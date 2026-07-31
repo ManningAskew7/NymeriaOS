@@ -78,10 +78,22 @@ cache-safe.
 - Same gates as binding: the management denylist
   (`PROTECTED_MANAGEMENT_TOOL_NAMES`), admin/developer role gates, and the
   thread's authoritative `disabled_tools`, resolving credentials as the calling
-  user. The deferred path is never a gate bypass. It shares one gate
-  (`tools/tool_invoke.py::deferred_gate_reason`) and one invocation envelope
-  (`core/workflows/verbs_tools.py::invoke_resolved_tool`) with the `nym.tools.*`
-  workflow dispatcher.
+  user. The deferred path is never a gate bypass. Gate
+  (`core/tool_execution.py::by_name_gate_reason`), resolver
+  (`resolve_by_name`, the dispatch superset) and execution envelope
+  (`run_tool_envelope` / `arun_tool_envelope`) are all shared with every other
+  by-name spelling: the `nym.tools.*` workflow dispatcher, the workflow memory
+  and thread-spawn verbs, and `self_invoke_tool`.
+- Lifecycle hooks fire here as they do for a bound call, on the TARGET's name:
+  `tool_invoke` is transport, so the graph tool node suppresses its own fire and
+  the envelope fires on the tool actually dispatched. A `require_approval` or
+  `block_if_matches` hook authored against `bash_execute` therefore also covers
+  `tool_invoke(name="bash_execute")`, which it did not before.
+- The gate carries a positive allowlist arm alongside the `disabled_tools`
+  denylist (`core/tool_execution.py::tool_allowlist`). It is a seam: it returns
+  `None` today, so no thread is narrowed. It governs the BY-NAME half only, not
+  bound calls, which are decided at graph build; read its docstring before
+  treating it as a per-tool permission model.
 - Arguments are validated against the target's real schema server-side but,
   unlike a bound tool, are NOT grammar-constrained as the model types them.
   `tool_invoke` pre-checks the args against the target's call schema and, on a

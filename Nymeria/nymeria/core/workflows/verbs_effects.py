@@ -214,9 +214,32 @@ def _memory_tool(name: str) -> Any:
 
 
 async def _run_memory_tool(ctx: VerbContext, name: str, tool_args: dict) -> str:
-    config = {"configurable": {"user_id": ctx.user_id, "thread_id": ctx.thread_id}}
+    """Run a memory tool through the shared by-name envelope.
+
+    Routed through ``invoke_resolved_tool`` so a PRE/POST tool hook sees a
+    workflow's memory write exactly as it sees a model's. It is deliberately NOT
+    put behind ``by_name_gate_reason``: ``nym.memory.*`` is the SDK's own verb,
+    authorised by the workflow's admin-approved revision, not a dispatch of the
+    thread's ``memory_add`` tool, so a thread that disabled that tool has not
+    said anything about this verb. The tool object is still resolved by module
+    attribute (``_memory_tool``) for the same reason.
+    """
+    from .verbs_tools import invoke_resolved_tool
+    from ..tool_execution import ToolDenied
+
     try:
-        result = await _memory_tool(name).ainvoke(tool_args, config)
+        result = await invoke_resolved_tool(
+            tool=_memory_tool(name),
+            tool_name=name,
+            user_id=ctx.user_id,
+            thread_id=ctx.thread_id,
+            args=tool_args,
+            tool_call_id=f"wf-{name}",
+        )
+    except ToolDenied as denied:
+        raise VerbError(
+            f"{name} was blocked by a lifecycle hook: {denied.reason}"
+        ) from denied
     except Exception as exc:  # noqa: BLE001 - normalize tool failures
         raise VerbError(f"{name} failed: {exc}") from exc
     text = str(result)

@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from langchain_core.messages import ToolMessage
+
 from .registry import VerbContext, VerbError, register_verb
 
 logger = logging.getLogger(__name__)
@@ -35,28 +37,19 @@ def _current_agent() -> Optional[Any]:
     return current_agent()
 
 
-def _gate_reason(tool_name: str, role: str) -> Optional[str]:
-    """Why ``role`` may not dispatch ``tool_name``, or None if allowed.
+def _gate_reason(agent: Any, tool_name: str, user_id: str, thread_id: str, role: str) -> Optional[str]:
+    """Seam: why this caller may not dispatch ``tool_name``, or None if allowed.
 
-    Order matters for the copy: the management denylist applies to everyone
-    (workflows must not rewire the tool system from inside a run); the role
-    gates mirror the graph-build chokepoints.
+    Delegates to the shared by-name gate so a workflow enforces exactly what the
+    deferred meta-tool and the self-modification test step enforce. It used to
+    apply only the management denylist and the role gates, leaving the exclusion
+    set unenforced (``nym.tools.tool_invoke`` was a legal, pointless recursion)
+    and relying on ``_find_tool``'s effective-set lookup to carry
+    ``disabled_tools`` as a side effect of resolution rather than as a decision.
     """
-    from ...tools import filter_admin_only_tools, filter_developer_only_tools
-    from ...tools.tool_search import PROTECTED_MANAGEMENT_TOOL_NAMES
+    from ..tool_execution import by_name_gate_reason
 
-    if tool_name in PROTECTED_MANAGEMENT_TOOL_NAMES:
-        return (
-            f"tool {tool_name!r} is a protected management tool and cannot be "
-            "called from a workflow"
-        )
-    _, blocked = filter_admin_only_tools({tool_name}, role)
-    if blocked:
-        return f"tool {tool_name!r} is admin-only and the caller is not an admin"
-    _, blocked = filter_developer_only_tools({tool_name}, role)
-    if blocked:
-        return f"tool {tool_name!r} is developer-only and the caller is not an admin"
-    return None
+    return by_name_gate_reason(agent, tool_name, user_id, thread_id, role)
 
 
 def _find_tool(agent: Any, user_id: str, thread_id: str, tool_name: str) -> Optional[Any]:
@@ -109,47 +102,74 @@ async def invoke_resolved_tool(
     args: dict,
     tool_call_id: str,
     workflow_depth: int = 0,
+    base_config: Any = None,
 ) -> Any:
     """Invoke an already-resolved, already-gated tool as the calling user.
 
-    The shared invocation envelope: ``ainvoke`` with the standard configurable
-    so per-user credentials and thread scoping resolve exactly as they do for an
-    in-turn tool call. Tools that declare an injected ``tool_call_id`` are
-    invoked with a full ToolCall envelope carrying a synthesized id (workflow
-    and deferred calls have no LLM tool_call to inherit one from). Raises the
-    tool's own exception on failure (callers normalize it); no gate or
-    resolution logic lives here so both the workflow verb and ``tool_invoke``
-    share one call path.
+    The by-name half of the shared execution envelope: it builds the config, runs
+    the call inside ``core/tool_execution``'s PRE/POST hook sandwich, and hands
+    back the tool's own result. Per-user credentials and thread scoping resolve
+    exactly as they do for an in-turn tool call. Raises the tool's own exception
+    on failure and ``ToolDenied`` on a hook veto; callers normalize both.
+
+    ``base_config`` is the caller's run config when it has one. ``tool_invoke``
+    passes the turn's, which is what lets a hook fire against the effective
+    tool: this function used to build a fresh three-key dict unconditionally and
+    discard the turn config, so the deferred path had no hook registry to fire
+    against. That discard, not a missing lookup, is why by-name calls were
+    invisible to hooks.
     """
-    # workflow_depth makes workflow-calls-workflow nesting bounded: a workflow
-    # custom tool dispatched from inside a run reads it from its configurable
-    # and refuses past budget.max_depth (core/workflows/tool_runtime.py).
-    config = {
-        "configurable": {
-            "user_id": user_id,
-            "thread_id": thread_id,
-            "workflow_depth": workflow_depth,
-        }
-    }
+    from ..tool_execution import arun_tool_envelope, by_name_tool_config
+
+    config = by_name_tool_config(
+        user_id=user_id,
+        thread_id=thread_id,
+        base=base_config,
+        workflow_depth=workflow_depth,
+        agent=_current_agent(),
+    )
     call_args = {k: v for k, v in (args or {}).items() if k != "tool_call_id"}
     # A tool that declares an InjectedToolCallId arg must be invoked with a full
     # ToolCall envelope (langchain's contract), with a synthesized id since a
     # workflow/deferred call has no LLM tool_call to inherit one from. Detection
     # is by signature, so the id is supplied preemptively, never as a retry
     # after a partial side effect.
-    if _wants_injected_tool_call_id(tool):
-        # ToolCall envelope form: langchain populates the InjectedToolCallId
-        # arg from the ``id`` field and returns a ToolMessage, so hand the
-        # caller its ``content`` rather than the message wrapper.
-        invocation = {
-            "args": call_args,
-            "name": tool_name,
-            "type": "tool_call",
-            "id": tool_call_id,
-        }
-        raw = await tool.ainvoke(invocation, config)
-        return getattr(raw, "content", raw)
-    return await tool.ainvoke(call_args, config)
+    wants_id = _wants_injected_tool_call_id(tool)
+
+    async def _execute(call: dict) -> Any:
+        # Args are read off the call the envelope hands back, not off the
+        # closure, so a PRE hook's ``modify`` decision actually reaches the tool
+        # rather than being computed and dropped.
+        effective_args = call.get("args") or {}
+        if wants_id:
+            # ToolCall envelope form: langchain populates the InjectedToolCallId
+            # arg from the ``id`` field and returns a ToolMessage.
+            invocation = {
+                "args": effective_args,
+                "name": tool_name,
+                "type": "tool_call",
+                "id": tool_call_id,
+            }
+            # Returned WHOLE rather than unwrapped to ``.content`` here. That
+            # ToolMessage carries a real success/error status, and unwrapping
+            # before the envelope reads it would leave every POST hook on this
+            # path seeing status=None: a hook with fire_conditions on
+            # tool_status would fire for bound calls and silently never for
+            # by-name ones, which is the same half-coverage this module exists
+            # to remove, one level down. The unwrap happens after the envelope.
+            return await tool.ainvoke(invocation, config)
+        return await tool.ainvoke(effective_args, config)
+
+    result = await arun_tool_envelope(
+        call={"name": tool_name, "args": call_args, "id": tool_call_id},
+        config=config,
+        execute=_execute,
+    )
+    # Hand the caller the tool's own payload, never the message wrapper.
+    # isinstance rather than getattr(result, "content", result): a tool that
+    # happens to return an object with a ``.content`` attribute is not a
+    # ToolMessage and must not be silently unwrapped.
+    return result.content if isinstance(result, ToolMessage) else result
 
 
 async def dispatch_tool_by_name(
@@ -164,13 +184,18 @@ async def dispatch_tool_by_name(
 ) -> Any:
     """Resolve and invoke one tool as the calling user; raises VerbError.
 
-    The workflow-side dispatcher: denylist, role gates, effective-tool-set
+    The workflow-side dispatcher: the shared by-name gate, effective-tool-set
     lookup, then the shared ``invoke_resolved_tool`` envelope. Resolution is the
     thread's EFFECTIVE set (``select_tools_for_graph``), so ``disabled_tools``
-    is enforced by the lookup itself.
+    is enforced twice over: once as a decision in the gate and once by the
+    lookup. Belt and braces on purpose, since the two answer to different
+    owners and the lookup's version is a side effect of resolution rather than
+    a stated rule.
     """
+    from ..tool_execution import ToolDenied
+
     role = _caller_role(user_id)
-    reason = _gate_reason(tool_name, role)
+    reason = _gate_reason(agent, tool_name, user_id, thread_id, role)
     if reason:
         raise VerbError(reason)
 
@@ -190,6 +215,10 @@ async def dispatch_tool_by_name(
             tool_call_id=tool_call_id,
             workflow_depth=workflow_depth,
         )
+    except ToolDenied as denied:
+        raise VerbError(
+            f"tool {tool_name!r} was blocked by a lifecycle hook: {denied.reason}"
+        ) from denied
     except VerbError:
         raise
     except Exception as exc:  # noqa: BLE001 - normalize tool failures

@@ -1284,6 +1284,22 @@ def _dispatch_provider_event(
     payload: dict[str, Any],
     run_config: Any,
 ) -> None:
+    """Emit one LLM-layer custom event to the turn's stream, best-effort.
+
+    This is the emitter for ``provider_retry`` / ``provider_fallback`` /
+    ``output_truncated``, which are LLM concerns and predate the tool envelope.
+    It stays a near-duplicate of ``core.tool_execution.dispatch_provider_event``
+    on purpose, for two reasons that both cut against collapsing them:
+
+    - Layering. That function serves the TOOL envelope and lives in a module
+      named for it. Routing a provider-fallback event through it would make the
+      LLM path depend on tool-execution code for something tools do not own.
+    - Test seam. ``dispatch_custom_event`` resolved HERE is what
+      ``test_fallback_consent.py`` and ``test_output_truncation.py`` patch to
+      capture provider events. Delegating moves the seam out from under them.
+
+    Swallows everything: a stream line never fails an LLM call.
+    """
     try:
         dispatch_custom_event(name, payload, config=run_config)
     except RuntimeError:
@@ -1297,29 +1313,13 @@ async def _adispatch_provider_event(
     payload: dict[str, Any],
     run_config: Any,
 ) -> None:
+    """Async twin of :func:`_dispatch_provider_event`."""
     try:
         await adispatch_custom_event(name, payload, config=run_config)
     except RuntimeError:
         logger.debug("[LLM] No callback manager for %s event", name)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[LLM] Failed to dispatch %s event: %s", name, exc)
-
-
-def _emit_hook_activity_sync(records: list, run_config: Any) -> None:
-    """Stream collected mutate-plane hook-activity records (sync tool path).
-
-    Each record is an ephemeral ``hook_activity`` custom event surfaced to the
-    chat stream as ``{type: "hook_activity", ...}``. Best-effort: a turn without
-    a callback manager (or a stream that already closed) simply drops the line.
-    """
-    for rec in records:
-        _dispatch_provider_event("hook_activity", dict(rec), run_config)
-
-
-async def _emit_hook_activity(records: list, run_config: Any) -> None:
-    """Async twin of :func:`_emit_hook_activity_sync` for the concurrent tool path."""
-    for rec in records:
-        await _adispatch_provider_event("hook_activity", dict(rec), run_config)
 
 
 def _llm_config_for_fallback(
@@ -3083,7 +3083,7 @@ class SafeToolNode(ToolNode):
     # ------------------------------------------------------------------ #
 
     def _run_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
-        from ...core import hooks
+        from ...core import hooks, tool_execution
         config = tool_runtime.config
         started_at = datetime.now(timezone.utc)
         started_monotonic = time.monotonic()
@@ -3091,7 +3091,7 @@ class SafeToolNode(ToolNode):
         if unbound is not None:
             return self._stamp_tool_timing(unbound, started_at, started_monotonic, config)
         registry = self._hook_registry(config)
-        if not hooks.tool_hooks_active(registry):
+        if self._skip_hook_envelope(call, registry, hooks):
             return self._stamp_tool_timing(
                 self._augment_auth_failure(
                     super()._run_one(call, input_type, tool_runtime), call, config
@@ -3100,43 +3100,29 @@ class SafeToolNode(ToolNode):
                 started_monotonic,
                 config,
             )
-        from langgraph.prebuilt.tool_node import ToolCallRequest
 
-        pre_activity: list = []
-        pre = hooks.dispatch(
-            hooks.HookEvent.PRE_TOOL_USE,
-            self._build_tool_hook_ctx(
-                hooks.HookEvent.PRE_TOOL_USE, call, config, state=tool_runtime.state
-            ),
-            registry=registry,
-            emit=pre_activity.append,
-        )
-        _emit_hook_activity_sync(pre_activity, config)
-        call, denied = self._apply_pre_tool_outcome(pre, call)
-        if denied is not None:
-            return denied
-        tool = self.tools_by_name.get(call["name"])
-        request = ToolCallRequest(
-            tool_call=call, tool=tool, state=tool_runtime.state, runtime=tool_runtime
-        )
-        result = self._execute_tool_sync(request, input_type, config)
-        post_ctx = self._build_tool_hook_ctx(
-            hooks.HookEvent.POST_TOOL_USE, call, config,
-            result_text=self._tool_result_text(result),
-            tool_status=self._tool_result_status(result),
-            state=tool_runtime.state,
-        )
-        post_activity: list = []
-        post = hooks.dispatch(
-            hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry,
-            emit=post_activity.append,
-        )
-        _emit_hook_activity_sync(post_activity, config)
-        final = self._apply_post_tool_outcome(result, post)
-        # Observe-plane side effects (notify/create_todo/webhook) see the same
-        # original result; scheduled off-turn, so they neither delay the tool
-        # return nor count against the tool timeout budget.
-        hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        def _execute(effective: ToolCall):
+            from langgraph.prebuilt.tool_node import ToolCallRequest
+
+            tool = self.tools_by_name.get(effective["name"])
+            request = ToolCallRequest(
+                tool_call=effective, tool=tool, state=tool_runtime.state,
+                runtime=tool_runtime,
+            )
+            return self._execute_tool_sync(request, input_type, config)
+
+        try:
+            final = tool_execution.run_tool_envelope(
+                call=cast(dict, call),
+                config=config,
+                execute=_execute,
+                state=tool_runtime.state,
+                registry=registry,
+            )
+        except tool_execution.ToolDenied as denied:
+            # Deliberately NOT timing-stamped: a vetoed call never ran, so a
+            # duration would be a measurement of the hook, not of the tool.
+            return self._denied_tool_message(call, denied.reason)
         return self._stamp_tool_timing(
             self._augment_auth_failure(final, call, config),
             started_at,
@@ -3145,7 +3131,7 @@ class SafeToolNode(ToolNode):
         )
 
     async def _arun_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
-        from ...core import hooks
+        from ...core import hooks, tool_execution
         config = tool_runtime.config
         started_at = datetime.now(timezone.utc)
         started_monotonic = time.monotonic()
@@ -3153,7 +3139,7 @@ class SafeToolNode(ToolNode):
         if unbound is not None:
             return self._stamp_tool_timing(unbound, started_at, started_monotonic, config)
         registry = self._hook_registry(config)
-        if not hooks.tool_hooks_active(registry):
+        if self._skip_hook_envelope(call, registry, hooks):
             return self._stamp_tool_timing(
                 await self._a_augment_auth_failure(
                     await super()._arun_one(call, input_type, tool_runtime), call, config
@@ -3162,48 +3148,66 @@ class SafeToolNode(ToolNode):
                 started_monotonic,
                 config,
             )
-        from langgraph.prebuilt.tool_node import ToolCallRequest
 
-        pre_activity: list = []
-        pre = await hooks.adispatch(
-            hooks.HookEvent.PRE_TOOL_USE,
-            self._build_tool_hook_ctx(
-                hooks.HookEvent.PRE_TOOL_USE, call, config, state=tool_runtime.state
-            ),
-            registry=registry,
-            emit=pre_activity.append,
-        )
-        await _emit_hook_activity(pre_activity, config)
-        call, denied = self._apply_pre_tool_outcome(pre, call)
-        if denied is not None:
-            return denied
-        tool = self.tools_by_name.get(call["name"])
-        request = ToolCallRequest(
-            tool_call=call, tool=tool, state=tool_runtime.state, runtime=tool_runtime
-        )
-        result = await self._execute_tool_async(request, input_type, config)
-        post_ctx = self._build_tool_hook_ctx(
-            hooks.HookEvent.POST_TOOL_USE, call, config,
-            result_text=self._tool_result_text(result),
-            tool_status=self._tool_result_status(result),
-            state=tool_runtime.state,
-        )
-        post_activity: list = []
-        post = await hooks.adispatch(
-            hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry,
-            emit=post_activity.append,
-        )
-        await _emit_hook_activity(post_activity, config)
-        final = self._apply_post_tool_outcome(result, post)
-        # Observe-plane side effects (notify/create_todo/webhook) see the same
-        # original result; scheduled off-turn (a loop task), so they neither
-        # delay the tool return nor count against the tool timeout budget.
-        hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        async def _execute(effective: ToolCall):
+            from langgraph.prebuilt.tool_node import ToolCallRequest
+
+            tool = self.tools_by_name.get(effective["name"])
+            request = ToolCallRequest(
+                tool_call=effective, tool=tool, state=tool_runtime.state,
+                runtime=tool_runtime,
+            )
+            return await self._execute_tool_async(request, input_type, config)
+
+        try:
+            final = await tool_execution.arun_tool_envelope(
+                call=cast(dict, call),
+                config=config,
+                execute=_execute,
+                state=tool_runtime.state,
+                registry=registry,
+            )
+        except tool_execution.ToolDenied as denied:
+            return self._denied_tool_message(call, denied.reason)
         return self._stamp_tool_timing(
             await self._a_augment_auth_failure(final, call, config),
             started_at,
             started_monotonic,
             config,
+        )
+
+    @staticmethod
+    def _skip_hook_envelope(call: ToolCall, registry, hooks) -> bool:
+        """True when this call takes the parent's path with no hook sandwich.
+
+        Two reasons, and they are unrelated:
+
+        - No PRE/POST tool hook is registered, so the sandwich would be pure
+          overhead. Delegating to ``super()`` rather than to
+          ``_execute_tool_sync`` keeps the parent's error semantics exactly as
+          they were before the seam existed.
+        - The call is TRANSPORT (``TRANSPORT_TOOL_NAMES``: ``tool_invoke`` and
+          ``self_invoke_tool``, both of which are also graph-bindable), whose
+          own envelope fires on the tool it dispatches, under that tool's real
+          name. Firing here too would show one user-visible action as two, and
+          would prompt twice for a single ``require_approval``. A hook authored
+          against either literal transport name therefore does not fire, which
+          is the intended reading of "hooks see the effective tool".
+        """
+        from ...core.tool_execution import TRANSPORT_TOOL_NAMES
+
+        if str(call.get("name") or "") in TRANSPORT_TOOL_NAMES:
+            return True
+        return not hooks.tool_hooks_active(registry)
+
+    @staticmethod
+    def _denied_tool_message(call: ToolCall, reason: str) -> ToolMessage:
+        """Render a hook veto as the error result the model sees."""
+        return ToolMessage(
+            content=f"blocked: {reason}",
+            name=str(call.get("name") or ""),
+            tool_call_id=str(call.get("id") or ""),
+            status="error",
         )
 
     @staticmethod
@@ -3323,159 +3327,15 @@ class SafeToolNode(ToolNode):
 
     @staticmethod
     def _hook_registry(config):
-        """Resolve the per-turn hook registry stamped into the run config.
+        """Seam: the per-turn hook registry stamped into the run config.
 
-        Falls back to the module ``default_registry`` when nothing is stamped
-        (production turns with no enabled hooks, and every existing test), so the
-        no-hooks path is byte-identical to before.
+        Core owns the resolution (``tool_execution.hook_registry_from_config``)
+        because the by-name paths need the identical answer; this stays as a
+        method only as a local alias, used on both the sync and async paths.
         """
-        from ...core import hooks
-        configurable = config.get("configurable") if isinstance(config, dict) else None
-        return (configurable or {}).get("hook_registry") or hooks.default_registry
+        from ...core.tool_execution import hook_registry_from_config
 
-    @staticmethod
-    def _state_messages(state) -> list:
-        """Best-effort message list from a graph state (list/dict/model shapes)."""
-        if isinstance(state, list):
-            return state
-        if isinstance(state, dict):
-            messages = state.get("messages")
-            return messages if isinstance(messages, list) else []
-        messages = getattr(state, "messages", None)
-        return messages if isinstance(messages, list) else []
-
-    @classmethod
-    def _fresh_context_tokens(cls, state, configurable: dict):
-        """Current context occupancy for a tool-event hook, or None.
-
-        Freshest signal first: the most recent AIMessage's provider-reported
-        input tokens from the running state (the same source
-        ``should_subturn_compact`` reads, so a long tool loop sees occupancy
-        grow mid-turn). Falls back to the turn-entry stamp from
-        ``graph_run_config``. Never raises.
-        """
-        try:
-            from ...core.token_usage import extract_last_from_messages
-            input_tokens, _ = extract_last_from_messages(cls._state_messages(state))
-            if input_tokens:
-                return int(input_tokens)
-        except Exception:  # noqa: BLE001 - a stats read must never break a tool call
-            logger.debug("hook context-token extraction failed", exc_info=True)
-        return configurable.get("hook_context_tokens")
-
-    def _build_tool_hook_ctx(
-        self, event, call, config, *, result_text=None, tool_status=None, state=None
-    ):
-        """Build a PRE/POST tool HookContext from the call + run config.
-
-        thread_id/user_id come from the run config's ``configurable``; turn-source
-        fields (``hook_is_autonomous``/``hook_holder_kind``/``hook_trigger_label``)
-        are stamped there by ``agent_safety.graph_run_config`` for graph-run turns
-        and default when absent (e.g. a read-only state fetch), so a tool hook can
-        scope by autonomous-vs-interactive / holder / trigger. The context-usage
-        fields combine the turn-stable stamps (window, compact trigger) with the
-        freshest occupancy from ``state`` (see ``_fresh_context_tokens``).
-        """
-        from ...core import hooks
-
-        configurable = {}
-        if isinstance(config, dict):
-            configurable = config.get("configurable") or {}
-        args = call.get("args") if isinstance(call, dict) else None
-        return hooks.HookContext(
-            event=event,
-            thread_id=str(configurable.get("thread_id") or ""),
-            user_id=str(configurable.get("user_id") or ""),
-            is_autonomous=bool(configurable.get("hook_is_autonomous", False)),
-            holder_kind=configurable.get("hook_holder_kind"),
-            trigger_label=configurable.get("hook_trigger_label"),
-            tool_name=call.get("name") if isinstance(call, dict) else None,
-            tool_call_id=call.get("id") if isinstance(call, dict) else None,
-            tool_args=args if isinstance(args, dict) else None,
-            tool_result_text=result_text,
-            tool_status=tool_status,
-            context_tokens=self._fresh_context_tokens(state, configurable),
-            context_limit=configurable.get("hook_context_limit"),
-            compact_trigger_tokens=configurable.get("hook_compact_trigger_tokens"),
-        )
-
-    @staticmethod
-    def _apply_pre_tool_outcome(
-        outcome, call: ToolCall
-    ) -> tuple[ToolCall, Optional[ToolMessage]]:
-        """Apply a reduced PRE outcome. Returns (call, denied_message_or_None)."""
-        decision = getattr(outcome, "decision", "allow") if outcome else "allow"
-        if decision == "deny":
-            reason = getattr(outcome, "reason", None) or "blocked by a lifecycle hook"
-            msg = ToolMessage(
-                content=f"blocked: {reason}",
-                name=str(call.get("name") or ""),
-                tool_call_id=str(call.get("id") or ""),
-                status="error",
-            )
-            return call, msg
-        if decision == "modify" and getattr(outcome, "updated_args", None):
-            new_args = {**(call.get("args") or {}), **outcome.updated_args}
-            return cast(ToolCall, {**call, "args": new_args}), None
-        return call, None
-
-    @staticmethod
-    def _apply_post_tool_outcome(result, outcome):
-        """Apply a reduced POST outcome to a ToolMessage result (or list thereof).
-
-        Command results are passed through unchanged. For multimodal (list)
-        content, a text rewrite replaces the text blocks while preserving
-        non-text (image/file) blocks; a note is appended as a new text block.
-        A fresh ToolMessage is returned via ``model_copy`` rather than mutating
-        the original in place (matching ``_truncate_tool_message``).
-        """
-        if outcome is None:
-            return result
-        updated = getattr(outcome, "updated_result_text", None)
-        extra = getattr(outcome, "additional_context", None)
-        if updated is None and not extra:
-            return result
-
-        def _is_text_block(block) -> bool:
-            return isinstance(block, str) or (
-                isinstance(block, dict) and block.get("type") == "text"
-            )
-
-        def rewrite(msg):
-            if not isinstance(msg, ToolMessage):
-                return msg
-            content = msg.content
-            if updated is not None:
-                if isinstance(content, list):
-                    # Replace text blocks with the rewrite; keep image/file blocks.
-                    non_text = [b for b in content if not _is_text_block(b)]
-                    content = non_text + [{"type": "text", "text": updated}]
-                else:
-                    content = updated
-            if extra:
-                if isinstance(content, list):
-                    content = content + [{"type": "text", "text": extra}]
-                else:
-                    content = f"{content}\n\n{extra}"
-            return msg.model_copy(update={"content": content})
-
-        if isinstance(result, list):
-            return [rewrite(m) for m in result]
-        return rewrite(result)
-
-    @staticmethod
-    def _tool_result_text(result):
-        """Plain-text content of a ToolMessage result, else None."""
-        if isinstance(result, ToolMessage) and isinstance(result.content, str):
-            return result.content
-        return None
-
-    @staticmethod
-    def _tool_result_status(result):
-        """"success"/"error" status of a ToolMessage result, else None."""
-        if isinstance(result, ToolMessage):
-            return getattr(result, "status", None)
-        return None
+        return hook_registry_from_config(config)
 
     def _register_dynamic_tool(self, tool: BaseTool) -> None:
         """Add a late-bound tool to this ToolNode's dispatch table."""
@@ -4252,6 +4112,13 @@ class SafeToolNode(ToolNode):
         Mirrors ``_dispatch_provider_event``: swallow a missing callback manager
         (RuntimeError) and any other dispatch failure at debug level so a
         streaming hiccup never breaks tool execution.
+
+        Deliberately calls ``dispatch_custom_event`` directly instead of routing
+        through ``_dispatch_provider_event``. The duplication looks collapsible
+        and is not: this module-level symbol is the seam
+        ``test_tool_node_sequential.py`` patches, once to capture the frames and
+        once with a RAISING fake to prove the swallow. Delegating to a wrapper
+        that already swallows would leave that second test asserting nothing.
         """
         for name, payload in self._marker_frame_payloads(call, ack):
             try:

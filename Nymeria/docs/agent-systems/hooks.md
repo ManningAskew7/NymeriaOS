@@ -51,6 +51,17 @@ for nested args, e.g. `input.command`). `block_if_matches` returns a deny with a
 templated `reason`; `rewrite_arg` returns the changed args only (`updates`, templated),
 which the seam shallow-merges over the call. Empty `conditions` = always fire.
 
+The name a `matcher` sees is always the tool that actually RAN, never the meta-tool
+that carried it. Matching `tool_invoke` or `self_invoke_tool` literally therefore
+matches nothing: those two are transport (see "Where hooks fire" below). This is a
+BEHAVIOUR CHANGE. Before the shared execution envelope landed, a `matcher` on a
+transport name fired on the wrapper while the tool it dispatched went unhooked, so a
+hook authored against `tool_invoke` to catch "the agent running something unbound"
+now goes inert. Re-author it against the tools you actually want constrained, or drop
+the `matcher` entirely (an absent or empty matcher matches every call on every path;
+note there is no wildcard string, `"*"` is treated as a literal tool name and matches
+nothing).
+
 **`require_approval`** is the interactive `pre_tool_use` guardrail (backlog #77): when its
 `conditions` (and the shared `matcher`) match, the tool call **pauses in-band** while every
 surface is asked for a decision, then resolves from the first answer. The hold is an
@@ -365,7 +376,7 @@ The context-usage signal also feeds `{placeholder}` templating: `inject_context`
 (empty string when unknown). Signal sources per event: `prompt_submit`/`done`
 read the token tracker (`agent_compaction.hook_context_stats`); `pre`/
 `post_tool_use` read the freshest mid-turn occupancy from the running state's
-last AI message (`SafeToolNode._fresh_context_tokens`, the same source as
+last AI message (`tool_execution._fresh_context_tokens`, the same source as
 sub-turn compaction), falling back to the turn-entry stamp in
 `graph_run_config`. Stats are stamped only when the turn has enabled hooks, so
 the zero-hook hot path is unchanged.
@@ -664,12 +675,41 @@ endpoints (GUI, CLI, bots); self-invoked agent turns are excluded.
   (`chat` sync, `astream` async), right after `_prefix_turn_metadata`; injected text is
   wrapped in a strippable sentinel (`agent_history.wrap_hook_context`) and stripped from
   history/RAG by `strip_prompt_context`.
-- `PRE_TOOL_USE` / `POST_TOOL_USE`: `SafeToolNode._run_one` / `_arun_one`
-  (`vendor/react_agent/nodes.py`) override the vendored tool node. They call
-  `_execute_tool_sync` / `_execute_tool_async` directly (preserving the parent's
-  `GraphBubbleUp` re-raise) and fire on both the concurrent and sequential paths. When
-  no PRE/POST tool hook is registered, they delegate straight to `super()`, so the hot
-  path is unchanged by default.
+- `PRE_TOOL_USE` / `POST_TOOL_USE`: one shared envelope in
+  `core/tool_execution.py` (`run_tool_envelope` / `arun_tool_envelope`), which
+  every dispatch path calls. The envelope owns the policy (which hooks fire, in
+  what order, how an outcome is applied); each caller supplies the `execute`
+  step, because the mechanics genuinely differ.
+  - Bound calls: `SafeToolNode._run_one` / `_arun_one`
+    (`vendor/react_agent/nodes.py`) override the vendored tool node and pass a
+    closure over `_execute_tool_sync` / `_execute_tool_async` (calling them
+    directly preserves the parent's `GraphBubbleUp` re-raise). Fires on both the
+    concurrent and sequential paths. When no PRE/POST tool hook is registered,
+    the node delegates straight to `super()`, so the hot path is unchanged.
+  - By-name calls: `tool_invoke`, the workflow SDK's `nym.tools.*` /
+    `nym.memory.*` / thread-spawn verbs, and `self_invoke_tool` all reach the
+    envelope through `verbs_tools.invoke_resolved_tool` or a direct
+    `run_tool_envelope`. A hook authored against a tool therefore constrains it
+    however it was reached.
+  - **`tool_invoke` and `self_invoke_tool` are transport**
+    (`TRANSPORT_TOOL_NAMES`): both are graph-bindable, so for either one the
+    node suppresses its own fire and the inner envelope fires on the tool it
+    dispatched, under that tool's real name. So the call is seen once, as what
+    it actually ran, and a hook authored against either literal transport name
+    does not fire. Author against the tool you mean to constrain.
+  - A call the gate refuses before the envelope (`by_name_gate_reason`: role,
+    protected-management denylist, `disabled_tools`, allowlist) fires no hook,
+    matching how an unbound-call refusal has always returned before dispatch.
+  - **`require_approval` on a by-name call waits inside the tool budget.** On a
+    bound call the human wait happens before `_execute_tool_*`, so the tool
+    timeout never counts it. Through a transport tool the whole body, including
+    the inner PRE dispatch and its wait, runs inside `tool_timeout` (default
+    300s), while an authored `timeout_seconds` may be up to 600s. So an approval
+    window longer than `tool_timeout` is cut short on that path, surfacing as a
+    tool timeout rather than a clean deny. This is not a loss of protection
+    (before the envelope, a hook on the target did not fire on that path at
+    all), but keep `timeout_seconds` under `tool_timeout` if you author an
+    approval that a deferred call can reach.
 - `DONE` observe: dispatched at the normal-completion site of `chat`/`astream`, **also on the
   error path** (`completed_normally=False`) so a `done` `notify`/`webhook` can react to a
   failed turn, **and now on cancel/GeneratorExit** (SSE disconnect / `POST /stop`). Because
@@ -789,6 +829,6 @@ general `PROMPT_SUBMIT` dispatch can never double-emit the turn-metadata block t
 registry at all) and
 `core/agent_safety.py::graph_run_config` (stamps `configurable["hook_registry"]` plus the
 turn source `hook_is_autonomous`/`hook_holder_kind`/`hook_trigger_label`, which
-`nodes.py::_build_tool_hook_ctx` surfaces so a tool hook can scope by autonomous-vs-interactive);
+`tool_execution.build_tool_hook_ctx` surfaces so a tool hook can scope by autonomous-vs-interactive);
 every fire point falls back to the empty `default_registry` when no per-turn registry is set,
 so a user with no enabled hooks runs byte-identically to the spine.

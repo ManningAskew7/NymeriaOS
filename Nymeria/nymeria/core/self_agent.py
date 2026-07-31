@@ -328,17 +328,48 @@ def self_invoke_tool(
     Returns:
         The tool's output or an error message
     """
+    from ..tools.utils import caller_role, get_thread_id, get_user_id
     from .agent import get_current_agent
+    from .tool_execution import (
+        ToolDenied,
+        by_name_gate_reason,
+        resolve_by_name,
+        run_tool_envelope,
+        superset_tool_names,
+    )
 
     try:
         agent = get_current_agent()
         if agent is None:
             return "[Error]: No active agent found. Cannot invoke tool."
 
-        # Find tool in registry
-        tool_obj = agent.tool_registry.get_tool(tool_name)
+        user_id = get_user_id(config)
+        thread_id = get_thread_id(config)
+
+        # This is a by-name dispatch like any other, so it takes the shared gate
+        # rather than none at all. It previously applied no denylist, no role
+        # gate and no disabled_tools check, which made it the widest by-name
+        # path in the system despite being the narrowest in purpose. The
+        # create -> reload -> test cycle it exists for is unaffected: a freshly
+        # written tool is not protected, not admin-only and not disabled.
+        gate = by_name_gate_reason(
+            agent, tool_name, user_id, thread_id, caller_role(user_id, agent=agent)
+        )
+        if gate:
+            return f"[Error]: {gate}"
+
+        # Resolved from the caller's dispatch superset, not agent.tool_registry.
+        # The registry holds EVERY user's callable-thread tools, so resolving
+        # there reached across accounts and left the runtime ownership gate as
+        # the only thing in the way. The superset is team-scoped per user, so
+        # the reach is now structural rather than a check that has to fire.
+        tool_obj = resolve_by_name(agent, user_id, thread_id, tool_name)
         if not tool_obj:
-            available = [t["name"] for t in agent.tool_registry.list_tools()]
+            # Enumerated from the SAME superset the resolution used, not from
+            # agent.tool_registry: the registry spans every user's callable
+            # threads, so a help string built from it both leaks other accounts'
+            # callable names and omits catalog tools this caller can reach.
+            available = sorted(superset_tool_names(agent, user_id, thread_id))
             return f"[Error]: Tool '{tool_name}' not found. Available tools: {', '.join(available[:20])}"
 
         # Parse arguments
@@ -347,15 +378,23 @@ def self_invoke_tool(
         except json.JSONDecodeError as e:
             return f"[Error]: Invalid JSON arguments: {e}"
 
-        # Forward the caller's RunnableConfig so InjectedToolArg-bearing tools
-        # (notably the callable-thread closures in agents/tool_factory.py) see
-        # the real user_id/thread_id and the runtime ownership gate fires
-        # correctly. Without this, callable closures default user_id="default"
-        # — which is admin — so any user with self_invoke_tool enabled could
-        # invoke another user's callable as the bootstrap admin.
-        result = tool_obj.invoke(args, config=config)
+        # The caller's RunnableConfig is forwarded so InjectedToolArg-bearing
+        # tools (notably the callable-thread closures in agents/tool_factory.py)
+        # see the real user_id/thread_id and the runtime ownership gate fires.
+        # Without it, callable closures default to user_id="default", which is
+        # admin, so any user with self_invoke_tool enabled could invoke another
+        # user's callable as the bootstrap admin.
+        result = run_tool_envelope(
+            call={"name": tool_name, "args": args, "id": f"self-invoke-{tool_name}"},
+            config=config,
+            execute=lambda effective: tool_obj.invoke(
+                effective.get("args") or {}, config=config
+            ),
+        )
         return f"[Test result]: {result}"
 
+    except ToolDenied as denied:
+        return f"[Error]: '{tool_name}' was blocked by a lifecycle hook: {denied.reason}"
     except Exception as e:
         logger.error(f"self_invoke_tool failed: {e}", exc_info=True)
         return f"[Error]: Tool invocation failed: {str(e)}"

@@ -163,15 +163,59 @@ def _spawn_fresh(spawn_args: dict, config: dict) -> str:
 
     Sync on purpose: the caller runs it on the dedicated dispatch pool (the
     tool's own ``.ainvoke`` would put the minutes-long blocking body on the
-    loop's DEFAULT executor instead).
+    loop's DEFAULT executor instead), which is also why this uses the sync
+    envelope rather than the async one.
+
+    Wrapped in the shared envelope so a PRE/POST tool hook sees a workflow
+    spawning a thread. spawn_thread's own gates (depth cap, rate limit, role
+    filtering of requested optional_tools) live in the tool body and are
+    unaffected.
     """
     from typing import cast
 
     from langchain_core.runnables import RunnableConfig
 
     from ...tools.spawn_thread import spawn_thread
+    from ..tool_execution import ToolDenied, by_name_tool_config, run_tool_envelope
 
-    return cast(str, spawn_thread.invoke(spawn_args, cast(RunnableConfig, config)))
+    configurable = config.get("configurable") or {}
+    # The envelope gets a config with THIS thread's hook registry resolved from
+    # the agent. Without that step it would fall back to the module-global
+    # default registry, which is empty in production, so the hooks would appear
+    # to be wired and silently never fire. spawn_thread itself still receives the
+    # caller's original config, unchanged.
+    hook_config = by_name_tool_config(
+        user_id=str(configurable.get("user_id") or ""),
+        thread_id=str(configurable.get("thread_id") or ""),
+        base=config,
+        agent=_current_agent(),
+    )
+
+    def _execute(effective: dict) -> str:
+        return cast(
+            str,
+            spawn_thread.invoke(
+                effective.get("args") or {}, cast(RunnableConfig, config)
+            ),
+        )
+
+    try:
+        return cast(
+            str,
+            run_tool_envelope(
+                call={"name": "spawn_thread", "args": spawn_args, "id": "wf-spawn_thread"},
+                config=hook_config,
+                execute=_execute,
+            ),
+        )
+    except ToolDenied as denied:
+        # Named refusal, matching the other four envelope callers. Without this
+        # the reason still reaches the workflow author (ToolDenied stringifies
+        # to it) but arrives as a bare verb error, so "a hook stopped this"
+        # reads as "spawn_thread failed".
+        raise VerbError(
+            f"spawn_thread was blocked by a lifecycle hook: {denied.reason}"
+        ) from denied
 
 
 def _error_markered(text: str, *, include_plain: bool) -> Optional[str]:
