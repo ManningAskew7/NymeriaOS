@@ -38,6 +38,25 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_TTL = "2h"
+# Tools that reconfigure the agent's own capability or policy surface. Members
+# must be bound to the thread to be callable: the deferred paths (`tool_invoke`
+# and the `nym.tools.*` workflow verb) refuse them outright, so a turn cannot
+# reach one by name without it first being part of the thread's tool set.
+# Enforced in `core/workflows/verbs_tools.py::_gate_reason`.
+#
+# `hook_config` is here because the lifecycle-hook store is the policy plane:
+# `require_approval` and `block_if_matches` are the guardrails a user authors
+# when they specifically do not trust the agent with some action, so reaching
+# the tool that edits them without binding it is a disable-then-act route.
+# Its read-only sibling `hook_info` is deliberately NOT here (its "test" action
+# is a dry-run render that never fires a hook), because blocking a read-only
+# tool from the deferred path costs capability and buys nothing.
+#
+# Note the bound: this closes the *unbound* call only. An agent on a thread
+# that legitimately has `hook_config` bound can still edit hooks. Constraining
+# that is the per-tool permission layer's job, and once tool dispatch is
+# unified a user can also author a `require_approval` hook on `hook_config`
+# itself and have it fire on every path.
 PROTECTED_MANAGEMENT_TOOL_NAMES = frozenset(
     {
         "tool_search",
@@ -49,6 +68,7 @@ PROTECTED_MANAGEMENT_TOOL_NAMES = frozenset(
         "api_discover",
         "http_request",
         "tool_create",
+        "hook_config",
     }
 )
 
