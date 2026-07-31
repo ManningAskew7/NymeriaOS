@@ -30,7 +30,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 
 from ..config import get_settings
-from .credential_vault import Actor
+from .credential_vault import UNATTRIBUTED_ACTOR, Actor
 from ..tools.definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig
 from ..tools.metadata import (
     clear_custom_tool_metadata,
@@ -572,7 +572,7 @@ def interpolate_params(template: str, params: Dict[str, Any]) -> str:
 # defaults to "default", which is the BOOTSTRAP ADMIN, so an unattributed call
 # would silently become a privileged one. Failing closed on an unknown caller is
 # the whole point of requiring the actor in the first place.
-_UNATTRIBUTED_ACTOR = "__unattributed__"
+_UNATTRIBUTED_ACTOR = UNATTRIBUTED_ACTOR
 
 
 def _caller_actor(run_config: Optional[RunnableConfig]) -> Actor:

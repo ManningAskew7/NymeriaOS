@@ -514,13 +514,6 @@ def run_api(args: argparse.Namespace) -> None:
     """Run the REST API server."""
     from nymeria.triggers.api import run_api as start_api
     from nymeria.config import get_settings
-    from nymeria.process_hardening import restrict_proc_access
-
-    # Before anything can spawn a child. This process is about to hold the
-    # vault master key and the service token, and a same-user tool shell can
-    # otherwise read them straight out of /proc/<pid>/environ, which would
-    # undo the environment scrubbing the spawn sites do.
-    restrict_proc_access()
 
     settings = get_settings()
     host = args.host or settings.api_host
@@ -654,12 +647,6 @@ def _resolve_slim_port(args: argparse.Namespace) -> int:
 
 def run_slim(args: argparse.Namespace) -> None:
     """Run the single-process slim launcher (API + ticker + MCP)."""
-    from nymeria.process_hardening import restrict_proc_access
-
-    # Slim runs the agent in this same process, so it needs this at least as
-    # much as the Docker API path. See run_api for why it comes first.
-    restrict_proc_access()
-
     host = getattr(args, "host", None) or "127.0.0.1"
     port = _resolve_slim_port(args)
     data_dir = getattr(args, "data_dir", None)
@@ -1747,6 +1734,17 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     service_token_required = _service_token_requirement(args) is not None
+
+    # Once, here, before any subcommand runs or can spawn a child. Every
+    # subcommand reaches this after _load_environment() has already put the
+    # whole deployment .env into os.environ, so there is no subcommand for
+    # which leaving /proc/<pid>/environ world-readable to same-user processes
+    # is correct. Wiring it per-entry-point instead means remembering, and the
+    # first attempt at that already missed `cli --transport local`, which
+    # embeds a full agent with bash_execute seeded.
+    from nymeria.process_hardening import restrict_proc_access
+
+    restrict_proc_access()
 
     # Slim mode applies its env overrides BEFORE any settings cache load so the
     # validator and the API both see SQLite/Redis-off/loopback values.
