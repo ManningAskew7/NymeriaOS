@@ -347,7 +347,7 @@ def build_custom_tool_definition(
             request.workflow_config, actor_user_id=actor_user_id
         )
 
-    return CustomToolDefinition(
+    definition = CustomToolDefinition(
         id=request.id,
         name=request.name,
         description=request.description,
@@ -360,6 +360,13 @@ def build_custom_tool_definition(
         enabled=request.enabled,
         tags=request.tags,
     )
+    # http/mcp: the (admin) actor's save self-approves the execution revision so
+    # the gate admits it, mirroring the python and workflow branches above. The
+    # stamp has to happen HERE rather than at save time and after the definition
+    # exists, because the hash covers `parameters`, which is definition scope.
+    from ...core.custom_tool_gate import stamp_custom_tool_approval
+
+    return stamp_custom_tool_approval(definition, approved_by=actor_user_id)
 
 
 def apply_custom_tool_update(
@@ -380,8 +387,9 @@ def apply_custom_tool_update(
     original author); client-declared parameters for a workflow are a 400.
     Python updates re-approve the edited revision under the admin actor,
     re-stamped even for a params-only edit (else the execution gate, which
-    hashes the parameters, would fail closed). Name/enabled/tags edits never
-    touch the revision hash, so they cannot reset an approval.
+    hashes the parameters, would fail closed). http/mcp updates get the same
+    treatment for the same reason. Name/enabled/tags edits never touch the
+    revision hash for ANY type, so they cannot reset an approval.
     """
     if request.name is not None:
         definition.name = request.name
@@ -428,6 +436,23 @@ def apply_custom_tool_update(
         definition.enabled = request.enabled
     if request.tags is not None:
         definition.tags = request.tags
+    # LAST, and unlike its neighbours this one is order-dependent: it hashes the
+    # definition as finally assembled.
+    if definition.implementation_type in ("http", "mcp") and (
+        request.http_config is not None
+        or request.mcp_config is not None
+        or request.parameters is not None
+    ):
+        from ...core.custom_tool_gate import stamp_custom_tool_approval
+
+        # Re-stamp against the FINAL definition, exactly as the python branch
+        # does and for the same reason: the hash covers `parameters`, so a
+        # params-only edit would otherwise leave a legitimately updated tool
+        # failing its own gate. Crucially this is the whole condition. A
+        # name/description/enabled/tags edit falls through UNSTAMPED, so an
+        # admin renaming a record that was planted on disk does not thereby
+        # approve its launch command.
+        stamp_custom_tool_approval(definition, approved_by=actor_user_id)
 
 
 def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomToolResponse:

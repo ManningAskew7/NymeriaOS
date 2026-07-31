@@ -696,6 +696,14 @@ def _publish_draft(
             enabled=True,
             tags=["agent-created", f"user:{user_id}"],
         )
+        # The publishing user self-approves the revision, so the execution gate
+        # admits it (mirrors the python branch above). Unlike python this is
+        # NOT an admin claim: http authoring is agent-reachable by design, and
+        # the stamp's job is to separate "came through publish" from "appeared
+        # in data/custom_tools/", not to assert that a human reviewed it.
+        from ..core.custom_tool_gate import stamp_custom_tool_approval
+
+        stamp_custom_tool_approval(definition, approved_by=user_id)
     elif draft.implementation_type == "python":
         definition = CustomToolDefinition(
             id=draft.tool_id,

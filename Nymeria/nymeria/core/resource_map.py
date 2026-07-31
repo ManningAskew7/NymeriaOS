@@ -127,19 +127,30 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "Custom tool and workflow definitions (http, mcp, python, workflow types)",
         "global",
         "yes",
-        "publish via tool_create; python and workflow edits are inert until "
-        "re-approval (see below)",
+        "publish via tool_create; raw edits are inert until re-approval, for "
+        "every implementation type",
         gates=(
             "nymeria.core.python_custom_tools.python_execution_gate",
             "nymeria.core.workflows.authoring.workflow_execution_gate",
+            "nymeria.core.custom_tool_gate.custom_tool_execution_gate",
         ),
+        covered=True,
         drives_execution=True,
         control_note=(
-            "P4-01. The python and workflow variants recompute their approval "
-            "hash on every call; the http and mcp variants reach execution with "
-            "no gate at all, and an http definition can carry a "
-            "${credential:...} header to a caller-named URL. Classified at the "
-            "weakest variant, which is the convention for a mixed store."
+            "P4-01, CLOSED. All four implementation types now recompute an "
+            "approval hash on every call, so the store is no longer classified "
+            "at its weakest variant. Every type stamps at the AUTHORING layer "
+            "with the acting user, never at save time: the persist path cannot "
+            "tell a config that came from the request from one it just read off "
+            "disk, so stamping there would let a name-only PUT approve a "
+            "planted launch command. For http the stamp separates 'came through "
+            "publish' from 'appeared in the directory' (authoring is "
+            "agent-reachable by design and stays that way); for mcp, which has "
+            "always been admin-only to author, it records a real admin "
+            "decision. Residual, shared with the other three: the hash lives in "
+            "the file it protects, so a writer who replicates the canonical "
+            "form can forge it. The control is against a file-write primitive, "
+            "not against a shell."
         ),
     ),
     _StoreRow(

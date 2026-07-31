@@ -176,6 +176,7 @@ class MCPToolConfig(BaseModel):
         default=None,
         description="Working directory for the server process",
     )
+
     idle_timeout_seconds: int = Field(
         default=300,
         ge=30,

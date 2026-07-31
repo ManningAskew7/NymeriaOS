@@ -754,7 +754,6 @@ _NUMBERED_FINDING = r"\b(?:P4|[A-H]\d{1,2})-\d{2}\b"
 
 _UNCONTROLLED_STORES = frozenset(
     {
-        "custom_tools/<id>.json",
         "hooks/<user>.json",
         "triggers/<user>.json",
         "skills/global/<name>/SKILL.md; skills/users/<id>/<name>/SKILL.md",

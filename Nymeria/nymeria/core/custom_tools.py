@@ -289,8 +289,26 @@ class CustomToolLoader:
         Returns:
             A LangChain StructuredTool.
         """
-        config = definition.http_config
-        assert config is not None
+        assert definition.http_config is not None
+        tool_id = definition.id
+        loader = self
+
+        def _gated_config():
+            """Re-fetch + gate; return (config, None) or (None, error_text).
+
+            Re-reads from the loader rather than closing over ``config``, so an
+            on-disk edit is seen on the NEXT call with no reload. Mirrors
+            ``_create_python_tool._gated_config``.
+            """
+            from .custom_tool_gate import definition_execution_gate_error
+
+            defn = loader.get_definition(tool_id)
+            if defn is None or defn.http_config is None:
+                return None, f"[Error]: http tool {tool_id!r} is no longer available"
+            gate_error = definition_execution_gate_error(defn)
+            if gate_error:
+                return None, f"[Error]: approval_required - {gate_error}"
+            return defn.http_config, None
 
         # `run_config` is populated by LangChain, which finds it by its
         # RunnableConfig ANNOTATION rather than by name
@@ -303,22 +321,30 @@ class CustomToolLoader:
         # the vault's owner check is a statement about who is asking.
         async def execute_http(run_config: RunnableConfig, **kwargs: Any) -> str:
             """Execute the HTTP tool with given parameters."""
+            config, error = _gated_config()
+            if error is not None:
+                return error
+            assert config is not None
             return await execute_http_tool(
                 config,
                 kwargs,
                 actor=_caller_actor(run_config),
                 target_type="custom_tool",
-                target_id=definition.id,
+                target_id=tool_id,
             )
 
         def execute_http_sync(run_config: RunnableConfig, **kwargs: Any) -> str:
             """Synchronous twin of ``execute_http``."""
+            config, error = _gated_config()
+            if error is not None:
+                return error
+            assert config is not None
             return _sync_execute_http(
                 config,
                 kwargs,
                 actor=_caller_actor(run_config),
                 target_type="custom_tool",
-                target_id=definition.id,
+                target_id=tool_id,
             )
 
         return StructuredTool.from_function(
@@ -338,18 +364,48 @@ class CustomToolLoader:
         Returns:
             A LangChain StructuredTool.
         """
-        config = definition.mcp_config
-        assert config is not None
+        assert definition.mcp_config is not None
+        tool_id = definition.id
+        loader = self
 
         # Capture mcp_manager reference for the closure
         mcp_manager = self.mcp_manager
 
+        def _gated_config():
+            """Re-fetch + gate; return (config, None) or (None, error_text).
+
+            This type carries ``server_command``/``server_args`` directly, so an
+            ungated call is a subprocess spawn from whatever is on disk. The
+            same launch surface under ``data/mcp_servers/`` has been gated since
+            backlog #75; this is the other door onto it.
+            """
+            from .custom_tool_gate import definition_execution_gate_error
+
+            defn = loader.get_definition(tool_id)
+            if defn is None or defn.mcp_config is None:
+                return None, f"[Error]: mcp tool {tool_id!r} is no longer available"
+            gate_error = definition_execution_gate_error(defn)
+            if gate_error:
+                return None, f"[Error]: approval_required - {gate_error}"
+            return defn.mcp_config, None
+
         async def execute_mcp(**kwargs: Any) -> str:
             """Execute the MCP tool with given parameters."""
+            config, error = _gated_config()
+            if error is not None:
+                return error
+            assert config is not None
             return await mcp_manager.call_tool(config, kwargs)
 
+        def execute_mcp_sync(**kwargs: Any) -> str:
+            config, error = _gated_config()
+            if error is not None:
+                return error
+            assert config is not None
+            return mcp_manager.call_tool_sync(config, kwargs)
+
         return StructuredTool.from_function(
-            func=lambda **kwargs: mcp_manager.call_tool_sync(config, kwargs),
+            func=execute_mcp_sync,
             coroutine=execute_mcp,
             name=definition.id,
             description=definition.description,
@@ -477,6 +533,15 @@ class CustomToolLoader:
 
     def save_definition(self, definition: CustomToolDefinition) -> Path:
         """Save a tool definition to a JSON file.
+
+        Deliberately does NOT stamp an execution approval, for any of the four
+        implementation types. Every gate in this family stamps at the AUTHORING
+        layer with the real actor id, because this method cannot tell whether
+        the config it is persisting came from the request or was read off disk
+        a moment ago: a name-only ``PUT /tools/custom/{id}`` round-trips the
+        stored record through here, so a stamp applied at this depth would
+        approve a launch command nobody authored. See
+        ``core/custom_tool_gate.py`` and ``core/python_custom_tools.py``.
 
         Args:
             definition: The tool definition to save.
