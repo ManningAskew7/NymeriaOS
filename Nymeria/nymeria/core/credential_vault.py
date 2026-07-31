@@ -171,6 +171,14 @@ CREDENTIAL_REF_PATTERN = re.compile(
     r"\$\{credential:([A-Za-z][A-Za-z0-9_-]{2,127})\.([A-Za-z][A-Za-z0-9_-]{0,63})\}"
 )
 
+# The two halves of the ref above, on their own, for callers that BUILD a ref
+# out of caller-supplied parts rather than matching one. They live here so the
+# grammar cannot drift from the pattern that has to parse the result: a builder
+# that accepts something this pattern rejects emits a string which either fails
+# to resolve or, worse, parses as more than one reference.
+CREDENTIAL_ID_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,127}")
+CREDENTIAL_FIELD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
+
 
 class CredentialNotFound(LookupError):
     pass
@@ -738,6 +746,7 @@ class CredentialVaultRepo:
         *,
         target: str,
         actor_user_id: Optional[str] = None,
+        actor_is_admin: bool = False,
     ) -> bool:
         """Add ``target`` (``"type:id"`` form) to a credential's
         ``allowed_targets_json``.
@@ -748,19 +757,33 @@ class CredentialVaultRepo:
         specific MCP server or native tool needs to be recorded on the
         credential row itself, not just in the bookkeeping ``credential_bindings``
         table (which ``_target_allowed`` does not consult).
+
+        Owner-checked, like :meth:`remove_allowed_target`. It was not, and the
+        asymmetry was backwards: this is the WIDENING primitive, so it is the
+        one that grants a new call site the right to read the plaintext. It
+        matters more once an empty ``allowed_targets`` denies rather than
+        allows, because then this becomes the remediation path.
         """
         target = target.strip()
         if not target:
             raise ValueError("target must be a non-empty 'type:id' string")
-        record = self.get_credential(credential_id)
-        if record is None:
-            raise CredentialNotFound(credential_id)
-        existing = list(record.allowed_targets or [])
-        if target in existing:
-            return False
-        existing.append(target)
         now = _now()
         with self._lock, self._connect() as conn:
+            # Read inside the lock, like the remove twin. The previous
+            # unlocked read let a concurrent retarget be silently clobbered by
+            # the blind UPDATE below.
+            record = self._record_locked(conn, credential_id)
+            if record is None:
+                raise CredentialNotFound(credential_id)
+            self._require_actor_can_access(
+                record,
+                actor_user_id=actor_user_id,
+                actor_is_admin=actor_is_admin,
+            )
+            existing = list(record.allowed_targets or [])
+            if target in existing:
+                return False
+            existing.append(target)
             conn.execute(
                 """
                 UPDATE credentials

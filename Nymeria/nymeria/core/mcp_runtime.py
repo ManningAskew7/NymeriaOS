@@ -1059,8 +1059,35 @@ def _binding_ref(
     field_name = binding.get("field", "value") if isinstance(binding, dict) else "value"
     if not credential_id:
         return None
-    from .credential_vault import get_credential_vault_repo
+    from .credential_vault import (
+        CREDENTIAL_FIELD_RE,
+        CREDENTIAL_ID_RE,
+        get_credential_vault_repo,
+    )
 
+    # Both parts are caller-supplied and get interpolated into the ref below,
+    # so each has to be legal on its own. Without this, a field of
+    # ``value} ${credential:other-id.cache_json`` closes the ref early and
+    # appends a SECOND one. The sweep then skips the value (it already matches
+    # ``_credential_ref``), so it is stored verbatim, and MCP resolves both at
+    # spawn as SYSTEM_ACTOR. That turns a binding for a credential you may name
+    # into a read of one you may not.
+    if not CREDENTIAL_ID_RE.fullmatch(str(credential_id or "")):
+        raise ValueError(
+            f"Invalid credential id {credential_id!r} in binding for {field}"
+        )
+    if not CREDENTIAL_FIELD_RE.fullmatch(str(field_name or "")):
+        raise ValueError(
+            f"Invalid credential field {field_name!r} in binding for {field}"
+        )
+
+    # NB deliberately NOT owner-checked here. Every surface that reaches this
+    # (the REST install/create/update/retry routes and the agent's
+    # ``install_mcp_server``) is admin-only, and an admin already reads every
+    # credential legitimately via ``actor_is_admin``, so a check here would
+    # enforce nothing while breaking an admin configuring a server on a user's
+    # behalf. It becomes load-bearing the moment MCP management stops being
+    # admin-only; see the security backlog entry rather than re-deriving it.
     repo = get_credential_vault_repo()
     repo.bind_credential(
         credential_id,
