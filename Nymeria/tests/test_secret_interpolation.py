@@ -104,7 +104,7 @@ class _FakeVault:
         self,
         value,
         *,
-        actor_user_id=None,
+        actor,
         target_type=None,
         target_id=None,
         used_credentials=None,
@@ -113,7 +113,7 @@ class _FakeVault:
         self.calls.append(
             {
                 "value": value,
-                "actor_user_id": actor_user_id,
+                "actor": actor,
                 "target_type": target_type,
                 "target_id": target_id,
                 "used_credentials": used_credentials,
@@ -132,7 +132,7 @@ def test_resolve_credential_refs_no_marker_skips_vault(monkeypatch):
         raise AssertionError("vault must not be consulted for plain values")
 
     monkeypatch.setattr(credential_vault, "get_credential_vault_repo", boom)
-    assert si.resolve_credential_refs("no-creds-here") == "no-creds-here"
+    assert si.resolve_credential_refs("no-creds-here", actor="user-9") == "no-creds-here"
 
 
 def test_resolve_credential_refs_delegates_with_kwargs(monkeypatch):
@@ -145,14 +145,14 @@ def test_resolve_credential_refs_delegates_with_kwargs(monkeypatch):
         target_type="mcp_server",
         target_id="srv1",
         used_credentials=used,
-        actor_user_id="user-9",
+        actor="user-9",
         redact_values=redact,
     )
     assert out == "Bearer SEKRET"
     assert used == {"cred1"}
     assert redact == {"SEKRET"}
     call = fake.calls[0]
-    assert call["actor_user_id"] == "user-9"
+    assert call["actor"] == "user-9"
     assert call["target_type"] == "mcp_server"
     assert call["target_id"] == "srv1"
 
@@ -172,6 +172,7 @@ def test_resolve_env_and_credential_order_and_accumulation(monkeypatch):
     used_env: set[str] = set()
     out = si.resolve_env_and_credential_refs(
         "${env:CRED_REF}",
+        actor="user-9",
         target_type="mcp_server",
         target_id="srv1",
         used_credentials=used_creds,
@@ -189,11 +190,15 @@ def test_resolve_env_and_credential_missing_env_empty(monkeypatch):
         raise AssertionError("vault must not be consulted")
 
     monkeypatch.setattr(credential_vault, "get_credential_vault_repo", boom)
-    out = si.resolve_env_and_credential_refs("a=${env:NOPE}", missing_env="empty")
+    out = si.resolve_env_and_credential_refs(
+        "a=${env:NOPE}", actor="user-9", missing_env="empty"
+    )
     assert out == "a="
 
 
 def test_resolve_env_and_credential_missing_env_raise(monkeypatch):
     monkeypatch.delenv("NOPE", raising=False)
     with pytest.raises(ValueError, match="NOPE"):
-        si.resolve_env_and_credential_refs("${env:NOPE}", missing_env="raise")
+        si.resolve_env_and_credential_refs(
+            "${env:NOPE}", actor="user-9", missing_env="raise"
+        )

@@ -26,9 +26,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, cast
 
 import httpx
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 
 from ..config import get_settings
+from .credential_vault import Actor
 from ..tools.definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig
 from ..tools.metadata import (
     clear_custom_tool_metadata,
@@ -290,22 +292,37 @@ class CustomToolLoader:
         config = definition.http_config
         assert config is not None
 
-        async def execute_http(**kwargs: Any) -> str:
+        # `run_config` is populated by LangChain, which finds it by its
+        # RunnableConfig ANNOTATION rather than by name
+        # (`langchain_core.tools.base._get_runnable_config_param`), so the
+        # generated args_schema below stays untouched and the model never sees
+        # this parameter.
+        #
+        # The caller is the right actor here, not the tool's author:
+        # CustomToolDefinition carries no owner, so these tools are global, and
+        # the vault's owner check is a statement about who is asking.
+        async def execute_http(run_config: RunnableConfig, **kwargs: Any) -> str:
             """Execute the HTTP tool with given parameters."""
             return await execute_http_tool(
                 config,
                 kwargs,
+                actor=_caller_actor(run_config),
+                target_type="custom_tool",
+                target_id=definition.id,
+            )
+
+        def execute_http_sync(run_config: RunnableConfig, **kwargs: Any) -> str:
+            """Synchronous twin of ``execute_http``."""
+            return _sync_execute_http(
+                config,
+                kwargs,
+                actor=_caller_actor(run_config),
                 target_type="custom_tool",
                 target_id=definition.id,
             )
 
         return StructuredTool.from_function(
-            func=lambda **kwargs: _sync_execute_http(
-                config,
-                kwargs,
-                target_type="custom_tool",
-                target_id=definition.id,
-            ),
+            func=execute_http_sync,
             coroutine=execute_http,
             name=definition.id,
             description=definition.description,
@@ -548,13 +565,31 @@ def interpolate_params(template: str, params: Dict[str, Any]) -> str:
     return PARAM_PATTERN.sub(replace_param, template)
 
 
+# An actor that matches no user, so the vault's owner check denies every
+# user-owned record while system-owned ones still resolve.
+#
+# Deliberately NOT a fallback to the usual `get_user_id(config)` helper: that
+# defaults to "default", which is the BOOTSTRAP ADMIN, so an unattributed call
+# would silently become a privileged one. Failing closed on an unknown caller is
+# the whole point of requiring the actor in the first place.
+_UNATTRIBUTED_ACTOR = "__unattributed__"
+
+
+def _caller_actor(run_config: Optional[RunnableConfig]) -> Actor:
+    """Resolve the invoking user from a run config, failing closed."""
+    if not run_config:
+        return _UNATTRIBUTED_ACTOR
+    configurable = run_config.get("configurable") or {}
+    return configurable.get("user_id") or _UNATTRIBUTED_ACTOR
+
+
 async def execute_http_tool(
     config: HTTPToolConfig,
     params: Dict[str, Any],
     *,
+    actor: Actor,
     target_type: str = "custom_http_tool",
     target_id: Optional[str] = None,
-    actor_user_id: Optional[str] = None,
 ) -> str:
     """Execute an HTTP tool with the given parameters.
 
@@ -572,9 +607,9 @@ async def execute_http_tool(
         _sync_http_request,
         config,
         params,
+        actor=actor,
         target_type=target_type,
         target_id=target_id,
-        actor_user_id=actor_user_id,
     )
 
 
@@ -582,9 +617,9 @@ def _sync_http_request(
     config: HTTPToolConfig,
     params: Dict[str, Any],
     *,
+    actor: Actor,
     target_type: str = "custom_http_tool",
     target_id: Optional[str] = None,
-    actor_user_id: Optional[str] = None,
 ) -> str:
     """Synchronous core for HTTP tool execution.
 
@@ -608,7 +643,7 @@ def _sync_http_request(
         def resolve_credentials(value: str) -> str:
             return resolve_credential_refs(
                 value,
-                actor_user_id=actor_user_id,
+                actor=actor,
                 target_type=target_type,
                 target_id=target_id,
                 used_credentials=used_credentials,
@@ -703,9 +738,9 @@ def _sync_execute_http(
     config: HTTPToolConfig,
     params: Dict[str, Any],
     *,
+    actor: Actor,
     target_type: str = "custom_http_tool",
     target_id: Optional[str] = None,
-    actor_user_id: Optional[str] = None,
 ) -> str:
     """Synchronous entry point for HTTP tool execution (StructuredTool ``func``).
 
@@ -716,9 +751,9 @@ def _sync_execute_http(
     return _sync_http_request(
         config,
         params,
+        actor=actor,
         target_type=target_type,
         target_id=target_id,
-        actor_user_id=actor_user_id,
     )
 
 

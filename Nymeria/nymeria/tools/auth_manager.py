@@ -663,7 +663,7 @@ async def auth_test(
         }
     else:
         try:
-            secret_fields = repo.get_secret_fields_for_test(record.id, actor_user_id=user_id)
+            secret_fields = repo.get_secret_fields_for_test(record.id, actor=user_id)
         except Exception:
             probe = {
                 "ok": None,
@@ -757,7 +757,7 @@ async def _probe_and_mark(repo: Any, record: Any, user_id: str) -> tuple[dict[st
     system-credential gating is needed). Returns (probe dict, status_updated).
     """
     try:
-        secret_fields = repo.get_secret_fields_for_test(record.id, actor_user_id=user_id)
+        secret_fields = repo.get_secret_fields_for_test(record.id, actor=user_id)
     except Exception:
         return (
             {

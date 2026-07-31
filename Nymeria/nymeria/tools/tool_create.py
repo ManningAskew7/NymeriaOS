@@ -441,7 +441,7 @@ async def test_draft(
     if draft.implementation_type == "http":
         if draft.http_config is None:
             raise ValueError("Draft is missing http_config")
-        response = await execute_http_tool(draft.http_config, params)
+        response = await execute_http_tool(draft.http_config, params, actor=user_id)
         ok = not response.startswith("[Error]:")
     elif draft.implementation_type == "python":
         if draft.python_config is None:

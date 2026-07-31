@@ -103,7 +103,7 @@ def get_native_credential_value(
                     value = repo.get_secret_field(
                         record.id,
                         field_name,
-                        actor_user_id=user_id,
+                        actor=user_id,
                         target_type=NATIVE_TOOL_TARGET_TYPE,
                         target_id=tool_name,
                     )

@@ -42,6 +42,7 @@ from .http_policy import (
     httpx_request_with_policy,
     validate_http_egress_url,
 )
+from .credential_vault import SYSTEM_ACTOR
 from .secret_interpolation import resolve_env_and_credential_refs
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,10 @@ def _build_stdio_env(config: MCPToolConfig) -> Dict[str, str]:
     for key, value in config.env_vars.items():
         env[key] = resolve_env_and_credential_refs(
             value,
+            # SYSTEM_ACTOR: MCPToolConfig carries no owner, and this runs on the
+            # server-startup path rather than in a user's turn. The read is
+            # still bounded by allowed_targets containing mcp_server:<id>.
+            actor=SYSTEM_ACTOR,
             target_type="mcp_server",
             target_id=config.server_id or config.server_command,
             used_credentials=used_credentials,
@@ -458,6 +463,9 @@ class MCPServerManager:
         for k, v in config.headers.items():
             headers[k] = resolve_env_and_credential_refs(
                 v,
+                # SYSTEM_ACTOR: see _build_stdio_env. Same bound applies here,
+                # the read is scoped to mcp_server:<id> allowed targets.
+                actor=SYSTEM_ACTOR,
                 target_type="mcp_server",
                 target_id=config.server_id or config.url,
                 used_credentials=used_credentials,

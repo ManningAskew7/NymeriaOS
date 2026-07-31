@@ -497,6 +497,12 @@ Using the Todoist tool as an example:
   There is no automated rotation command yet.
 - Audit events are append-only and include the credential ID, actor, event
   type, target, and timestamp. They are never pruned automatically.
+- Every read of a secret's plaintext names an actor. Reads made on a user's
+  behalf record that user id; reads from paths with no user principal at all
+  (MCP server startup, background service-account fetches) record the marker
+  `__system__` rather than a blank actor, so "nobody was asked" and "the
+  platform itself asked" stay distinguishable in the trail. Mutation events
+  can still record a blank actor, since those calls predate this rule.
 
 ## Planned: Password Guard for Token Operations
 

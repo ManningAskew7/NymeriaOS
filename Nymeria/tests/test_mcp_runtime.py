@@ -158,6 +158,7 @@ def test_apply_config_values_converts_plaintext_secret_env_to_vault(tmp_path, mo
     assert repo.get_secret_field(
         credential_id,
         "value",
+        actor="alice",
         target_type="mcp_server",
         target_id=defn.id,
     ) == "sk-test-secret-value-1234567890"
@@ -368,7 +369,7 @@ def _stdio_defn(**kwargs):
     )
 
 
-def _stored_secret(repo, ref, defn):
+def _stored_secret(repo, ref, defn, *, actor="alice"):
     from nymeria.core.credential_vault import CREDENTIAL_REF_PATTERN
 
     assert "${credential:" in ref
@@ -378,6 +379,7 @@ def _stored_secret(repo, ref, defn):
     return repo.get_secret_field(
         credential_id,
         "value",
+        actor=actor,
         target_type="mcp_server",
         target_id=defn.id,
     )

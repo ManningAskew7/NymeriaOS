@@ -231,9 +231,9 @@ def create_custom_tools_router(
                 result = await execute_http_tool(
                     definition.http_config,
                     request.params,
+                    actor=user.id,
                     target_type="custom_tool",
                     target_id=definition.id,
-                    actor_user_id=user.id,
                 )
             elif definition.implementation_type == "mcp":
                 if definition.mcp_config is None:
