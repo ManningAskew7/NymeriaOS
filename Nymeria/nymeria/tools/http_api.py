@@ -21,6 +21,7 @@ from ..core.http_policy import (
     evaluate_http_url,
     load_http_policy_config,
     pinned_dns_resolution,
+    policy_http_client as _http_client,
     redirect_allowed,
 )
 
@@ -559,7 +560,7 @@ def _http_request_impl(
                 allow_https_to_http_redirect=policy_config.allow_https_to_http_redirect,
                 resolve_dns=False,
             )
-        with httpx.Client(
+        with _http_client(
             timeout=timeout_seconds,
             follow_redirects=False,
             transport=transport,
@@ -973,7 +974,7 @@ def _api_discover_impl(
     logger.info("API discovery tool: base_url=%s docs_url=%s", normalized_base, docs_url)
 
     try:
-        with httpx.Client(timeout=timeout_seconds, follow_redirects=False, transport=transport) as client:
+        with _http_client(timeout=timeout_seconds, follow_redirects=False, transport=transport) as client:
             index = 0
             while index < len(queue) and index < 25:
                 source, url = queue[index]

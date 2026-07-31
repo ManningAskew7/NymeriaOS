@@ -30,6 +30,7 @@ from typing import Annotated, Any, Callable, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
@@ -423,9 +424,8 @@ def image_gen_flux(
             raise RuntimeError(f"FLUX job {status}: {data.get('details') or ''}".strip())
         return status == "Ready"
 
-    import httpx
 
-    with httpx.Client(timeout=60.0) as client:
+    with _http_client(timeout=60.0) as client:
         submit = client.post(
             f"{_BFL_BASE_URL}/{endpoint_slug}", headers=submit_headers, json=payload
         )
@@ -527,9 +527,8 @@ def image_gen_replicate(
             raise RuntimeError(f"Replicate prediction {status}: {data.get('error') or ''}".strip())
         return status == "succeeded"
 
-    import httpx
 
-    with httpx.Client(timeout=120.0) as client:
+    with _http_client(timeout=120.0) as client:
         submit = client.post(
             f"{_REPLICATE_BASE_URL}/models/{slug}/predictions",
             headers=submit_headers,
@@ -625,9 +624,8 @@ def image_gen_fal(
 
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
 
-    import httpx
 
-    with httpx.Client(timeout=120.0) as client:
+    with _http_client(timeout=120.0) as client:
         response = client.post(f"{_FAL_BASE_URL}/{slug}", headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()

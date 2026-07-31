@@ -1047,6 +1047,21 @@ def test_brave_registered_in_optional_group():
 # --- SearXNG ---------------------------------------------------------------
 
 
+def _allowlist_policy(monkeypatch, *hosts):
+    """Point the egress policy at an explicit allowlist, with DNS off.
+
+    Hermetic on purpose: an allowlist match short-circuits before resolution
+    (``http_policy.evaluate_http_url``), so nothing here touches the network.
+    """
+    from nymeria.core import http_policy
+
+    monkeypatch.setattr(
+        http_policy,
+        "load_http_policy_config",
+        lambda: http_policy.HTTPPolicyConfig(internal_allowlist=hosts, resolve_dns=False),
+    )
+
+
 def test_searxng_base_url_prefers_vault_over_settings(monkeypatch):
     from nymeria.tools import web_search_integrations as wsi
     import nymeria.tools.native_credentials as nc
@@ -1057,8 +1072,41 @@ def test_searxng_base_url_prefers_vault_over_settings(monkeypatch):
         field_name = "base_url"
 
     monkeypatch.setattr(nc, "get_native_credential_value", lambda **kw: FakeCred())
+    # A vault-supplied address is screened against the egress policy, so a
+    # self-hosted instance now needs an HTTP_INTERNAL_ALLOWLIST entry to win.
+    # That is the documented capability change, not an accident of the fixture.
+    _allowlist_policy(monkeypatch, "vault-searx:8080")
 
     assert wsi._get_searxng_base_url(config=None) == "http://vault-searx:8080"
+
+
+def test_searxng_refused_vault_address_falls_through_to_settings(monkeypatch):
+    """A planted vault address must be inert, never a denial of service.
+
+    Any identified caller can POST a ``searxng`` credential. If the screen
+    raised instead of falling through, one such record would break the tool for
+    every user of the deployment even though the operator's own sidecar is
+    configured and reachable.
+    """
+    from nymeria.tools import web_search_integrations as wsi
+    import nymeria.config as config
+    import nymeria.tools.native_credentials as nc
+
+    class PlantedCred:
+        value = "http://127.0.0.1:8000"
+        credential_id = "c1"
+        field_name = "base_url"
+
+    monkeypatch.delenv("SEARXNG_BASE_URL", raising=False)
+    monkeypatch.setattr(nc, "get_native_credential_value", lambda **kw: PlantedCred())
+    _allowlist_policy(monkeypatch)
+
+    class FakeSettings:
+        searxng_base_url = "http://settings-searx:8080"
+
+    monkeypatch.setattr(config, "get_settings", lambda: FakeSettings())
+
+    assert wsi._get_searxng_base_url(config=None) == "http://settings-searx:8080"
 
 
 def test_searxng_base_url_falls_back_to_settings(monkeypatch):

@@ -316,6 +316,7 @@ def resolve_native_credential(
     aliases: tuple[str, ...] = (),
     env_vars: tuple[str, ...] = (),
     field_names: Iterable[str] = ("api_key", "token", "value"),
+    destination_label: str = "",
 ) -> Optional[str]:
     """Resolve a native-tool credential string: vault, then settings, then env.
 
@@ -325,6 +326,16 @@ def resolve_native_credential(
     trio; pass a different tuple for non-key credentials (e.g. the SearXNG base
     URL). Replaces the per-provider ``_get_<provider>_api_key`` resolvers that each
     hand-rolled this vault -> settings -> env fallback.
+
+    ``destination_label`` marks the resolved value as an ADDRESS, and screens it
+    against the egress policy only when the VAULT answered. This function is the
+    right place for that split because it is the only one that knows which leg
+    won: a caller sees one string. The settings and env legs are operator
+    configuration, and for the one provider that uses this today the documented
+    value is an internal sidecar (``http://searxng:8080``), so screening those
+    would delete the supported deployment. The vault leg is reachable by any
+    identified caller over ``POST /credentials``. Same rule, same reasoning, as
+    ``service_integration_base.signed_endpoint_url``.
     """
     try:
         cred = get_native_credential_value(
@@ -342,7 +353,27 @@ def resolve_native_credential(
         logger.debug("Refused a vault-supplied destination for %s; using settings", provider)
         cred = None
     if cred and cred.value:
-        return cred.value
+        if not destination_label:
+            return cred.value
+        from ..core.http_policy import validate_http_egress_url
+
+        try:
+            return validate_http_egress_url(str(cred.value).strip(), label=destination_label)
+        except ValueError as exc:
+            # Falls through for the same reason the refusal arm above does, and
+            # it has to: raising here would turn a planted record into a DENIAL
+            # OF SERVICE. Any identified caller can POST a `searxng` credential
+            # holding `http://127.0.0.1`, and a raise would then break the tool
+            # for every user of the deployment even though the operator's own
+            # `SEARXNG_BASE_URL` is configured and reachable. Refusing the
+            # address and carrying on makes the planted record inert, which is
+            # the outcome the operator's standing rule asks for.
+            logger.warning(
+                "Refused a vault-supplied %s for %s (%s); using operator configuration instead",
+                destination_label,
+                provider,
+                exc,
+            )
 
     from ..config import get_settings
 

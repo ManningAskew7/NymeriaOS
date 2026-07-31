@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, Tuple
 
-import httpx
+from ..core.http_policy import policy_http_client as _http_client
 
 logger = logging.getLogger(__name__)
 
@@ -549,11 +549,11 @@ def _pkce_challenge(verifier: str) -> str:
 def fetch_google_user_info(access_token: str) -> Tuple[str, str]:
     """Return ``(email, display_name)``. Falls back to placeholders on error."""
     try:
-        response = httpx.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
-        )
+        with _http_client(timeout=10) as client:
+            response = client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
         if response.status_code == 200:
             info = response.json()
             return info.get("email", "unknown"), info.get("name", "Unknown User")
@@ -903,7 +903,8 @@ def exchange_code_for_tokens(
         }
         if code_verifier:
             data["code_verifier"] = code_verifier
-        response = httpx.post(token_uri, data=data, timeout=30)
+        with _http_client(timeout=30) as client:
+            response = client.post(token_uri, data=data)
         if response.status_code != 200:
             return False, f"Token exchange failed ({response.status_code}): {response.text}"
         return True, response.json()

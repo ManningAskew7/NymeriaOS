@@ -35,6 +35,35 @@ from nymeria.core.thread_config import ThreadConfig
 from nymeria.core.user_profile import ToolPreferences, migrate_tool_names
 
 
+
+def _stub_policy_client(monkeypatch, module, **handlers):
+    """Point ``module._http_client`` at a stub exposing the given methods.
+
+    These paths build a client from the policy factory and call it inside a
+    ``with`` block, so the seam is the FACTORY, not ``httpx``. Patching httpx
+    directly used to work and silently stopped meaning anything the moment the
+    call went through the factory, which is why this helper exists rather than
+    a per-test lambda: one place to change if the shape moves again.
+    """
+    captured_kwargs = {}
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    for name, fn in handlers.items():
+        setattr(_Client, name, staticmethod(fn))
+
+    def _factory(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _Client()
+
+    monkeypatch.setattr(module, "_http_client", _factory)
+    return captured_kwargs
+
 def _config(user_id: str = "user-1", thread_id: str = "thread-1"):
     return {"configurable": {"user_id": user_id, "thread_id": thread_id}}
 
@@ -512,11 +541,11 @@ def test_exchange_code_for_tokens_sends_pkce_verifier(monkeypatch):
         def json(self):
             return {"access_token": "access"}
 
-    def fake_post(url, *, data, timeout):
-        captured.update({"url": url, "data": data, "timeout": timeout})
+    def fake_post(url, *, data):
+        captured.update({"url": url, "data": data})
         return Response()
 
-    monkeypatch.setattr(auth_cache_utils.httpx, "post", fake_post)
+    client_kwargs = _stub_policy_client(monkeypatch, auth_cache_utils, post=fake_post)
 
     success, _ = auth_cache_utils.exchange_code_for_tokens(
         "auth-code",
@@ -528,6 +557,9 @@ def test_exchange_code_for_tokens_sends_pkce_verifier(monkeypatch):
 
     assert success is True
     assert captured["data"]["code_verifier"] == "verifier"
+    # The timeout moved from the call to the client when this path started
+    # building its client from the policy factory; it is still applied.
+    assert client_kwargs["timeout"] == 30
 
 
 def test_save_google_account_does_not_persist_client_secret(monkeypatch):

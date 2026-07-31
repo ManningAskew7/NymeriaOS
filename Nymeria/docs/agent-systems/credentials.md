@@ -186,6 +186,15 @@ vendor's public API and sending a self-hosted instance's token there would be
 worse than failing. Put the credential in the same record, or remove the
 address from the record and set the provider's `*_BASE_URL` instead.
 
+**Whichever record supplies it, the address still has to be reachable under the
+egress policy.** The join says which record may name a destination; it says
+nothing about where that destination points. Every integration request is
+checked against `core/http_policy.py` when it is issued, with DNS resolution on,
+so a hostname resolving into private or loopback space is refused even though
+the same URL parses fine. Self-hosted instances are supported by listing the
+host in `HTTP_INTERNAL_ALLOWLIST` (see `configuration.md`), which is the same
+requirement a literal private IP already had.
+
 If no credential matches, the tool returns a human-readable setup hint:
 
 > No Todoist credential found. Save one in Settings > Connections with

@@ -12,6 +12,7 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
@@ -23,6 +24,7 @@ from .service_integration_base import (
     credential_value as _credential_value,
     dump_json,
     filtered as _filtered,
+    request_with_policy as _request_with_policy,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -129,8 +131,9 @@ def _request_json(
     import httpx
 
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.request(
+        with _http_client(timeout=_HTTP_TIMEOUT) as client:
+            response = _request_with_policy(
+                client,
                 method,
                 url,
                 params=_filtered(params) if params is not None else None,

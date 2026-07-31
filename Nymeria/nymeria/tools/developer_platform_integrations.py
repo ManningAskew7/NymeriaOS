@@ -11,12 +11,7 @@ from urllib.parse import quote, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from ..core.http_policy import (
-    HTTPPolicyRedirectLimit,
-    HTTPPolicyViolation,
-    httpx_request_with_policy,
-    validate_http_egress_url,
-)
+from ..core.http_policy import policy_http_client as _http_client, validate_http_egress_url
 
 from .credential_registry import (
     CredentialFieldGroup,
@@ -27,6 +22,7 @@ from .service_integration_base import (
     clamp_limit,
     credential_value as _credential_value,
     dump_json,
+    request_with_policy as _request_with_policy,
     settings_value as _settings_value,
 )
 
@@ -306,25 +302,22 @@ def _request_json(
     import httpx
 
     try:
-        with httpx.Client(
+        with _http_client(
             timeout=_HTTP_TIMEOUT,
             limits=httpx.Limits(max_keepalive_connections=0),
             trust_env=False,
         ) as client:
-            response, _redirect_chain, _policy = httpx_request_with_policy(
+            response = _request_with_policy(
+                client,
                 method,
                 url,
-                client=client,
                 params=_filtered_params(params),
                 headers=headers,
-                follow_redirects=False,
             )
             response.raise_for_status()
             if response.status_code == 204 or not response.content:
                 return {"status": "ok", "status_code": response.status_code}
             return response.json()
-    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-        raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
     except httpx.HTTPStatusError as e:
         detail = ""
         try:
@@ -350,8 +343,8 @@ def _request_json_body(
     import httpx
 
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.request(method, url, json=json_body, headers=headers)
+        with _http_client(timeout=_HTTP_TIMEOUT) as client:
+            response = _request_with_policy(client, method, url, json=json_body, headers=headers)
             response.raise_for_status()
             if response.status_code == 204 or not response.content:
                 return {"status": "ok", "status_code": response.status_code}

@@ -13,10 +13,10 @@ import time
 from html import unescape
 from typing import Annotated, Any, Optional, List
 
-import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from ..config.oauth_providers import MICROSOFT_TOKEN_URI
 from . import auth_cache_utils as auth_utils
 from .utils import get_user_id
@@ -196,15 +196,15 @@ def try_complete_pending_auth(user_id: str) -> bool:
     client_id = os.environ.get("MICROSOFT_MCP_CLIENT_ID", "8ad36cab-9646-40ee-97f5-0ddd7cd6e5c8")
 
     try:
-        response = httpx.post(
-            TOKEN_URL,
-            data={
-                "client_id": client_id,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-            },
-            timeout=10,
-        )
+        with _http_client(timeout=10) as client:
+            response = client.post(
+                TOKEN_URL,
+                data={
+                    "client_id": client_id,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": device_code,
+                },
+            )
 
         if response.status_code == 200:
             data = response.json()
@@ -214,11 +214,11 @@ def try_complete_pending_auth(user_id: str) -> bool:
 
             # Get user info
             try:
-                user_response = httpx.get(
-                    f"{GRAPH_BASE}/me",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=10,
-                )
+                with _http_client(timeout=10) as client:
+                    user_response = client.get(
+                        f"{GRAPH_BASE}/me",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
                 if user_response.status_code == 200:
                     user_info = user_response.json()
                     email = user_info.get("mail") or user_info.get("userPrincipalName", "unknown")
@@ -304,16 +304,16 @@ def get_access_token(user_id: str, account_id: Optional[str] = None) -> Optional
         import os
         client_id = os.environ.get("MICROSOFT_MCP_CLIENT_ID", "8ad36cab-9646-40ee-97f5-0ddd7cd6e5c8")
 
-        response = httpx.post(
-            TOKEN_URL,
-            data={
-                "client_id": client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "scope": "offline_access User.Read Mail.ReadWrite Mail.Send",
-            },
-            timeout=30,
-        )
+        with _http_client(timeout=30) as client:
+            response = client.post(
+                TOKEN_URL,
+                data={
+                    "client_id": client_id,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "scope": "offline_access User.Read Mail.ReadWrite Mail.Send",
+                },
+            )
 
         if response.status_code == 200:
             data = response.json()
@@ -354,14 +354,14 @@ def graph_request(
     }
 
     try:
-        response = httpx.request(
-            method=method,
-            url=url,
-            headers=headers,
-            json=json_data,
-            params=params,
-            timeout=30,
-        )
+        with _http_client(timeout=30) as client:
+            response = client.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json=json_data,
+                params=params,
+            )
 
         if response.status_code >= 400:
             error_data = response.json() if response.text else {}

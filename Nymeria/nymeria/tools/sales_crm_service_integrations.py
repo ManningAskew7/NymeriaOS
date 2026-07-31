@@ -11,6 +11,7 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
@@ -23,6 +24,7 @@ from .service_integration_base import (
     dump_json,
     filtered as _filtered_params,
     parse_json as _parse_json,
+    request_with_policy as _request_with_policy,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -594,8 +596,8 @@ def _request_json(
 
     request_params = _filtered_params({**(params or {}), **(auth_params or {})})
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.request(method, url, params=request_params, json=json_body, headers=headers)
+        with _http_client(timeout=_HTTP_TIMEOUT) as client:
+            response = _request_with_policy(client, method, url, params=request_params, json=json_body, headers=headers)
             response.raise_for_status()
             if response.status_code == 204 or not response.content:
                 return {"status": "ok", "status_code": response.status_code}

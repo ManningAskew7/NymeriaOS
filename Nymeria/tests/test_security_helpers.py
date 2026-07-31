@@ -216,6 +216,102 @@ def test_httpx_request_with_policy_pins_dns_between_check_and_connect(monkeypatc
     assert socket.getaddrinfo("api.example.com", 443)[0][4][0] == hostile_ip
 
 
+@pytest.mark.parametrize(
+    "env_var", ["http_proxy", "https_proxy", "all_proxy"]
+)
+def test_requests_policy_path_does_not_inherit_an_env_proxy(monkeypatch, env_var):
+    """A proxy would make the whole policy advisory, on the requests side too.
+
+    The proxy resolves the hostname ITSELF and opens the socket, so neither the
+    private-address verdict nor the resolver pin describes what the connection
+    reaches. This path carries ``web_fetch`` and ``browser``, whose URL is a
+    plain tool argument, so it is the higher-exposure half of the two.
+
+    Asserts the MECHANISM rather than the argument: it feeds whatever the code
+    passed back through requests' own environment merge and checks that no proxy
+    survives. An assertion on the literal dict would pass while ``ALL_PROXY``
+    still routed, which is exactly the bug the third key exists to prevent.
+    """
+    import requests
+    from requests.utils import select_proxy
+
+    url = "https://example.invalid/x"
+    captured: dict = {}
+
+    class FakeSession:
+        def get(self, target, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(is_redirect=False, status_code=200, headers={}, url=target)
+
+    monkeypatch.setenv(env_var, "http://attacker-proxy.invalid:3128")
+
+    http_policy.requests_get_with_policy(
+        url,
+        session=FakeSession(),
+        config=http_policy.HTTPPolicyConfig(resolve_dns=False),
+    )
+
+    merged = requests.Session().merge_environment_settings(
+        url, dict(captured.get("proxies") or {}), None, None, None
+    )
+    assert select_proxy(url, merged["proxies"]) is None, (
+        f"{env_var} still routes this request through a proxy the policy cannot see"
+    )
+
+
+def test_pinned_dns_resolution_covers_the_punycode_spelling(monkeypatch):
+    """An internationalized hostname must not slip the pin.
+
+    A decision carries the hostname as ``urlparse`` reports it, which for an IDN
+    is the UNICODE form; httpx and requests connect with the IDNA (punycode)
+    form. Keyed on one spelling, the dispatcher matched neither the client's
+    lookup nor anything else, fell through to the system resolver, and the check
+    and the connect performed independent lookups. That is the rebinding window
+    the pin exists to close, and it failed SILENTLY: the screen still ran, so
+    only the pin's own behaviour shows it.
+
+    Asserted through the hostile-resolver seam its sibling above uses, so a
+    regression looks like a rebind rather than a missing key.
+    """
+    pinned_ip, hostile_ip = "93.184.216.34", "10.0.0.5"
+
+    def hostile_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (hostile_ip, port))]
+
+    monkeypatch.setattr(http_policy, "_SYSTEM_GETADDRINFO", hostile_getaddrinfo)
+
+    # The second pair is the sharp one. "ß" is an IDNA DEVIATION character: the
+    # stdlib codec (IDNA2003) maps it to "fass.example.test" while httpx and
+    # requests, which both use the `idna` package (IDNA2008/UTS46), ask for
+    # "xn--fa-hia.example.test". Those are different domains, so keying on the
+    # stdlib spelling would have left the policy judging one host and the client
+    # connecting to another. The first pair alone cannot catch that, because the
+    # two standards agree on "ü".
+    for unicode_host, wire_host in (
+        ("münchen.example.test", "xn--mnchen-3ya.example.test"),
+        ("faß.example.test", "xn--fa-hia.example.test"),
+    ):
+        decision = http_policy.evaluate_http_url(
+            f"https://{unicode_host}/x",
+            config=http_policy.HTTPPolicyConfig(),
+            resolver=lambda host, port: [pinned_ip],
+        )
+        assert decision.allowed and decision.resolved_ips == (pinned_ip,)
+        # The verdict must be ABOUT the host the client will reach, not merely
+        # pinned to it: a decision carrying the unicode (or IDNA2003) spelling
+        # would have resolved a different name than the socket asks for.
+        assert decision.host == wire_host
+
+        with http_policy.pinned_dns_resolution(decision):
+            for spelling in (unicode_host, wire_host):
+                resolved = socket.getaddrinfo(spelling, 443, type=socket.SOCK_STREAM)
+                assert resolved[0][4][0] == pinned_ip, f"{spelling} escaped the pin"
+
+        # Outside the pin the hostile answer is what a second lookup would get,
+        # which is what makes the assertion above meaningful.
+        assert socket.getaddrinfo(wire_host, 443)[0][4][0] == hostile_ip
+
+
 def test_pinned_dns_resolution_isolates_concurrent_threads():
     """Two threads pinning different hosts at the same time each resolve their
     own pinned IP.

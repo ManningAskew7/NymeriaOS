@@ -16,6 +16,7 @@ from .credential_registry import (
     ProviderCredentialSpec,
     register_provider_spec,
 )
+from .service_integration_base import signed_endpoint_url
 
 logger = logging.getLogger(__name__)
 
@@ -124,16 +125,18 @@ def _aws_client(
     *,
     region_name: str = "",
 ) -> tuple[Any, str | None]:
-    access_key = _credential_value(
+    vault_access_key = _credential_value(
         field_names=_AWS.group("access_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("s3_access_key_id")
-    secret_key = _credential_value(
+    )
+    vault_secret_key = _credential_value(
         field_names=_AWS.group("secret_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("s3_secret_access_key")
+    )
+    access_key = vault_access_key or _settings_value("s3_access_key_id")
+    secret_key = vault_secret_key or _settings_value("s3_secret_access_key")
     session_token = _credential_value(
         field_names=_AWS.group("session_token"),
         tool_name=tool_name,
@@ -145,13 +148,21 @@ def _aws_client(
         or _settings_value("s3_region")
         or "us-east-1"
     )
-    endpoint_url = _credential_value(
-        field_names=_AWS.group("endpoint_url"),
-        tool_name=tool_name,
-        config=config,
-    )
     if not access_key or not secret_key:
         return None, _setup_hint(tool_name)
+
+    # AFTER the setup-hint guard, deliberately. A deployment with no keys at all
+    # has nothing to steer and nothing to steal, so it should get the friendly
+    # "save an access key id and secret" hint, not a refusal about an endpoint.
+    endpoint_url = signed_endpoint_url(
+        from_vault=_credential_value(
+            field_names=_AWS.group("endpoint_url"),
+            tool_name=tool_name,
+            config=config,
+        ),
+        keys_from_vault=bool(vault_access_key and vault_secret_key),
+        label="AWS endpoint URL",
+    )
 
     import boto3
 

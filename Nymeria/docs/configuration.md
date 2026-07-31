@@ -1407,11 +1407,41 @@ call.
 By default these egress paths are public-internet-only. Loopback, private,
 link-local, reserved, unspecified, multicast, and metadata targets are blocked
 after DNS resolution unless the target is a non-metadata host explicitly listed
-in `HTTP_INTERNAL_ALLOWLIST`. Service-integration base URL validation also
-blocks literal private/metadata targets and honors the domain allow/block lists.
-Policy-managed requests pin the request-time socket resolver to the IPs that
-passed DNS policy validation, preserving hostname-based TLS validation while
-closing DNS-rebinding gaps.
+in `HTTP_INTERNAL_ALLOWLIST`. Policy-managed requests pin the request-time
+socket resolver to the IPs that passed DNS policy validation, preserving
+hostname-based TLS validation while closing DNS-rebinding gaps.
+
+The service-integration tools are on the same policy, in two stages. Their base
+URL is validated when it is resolved, which catches a literal private or
+metadata target and applies the domain allow/block lists, and the request is
+re-checked with DNS resolution when it is issued.
+
+**Self-hosted integrations need an allowlist entry.** If you point an
+integration at your own instance, whether by IP (`http://192.168.1.5:8080`) or
+by hostname (`http://jenkins.corp.local:8080`, `http://minio:9000`), add that
+host to `HTTP_INTERNAL_ALLOWLIST` or the request is refused. The refusal reason
+depends on how the name behaves: an address that resolves to a private or
+loopback IP is refused as `private_network` or `loopback_network`, while a name
+that does not resolve from the backend at all (a container alias seen only on
+another Docker network, say) is refused as `dns_resolution_failed`. Both are the
+same allowlist answer. This applies whether the address comes from a saved
+credential or from a `*_BASE_URL` setting.
+
+Two addresses are exempt, and only when they come from operator configuration
+rather than from a saved credential: `S3_ENDPOINT_URL` and `SEARXNG_BASE_URL`.
+The same fields saved as a CREDENTIAL are screened like any other, so a
+self-hosted MinIO or SearXNG reached through the vault still needs an allowlist
+entry (SearXNG falls back to the setting when its saved address is refused; the
+S3 endpoint refuses the call). The AWS integration's `endpoint_url` has no
+settings leg at all and is always screened.
+
+**Tool HTTP egress ignores `HTTP_PROXY` and `HTTPS_PROXY`.** A proxy would
+resolve the hostname itself and open the socket on the tool's behalf, which
+makes both the private-address block and the resolver pin advisory. The clients
+these tools build therefore drop proxy routing while keeping the rest of their
+environment handling, so `SSL_CERT_FILE` and a custom CA bundle still apply.
+`bash_execute` is separate: it runs under its own scrubbed environment and sees
+a proxy variable only if you name it in `BASH_ENV_PASSTHROUGH`.
 
 ### Autonomous Operation
 

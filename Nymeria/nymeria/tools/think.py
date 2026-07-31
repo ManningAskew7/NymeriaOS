@@ -5,6 +5,7 @@ returns its analysis.  This is an external LLM call, not internal reasoning.
 """
 from .registry import ToolGroup, register_tool_group
 
+from ..core.http_policy import policy_http_client as _http_client
 import logging
 from typing import Optional
 
@@ -97,7 +98,7 @@ def consult(
             "reasoning": {"enabled": True},
         }
 
-        with httpx.Client(timeout=180.0) as client:
+        with _http_client(timeout=180.0) as client:
             response = client.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
