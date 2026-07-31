@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from nymeria.config.oauth_providers import (
+    GOOGLE_TOKEN_URI,
     OAUTH_PROVIDERS,
     OAuthProviderDescriptor,
     get_oauth_provider,
@@ -170,3 +171,23 @@ def test_list_oauth_providers_returns_all_in_order():
     assert {d.provider_id for d in listed} == set(OAUTH_PROVIDERS)
     # Listing must be deterministic so docs / UI menus don't shuffle.
     assert [d.provider_id for d in listed] == list(OAUTH_PROVIDERS.keys())
+
+
+def test_token_endpoint_consumers_take_the_registry_value_verbatim():
+    """The refresh path resolves ``token_uri`` from here, never from an account.
+
+    A token endpoint receives whatever proves the grant, so this registry is a
+    security boundary rather than a convenience table (see the note beside
+    ``__all__`` in the module). Asserting the resolver agrees with every
+    descriptor keeps a future descriptor from being added without the refresh
+    path following it: a provider the resolver does not recognize falls through
+    to the empty string, which cannot refresh at all.
+    """
+    from nymeria.tools.auth_cache_utils import _resolve_provider_token_uri
+
+    for descriptor in list_oauth_providers():
+        assert _resolve_provider_token_uri(descriptor.provider_id) == descriptor.token_uri
+
+    # Legacy cache filenames can still produce an unregistered Google-family id.
+    assert _resolve_provider_token_uri("google_unknown_future") == GOOGLE_TOKEN_URI
+    assert _resolve_provider_token_uri("some_other_vendor") == ""

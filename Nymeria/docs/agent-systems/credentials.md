@@ -337,7 +337,15 @@ The vault record written by both flows uses these conventions:
   config at refresh time and is **not** stored in the vault.
 - `metadata`: `scopes` (list), `email`, `name`, `account_id`, `expires_at`
   (ISO 8601, UTC), `client_id`, `token_uri`, `provider_id`, `source`
-  (`"oauth_callback"` or `"oauth_device_flow"`)
+  (`"oauth_callback"` or `"oauth_device_flow"`). `token_uri` is written for
+  display only and is never read back: the token endpoint decides where the
+  grant proof is POSTed (the operator's `client_secret` on the Google path),
+  and metadata is writable by any caller who can reach `POST`/`PATCH
+  /credentials`, so every exchange and refresh path resolves it from the
+  provider registry in `config/oauth_providers.py` instead. Because
+  `GET /credentials` returns metadata verbatim, the value is also rewritten
+  from the registry on every refresh write-back, so a record cannot go on
+  displaying an endpoint that is not the one in use.
 - `allowed_targets`: default `["native_tool:*"]`, so any native Google or
   Outlook tool can read the token. Bind to a specific tool name to scope.
 

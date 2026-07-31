@@ -58,6 +58,7 @@ def _mint_vault_oauth_token(
     expires_at: str | None = None,
     scopes: list[str] | None = None,
     client_id: str | None = "vault-client-id",
+    token_uri: str | None = None,
 ):
     """Create an active ``oauth_token`` credential mirroring finalize_oauth_credential."""
     metadata = {
@@ -68,9 +69,12 @@ def _mint_vault_oauth_token(
         "scopes": scopes or ["scope-a"],
         "expires_at": expires_at
         or datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat(timespec="seconds"),
-        "token_uri": "https://oauth2.googleapis.com/token"
-        if provider.startswith("google")
-        else "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "token_uri": token_uri
+        or (
+            "https://oauth2.googleapis.com/token"
+            if provider.startswith("google")
+            else "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        ),
         "source": "oauth_callback",
     }
     if client_id:
@@ -414,3 +418,177 @@ def test_resolve_provider_client_id_falls_back_to_outlook_default(monkeypatch):
     assert _resolve_provider_client_id("outlook", None) == "env-id"
     # Unknown provider returns None when no override is given
     assert _resolve_provider_client_id("unknown_provider", None) is None
+
+
+# --- the OAuth token endpoint is not attacker-supplied (E10-02) -------------
+#
+# `token_uri` decides where the grant proof is POSTed (the operator's OAuth
+# `client_secret` on the Google path), so it is a destination, and neither source
+# of an account dict is trustworthy for one. Vault METADATA is written by
+# `POST /credentials`, which is gated by `verify_api_key` alone and takes
+# arbitrary provider/secret_fields/metadata, so any authenticated caller can
+# plant a row over REST with no agent, no admin and no file write. The LEGACY
+# half is no safer: it now lives in the vault too (kind `legacy_token_cache`),
+# and `PATCH /credentials/{id}` lets its owner rewrite `cache_json` wholesale
+# over the same REST surface.
+#
+# The endpoint now comes from `config/oauth_providers.py` instead. Two of these
+# assert EGRESS, meaning the address the credential object would actually be
+# refreshed against, because a green "no leak" proves nothing if the fixture
+# never built a credential in the first place. The first asserts the merged
+# account dict instead: no consumer reads that key any more, so what it pins is
+# that the vault loader does not launder caller metadata into a field the GUI
+# and any future reader would take at face value.
+
+_ATTACKER_TOKEN_URI = "https://attacker.example/token"
+_GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+
+
+def test_planted_vault_metadata_cannot_move_the_token_endpoint(vault_setup):
+    """The metadata column is caller-writable, so its `token_uri` is ignored."""
+    repo, _ = vault_setup
+    _mint_vault_oauth_token(
+        repo,
+        user_id="alice",
+        provider="google_calendar",
+        account_id="alice_at_example_com",
+        email="alice@example.com",
+        token_uri=_ATTACKER_TOKEN_URI,
+    )
+
+    from nymeria.tools.auth_cache_utils import resolve_oauth_cache
+
+    source = resolve_oauth_cache("alice", "google_calendar", cache_filename="google_calendar.json")
+    account = source.cache["accounts"]["alice_at_example_com"]
+
+    assert account["token_uri"] == _GOOGLE_TOKEN_URI
+
+
+def test_a_refresh_write_back_scrubs_a_planted_endpoint_from_the_record(vault_setup):
+    """The stored record stops advertising an address that is not in use.
+
+    Ignoring the planted value at the read sites leaves it sitting in the
+    credential row, and `GET /credentials` returns metadata verbatim, so the
+    GUI would keep presenting it as this account's token endpoint. Rewriting it
+    from the registry on every write-back makes the planted artifact inert
+    rather than merely unread.
+    """
+    repo, _ = vault_setup
+    cred = _mint_vault_oauth_token(
+        repo,
+        user_id="alice",
+        provider="google_calendar",
+        account_id="alice_acct",
+        email="alice@example.com",
+        token_uri=_ATTACKER_TOKEN_URI,
+    )
+    assert repo.get_credential(cred.id).metadata["token_uri"] == _ATTACKER_TOKEN_URI, (
+        "the fixture never planted anything, so this would prove nothing"
+    )
+
+    from nymeria.tools.auth_cache_utils import resolve_oauth_cache
+
+    source = resolve_oauth_cache("alice", "google_calendar", cache_filename="google_calendar.json")
+    account = source.cache["accounts"]["alice_acct"]
+    account["access_token"] = "REFRESHED-TOK"
+    account["expires_at"] = time.time() + 7200
+    source.persist(source.cache)
+
+    assert repo.get_credential(cred.id).metadata["token_uri"] == _GOOGLE_TOKEN_URI
+
+
+def test_a_planted_account_dict_cannot_move_the_refresh_endpoint(monkeypatch):
+    """The consumption point, which is what covers the LEGACY file too.
+
+    Gating only the vault loader would leave the file half of the merged cache
+    open, so `refresh_google_account` ignores whatever `token_uri` the account
+    dict carries regardless of which store it came from.
+    """
+    seen: dict = {}
+
+    class _FakeCredentials:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def refresh(self, _request):
+            raise RuntimeError("stop here; the constructor is what is under test")
+
+    import google.oauth2.credentials as google_creds
+
+    monkeypatch.setattr(google_creds, "Credentials", _FakeCredentials)
+
+    from nymeria.tools.auth_cache_utils import refresh_google_account
+
+    refresh_google_account(
+        {
+            "access_token": "tok",
+            "refresh_token": "refresh-tok",
+            "client_id": "cid",
+            "client_secret": "OPERATOR-GOOGLE-SECRET",
+            "token_uri": _ATTACKER_TOKEN_URI,
+            "scopes": ["scope-a"],
+        },
+        ["scope-a"],
+        provider="google_calendar",
+    )
+
+    assert seen, "the credential object was never built, so this proved nothing"
+    assert seen["token_uri"] == _GOOGLE_TOKEN_URI
+    assert _ATTACKER_TOKEN_URI not in seen.values()
+
+
+def test_a_planted_legacy_cache_cannot_move_the_endpoint_the_api_refreshes_against(
+    vault_setup, monkeypatch
+):
+    """The third consumption point, and the only one the other two do not cover.
+
+    ``get_google_credentials`` hands its ``Credentials`` object to
+    ``googleapiclient.discovery.build``, which refreshes on its own schedule
+    (any 401, or immediately when ``access_token`` is absent), so the address
+    baked into the object is a live egress even though this call never posts
+    anything itself. The account here comes from the LEGACY half of the merged
+    cache, whose ``cache_json`` its owner rewrites over
+    ``PATCH /credentials/{id}``; the vault half is already covered above, and
+    gating only that half would have left this open.
+    """
+    _, _ = vault_setup
+    seen: dict = {}
+
+    class _FakeCredentials:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    import google.oauth2.credentials as google_creds
+
+    monkeypatch.setattr(google_creds, "Credentials", _FakeCredentials)
+
+    from nymeria.tools.auth_cache_utils import get_google_credentials, save_token_cache
+
+    save_token_cache(
+        "alice",
+        "google_calendar.json",
+        {
+            "accounts": {
+                "legacy_acct": {
+                    "email": "legacy@example.com",
+                    "access_token": "legacy-tok",
+                    "refresh_token": "legacy-refresh",
+                    "client_id": "cid",
+                    "client_secret": "OPERATOR-GOOGLE-SECRET",
+                    "token_uri": _ATTACKER_TOKEN_URI,
+                    # Future, so the eager refresh is skipped and the planted
+                    # address survives all the way into the returned object.
+                    "expires_at": time.time() + 3600,
+                    "scopes": ["scope-a"],
+                }
+            }
+        },
+    )
+
+    creds = get_google_credentials(
+        "alice", "google_calendar", ["scope-a"], cache_filename="google_calendar.json"
+    )
+
+    assert creds is not None, "no credential was built, so this proved nothing"
+    assert seen["token_uri"] == _GOOGLE_TOKEN_URI
+    assert _ATTACKER_TOKEN_URI not in seen.values()

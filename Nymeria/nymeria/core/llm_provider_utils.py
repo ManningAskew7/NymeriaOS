@@ -310,6 +310,8 @@ def destination_redirects_away_from_config(
     key. The cost is that a thread aimed at a keyless LAN model server has to
     set a per-thread ``api_key`` as well (any value; the server ignores it),
     which is the same one-field hatch every other destination uses.
+
+    Shape (b) of the three in ``SECURITY.md`` 2.5.
     """
     if not (candidate or "").strip():
         # Naming nothing is not a redirection. `""` is the spelling for

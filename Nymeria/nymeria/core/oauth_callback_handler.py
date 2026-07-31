@@ -324,6 +324,11 @@ def finalize_oauth_credential(
             "name": name,
             "scopes": granted_scopes,
             "expires_at": expires_at_iso,
+            # Informational only. Nothing reads this back: metadata is
+            # caller-writable over `POST`/`PATCH /credentials`, so every refresh
+            # and exchange path resolves the endpoint from the registry instead
+            # (`auth_cache_utils._resolve_provider_token_uri`). Kept because the
+            # documented record shape includes it and readers may display it.
             "token_uri": descriptor.token_uri,
             "source": source,
             "userinfo_sub": sub,

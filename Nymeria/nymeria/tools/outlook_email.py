@@ -17,6 +17,7 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..config.oauth_providers import MICROSOFT_TOKEN_URI
 from . import auth_cache_utils as auth_utils
 from .utils import get_user_id
 
@@ -112,8 +113,12 @@ def _truncate_body(text: str) -> str:
     return text[:_BODY_PREVIEW_CHARS] + f"\n...[truncated {dropped} chars]"
 
 
-# Token refresh endpoint
-TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+# Token refresh endpoint, from the OAuth registry. Microsoft is a PUBLIC client
+# here (the descriptor has a `client_id_fallback` and no `client_secret_env`), so
+# what rides this address is the user's refresh token rather than an operator
+# secret. Still a destination worth pinning, and a second literal would be a
+# second place to drift.
+TOKEN_URL = MICROSOFT_TOKEN_URI
 
 
 def _select_account(

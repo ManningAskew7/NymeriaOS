@@ -212,7 +212,29 @@ snapshot passphrases accordingly.
 **Where those credentials are allowed to go.**
 
 A user-writable field must not decide where the server sends the server's own
-credentials. Two settings surfaces let a caller name an LLM endpoint: the
+credentials. That one rule has three shapes in this codebase, chosen by how
+much freedom the destination legitimately needs:
+
+- **(a) Replaced from the registry**, when the acceptable address is fixed and
+  already declared. OAuth token endpoints work this way.
+- **(b) Compared against configured destinations**, when the set is enumerable
+  and letting a caller name one is a feature. LLM base URLs work this way.
+- **(c) Joined to the credential's own record**, when the host is inherently
+  arbitrary. Service integrations need this and do not have it yet; see the
+  residuals below.
+
+*OAuth token endpoints.* The endpoint a refresh or code exchange POSTs to
+receives whatever proves the grant: the operator's OAuth `client_secret` where
+the provider is a confidential client, and the user's own refresh token where
+it is a public one. Every provider Nymeria supports has exactly one such
+endpoint, declared in `config/oauth_providers.py`. It is therefore taken from
+that registry and never from the credential record, whose metadata any caller
+who can reach `POST`/`PATCH /credentials` can write. The recorded `token_uri`
+is kept for display and is not read back. This is a replacement rather than a
+validation on purpose: validating leaves "which addresses are acceptable" open
+indefinitely, while replacing closes it.
+
+*LLM base URLs.* Two settings surfaces let a caller name an endpoint: the
 admin-only global config, and the deliberately non-admin per-thread
 `llm_config.base_url`. For the second, the destination may come from the
 request but the stored credential may not.
@@ -263,9 +285,14 @@ rather than per-provider keys, that sends the generic key to the newly chosen
 provider's own canonical host. A thread pointed at a
 keyless local model server has to set some per-thread `api_key` as well, since
 otherwise the refusal would send its prompts to the configured provider
-instead. Service integrations resolve a destination and a credential from the
-vault as two independent lookups, so a record holding only a base URL can still
-steer a credential resolved elsewhere; that is a separate, tracked gap.
+instead. Service integrations are the third shape above and still resolve a
+destination and a credential from the vault as two independent lookups, so a
+record holding only a base URL, or only a TLS-verification flag, can still
+steer or downgrade a request authenticated by a credential resolved elsewhere;
+that is a separate, tracked gap, and it covers a small number of service
+integrations whose OAuth token endpoint comes from a vault field rather than
+from the registry shape (a) uses. Embedding and voice base URLs have no such
+check at all.
 
 ### 2.6 In-process heuristics (useful, not boundaries)
 

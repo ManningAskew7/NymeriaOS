@@ -204,6 +204,48 @@ def _epoch_seconds_to_iso(value: Any) -> str:
         return ""
 
 
+def _resolve_provider_token_uri(provider: str) -> str:
+    """The OAuth token endpoint, from the REGISTRY and never from an account.
+
+    A token endpoint is a DESTINATION that decides where a secret goes: the
+    refresh below POSTs the operator's OAuth ``client_secret`` to whatever it
+    names. It used to come from ``credential.metadata``, which is caller-
+    writable, so the address was attacker-supplied. (E10-02. The audit doc has
+    the reachability details; they are deliberately not restated here, because
+    they describe the auth posture of a route that is itself under change.)
+
+    Not validated, REPLACED. A token endpoint is a fixed property of a
+    provider, ``config/oauth_providers.py`` already declares it for every
+    provider Nymeria supports, and no legitimate flow needs a per-account one.
+    A validator would leave "which addresses are acceptable" open forever;
+    taking the registry's answer closes it. This is what both token EXCHANGE
+    paths already do (``core/oauth_callback_handler.py`` and
+    ``core/oauth_device_flow.py`` both POST to ``descriptor.token_uri`` and
+    ignore the value carried alongside), so the refresh path was the outlier
+    rather than this being a new rule.
+
+    Do NOT read ``_resolve_provider_client_id`` below as the same move: it
+    returns the metadata value FIRST and falls back to env/file. That asymmetry
+    is deliberate for now (a wrong ``client_id`` selects no secret and fails
+    closed) but it is the opposite pattern, and copying it here would reopen
+    this.
+
+    Shape (a) of the three in ``SECURITY.md`` 2.5.
+    """
+    from ..config.oauth_providers import GOOGLE_TOKEN_URI, get_oauth_provider
+
+    descriptor = get_oauth_provider(provider)
+    if descriptor is not None and descriptor.token_uri:
+        return descriptor.token_uri
+    # Reached only for a legacy cache filename with no registered provider id.
+    # Keep the historical Google default rather than inventing an address, and
+    # leave anything else empty as before. Normalized the same way
+    # `get_oauth_provider` normalizes, so the two arms cannot disagree about
+    # whether "Google_Legacy" is a Google id.
+    normalized = str(provider or "").strip().lower()
+    return GOOGLE_TOKEN_URI if normalized.startswith("google") else ""
+
+
 def _resolve_provider_client_id(
     provider: str,
     account_metadata_client_id: Optional[str],
@@ -304,8 +346,13 @@ def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
             "expires_at": expires_at_epoch,
             "scopes": scopes,
             "client_id": client_id,
-            "token_uri": meta.get("token_uri")
-            or ("https://oauth2.googleapis.com/token" if provider.startswith("google") else ""),
+            # NOT `meta.get("token_uri")`: see `_resolve_provider_token_uri`.
+            # No consumer reads this key any more; it is kept so the vault half
+            # of the merged dict has the same shape as the legacy half, and it
+            # carries the registry answer so that shape is not a lie. The legacy
+            # half can still carry a planted address, which is why the two
+            # consumption points below resolve rather than trust it.
+            "token_uri": _resolve_provider_token_uri(provider),
             _VAULT_CRED_ID_KEY: cred.id,
         }
 
@@ -344,6 +391,14 @@ def _persist_vault_oauth_account(user_id: str, account_id: str, account: dict) -
         metadata["scopes"] = list(account["scopes"])
     if account.get("client_id"):
         metadata["client_id"] = str(account["client_id"])
+    # Self-heal the recorded endpoint. Nothing reads it back (the refresh
+    # resolves from the registry), but `GET /credentials` returns metadata
+    # verbatim, so a planted value would otherwise sit in the GUI presenting
+    # itself as the endpoint in use. Correcting it on every write-back makes
+    # the planted artifact inert rather than merely ignored.
+    registry_token_uri = _resolve_provider_token_uri(existing.provider)
+    if registry_token_uri:
+        metadata["token_uri"] = registry_token_uri
 
     secret_fields = {"access_token": str(account.get("access_token") or "")}
     if account.get("refresh_token"):
@@ -507,12 +562,21 @@ def fetch_google_user_info(access_token: str) -> Tuple[str, str]:
     return "unknown", "Unknown User"
 
 
-def refresh_google_account(account: dict, scopes: list) -> Tuple[str, str]:
+def refresh_google_account(
+    account: dict, scopes: list, *, provider: str
+) -> Tuple[str, str]:
     """Refresh a stored Google OAuth account.
 
     Returns ``("refreshed", "")`` on success, ``("invalid", reason)`` when
     Google rejects the refresh token, or ``("unavailable", reason)`` when the
     local environment cannot validate it safely.
+
+    ``provider`` is required rather than defaulted because it selects the token
+    endpoint from the OAuth registry, and no default can be right: ``"google"``
+    is not a registered provider id, so defaulting to it would silently route
+    every caller through the unregistered-id fallback that
+    :func:`_resolve_provider_token_uri` keeps for legacy cache filenames.
+    Callers that genuinely have no provider id pass that string explicitly.
     """
     try:
         from google.auth.exceptions import RefreshError
@@ -534,7 +598,10 @@ def refresh_google_account(account: dict, scopes: list) -> Tuple[str, str]:
     creds = Credentials(
         token=account.get("access_token"),
         refresh_token=refresh_token,
-        token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
+        # The registry, not `account["token_uri"]`: this POSTs `client_secret`,
+        # and both halves of the merged account dict are caller-writable. See
+        # `_resolve_provider_token_uri`.
+        token_uri=_resolve_provider_token_uri(provider),
         client_id=account.get("client_id"),
         client_secret=client_secret,
         scopes=account.get("scopes", list(scopes)),
@@ -572,12 +639,19 @@ def refresh_google_account(account: dict, scopes: list) -> Tuple[str, str]:
 def validate_google_accounts_for_display(
     accounts: dict,
     scopes: list,
+    *,
+    provider: str = "google",
 ) -> Tuple[list[dict], bool]:
     """Validate cached Google accounts before presenting them as usable.
 
     Mutates ``accounts`` in place when a token refresh succeeds or Google
     confirms a refresh token is invalid. Returns ``(rows, changed)`` where
     each row has account_id/account/status/usable/reason keys.
+
+    ``provider`` is forwarded to the refresh so the token endpoint comes from
+    the right registry entry. It defaults here, unlike on
+    :func:`refresh_google_account`, because this helper takes a bare accounts
+    dict with no provider context of its own and its callers are display paths.
     """
     required_scopes = set(scopes)
     rows: list[dict] = []
@@ -621,7 +695,7 @@ def validate_google_accounts_for_display(
             })
             continue
 
-        refresh_status, reason = refresh_google_account(account, scopes)
+        refresh_status, reason = refresh_google_account(account, scopes, provider=provider)
         if refresh_status == "refreshed":
             accounts[account_id] = account
             changed = True
@@ -709,7 +783,7 @@ def get_google_credentials(
 
     expires_at = account.get("expires_at", 0)
     if time.time() >= expires_at - 60:
-        status, reason = refresh_google_account(account, list(scopes))
+        status, reason = refresh_google_account(account, list(scopes), provider=provider)
         if status != "refreshed":
             display_name = provider_display_name or provider
             if status == "invalid":
@@ -729,7 +803,8 @@ def get_google_credentials(
     return Credentials(
         token=account.get("access_token"),
         refresh_token=account.get("refresh_token"),
-        token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
+        # From the registry, never the account dict: see `refresh_google_account`.
+        token_uri=_resolve_provider_token_uri(provider),
         client_id=account.get("client_id"),
         client_secret=account.get("client_secret") or _resolve_google_client_secret(
             account.get("client_id")
@@ -805,13 +880,19 @@ def exchange_code_for_tokens(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
-    token_uri: str = "https://oauth2.googleapis.com/token",
+    token_uri: str = "",
     code_verifier: Optional[str] = None,
 ) -> Tuple[bool, Any]:
     """Exchange an authorization code for ``(access_token, refresh_token)``.
 
     Returns ``(True, token_data_dict)`` on success or ``(False, error_string)``.
+
+    An omitted ``token_uri`` resolves from the registry rather than a literal.
+    The parameter itself stays caller-supplied because it has no production
+    callers today; if one is ever added, it must pass a provider id here rather
+    than an address carried alongside an account.
     """
+    token_uri = token_uri or _resolve_provider_token_uri("google")
     try:
         data = {
             "code": auth_code,
