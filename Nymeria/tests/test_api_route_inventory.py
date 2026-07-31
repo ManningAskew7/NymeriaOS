@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
 from fastapi.routing import APIRoute
 
 from nymeria import __version__
@@ -417,6 +418,117 @@ def test_api_responses_include_baseline_security_headers(
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["referrer-policy"] == "no-referrer"
+    assert "content-security-policy" in response.headers
+
+
+def test_csp_locks_down_the_dangerous_directives(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The CSP's value is in what it forbids, so assert that, not its presence.
+
+    `script-src` must never carry 'unsafe-inline': inline injection is the
+    vector the policy exists to stop, and the SPA's own bootstrap scripts are
+    admitted by hash instead (see `_build_csp`).
+    """
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    csp = client.get("/health").headers["content-security-policy"]
+    directives = {
+        part.strip().split(" ", 1)[0]: part.strip()
+        for part in csp.split(";")
+        if part.strip()
+    }
+
+    assert "'unsafe-inline'" not in directives["script-src"]
+    assert "'unsafe-eval'" not in directives["script-src"]
+    assert directives["object-src"] == "object-src 'none'"
+    assert directives["frame-ancestors"] == "frame-ancestors 'none'"
+    assert directives["base-uri"] == "base-uri 'self'"
+    assert directives["default-src"] == "default-src 'self'"
+
+
+def test_csp_admits_every_inline_script_in_the_served_index(tmp_path: Path):
+    """Regression for the failure mode a pinned hash list would have.
+
+    One of the SPA's inline scripts embeds a build-hashed module filename, so
+    its hash changes on every frontend build. If the header ever stops being
+    derived from the index.html actually being served, the page dies with a
+    console full of CSP violations and nothing else fails first.
+    """
+    import base64
+    import hashlib
+
+    from nymeria.triggers.api import (
+        _INLINE_SCRIPT_RE,
+        _build_csp,
+        _frontend_static_dir,
+    )
+
+    frontend_dir = Path(_frontend_static_dir())
+    index_path = frontend_dir / "index.html"
+    if not index_path.is_file():
+        pytest.skip("no built frontend in this checkout")
+
+    csp = _build_csp(str(frontend_dir))
+    script_src = next(
+        part for part in csp.split(";") if part.strip().startswith("script-src")
+    )
+
+    inline_scripts = _INLINE_SCRIPT_RE.findall(index_path.read_bytes())
+    assert inline_scripts, "index.html has no inline scripts; the regex may have rotted"
+    for body in inline_scripts:
+        digest = base64.b64encode(hashlib.sha256(body).digest()).decode()
+        assert f"'sha256-{digest}'" in script_src
+
+
+def test_csp_allows_every_external_origin_the_build_loads(tmp_path: Path):
+    """Fail here, not in the browser, when the frontend gains a new CDN.
+
+    The first draft of this policy blocked the webfont stylesheet, its font
+    files, and the Office.js shim, because those are loaded from origins the
+    Tauri baseline never had to name. Nothing in the build pipeline would have
+    reported that: the page renders, just wrong. So the invariant is executable.
+
+    Only `<link>` and `<script>` tags are scanned. Anchor `href`s are plain
+    navigation and no directive in this policy governs them.
+    """
+    import re as _re
+
+    from nymeria.triggers.api import _build_csp, _frontend_static_dir
+
+    frontend_dir = Path(_frontend_static_dir())
+    index_path = frontend_dir / "index.html"
+    if not index_path.is_file():
+        pytest.skip("no built frontend in this checkout")
+
+    csp = _build_csp(str(frontend_dir))
+    html = index_path.read_text()
+
+    loaded = _re.findall(
+        r"<(?:link|script)\b[^>]*?(?:href|src)=\"(https?://[^\"]+)\"",
+        html,
+        _re.DOTALL | _re.IGNORECASE,
+    )
+    origins = {_re.match(r"https?://[^/]+", url).group(0) for url in loaded}
+    assert origins, "index.html loads nothing external; the scan may have rotted"
+
+    missing = sorted(origin for origin in origins if origin not in csp)
+    assert not missing, (
+        f"the built frontend loads from {missing}, which the CSP does not allow. "
+        f"Add the origin to the _CSP_* constants in nymeria/triggers/api.py, or "
+        f"self-host the asset."
+    )
+
+
+def test_csp_survives_a_missing_frontend_build(tmp_path: Path):
+    """A source checkout with no built SPA must still get a policy, not a crash."""
+    from nymeria.triggers.api import _build_csp
+
+    csp = _build_csp(str(tmp_path))
+
+    assert "script-src 'self'" in csp
+    assert "sha256-" not in csp
 
 
 def test_api_responses_include_request_id(

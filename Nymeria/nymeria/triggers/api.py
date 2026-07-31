@@ -1,8 +1,11 @@
 """FastAPI REST API trigger with SSE streaming for Nymeria."""
 
+import base64
+import hashlib
 import logging
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable, NoReturn, Optional
 from uuid import uuid4
@@ -113,6 +116,84 @@ def _frontend_static_dir() -> str:
     if package_frontend.exists():
         return str(package_frontend)
     return str(source_frontend)
+
+
+# Content-Security-Policy for the backend-served web client, baselined on the
+# policy the Tauri desktop shell already enforces
+# (nymeria-desktop/src-tauri/tauri.conf.json) minus its `ipc:` sources, which
+# exist only for Tauri's IPC transport. The desktop policy is a Tauri *runtime*
+# setting, so it does not travel with the same build when the backend serves it
+# over HTTP; that gap is the finding this closes.
+#
+# `connect-src` stays deliberately wide. The client's backend URL is
+# user-configured and may be a different origin than the one serving these
+# assets (see `probeConnection` in nymeria-desktop/src/lib/services/api/base.ts,
+# whose own error copy tells the user to allow this app's origin in CORS).
+# Narrowing this to 'self' would break pointing the web client at a remote
+# backend, which is a supported deployment.
+# Three origins the shipped build actually loads from, named rather than
+# wildcarded. Verified against nymeria/frontend/: the webfont stylesheet and
+# the font files it references (index.html), and the Office.js shim the Outlook
+# taskpane injects at runtime (a dynamically created <script>, so `script-src`
+# governs it). Re-check these if the frontend build ever adds a CDN.
+_CSP_FONT_STYLE_ORIGIN = "https://fonts.googleapis.com"
+_CSP_FONT_FILE_ORIGIN = "https://fonts.gstatic.com"
+_CSP_OFFICE_JS_ORIGIN = "https://appsforoffice.microsoft.com"
+
+_CSP_STATIC_DIRECTIVES: tuple[str, ...] = (
+    "default-src 'self'",
+    # Svelte emits inline style attributes; there is no hash-based equivalent
+    # for those, so styles keep 'unsafe-inline'. Scripts do not (below).
+    f"style-src 'self' 'unsafe-inline' {_CSP_FONT_STYLE_ORIGIN}",
+    "img-src 'self' data: blob: http: https:",
+    f"font-src 'self' data: {_CSP_FONT_FILE_ORIGIN}",
+    "media-src 'self' data: blob: http: https:",
+    "connect-src 'self' http: https: ws: wss:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+)
+
+# Inline <script> elements only: the negative lookahead skips `<script src=...>`,
+# which `script-src 'self'` already covers.
+_INLINE_SCRIPT_RE = re.compile(
+    rb"<script(?![^>]*\bsrc\b)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
+)
+
+
+def _inline_script_csp_hashes(index_path: Path) -> list[str]:
+    """Return a CSP ``sha256-`` source for each inline script in ``index_path``.
+
+    Hashing at startup rather than pinning literals is load-bearing: the SPA's
+    bootstrap script embeds a build-hashed module filename, so a pinned hash
+    would go stale on the next ``npm run build`` and take the whole page down
+    with it. Reading the file we actually serve keeps the two in step.
+    """
+    try:
+        html = index_path.read_bytes()
+    except OSError:
+        logger.debug("Could not read %s for CSP script hashes", index_path, exc_info=True)
+        return []
+    return [
+        f"'sha256-{base64.b64encode(hashlib.sha256(match.group(1)).digest()).decode()}'"
+        for match in _INLINE_SCRIPT_RE.finditer(html)
+    ]
+
+
+def _build_csp(frontend_dir: str) -> str:
+    """Build the CSP header value once, for the frontend build being served.
+
+    `script-src` deliberately omits 'unsafe-inline': admitting the SPA's own
+    bootstrap scripts by hash is what makes the policy worth having, since
+    inline injection is the vector it exists to stop.
+    """
+    script_src = [
+        "'self'",
+        _CSP_OFFICE_JS_ORIGIN,
+        *_inline_script_csp_hashes(Path(frontend_dir) / "index.html"),
+    ]
+    return "; ".join(("script-src " + " ".join(script_src), *_CSP_STATIC_DIRECTIVES))
 
 
 def _first_path_segment(path: str) -> str:
@@ -816,6 +897,12 @@ def create_api_app(
         finally:
             reset_request_id(token)
 
+    # Resolved once here rather than at the frontend-hosting block below,
+    # because the CSP hashes the served index.html and the middleware closes
+    # over the result.
+    _frontend_dir = _frontend_static_dir()
+    _csp_header = _build_csp(_frontend_dir)
+
     @app.middleware("http")
     async def _security_headers(request: Request, call_next):
         response = await call_next(request)
@@ -825,6 +912,8 @@ def create_api_app(
             response.headers["X-Frame-Options"] = "DENY"
         if "referrer-policy" not in response.headers:
             response.headers["Referrer-Policy"] = "no-referrer"
+        if "content-security-policy" not in response.headers:
+            response.headers["Content-Security-Policy"] = _csp_header
         return response
 
     # Reject oversized request bodies before any handler buffers them. Added
@@ -1095,7 +1184,6 @@ def create_api_app(
     # Frontend static hosting (Outlook add-in / web UI)
     # ========================================================================
 
-    _frontend_dir = _frontend_static_dir()
     if os.path.isdir(_frontend_dir):
         _register_frontend_routes(app, _frontend_dir)
 
