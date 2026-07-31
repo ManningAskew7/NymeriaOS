@@ -9,8 +9,10 @@ log recorded ``None`` for who asked.
 The vector that made this more than theoretical: OAuth caches migrated into the
 vault land as ``cred_lcache_*`` records with an EMPTY ``allowed_targets`` list
 (so target scoping does not narrow them either) and hold live refresh tokens.
-Their ids are derived from the account label, so a caller who can reach any
-unattributed read path does not need to enumerate anything.
+Their ids are a sha256 over the owner's user id and the cache filename, and the
+filename set is small and known, so the id is computable offline from a user id
+alone: a caller who can reach any unattributed read path does not need to
+enumerate anything.
 
 These tests pin the two halves of the fix: the read gate has no "no actor"
 branch, and omitting the argument is a ``TypeError`` at the call site rather

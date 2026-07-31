@@ -136,6 +136,16 @@ not on the other. State both when reasoning about it.
   vault plaintext, and there is no agent tool that reads a secret back
   (`auth_write` is write-only). This holds against a language-level adversary: a
   prompt-injected model cannot read a stored key out of its own context.
+
+  One sharp edge to know: MCP resolves credential aliases **as the platform**,
+  not as a user, so the vault's owner check is skipped there by design and
+  `allowed_targets` is the only gate on that path. A row whose `allowed_targets`
+  is empty is readable by any target. That is currently sound only because every
+  surface that can put an alias into a server definition (the MCP REST routes
+  and the agent's `install_mcp_server`) is admin-only, and an admin already
+  reads every credential legitimately. It stops being sound the moment MCP
+  management is delegated to non-admins, which is a prerequisite for the
+  multi-tenant work in 2.4, not an independent hardening.
 - **Execution channel (not protected today).** The master key lives in the agent
   process environment. Any subprocess the agent spawns runs as the same user and
   can, by default, recover the key and then decrypt the stores off disk. Three
