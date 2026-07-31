@@ -157,9 +157,11 @@ The resolver (`native_credentials.py`):
 2. Checks for explicit **bindings** (highest priority, score 0)
 3. Checks **allowed_targets** for `native_tool:<tool_name>` (score 1)
 4. Falls back to wildcard `native_tool:*` or `*` targets (score 2)
-5. Falls back to unscoped credentials with no targets (score 3)
-6. At the same priority level, prefers user-owned over system-owned
-7. Decrypts the first matching secret field, logs an audit event, returns it
+5. At the same priority level, prefers user-owned over system-owned
+6. Decrypts the first matching secret field, logs an audit event, returns it
+
+There is no longer a fallback to "unscoped credentials with no targets". A
+credential with no targets is not a lenient one, it is a locked one.
 
 If no credential matches, the tool returns a human-readable setup hint:
 
@@ -350,13 +352,53 @@ call to the correct store.
   disabling, or deleting user-owned credentials, so callers do not rely only
   on router-level guards.
 - **Allowed targets**: A list like `["native_tool:todoist_tasks", "mcp_server:my-server"]`
-  restricts which consumers can decrypt. `"*"` or empty list = unrestricted.
-  Supported target strings include `native_tool:<name>`, `mcp_server:<id>`,
-  `custom_http_tool:<id>`, `llm_provider:<provider>`, `thread:<id>`, and
-  wildcard forms like `native_tool:*`.
+  restricts which consumers can decrypt. `"*"` = unrestricted. An **empty list
+  denies everything**, and a read that names no target at all is refused unless
+  the record is `"*"`. Supported target strings include `native_tool:<name>`,
+  `mcp_server:<id>`, `custom_tool:<id>`, `llm_provider:<provider>`,
+  `thread:<id>`, and wildcard forms like `native_tool:*`.
+
+  Empty used to mean unrestricted, which made the gate vacuous on the rows that
+  needed it most, since most creation paths left it empty. Two consequences of
+  the flip worth knowing:
+
+  - **A caller that does not specify targets gets the kind's reader set**, not
+    an empty list (`CredentialVaultRepo.default_targets_for_kind`): an
+    `oauth_token` gets `["native_tool:*"]`, a `legacy_token_cache` gets
+    `["native_auth_cache:*"]`, an `api_key` gets the native-tool, LLM, thread
+    and custom-tool wildcards. So an agent saving a credential without saying
+    what it is for still produces something usable. Naming a bind target
+    overrides that entirely and scopes the row to exactly that target.
+  - **Notice what the defaults leave out: `mcp_server`.** MCP resolves
+    credentials as the platform rather than as a user, so the vault's owner
+    check is skipped there and `allowed_targets` is the only gate on that path.
+    A credential only reaches an MCP server if something says so explicitly.
+
+  Existing rows were migrated once, on first open after upgrade, by a backfill
+  that writes the same per-kind sets, and the wildcard for any kind it does not
+  recognise. Its version stamp is a key in the shared `schema_meta` watermark
+  table, NOT `PRAGMA user_version`: that counter is per database FILE, and this
+  file is shared with the accounts, chat-binding and notification repos, so a
+  file-global counter would let whichever component migrated first suppress
+  every other component's migration permanently. The watermark is read without a
+  lock first, so only a process that has migrating to do takes a write lock. Rows it could not classify
+  are named in a startup WARNING so they can be narrowed by hand. The gate is
+  version-stamped rather than condition-checked precisely so that a row an
+  operator later empties on purpose is not re-widened on the next boot.
 - **Bindings**: Explicit credential-to-target links stored in the
-  `credential_bindings` table. Bindings override the scoring system (highest
-  priority).
+  `credential_bindings` table. A binding outranks the scoring system when
+  *choosing* which credential to use, but it does not by itself admit a
+  decrypt: `allowed_targets` is still checked. Every surface that binds records
+  both, except `_copy_replacement_bindings` in the OAuth callback handler, which
+  does not need to: it re-points an existing binding at a replacement row whose
+  targets are already the union of every row folded into it.
+
+  Which of the two a surface may write differs on purpose. An admin binding a
+  credential through the API or MCP widens the row, because that is the whole
+  point of the action. The agent-facing bind tools do not: scope belongs to
+  whoever created the credential, not to whoever references it later, or
+  binding would become a way to grant yourself a target the owner never
+  allowed.
 - **Status**: `active`, `pending_setup`, `invalid`, `disabled`. Runtime
   resolution functions use active credentials only.
 - **Agent safety**: The `auth_inspect`, `auth_cleanup`, and `auth_bindings`

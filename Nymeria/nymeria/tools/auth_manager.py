@@ -922,6 +922,12 @@ async def auth_write(
             kind=(kind or "api_key").strip() or "api_key",
             secret_fields=secrets_obj,
             metadata=metadata_obj,
+            # A stated bind target IS the scope, and it beats the kind's
+            # default reader set outright rather than being added on top of it.
+            # The agent knows what it is saving the credential FOR, so when it
+            # says so the row should be scoped to exactly that; the default
+            # exists only for the case where it does not say.
+            allowed_targets=[f"{bind_type}:{bind_id}"] if bind_type else None,
             created_by_user_id=user_id,
         )
         payload: dict[str, Any] = {

@@ -206,9 +206,14 @@ def create_credentials_router(
         body: CredentialSetupSessionRequest,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        allowed_targets = []
-        if body.target_type and body.target_id:
-            allowed_targets.append(f"{body.target_type}:{body.target_id}")
+        # None (not []) when no target was named: the credential should get
+        # its kind's default readers, not a lockout that the later secret
+        # submission does not repair.
+        allowed_targets = (
+            [f"{body.target_type}:{body.target_id}"]
+            if body.target_type and body.target_id
+            else None
+        )
         metadata = {
             **body.metadata,
             "setup_session": True,
@@ -404,6 +409,19 @@ def create_credentials_router(
             )
         except CredentialNotFound as exc:
             raise HTTPException(status_code=404, detail="Credential not found") from exc
+        # The bindings table is bookkeeping; the read gate gets its answer from
+        # allowed_targets and never consults it. Every other bind surface pairs
+        # the two (auth_manager, credential_prompt, mcp_runtime); this one did
+        # not, which was invisible while an empty allowed_targets admitted
+        # everything and becomes a silent no-op now that it denies. The caller
+        # already passed _require_manage, so this grants nothing they could not
+        # grant directly.
+        repo.add_allowed_target(
+            credential_id,
+            target=f"{body.target_type}:{body.target_id}",
+            actor_user_id=user.id,
+            actor_is_admin=user.role == "admin",
+        )
         row = repo.get_binding(binding_id)
         if row is None:
             raise HTTPException(status_code=500, detail="Binding was not saved")

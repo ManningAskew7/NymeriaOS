@@ -21,6 +21,11 @@ class CredentialResponse(BaseModel):
     status: str
     metadata: dict[str, Any] = {}
     scopes: list[str] = []
+    # A plain list, unlike the REQUEST models below. The None-means-unspecified
+    # distinction is about what a client OMITS; a response always reports the
+    # stored value, and ``record.public_dict()`` always has one. Making this
+    # optional only loosened the published OpenAPI contract to ``array | null``
+    # for a null that is never emitted.
     allowed_targets: list[str] = []
     expires_at: Optional[str] = None
     last_used_at: Optional[str] = None
@@ -47,7 +52,11 @@ class CredentialCreateRequest(BaseModel):
     account_label: Optional[str] = Field(default=None, max_length=240)
     metadata: dict[str, Any] = {}
     scopes: list[str] = []
-    allowed_targets: list[str] = []
+    # ``None``, not ``[]``. An empty list is a real instruction to the vault
+    # ("nothing may read this"), so it must not also be what a client that
+    # simply omitted the field sends. Omitting it now means "use the default
+    # for this kind"; locking a credential down takes an explicit ``[]``.
+    allowed_targets: Optional[list[str]] = None
     expires_at: Optional[str] = None
     status: CredentialStatus = "active"
     secret_fields: dict[str, str] = Field(default_factory=dict)

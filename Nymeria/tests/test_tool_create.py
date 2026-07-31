@@ -514,3 +514,110 @@ def test_loader_python_tool_revocation_takes_effect_next_call(tmp_path):
     result = tool_obj.invoke({"value": "nymeria"})
     assert isinstance(result, str)
     assert result.startswith("[Error]: approval_required")
+
+
+# --- draft-test sits behind the same vault gate as the published tool ------
+
+
+class _RecordingVault:
+    """Captures the (actor, target) the credential vault is asked to resolve under."""
+
+    def __init__(self):
+        self.calls = []
+
+    def resolve_references(
+        self,
+        value,
+        *,
+        actor,
+        target_type=None,
+        target_id=None,
+        used_credentials=None,
+        redact_values=None,
+    ):
+        self.calls.append(
+            {"actor": actor, "target_type": target_type, "target_id": target_id}
+        )
+        if used_credentials is not None:
+            used_credentials.add("cred1")
+        if redact_values is not None:
+            redact_values.add("SEKRET")
+        return value.replace("${credential:cred1.token}", "SEKRET")
+
+
+def test_draft_test_resolves_credentials_under_the_published_target(tmp_path, monkeypatch):
+    """Testing a draft must not reach a credential the published tool cannot.
+
+    Draft-test is a real execution with real credentials, so it has to present
+    the same ``(target_type, target_id)`` to the vault that the published tool
+    will. It presented neither: with no target at all, a credential scoped to
+    any specific tool was unreachable, and while an empty ``allowed_targets``
+    still meant "any target may read", every other credential was reachable.
+
+    The ``custom_tool`` literal is checked here, not just "some target", because
+    the vault matches it as a string: the HTTP entry points defaulted to
+    ``custom_http_tool`` while every other caller passed ``custom_tool``, which
+    no test caught while the gate was vacuous.
+    """
+    from nymeria.core import credential_vault
+
+    vault = _RecordingVault()
+    monkeypatch.setattr(credential_vault, "get_credential_vault_repo", lambda: vault)
+    monkeypatch.setattr(
+        "nymeria.tools.http_api._http_request_impl",
+        lambda **kwargs: {"ok": True, "body": {"done": True}},
+    )
+
+    store = ToolDraftStore(tmp_path / "drafts")
+    draft = create_draft_definition(
+        user_id="user-1",
+        tool_id="priced",
+        name="Priced",
+        description="Fetch a price behind an authenticated endpoint",
+        parameters={},
+        http_config=_http_config(
+            headers={"X-Token": "${credential:cred1.token}"},
+            url="https://api.example.com/prices",
+        ),
+    )
+    store.save("user-1", draft)
+
+    result = asyncio.run(run_draft_test(store, "user-1", "priced", {}))
+
+    assert result["ok"] is True
+    assert vault.calls, "the draft test never consulted the vault"
+    for call in vault.calls:
+        assert call["actor"] == "user-1"
+        assert call["target_type"] == "custom_tool"
+        assert call["target_id"] == "priced"
+
+    # The other half of the invariant: the PUBLISHED tool, which reaches the
+    # vault through a different entry point, presents the same target string.
+    # ``_publish_draft`` sets ``definition.id = draft.tool_id``, so a divergence
+    # here is a divergence between the two spellings, not between two tools.
+    vault.calls.clear()
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    loader.save_definition(
+        CustomToolDefinition(
+            id="priced",
+            name="Priced",
+            description="Fetch a price behind an authenticated endpoint",
+            parameters={},
+            implementation_type="http",
+            http_config=HTTPToolConfig(
+                method="GET",
+                url="https://api.example.com/prices",
+                headers={"X-Token": "${credential:cred1.token}"},
+            ),
+            enabled=True,
+        )
+    )
+    tool_obj = loader.get_tool("priced")
+    assert tool_obj is not None
+    tool_obj.invoke({}, config={"configurable": {"user_id": "user-1"}})
+
+    assert vault.calls
+    for call in vault.calls:
+        assert call["actor"] == "user-1"
+        assert call["target_type"] == "custom_tool"
+        assert call["target_id"] == "priced"

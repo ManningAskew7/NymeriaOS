@@ -9,8 +9,11 @@ interpolates a caller-supplied `credential_id` and `field` into a
 SECOND one. `_sweep_sensitive_mapping` then skips the value (it already matches
 `_credential_ref`), so it is stored verbatim, and `mcp_manager` resolves BOTH at
 spawn as `SYSTEM_ACTOR`. Because MCP resolution skips the vault's owner check by
-design, and a row with an empty `allowed_targets` is readable by any target,
-that turned "bind a credential you may name" into "read one you may not".
+design, `allowed_targets` is the only gate on that path, and at the time every
+agent-facing creation path left it empty, which then meant "any target may
+read". That turned "bind a credential you may name" into "read one you may
+not". Empty denies now, but the ref-splitting bug is independent of that: a
+smuggled ref still resolves against any row whose targets do admit MCP.
 
 **2. `add_allowed_target` is owner-checked**, like its `remove_allowed_target`
 twin, which already was. The asymmetry was backwards: this is the WIDENING
@@ -22,7 +25,15 @@ that reaches `_binding_ref` is admin-only, and an admin already reads every
 credential legitimately via `actor_is_admin`. So property 1 is a
 correctness/defence-in-depth fix, NOT a live non-admin privilege escalation.
 An ownership check inside `_binding_ref` was tried and removed: it enforced
-nothing today and broke an admin configuring a server on a user's behalf.
+nothing today and broke an admin configuring a server on a user's behalf. It
+becomes load-bearing the moment MCP management is delegated to non-admins,
+which is tracked as its own security task rather than guessed at here.
+
+**3. An MCP bind grants the target it binds.** The bindings table is
+bookkeeping; the gate reads `allowed_targets`. The two are paired on this
+surface and deliberately NOT paired in the agent-facing bind tools, because
+the question "may a bind widen a row" has different right answers for an admin
+wiring up a server and for a thread referencing someone else's credential.
 """
 
 from __future__ import annotations
@@ -93,6 +104,10 @@ def vault(tmp_path, monkeypatch):
         kind="legacy_token_cache",
         secret_fields={"cache_json": _VICTIM_SECRET},
         status="active",
+        # Explicitly empty: this fixture stands in for a pre-migration row that
+        # relied on "empty means any target may read". An unspecified list now
+        # gets the kind's reader set instead, which would not reproduce it.
+        allowed_targets=[],
         actor_user_id="alice",
     )
     repo.upsert_credential(
@@ -104,6 +119,7 @@ def vault(tmp_path, monkeypatch):
         kind="secret",
         secret_fields={"value": "mallory-own"},
         status="active",
+        allowed_targets=[],
         actor_user_id="mallory",
     )
     record = repo.get_credential("cred_lcache_victim")
@@ -170,21 +186,46 @@ def test_an_ordinary_binding_still_works(vault):
     assert defn.env_vars["API_KEY"] == "${credential:cred_mallory_own.value}"
 
 
-def test_a_binding_does_not_narrow_an_unscoped_credential(vault):
-    """Binding must NOT write allowed_targets.
+def test_an_mcp_bind_grants_the_target_it_binds(vault):
+    """Bind and grant are one action on THIS surface, or the surface is dead.
 
-    An empty ``allowed_targets`` means "any target may read" today, so adding
-    ``mcp_server:<id>`` would flip the row from allow-all to allow-only-this and
-    silently break every other consumer: a legacy OAuth cache read via
-    ``native_auth_cache`` starts failing, and ``load_token_cache`` swallows that
-    at debug level, so the user is signed out with no error. Pinned because an
-    earlier version of this change did exactly that.
+    MCP resolves as SYSTEM_ACTOR, so ``allowed_targets`` is the only check on
+    the spawn path. A bindings row on its own grants nothing, so binding an
+    existing credential to a server produced a server that raised
+    ``CredentialAccessDenied`` at spawn, with nothing tying the failure back to
+    the bind.
+
+    This is deliberately the OPPOSITE of the agent-facing bind tools below.
+    Widening here is an admin saying "use this credential for this server",
+    which is the action itself; widening there would let whoever references a
+    credential grant themselves a target its owner never allowed.
     """
     _bind("mallory")
 
     record = vault.get_credential("cred_mallory_own")
     assert record is not None
-    assert record.allowed_targets == []
+    assert record.allowed_targets == ["mcp_server:srv-binding-1"]
+
+
+def test_an_mcp_bind_adds_to_existing_targets_rather_than_replacing_them(vault):
+    """Widening must not become narrowing.
+
+    ``add_allowed_target`` appends. Assigning the bind target instead would
+    strip every other reader the credential had, which is how an earlier
+    version of this silently signed users out of unrelated integrations.
+    """
+    vault.add_allowed_target(
+        "cred_mallory_own", target="native_tool:*", actor_user_id="mallory"
+    )
+
+    _bind("mallory")
+
+    record = vault.get_credential("cred_mallory_own")
+    assert record is not None
+    assert sorted(record.allowed_targets) == [
+        "mcp_server:srv-binding-1",
+        "native_tool:*",
+    ]
 
 
 # --- property 2: the widening primitive is owner-checked ------------------

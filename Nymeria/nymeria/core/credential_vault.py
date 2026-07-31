@@ -164,6 +164,18 @@ CREATE TABLE IF NOT EXISTS credential_audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_credential_audit_credential
 ON credential_audit_events(credential_id, created_at);
+
+-- Migration watermarks, keyed by component. Declared here as well as in
+-- AccountsRepo because this file is SHARED by several repos (accounts, chat
+-- bindings, notification destinations, this vault) and any of them may open it
+-- first; ``IF NOT EXISTS`` makes that a no-op for whoever loses the race.
+-- Deliberately not PRAGMA user_version: that is one counter for the whole FILE,
+-- so whichever component stamped it first would silently suppress every other
+-- component's migrations forever.
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -397,7 +409,223 @@ class CredentialVaultRepo:
     def _init_schema(self) -> None:
         with self._lock, self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_locked(conn)
             conn.commit()
+
+    # Component key for :data:`SCHEMA_MIGRATIONS`. This database file is SHARED:
+    # AccountsRepo, ChatBindingsRepo and NotificationDestinationsRepo all open
+    # the same ``accounts.db`` (see ``core/agent.py``). That is why the version
+    # is a row keyed by component and NOT ``PRAGMA user_version``, which is one
+    # counter for the whole file. With the PRAGMA, whichever component migrated
+    # first would stamp the counter and every other component's migration would
+    # be skipped forever, silently. Here that failure mode is "unreachable"
+    # rather than "we happened to go first".
+    # Key in the shared ``schema_meta`` watermark table. Namespaced because that
+    # table belongs to the file, not to this repo.
+    _MIGRATION_KEY = "credential_vault.schema_version"
+    _SCHEMA_VERSION = 1
+
+    def _read_version_locked(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?", (self._MIGRATION_KEY,)
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError):
+            return 0
+
+    def _migrate_locked(self, conn: sqlite3.Connection) -> None:
+        """Run data migrations that the bare ``CREATE TABLE`` cannot express.
+
+        Versioned on a stored watermark rather than on the shape of the data.
+        That distinction is the whole point: the v1 backfill below rewrites rows
+        whose ``allowed_targets`` is empty, and once empty means DENY, a
+        condition-gated version of it would re-widen, on every startup, any row
+        an operator had deliberately narrowed to nothing.
+
+        Double-checked: the watermark is read WITHOUT a lock first, so the
+        already-migrated path (every start after the first) takes no write lock
+        at all. Only a process that sees work to do escalates to
+        ``BEGIN IMMEDIATE`` and re-reads inside the transaction. Both halves
+        matter. Without the re-read, a cold Docker start runs api, worker and
+        mcp through the same backfill and each writes its own audit row, in the
+        subsystem whose entire job is an honest audit trail. Without the
+        lock-free pre-check, every process takes a write lock on every boot to
+        discover it has nothing to do, and they serialise on it: with four repos
+        sharing this file, that is a 30-second stall (the ``_connect`` busy
+        timeout) and then an unhandled ``OperationalError`` out of startup.
+        """
+        if self._read_version_locked(conn) >= self._SCHEMA_VERSION:
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        version = self._read_version_locked(conn)
+        if version >= self._SCHEMA_VERSION:
+            conn.commit()
+            return
+        if version < 1:
+            self._backfill_empty_allowed_targets_locked(conn)
+        conn.execute(
+            """
+            INSERT INTO schema_meta (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = ?
+            """,
+            (
+                self._MIGRATION_KEY,
+                str(self._SCHEMA_VERSION),
+                str(self._SCHEMA_VERSION),
+            ),
+        )
+
+    # Which targets each credential KIND is legitimately read with. Values are
+    # the union of every reader for that kind, not a guess at the single right
+    # one: the backfill's job is not to scope these perfectly, it is to stop a
+    # secret that was never an MCP credential from being reachable through the
+    # MCP path. That path is the only reader that resolves as SYSTEM_ACTOR, so
+    # it is the only one where `allowed_targets` is the sole gate; every other
+    # reader re-checks ownership. Granting the union cannot break a working
+    # deployment, and still drops `mcp_server:*`.
+    #
+    # Sources, so this is auditable rather than inferred:
+    #   native_auth_cache:*  load_legacy_cache, the only reader of cache_json
+    #   native_tool:*        native_credentials, auth_cache_utils; also what
+    #                        auth_cache_utils/oauth_callback_handler already
+    #                        self-heal an empty oauth_token row to
+    #   llm_provider:*/thread:*  llm_credentials._target_candidates
+    #   custom_tool:*        custom_tools' HTTP executor
+    #   mcp_server:*         mcp_manager, for the MCP-only kinds
+    _LLM_READERS = ["llm_provider:*", "thread:*"]
+    _GENERIC_READERS = ["native_tool:*", "llm_provider:*", "thread:*", "custom_tool:*"]
+    _EMPTY_TARGET_BACKFILL: dict[str, list[str]] = {
+        "legacy_token_cache": ["native_auth_cache:*"],
+        "oauth_cache": ["native_auth_cache:*"],
+        "oauth_token": ["native_tool:*"],
+        # google_sheets.py reads this with native_tool:google_sheets.
+        "service_account": ["native_tool:*"],
+        # `env_var` is what `migrate_mcp_encrypted_env_vars` writes, and it is
+        # only ever read back through the MCP path.
+        "env_var": ["mcp_server:*"],
+        "api_key": _GENERIC_READERS,
+        "pat": _GENERIC_READERS,
+        "secret": _GENERIC_READERS,
+        "form": _GENERIC_READERS,
+        # The rest of `llm_credentials.LLM_CREDENTIAL_KINDS`. Listed explicitly
+        # rather than left to the wildcard fallback: these are real kinds this
+        # codebase writes, and "unclassified" should mean "we do not know the
+        # readers", not "nobody enumerated them".
+        "llm_provider": _LLM_READERS,
+        "llm_connection": _LLM_READERS,
+        "provider_connection": _LLM_READERS,
+        "openai_compatible": _LLM_READERS,
+        "connection": _LLM_READERS,
+    }
+
+    # What an unrecognised kind gets: the wildcard, i.e. exactly the reach it
+    # has today. Deliberately NOT a narrowing. A kind this table does not know
+    # is a kind whose readers were not enumerated, and a wrong guess there is a
+    # silent failure (`load_token_cache` swallows a denial at debug level and
+    # its on-disk fallback was deleted after the vault save, so the user is
+    # simply signed out). Loud logging over silent breakage.
+    _EMPTY_TARGET_FALLBACK: list[str] = ["*"]
+
+    @classmethod
+    def default_targets_for_kind(
+        cls, kind: str, provider: Optional[str] = None
+    ) -> list[str]:
+        """What a caller that did not name a target gets, by credential kind.
+
+        Shared with the v1 migration on purpose: "which call sites legitimately
+        read this kind" is one fact, and a default that drifted from the
+        backfill would mean a freshly saved credential behaved differently from
+        an identical migrated one.
+
+        This is why an agent can still save a credential the lazy way. The
+        agent writes secrets but never reads them back, so the useful default
+        is not "deny" (which would make a saved credential inert and push
+        people back to pasting keys into config) but "the readers this kind is
+        for, and not the one that skips the owner check".
+        """
+        targets, _known = cls._default_targets(kind, provider)
+        return targets
+
+    @classmethod
+    def _default_targets(
+        cls, kind: str, provider: Optional[str]
+    ) -> tuple[list[str], bool]:
+        """Resolve (targets, was_classified) for a kind/provider pair.
+
+        The single source for BOTH the create path and the v1 migration, which
+        is why provider is a parameter rather than a branch in the migration
+        loop: a freshly saved credential and an identical migrated one have to
+        land on the same targets, or the two answers drift apart exactly where
+        nobody looks.
+        """
+        if str(provider or "") == "mcp":
+            # An MCP credential is the one family whose reader IS the MCP path,
+            # so the kind table would point it at the wrong place: it shares
+            # kinds ("secret", "env_var") with ordinary rows that must NOT be
+            # MCP-readable.
+            return ["mcp_server:*"], True
+        targets = cls._EMPTY_TARGET_BACKFILL.get(kind)
+        if targets is None:
+            return list(cls._EMPTY_TARGET_FALLBACK), False
+        return list(targets), True
+
+    def _backfill_empty_allowed_targets_locked(self, conn: sqlite3.Connection) -> None:
+        """Make every implicit "any target may read" grant explicit.
+
+        Empty currently MEANS unrestricted, so this changes no behaviour on its
+        own; it writes down what the row already permits so that empty can then
+        be redefined as deny. Rows that already carry targets are untouched.
+        """
+        rows = conn.execute(
+            """
+            SELECT id, kind, provider FROM credentials
+            WHERE allowed_targets_json IN ('[]', '')
+            """
+        ).fetchall()
+        if not rows:
+            return
+        unclassified: list[str] = []
+        for row in rows:
+            kind = str(row["kind"] or "")
+            targets, known = self._default_targets(kind, row["provider"])
+            if not known:
+                unclassified.append(f"{row['id']} (kind={kind or '?'})")
+            # ``updated_at`` is deliberately NOT touched. This migration writes
+            # down what a row already permitted, so it changes no user-visible
+            # behaviour, and the timestamp is read as one: the stale-OAuth sweep
+            # in ``tools/auth_manager.py`` picks the survivor among duplicate
+            # rows with ``max(key=updated_at)``. Stamping every row with one
+            # value collapses that ordering into a tie, and the tie resolves to
+            # whichever row came back first, so the sweep can nominate the
+            # NEWER token for deletion.
+            conn.execute(
+                "UPDATE credentials SET allowed_targets_json = ? WHERE id = ?",
+                (_json_dumps(targets), row["id"]),
+            )
+            self._audit_locked(
+                conn,
+                credential_id=str(row["id"]),
+                actor_user_id=SYSTEM_ACTOR_AUDIT_ID,
+                event_type="allowed_targets_backfilled",
+                details={"kind": kind, "targets": list(targets)},
+            )
+        logger.info(
+            "Credential vault: recorded explicit allowed_targets on %d row(s) "
+            "that previously relied on the empty-means-any default",
+            len(rows),
+        )
+        if unclassified:
+            logger.warning(
+                "Credential vault: %d credential row(s) kept an UNRESTRICTED "
+                "allowed_targets because their kind has no known reader set. "
+                "They are no less permissive than before, but they are the ones "
+                "worth narrowing by hand: %s",
+                len(unclassified),
+                ", ".join(unclassified),
+            )
 
     def _secret_field_names(self, conn: sqlite3.Connection, credential_id: str) -> list[str]:
         rows = conn.execute(
@@ -456,7 +684,15 @@ class CredentialVaultRepo:
         now = _now()
         metadata = metadata or {}
         scopes = scopes or []
-        allowed_targets = allowed_targets or []
+        # ``None`` means "the caller did not say", and gets the kind's reader
+        # set. An explicit ``[]`` means "nothing may read this" and is
+        # respected: once empty denies, that is a legitimate thing to ask for,
+        # and silently widening it would make the lockout unspellable.
+        allowed_targets = (
+            self.default_targets_for_kind(kind, provider)
+            if allowed_targets is None
+            else list(allowed_targets)
+        )
         secret_fields = secret_fields or {}
 
         with self._lock, self._connect() as conn:
@@ -540,13 +776,35 @@ class CredentialVaultRepo:
         now = _now()
         metadata = metadata or {}
         scopes = scopes or []
-        allowed_targets = allowed_targets or []
         secret_fields = secret_fields or {}
 
         with self._lock, self._connect() as conn:
             existing = conn.execute(
-                "SELECT id FROM credentials WHERE id = ?", (credential_id,)
+                "SELECT id, allowed_targets_json FROM credentials WHERE id = ?",
+                (credential_id,),
             ).fetchone()
+            # Resolving the target list needs to know insert from update, so it
+            # happens here rather than up top with the other normalisation.
+            #
+            #   supplied      -> honoured verbatim, including an explicit []
+            #                    ("nothing may read this"), which has to stay
+            #                    spellable now that empty denies.
+            #   omitted, new  -> the kind's reader set, so a caller that never
+            #                    thought about targets still gets a usable row.
+            #   omitted, existing -> KEEP what the row already has. "The caller
+            #                    did not say" must not silently rewrite scope
+            #                    the user set: this UPDATE assigns every column
+            #                    unconditionally, so anything else here is data
+            #                    loss on every partial update.
+            if allowed_targets is not None:
+                resolved_targets = list(allowed_targets)
+            elif existing is not None:
+                resolved_targets = list(
+                    _json_loads(existing["allowed_targets_json"], [])
+                )
+            else:
+                resolved_targets = self.default_targets_for_kind(kind, provider)
+            allowed_targets = resolved_targets
             if existing:
                 conn.execute(
                     """
@@ -942,8 +1200,23 @@ class CredentialVaultRepo:
             return cur.rowcount > 0
 
     def _target_allowed(self, record: CredentialRecord, target_type: Optional[str], target_id: Optional[str]) -> bool:
+        """Which call sites may resolve this credential to plaintext.
+
+        An EMPTY list denies. It used to allow everything, which made the gate
+        vacuous on exactly the rows that most needed it: every agent-facing
+        creation path produced an empty list, and MCP resolution skips the
+        owner check by design (it resolves as SYSTEM_ACTOR), so for that reader
+        this is the only gate there is. ``"*"`` still allows any target, so an
+        intentionally unrestricted credential says so out loud.
+
+        The flip is safe only because the v1 migration wrote an explicit grant
+        onto every row that was relying on the old default; do not reorder
+        those two, and do not "simplify" this back to a truthy check.
+        """
         allowed = record.allowed_targets or []
-        if not allowed or "*" in allowed:
+        if not allowed:
+            return False
+        if "*" in allowed:
             return True
         if not target_type:
             return False
@@ -1219,6 +1492,11 @@ class CredentialVaultRepo:
             scopes=scopes,
             expires_at=expires_at,
             secret_fields={"cache_json": json.dumps(cache, default=str)},
+            # Must match what load_legacy_cache reads with, below. It was
+            # unset, so these rows resolved only because empty meant "any
+            # target": the writer and its single reader never agreed on a
+            # target string, and nothing noticed because the gate was vacuous.
+            allowed_targets=[f"native_auth_cache:{cache_filename}"],
             actor_user_id=actor_user_id or user_id,
         )
 

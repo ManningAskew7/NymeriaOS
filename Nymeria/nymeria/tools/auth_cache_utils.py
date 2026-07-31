@@ -360,7 +360,11 @@ def _persist_vault_oauth_account(user_id: str, account_id: str, account: dict) -
             account_label=existing.account_label,
             metadata=metadata,
             scopes=list(metadata.get("scopes") or existing.scopes or []),
-            allowed_targets=existing.allowed_targets or ["native_tool:*"],
+            # NOT ``or ["native_tool:*"]``. An empty list is now a deliberate
+            # lockout, and a truthy check would silently re-grant it on the next
+            # token refresh, which is the exact failure the vault's
+            # ``_target_allowed`` docstring warns against.
+            allowed_targets=existing.allowed_targets,
             expires_at=expires_iso or existing.expires_at,
             status="active",
             secret_fields=secret_fields,

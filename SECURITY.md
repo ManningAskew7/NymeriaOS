@@ -139,13 +139,25 @@ not on the other. State both when reasoning about it.
 
   One sharp edge to know: MCP resolves credential aliases **as the platform**,
   not as a user, so the vault's owner check is skipped there by design and
-  `allowed_targets` is the only gate on that path. A row whose `allowed_targets`
-  is empty is readable by any target. That is currently sound only because every
-  surface that can put an alias into a server definition (the MCP REST routes
-  and the agent's `install_mcp_server`) is admin-only, and an admin already
-  reads every credential legitimately. It stops being sound the moment MCP
-  management is delegated to non-admins, which is a prerequisite for the
-  multi-tenant work in 2.4, not an independent hardening.
+  `allowed_targets` is the only gate on that path. That list is now load-bearing
+  rather than advisory: an empty list DENIES, and a credential saved without a
+  stated purpose gets the set of call sites its kind is actually read from,
+  which for every kind except an MCP credential excludes `mcp_server`. So an
+  ordinary API key cannot be reached through the one reader that skips the owner
+  check: a server definition that simply names such a credential fails closed at
+  spawn. Reaching it takes an explicit bind, and binding is admin-only.
+
+  Two residuals to keep in view. A row explicitly set to `["*"]` is readable by
+  any target including MCP, and that is what a credential of an unrecognised
+  kind gets, because narrowing a kind whose readers were never enumerated fails
+  silently (the caller swallows the denial) while leaving it wide fails visibly;
+  the kind is free text at the API and in the GUI, so an operator can create one
+  by typing an unfamiliar word. And binding is what widens a row, which is
+  correct for an admin wiring up a server but means the check that matters is
+  the one on the bind: `POST /credentials/{id}/bindings` is owner-checked, while
+  `install_mcp_server` asserts admin rather than checking ownership, since every
+  route reaching it is admin-only today. Delegating MCP management to non-admins,
+  a prerequisite for the multi-tenant work in 2.4, requires fixing that first.
 - **Execution channel (not protected today).** The master key lives in the agent
   process environment. Any subprocess the agent spawns runs as the same user and
   can, by default, recover the key and then decrypt the stores off disk. Three

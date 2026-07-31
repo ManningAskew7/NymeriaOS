@@ -55,7 +55,11 @@
     formOwnerType = credential.ownerType;
     const required = credential.metadata?.required_fields;
     formSecretField = Array.isArray(required) && required.length > 0 ? String(required[0]) : 'value';
-    formAllowedTarget = credential.allowedTargets[0] || '';
+    // Only preload when the credential carries exactly one target. The form
+    // round-trips a single value, so preloading the first of several and
+    // saving would silently drop the rest.
+    formAllowedTarget =
+      credential.allowedTargets.length === 1 ? credential.allowedTargets[0] : '';
     showForm = true;
   }
 
@@ -71,7 +75,12 @@
   async function saveCredential() {
     formStatus = 'saving';
     formError = '';
-    const allowed = formAllowedTarget.trim() ? [formAllowedTarget.trim()] : [];
+    // `undefined`, never `[]`: an empty list is a real instruction to the
+    // backend ("nothing may read this credential"), so a blank optional field
+    // must omit the key instead. Sending `[]` here created a credential that
+    // looked healthy in the list and could never be decrypted, with nothing
+    // logged above DEBUG.
+    const allowed = formAllowedTarget.trim() ? [formAllowedTarget.trim()] : undefined;
     const secret_fields = formSecretValue ? { [formSecretField.trim() || 'value']: formSecretValue } : {};
     const result = completingId
       ? await credentialsStore.update(completingId, {

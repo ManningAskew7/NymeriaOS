@@ -43,8 +43,10 @@ def _target_score(record: Any, tool_name: str, bound_ids: set[str]) -> int:
         return 1
     if f"{NATIVE_TOOL_TARGET_TYPE}:*" in allowed or "*" in allowed:
         return 2
-    if not allowed:
-        return 3
+    # An empty allowed_targets used to score 3 here, as a usable-but-unscoped
+    # candidate, because the vault then read it as "any target may read". It
+    # denies now, so ranking such a record above 100 would only pick a
+    # credential the vault is about to refuse.
     return 100
 
 
@@ -59,8 +61,13 @@ def get_native_credential_value(
     """Return the best matching credential-vault field for a native tool.
 
     Selection order favors explicit bindings, then explicit allowed target,
-    then wildcard target, then unscoped credentials. User-owned credentials are
-    preferred over system credentials at the same target score.
+    then wildcard target. User-owned credentials are preferred over system
+    credentials at the same target score.
+
+    A credential with no allowed targets is NOT a candidate. It used to rank
+    last but still win when nothing else matched, back when an empty list meant
+    "any consumer may decrypt this". Empty now denies, so ranking it would only
+    pick a credential the vault is about to refuse.
     """
     user_id = get_user_id(config)
     provider_names = _provider_candidates(provider, provider_aliases)

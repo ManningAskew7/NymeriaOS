@@ -82,8 +82,8 @@ def _target_score(record: Any, provider: str, thread_id: str | None, bound_ids: 
         return 2
     if f"{LLM_PROVIDER_TARGET_TYPE}:*" in allowed or "thread:*" in allowed or "*" in allowed:
         return 3
-    if not allowed:
-        return 4
+    # See native_credentials._target_score: an empty allowed_targets denies at
+    # the vault now, so it is no longer a candidate worth ranking.
     return 100
 
 

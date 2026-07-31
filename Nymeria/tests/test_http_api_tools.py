@@ -564,6 +564,8 @@ def test_custom_http_tool_uses_shared_policy_for_blocked_targets():
             HTTPToolConfig(method="GET", url="http://127.0.0.1:8000/admin"),
             {},
             actor="user-1",
+            target_type="custom_tool",
+            target_id="t1",
         )
     )
 
@@ -584,6 +586,8 @@ def test_sync_execute_http_runs_without_an_event_loop():
             HTTPToolConfig(method="GET", url="http://127.0.0.1:8000/admin"),
             {},
             actor="user-1",
+            target_type="custom_tool",
+            target_id="t1",
         )
 
     result = asyncio.run(driver())
@@ -594,9 +598,9 @@ def test_sync_and_async_http_paths_agree():
     """``_sync_execute_http`` and ``execute_http_tool`` share one core, so identical input yields identical output."""
     config = HTTPToolConfig(method="GET", url="http://127.0.0.1:8000/admin")
 
-    sync_result = _sync_execute_http(config, {}, actor="user-1")
-    async_result = asyncio.run(execute_http_tool(config, {}, actor="user-1"))
-    direct_core = _sync_http_request(config, {}, actor="user-1")
+    sync_result = _sync_execute_http(config, {}, actor="user-1", target_type="custom_tool", target_id="t1")
+    async_result = asyncio.run(execute_http_tool(config, {}, actor="user-1", target_type="custom_tool", target_id="t1"))
+    direct_core = _sync_http_request(config, {}, actor="user-1", target_type="custom_tool", target_id="t1")
 
     assert sync_result == async_result == direct_core
     assert sync_result.startswith("[Error]: blocked_network_target")
@@ -716,7 +720,7 @@ def test_sync_http_request_response_path_match_extracts_value(monkeypatch):
         response_path="$.data.temperature",
     )
 
-    assert _sync_http_request(config, {}, actor="user-1") == "21"
+    assert _sync_http_request(config, {}, actor="user-1", target_type="custom_tool", target_id="t1") == "21"
 
 
 def test_sync_http_request_response_path_no_match_returns_error_not_body(monkeypatch):
@@ -731,7 +735,7 @@ def test_sync_http_request_response_path_no_match_returns_error_not_body(monkeyp
         response_path="$.data.humidity",
     )
 
-    result = _sync_http_request(config, {}, actor="user-1")
+    result = _sync_http_request(config, {}, actor="user-1", target_type="custom_tool", target_id="t1")
 
     assert result == (
         "[Error]: response_path '$.data.humidity' did not match the response body"
@@ -811,7 +815,7 @@ def test_sync_http_request_interpolates_params_env_and_credentials(monkeypatch):
     result = _sync_http_request(
         config,
         {"param_user": "u-1", "param_name": "alice"},
-        target_type="custom_http_tool",
+        target_type="custom_tool",
         target_id="tool-9",
         actor="user-7",
     )
@@ -828,7 +832,7 @@ def test_sync_http_request_interpolates_params_env_and_credentials(monkeypatch):
     # The vault was called with the custom-tool target, actor, and a redact set.
     call = vault.calls[0]
     assert call["actor"] == "user-7"
-    assert call["target_type"] == "custom_http_tool"
+    assert call["target_type"] == "custom_tool"
     assert call["target_id"] == "tool-9"
     assert call["redact_values"] is not None
 

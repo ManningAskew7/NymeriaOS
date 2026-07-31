@@ -156,12 +156,22 @@ def _matching_oauth_credentials(
 
 
 def _merged_allowed_targets(current: Any, replacements: list[Any]) -> list[str]:
+    """Union the reach of every row folded into the survivor.
+
+    This is also why ``_copy_replacement_bindings`` does not need to widen: a
+    replaced row's grants arrive here, so re-pointing its bindings cannot leave
+    the survivor bound to a target it may not read.
+
+    Returns the empty union as-is rather than falling back to a default. An
+    empty list is now a deliberate lockout, so a truthy fallback would silently
+    re-grant, on the next token refresh, a row an operator had locked.
+    """
     merged: list[str] = []
     for record in [current, *replacements]:
         for target in record.allowed_targets or []:
             if target not in merged:
                 merged.append(target)
-    return merged or ["native_tool:*"]
+    return merged
 
 
 def _copy_replacement_bindings(
