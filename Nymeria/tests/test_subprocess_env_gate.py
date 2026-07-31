@@ -214,7 +214,14 @@ def _passes_env(node: ast.Call, dicts_without_env: set[str] = frozenset()) -> bo
 
 
 def _is_environ_copy(node: ast.expr) -> bool:
-    """True for os.environ.copy(), dict(os.environ), {**os.environ}."""
+    """True for os.environ, os.environ.copy(), dict(os.environ), {**os.environ}.
+
+    Bare ``os.environ`` counts. ``subprocess`` accepts it and the child inherits
+    exactly as if the whole thing had been copied, so it is the shortest way to
+    write the leak and has to be the first thing this recognises.
+    """
+    if isinstance(node, ast.Attribute) and node.attr == "environ":
+        return True
     if isinstance(node, ast.Dict):
         return any(
             key is None and isinstance(value, ast.Attribute) and value.attr == "environ"
@@ -235,6 +242,36 @@ def _is_environ_copy(node: ast.expr) -> bool:
             isinstance(arg, ast.Attribute) and arg.attr == "environ" for arg in node.args
         )
     return False
+
+
+def _environ_copy_functions(tree: ast.AST, copy_names: set[str]) -> set[str]:
+    """Functions in this module that RETURN a full copy of the environment.
+
+    The shape that motivated this: `finalize.py`'s `_compose_env` builds
+    `dict(os.environ)`, layers a few pins on top, and returns it, and both
+    `docker compose` spawns pass `env=_compose_env(spec)`. A check that looks
+    only at names bound in the enclosing scope sees a call expression and reads
+    it as clean, so two spawns handing the whole deployment environment to a
+    third-party binary went unrecorded.
+
+    One hop, same module, no transitive resolution. That is where the cost
+    stays proportionate, and it covers the shape the tree actually uses; a
+    helper in ANOTHER module remains a documented blind spot.
+    """
+    functions: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Return) or sub.value is None:
+                continue
+            returns_copy = _is_environ_copy(sub.value) or (
+                isinstance(sub.value, ast.Name) and sub.value.id in copy_names
+            )
+            if returns_copy:
+                functions.add(node.name)
+                break
+    return functions
 
 
 def _environ_copy_names(tree: ast.AST) -> set[str]:
@@ -265,13 +302,21 @@ def _environ_copy_names(tree: ast.AST) -> set[str]:
     return names
 
 
-def _builds_env_from_full_copy(node: ast.Call, copy_names: set[str]) -> bool:
+def _builds_env_from_full_copy(
+    node: ast.Call, copy_names: set[str], copy_functions: set[str]
+) -> bool:
     env = _env_argument(node)
     if env is None:
         return False
     if _is_environ_copy(env):
         return True
-    return isinstance(env, ast.Name) and env.id in copy_names
+    if isinstance(env, ast.Name) and env.id in copy_names:
+        return True
+    return (
+        isinstance(env, ast.Call)
+        and isinstance(env.func, ast.Name)
+        and env.func.id in copy_functions
+    )
 
 
 def _markers_above(lines: list[str], lineno: int) -> str:
@@ -305,13 +350,14 @@ def _walk_spawns():
         rel = path.relative_to(NYMERIA_ROOT).as_posix()
         lines = source.splitlines()
         copy_names = _environ_copy_names(tree)
+        copy_functions = _environ_copy_functions(tree, copy_names)
         empty_kwargs = _locally_built_dicts_without_env(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _spawn_name(node):
                 yield (
                     f"{rel}:{node.lineno}",
                     node,
-                    copy_names,
+                    (copy_names, copy_functions),
                     _markers_above(lines, node.lineno),
                     empty_kwargs,
                 )
@@ -335,8 +381,8 @@ def test_every_spawn_supplies_an_environment():
 
 def test_no_spawn_builds_its_environment_from_a_full_copy():
     violations = [
-        key for key, node, copy_names, markers, _ in _walk_spawns()
-        if _builds_env_from_full_copy(node, copy_names)
+        key for key, node, copy_info, markers, _ in _walk_spawns()
+        if _builds_env_from_full_copy(node, *copy_info)
         and FULL_COPY_MARKER not in markers
     ]
     assert not violations, (

@@ -140,13 +140,19 @@ not on the other. State both when reasoning about it.
   process environment. Any subprocess the agent spawns runs as the same user and
   can, by default, recover the key and then decrypt the stores off disk. Three
   separate channels, in different states:
-  - Environment *inheritance* is scrubbed on every spawn Nymeria makes, in the
-    API process and now in the setup wizard and CLI too (those load the whole
+  - Environment *inheritance* is scrubbed on the agent-reachable spawns in the
+    API process and on the setup-wizard and CLI spawns (those load the whole
     deployment `.env`, so they mattered as much). A repo gate fails the build
     if a new spawn lands without a deliberate environment or a marker comment
-    justifying the inherit; the two standing exemptions are Nymeria
-    re-executing itself, where a scrubbed environment would be a broken
-    backend.
+    justifying the inherit. Five spawns are deliberately exempt and none is
+    agent-reachable: the API re-executing itself on a self-restart, the wizard
+    launching the slim backend, two `docker compose` invocations (compose
+    resolves `${...}` from the process environment, and the environment is the
+    stack configuration it is installing), and a statusline script the user
+    wrote themselves, running on their own machine under their own account.
+    The gate is syntactic and its limits are listed in its own module
+    docstring; read a green run as "no new bare spawn was introduced", not as
+    "nothing inherits".
   - `/proc/<pid>/environ` and ptrace reads of *the agent process* are closed by
     `PR_SET_DUMPABLE(0)`, set at startup in `run.py`, which makes that process's
     `/proc` entries root-owned. Root and `CAP_SYS_PTRACE` are unaffected, and

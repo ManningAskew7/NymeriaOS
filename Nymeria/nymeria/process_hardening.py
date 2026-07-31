@@ -22,9 +22,12 @@ isolation.
 **Cost, stated plainly.** The flag's original purpose is suppressing core
 dumps, so this process will not produce one on a crash. Profilers and debuggers
 that attach via ptrace (py-spy, gdb) stop working from an unprivileged same-UID
-shell. They keep working as root or with ``CAP_SYS_PTRACE``, which is how the
-documented container workflow already invokes them
-(``docker exec --privileged ... py-spy dump --pid 1``). If you need the
+shell. They keep working as root or with ``CAP_SYS_PTRACE``. In a container
+that means ``docker exec -u 0 --privileged``: ``--privileged`` alone does not
+change the exec'd user, so with ``cap_drop: ALL`` you stay unprivileged and it
+does not help. The full corrected recipe, including why ``--pid 1`` is the
+wrong target when ``init: true`` is set, is in
+``docs/private/plans/shipped/10-operational-gotchas.md``. If you need the
 unprivileged path back on a debugging host, set
 ``NYMERIA_DISABLE_PROCESS_HARDENING=1``.
 
@@ -42,9 +45,13 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-# From <linux/prctl.h>. Stable kernel ABI constants, safe to inline; the two
-# in exec_sandbox.py are inlined the same way.
-_PR_SET_DUMPABLE = 4
+# From <linux/prctl.h>. Stable kernel ABI constants.
+#
+# SET is public because it is half of a two-module mechanism: this module
+# clears the flag, and ``oom.py``'s preexec restores it in each child so the
+# child can still write its own /proc/self/oom_score_adj. A second copy of the
+# number in that module is how the two halves would drift apart.
+PR_SET_DUMPABLE = 4
 _PR_GET_DUMPABLE = 3
 
 DISABLE_ENV_VAR = "NYMERIA_DISABLE_PROCESS_HARDENING"
@@ -77,7 +84,7 @@ def restrict_proc_access() -> bool:
         return False
     try:
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
             logger.debug(
                 "prctl(PR_SET_DUMPABLE, 0) failed: errno %d", ctypes.get_errno()
             )
@@ -98,4 +105,4 @@ def restrict_proc_access() -> bool:
     return True
 
 
-__all__ = ["DISABLE_ENV_VAR", "restrict_proc_access"]
+__all__ = ["DISABLE_ENV_VAR", "PR_SET_DUMPABLE", "restrict_proc_access"]

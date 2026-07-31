@@ -22,6 +22,11 @@ import os
 import sys
 from typing import Any, Callable, Optional
 
+# Imported rather than redeclared: process_hardening is what CLEARS this flag,
+# and the preexec below is what restores it per child. One constant, one
+# mechanism.
+from .process_hardening import PR_SET_DUMPABLE
+
 # 0..1000. Large enough that a modest tool subprocess outranks the much larger
 # API server in the kernel's per-process OOM scoring, without pinning it to the
 # absolute maximum (1000, "always kill first") so genuinely runaway children
@@ -54,6 +59,22 @@ def oom_score_preexec(
 
     payload = str(int(score)).encode("ascii")
 
+    # Resolve libc HERE, in the parent, not inside the child below.
+    #
+    # ``import ctypes`` and ``CDLL`` both run real Python and a ``dlopen``,
+    # which takes the import lock and glibc's loader lock. ``preexec_fn`` runs
+    # post-fork in a process that has only the calling thread, so a lock any
+    # OTHER thread held at fork time is held forever in the child: the textbook
+    # post-fork deadlock, and it would hang a tool call rather than fail it.
+    # The parent-side call also warms the loader so the bound ``prctl`` below
+    # is a plain function pointer by the time the child touches it.
+    try:
+        import ctypes
+
+        _prctl = ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except (OSError, AttributeError):  # pragma: no cover - no glibc
+        _prctl = None
+
     def _preexec() -> None:
         # Restore dumpability in the CHILD before touching /proc/self.
         #
@@ -65,17 +86,16 @@ def oom_score_preexec(
         # the kernel goes back to evicting the largest-RSS process, which is
         # the API itself. Exactly what this module exists to prevent.
         #
-        # Undoing it here is safe and is not a hole. execve resets dumpable to
-        # 1 for an ordinary binary moments later anyway, so this only closes a
-        # window that was never going to persist, and the child's environment
-        # has already been scrubbed by the caller (see subprocess_env.py), so
-        # there is nothing in it worth protecting from the child itself.
-        try:
-            import ctypes
-
-            ctypes.CDLL("libc.so.6", use_errno=True).prctl(4, 1, 0, 0, 0)
-        except (OSError, AttributeError):
-            pass
+        # What the window between here and execve exposes is the forked ADDRESS
+        # SPACE, which is still a copy of the parent's and holds everything the
+        # parent held, master key included. It is not closed by the caller's
+        # environment scrubbing, which governs what execve hands over. It is
+        # acceptable because it lasts microseconds, needs a same-uid attacker
+        # already racing this exact fork, and execve resets dumpable to 1 for
+        # an ordinary binary immediately afterwards anyway: the flag was never
+        # going to survive into the process anyone could actually attach to.
+        if _prctl is not None:
+            _prctl(PR_SET_DUMPABLE, 1, 0, 0, 0)
         try:
             fd = os.open(_OOM_SCORE_PATH, os.O_WRONLY)
             try:
