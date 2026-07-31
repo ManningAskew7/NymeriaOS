@@ -1994,6 +1994,7 @@ class CommandBackendClient:
             vault=getattr(self.agent, "credential_vault", None),
             owner_user_id=self.user.id,
             settings=self._settings(),
+            actor_role=getattr(self.user, "role", "") or "",
         )
 
 

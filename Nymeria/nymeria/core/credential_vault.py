@@ -50,20 +50,56 @@ class _SystemActor:
 
 SYSTEM_ACTOR = _SystemActor()
 
-# What SYSTEM_ACTOR is written as in the audit trail. A distinct marker rather
+
+class _UnattributedActor:
+    """Sentinel: a caller that could not name a principal at all.
+
+    Distinct from :data:`SYSTEM_ACTOR`, which asserts "the platform is asking
+    and has established authority elsewhere". This one asserts the opposite:
+    the code path expected a user and did not find one. It is DENIED for
+    user-owned records.
+
+    A sentinel rather than a reserved string like ``"__unattributed__"``,
+    because user ids are chosen by the caller of
+    ``AccountsRepo.create_user(user_id, ...)``. A reserved string is one
+    ``create_user("__unattributed__", ...)`` away from being a real principal
+    that compares equal to the marker, which would turn "we do not know who
+    this is" into "this is the owner" for anything that account owns.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "UNATTRIBUTED_ACTOR"
+
+
+UNATTRIBUTED_ACTOR = _UnattributedActor()
+
+# How the sentinels are written in the audit trail. Distinct markers rather
 # than NULL: "the platform read this" and "nobody recorded who read this" were
 # previously the same row, and only one of them is acceptable.
+#
+# Known limitation: a user account created with one of these exact ids would
+# produce audit rows indistinguishable from a sentinel read. Fixing that
+# properly needs a separate actor_kind column rather than a reserved value,
+# which is a schema migration; it is tracked rather than bodged here. The
+# AUTHORIZATION collision is closed above, which is the half that grants access.
 SYSTEM_ACTOR_AUDIT_ID = "__system__"
+UNATTRIBUTED_ACTOR_AUDIT_ID = "__unattributed__"
 
 # The actor for a plaintext read: a user id, or an explicit "no principal".
 # Deliberately NOT Optional[str] -- `None` must not be spellable, or the old
 # fail-open returns as a one-character diff.
-Actor = Union[str, _SystemActor]
+Actor = Union[str, _SystemActor, _UnattributedActor]
 
 
 def _audit_actor_id(actor: Actor) -> str:
     """Render an actor for the audit trail."""
-    return SYSTEM_ACTOR_AUDIT_ID if isinstance(actor, _SystemActor) else actor
+    if isinstance(actor, _SystemActor):
+        return SYSTEM_ACTOR_AUDIT_ID
+    if isinstance(actor, _UnattributedActor):
+        return UNATTRIBUTED_ACTOR_AUDIT_ID
+    return actor
 
 
 OwnerType = str
@@ -939,6 +975,14 @@ class CredentialVaultRepo:
         ``SYSTEM_ACTOR`` explicitly, which is greppable and reviewable in a way
         that an omitted keyword argument is not.
         """
+        if actor is UNATTRIBUTED_ACTOR:
+            # Explicit, ahead of the admin and non-user-owned escapes. Falling
+            # through would also deny (a sentinel never equals an owner id),
+            # but only by accident of comparison, and "we could not identify
+            # the caller" must be a stated refusal rather than a near miss.
+            raise CredentialAccessDenied(
+                f"Credential {record.id} read with no identifiable principal"
+            )
         if actor is SYSTEM_ACTOR or actor_is_admin or record.owner_type != "user":
             return
         if record.owner_user_id == actor:

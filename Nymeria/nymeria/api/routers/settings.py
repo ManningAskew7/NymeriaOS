@@ -940,7 +940,7 @@ async def _available_models(
     vault: Any,
     owner_user_id: Optional[str],
     settings: Any,
-    caller_supplied_base_url: bool = False,
+    actor_role: str,
 ) -> list[dict]:
     """Fetch available models from the configured LLM provider or CLIProxy.
 
@@ -953,19 +953,32 @@ async def _available_models(
     over the vault/settings resolution so the /provider setup flow can list
     models with a just-pasted key before saving it.
 
-    ``caller_supplied_base_url`` says the DESTINATION came from the request
-    rather than from configuration, and it suppresses every STORED credential
-    source (vault, then the per-provider settings fallbacks further down).
-    This is a credential-egress gate, not tidiness, and it is the same shape as
-    ``anthropic_probe_base_url`` in the vendored provider factory: the property
-    being defended is that the key never reaches the wire, not that the request
-    never happens. The ephemeral ``api_key`` argument is unaffected, because a
-    caller who supplies both the address and the key is spending only their own
-    credential. Callers that set this flag must therefore not also pass a
-    stored key.
+    ``actor_role`` is REQUIRED and drives the credential-egress gate below. It
+    is a role rather than a pre-computed boolean, and it lives here rather than
+    at each route, because a shared helper with a permissive default is how
+    this kind of gate gets forgotten: this function has three callers (both
+    routes and ``command_service`` for the in-process TurnExecutor shape), and
+    the whole reason it is module-scope is that those shapes must not drift.
+    A flag one caller can omit re-creates the drift the docstring above warns
+    about. Required and derived here, they cannot.
+
+    The gate: when the DESTINATION came from the request rather than from
+    configuration, every STORED credential source is suppressed (vault, then
+    the per-provider settings fallbacks further down), so an address the caller
+    named gets an unauthenticated probe or nothing. This is the same shape as
+    ``anthropic_probe_base_url`` in the vendored provider factory, which states
+    the principle plainly: the gate lives at the resolver every caller shares,
+    so a caller that forgets gets no egress rather than a leak. The property
+    defended is that the key never reaches the wire, not that the request never
+    happens.
+
+    Admins are exempt: they already reach destination-plus-key through the
+    admin-gated POST route and hold the environment the key lives in. The
+    ephemeral ``api_key`` argument is unaffected either way, since a caller
+    supplying both address and key is spending only their own credential.
     """
     effective_provider = normalize_llm_provider(provider or settings.llm_provider)
-    use_stored_credentials = not caller_supplied_base_url
+    use_stored_credentials = not (bool(base_url) and actor_role != "admin")
     credential = (
         get_llm_provider_credential(
             effective_provider,
@@ -1670,11 +1683,10 @@ def create_settings_router(
         ``validate_http_egress_url`` here because loopback is a legitimate
         target for exactly the local-LLM flows above.
         """
-        untrusted_destination = bool(base_url) and user.role != "admin"
         return await _available_models(
             provider=provider,
             base_url=base_url,
-            caller_supplied_base_url=untrusted_destination,
+            actor_role=user.role,
             api_key=None,
             vault=getattr(get_agent_fn(), "credential_vault", None),
             owner_user_id=user.id,
@@ -1702,6 +1714,7 @@ def create_settings_router(
             vault=getattr(get_agent_fn(), "credential_vault", None),
             owner_user_id=user.id,
             settings=settings,
+            actor_role=user.role,
         )
 
     return router

@@ -156,3 +156,51 @@ def test_every_secret_read_is_attributed_in_the_audit_log(repo, alice_oauth_cach
     repo.get_secret_field(alice_oauth_cache.id, "refresh_token", actor=SYSTEM_ACTOR)
     repo.get_secret_field(alice_oauth_cache.id, "refresh_token", actor="alice")
     assert _read_event_actors(repo, alice_oauth_cache.id) == {"__system__", "alice"}
+
+
+def test_an_unidentifiable_caller_is_denied_not_treated_as_the_owner(
+    repo, alice_oauth_cache
+):
+    """UNATTRIBUTED_ACTOR is a sentinel object, not a reserved string.
+
+    User ids come from the caller of AccountsRepo.create_user, so a reserved
+    string like "__unattributed__" is one create_user away from becoming a real
+    principal that compares equal to the marker. For anything that account then
+    owned, "we cannot identify this caller" would silently read as "this caller
+    is the owner". A sentinel cannot be minted as a user id.
+    """
+    from nymeria.core.credential_vault import UNATTRIBUTED_ACTOR
+
+    with pytest.raises(CredentialAccessDenied):
+        repo.get_secret_field(
+            alice_oauth_cache.id, "refresh_token", actor=UNATTRIBUTED_ACTOR
+        )
+
+
+def test_the_reserved_audit_string_is_not_a_usable_principal(repo):
+    """The collision the sentinel closes, stated as a test.
+
+    A record owned by a user literally named "__unattributed__" must not become
+    readable by an unattributed call.
+    """
+    from nymeria.core.accounts import AccountsRepo
+    from nymeria.core.credential_vault import UNATTRIBUTED_ACTOR
+
+    # The attack setup: user ids are chosen by the caller, so an account CAN be
+    # provisioned with the audit trail's reserved marker as its id.
+    AccountsRepo(repo.db_path).create_user(
+        "__unattributed__", "impostor@example.com", "Impostor"
+    )
+    repo_record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="__unattributed__",
+        name="Impersonation bait",
+        provider="google",
+        kind="oauth_cache",
+        secret_fields={"refresh_token": "should-not-be-reachable"},
+        allowed_targets=[],
+    )
+    with pytest.raises(CredentialAccessDenied):
+        repo.get_secret_field(
+            repo_record.id, "refresh_token", actor=UNATTRIBUTED_ACTOR
+        )
