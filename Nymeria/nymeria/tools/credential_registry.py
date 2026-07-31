@@ -98,7 +98,13 @@ class ProviderCredentialSpec:
 
 
 def _lookup_candidates(name: str) -> set[str]:
-    """Match-candidate expansion, mirroring native_credentials semantics."""
+    """Match-candidate expansion, mirroring native_credentials semantics.
+
+    The import is function-local because it is now CYCLE-BREAKING, not merely
+    lazy: `native_credentials` imports this module at module scope for the
+    destination register, so the two are mutually dependent and a module-scope
+    import back would not resolve. Same for the other two in this file.
+    """
     from .native_credentials import provider_candidates
 
     return provider_candidates(name, ())
@@ -203,6 +209,177 @@ def register_provider_spec(spec: ProviderCredentialSpec) -> ProviderCredentialSp
         for tool_name in spec.tools:
             _TOOL_INDEX[tool_name] = spec.provider
     return spec
+
+
+# ---------------------------------------------------------------------------
+# Destination classification (E10-02 slice B)
+# ---------------------------------------------------------------------------
+#
+# Which credential fields are DESTINATIONS, meaning their value decides where a
+# request goes rather than what it proves. `native_credentials` uses this to
+# refuse serving a destination from a record that does not also carry the
+# provider's own credential, so one record cannot steer a request another record
+# authenticates. The rule and its residuals are in `SECURITY.md` 2.5, shape (c).
+#
+# Keyed on the PRIMARY field name, `CredentialFieldGroup.names[0]`, because
+# individual ALIASES do not partition: `value` is a `base_url` alias for searxng
+# and an alias of 27 secret roles elsewhere, and `url` and `domain` are also
+# `link_name` aliases. Primaries do not partition perfectly either, and the
+# register resolves that by OVER-classifying, which is the safe direction: nine
+# primaries here are declared by more than one spec and are a real host switch
+# for only some of them (`api_version` is declared by five, and only Invoice
+# Ninja changes registrable domain on it). Ties break toward destination, so a
+# few lookups are gated that need not be; the reverse would be a hole.
+#
+# A ROLE-keyed register would give the identical result here (measured: zero
+# differing specs), since classification runs over `spec.groups` and never over
+# call sites. Primary-keyed is kept because it is the same key the non-proof
+# register below needs, and THAT one genuinely cannot use roles alone (mailjet).
+# Do not "simplify" this to roles without re-reading that constraint.
+#
+# `tests/test_credential_destination_gate.py` walks the tools package and fails
+# when any requested primary is in neither this set nor the declared inert set,
+# so a NEW destination field name cannot default into the inert half.
+DESTINATION_PRIMARY_FIELDS: frozenset[str] = frozenset({
+    # The value is a URL.
+    "accounts_base_url", "api_base_url", "api_url", "app_base_url", "base_url",
+    "clearbit_autocomplete_base_url", "clearbit_company_base_url",
+    "clearbit_person_base_url", "connections_url", "content_base_url", "endpoint",
+    "endpoint_url", "graphql_url", "instance_url", "jina_deepsearch_base_url",
+    "jina_reader_base_url", "jina_search_base_url", "management_base_url",
+    "preview_base_url", "public_base_url", "registry_url", "token_url",
+    "tracking_base_url", "url", "webdav_url", "webhook_url",
+    # The value is interpolated into a hostname.
+    "app_name", "cloud_domain", "domain", "host", "instance", "region",
+    "server_prefix", "shop_subdomain", "site", "subdomain",
+    # The value switches the host between hard-coded vendor constants. Real host
+    # changes, closed set. `api_version` is here because Invoice Ninja picks
+    # between app.invoiceninja.com and invoicing.co on it; its other four sites
+    # are path segments only, and the closed set is what makes that safe.
+    "api_plan", "api_version", "classic_api", "environment", "sandbox",
+})
+
+
+def destination_fields_for(spec: ProviderCredentialSpec) -> frozenset[str]:
+    """Every field name (all aliases) this provider treats as a destination.
+
+    This, not the requested primary alone, is what decides whether a lookup is a
+    destination lookup. Membership is judged PER SPEC, which is what makes the
+    ambiguous aliases harmless: ``value`` is a ``base_url`` alias for searxng and
+    an alias of 27 secret roles elsewhere, and only the owning spec can say which
+    it is here. No spec shares a name between a destination group and any other
+    group, so this classifies every lookup exactly (asserted in
+    ``tests/test_credential_destination_gate.py``).
+    """
+    return frozenset(
+        name
+        for group in spec.groups
+        if group.names[0] in DESTINATION_PRIMARY_FIELDS
+        for name in group.names
+    )
+
+
+# Non-destination groups that are still NOT proof of possession: the public half
+# of a keyed pair, a bare account identifier, a version, a header name, or a
+# transport switch. A record carrying only one of these has demonstrated
+# nothing, so it must not anchor a destination. Without this, Reddit's
+# `client_id` would have anchored the very lookup that hands the operator's
+# `client_secret` to a vault-supplied token endpoint.
+#
+# ONE set of names, matched against a group's ROLE and against its PRIMARY.
+# Both keys are needed, and the whole register needs exactly three of them:
+# mailjet is caught only by role, aws and s3 only by primary, and the other 33
+# excluded groups spell their role and their primary the same word. An earlier
+# version kept two sets and wrote 29 of the 40 names into both, which is a
+# hazard rather than redundancy: editing one and not the other is a silent
+# no-op in a security register. The counterexamples are real:
+#
+# - Mailjet's public half is `role="email_api_key"` with
+#   `names=("api_key", "apiKey", "public_key", "publicKey", "username")`. Its
+#   PRIMARY is `api_key`, a genuine secret name almost everywhere else, so a
+#   primary-keyed check misses it and Mailjet's public key anchors a
+#   destination. The role names it exactly.
+# - The role `access_key` means opposite things in two specs: AWS declares it
+#   with `names=("access_key_id", ...)`, the public half, while MessageBird
+#   declares it with `names=("access_key", ...)`, its actual secret. So a
+#   role-keyed check alone is wrong too, and AWS is caught by its primary.
+#
+# The list is explicit because the question it answers is semantic and the
+# registry does not encode it. `required` was tried as a proxy and is wrong in
+# both directions: Jira and Zendesk mark bearer auth `required=False` precisely
+# because it is the ALTERNATIVE to basic auth, so a legitimate OAuth record
+# holds nothing marked required, and sixteen genuine destinations are marked
+# required because a self-hosted instance URL is mandatory.
+#
+# Judged per provider, not by name shape. `service_role` is Supabase's actual
+# service-role key and DOES anchor; `account_key` and `organizer_key` are
+# GoToWebinar identifiers whose own hint names `access_token` as the credential,
+# and `user_key` is Pushover's user identifier, so none of the three does. The
+# TLS and header entries (`ignore_ssl*`, `allow_unauthorized_certs`, `headers*`,
+# `api_key_header`) are a separate defect of the same independence shape: they
+# are not addresses, so this control does not cover them and they are tracked on
+# their own.
+#
+# Every entry here excludes at least one real group, asserted by
+# `test_no_non_proof_entry_is_dead_weight`. `link_name` used to be here and
+# is not, because the alias-collision rule below already covers the only
+# group that declares it (salesmate's, which aliases `url` and `domain`);
+# an entry that excludes nothing reads as coverage it does not provide.
+_NON_PROOF_NAMES: frozenset[str] = frozenset({
+    "access_key_id", "account_id", "account_key", "account_sid",
+    "algorithm", "allow_insecure", "allow_unauthorized_certs", "api_id",
+    "api_key_header", "api_key_sid", "api_username", "app_id",
+    "auth_header", "auth_id", "business_account_id", "client_id",
+    "database", "email", "email_api_key", "force_path_style", "from_email",
+    "headers", "headers_json", "hostname", "ignore_ssl",
+    "ignore_ssl_issues", "intercom_version", "notion_version",
+    "organizer_key", "phone_number_id", "public_key", "realm_id",
+    "space_id", "tenant_id", "tracking_site_id", "user_key", "username",
+    "vendor_id", "version",
+})
+
+
+def credential_anchor_fields(spec: ProviderCredentialSpec) -> frozenset[str]:
+    """Field names whose presence proves a record holds this provider's own credential.
+
+    Everything that is not a destination and whose group is not on the
+    non-proof list above. Stated as an exclusion rather than an allowlist of secret-looking
+    names because a name heuristic drifts in both directions: it reads
+    ``api_key_header`` and ``allow_unauthorized_certs`` as secrets, and misses
+    ``service_role``.
+
+    All aliases of an anchor group count, not just its primary, because a record
+    may store any of them. That is also what separates MessageBird's
+    ``access_key`` (its actual secret) from AWS's ``access_key`` role, whose
+    names lead with ``access_key_id``, the public half of a pair.
+
+    A group is disqualified when ANY of its names is a destination primary, not
+    just its own primary. Salesmate found this: its required ``link_name`` group
+    aliases ``url`` and ``domain``, so a record holding nothing but ``domain``
+    would have proved possession using a value that is an address everywhere
+    else in the register. The rule is that a name which is a destination
+    somewhere can never be proof of possession anywhere.
+
+    This set is deliberately not the whole control. It says which names COULD
+    prove possession; ``native_credentials`` decides whether a given record
+    actually did, by requiring it to hold every anchor name any other visible
+    record holds. That completeness rule is what makes an imperfect entry here
+    survivable: a record naming an anchor it does not really own still has to
+    out-hold the record it is trying to steer, and if it does, it also wins the
+    secret lookup and only sends its own junk to its own address.
+
+    An empty result means the provider declares nothing to protect and callers
+    must NOT gate. ``searxng`` is the only one: a bare instance URL with no
+    credential anywhere in its spec.
+    """
+    return frozenset(
+        name
+        for group in spec.groups
+        if group.role not in _NON_PROOF_NAMES
+        and group.names[0] not in _NON_PROOF_NAMES
+        and not (set(group.names) & DESTINATION_PRIMARY_FIELDS)
+        for name in group.names
+    )
 
 
 def get_provider_spec(name: str) -> Optional[ProviderCredentialSpec]:
@@ -370,9 +547,12 @@ def auth_status_for_tools(
 
 
 __all__ = [
+    "DESTINATION_PRIMARY_FIELDS",
     "CredentialFieldGroup",
     "ProviderCredentialSpec",
     "auth_status_for_tools",
+    "credential_anchor_fields",
+    "destination_fields_for",
     "get_provider_spec",
     "iter_provider_specs",
     "provider_credential_status",
