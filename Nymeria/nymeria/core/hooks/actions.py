@@ -562,29 +562,32 @@ def _execute_command(ctx: HookContext, command: str, timeout: float) -> _Command
     """
     from ...config import get_settings
     from ...oom import oom_score_preexec
+    from ..exec_policy import sandbox_shell_launch
     try:
         cwd = str(get_settings().data_dir)
     except Exception:  # noqa: BLE001
         cwd = None
     proc = None
+    spawn_kwargs: Dict[str, Any] = {
+        "shell": True,
+        "cwd": cwd,
+        "env": _run_command_env(ctx),
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "errors": "replace",  # invalid bytes must not abort the drain (fail-open risk)
+        "start_new_session": True,  # own process group, so we can kill children
+        "preexec_fn": oom_score_preexec(),
+    }
     try:
-        # sandbox-gate: unsandboxed - blocked on the cwd above. It is the data
-        # dir, which on a deployment where the data dir sits outside the
-        # project root (Docker) is exactly the directory the sandbox carves, so
-        # confining this without first moving the cwd would break hook scripts
-        # that read their own output. C1-02 follow-up.
+        # Inside the try on purpose: this raises rather than degrading if the
+        # policy cannot be built, and a hook script that cannot be confined must
+        # take the surface's existing failure path (spawn_failed, which DENIES on
+        # the pre_tool_use guardrail) rather than run unconfined.
+        launch = sandbox_shell_launch(command, spawn_kwargs)
         proc = subprocess.Popen(  # noqa: S602 - shell command is the feature; admin+flag gated
-            command,
-            shell=True,
-            cwd=cwd,
-            env=_run_command_env(ctx),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",  # invalid bytes must not abort the drain (fail-open risk)
-            start_new_session=True,  # own process group, so we can kill children
-            preexec_fn=oom_score_preexec(),
+            launch, **spawn_kwargs
         )
     except Exception:  # noqa: BLE001 - spawn failure (bad cwd, fork limit, etc.)
         logger.warning("hook run_command failed to execute", exc_info=True)

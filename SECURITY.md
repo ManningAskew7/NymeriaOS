@@ -123,25 +123,37 @@ it on Linux, which closes the environment-disclosure route described in Section
 2.5, and on a deployment whose data directory sits outside the agent's working
 tree it also closes off-disk reads of the credential stores. The two surfaces
 that run agent-AUTHORED code out of process, the Python custom-tool runner and
-the workflow runner, are inside it too. It is a subtraction from what a command
+the workflow runner, are inside it too, as is the `run_command` hook action. It
+is a subtraction from what a command
 could reach before, not an allowlist, and it is **not** tenant isolation: the
 sandboxed command still reaches every other account's profile and transcript
 data, and the remaining execution surfaces (MCP stdio servers, the MCP package
-installer, the `run_command` hook action, the Claude Code bridge, and the
+installer, the Claude Code bridge, and the
 self-modification import check) are not wired to it yet. Until they are, run one trust domain per backend. Each unwired surface has to say at its own call site
 why it is not confined; `tests/test_exec_sandbox_gate.py` fails the build on a
 new agent-reachable spawn that does neither.
+
+The confined surfaces do not all get the same policy, and the difference is
+worth knowing. What can be denied depends on where a surface's child is
+expected to create files, because Landlock cannot deny a path without making
+its parent opaque to files created later. `run_command` runs hook scripts with
+the data directory as their working directory, so on every layout its child
+keeps read access to the credential stores and loses only `/proc`;
+`bash_execute` works in the project tree, so on a deployment whose data
+directory sits outside that tree it loses the stores as well.
 
 Three things the sandbox does not do, worth knowing before relying on it:
 
 - It confines reads, not writes. The policy grants write access across the
   filesystem and leaves ordinary file permissions to restrain it, so in a
   source checkout owned by the account Nymeria runs as, a command can rewrite
-  Nymeria's own code, including the sandbox module, and disarm it for every
-  later call. The Docker shape mounts the package read-only, which is why it
-  is the stronger deployment here as well. Self-modification is a shipped
-  feature, so this is a consequence of the trust model rather than a bug in
-  the sandbox.
+  Nymeria's own code, including the sandbox module. What that no longer buys is
+  the NEXT call: the sandbox module is read once at import and shipped to the
+  child as source, so a rewrite waits for a restart like any other module (see
+  the detail below). The Docker shape mounts the package read-only, which is
+  why it is the stronger deployment here as well. Self-modification is a
+  shipped feature, so this is a consequence of the trust model rather than a
+  bug in the sandbox.
 - It does not confine the process tree's privileges beyond what Landlock
   requires. Requiring `no_new_privs` does disable setuid binaries and file
   capabilities as a side effect (`sudo`, `ping`, `mount` stop working), but
@@ -250,21 +262,40 @@ not on the other. State both when reasoning about it.
   only in an ephemeral run directory and so needs no concession for the
   project tree.
 
-  **The sandbox does not defend its own launcher.** The shim that applies the
-  policy is an ordinary file in the project tree, re-read from disk on every
-  launch, and it runs before the policy exists. A sandboxed process that can
-  write it therefore lifts the sandbox for the next launch, with no restart
-  needed. That makes the shim materially different from the rest of the
-  backend, where a rewritten module does nothing until the process reloads it.
-  Landlock cannot close this: denying the file would not stop it being
-  replaced, and the project tree has to stay writable because self-modification
-  is a supported feature. Deployment decides exposure, and the reference Docker
-  deployment is not exposed, because the container user does not own the
-  bind-mounted source (verified: the write is refused). A source or slim
-  install where the service runs as the user who owns the checkout IS exposed.
-  Run those as a separate user from the one owning the tree, or accept that the
-  sandbox is a control against accident and unprivileged code rather than
-  against code that has already been given the repo to write.
+  **The sandbox defends its own launcher, but only within a process
+  lifetime.** The shim that applies the policy used to be launched by file
+  path, which made it the one piece of the backend re-read from disk on every
+  launch; since it runs before the policy exists, anything able to write that
+  file lifted the sandbox for the next launch with no restart. It is now read
+  once at import and handed to the interpreter as source, so a rewrite on disk
+  cannot take effect until the process restarts. That is the same property the
+  rest of the backend already had, not a stronger one: a rewritten module does
+  nothing until it is reloaded, and after a restart the tampered code is what
+  loads. Landlock cannot close the remaining half, because the project tree has
+  to stay writable for self-modification to work, and denying a file would not
+  stop it being replaced. So an actor that can write the source and wait for a
+  restart still wins, which is `2.2`'s standing concession rather than
+  something specific to the sandbox. Exposure is a deployment property: the
+  reference Docker deployment does not grant it, because the container user
+  does not own the bind-mounted source (verified: the write is refused), while
+  a source or slim install running as the user who owns the checkout does. Run
+  those as a separate user from the one owning the tree if that matters to you.
+
+  **The interpreter underneath it is a live no-restart residual on some
+  layouts.** Only Nymeria's own file stopped being re-read per launch. The
+  launch still reads the Python binary, and Python still imports `os`, `json`,
+  `struct`, `ctypes` and friends as ordinary stdlib files, all before the
+  policy is applied, so where that tree is writable by the service user the
+  original two-call shape survives against the stdlib instead. Measured: a
+  `uv`-managed interpreter is mode 664 owned by the service user, while a
+  distro `/usr/lib/python3.x` and the Docker image's interpreter are
+  root-owned. So the Docker and system-Python shapes are unaffected and a slim
+  install on a `uv` interpreter is not. This is not fixable inside the sandbox,
+  because the shim has to be Python to reach Landlock at all and every import
+  it makes is by construction pre-policy. Reaching it still requires code
+  execution in the first place, which means `bash_execute`, an admin-only
+  Python tool, or an admin-approved workflow. Run the service as a user that
+  does not own its interpreter if this matters to you.
 
   The same rule leaves the deployment's `.env` readable to a sandboxed shell in
   EVERY shape, including Docker (the repo is bind-mounted at `/app`, so
