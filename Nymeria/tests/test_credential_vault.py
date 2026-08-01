@@ -507,3 +507,128 @@ def test_upsert_credential_update_path_returns_fresh_record_without_reopening(tm
     fresh = repo.get_credential("cred_fixed_2")
     assert fresh is not None
     assert updated.public_dict() == fresh.public_dict()
+
+
+# --- possession probes must not be recorded as use -------------------------
+#
+# ``has_secret_values`` exists because the destination-join control (E10-02-D)
+# has to ask "could this record serve this secret" about records it is about to
+# REJECT. Answering that through ``get_secret_field`` worked, but that is the
+# accounting path: it bumps ``last_used_at`` and writes a ``used`` audit row per
+# call, so one address lookup produced five ``used`` rows where it should have
+# produced one, and marked a record used that was never used. These tests pin
+# the distinction; they fail if anyone routes the probe back through the read.
+
+
+def _used_events(repo: CredentialVaultRepo, credential_id: str) -> list[str]:
+    with repo._connect() as conn:
+        return [
+            row["event_type"]
+            for row in conn.execute(
+                "SELECT event_type FROM credential_audit_events WHERE credential_id = ?"
+                " ORDER BY id",
+                (credential_id,),
+            ).fetchall()
+        ]
+
+
+def _probe_record(repo: CredentialVaultRepo, **extra_secrets: str) -> str:
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Elastic",
+        provider="elasticsearch",
+        kind="api_key",
+        # Explicit, so these tests are about possession and the audit trail
+        # rather than about allowed_targets (an empty list denies).
+        allowed_targets=["*"],
+        secret_fields={
+            "api_key": "REAL-KEY",
+            "base_url": "https://self.hosted",
+            **extra_secrets,
+        },
+    )
+    return record.id
+
+
+def test_has_secret_values_reports_possession_by_value(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    # An empty value CAN be stored (the write is an upsert with no delete arm,
+    # and rows predating the schema validator carry them), and must NOT count as
+    # possession: that gap is the whole bypass this closes.
+    cred_id = _probe_record(repo, token="")
+
+    held = repo.has_secret_values(
+        cred_id, ["api_key", "token", "never_stored"], actor="alice"
+    )
+    assert held == frozenset({"api_key"}), (
+        "possession must be judged by VALUE: 'token' is stored but empty, and "
+        "'never_stored' is absent, so neither is held"
+    )
+
+
+def test_has_secret_values_does_not_record_a_use(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    cred_id = _probe_record(repo)
+    before_events = _used_events(repo, cred_id)
+    before_used_at = repo.get_credential(cred_id).last_used_at
+
+    for _ in range(3):
+        repo.has_secret_values(cred_id, ["api_key", "base_url"], actor="alice")
+
+    assert _used_events(repo, cred_id) == before_events, (
+        "a possession probe must not write an audit event; once probes are "
+        "indistinguishable from reads the log cannot answer 'was this "
+        "credential actually read?'"
+    )
+    assert repo.get_credential(cred_id).last_used_at == before_used_at, (
+        "a possession probe must not bump last_used_at"
+    )
+
+    # The real read still does both, so the control is the probe's restraint and
+    # not an accounting regression.
+    repo.get_secret_field(cred_id, "api_key", actor="alice")
+    assert "used" in _used_events(repo, cred_id)
+    assert repo.get_credential(cred_id).last_used_at != before_used_at
+
+
+def test_has_secret_values_enforces_the_same_access_checks_as_a_read(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    cred_id = _probe_record(repo)
+    # A caller who may not read the secret must not learn whether it exists, and
+    # more directly: a record this actor cannot reach must not be able to win
+    # the destination right, so "denied" and "holds nothing" agree at the call site.
+    with pytest.raises(CredentialAccessDenied):
+        repo.has_secret_values(cred_id, ["api_key"], actor="bob")
+
+
+# The write-path half of the same rule. It lives here, next to the read-path
+# half, rather than in an API-schema test, because the two only make sense
+# together: the schema stops the shape being STORED, and ``has_secret_values``
+# covers rows stored before the schema existed plus any writer that does not
+# come through it. Splitting them leaves each looking like belt-and-braces.
+
+
+def test_the_rest_surface_refuses_a_blank_anchor_like_its_agent_facing_twin():
+    from pydantic import ValidationError
+
+    from nymeria.api.schemas.credentials import (
+        CredentialCreateRequest,
+        CredentialUpdateRequest,
+    )
+
+    planted = {"base_url": "https://attacker.invalid", "api_key": ""}
+    for model, extra in (
+        (CredentialCreateRequest, {"name": "n", "provider": "elasticsearch"}),
+        (CredentialUpdateRequest, {}),
+    ):
+        with pytest.raises(ValidationError):
+            model(secret_fields=planted, **extra)
+        # Whitespace is the same shape; ``.strip()`` is what catches it, matching
+        # tools/auth_manager.py::auth_write, which has always enforced this.
+        with pytest.raises(ValidationError):
+            model(secret_fields={"base_url": "https://x.invalid", "api_key": "  "}, **extra)
+        # A real record still saves, and omitting the field entirely is still a
+        # metadata-only update. The control must cost no legitimate capability.
+        model(secret_fields={"base_url": "https://self.hosted", "api_key": "K"}, **extra)
+        model(**extra)

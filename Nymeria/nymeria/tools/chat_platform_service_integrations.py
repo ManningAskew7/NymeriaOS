@@ -24,6 +24,7 @@ from .service_integration_base import (
     filtered as _filtered,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -233,24 +234,28 @@ def _api_token_config(
         "value",
     ),
 ) -> tuple[str, str | None]:
-    base = (
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=("base_url", "baseUrl", "homeserverUrl", "domain", "url", "api_url", "apiUrl"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_base_name)
-        or default_base
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "homeserverUrl", "domain", "url", "api_url", "apiUrl"),
+        tool_name=tool_name,
+        config=config,
     )
-    token = _credential_value(
+    base = base_from_vault or _settings_value(settings_base_name) or default_base
+    token_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=field_names,
         tool_name=tool_name,
         config=config,
-    ) or _settings_value(settings_key_name)
+    )
+    token = token_from_vault or _settings_value(settings_key_name)
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=provider,
+    )
     if not token:
         return "", _setup_hint(
             provider=provider,

@@ -23,6 +23,7 @@ from .service_integration_base import (
     credential_value as _credential_value,
     dump_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
 )
 
@@ -207,18 +208,34 @@ def _graphql_endpoint(
     tool_name: str,
     endpoint: str,
     config: Optional[RunnableConfig],
-) -> str | None:
-    return (
-        endpoint.strip()
-        or _credential_value(
-            provider=_GRAPHQL.provider,
-            provider_aliases=_GRAPHQL.aliases,
-            field_names=_GRAPHQL.group("endpoint"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("graphql_endpoint")
+) -> tuple[str | None, str | None]:
+    """Resolve the GraphQL endpoint, reporting where the address came from.
+
+    Returns ``(endpoint_or_none, endpoint_from_vault)``. The second element is
+    the provenance ``_require_joined_destination`` needs: this helper resolves
+    the address while ``_graphql_headers`` resolves the credentials, so neither
+    of the two can see the pairing alone, which is why the leak survived here.
+
+    It is None whenever the address did not come from a saved record, and that
+    deliberately includes the caller-supplied ``endpoint`` argument. A tool
+    argument is not a vault record steering the request, so it is neither half
+    of this join; treating it as one would refuse every explicit-endpoint call
+    that leans on a configured key, which is the documented way to use this tool
+    against an endpoint you have not saved. A caller-named address carrying the
+    server's key is a different question (the tool argument is agent-supplied),
+    and it is not what this control decides.
+    """
+    caller_endpoint = endpoint.strip()
+    if caller_endpoint:
+        return caller_endpoint, None
+    endpoint_from_vault = _credential_value(
+        provider=_GRAPHQL.provider,
+        provider_aliases=_GRAPHQL.aliases,
+        field_names=_GRAPHQL.group("endpoint"),
+        tool_name=tool_name,
+        config=config,
     )
+    return (endpoint_from_vault or _settings_value("graphql_endpoint")), endpoint_from_vault
 
 
 def _graphql_headers(
@@ -226,12 +243,31 @@ def _graphql_headers(
     tool_name: str,
     headers_json: str,
     config: Optional[RunnableConfig],
+    endpoint_from_vault: str | None,
 ) -> dict[str, str]:
+    """Build the request headers, joined to whoever supplied the address.
+
+    ``endpoint_from_vault`` is ``_graphql_endpoint``'s second return value. Every
+    credential this commits to the wire is guarded against it SEPARATELY, never
+    against a disjunction of the three: graphql declares three independent anchor
+    groups, so a record holding ``endpoint`` plus any one of them proves
+    possession, wins the address lookup, and would satisfy a guard written over
+    the alternatives while a different branch still carries the operator's
+    environment-configured secret to the address that record chose.
+    """
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+    # The stored header blob is deliberately outside this control, not an
+    # oversight of it. ``credential_registry._NON_PROOF_NAMES`` lists
+    # ``headers``/``headers_json`` with the TLS fields as an independence defect
+    # of the same shape tracked on its own: they are neither an address nor proof
+    # of possession. Guarding it here would also refuse the ordinary setup of one
+    # record holding endpoint + key alongside operator-set DEFAULT headers, which
+    # is what GRAPHQL_HEADERS_JSON is documented to be. The residual is that an
+    # operator who puts auth in that blob has put it outside the join.
     stored_headers = (
         _credential_value(
             provider=_GRAPHQL.provider,
@@ -248,6 +284,13 @@ def _graphql_headers(
     headers.update({str(key): str(value) for key, value in parsed_headers.items() if value is not None})
     headers.update({str(key): str(value) for key, value in request_headers.items() if value is not None})
 
+    # The one auth credential here that needs no guard: there is no
+    # ``GRAPHQL_AUTHORIZATION`` setting behind it, so its value can only ever be
+    # the vault's and the join is already made. Adding an ``or
+    # _settings_value(...)`` leg later makes it exactly as steerable as the two
+    # below and needs its own guard on its own ``*_from_vault`` local; a guard
+    # written over ``authorization`` itself would be a permanent no-op that reads
+    # as coverage.
     authorization = _credential_value(
         provider=_GRAPHQL.provider,
         provider_aliases=_GRAPHQL.aliases,
@@ -255,23 +298,22 @@ def _graphql_headers(
         tool_name=tool_name,
         config=config,
     )
-    bearer_token = (
-        _credential_value(
-            provider=_GRAPHQL.provider,
-            provider_aliases=_GRAPHQL.aliases,
-            field_names=_GRAPHQL.group("bearer_token"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("graphql_bearer_token")
+    bearer_token_from_vault = _credential_value(
+        provider=_GRAPHQL.provider,
+        provider_aliases=_GRAPHQL.aliases,
+        field_names=_GRAPHQL.group("bearer_token"),
+        tool_name=tool_name,
+        config=config,
     )
-    api_key = _credential_value(
+    bearer_token = bearer_token_from_vault or _settings_value("graphql_bearer_token")
+    api_key_from_vault = _credential_value(
         provider=_GRAPHQL.provider,
         provider_aliases=_GRAPHQL.aliases,
         field_names=_GRAPHQL.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("graphql_api_key")
+    )
+    api_key = api_key_from_vault or _settings_value("graphql_api_key")
     api_key_header = (
         _credential_value(
             provider=_GRAPHQL.provider,
@@ -283,11 +325,34 @@ def _graphql_headers(
         or _settings_value("graphql_api_key_header")
         or "x-api-key"
     )
+    # Each guard sits in the branch that actually puts its credential on the
+    # wire, so a request is refused only when the secret it would disclose is one
+    # this call is about to send. A stored ``authorization`` suppresses the
+    # bearer branch entirely, and refusing there would reject a record that
+    # discloses nothing. There is no setup hint to jump ahead of: these providers
+    # surface none, and the caller has already returned its "save a credential"
+    # message when no endpoint resolved at all.
     if authorization:
         headers["Authorization"] = authorization
     elif bearer_token:
+        _require_joined_destination(
+            destination_from_vault=endpoint_from_vault,
+            secret_from_vault=bearer_token_from_vault,
+            secret=bearer_token,
+            provider=_GRAPHQL.provider,
+        )
         headers["Authorization"] = f"Bearer {bearer_token}"
     if api_key:
+        # Joined on the api key alone. This header is independent of the
+        # Authorization one above, so a record holding ``endpoint`` plus a
+        # ``bearer_token`` proves possession, wins the address, and would still
+        # carry the operator's GRAPHQL_API_KEY here.
+        _require_joined_destination(
+            destination_from_vault=endpoint_from_vault,
+            secret_from_vault=api_key_from_vault,
+            secret=api_key,
+            provider=_GRAPHQL.provider,
+        )
         headers[str(api_key_header)] = api_key
     return headers
 
@@ -972,7 +1037,9 @@ def graphql_execute_query(
     if not query.strip():
         return "[Error]: query is required."
     try:
-        resolved_endpoint = _graphql_endpoint("graphql_execute_query", endpoint, config)
+        resolved_endpoint, endpoint_from_vault = _graphql_endpoint(
+            "graphql_execute_query", endpoint, config
+        )
         if not resolved_endpoint:
             return (
                 "[Error]: endpoint is required. Pass endpoint, save a GraphQL credential "
@@ -993,6 +1060,7 @@ def graphql_execute_query(
                 tool_name="graphql_execute_query",
                 headers_json=headers_json,
                 config=config,
+                endpoint_from_vault=endpoint_from_vault,
             ),
         )
         return _dump_json(data)

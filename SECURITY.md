@@ -441,7 +441,22 @@ the deployment-wide one, so that split was reachable over the REST API.
 
 The address is now served only by the first record holding any of the
 provider's own credential fields, and only when that record holds every such
-field any other visible record holds. Both halves matter: a provider with two
+field any other visible record holds. Holding means carrying a value, not
+naming a field: the two are not the same because field names are caller-chosen,
+so a record that merely NAMED the right field could satisfy this rule and then
+have its empty value skipped by the lookup that follows, letting a different
+record answer with the real secret. That is the same split one level down, so
+possession is judged by reading the values.
+
+Saving a blank credential field is refused at both write surfaces now, so that
+shape is harder to create than it was. The read-side rule above is still what
+the guarantee rests on, and deliberately so: it covers records saved before the
+write check existed, and any future writer that does not go through those
+surfaces. Neither half is load-bearing alone. Note also that answering "does
+this record hold this field" is a possession probe rather than a read, and is
+not recorded as credential use, so the vault's audit log continues to mean "this
+secret was actually read" rather than "something asked about it".
+Both halves of the rule matter too: a provider with two
 independent secrets (a delivery token and a preview token, an API key and a
 session token) would otherwise let a record prove possession with one and steer
 a request authenticated by the other, and a credential explicitly bound to a
@@ -482,8 +497,34 @@ What this does not do is verify that a record's fields hold what they claim.
 Field names are caller-chosen, so a record can satisfy the join by naming every
 credential field with junk values. It then also wins those secret lookups, so
 what reaches the address it chose is its own junk rather than anyone else's
-secret. The exact guarantee (this address came from the same record as this
-credential, checked where the request is built) is tracked separately.
+secret.
+
+The gap that leaves is the one where the record proves possession with a
+*different* field from the one the call site asks for. The check above runs when
+the address is resolved, and at that moment "this record holds some credential
+field of this provider's" is all it can know. A provider with alternative
+credentials is then steerable: a record holding an address and a refresh token
+satisfies it, the call site asks for the client secret, that lookup misses, and
+the deployment's own environment-configured secret answers instead and rides to
+the address the record chose. Nothing about that is visible at the lookup, since
+a first miss in an `A or B or setting` chain is exactly what the alternatives
+shape is meant to do.
+
+So a second check runs one step later, where the credential is committed to a
+request and both halves are finally in scope: if a vault record supplied the
+address and did not supply the secret about to be sent there, the call is
+refused. It is a no-op in every other shape, including the ordinary one where a
+single record holds both. The check is per credential rather than per call site,
+because "some guard ran here" is not coverage when a function has three
+authentication branches, and a build gate derives the sites that need it from
+the credential register rather than a hand-maintained list.
+
+The residual is a destination that is a host *fragment* rather than a whole URL:
+a subdomain, an instance name or a region interpolated into a vendor template.
+Those are not yet covered, and the assumption that a fragment cannot escape its
+vendor is false where the site does not validate it (a value containing `/` or
+`#` terminates the authority and the vendor suffix is discarded). Treat a
+vault-supplied host fragment as able to name any host until that is closed.
 
 *Where the tool request leaves.* The join decides which record may supply an
 address. A separate control decides whether that address may be reached at all,

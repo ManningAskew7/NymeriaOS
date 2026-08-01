@@ -25,6 +25,7 @@ from .service_integration_base import (
     filtered as _filtered_params,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -333,40 +334,59 @@ def _pipedrive_search_resource(resource: str) -> str:
 
 
 def _pipedrive_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str], dict[str, str] | str]:
+    base_from_vault = _credential_value(
+        provider=_PIPEDRIVE.provider,
+        provider_aliases=_PIPEDRIVE.aliases,
+        field_names=_PIPEDRIVE.group("base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     base = (
-        _credential_value(
-            provider=_PIPEDRIVE.provider,
-            provider_aliases=_PIPEDRIVE.aliases,
-            field_names=_PIPEDRIVE.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        base_from_vault
         or _settings_value("pipedrive_base_url")
         or _PIPEDRIVE_V2_BASE_URL
     )
-    api_token = _credential_value(
+    api_token_from_vault = _credential_value(
         provider=_PIPEDRIVE.provider,
         provider_aliases=_PIPEDRIVE.aliases,
         field_names=_PIPEDRIVE.group("api_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("pipedrive_api_token")
-    access_token = _credential_value(
+    )
+    api_token = api_token_from_vault or _settings_value("pipedrive_api_token")
+    access_token_from_vault = _credential_value(
         provider=_PIPEDRIVE.provider,
         provider_aliases=_PIPEDRIVE.aliases,
         field_names=_PIPEDRIVE.group("access_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("pipedrive_access_token")
+    )
+    access_token = access_token_from_vault or _settings_value("pipedrive_access_token")
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
     auth_params: dict[str, str] = {}
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: a record holding base_url + api_token clears slice B's "some
+    # anchor", and the bearer branch would then send the operator's access token
+    # to the address that record chose.
     if access_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=access_token_from_vault,
+            secret=access_token,
+            provider=_PIPEDRIVE.provider,
+        )
         headers["Authorization"] = f"Bearer {access_token}"
     elif api_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_token_from_vault,
+            secret=api_token,
+            provider=_PIPEDRIVE.provider,
+        )
         auth_params["api_token"] = api_token
     else:
         return _base_url(base), _PIPEDRIVE_V1_BASE_URL, headers, _setup_hint(

@@ -27,6 +27,7 @@ from .service_integration_base import (
     dump_json,
     filtered as _filtered,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
     signed_endpoint_url,
@@ -287,16 +288,14 @@ def _dropbox_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 
 def _nextcloud_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, httpx.Auth | None, dict[str, str], str | None]:
-    webdav_url = (
-        _credential_value(
-            provider=_NEXTCLOUD.provider,
-            provider_aliases=_NEXTCLOUD.aliases,
-            field_names=_NEXTCLOUD.group("webdav_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("nextcloud_webdav_url")
+    webdav_url_from_vault = _credential_value(
+        provider=_NEXTCLOUD.provider,
+        provider_aliases=_NEXTCLOUD.aliases,
+        field_names=_NEXTCLOUD.group("webdav_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    webdav_url = webdav_url_from_vault or _settings_value("nextcloud_webdav_url")
     username = _credential_value(
         provider=_NEXTCLOUD.provider,
         provider_aliases=_NEXTCLOUD.aliases,
@@ -304,27 +303,46 @@ def _nextcloud_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         tool_name=tool_name,
         config=config,
     ) or _settings_value("nextcloud_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_NEXTCLOUD.provider,
         provider_aliases=_NEXTCLOUD.aliases,
         field_names=_NEXTCLOUD.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("nextcloud_password")
-    access_token = _credential_value(
+    )
+    password = password_from_vault or _settings_value("nextcloud_password")
+    access_token_from_vault = _credential_value(
         provider=_NEXTCLOUD.provider,
         provider_aliases=_NEXTCLOUD.aliases,
         field_names=_NEXTCLOUD.group("access_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("nextcloud_access_token")
+    )
+    access_token = access_token_from_vault or _settings_value("nextcloud_access_token")
     if not webdav_url:
         return "", None, {}, "[Error]: No Nextcloud WebDAV URL found. Save a Nextcloud credential with webdav_url, or set NEXTCLOUD_WEBDAV_URL."
     headers = {"Accept": "application/json", "User-Agent": "Nymeria"}
+    # The guard runs per BRANCH, on the credential that actually authenticates the
+    # request. Asking instead whether the record supplied EITHER alternative would
+    # reproduce slice B's own weakness one level down: a record holding webdav_url
+    # plus an app password clears "some anchor", and the token branch then sends the
+    # operator's access token to that record's address.
     if access_token:
+        _require_joined_destination(
+            destination_from_vault=webdav_url_from_vault,
+            secret_from_vault=access_token_from_vault,
+            secret=access_token,
+            provider=_NEXTCLOUD.provider,
+        )
         headers["Authorization"] = f"Bearer {access_token}"
         return _base_url(webdav_url), None, headers, None
     if username and password:
+        _require_joined_destination(
+            destination_from_vault=webdav_url_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_NEXTCLOUD.provider,
+        )
         return _base_url(webdav_url), httpx.BasicAuth(username, password), headers, None
     return _base_url(webdav_url), None, headers, _setup_hint(
         provider=_NEXTCLOUD.provider,
@@ -442,6 +460,13 @@ def _s3_client(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any, s
             display_name=_S3.display_name,
         )
 
+    # join-gate: enforced-elsewhere - signed_endpoint_url IS the join, for boto3.
+    # Same rule expressed the other way round: require_joined_destination refuses
+    # the request, and this DROPS the vault-supplied endpoint and sends to the
+    # vendor instead. The inversion is deliberate and predates that guard.
+    # botocore signs with the keys itself and never reaches request_with_policy,
+    # so there is no later point at which a refusal could be raised.
+    #
     # AFTER the setup-hint guard, deliberately. A deployment with no keys at all
     # has nothing to steer and nothing to steal, so it should get the friendly
     # "save an access key id and secret" hint, not a refusal about an endpoint.

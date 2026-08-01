@@ -25,6 +25,7 @@ from .service_integration_base import (
     dump_json,
     filtered as _filtered,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -230,34 +231,47 @@ def _youtube_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
     return _base_url(base), api_key
 
 
-def _spotify_base(tool_name: str, config: Optional[RunnableConfig]) -> str:
-    base = (
-        _credential_value(
-            provider=_SPOTIFY.provider,
-            provider_aliases=_SPOTIFY.aliases,
-            field_names=_SPOTIFY.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("spotify_base_url")
-        or _SPOTIFY_BASE_URL
+def _spotify_base(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, Optional[str]]:
+    """Resolve the Spotify API root, reporting where the address came from.
+
+    Returns ``(base, base_from_vault)``. The second element is the provenance
+    ``_require_joined_destination`` needs: this helper resolves the address
+    while its CALLER resolves the secrets, so neither half can see the pairing
+    alone. It is None whenever the address came from settings or the constant.
+    """
+    base_from_vault = _credential_value(
+        provider=_SPOTIFY.provider,
+        provider_aliases=_SPOTIFY.aliases,
+        field_names=_SPOTIFY.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    return _base_url(base)
+    base = base_from_vault or _settings_value("spotify_base_url") or _SPOTIFY_BASE_URL
+    return _base_url(base), base_from_vault
 
 
-def _spotify_accounts_base(tool_name: str, config: Optional[RunnableConfig]) -> str:
+def _spotify_accounts_base(
+    tool_name: str, config: Optional[RunnableConfig]
+) -> tuple[str, Optional[str]]:
+    """Resolve the Spotify token endpoint's root, and where the address came from.
+
+    Same contract as ``_spotify_base``. This is the address the client secret
+    itself travels to, so it is the destination the client-credentials branch
+    joins against, not the API base.
+    """
+    accounts_base_from_vault = _credential_value(
+        provider=_SPOTIFY.provider,
+        provider_aliases=_SPOTIFY.aliases,
+        field_names=_SPOTIFY.group("accounts_base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     base = (
-        _credential_value(
-            provider=_SPOTIFY.provider,
-            provider_aliases=_SPOTIFY.aliases,
-            field_names=_SPOTIFY.group("accounts_base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        accounts_base_from_vault
         or _settings_value("spotify_accounts_base_url")
         or _SPOTIFY_ACCOUNTS_BASE_URL
     )
-    return _base_url(base)
+    return _base_url(base), accounts_base_from_vault
 
 
 def _spotify_token_from_client_credentials(
@@ -293,14 +307,30 @@ def _spotify_token_from_client_credentials(
 
 
 def _spotify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = _spotify_base(tool_name, config)
-    access_token = _credential_value(
+    base, base_from_vault = _spotify_base(tool_name, config)
+    access_token_from_vault = _credential_value(
         provider=_SPOTIFY.provider,
         provider_aliases=_SPOTIFY.aliases,
         field_names=_SPOTIFY.group("access_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("spotify_access_token")
+    )
+    access_token = access_token_from_vault or _settings_value("spotify_access_token")
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. Asking instead whether the record supplied EITHER alternative
+    # would reproduce slice B's own weakness one level down: a record holding
+    # base_url plus a client_secret clears "some anchor", and this branch would
+    # then send the operator's access token to that record's address. It is
+    # spelled here rather than at the header below because by then the local may
+    # hold a token MINTED from the client secret, whose provenance is that
+    # secret's, and re-joining it against the vault access token would refuse a
+    # legitimate single record holding base_url plus client credentials.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=access_token_from_vault,
+        secret=access_token,
+        provider=_SPOTIFY.provider,
+    )
     if not access_token:
         client_id = _credential_value(
             provider=_SPOTIFY.provider,
@@ -309,13 +339,14 @@ def _spotify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
             tool_name=tool_name,
             config=config,
         ) or _settings_value("spotify_client_id")
-        client_secret = _credential_value(
+        client_secret_from_vault = _credential_value(
             provider=_SPOTIFY.provider,
             provider_aliases=_SPOTIFY.aliases,
             field_names=_SPOTIFY.group("client_secret"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("spotify_client_secret")
+        )
+        client_secret = client_secret_from_vault or _settings_value("spotify_client_secret")
         if not client_id or not client_secret:
             return base, _setup_hint(
                 provider=_SPOTIFY.provider,
@@ -324,10 +355,32 @@ def _spotify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
                 env_var=_SPOTIFY.env_var,
                 display_name=_SPOTIFY.display_name,
             )
+        # The secret half of the pair rides a Basic header to the ACCOUNTS root,
+        # so that, not the API base, is the address it has to be joined to. The
+        # client id is the public half and proves nothing, so it is not guarded.
+        accounts_base, accounts_base_from_vault = _spotify_accounts_base(tool_name, config)
+        _require_joined_destination(
+            destination_from_vault=accounts_base_from_vault,
+            secret_from_vault=client_secret_from_vault,
+            secret=client_secret,
+            provider=_SPOTIFY.provider,
+        )
+        # Second address, same secret: the bearer minted just below inherits the
+        # client secret's provenance and rides to the API base, so that pairing
+        # needs its own join. Measured, not theoretical: anchoring is by field
+        # NAME, so a record holding base_url plus an EMPTY access_token clears
+        # slice B, lands here, and would carry a token minted from the
+        # operator's configured secret to the address that record chose.
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=client_secret_from_vault,
+            secret=client_secret,
+            provider=_SPOTIFY.provider,
+        )
         access_token = _spotify_token_from_client_credentials(
             client_id=client_id,
             client_secret=client_secret,
-            accounts_base=_spotify_accounts_base(tool_name, config),
+            accounts_base=accounts_base,
         )
 
     headers = _json_headers()

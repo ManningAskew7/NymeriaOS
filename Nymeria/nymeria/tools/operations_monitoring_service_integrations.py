@@ -26,6 +26,7 @@ from .service_integration_base import (
     filtered as _filtered,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -372,24 +373,28 @@ def _bearer_config(
     display_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=("base_url", "url", "api_url", "apiUrl"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_base_name)
-        or default_base
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "url", "api_url", "apiUrl"),
+        tool_name=tool_name,
+        config=config,
     )
-    token = _credential_value(
+    base = base_from_vault or _settings_value(settings_base_name) or default_base
+    token_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=token_fields,
         tool_name=tool_name,
         config=config,
-    ) or _settings_value(settings_token_name)
+    )
+    token = token_from_vault or _settings_value(settings_token_name)
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=provider,
+    )
     if not token:
         return _base_url(base), _setup_hint(
             provider=provider,
@@ -423,33 +428,39 @@ def _service_base(
     display_name: str,
     env_var: str,
     config: Optional[RunnableConfig],
-) -> str | None:
-    base = (
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_base_name)
+) -> tuple[str | None, str | None]:
+    """Resolve a self-hosted provider's base URL, reporting where it came from.
+
+    Returns ``(base_or_error, base_from_vault)``. The second element is the
+    provenance every caller needs for ``_require_joined_destination``: these
+    helpers resolve the address here and the secret in the CALLER, so a
+    per-function view of either one alone cannot see the pairing. It is None
+    whenever the address came from settings.
+    """
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value(settings_base_name)
     if base:
-        return _base_url(base)
+        return _base_url(base), base_from_vault
     return _setup_hint(
         provider=provider,
         field_names=("base_url", "url"),
         tool_name=tool_name,
         env_var=env_var,
         display_name=display_name,
-    )
+    ), base_from_vault
 
 
 def _grafana_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str]:
-    base_or_error = _service_base(
+    base_or_error, base_from_vault = _service_base(
         provider=_GRAFANA.provider,
         provider_aliases=_GRAFANA.aliases,
         settings_base_name="grafana_base_url",
@@ -460,13 +471,20 @@ def _grafana_config(
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Grafana base URL is required."
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_GRAFANA.provider,
         provider_aliases=_GRAFANA.aliases,
         field_names=_GRAFANA.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("grafana_api_token")
+    )
+    token = token_from_vault or _settings_value("grafana_api_token")
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_GRAFANA.provider,
+    )
     if not token:
         return "", _setup_hint(
             provider=_GRAFANA.provider,
@@ -486,7 +504,7 @@ def _metabase_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str]:
-    base_or_error = _service_base(
+    base_or_error, base_from_vault = _service_base(
         provider=_METABASE.provider,
         provider_aliases=_METABASE.aliases,
         settings_base_name="metabase_base_url",
@@ -497,40 +515,67 @@ def _metabase_config(
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Metabase base URL is required."
-    session_token = _credential_value(
+    session_token_from_vault = _credential_value(
         provider=_METABASE.provider,
         provider_aliases=_METABASE.aliases,
         field_names=_METABASE.group("session_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("metabase_session_token")
-    api_key = _credential_value(
+    )
+    session_token = session_token_from_vault or _settings_value("metabase_session_token")
+    api_key_from_vault = _credential_value(
         provider=_METABASE.provider,
         provider_aliases=_METABASE.aliases,
         field_names=_METABASE.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("metabase_api_key")
+    )
+    api_key = api_key_from_vault or _settings_value("metabase_api_key")
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. Asking instead whether the record supplied ANY of the three
+    # alternatives would reproduce slice B's own weakness one level down: a
+    # record holding base_url + password clears "some anchor", and the
+    # session-token branch then sends the operator's token to that address.
     if session_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=session_token_from_vault,
+            secret=session_token,
+            provider=_METABASE.provider,
+        )
         return base_or_error, {"Accept": "application/json", "X-Metabase-Session": session_token}
     if api_key:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_key_from_vault,
+            secret=api_key,
+            provider=_METABASE.provider,
+        )
         return base_or_error, {"Accept": "application/json", "x-api-key": api_key}
 
-    username = _credential_value(
+    username_from_vault = _credential_value(
         provider=_METABASE.provider,
         provider_aliases=_METABASE.aliases,
         field_names=_METABASE.group("username"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("metabase_username")
-    password = _credential_value(
+    )
+    username = username_from_vault or _settings_value("metabase_username")
+    password_from_vault = _credential_value(
         provider=_METABASE.provider,
         provider_aliases=_METABASE.aliases,
         field_names=_METABASE.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("metabase_password")
+    )
+    password = password_from_vault or _settings_value("metabase_password")
     if username and password:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_METABASE.provider,
+        )
         session = _request_json(
             "POST",
             f"{base_or_error}/api/session",
@@ -554,7 +599,7 @@ def _elasticsearch_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, Any, bool]:
-    base_or_error = _service_base(
+    base_or_error, base_from_vault = _service_base(
         provider=_ELASTICSEARCH.provider,
         provider_aliases=_ELASTICSEARCH.aliases,
         settings_base_name="elasticsearch_base_url",
@@ -565,34 +610,38 @@ def _elasticsearch_config(
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Elasticsearch base URL is required.", None, True
-    api_key = _credential_value(
+    api_key_from_vault = _credential_value(
         provider=_ELASTICSEARCH.provider,
         provider_aliases=_ELASTICSEARCH.aliases,
         field_names=_ELASTICSEARCH.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("elasticsearch_api_key")
-    bearer_token = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("elasticsearch_api_key")
+    bearer_token_from_vault = _credential_value(
         provider=_ELASTICSEARCH.provider,
         provider_aliases=_ELASTICSEARCH.aliases,
         field_names=_ELASTICSEARCH.group("bearer_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("elasticsearch_bearer_token")
-    username = _credential_value(
+    )
+    bearer_token = bearer_token_from_vault or _settings_value("elasticsearch_bearer_token")
+    username_from_vault = _credential_value(
         provider=_ELASTICSEARCH.provider,
         provider_aliases=_ELASTICSEARCH.aliases,
         field_names=_ELASTICSEARCH.group("username"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("elasticsearch_username")
-    password = _credential_value(
+    )
+    username = username_from_vault or _settings_value("elasticsearch_username")
+    password_from_vault = _credential_value(
         provider=_ELASTICSEARCH.provider,
         provider_aliases=_ELASTICSEARCH.aliases,
         field_names=_ELASTICSEARCH.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("elasticsearch_password")
+    )
+    password = password_from_vault or _settings_value("elasticsearch_password")
     verify = not _truthy(
         _credential_value(
             provider=_ELASTICSEARCH.provider,
@@ -605,11 +654,34 @@ def _elasticsearch_config(
     )
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     auth = None
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. Asking instead whether the record supplied ANY of the
+    # alternatives would reproduce slice B's own weakness one level down: a
+    # record holding base_url + password clears "some anchor", and the api_key
+    # branch then sends the operator's key to that record's address.
     if api_key:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_key_from_vault,
+            secret=api_key,
+            provider=_ELASTICSEARCH.provider,
+        )
         headers["Authorization"] = f"ApiKey {api_key}"
     elif bearer_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=bearer_token_from_vault,
+            secret=bearer_token,
+            provider=_ELASTICSEARCH.provider,
+        )
         headers["Authorization"] = f"Bearer {bearer_token}"
     elif username and password:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_ELASTICSEARCH.provider,
+        )
         auth = (username, password)
     else:
         return "", _setup_hint(
@@ -626,7 +698,7 @@ def _splunk_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, bool]:
-    base_or_error = _service_base(
+    base_or_error, base_from_vault = _service_base(
         provider=_SPLUNK.provider,
         provider_aliases=_SPLUNK.aliases,
         settings_base_name="splunk_base_url",
@@ -637,13 +709,20 @@ def _splunk_config(
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Splunk base URL is required.", True
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_SPLUNK.provider,
         provider_aliases=_SPLUNK.aliases,
         field_names=_SPLUNK.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("splunk_auth_token")
+    )
+    token = token_from_vault or _settings_value("splunk_auth_token")
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_SPLUNK.provider,
+    )
     verify = not _truthy(
         _credential_value(
             provider=_SPLUNK.provider,
@@ -808,38 +887,35 @@ def _uptimerobot_request(
 
 
 def _pagerduty_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_PAGERDUTY.provider,
-            provider_aliases=_PAGERDUTY.aliases,
-            field_names=_PAGERDUTY.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("pagerduty_base_url")
-        or _PAGERDUTY_BASE_URL
+    base_from_vault = _credential_value(
+        provider=_PAGERDUTY.provider,
+        provider_aliases=_PAGERDUTY.aliases,
+        field_names=_PAGERDUTY.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value("pagerduty_base_url") or _PAGERDUTY_BASE_URL
     # The access-token and api-token lookups scope to different alias subsets
     # per branch, so those provider_aliases stay inline while the field tuples
     # come from the spec.
-    access_token = _credential_value(
+    access_token_from_vault = _credential_value(
         provider=_PAGERDUTY.provider,
         provider_aliases=("pagerduty_oauth2_api",),
         field_names=_PAGERDUTY.group("access_token"),
         tool_name=tool_name,
         config=config,
     )
-    api_token = (
-        access_token
-        or _credential_value(
-            provider=_PAGERDUTY.provider,
-            provider_aliases=("pagerduty_api",),
-            field_names=_PAGERDUTY.group("api_token"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("pagerduty_api_token")
+    # The access token has no settings leg, so the vault lookup IS its
+    # provenance; the alias keeps the guard call below reading like every other.
+    access_token = access_token_from_vault
+    api_token_from_vault = access_token_from_vault or _credential_value(
+        provider=_PAGERDUTY.provider,
+        provider_aliases=("pagerduty_api",),
+        field_names=_PAGERDUTY.group("api_token"),
+        tool_name=tool_name,
+        config=config,
     )
+    api_token = api_token_from_vault or _settings_value("pagerduty_api_token")
     if not api_token:
         return _base_url(base), _setup_hint(
             provider=_PAGERDUTY.provider,
@@ -848,7 +924,35 @@ def _pagerduty_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
             env_var=_PAGERDUTY.env_var,
             display_name=_PAGERDUTY.display_name,
         )
-    auth_value = f"Bearer {access_token}" if access_token else f"Token token={api_token}"
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. One guard over both alternatives would reproduce slice B's
+    # own weakness one level down: a record holding base_url + api_token would
+    # clear it, and the access-token branch then sends a credential that record
+    # does not hold to the address it chose.
+    #
+    # The access-token one is a structural NO-OP and is kept anyway. That branch
+    # has no settings leg, so its value and its provenance are the same local and
+    # the refusal can never fire. It stays because the gate reads assignments,
+    # not reachability: without it, `access_token_from_vault` is an anchor
+    # lookup no guard names, which is indistinguishable from the shape that DOES
+    # leak. One free call buys the uniform shape. Do not copy this into a branch
+    # that has a settings leg and assume the same.
+    if access_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=access_token_from_vault,
+            secret=access_token,
+            provider=_PAGERDUTY.provider,
+        )
+        auth_value = f"Bearer {access_token}"
+    else:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_token_from_vault,
+            secret=api_token,
+            provider=_PAGERDUTY.provider,
+        )
+        auth_value = f"Token token={api_token}"
     return _base_url(base), {
         "Accept": "application/vnd.pagerduty+json;version=2",
         "Authorization": auth_value,

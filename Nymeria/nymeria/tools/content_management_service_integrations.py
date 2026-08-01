@@ -27,6 +27,7 @@ from .service_integration_base import (
     filtered as _filtered,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -291,16 +292,14 @@ def _auth_basic(username: str, password: str) -> str:
 
 
 def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_WORDPRESS.provider,
-            provider_aliases=_WORDPRESS.aliases,
-            field_names=_WORDPRESS.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("wordpress_url")
+    base_from_vault = _credential_value(
+        provider=_WORDPRESS.provider,
+        provider_aliases=_WORDPRESS.aliases,
+        field_names=_WORDPRESS.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value("wordpress_url")
     username = _credential_value(
         provider=_WORDPRESS.provider,
         provider_aliases=_WORDPRESS.aliases,
@@ -308,13 +307,14 @@ def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         tool_name=tool_name,
         config=config,
     ) or _settings_value("wordpress_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_WORDPRESS.provider,
         provider_aliases=_WORDPRESS.aliases,
         field_names=_WORDPRESS.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("wordpress_password")
+    )
+    password = password_from_vault or _settings_value("wordpress_password")
     if not base:
         return "", (
             "[Error]: No WordPress URL found. Save a WordPress credential with "
@@ -331,6 +331,15 @@ def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
             env_var=_WORDPRESS.env_var,
             display_name=_WORDPRESS.display_name,
         )
+    # The username is not guarded: the registry does not count it as an anchor,
+    # so it proves nothing about who owns the record. Guarding the password
+    # covers the Basic header, which carries both.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=password_from_vault,
+        secret=password,
+        provider=_WORDPRESS.provider,
+    )
     return base, {
         "Accept": "application/json",
         "Authorization": f"Basic {_auth_basic(username, password)}",
@@ -340,16 +349,14 @@ def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 
 
 def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_STRAPI.provider,
-            provider_aliases=_STRAPI.aliases,
-            field_names=_STRAPI.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("strapi_url")
+    base_from_vault = _credential_value(
+        provider=_STRAPI.provider,
+        provider_aliases=_STRAPI.aliases,
+        field_names=_STRAPI.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value("strapi_url")
     version = (
         _credential_value(
             provider=_STRAPI.provider,
@@ -368,13 +375,23 @@ def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         )
     base = _base_url(base)
     api_root = base if version == "v3" else (base if base.endswith("/api") else f"{base}/api")
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_STRAPI.provider,
         provider_aliases=_STRAPI.aliases,
         field_names=_STRAPI.group("api_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("strapi_api_token")
+    )
+    token = token_from_vault or _settings_value("strapi_api_token")
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: the API token here, the login password below. It no-ops when
+    # the token did not resolve, which is exactly when that second branch runs.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_STRAPI.provider,
+    )
     if not token:
         email = _credential_value(
             provider=_STRAPI.provider,
@@ -383,14 +400,21 @@ def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
             tool_name=tool_name,
             config=config,
         ) or _settings_value("strapi_email")
-        password = _credential_value(
+        password_from_vault = _credential_value(
             provider=_STRAPI.provider,
             provider_aliases=_STRAPI.aliases,
             field_names=_STRAPI.group("password"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("strapi_password")
+        )
+        password = password_from_vault or _settings_value("strapi_password")
         if email and password:
+            _require_joined_destination(
+                destination_from_vault=base_from_vault,
+                secret_from_vault=password_from_vault,
+                secret=password,
+                provider=_STRAPI.provider,
+            )
             login_url = f"{api_root}/auth/local"
             login_data = _request_json(
                 "POST",
@@ -431,46 +455,67 @@ def _contentful_config(
         tool_name=tool_name,
         config=config,
     ) or _settings_value("contentful_space_id")
+    # The two tokens are independent credentials against independent addresses,
+    # so each branch guards its OWN pair. Asking whether the record supplied
+    # EITHER token would reproduce the weakness one level down: a record holding
+    # preview_base_url + preview_token would clear the check on the delivery
+    # path, which sends the operator's delivery token.
     if source == "preview":
-        token = _credential_value(
+        token_from_vault = _credential_value(
             provider=_CONTENTFUL.provider,
             provider_aliases=_CONTENTFUL.aliases,
             field_names=_CONTENTFUL.group("preview_token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("contentful_preview_token")
+        )
+        token = token_from_vault or _settings_value("contentful_preview_token")
+        base_from_vault = _credential_value(
+            provider=_CONTENTFUL.provider,
+            provider_aliases=_CONTENTFUL.aliases,
+            field_names=_CONTENTFUL.group("preview_base_url"),
+            tool_name=tool_name,
+            config=config,
+        )
         base = (
-            _credential_value(
-                provider=_CONTENTFUL.provider,
-                provider_aliases=_CONTENTFUL.aliases,
-                field_names=_CONTENTFUL.group("preview_base_url"),
-                tool_name=tool_name,
-                config=config,
-            )
+            base_from_vault
             or _settings_value("contentful_preview_base_url")
             or _CONTENTFUL_PREVIEW_BASE_URL
+        )
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_CONTENTFUL.provider,
         )
         # Branch-variant env_var: preview vs delivery. Stays inline; the spec
         # carries the delivery value for the shared setup hint below.
         env_var = "CONTENTFUL_PREVIEW_TOKEN"
     else:
-        token = _credential_value(
+        token_from_vault = _credential_value(
             provider=_CONTENTFUL.provider,
             provider_aliases=_CONTENTFUL.aliases,
             field_names=_CONTENTFUL.group("delivery_token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("contentful_delivery_token")
+        )
+        token = token_from_vault or _settings_value("contentful_delivery_token")
+        base_from_vault = _credential_value(
+            provider=_CONTENTFUL.provider,
+            provider_aliases=_CONTENTFUL.aliases,
+            field_names=_CONTENTFUL.group("base_url"),
+            tool_name=tool_name,
+            config=config,
+        )
         base = (
-            _credential_value(
-                provider=_CONTENTFUL.provider,
-                provider_aliases=_CONTENTFUL.aliases,
-                field_names=_CONTENTFUL.group("base_url"),
-                tool_name=tool_name,
-                config=config,
-            )
+            base_from_vault
             or _settings_value("contentful_base_url")
             or _CONTENTFUL_BASE_URL
+        )
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_CONTENTFUL.provider,
         )
         env_var = "CONTENTFUL_DELIVERY_TOKEN"
     if not space_id:
@@ -493,28 +538,42 @@ def _contentful_config(
     }
 
 
-def _ghost_site_url(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
-    value = (
-        _credential_value(
-            provider=_GHOST.provider,
-            provider_aliases=_GHOST.aliases,
-            field_names=_GHOST.group("url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("ghost_url")
+def _ghost_site_url(
+    tool_name: str, config: Optional[RunnableConfig]
+) -> tuple[str | None, str | None]:
+    """Resolve the Ghost site URL, reporting where the address came from.
+
+    Returns ``(site_or_none, site_from_vault)``. The second element is the
+    provenance ``_require_joined_destination`` needs: this helper resolves the
+    address while ``_ghost_admin_headers`` and ``_ghost_content_key`` resolve the
+    secrets, so no one of the three can see the pairing alone. It is None
+    whenever the address came from settings.
+    """
+    site_from_vault = _credential_value(
+        provider=_GHOST.provider,
+        provider_aliases=_GHOST.aliases,
+        field_names=_GHOST.group("url"),
+        tool_name=tool_name,
+        config=config,
     )
-    return _base_url(value) if value else None
+    value = site_from_vault or _settings_value("ghost_url")
+    return (_base_url(value) if value else None), site_from_vault
 
 
-def _ghost_admin_headers(tool_name: str, config: Optional[RunnableConfig]) -> dict[str, str] | str:
-    admin_key = _credential_value(
+def _ghost_admin_headers(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    *,
+    site_from_vault: str | None,
+) -> dict[str, str] | str:
+    admin_key_from_vault = _credential_value(
         provider=_GHOST.provider,
         provider_aliases=("ghost_admin_api",),  # admin-path alias only (see _GHOST spec)
         field_names=_GHOST.group("admin_api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("ghost_admin_api_key")
+    )
+    admin_key = admin_key_from_vault or _settings_value("ghost_admin_api_key")
     if not admin_key:
         return _setup_hint(
             provider=_GHOST.provider,
@@ -523,6 +582,19 @@ def _ghost_admin_headers(tool_name: str, config: Optional[RunnableConfig]) -> di
             env_var=_GHOST.env_var,
             display_name=_GHOST.display_name,
         )
+    # Joined on the ADMIN key alone, never on a disjunction with the content
+    # key. Ghost declares two independent anchor groups, so a record holding
+    # ``url`` plus a ``content_api_key`` proves possession, wins the address, and
+    # would satisfy a disjunctive guard while this branch still mints a JWT from
+    # the operator's GHOST_ADMIN_API_KEY and sends it to that address. The guard
+    # sits after the setup-hint return (an unconfigured deployment keeps its
+    # hint) and before the mint, so a refused request never produces a token.
+    _require_joined_destination(
+        destination_from_vault=site_from_vault,
+        secret_from_vault=admin_key_from_vault,
+        secret=admin_key,
+        provider=_GHOST.provider,
+    )
     try:
         import jwt
 
@@ -545,35 +617,63 @@ def _ghost_admin_headers(tool_name: str, config: Optional[RunnableConfig]) -> di
     }
 
 
-def _ghost_content_key(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
-    return _credential_value(
+def _ghost_content_key(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    *,
+    site_from_vault: str | None,
+) -> str | None:
+    key_from_vault = _credential_value(
         provider=_GHOST.provider,
         provider_aliases=("ghost_content_api",),  # content-path alias only (see _GHOST spec)
         field_names=_GHOST.group("content_api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("ghost_content_api_key")
+    )
+    key = key_from_vault or _settings_value("ghost_content_api_key")
+    # Joined on the CONTENT key alone, for the mirror of the reason spelled out
+    # in _ghost_admin_headers: a record holding ``url`` plus an ``admin_api_key``
+    # would otherwise carry the operator's GHOST_CONTENT_API_KEY, which rides as
+    # a query parameter, to the address that record chose. The guard no-ops on an
+    # empty secret, so a deployment with nothing configured still reaches the
+    # caller's content-path setup hint rather than a refusal about an address.
+    _require_joined_destination(
+        destination_from_vault=site_from_vault,
+        secret_from_vault=key_from_vault,
+        secret=key,
+        provider=_GHOST.provider,
+    )
+    return key
 
 
 def _storyblok_content_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | dict[str, str]]:
+    base_from_vault = _credential_value(
+        provider=_STORYBLOK.provider,
+        provider_aliases=("storyblok_content_api",),  # content-path alias only (see _STORYBLOK)
+        field_names=_STORYBLOK.group("content_base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     base = (
-        _credential_value(
-            provider=_STORYBLOK.provider,
-            provider_aliases=("storyblok_content_api",),  # content-path alias only (see _STORYBLOK)
-            field_names=_STORYBLOK.group("content_base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        base_from_vault
         or _settings_value("storyblok_content_base_url")
         or _STORYBLOK_CONTENT_BASE_URL
     )
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_STORYBLOK.provider,
         provider_aliases=("storyblok_content_api",),  # content-path alias only (see _STORYBLOK)
         field_names=_STORYBLOK.group("content_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("storyblok_content_token")
+    )
+    token = token_from_vault or _settings_value("storyblok_content_token")
+    # The token rides as a query parameter on every content-path request.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_STORYBLOK.provider,
+    )
     if not token:
         return _base_url(base), _setup_hint(
             provider=_STORYBLOK.provider,
@@ -589,14 +689,15 @@ def _storyblok_management_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, str, dict[str, str] | str]:
+    base_from_vault = _credential_value(
+        provider=_STORYBLOK.provider,
+        provider_aliases=("storyblok_management_api",),  # management-path alias only
+        field_names=_STORYBLOK.group("mgmt_base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     base = (
-        _credential_value(
-            provider=_STORYBLOK.provider,
-            provider_aliases=("storyblok_management_api",),  # management-path alias only
-            field_names=_STORYBLOK.group("mgmt_base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        base_from_vault
         or _settings_value("storyblok_management_base_url")
         or _STORYBLOK_MANAGEMENT_BASE_URL
     )
@@ -607,13 +708,20 @@ def _storyblok_management_config(
         tool_name=tool_name,
         config=config,
     ) or _settings_value("storyblok_space_id")
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_STORYBLOK.provider,
         provider_aliases=("storyblok_management_api",),  # management-path alias only
         field_names=_STORYBLOK.group("mgmt_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("storyblok_management_token")
+    )
+    token = token_from_vault or _settings_value("storyblok_management_token")
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_STORYBLOK.provider,
+    )
     if not space_id:
         return _base_url(base), "", (
             "[Error]: No Storyblok space ID found. Save a Storyblok credential with "
@@ -1142,7 +1250,7 @@ def ghost_list_posts(
         fields: Optional comma-separated field selector.
     """
     try:
-        site = _ghost_site_url("ghost_list_posts", config)
+        site, site_from_vault = _ghost_site_url("ghost_list_posts", config)
         if not site:
             return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
         params = _filtered(
@@ -1155,12 +1263,16 @@ def ghost_list_posts(
             }
         )
         if source.strip().lower() == "admin":
-            headers_or_error = _ghost_admin_headers("ghost_list_posts", config)
+            headers_or_error = _ghost_admin_headers(
+                "ghost_list_posts", config, site_from_vault=site_from_vault
+            )
             if isinstance(headers_or_error, str):
                 return headers_or_error
             data = _request_json("GET", f"{site}/ghost/api/admin/posts/", params=params, headers=headers_or_error)
         else:
-            key = _ghost_content_key("ghost_list_posts", config)
+            key = _ghost_content_key(
+                "ghost_list_posts", config, site_from_vault=site_from_vault
+            )
             if not key:
                 # Content-path hint variant: field_names/env_var inline (see _GHOST).
                 return _setup_hint(
@@ -1197,19 +1309,23 @@ def ghost_get_post(
     if not identifier.strip():
         return "[Error]: identifier is required."
     try:
-        site = _ghost_site_url("ghost_get_post", config)
+        site, site_from_vault = _ghost_site_url("ghost_get_post", config)
         if not site:
             return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
         identifier_type = "slug" if identifier_type.strip().lower() == "slug" else "id"
         suffix = f"slug/{quote(identifier.strip(), safe='')}/" if identifier_type == "slug" else f"{quote(identifier.strip(), safe='')}/"
         params = _filtered({"include": include.strip()})
         if source.strip().lower() == "admin":
-            headers_or_error = _ghost_admin_headers("ghost_get_post", config)
+            headers_or_error = _ghost_admin_headers(
+                "ghost_get_post", config, site_from_vault=site_from_vault
+            )
             if isinstance(headers_or_error, str):
                 return headers_or_error
             data = _request_json("GET", f"{site}/ghost/api/admin/posts/{suffix}", params=params, headers=headers_or_error)
         else:
-            key = _ghost_content_key("ghost_get_post", config)
+            key = _ghost_content_key(
+                "ghost_get_post", config, site_from_vault=site_from_vault
+            )
             if not key:
                 # Content-path hint variant: field_names/env_var inline (see _GHOST).
                 return _setup_hint(
@@ -1242,10 +1358,12 @@ def ghost_create_post(
     if not fields_json.strip():
         return "[Error]: fields_json is required."
     try:
-        site = _ghost_site_url("ghost_create_post", config)
+        site, site_from_vault = _ghost_site_url("ghost_create_post", config)
         if not site:
             return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
-        headers_or_error = _ghost_admin_headers("ghost_create_post", config)
+        headers_or_error = _ghost_admin_headers(
+            "ghost_create_post", config, site_from_vault=site_from_vault
+        )
         if isinstance(headers_or_error, str):
             return headers_or_error
         body = {"posts": [_parse_json(fields_json, expected=dict, label="fields_json")]}
@@ -1271,10 +1389,12 @@ def ghost_update_post(
     if not post_id.strip() or not fields_json.strip():
         return "[Error]: post_id and fields_json are required."
     try:
-        site = _ghost_site_url("ghost_update_post", config)
+        site, site_from_vault = _ghost_site_url("ghost_update_post", config)
         if not site:
             return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
-        headers_or_error = _ghost_admin_headers("ghost_update_post", config)
+        headers_or_error = _ghost_admin_headers(
+            "ghost_update_post", config, site_from_vault=site_from_vault
+        )
         if isinstance(headers_or_error, str):
             return headers_or_error
         body = {"posts": [_parse_json(fields_json, expected=dict, label="fields_json")]}
@@ -1303,10 +1423,12 @@ def ghost_delete_post(
     if not post_id.strip():
         return "[Error]: post_id is required."
     try:
-        site = _ghost_site_url("ghost_delete_post", config)
+        site, site_from_vault = _ghost_site_url("ghost_delete_post", config)
         if not site:
             return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
-        headers_or_error = _ghost_admin_headers("ghost_delete_post", config)
+        headers_or_error = _ghost_admin_headers(
+            "ghost_delete_post", config, site_from_vault=site_from_vault
+        )
         if isinstance(headers_or_error, str):
             return headers_or_error
         data = _request_json(

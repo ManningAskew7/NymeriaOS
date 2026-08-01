@@ -26,6 +26,7 @@ from .service_integration_base import (
     dump_json,
     filtered as _filtered_params,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -247,23 +248,22 @@ def _request_json(
 
 
 def _jira_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_JIRA.provider,
-            provider_aliases=_JIRA.aliases,
-            field_names=_JIRA.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("jira_base_url")
+    base_from_vault = _credential_value(
+        provider=_JIRA.provider,
+        provider_aliases=_JIRA.aliases,
+        field_names=_JIRA.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    access_token = _credential_value(
+    base = base_from_vault or _settings_value("jira_base_url")
+    access_token_from_vault = _credential_value(
         provider=_JIRA.provider,
         provider_aliases=_JIRA.aliases,
         field_names=_JIRA.group("access_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("jira_access_token")
+    )
+    access_token = access_token_from_vault or _settings_value("jira_access_token")
     email = _credential_value(
         provider=_JIRA.provider,
         provider_aliases=_JIRA.aliases,
@@ -271,13 +271,14 @@ def _jira_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jira_email")
-    api_token = _credential_value(
+    api_token_from_vault = _credential_value(
         provider=_JIRA.provider,
         provider_aliases=_JIRA.aliases,
         field_names=_JIRA.group("api_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("jira_api_token")
+    )
+    api_token = api_token_from_vault or _settings_value("jira_api_token")
 
     if not base:
         return "", (
@@ -289,10 +290,26 @@ def _jira_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: a record holding base_url + api_token clears slice B's "some
+    # anchor", and the bearer branch would then send the operator's access token
+    # to the address that record chose.
     if access_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=access_token_from_vault,
+            secret=access_token,
+            provider=_JIRA.provider,
+        )
         headers["Authorization"] = f"Bearer {access_token}"
         return _base_url(base), headers
     if email and api_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_token_from_vault,
+            secret=api_token,
+            provider=_JIRA.provider,
+        )
         raw = f"{email}:{api_token}".encode()
         headers["Authorization"] = f"Basic {base64.b64encode(raw).decode()}"
         return _base_url(base), headers
@@ -382,25 +399,27 @@ def _taiga_api_base(value: str) -> str:
 
 
 def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    raw_base_from_vault = _credential_value(
+        provider=_TAIGA.provider,
+        provider_aliases=_TAIGA.aliases,
+        field_names=_TAIGA.group("base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     raw_base = (
-        _credential_value(
-            provider=_TAIGA.provider,
-            provider_aliases=_TAIGA.aliases,
-            field_names=_TAIGA.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        raw_base_from_vault
         or _settings_value("taiga_base_url")
         or _TAIGA_BASE_URL
     )
     base = _taiga_api_base(raw_base)
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_TAIGA.provider,
         provider_aliases=_TAIGA.aliases,
         field_names=_TAIGA.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("taiga_auth_token")
+    )
+    token = token_from_vault or _settings_value("taiga_auth_token")
     username = _credential_value(
         provider=_TAIGA.provider,
         provider_aliases=_TAIGA.aliases,
@@ -408,15 +427,35 @@ def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         tool_name=tool_name,
         config=config,
     ) or _settings_value("taiga_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_TAIGA.provider,
         provider_aliases=_TAIGA.aliases,
         field_names=_TAIGA.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("taiga_password")
+    )
+    password = password_from_vault or _settings_value("taiga_password")
 
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: a record holding base_url + password clears slice B's "some
+    # anchor", and the token branch would then send the operator's auth token to
+    # the address that record chose. The token branch is guarded HERE rather
+    # than at the header below, because a token minted by the login exchange
+    # came from that same address and is not the operator's to leak.
+    if token:
+        _require_joined_destination(
+            destination_from_vault=raw_base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_TAIGA.provider,
+        )
     if not token and username and password:
+        _require_joined_destination(
+            destination_from_vault=raw_base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_TAIGA.provider,
+        )
         data = _request_json(
             "POST",
             f"{base}/auth",
@@ -441,29 +480,28 @@ def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 
 
 def _wekan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    raw_base = (
-        _credential_value(
-            provider=_WEKAN.provider,
-            provider_aliases=_WEKAN.aliases,
-            field_names=_WEKAN.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("wekan_base_url")
+    raw_base_from_vault = _credential_value(
+        provider=_WEKAN.provider,
+        provider_aliases=_WEKAN.aliases,
+        field_names=_WEKAN.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    raw_base = raw_base_from_vault or _settings_value("wekan_base_url")
     if not raw_base:
         return "", (
             "[Error]: No Wekan base URL found. Save a Wekan credential with field "
             '"url" or "base_url", or set WEKAN_BASE_URL.'
         )
     base = _base_url(raw_base)
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_WEKAN.provider,
         provider_aliases=_WEKAN.aliases,
         field_names=_WEKAN.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("wekan_token")
+    )
+    token = token_from_vault or _settings_value("wekan_token")
     username = _credential_value(
         provider=_WEKAN.provider,
         provider_aliases=_WEKAN.aliases,
@@ -471,15 +509,35 @@ def _wekan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         tool_name=tool_name,
         config=config,
     ) or _settings_value("wekan_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_WEKAN.provider,
         provider_aliases=_WEKAN.aliases,
         field_names=_WEKAN.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("wekan_password")
+    )
+    password = password_from_vault or _settings_value("wekan_password")
 
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: a record holding url + password clears slice B's "some
+    # anchor", and the token branch would then send the operator's token to the
+    # address that record chose. The token branch is guarded HERE rather than at
+    # the header below, because a token minted by the login exchange came from
+    # that same address and is not the operator's to leak.
+    if token:
+        _require_joined_destination(
+            destination_from_vault=raw_base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_WEKAN.provider,
+        )
     if not token and username and password:
+        _require_joined_destination(
+            destination_from_vault=raw_base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_WEKAN.provider,
+        )
         data = _request_json(
             "POST",
             f"{base}/users/login",
