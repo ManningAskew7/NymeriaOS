@@ -123,6 +123,12 @@ argv) and runs with a **minimal environment** (`PATH`/`HOME`/`LANG`/`LC_ALL`/`TM
 `NYMERIA_HOOK_EVENT`/`_THREAD_ID`/`_USER_ID`/`_TOOL_NAME`; no inherited process secrets), in
 its own process group (`start_new_session`), under the author-configured `timeout_seconds`
 (1..300; the mutate/in-band events additionally cap it at 60s so a hook cannot stall a turn).
+On Linux it also runs inside the Landlock filesystem sandbox (`EXEC_SANDBOX_ENABLED`, on by
+default), which denies the script `/proc` and so stops it reading the deployment's process
+environment out of PID 1. Two practical consequences: `ps`, `top` and `pgrep` do not work in
+a hook script, and the working directory (the data dir) stays fully readable and writable, so
+a script can still write scratch files and read them back. On a kernel without Landlock the
+sandbox degrades to a warning rather than refusing to run the hook.
 On timeout the whole process group is `SIGKILL`ed. The contract by event: on `prompt_submit`,
 exit 0 stdout is injected as context (**fail-open**: a spawn error or non-zero exit injects
 nothing); on `pre_tool_use`, exit 2 is a **deny** (stderr is the reason), exit 0 with empty

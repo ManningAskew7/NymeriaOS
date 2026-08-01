@@ -324,7 +324,15 @@ import contextlib  # noqa: E402
 import json  # noqa: E402
 import sys  # noqa: E402
 
+import pytest  # noqa: E402
+
 from nymeria.core.hooks.actions import run_command  # noqa: E402
+from nymeria.exec_sandbox import sandbox_available  # noqa: E402
+
+requires_landlock = pytest.mark.skipif(
+    not sandbox_available(),
+    reason="Landlock is unavailable on this kernel, so nothing is enforced",
+)
 
 
 def _prompt(**kw):
@@ -340,13 +348,23 @@ def _run_settings(enabled=True):
 
 
 @contextlib.contextmanager
-def _patch_run_settings(enabled=True, *, owner_is_admin=True):
+def _patch_run_settings(enabled=True, *, owner_is_admin=True, sandboxed=False):
     # run_command imports get_settings twice (gate + cwd resolution) and
     # is_admin once (owner re-check). Patch all at their import sources. The
     # owner defaults to admin so the existing run_command tests exercise
     # execution; the gate-symmetry tests pass owner_is_admin=False.
+    #
+    # ``sandboxed`` is pinned rather than left ambient, and that is not
+    # tidiness. ``exec_policy`` binds ``get_settings`` at ITS module scope, so
+    # the patch above does not reach it: without this the surface would consult
+    # the real settings and the real kernel, making every spawning test in this
+    # file pass or fail on whether the host happens to have Landlock and the
+    # deployment flag on. Off by default because these tests are about the I/O
+    # pump and the per-event contract; the confinement itself is asserted by
+    # test_run_command_child_cannot_read_proc_environ.
     with patch("nymeria.config.get_settings", return_value=_run_settings(enabled)), \
-            patch("nymeria.tools.utils.is_admin", return_value=owner_is_admin):
+            patch("nymeria.tools.utils.is_admin", return_value=owner_is_admin), \
+            patch("nymeria.core.exec_policy.sandbox_enabled", return_value=sandboxed):
         yield
 
 
@@ -426,6 +444,46 @@ def test_run_command_env_is_minimal_no_secret_leak():
         assert out.inject_context == "ABSENT"
     finally:
         del os.environ["NYMERIA_SECRET_PROBE"]
+
+
+@requires_landlock
+def test_run_command_child_cannot_read_proc_environ():
+    """C1-02: the hook's child is confined, so /proc/1/environ is unreadable.
+
+    The env scrub above stops the child INHERITING secrets. It does nothing
+    about the child walking over to PID 1 and reading the deployment's whole
+    environment off /proc, which on this box is the vault master key, the
+    service token and every provider key. That is the gap the sandbox closes,
+    and the two tests are a pair: neither one alone means the child cannot see
+    the secrets.
+    """
+    script = (
+        f"{sys.executable} -c \""
+        "import sys\n"
+        "try:\n"
+        "    open('/proc/1/environ','rb').read()\n"
+        "    sys.stdout.write('LEAKED')\n"
+        "except OSError:\n"
+        "    sys.stdout.write('DENIED')\n"
+        "\""
+    )
+    with _patch_run_settings(sandboxed=True):
+        out = run_command(_prompt(), {"command": script})
+    assert isinstance(out, PromptOutcome), out
+    assert out.inject_context == "DENIED", out.inject_context
+
+
+def test_run_command_unsandboxed_deployment_still_runs():
+    """The negative control for the test above, and it earns its place.
+
+    Without it, wiring the sandbox so aggressively that every hook script
+    failed would still show green: the enforcement test only asserts that a
+    read is refused, and a child that never ran refuses it too.
+    """
+    with _patch_run_settings(sandboxed=False):
+        out = run_command(_prompt(), {"command": "printf 'ran'"})
+    assert isinstance(out, PromptOutcome)
+    assert out.inject_context == "ran"
 
 
 def test_run_command_pre_allows_on_exit0_empty():
