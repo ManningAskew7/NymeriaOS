@@ -424,9 +424,16 @@ security boundary, and several say so in their own code.
   fails closed on mismatch, so a definition planted on disk or hot-loaded outside
   the sanctioned admin path stays inert. These are provenance checks, not
   sandboxes; a caller who already has file-write or shell bypasses them.
-- **File-tool secrets denylist.** Blocks `file_read`/`file_write`/`file_edit`
-  from the credential and token stores. A tool-layer foot-gun guard for the
-  structured file tools only; `bash_execute` reads those files directly.
+- **File-tool path policies.** Two of them. A denylist blocks
+  `file_read`/`file_write`/`file_edit` from the credential and token stores. A
+  role check refuses the two write tools (not `file_read`) on the global prompt
+  overrides in the data-dir root for anyone who is not an admin, mirroring the
+  admin gate their REST surface already carries. Neither governs
+  `self_modify_rollback`, which has its own screen: it restores only into the
+  self-modification writable allowlist, which is disjoint from the data dir, so
+  the backup stash cannot launder a write into either set. Tool-layer foot-gun
+  guards for the structured file tools only; `bash_execute` reads and writes
+  those files directly.
 - **Output and log redaction.** Targeted substring redaction of known secret
   values on known egress paths (custom HTTP tool results, MCP source, credential
   tests, provider errors, Redis URLs). It is not a comprehensive data-loss

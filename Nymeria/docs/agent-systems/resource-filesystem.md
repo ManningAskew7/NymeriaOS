@@ -136,6 +136,28 @@ this revisited.
   first denylist here. This is tool-layer policy, not a security boundary:
   `bash_execute` cannot be path-confined (the honest limit recorded in the
   plan; the execution sandbox is the shared future dependency).
+- **Writing a global prompt override is admin-only**
+  (`tools/filesystem.py::admin_only_write_error`, P4-02): `system_prompt.md`,
+  `dream_prompt.md` and `dream_kickoff.md` in the data-dir root. Each replaces a
+  prompt for **every user of the deployment**, which the product had already
+  decided is an admin's call (`PUT /settings/system-prompt` and
+  `PUT /settings/dream-prompts` are both admin-gated), so the file route was not
+  a second surface, it was the same action with no role check. The file tools
+  now apply the same rule: an admin writes, anyone else is refused with the
+  route named, and a caller the run config does not name is refused. Writing
+  THROUGH one of the names (`system_prompt.md/notes.md`) is refused for
+  everyone, admins included, because it would leave a directory where a file is
+  expected and the prompt would stop loading. On a single-user
+  deployment, where the only account is an admin, nothing changes. `file_read`
+  is deliberately not a caller: nothing here is secret and the agent inspecting
+  the prompt that governs it is useful. Matching is on the data-dir root only,
+  so a same-named file in a skill folder or a workspace is untouched. To steer
+  one thread rather than the deployment, use its per-thread instructions or
+  dreaming config, neither of which needs an admin. Same tool-layer caveat as
+  the secrets denylist. `self_modify_rollback` does not share these policies but
+  cannot reach around them either: it restores only into the self-modification
+  writable allowlist (`nymeria/tools/`, `nymeria/agents/`,
+  `nymeria/triggers/sources/`), which is disjoint from the data dir.
 
 ## Approval gates and audit
 

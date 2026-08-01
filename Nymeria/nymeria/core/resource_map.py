@@ -19,7 +19,7 @@ That alone would only bind a developer already editing this list, which is the
 one who was never going to forget. So ``tests/test_resource_layout.py`` walks
 the package for every ``data_dir / "<name>"`` and fails on any child that is in
 neither this list, ``_OPERATIONAL_DIRS``, nor its own reasoned non-store set.
-It also reconciles the denylist column against live ``file_write`` behavior and
+It also reconciles the refusal columns against live ``file_write`` behavior and
 ratchets the uncontrolled set so it can only shrink. The reasoning behind each
 verdict, and what a gate is and is not worth, is in
 ``docs/private/security/control-store-matrix.md``.
@@ -50,9 +50,16 @@ class StoreControl(str, Enum):
        at it (loaded into a prompt, dispatched as a tool, launched as a process,
        or used to resolve a destination or a credential)? If not, the file is
        data and the general untrusted-content posture covers it: ``EXEMPT``.
-    2. If it is consumed that way, is there a legitimate hand-editing workflow?
-       If there is none, the file tools refuse the path outright (``denylisted``)
-       because nothing is lost by refusing. This is the rare case.
+    2. If it is consumed that way, does the file route reach an effect that the
+       sanctioned surface would not have granted this caller? Then the file
+       tools refuse, at the same width as the thing being bypassed: outright
+       (``denylisted``) when there is no legitimate hand-editing workflow at
+       all, so nothing is lost by refusing everyone, or for non-admins only
+       (``admin_only``) when the workflow is legitimate but the sanctioned
+       surface is itself role-gated, so what the file route bypassed was the
+       role check rather than the workflow. Refusing more widely than the
+       surface does would buy nothing and cost the management surface. Both are
+       the rare case.
     3. Otherwise the write is allowed to land and the *artifact* is made inert
        until it is re-approved through the sanctioned surface (``gates``). This
        is the default, because it preserves the management surface: it stops a
@@ -98,6 +105,12 @@ class _StoreRow:
     # Declaring it makes it a claim, which the test then reconciles against
     # live file_write behavior in both directions.
     denylisted: bool = False
+    # The narrower sibling of ``denylisted``: the file tools refuse the write
+    # for a non-admin and allow it for an admin. Kept as its own column rather
+    # than folded into ``denylisted`` because the two make different claims and
+    # the reconcile test proves different things: a denylisted row must be
+    # refused for EVERYONE, and asserting that of this one would be false.
+    admin_only: bool = False
     # Dotted paths, resolved by the test rather than imported here: the gate
     # modules pull in heavy dependencies and some import back into core, which
     # is why every store import in this module is function-local.
@@ -302,13 +315,18 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "Dream prompt overrides; file absent = built-in default",
         "global",
         "yes",
-        "files-as-truth",
+        "readable; writes are admin-only, as at PUT /settings/dream-prompts",
+        admin_only=True,
+        covered=True,
         drives_execution=True,
         control_note=(
-            "P4-02, and unlike system_prompt.md these hot-load. They drive "
+            "P4-02, CLOSED. Unlike system_prompt.md these hot-load. They drive "
             "dream turns, which run unattended on a strict tool allowlist that "
             "nonetheless includes authoring memory, the parent's instructions, "
-            "skills, triggers and tools."
+            "skills, triggers and tools. Rule 2, at role width: the file tools "
+            "apply the same admin check PUT /settings/dream-prompts carries "
+            "(tools/filesystem.py::admin_only_write_error). Reads unaffected. "
+            "Residual: bash_execute is not path-checkable."
         ),
     ),
     _StoreRow(
@@ -316,14 +334,20 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "System prompt override; file absent = built-in default",
         "global",
         "no (read at startup; apply via settings update or restart)",
-        "files-as-truth",
+        "readable; writes are admin-only, as at PUT /settings/system-prompt",
+        admin_only=True,
+        covered=True,
         drives_execution=True,
         control_note=(
-            "P4-02. Replaces the whole system prompt, for every user of the "
-            "deployment. The startup-only read is a delay and not a control: "
-            "restarts happen, and POST /restart exists. The highest-leverage "
-            "persistence primitive here, because it survives compaction, "
-            "pruning and thread deletion by not being in the conversation."
+            "P4-02, CLOSED. Replaces the whole system prompt, for every user of "
+            "the deployment, and is the highest-leverage persistence primitive "
+            "here: it survives compaction, pruning and thread deletion by not "
+            "being in the conversation. The startup-only read was a delay and "
+            "not a control, since restarts happen and POST /restart exists. "
+            "Rule 2, at role width: the file tools apply the same admin check "
+            "PUT /settings/system-prompt carries "
+            "(tools/filesystem.py::admin_only_write_error). Reads unaffected. "
+            "Residual: bash_execute is not path-checkable."
         ),
     ),
     _StoreRow(
@@ -409,7 +433,8 @@ def render_resource_readme() -> str:
         "this directory is live runtime state: every agent-owned store",
         "(custom tools, workflows, hooks, triggers, skills and kits, MCP",
         "server configs, thread configs, prompt overrides) lives here as",
-        "plain files, editable with the generic file tools. The bundled",
+        "plain files, editable with the generic file tools. A few carry a",
+        "narrower edit posture, named per row in the table below. The bundled",
         "`nymeria-resources` skill carries the editing rules; this file is",
         "the live per-deployment index it points at.",
         "",

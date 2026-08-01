@@ -10,12 +10,15 @@ import os
 import stat
 import tempfile
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, Field, ValidationError
 
 from .filesystem import (
+    admin_only_write_error,
+    config_principal,
     protected_path_error,
     resolve_workspace_write_path,
     secrets_path_error,
@@ -356,6 +359,7 @@ def file_edit(
     dry_run: bool = False,
     expected_sha256: Optional[str] = None,
     max_diff_chars: int = 20000,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Precisely edit an existing text file with exact, all-or-nothing operations.
@@ -420,6 +424,15 @@ def file_edit(
             return _error_result(
                 "secrets_path",
                 secrets_error,
+                file_path=str(path),
+                dry_run=dry_run,
+            )
+
+        admin_only_error = admin_only_write_error(path, config_principal(config))
+        if admin_only_error:
+            return _error_result(
+                "admin_only_path",
+                admin_only_error,
                 file_path=str(path),
                 dry_run=dry_run,
             )

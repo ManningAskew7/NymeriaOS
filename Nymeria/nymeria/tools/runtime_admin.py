@@ -2,7 +2,6 @@
 from .registry import ToolGroup, register_tool_group
 
 import logging
-from pathlib import Path
 from typing import Tuple
 
 from langchain_core.tools import tool
@@ -87,16 +86,45 @@ def self_modify_rollback(file_path: str) -> str:
     logger.info(f"self_modify_rollback called: file_path={file_path}")
 
     from ..core.backup import BackupManager
+    from ..core.self_agent import (
+        resolve_in_writable_dir,
+        self_edit_allowed,
+        self_edit_disabled_error,
+    )
     from ..config import get_settings
 
     try:
         settings = get_settings()
-        backup_manager = BackupManager(settings.backups_dir, settings.project_root)
+        project_root = settings.project_root
 
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = settings.project_root / file_path
+        # A restore is a WRITE to a caller-supplied destination, so it owes the
+        # same two controls the write it undoes already paid (audit C12-01).
+        # Without them this was the laundering route past every path policy in
+        # the tree: an ordinary `file_write` to `backups/<...>/x` is allowed
+        # (`backups` is not a secret store), and this call then copied that
+        # content over any path the caller named, reaching the credential
+        # stores, the global prompt overrides and the protected source dirs
+        # that every other write path refuses.
+        #
+        # The writable allowlist is the right screen rather than a stack of
+        # denials because it costs nothing: `create_backup` has exactly two
+        # callers, `self_file_write` and `self_file_delete`, and both resolve
+        # through this same helper first. So every backup that can exist is
+        # already inside the allowlist, and a rollback target outside it can
+        # only be a destination somebody chose, never one this tool produced.
+        if not self_edit_allowed():
+            return self_edit_disabled_error()
 
+        path = resolve_in_writable_dir(file_path, project_root)
+        if path is None:
+            return (
+                f"[Error]: Cannot roll back {file_path}: rollback restores the "
+                "files the self-modification tools may write, and this path is "
+                "not one of them. Writable: nymeria/tools/, nymeria/agents/, "
+                "nymeria/triggers/sources/."
+            )
+
+        backup_manager = BackupManager(settings.backups_dir, project_root)
         success = backup_manager.restore_backup(path)
         if success:
             return f"[Success]: Rolled back {file_path} to previous version"
