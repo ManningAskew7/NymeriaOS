@@ -142,6 +142,12 @@ def _aws_client(
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_session_token")
+    # authority-gate: not-a-fragment - `region` is handed to boto3, which
+    # interpolates it into s3.{region}.amazonaws.com itself, so neither
+    # vendor_host nor the build gate can see that authority. Measured rather
+    # than assumed: botocore refuses, raising InvalidRegionError on
+    # "evil.com/x#". It is safe by a third party's validation, not by anything
+    # here, which is why this says so instead of staying silent.
     region = (
         region_name.strip()
         or _credential_value(field_names=_AWS.group("region"), tool_name=tool_name, config=config)

@@ -8,7 +8,7 @@ import hashlib
 import hmac
 import logging
 from typing import Annotated, Any, Optional
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -30,6 +30,7 @@ from .service_integration_base import (
     request_with_policy as _request_with_policy,
     require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
+    vendor_host as _vendor_host,
     setup_hint as _setup_hint,
 )
 
@@ -478,17 +479,6 @@ def _limit(value: int, *, default: int = 25, max_value: int = 250) -> int:
     return clamp_limit(value, default=default, max_value=max_value)
 
 
-def _shopify_host_from_shop(value: str) -> str:
-    shop = value.strip().rstrip("/")
-    parsed = urlparse(shop if "://" in shop else f"https://{shop}")
-    host = parsed.netloc or parsed.path
-    if "/" in host:
-        host = host.split("/", 1)[0]
-    if not host:
-        raise ValueError("Shopify shop must be a shop subdomain or myshopify.com host.")
-    return host if host.endswith(".myshopify.com") else f"{host}.myshopify.com"
-
-
 def _request_json(
     method: str,
     url: str,
@@ -611,7 +601,11 @@ def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
                 "[Error]: No Shopify shop found. Save a Shopify credential with "
                 '"shop_subdomain" / "shop", or set SHOPIFY_SHOP.'
             )
-        base = f"https://{_shopify_host_from_shop(shop)}/admin/api/{api_version.strip()}"
+        host = _vendor_host(
+            shop, vendor_suffix=".myshopify.com",
+            provider=_SHOPIFY.provider, field="shop",
+        )
+        base = f"https://{host}/admin/api/{api_version.strip()}"
     access_token_from_vault = _credential_value(
         provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
@@ -773,7 +767,8 @@ def _chargebee_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
                 "[Error]: No Chargebee site found. Save a Chargebee credential with "
                 '"site" / "account_name", or set CHARGEBEE_SITE.'
             )
-        base = f"https://{site.strip().removesuffix('.chargebee.com')}.chargebee.com/api/{_CHARGEBEE_API_VERSION}"
+        host = _vendor_host(site, vendor_suffix=".chargebee.com", provider=_CHARGEBEE.provider, field="site")
+        base = f"https://{host}/api/{_CHARGEBEE_API_VERSION}"
     api_key = _credential_value(
         provider=_CHARGEBEE.provider,
         provider_aliases=_CHARGEBEE.aliases,
@@ -970,6 +965,12 @@ def _tapfiliate_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 
 
 def _magento_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    # authority-gate: not-a-fragment - magento's destination group has the
+    # primary `host`, which is a fragment name at other providers, but here the
+    # value is a WHOLE address: it is requested through its `base_url` alias, it
+    # falls back to MAGENTO_BASE_URL, and it reaches _base_url unchanged. No
+    # vendor suffix is hard-coded anywhere, so there is no promise to escape.
+    # Provenance is the control, and require_joined_destination applies it.
     base = (
         _credential_value(
             provider=_MAGENTO.provider,

@@ -29,6 +29,7 @@ from .service_integration_base import (
     require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
+    vendor_host as _vendor_host,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,7 +225,25 @@ def _erpnext_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         )
         domain = domain_from_vault or _settings_value("erpnext_cloud_domain")
         if subdomain and domain:
-            base = f"https://{subdomain.strip()}.{domain.strip()}"
+            # Both halves go through the constrainer, which is not what an
+            # earlier reading of this site concluded. It was filed as two
+            # WHOLE-ADDRESS fields on the grounds that `cloud_domain` is free
+            # text, so no vendor domain was hard-coded and there was no promise
+            # to escape. That is false in the DEFAULT configuration:
+            # `erpnext_cloud_domain` defaults to "erpnext.com", so with only a
+            # subdomain supplied the template is exactly the vendor shape this
+            # finding is about, and a planted "evil.example.net/x#" reached
+            # netloc evil.example.net carrying the record's own token.
+            # vendor_host validates the suffix as well as the label, so the
+            # free-text half cannot do through the suffix what the first half
+            # can no longer do directly.
+            host = _vendor_host(
+                subdomain,
+                vendor_suffix=f".{domain.strip()}",
+                provider=_ERPNEXT.provider,
+                field="subdomain",
+            )
+            base = f"https://{host}"
             # Composed, but still a vault-supplied ADDRESS: both halves are
             # destination fields in the register (they interpolate into the
             # hostname) and `cloud_domain` is free text, so a record supplying

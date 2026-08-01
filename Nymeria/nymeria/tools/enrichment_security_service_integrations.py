@@ -28,6 +28,7 @@ from .service_integration_base import (
     require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
+    vendor_host as _vendor_host,
 )
 
 logger = logging.getLogger(__name__)
@@ -605,6 +606,9 @@ def _okta_root(value: str) -> str:
     if not root:
         raise ValueError("Okta base URL is required")
     if "://" not in root:
+        # authority-gate: not-a-fragment - prepends a scheme to an address the
+        # caller already resolved, then hands it straight to _base_url, which is
+        # the egress screen. There is no vendor suffix here to escape.
         root = f"https://{root}"
     return _base_url(root)
 
@@ -633,8 +637,33 @@ def _okta_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
     if not base and domain:
         domain_text = domain.strip().replace("https://", "").replace("http://", "").rstrip("/")
         if "." not in domain_text:
-            domain_text = f"{domain_text}{_OKTA_DEFAULT_DOMAIN_SUFFIX}"
-        base = f"https://{domain_text}"
+            # The dotless arm is a FRAGMENT site: appending ".okta.com" makes a
+            # promise about where this lands, and a bare interpolation does not
+            # keep it. Measured before this call was added: "internal#" built
+            # "https://internal#.okta.com", whose netloc is "internal", and "?"
+            # and ":" do the same. None of those contain a dot, so "it must be
+            # dotted to be dangerous" was wrong.
+            host = _vendor_host(
+                domain_text,
+                vendor_suffix=_OKTA_DEFAULT_DOMAIN_SUFFIX,
+                provider=_OKTA.provider,
+                field="domain",
+            )
+            base = f"https://{host}"
+        else:
+            # authority-gate: not-a-fragment - the dotted arm is a WHOLE
+            # address, deliberately not run through vendor_host: Okta customers
+            # front their org with a vanity domain ("login.acme.com"), so
+            # forcing the suffix on here would append ".okta.com" to a
+            # legitimate address and break every such deployment. Nothing is
+            # promised about this value, so there is no promise to escape. The
+            # control that applies is provenance, and it is enforced a layer
+            # DOWN rather than here: okta declares one anchor group, so a record
+            # supplying the address must also hold the token and
+            # native_credentials refuses the lookup outright. That is arithmetic
+            # rather than a control, so it is asserted by
+            # test_okta_is_joined_a_layer_down_rather_than_at_the_site.
+            base = f"https://{domain_text}"
     if not base:
         return "", (
             '[Error]: No Okta base URL found. Save an Okta credential with "base_url" or '

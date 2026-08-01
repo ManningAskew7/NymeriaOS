@@ -28,6 +28,7 @@ from .service_integration_base import (
     request_with_policy as _request_with_policy,
     require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
+    vendor_host as _vendor_host,
     setup_hint as _setup_hint,
 )
 
@@ -224,8 +225,8 @@ def _zendesk_base(
     )
     subdomain = subdomain_from_vault or _settings_value("zendesk_subdomain")
     if subdomain:
-        subdomain = subdomain.strip().replace(".zendesk.com", "")
-        return f"https://{subdomain}.zendesk.com/api/v2", subdomain_from_vault
+        host = _vendor_host(subdomain, vendor_suffix=".zendesk.com", provider=_ZENDESK.provider, field="subdomain")
+        return f"https://{host}/api/v2", subdomain_from_vault
     return None, None
 
 
@@ -341,7 +342,8 @@ def _mailchimp_base(
         server_prefix = api_key.rsplit("-", 1)[-1]
         prefix_from_vault = api_key_from_vault
     if server_prefix:
-        return f"https://{server_prefix.strip()}.api.mailchimp.com/3.0", prefix_from_vault
+        host = _vendor_host(server_prefix, vendor_suffix=".api.mailchimp.com", provider=_MAILCHIMP.provider, field="server_prefix")
+        return f"https://{host}/3.0", prefix_from_vault
     return None, None
 
 

@@ -957,6 +957,10 @@ def _vero_request(
 
 
 def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[dict[str, Any], str | None]:
+    # authority-gate: not-a-fragment - customerio's `region` is a vendor SWITCH,
+    # never interpolated: the value is lowercased and tested for "eu", picking
+    # between two hard-coded base-URL constants. A planted value can only choose
+    # between those two, which is the closed set that makes it safe.
     region = (
         _credential_value(
             provider=_CUSTOMERIO.provider,

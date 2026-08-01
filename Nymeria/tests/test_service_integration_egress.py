@@ -42,11 +42,14 @@ from __future__ import annotations
 import ast
 import importlib
 import pathlib
+import re
 import socket
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+
+from test_subprocess_env_gate import _markers_above
 
 from nymeria.core import http_policy
 from nymeria.core.accounts import AccountsRepo
@@ -1333,10 +1336,17 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
     shape this gate recognises was introduced", not as "no site can leak".
 
     * Host FRAGMENT destinations (``DESTINATION_HOST_FRAGMENT_FIELDS``), out of
-      scope deliberately and tracked as E10-02-E. Where the site does not
-      validate the fragment, ``/`` or ``#`` terminates the authority and it
-      escapes the vendor; where it does, a planted value still reaches another
-      TENANT of the same vendor. Both want fixing, neither is this rule.
+      scope deliberately. The half where the fragment left the vendor entirely
+      is closed, by ``vendor_host`` and the two gates at the end of this file
+      (E10-02-E). The half that remains is this rule's own kind of question and
+      still is not answered here: a CONSTRAINED fragment reaches another TENANT
+      of the same vendor, and the reason this gate cannot ask is mechanical
+      rather than deliberate. Those lookups resolve to ``provider=None,
+      fields=None`` and are dropped by ``if not resolves_address: continue``
+      before the fail-closed "unknown" rule below can require a guard. Widening
+      the join to fragments is therefore blocked on fixing that ordering (task
+      #69), and adding a fragment rule first would add it to an analysis that
+      cannot see the functions it applies to.
     * Whether a guard is placed CORRECTLY, beyond ordering. It requires a guard
       naming each anchor local between that lookup and the next rebinding of the
       name, which catches a guard above its own assignment and a second branch
@@ -1579,3 +1589,785 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
         "self-joining now or genuinely no longer shaped, and only then move the "
         "floor. What you must never do is lower it without naming the function."
     )
+
+# --- E10-02-E: a vault-supplied host FRAGMENT must not leave the vendor domain
+
+
+def test_a_planted_fragment_cannot_move_the_netloc_off_the_vendor():
+    """The measured escape, closed. Do not simplify this to a charset assertion.
+
+    What matters is not that the value is rejected but that the RESULT cannot
+    become someone else's netloc, so this asserts on ``urlparse`` output rather
+    than on the helper's return value. The four terminators each move the vendor
+    suffix into a different URL component, which is why a blacklist of one of
+    them (the original finding said "#") would have looked like a fix.
+    """
+    from urllib.parse import urlparse
+
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+    from nymeria.tools.service_integration_base import vendor_host
+
+    escapes = [
+        "evil.com/x#",          # suffix pushed into the path
+        "evil.com?",            # into the query
+        "evil.com#",            # into the fragment
+        "evil.com:443#",        # into a port, then the fragment
+        "https://evil.com/x",   # scheme stripped, slash remains
+        "a@evil.com",           # userinfo, measured NOT an escape but still refused
+        "evil.com\\",           # backslash, measured NOT an escape but still refused
+        "evil .com",            # would be percent-encoded downstream
+        "evil.com\ty",          # would have the tab deleted downstream
+        "acme\u3002evil.com",    # IDEOGRAPHIC FULL STOP, UTS-46 maps it to "."
+        # The last two are why the pattern ends in \Z rather than $. Python's
+        # $ also matches before a trailing newline, and .strip() runs before
+        # rstrip("/"), so the slash shields the newline from the strip. Not
+        # exploitable (urlsplit deletes the newline, httpx refuses the URL
+        # outright), but it is the one character that reached a validated
+        # result while being outside the charset, which is the whole argument.
+        "evil.com\n/",
+        "evil.com\r/",
+    ]
+    for planted in escapes:
+        with pytest.raises(CredentialDestinationRefused):
+            vendor_host(
+                planted, vendor_suffix=".service-now.com",
+                provider="servicenow", field="instance",
+            )
+
+    # Values that are NOT escapes must still be accepted, and the reason is that
+    # they stay under the vendor: refusing them would be capability lost for no
+    # security gained. Both were measured during the finding.
+    for benign in ["evil.com/", "foo.bar", "https://evil.com"]:
+        host = urlparse(
+            "https://"
+            + vendor_host(
+                benign, vendor_suffix=".service-now.com",
+                provider="servicenow", field="instance",
+            )
+            + "/api/now"
+        ).netloc
+        assert host.endswith(".service-now.com"), host
+
+
+def test_the_refusal_does_not_echo_the_value():
+    """One call site derives the fragment from the API KEY itself.
+
+    ``customer_engagement``'s mailchimp reads its server prefix as
+    ``api_key.rsplit("-", 1)[-1]``, so echoing a refused value would put a slice
+    of the credential into a tool-visible error string, in the one corpus whose
+    subject is credentials not reaching places they should not.
+    """
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+    from nymeria.tools.service_integration_base import vendor_host
+
+    with pytest.raises(CredentialDestinationRefused) as excinfo:
+        vendor_host(
+            "us21-abc123secret/x", vendor_suffix=".api.mailchimp.com",
+            provider="mailchimp", field="server_prefix",
+        )
+    assert "abc123secret" not in str(excinfo.value)
+
+
+def test_legitimate_tenants_still_resolve():
+    """The helper returns the WHOLE host, which is what lets the gate below be
+    a simple rule: no URL template in this corpus contains a vendor domain."""
+    from nymeria.tools.service_integration_base import vendor_host
+
+    for given, expected in [
+        ("acme", "acme.service-now.com"),
+        ("acme.service-now.com", "acme.service-now.com"),   # user pasted the host
+        ("https://acme.service-now.com", "acme.service-now.com"),  # ...or the URL
+        ("https://acme.service-now.com/", "acme.service-now.com"),
+        ("ACME.SERVICE-NOW.COM", "ACME.service-now.com"),   # DNS is case-insensitive
+        ("  acme  ", "acme.service-now.com"),
+        ("my-tenant-1", "my-tenant-1.service-now.com"),
+        ("foo.bar", "foo.bar.service-now.com"),             # multi-label tenants
+    ]:
+        assert vendor_host(
+            given, vendor_suffix=".service-now.com",
+            provider="servicenow", field="instance",
+        ) == expected
+
+
+# The marker that opts a site out, matched against the contiguous comment block
+# directly above it. A table keyed by (module, function) was tried first and
+# replaced: the repo already learned this one. test_subprocess_env_gate.py
+# records that its own path:line table "broke twice in a single pass", and the
+# join gate one function up already uses a call-site marker. Two things decided
+# it here. A count of allowed sites per function cannot tell one exempt site
+# from another, so deleting the okta dotted arm and adding a DIFFERENT
+# unconstrained template in the same function kept the count at 1 and passed.
+# And the reason ended up written twice, once at the site and once in the table,
+# which is two copies of a security argument free to drift apart.
+_AUTHORITY_MARKER = "authority-gate: not-a-fragment"
+
+# The helper, by its real name and by the alias every integration imports it
+# under. An earlier version asked ``"vendor_host" in _call_name(...)``, and a
+# substring test is satisfied by ``_unsafe_vendor_host_passthrough``, so the one
+# thing the gate checks could be defeated by naming a function.
+_VENDOR_HOST_NAMES = frozenset({"vendor_host", "_vendor_host"})
+
+
+def _is_vendor_host(call) -> bool:
+    return (_call_name(call) or "") in _VENDOR_HOST_NAMES
+
+
+def _authority_interpolations(tree, module_constants):
+    """Yield ``(lineno, expr, kind, following)`` for authority interpolations.
+
+    ``following`` is the literal text after the interpolation, with ``\x00``
+    standing in for any later placeholder, so the caller can check that nothing
+    trails a completed host inside the authority.
+
+    Covers four interpolation forms, not just f-strings. That is not
+    thoroughness for its own sake: ``sales_crm_service_integrations`` keeps its
+    template in a module-level ``.format()`` constant, which is an
+    ``ast.Constant`` and never an ``ast.JoinedStr`` no matter how wide the walk,
+    so an f-string-only gate was measured blind to a real site. ``%``, ``+`` and
+    ``"".join`` are covered because they are the same defect in a different
+    spelling, and a ratchet that only recognises today's spelling stops being a
+    ratchet the first time someone reformats.
+
+    "Authority" means: after a literal ``http://``/``https://`` and before the
+    first ``/`` that follows it. A name in the PATH cannot move the netloc, so
+    counting one would report correct sites (chargebee interpolates its API
+    version there).
+    """
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            seen = ""
+            hits = []
+            for index, part in enumerate(node.values):
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    seen += part.value
+                elif isinstance(part, ast.FormattedValue):
+                    if _AUTHORITY_TAIL.search(seen):
+                        hits.append((index, part.value))
+                    seen += "\x00"
+            for index, expr in hits:
+                out.append((node.lineno, expr, "f-string", _tail_text(node.values[index + 1:])))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            # ``"https://" + host + ".vendor.com/x"``. Flattened left-to-right,
+            # which is how Python associates it, so the accumulated literal
+            # prefix is well defined. No site in the corpus spells a URL this
+            # way today; it is here because it is ordinary Python and the
+            # near-neighbour ``f"https://{root}"`` already appears, so it is the
+            # spelling a future edit is most likely to reach for.
+            for lineno, expr, following in _concat_authority(_flatten_add(node), node.lineno):
+                out.append((lineno, expr, "+", following))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join"
+            and isinstance(node.func.value, ast.Constant)
+            and node.func.value.value == ""
+            and node.args
+            and isinstance(node.args[0], (ast.List, ast.Tuple))
+        ):
+            # ``"".join(["https://", host, ".vendor.com/x"])``, the same defect
+            # spelled as a join, and forward-looking for the same reason as the
+            # arm above. Only the empty-separator literal-sequence form is
+            # understood; anything else is out of scope and said so below.
+            for lineno, expr, following in _concat_authority(node.args[0].elts, node.lineno):
+                out.append((lineno, expr, "join", following))
+        elif (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Mod)
+            and isinstance(node.left, ast.Constant)
+            and isinstance(node.left.value, str)
+        ):
+            segments = re.split(r"%(?:\([^)]*\))?[-+ #0]*\d*(?:\.\d+)?[sdr]", node.left.value)
+            args = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
+            seen = ""
+            for index, segment in enumerate(segments[:-1]):
+                seen += segment
+                if _AUTHORITY_TAIL.search(seen):
+                    out.append((
+                        node.lineno,
+                        args[index] if index < len(args) else node.right,
+                        "%",
+                        "\x00".join(segments[index + 1:]),
+                    ))
+                seen += "\x00"
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "format"
+        ):
+            target = node.func.value
+            if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                template = target.value
+            elif isinstance(target, ast.Name):
+                template = module_constants.get(target.id)
+            else:
+                template = None
+            if template is None:
+                continue
+            seen = ""
+            cursor = 0
+            for match in re.finditer(r"\{([^}:!]*)[^}]*\}", template):
+                seen += template[cursor:match.start()]
+                cursor = match.end()
+                if _AUTHORITY_TAIL.search(seen):
+                    key = match.group(1)
+                    expr = None
+                    if key.isdigit() or not key:
+                        index = int(key or 0)
+                        if index < len(node.args):
+                            expr = node.args[index]
+                    else:
+                        expr = next(
+                            (kw.value for kw in node.keywords if kw.arg == key), None
+                        )
+                    out.append((node.lineno, expr, ".format", _format_tail(template[cursor:])))
+                seen += "\x00"
+    return out
+
+
+_AUTHORITY_TAIL = re.compile(r"https?://[^/\s]*$", re.IGNORECASE)
+
+
+def _flatten_add(node):
+    """Left-to-right operands of a chain of ``+``, so ``a + b + c`` is 3 not 2."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _flatten_add(node.left) + _flatten_add(node.right)
+    return [node]
+
+
+def _tail_text(parts) -> str:
+    """Literal text of the remaining f-string parts, placeholders as NUL."""
+    return "".join(
+        part.value
+        if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        else "\x00"
+        for part in parts
+    )
+
+
+def _format_tail(rest: str) -> str:
+    return re.sub(r"\{[^}]*\}", "\x00", rest)
+
+
+def _concat_authority(parts, lineno):
+    """Operands of a string concatenation that land in a URL authority."""
+    found = []
+    seen = ""
+    for index, part in enumerate(parts):
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            seen += part.value
+            continue
+        if _AUTHORITY_TAIL.search(seen):
+            found.append((getattr(part, "lineno", lineno), part, _tail_text(parts[index + 1:])))
+        seen += "\x00"
+    return found
+
+
+def test_every_url_authority_in_tools_is_built_by_the_helper():
+    """The ratchet, as an opt-OUT over every module in ``nymeria/tools/``.
+
+    The first version of this gate was an opt-IN keyed on a hand list of vendor
+    suffixes, and adversarial mutation measured it catching ONE of the nine real
+    sites: deleting the helper call at freshworks_crm or bubble passed clean, and
+    so did a whole new module with an unconstrained template. Two lessons, both
+    of them structural rather than about that particular list:
+
+    1. An opt-in gate cannot see a module nobody added to it, which is exactly
+       the case it exists for. So this walks every module and requires an
+       exemption to be DECLARED, with its reason, in a marker comment at
+       the site itself.
+    2. Keying on the vendor suffix appearing in the template only works while
+       the template contains the suffix. ``vendor_host`` owns the suffix, so a
+       compliant template has no vendor domain in it at all. The rule here is
+       the inverse and does not depend on recognising a vendor: ANY
+       interpolation into a URL authority must be a call to the helper, or a
+       local this function assigned from one.
+
+    It is deliberately DOUBLED by ``test_every_declared_host_fragment_reaches_
+    the_helper`` at the end of this file, which asks the same question from the
+    credential register instead of from the source text. Each sees a class the
+    other cannot, and without that one this parser's admitted blind spots below
+    would be blind spots for the whole control.
+
+    Deleting any of the twelve helper calls now fails this test and names the
+    line, as does adding an unconstrained template to a new module, to a listed
+    module, or inside a function that already holds an exemption.
+
+    WHAT IT STILL CANNOT SEE, both measured by mutation rather than reasoned
+    about, and both left open deliberately because closing them costs more than
+    the shape is worth:
+
+    * A scheme that is not a literal. ``proto = "https"`` then
+      ``f"{proto}://{host}.vendor.com"`` reads the accumulated prefix as having
+      no scheme, so no interpolation looks like an authority. Catching it means
+      constant-folding locals, which is most of an interpreter; nothing in this
+      corpus writes a URL that way.
+    * A name REBOUND after the helper assigned it. ``constrained`` is the set of
+      names this function ever assigned from ``vendor_host``, not a flow
+      analysis, so ``host = vendor_host(...)`` followed later by
+      ``host = something_else`` still counts as constrained. This is the same
+      trade the sibling join gate makes one function over, and the same answer:
+      a name-based approximation catches deletion, which is the change a
+      refactor actually makes, and misses deliberate rebinding, which is not.
+
+    Read a green run as "no new unconstrained authority of a shape this gate
+    recognises", not as "no template can be steered".
+    """
+    problems = []
+    marked: set[tuple[str, int]] = set()
+    for path in _tools_modules():
+        source = path.read_text()
+        source_lines = source.splitlines()
+        tree = ast.parse(source)
+        # ``AnnAssign`` as well as ``Assign``. Measured: annotating the
+        # freshworks template (``_FRESHWORKS_CRM_BASE_URL: str = "..."``, which
+        # is idiomatic in this repo, see credential_registry) and deleting its
+        # helper call passed the gate green with the original vulnerability
+        # fully restored. One token was the whole difference.
+        module_constants = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets = [node.target]
+            else:
+                continue
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                for target in targets:
+                    module_constants[target.id] = node.value.value
+        # Attribute each site to the innermost function containing it, so the
+        # "assigned from the helper" lookup below sees that function's own
+        # locals rather than an enclosing scope's.
+        owners = {}
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            constrained = {
+                target.id
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call)
+                and _is_vendor_host(node.value)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            }
+            for lineno, expr, kind, following in _authority_interpolations(
+                fn, module_constants
+            ):
+                key = (lineno, kind, ast.dump(expr) if expr else "", following)
+                previous = owners.get(key)
+                if previous is None or fn.lineno > previous[0].lineno:
+                    owners[key] = (fn, expr, constrained, kind, lineno, following)
+        for fn, expr, constrained, kind, lineno, following in owners.values():
+            # Two accepted shapes and no others. An arbitrary expression whose
+            # NAMES are all constrained is not the same as a constrained value:
+            # ``f"https://{host.replace('vendor.com', 'evil.com')}"`` passed a
+            # ``names <= constrained`` test while rebuilding the whole defect.
+            constrained_here = (
+                isinstance(expr, ast.Call) and _is_vendor_host(expr)
+            ) or (isinstance(expr, ast.Name) and expr.id in constrained)
+            if constrained_here:
+                # ...and nothing may follow it inside the authority. Owning the
+                # suffix in the helper is what makes this gate vendor-agnostic,
+                # and that only holds while no template appends a domain of its
+                # own afterwards: f"https://{vendor_host(...)}.evil.com" is
+                # otherwise a fully constrained call landing on evil.com.
+                trailing = following.split("\x00", 1)[0]
+                head = trailing.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+                if head:
+                    problems.append(
+                        f"{path.name}:{lineno} ({fn.name}, {kind}) appends "
+                        f"{head!r} to a host the helper already completed, which "
+                        "puts a vendor domain back into a URL template and "
+                        "moves the netloc off whatever the helper returned"
+                    )
+                continue
+            # Only AFTER the two "this site is constrained" arms, so a marker
+            # is never what makes a correctly built site pass.
+            marker = _markers_above(source_lines, lineno)
+            if _AUTHORITY_MARKER in marker:
+                marked.add((path.name, lineno))
+                # Length of the whole comment block, not of what follows the
+                # marker on its own line: _markers_above collects upward, so the
+                # block arrives bottom-first and the marker is usually its last
+                # element with the reason ABOVE it in the joined string.
+                if len(marker) - len(_AUTHORITY_MARKER) < 80:
+                    problems.append(
+                        f"{path.name}:{lineno} ({fn.name}) carries the marker "
+                        "with no reason around it. The marker is meant to be "
+                        "read by a person reviewing the site, so a bare one is "
+                        "worse than none: it silences the gate and explains "
+                        "nothing"
+                    )
+                continue
+            problems.append(
+                f"{path.name}:{lineno} ({fn.name}, {kind}) interpolates into a "
+                "URL authority without vendor_host, so the value can terminate "
+                "the authority and move the netloc off the intended host"
+            )
+    assert not problems, (
+        "unconstrained URL authority interpolations:\n  "
+        + "\n  ".join(problems)
+        + "\n\nEither build the host with service_integration_base.vendor_host, "
+        f"or put a `# {_AUTHORITY_MARKER} - <reason>` comment directly above the "
+        "site saying which other control governs it."
+    )
+    # A marker cannot go stale (delete the line and it goes with it), so there
+    # is no staleness assert to write. What is worth pinning is that markers
+    # stay RARE: this gate is only as strong as the number of sites that have
+    # opted out of it, and three is small enough to re-read on every change.
+    assert len(marked) == 2, (
+        f"{len(marked)} sites now carry the {_AUTHORITY_MARKER!r} marker "
+        f"({sorted(marked)}), not 2. "
+        "Adding one is allowed and sometimes right, but it is the one edit that "
+        "makes this gate weaker, so it should be a deliberate line in a diff "
+        "rather than a number that drifts. Update this count with the site."
+    )
+
+
+@pytest.mark.parametrize(
+    "field,planted",
+    [("base_url", "https://attacker.invalid"), ("domain", "attacker.invalid")],
+)
+def test_okta_is_joined_a_layer_down_rather_than_at_the_site(
+    vault_setup, monkeypatch, field, planted
+):
+    """Evidence for the two ``_okta_*`` markers in enrichment_security.
+
+    They claim okta needs no site guard because a record that supplies the
+    address must also hold the token. That is anchor ARITHMETIC, not a control:
+    it holds because okta declares exactly ONE anchor group, so slice B's
+    refusal fires at the LOOKUP, before this module sees a value.
+
+    So the PREMISE is asserted directly, and that is the load-bearing half.
+    An earlier version of this test asserted only the consequence and claimed
+    in its own docstring that it "fails the moment the arithmetic changes";
+    review added a second anchor group to the spec, built the record the
+    docstring described, watched the operator's env token ride to the planted
+    address, and this test still passed. The consequence is asserted too, but
+    it is the cheap half: the pre-existing join gate already covers it.
+
+    Note the refusal comes from ``native_credentials``, not from any call in
+    ``_okta_config``: reading the site alone would suggest it is unguarded.
+    """
+    from nymeria.tools import enrichment_security_service_integrations as tools
+    from nymeria.tools.credential_registry import credential_anchor_fields
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    # The premise. If this ever fails, the marker at _okta_config is no longer
+    # true and that site needs a guard of its own: with two anchor groups a
+    # record can hold credential B, supply the address, and the operator's
+    # env-configured credential A rides to it.
+    anchors = [
+        group
+        for group in tools._OKTA.groups
+        if group.names[0] in credential_anchor_fields(tools._OKTA)
+    ]
+    assert len(anchors) == 1, (
+        f"okta now declares {len(anchors)} anchor groups, not 1: "
+        f"{[g.names[0] for g in anchors]}. The exemption marker at "
+        "_okta_config rests on there being exactly one."
+    )
+
+    _mint(vault_setup, name=f"planted-{field}", provider="okta",
+          secret_fields={field: planted})
+    monkeypatch.setattr(
+        tools,
+        "_settings_value",
+        lambda name: "OPERATOR-SSWS-TOKEN" if name == "okta_access_token" else None,
+    )
+
+    with pytest.raises(CredentialDestinationRefused) as excinfo:
+        tools._okta_config("okta_list_users", {"configurable": {"user_id": "alice"}})
+    assert field in str(excinfo.value)
+
+
+@pytest.mark.parametrize("planted", ["internal#", "internal?x", "internal:8080#"])
+def test_the_okta_dotless_arm_keeps_its_own_vendor_promise(
+    vault_setup, monkeypatch, planted
+):
+    """The escape review measured, on a record that holds BOTH halves.
+
+    The test above shows a record supplying only the address is refused at the
+    lookup, which is what makes okta safe from credential EGRESS. It says
+    nothing about the fragment, because that record never reaches this code. A
+    record that also holds the token does reach it, and before the dotless arm
+    called vendor_host it built "https://internal#.okta.com", whose netloc is
+    "internal": the vendor suffix promised by the template ends up in the URL
+    fragment. None of these three values contains a dot, which is exactly why
+    "it must be dotted to be dangerous" was the wrong reading.
+
+    The remaining reach is then that record's OWN credential to a non-okta
+    host, which the egress policy screens by resolved address. Small, but the
+    template made a promise and this is what keeping it looks like.
+    """
+    from urllib.parse import urlparse
+
+    from nymeria.tools import enrichment_security_service_integrations as tools
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    _mint(
+        vault_setup,
+        name="self-consistent",
+        provider="okta",
+        secret_fields={"domain": planted, "api_token": "record-own-token"},
+    )
+    monkeypatch.setattr(tools, "_settings_value", lambda name: None)
+
+    with pytest.raises(CredentialDestinationRefused):
+        tools._okta_config("okta_list_users", {"configurable": {"user_id": "alice"}})
+
+    # ...and the legitimate spelling of the same field still works, so this is
+    # not the charset refusing everything.
+    assert urlparse(
+        "https://"
+        + base.vendor_host("acme", vendor_suffix=".okta.com",
+                           provider="okta", field="domain")
+    ).netloc == "acme.okta.com"
+
+
+def test_every_declared_host_fragment_reaches_the_helper():
+    """The same rule again, derived from the REGISTER rather than from an AST parse.
+
+    Deliberately redundant with the gate above, and the redundancy is the point.
+    That one walks URL templates, so it sees a site whose value came from a
+    setting no spec declares, and it is blind to a template spelling it does not
+    recognise. This one walks the register, so it sees every field the register
+    calls a host fragment no matter how the URL is spelled, and it is blind to a
+    fragment no spec declares. Each covers a class the other cannot, and without
+    this one the AST parser's admitted blind spots would be blind spots for the
+    whole control.
+
+    The scope comes from ``credential_registry.destination_host_fragment_fields_for``,
+    per spec, for the reason its docstring gives: a NAME set is right per name
+    and wrong per provider. Measured here, not hypothetically: magento's
+    destination group has the primary ``host``, which is a fragment name at other
+    providers, so intersecting NAMES rather than matching GROUPS reported
+    magento's whole-URL lookup as a fragment and would have demanded the wrong
+    control at it.
+    """
+    from nymeria.tools.credential_registry import (
+        DESTINATION_HOST_FRAGMENT_FIELDS,
+        destination_host_fragment_fields_for,
+    )
+
+    problems = []
+    reaching = 0
+    marked = 0
+    for path in _tools_modules():
+        if path.name == "__init__.py":
+            continue
+        module = importlib.import_module(f"nymeria.tools.{path.stem}")
+        source = path.read_text()
+        source_lines = source.splitlines()
+        tree = ast.parse(source)
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        wrappers = _lookup_wrappers(functions, module)
+        for fn in functions:
+            # Names that reach the helper, closed backwards over assignment.
+            # The lookup rarely feeds vendor_host directly: the corpus writes
+            # ``subdomain = subdomain_from_vault or _settings_value(...)`` and
+            # then hands ``subdomain`` over, and okta puts a ``.strip()`` in
+            # between, so a check for the lookup's own target reports four
+            # correct sites. This walks assignments to a fixpoint: if a name
+            # reaches the helper, every name its value was derived from does.
+            #
+            # It over-approximates, by design. ``x = a or b`` followed by
+            # ``vendor_host(x)`` marks BOTH a and b as reaching, so a function
+            # that constrains one arm of an alternation and not the other reads
+            # as clean here. That is the same name-based approximation the gate
+            # above makes, and the same answer applies: this rule exists to
+            # catch a fragment with no constraint anywhere, and the per-arm
+            # question belongs to the join gate, which is already per branch.
+            to_helper = set()
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Call) and _is_vendor_host(node):
+                    for inner in ast.walk(node):
+                        if isinstance(inner, ast.Name):
+                            to_helper.add(inner.id)
+            derived_from = {}
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                    continue
+                if not isinstance(node.targets[0], ast.Name):
+                    continue
+                sources = {
+                    inner.id
+                    for inner in ast.walk(node.value)
+                    if isinstance(inner, ast.Name)
+                }
+                derived_from.setdefault(node.targets[0].id, set()).update(sources)
+            changed = True
+            while changed:
+                changed = False
+                for name in list(to_helper):
+                    for source in derived_from.get(name, ()):
+                        if source not in to_helper:
+                            to_helper.add(source)
+                            changed = True
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                    continue
+                target = node.targets[0]
+                if not isinstance(target, ast.Name):
+                    continue
+                # EVERY operand of an ``or`` chain, not just the first. aws
+                # writes ``region = region_name.strip() or _credential_value(...)
+                # or _settings_value(...)``, so taking values[0] silently drops
+                # the one lookup in the corpus that is not written first. That
+                # is the same shape as ratchet hole 1 in the sibling join gate.
+                operands = (
+                    node.value.values
+                    if isinstance(node.value, ast.BoolOp)
+                    else [node.value]
+                )
+                call = next(
+                    (
+                        operand
+                        for operand in operands
+                        if isinstance(operand, ast.Call)
+                        and (_call_name(operand) or "").endswith("credential_value")
+                        or (
+                            isinstance(operand, ast.Call)
+                            and _call_name(operand) in wrappers
+                        )
+                    ),
+                    None,
+                )
+                if call is None:
+                    continue
+                keywords = {kw.arg: kw.value for kw in call.keywords or []}
+                spec = _resolved_spec(keywords.get("provider"), module)
+                if spec is None:
+                    spec = wrappers.get(_call_name(call))
+                fields = _resolved_field_names(keywords.get("field_names"), module)
+                if spec is None or fields is None:
+                    continue
+                # Two conditions, and both are needed. The register accessor
+                # answers "is this NAME a fragment name for this provider",
+                # which is the per-spec half. GROUP identity answers "is this
+                # LOOKUP asking for the fragment group", which the accessor
+                # cannot: magento's whole-URL group carries `host` and `url`
+                # aliases that are fragment primaries elsewhere, so a name test
+                # alone reported its address lookup as a fragment.
+                fragment_names = destination_host_fragment_fields_for(spec)
+                if not (fields & fragment_names):
+                    continue
+                if not any(
+                    group.names[0] in DESTINATION_HOST_FRAGMENT_FIELDS
+                    and fields == frozenset(group.names)
+                    for group in spec.groups
+                ):
+                    continue
+                if target.id in to_helper:
+                    reaching += 1
+                    continue
+                # Above the ASSIGNMENT, not above the call: the corpus wraps
+                # these lookups in a parenthesised ``x = (\n  lookup(...)\n  or
+                # ...)``, so the call's own line has ``x = (`` above it and a
+                # marker there would never be found.
+                marker = _markers_above(source_lines, node.lineno) or _markers_above(
+                    source_lines, call.lineno
+                )
+                if _AUTHORITY_MARKER in marker:
+                    marked += 1
+                    # Same standard as the gate above, and it was missing here
+                    # until mutation testing hollowed out s3's reason to a bare
+                    # marker and this rule passed. A marker with no reason is
+                    # the worst of both: it silences the check and records no
+                    # judgement for the next reader to disagree with.
+                    if len(marker) - len(_AUTHORITY_MARKER) < 80:
+                        problems.append(
+                            f"{path.name}:{call.lineno} ({fn.name}) carries the "
+                            "marker with no reason around it"
+                        )
+                    continue
+                problems.append(
+                    f"{path.name}:{call.lineno} ({fn.name}) resolves "
+                    f"{spec.provider}'s declared host FRAGMENT into "
+                    f"{target.id!r}, which never reaches vendor_host"
+                )
+    assert not problems, (
+        "declared host fragments with no constraint:\n  "
+        + "\n  ".join(problems)
+        + "\n\nEither build the host with service_integration_base.vendor_host, "
+        f"or put a `# {_AUTHORITY_MARKER} - <reason>` comment above the lookup "
+        "saying what the value actually does (a path segment, a whole address, "
+        "a switch between constants, or a third party's own validation)."
+    )
+    assert (reaching, marked) == (13, 7), (
+        f"the register declares {reaching + marked} host-fragment lookups, of "
+        f"which {reaching} reach vendor_host and {marked} are marked; expected "
+        "13 and 7. A rise in the marked count is the one that matters: it means "
+        "a fragment was classified as needing no constraint, which is the "
+        "judgement this whole finding turned on getting wrong once."
+    )
+
+
+@pytest.mark.parametrize("planted", ["evil.example.net/x#", "evil.example.net?", "evil.example.net:8443#"])
+def test_the_erpnext_default_domain_is_a_vendor_promise_too(vault_setup, monkeypatch, planted):
+    """The site this pass first exempted on a reason that was false by default.
+
+    erpnext composes ``f"https://{subdomain}.{cloud_domain}"``, and the first
+    reading called both halves free text, so no vendor domain was hard-coded and
+    there was nothing to escape. But ``erpnext_cloud_domain`` is a Settings field
+    with the default ``"erpnext.com"``, so on an install that has not set it the
+    template is exactly the vendor shape this finding is about. Review measured
+    the leak with a self-consistent record, which is the shape that clears the
+    join gate: netloc ``evil.example.net`` carrying the record's own token.
+
+    The lesson is in the test name. A DEFAULT is part of the template. "Free
+    text" described the field's type, and what mattered was its value on a box
+    nobody configured.
+    """
+    from nymeria.tools import enterprise_business_service_integrations as tools
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    _mint(
+        vault_setup,
+        name="self-consistent",
+        provider="erpnext",
+        secret_fields={
+            "subdomain": planted,
+            "api_key": "record-own-key",
+            "api_secret": "record-own-secret",
+        },
+    )
+    # The default is the POINT, so it is left in place rather than patched
+    # away: an earlier draft of this test stubbed _settings_value to None, which
+    # left cloud_domain empty and skipped the composing branch entirely, so it
+    # passed while testing nothing.
+    monkeypatch.setattr(
+        tools,
+        "_settings_value",
+        lambda name: "erpnext.com" if name == "erpnext_cloud_domain" else None,
+    )
+
+    with pytest.raises(CredentialDestinationRefused):
+        tools._erpnext_config("erpnext_list_records", {"configurable": {"user_id": "alice"}})
+
+
+def test_a_vendor_suffix_that_is_itself_a_destination_is_refused():
+    """The suffix is checked, and at erpnext it is DATA rather than a literal.
+
+    Without this, the second half of a composed host does exactly what the
+    constrainer stops the first half doing, and the three degenerate literal
+    spellings below quietly return a host outside the vendor from a function
+    whose entire promise is the opposite.
+    """
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    for suffix in ["", "okta.com", "@evil.com", ".evil.com/x", "."]:
+        with pytest.raises(CredentialDestinationRefused):
+            base.vendor_host(
+                "acme", vendor_suffix=suffix, provider="probe", field="tenant"
+            )
+
+    assert base.vendor_host(
+        "acme", vendor_suffix=".okta.com", provider="probe", field="tenant"
+    ) == "acme.okta.com"
+
