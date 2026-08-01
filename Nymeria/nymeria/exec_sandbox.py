@@ -58,6 +58,7 @@ import ctypes
 import errno
 import json
 import os
+import stat
 import struct
 import sys
 from dataclasses import dataclass, field
@@ -114,6 +115,14 @@ _ACCESS_RW = (
     | _FS_REFER
 )
 
+# The subset of _ACCESS_RW that is meaningful on a non-directory. Landlock
+# rejects landlock_add_rule with EINVAL when a directory-only right (MAKE_*,
+# REMOVE_*, READ_DIR, REFER) is requested on a file, and the failure surfaces as
+# an opaque "errno 22" that fails the whole launch closed. So an allow root that
+# happens to be a file needs its own mask; see _add_rules. This is what makes it
+# possible to allow individual device nodes rather than all of /dev.
+_ACCESS_RW_FILE = _FS_READ_FILE | _FS_WRITE_FILE | _FS_EXECUTE | _FS_TRUNCATE
+
 _SANDBOX_POLICY_ENV = "NYMERIA_SANDBOX_POLICY"
 
 # Default read-only system roots every child needs to load an interpreter and
@@ -125,6 +134,27 @@ DEFAULT_SYSTEM_ROOTS: tuple[str, ...] = (
     "/bin",
     "/sbin",
     "/etc",
+)
+
+# Device nodes every sandboxed child needs, granted individually rather than by
+# allowing all of /dev. These are WRITABLE because the common uses are writes:
+# `> /dev/null`, `2> /dev/null`. Measured cost of omitting them, which is why
+# they are a default rather than something each caller remembers: `git` fails
+# outright ("fatal: could not open '/dev/null'"), and every shell redirection to
+# /dev/null becomes a hard error, so ordinary commands fail for a reason with no
+# connection to what the sandbox is for.
+#
+# Allowing them grants nothing: Landlock only ever REMOVES reach, so a node the
+# calling user could not open before (a raw block device, root-owned) stays shut
+# by ordinary permissions. Listing them one by one rather than allowing /dev
+# keeps a future user-writable node under it out of reach by default.
+DEFAULT_DEVICE_NODES: tuple[str, ...] = (
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
 )
 
 
@@ -195,11 +225,17 @@ class SandboxPolicy:
     Only ``read_only`` and ``read_write`` roots (and everything beneath them)
     are reachable; every other path, including ``/proc`` and the credential
     stores, is denied. ``read_only`` is seeded with the system roots needed to
-    launch a binary.
+    launch a binary, and ``read_write`` with the standard device nodes, because
+    a child that cannot open ``/dev/null`` fails in ways unrelated to what the
+    sandbox is for.
+
+    A root may be a directory (the whole subtree is reachable) or a single
+    file, which is how the device nodes are granted without opening all of
+    ``/dev``.
     """
 
     read_only: tuple[str, ...] = field(default=DEFAULT_SYSTEM_ROOTS)
-    read_write: tuple[str, ...] = field(default=())
+    read_write: tuple[str, ...] = field(default=DEFAULT_DEVICE_NODES)
 
     def to_env_value(self) -> str:
         return json.dumps({"ro": list(self.read_only), "rw": list(self.read_write)})
@@ -269,7 +305,8 @@ def apply_landlock_policy(policy: SandboxPolicy) -> None:
         _add_rules(lib, ruleset_fd, policy.read_only, _ACCESS_RO & handled_fs,
                    allow_symlink=True)
         _add_rules(lib, ruleset_fd, policy.read_write, _ACCESS_RW & handled_fs,
-                   allow_symlink=False)
+                   allow_symlink=False,
+                   file_access=_ACCESS_RW_FILE & handled_fs)
         if lib.syscall(
             ctypes.c_long(_NR_landlock_restrict_self),
             ctypes.c_int(ruleset_fd),
@@ -299,7 +336,8 @@ def _open_root(path: str, *, allow_symlink: bool) -> int:
 
 
 def _add_rules(
-    lib: ctypes.CDLL, ruleset_fd: int, paths, access: int, *, allow_symlink: bool
+    lib: ctypes.CDLL, ruleset_fd: int, paths, access: int, *, allow_symlink: bool,
+    file_access: int | None = None,
 ) -> None:
     for path in paths:
         try:
@@ -310,8 +348,16 @@ def _add_rules(
             # so it propagates and fails the whole launch closed.)
             continue
         try:
+            # Directory-only rights on a file are EINVAL, so narrow the mask for
+            # a non-directory root. Decided from the OPEN fd, not the path, so a
+            # swap between the two cannot change which mask is applied, and held
+            # in a per-iteration name: assigning `access` here would leak the
+            # narrowed mask to every root after the first file one.
+            this_access = access
+            if file_access is not None and not stat.S_ISDIR(os.fstat(fd).st_mode):
+                this_access = file_access
             # struct landlock_path_beneath_attr { u64 allowed_access; s32 parent_fd; } packed
-            pb = struct.pack("=Qi", access, fd)
+            pb = struct.pack("=Qi", this_access, fd)
             pb_buf = ctypes.create_string_buffer(pb, len(pb))
             if lib.syscall(
                 ctypes.c_long(_NR_landlock_add_rule),

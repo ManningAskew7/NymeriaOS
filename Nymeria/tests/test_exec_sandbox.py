@@ -18,6 +18,7 @@ import sys
 import pytest
 
 from nymeria.exec_sandbox import (
+    DEFAULT_DEVICE_NODES,
     DEFAULT_SYSTEM_ROOTS,
     SandboxPolicy,
     landlock_abi_version,
@@ -81,7 +82,15 @@ def test_policy_env_roundtrip():
 
 def test_policy_defaults_seed_system_roots():
     assert SandboxPolicy().read_only == DEFAULT_SYSTEM_ROOTS
-    assert SandboxPolicy().read_write == ()
+    # Writable, not read-only: the common uses are writes (`> /dev/null`,
+    # `2> /dev/null`). A default rather than something each caller remembers,
+    # because omitting them fails ordinary commands for reasons unrelated to
+    # the sandbox (measured: `git` cannot start at all).
+    assert SandboxPolicy().read_write == DEFAULT_DEVICE_NODES
+    assert "/dev/null" in DEFAULT_DEVICE_NODES
+    # Granted one node at a time, so a future user-writable node under /dev is
+    # not reachable by default.
+    assert "/dev" not in DEFAULT_DEVICE_NODES
 
 
 def test_policy_rejects_non_dict_json():
@@ -167,6 +176,100 @@ def test_enforcement_denies_outside_allowlist(tmp_path):
     assert res["write"] == "OK"
     assert res["secret"].startswith("DENIED"), res["secret"]
     assert res["proc"].startswith("DENIED"), res["proc"]
+
+
+@requires_landlock
+def test_enforcement_grants_a_single_file_root_without_opening_its_directory(
+    tmp_path,
+):
+    """A writable root may be a FILE, which is how device nodes are granted.
+
+    Landlock rejects landlock_add_rule with EINVAL when a directory-only right
+    (MAKE_*, REMOVE_*, READ_DIR, REFER) is asked for on a file, and the failure
+    surfaces as an opaque errno that fails the whole launch closed. So a file
+    root needs its own narrower mask. Without it, DEFAULT_DEVICE_NODES would
+    make every sandboxed launch in the tree fail to start.
+
+    The second half is the point of granting nodes individually: allowing the
+    file must not make its DIRECTORY readable.
+    """
+    allowed = tmp_path / "allowed.txt"
+    allowed.write_text("visible", encoding="utf-8")
+    sibling = tmp_path / "sibling.txt"
+    sibling.write_text("hidden", encoding="utf-8")
+
+    script = (
+        "import sys\n"
+        "def probe(fn):\n"
+        "    try:\n"
+        "        return fn()\n"
+        "    except OSError as exc:\n"
+        "        return 'DENIED:' + exc.__class__.__name__\n"
+        f"print(probe(lambda: open({str(allowed)!r}).read()))\n"
+        f"print(probe(lambda: open({str(allowed)!r}, 'a').write('!') and 'W'))\n"
+        f"print(probe(lambda: open({str(sibling)!r}).read()))\n"
+        f"import os; print(probe(lambda: str(sorted(os.listdir({str(tmp_path)!r})))))\n"
+    )
+    policy = SandboxPolicy(
+        read_only=(*DEFAULT_SYSTEM_ROOTS, *_PY_ROOTS),
+        read_write=(str(allowed),),
+    )
+    proc = subprocess.run(
+        wrap_argv([sys.executable, "-c", script]),
+        env={**os.environ, **sandbox_env_overlay(policy)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    read, wrote, sibling_read, listing = proc.stdout.split("\n")[:4]
+    assert read == "visible", proc.stdout
+    assert not wrote.startswith("DENIED"), proc.stdout
+    assert sibling_read.startswith("DENIED"), proc.stdout
+    assert listing.startswith("DENIED"), proc.stdout
+
+
+@requires_landlock
+def test_enforcement_file_root_mask_does_not_leak_to_later_roots(tmp_path):
+    """The narrowed mask is per root, not sticky.
+
+    A file root and a directory root in the same policy, file FIRST, which is
+    the real ordering: DEFAULT_DEVICE_NODES are files and sit ahead of every
+    caller-added workspace. Assigning the narrowed mask to the loop variable
+    instead of a per-iteration name silently strips create/delete from every
+    directory root after the first file one, and a plain write still succeeds,
+    so only a create/remove probe catches it.
+    """
+    node = tmp_path / "node.txt"
+    node.write_text("n", encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    script = (
+        "import os, sys\n"
+        "def probe(fn):\n"
+        "    try:\n"
+        "        return fn() or 'OK'\n"
+        "    except OSError as exc:\n"
+        "        return 'DENIED:' + exc.__class__.__name__\n"
+        f"print(probe(lambda: open({str(workspace / 'new.txt')!r}, 'w').write('x') and None))\n"
+        f"print(probe(lambda: os.mkdir({str(workspace / 'sub')!r})))\n"
+        f"print(probe(lambda: os.remove({str(workspace / 'new.txt')!r})))\n"
+    )
+    policy = SandboxPolicy(
+        read_only=(*DEFAULT_SYSTEM_ROOTS, *_PY_ROOTS),
+        read_write=(str(node), str(workspace)),
+    )
+    proc = subprocess.run(
+        wrap_argv([sys.executable, "-c", script]),
+        env={**os.environ, **sandbox_env_overlay(policy)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    for line in proc.stdout.split("\n")[:3]:
+        assert line == "OK", f"directory root lost a right after a file root: {proc.stdout}"
 
 
 @requires_landlock
