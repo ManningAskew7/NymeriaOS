@@ -389,8 +389,26 @@ def _sandbox_launch(
     policy = tool_sandbox_policy(
         popen_kwargs.get("cwd"), creation_roots=creation_roots
     )
+    # Wrap BEFORE touching the caller's kwargs. ``wrap_argv`` can raise (it
+    # refuses rather than degrading when the shim source is unavailable), and
+    # assigning env first would leave a refused launch carrying the policy var
+    # with no shim to read it: kwargs describing a confinement that is not
+    # there. Same invariant ``sandbox_shell_launch`` keeps for ``shell``.
+    try:
+        launch = wrap_argv(list(argv))
+    except SandboxError as exc:
+        # The mechanism reports what it could not build; naming the way out is
+        # this layer's job, because EXEC_SANDBOX_ENABLED is read here and
+        # nowhere else. Same division the carve budgets keep: a leaf that knows
+        # nothing about which control it is must not tell an operator to
+        # disable one.
+        raise SandboxError(
+            f"{exc}. Set EXEC_SANDBOX_ENABLED=false to run without "
+            "confinement, which is a deliberate security decision, rather "
+            "than shipping an unconfined launch that looks confined."
+        ) from exc
     popen_kwargs["env"] = {**base_env, **sandbox_env_overlay(policy)}
-    return wrap_argv(list(argv))
+    return launch
 
 
 def sandbox_argv_launch(
