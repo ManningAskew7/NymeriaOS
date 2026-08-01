@@ -389,10 +389,17 @@ class MCPServerManager:
         # Note what this does NOT claim: the container layout carves the data
         # dir either way, so a server creating a new file directly there and
         # reading it back fails today (measured). The default roots make the
-        # hazard SMALLER, not absent. Filed as a follow-up: managed servers get a
-        # working directory Nymeria itself sets under the runtime tree, so for
-        # that population the write area IS known and could be named, which
-        # would restore the store denials on the slim shape.
+        # hazard SMALLER, not absent. Two things bound it, both measured, and
+        # they are why it is a hazard rather than a break: only DIRECT children
+        # of a carved container are affected, because anything deeper sits under
+        # a directory that existed at policy-build time and got its own rule, so
+        # a managed server can always read its own installed code; and the window
+        # is the CONNECTION, not the process, because the policy is rebuilt per
+        # spawn, so a restart or the idle reaper makes the file readable again.
+        # Filed as a follow-up: managed servers get a working directory Nymeria
+        # itself sets under the runtime tree, so for that population the write
+        # area IS known and could be named, which would restore the store
+        # denials on the slim shape.
         launch = sandbox_argv_launch(cmd, popen_kwargs)
 
         try:

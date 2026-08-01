@@ -739,7 +739,7 @@ def test_stdio_read_loop_propagates_unexpected_errors(monkeypatch):
 # ---- stdio server confinement (C1-02) ----------------------------------------
 
 
-def test_the_stdio_server_launch_is_confined(monkeypatch):
+def test_the_stdio_server_launch_is_confined(mcp_manager_instance, monkeypatch):
     """The server process is the WRAPPED argv, not the raw command.
 
     An MCP stdio server is an arbitrary operator-configured program that the API
@@ -773,9 +773,8 @@ def test_the_stdio_server_launch_is_confined(monkeypatch):
         tool_name="__discovery__",
         server_id="srv-stdio",
     )
-    manager = MCPServerManager()
     with pytest.raises(RuntimeError, match="Failed to start MCP server"):
-        manager._start_server(config)
+        mcp_manager_instance._start_server(config)
 
     assert captured["argv"] == [sys.executable, "server.py"]
     assert captured["spawned"] == ["/shim", sys.executable, "server.py"]
@@ -790,7 +789,9 @@ def test_the_stdio_server_launch_is_confined(monkeypatch):
     assert captured["env"] is not None
 
 
-def test_a_dead_server_reports_why_it_died_through_the_shim(monkeypatch):
+def test_a_dead_server_reports_why_it_died_through_the_shim(
+    mcp_manager_instance, monkeypatch
+):
     """A missing `server_command` still reaches the caller with the reason.
 
     Wrapping changes the shape of this failure and it is worth pinning, because
@@ -819,9 +820,8 @@ def test_a_dead_server_reports_why_it_died_through_the_shim(monkeypatch):
         server_id="srv-missing",
         startup_timeout_seconds=10,
     )
-    manager = MCPServerManager()
     with pytest.raises(RuntimeError) as excinfo:
-        manager._start_server(config)
+        mcp_manager_instance._start_server(config)
 
     message = str(excinfo.value)
     assert "definitely-not-a-real-mcp-binary" in message, (
