@@ -21,13 +21,23 @@ Dual purpose, one file:
   express directly, and ``wrap_argv``/``sandbox_env_overlay`` for a parent to
   build a sandboxed launch. What each Nymeria exec surface actually passes is
   ``core/exec_policy.py``'s business, not this module's.
-* **Shim** (launched by file path, ``python3 exec_sandbox.py -- <cmd> ...``):
+* **Shim** (launched as ``python3 -I -S -c <this module's source> -- <cmd>``):
   runs in a FRESH, single-threaded interpreter, reads the policy from the
   ``NYMERIA_SANDBOX_POLICY`` env var, applies Landlock, then ``execvp``s the real
   command. Running the syscalls in the fresh shim (not a ``preexec_fn`` after a
   fork of the heavily-threaded API process) avoids the fork+threads deadlock
-  hazard. The shim is stdlib-only and imports nothing from ``nymeria`` so a
-  file-path launch never drags in the package.
+  hazard. The source travels in the argv rather than as a path so that the file
+  cannot be rewritten between launches (C1-02-D, see ``_read_own_source``),
+  which makes the stdlib-only rule MORE load-bearing than it was, not less:
+  every import the shim performs happens before the policy exists, so each one
+  is a file an attacker with write access could aim at. Import nothing from
+  ``nymeria``, and add stdlib imports only when there is no alternative.
+
+  That rule is NOT currently satisfied: ``dataclasses`` (used only for
+  ``SandboxPolicy``) drags in ~21 further modules. Replacing it with a plain
+  class is the one reduction available from inside this module, and belongs
+  with the minimal-shim split rather than alone; both are filed as C1-02-E on
+  the remediation board, which carries the measurements.
 
 Fail-closed: a shim invoked WITH a policy that cannot be enforced exits nonzero
 and never ``exec``s the target. A sandboxed launch never degrades to an
@@ -549,8 +559,68 @@ def _add_rules(
             os.close(fd)
 
 
-def _shim_path() -> str:
-    return os.path.abspath(__file__)
+def _read_own_source() -> str:
+    """This module's own text, captured ONCE at import.
+
+    Load-bearing, and the finding is C1-02-D. The shim used to be launched by
+    file path, which made it the only Nymeria code RE-READ FROM DISK on every
+    launch, and it runs BEFORE the policy exists. A sandboxed child that could
+    write this file therefore lifted the sandbox for the next launch, with no
+    restart needed. That is not the ordinary "an agent can edit the backend"
+    concession: every other module is already imported into the running
+    process, so rewriting it does nothing until a reload, and rewriting the
+    RUNNERS buys nothing because they execute under the policy. This one file
+    was the exception, and it was the whole control.
+
+    Reading the text here and handing it to the interpreter with ``-c`` means
+    no NYMERIA file is re-read per launch, so rewriting this one cannot take
+    effect until a restart, which is exactly the property the rest of the
+    backend already has.
+
+    Read that scope narrowly, because a wider claim would be false: no NYMERIA
+    file is re-read per launch, but the interpreter binary and the stdlib
+    modules the shim imports still are, all of it before the policy applies.
+    Where that tree is writable by the same uid the same no-restart shape
+    survives one layer down. Filed as C1-02-E on the remediation board, which
+    owns the measurements and the deployment split; not closable from here,
+    since the shim has to be Python to reach Landlock through ctypes.
+
+    ASCII-only, and this module must stay that way: the payload rides
+    ``execve``, so under a filesystem encoding of ``ascii`` a single non-ASCII
+    byte anywhere in this file would fail every sandboxed spawn far from its
+    cause. Pinned by ``test_the_shim_payload_is_ascii_only``.
+
+    Returns "" rather than raising, in two cases. The expected one is no
+    ``__file__`` at all: this source running AS the ``-c`` payload, i.e. the
+    shim child, which launches no shim and needs no copy. The other is any
+    failure to read the text, which routes the problem to ``wrap_argv``'s
+    ``SandboxError``.
+
+    The catch is deliberately wide. This function runs at IMPORT, so anything
+    escaping here does not degrade a launch, it stops the backend booting with
+    a traceback that names nothing about sandboxing:
+
+    * ``NameError``     no ``__file__``. LOAD-BEARING, not defensive: it is the
+      shim child's own path, since the ``-c`` payload re-runs this line and
+      would otherwise die before reaching ``_shim_main``.
+    * ``OSError``       unreadable or missing.
+    * ``ValueError``    a SOURCELESS install: ``__file__`` is the ``.pyc`` and
+      decoding it as UTF-8 raises ``UnicodeDecodeError``, which is a
+      ``ValueError`` and would otherwise sail straight past an ``OSError``
+      handler.
+    * ``TypeError``     a loader that sets ``__file__ = None``, which
+      ``os.path.abspath`` refuses. The one speculative arm; the others are
+      reachable in this deployment.
+    """
+    try:
+        source_path = os.path.abspath(__file__)
+        with open(source_path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except (NameError, OSError, ValueError, TypeError):
+        return ""
+
+
+_SHIM_SOURCE = _read_own_source()
 
 
 def wrap_argv(argv, *, python_executable: str | None = None) -> list[str]:
@@ -577,9 +647,43 @@ def wrap_argv(argv, *, python_executable: str | None = None) -> list[str]:
     and drops the user site directory. Nothing is lost: the shim imports only
     stdlib, which ``-S`` leaves fully importable, and it ``execvp``s the real
     command as a fresh image with its own flags.
+
+    The shim travels as ``-c`` SOURCE rather than as a file path (C1-02-D; the
+    reasoning is in ``_read_own_source``, not repeated here). What that costs,
+    which is this function's business: the source shows up in the child's ``ps``
+    output for the few milliseconds before ``execvp``, which is noise rather
+    than a leak since it is this file and already on disk; and it occupies one
+    argument, which Linux caps at ``MAX_ARG_STRLEN`` INDEPENDENTLY of the
+    others, so it does not eat into the policy string's budget.
+    ``test_the_shim_payload_fits_in_one_execve_argument`` holds that line.
+
+    It also has to be built HERE rather than carried in ``sandbox_env_overlay``
+    beside the policy, which would be smaller and is the obvious question. The
+    overlay is merged over a CALLER-SUPPLIED env, so putting the code there
+    would let a caller's environment decide what runs; and the two fail in
+    opposite directions, a bad policy closed and a bad shim open. The argv is
+    built entirely inside this function.
+
+    Raises rather than falling back to a path launch if the source is missing,
+    because the fallback would be the exact weakness this closes, re-entered
+    silently and precisely where nobody is looking.
+
+    That is a real trade, not a free one, and one deployment pays it: a
+    SOURCELESS install (``.pyc`` only, sources stripped) could launch the shim
+    by path before and cannot now, since there is no text to read. Such a
+    deployment has to turn confinement off deliberately and accept unconfined
+    execution, which is the point: the alternative is confinement that silently
+    is not there. HOW to turn it off is the policy layer's business, so the
+    remedy is named by ``core/exec_policy.py`` (which owns that setting) rather
+    than here.
     """
     python = python_executable or sys.executable
-    return [python, "-I", "-S", _shim_path(), "--", *argv]
+    if not _SHIM_SOURCE:
+        raise SandboxError(
+            "sandbox shim source unavailable: exec_sandbox.py could not be read "
+            "at import time, so a confined launch cannot be built"
+        )
+    return [python, "-I", "-S", "-c", _SHIM_SOURCE, "--", *argv]
 
 
 def sandbox_env_overlay(policy: SandboxPolicy) -> dict[str, str]:
@@ -609,11 +713,13 @@ def _restore_default_signals() -> None:
 
 
 def _shim_main(raw_argv: list[str]) -> int:
-    # Launched by file path: sys.path[0] is this file's dir (the nymeria package
-    # dir), which could shadow a stdlib module. Drop it; the shim is stdlib-only.
-    if sys.path and sys.path[0] == os.path.dirname(_shim_path()):
-        sys.path.pop(0)
-
+    # No sys.path surgery here, and `-I` is why. Under `-c` the interpreter
+    # prepends the CURRENT DIRECTORY to sys.path, which for bash_execute is the
+    # agent's own working directory: writable by the very code this confines,
+    # and read before the policy exists. `-I` implies `-P`, which suppresses
+    # that, leaving sys.path[0] as the stdlib zip (measured). So the launch flag
+    # is the control; `-c` on its own would be WORSE here than the old path
+    # launch, not safer. Never drop `-I` from wrap_argv.
     try:
         sep = raw_argv.index("--")
     except ValueError:

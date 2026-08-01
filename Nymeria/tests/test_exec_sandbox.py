@@ -14,6 +14,9 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+import nymeria.exec_sandbox
 
 import pytest
 
@@ -115,9 +118,129 @@ def test_wrap_argv_shape():
     # site/usercustomize/.pth from a user-writable directory BEFORE it applies
     # the policy. See test_the_shim_does_not_run_user_site_startup_code.
     assert argv[1:3] == ["-I", "-S"]
-    assert argv[3].endswith("exec_sandbox.py")
-    assert argv[4] == "--"
-    assert argv[5:] == ["cat", "/etc/hostname"]
+    # The shim travels as SOURCE, not as a path (C1-02-D). A path launch re-read
+    # it from disk every time, before the policy existed, so whatever could
+    # write the file owned the sandbox. See
+    # test_the_shim_survives_its_own_file_being_rewritten.
+    assert argv[3] == "-c"
+    assert "def _shim_main(" in argv[4]
+    assert argv[5] == "--"
+    assert argv[6:] == ["cat", "/etc/hostname"]
+
+
+def test_wrap_argv_names_no_file_to_tamper_with():
+    """Nothing in a confined launch may point at an on-disk launcher.
+
+    The single-assertion form of C1-02-D: if any argument were still a path to
+    the shim, the interpreter would read that path at launch and the fix would
+    be cosmetic. Deliberately checks EVERY argument rather than the one that
+    used to hold it, since a future edit could reintroduce the path elsewhere.
+    """
+    argv = wrap_argv(["cat", "/etc/hostname"], python_executable="/usr/bin/python3")
+    # Excluded by IDENTITY, not by position: keying on an index would silently
+    # start protecting a different argument the moment the argv shape changes.
+    payload = nymeria.exec_sandbox._SHIM_SOURCE
+    assert not [
+        arg for arg in argv if arg != payload and arg.endswith("exec_sandbox.py")
+    ], argv
+
+
+def test_the_shim_payload_fits_in_one_execve_argument():
+    """A budget with no guard is a budget that gets exceeded silently.
+
+    The module carries its own source to the child now, so growing the file
+    grows every sandboxed launch. Linux caps a SINGLE argument at
+    ``MAX_ARG_STRLEN`` (128 KiB, and unlike ``ARG_MAX`` it is not raisable), and
+    going past it fails the spawn with an opaque ``E2BIG``: the same failure the
+    sibling ``_MAX_CARVED_ROOTS`` ceiling exists to turn into something legible.
+
+    Also the tripwire for when splitting a minimal shim module stops being
+    premature: the file has more than doubled since it was written (14,891
+    bytes at introduction, ~35 KB now, measured).
+    """
+    size = len(nymeria.exec_sandbox._SHIM_SOURCE.encode("utf-8"))
+    assert 0 < size < 128 * 1024, f"shim payload is {size} bytes"
+
+
+def test_wrap_argv_refuses_rather_than_launching_unconfined(monkeypatch):
+    """The fail-closed arm, which is the entire reason there is no fallback.
+
+    If the source cannot be read, the tempting move is to launch the shim by
+    path instead. That would silently re-enter the weakness the source capture
+    exists to close, on exactly the deployments least able to notice. So it
+    must raise, and something has to hold that line.
+    """
+    monkeypatch.setattr(nymeria.exec_sandbox, "_SHIM_SOURCE", "")
+    with pytest.raises(nymeria.exec_sandbox.SandboxError) as excinfo:
+        wrap_argv(["echo", "SHOULD-NOT-RUN"])
+    # Says what it could not build, and deliberately does NOT name
+    # EXEC_SANDBOX_ENABLED: that setting belongs to core/exec_policy.py, which
+    # adds the remedy. Asserted there by
+    # test_a_refused_launch_tells_the_operator_how_to_opt_out.
+    assert "shim source unavailable" in str(excinfo.value)
+    assert "EXEC_SANDBOX_ENABLED" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "arm,make_file",
+    [
+        # The shim child: running AS the -c payload, there is no __file__ at all.
+        ("NameError", None),
+        # A loader that sets __file__ = None; os.path.abspath refuses it.
+        ("TypeError", lambda _tmp: None),
+        # Missing or unreadable.
+        ("OSError", lambda tmp: str(tmp / "definitely-not-here.py")),
+        # A SOURCELESS install: __file__ is the .pyc, and decoding it as UTF-8
+        # raises UnicodeDecodeError. That is a ValueError, so an OSError-only
+        # handler would sail straight past it.
+        ("UnicodeDecodeError", "binary"),
+    ],
+)
+def test_reading_the_source_returns_empty_instead_of_raising(arm, make_file, tmp_path):
+    """``_read_own_source`` runs at IMPORT, so anything it lets escape is fatal.
+
+    Not a launch degrading: the backend failing to boot, with a traceback that
+    names nothing about sandboxing. Each arm is driven through the real
+    function by swapping the module's own ``__file__``, so the test fails if
+    the catch is ever narrowed to, say, bare ``OSError``.
+    """
+    if make_file == "binary":
+        bad = tmp_path / "exec_sandbox.pyc"
+        bad.write_bytes(b"\xa7\x0d\x0d\x0a\x00\x01\xfe\xff not utf-8")
+        replacement = str(bad)
+    elif make_file is None:
+        replacement = None
+    else:
+        replacement = make_file(tmp_path)
+
+    module_globals = nymeria.exec_sandbox.__dict__
+    original = module_globals["__file__"]
+    try:
+        if make_file is None:
+            del module_globals["__file__"]
+        else:
+            module_globals["__file__"] = replacement
+        assert nymeria.exec_sandbox._read_own_source() == "", arm
+    finally:
+        module_globals["__file__"] = original
+
+    # The capture itself must still be intact for every other test in this file.
+    assert nymeria.exec_sandbox._read_own_source().startswith('"""Landlock')
+
+
+def test_the_shim_payload_is_ascii_only():
+    """The payload rides ``execve``, so it has to survive the fs encoding.
+
+    Under a filesystem encoding of ``ascii`` (a stripped container with no
+    locale, which PEP 538/540 makes rare but not impossible), a non-ASCII byte
+    anywhere in this module would fail every sandboxed spawn rather than
+    anything nearer the cause. Cheap to keep true, miserable to diagnose.
+    """
+    # Asserted here rather than leaned on: ``"".encode("ascii")`` succeeds, so
+    # without this the test would pass vacuously on an empty capture and quietly
+    # stop covering anything.
+    assert nymeria.exec_sandbox._SHIM_SOURCE
+    nymeria.exec_sandbox._SHIM_SOURCE.encode("ascii")
 
 
 def test_sandbox_env_overlay_carries_policy():
@@ -492,6 +615,72 @@ def test_enforcement_carved_directory_denies_content_and_stays_usable(tmp_path):
     assert lines[5].startswith("DENIED"), proc.stdout
     assert lines[6] == "None", proc.stdout                   # removing works
     assert denied.read_text(encoding="utf-8") == "SECRET"
+
+
+@requires_landlock
+def test_the_shim_survives_its_own_file_being_rewritten(tmp_path):
+    """C1-02-D: rewriting the shim on disk must not lift the sandbox.
+
+    The attack this closes is two calls wide and needs no restart. Call one
+    writes ``exec_sandbox.py``, replacing the launcher with one that never
+    applies a policy; call two is any sandboxed spawn, which used to re-read
+    that file and run it BEFORE the policy existed. It is the same shape as the
+    ``usercustomize`` bypass ``-I -S`` closes, one level up, and it was the only
+    Nymeria file with that property: everything else is already imported, where
+    a rewrite does nothing until a reload.
+
+    Driven against a COPY of the module so the repo file is never touched. The
+    copy is imported (capturing its source in memory, as a real process does at
+    startup), then its file is overwritten with a hostile launcher, then the
+    already-imported copy is asked to build and run a confined launch.
+    """
+    import importlib.util
+
+    real_source = Path(nymeria.exec_sandbox.__file__).read_text(encoding="utf-8")
+    copy_path = tmp_path / "shim_copy.py"
+    copy_path.write_text(real_source, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("shim_copy_under_test", copy_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec: @dataclass resolves its own module out of
+    # sys.modules while the class body runs, and fails on an unregistered one.
+    sys.modules["shim_copy_under_test"] = module
+    try:
+        spec.loader.exec_module(module)  # captures _SHIM_SOURCE from disk, once
+    finally:
+        sys.modules.pop("shim_copy_under_test", None)
+
+    # The attacker's single write: a launcher that skips the policy entirely.
+    copy_path.write_text(
+        "import os, sys\n"
+        "if __name__ == '__main__':\n"
+        "    sep = sys.argv.index('--')\n"
+        "    os.execvp(sys.argv[sep + 1], sys.argv[sep + 1:])\n",
+        encoding="utf-8",
+    )
+
+    policy = module.carved_policy(
+        read_only=tuple(module.DEFAULT_SYSTEM_ROOTS),
+        read_write=("/", *module.DEFAULT_DEVICE_NODES),
+        denied=("/proc",),
+    )
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        **module.sandbox_env_overlay(policy),
+    }
+    proc = subprocess.run(
+        module.wrap_argv(
+            ["/bin/sh", "-c", "cat /proc/self/environ && echo LEAKED || echo DENIED"]
+        ),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert "DENIED" in proc.stdout, (proc.returncode, proc.stdout, proc.stderr)
+    assert "LEAKED" not in proc.stdout, (proc.stdout, proc.stderr)
 
 
 @requires_landlock

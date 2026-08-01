@@ -307,6 +307,52 @@ def test_a_launch_without_an_explicit_env_is_refused(tmp_path, monkeypatch):
         exec_policy.sandbox_shell_launch("true", {})
 
 
+def test_a_refused_launch_tells_the_operator_how_to_opt_out(tmp_path, monkeypatch):
+    """The remedy is named HERE, because this layer owns the setting.
+
+    ``wrap_argv`` refuses when it has no shim source to send, but it is the
+    mechanism leaf: it reads no settings and must not tell an operator to
+    disable a control it knows nothing about. The same division the twin carve
+    budgets keep. So the leaf reports what it could not build and this layer
+    adds ``EXEC_SANDBOX_ENABLED``, which it reads and nothing else does.
+
+    Without this the refactor that moved the sentence would leave the operator
+    with a dead end: a hard failure naming no supported way forward.
+    """
+    import nymeria.exec_sandbox as mech
+
+    _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data")
+    monkeypatch.setattr(exec_policy, "sandbox_available", lambda: True)
+    monkeypatch.setattr(mech, "_SHIM_SOURCE", "")
+
+    with pytest.raises(SandboxError) as excinfo:
+        exec_policy.sandbox_argv_launch(["/bin/true"], {"env": {}})
+    message = str(excinfo.value)
+    assert "shim source unavailable" in message  # the leaf's half
+    assert "EXEC_SANDBOX_ENABLED=false" in message  # this layer's half
+
+
+def test_a_refused_launch_leaves_the_callers_kwargs_alone(tmp_path, monkeypatch):
+    """A refusal must not leave kwargs describing a confinement that is absent.
+
+    ``wrap_argv`` can raise now, which it could not when this ordering was
+    written. If the policy env were overlaid first, a caller that caught the
+    error and carried on would spawn with ``NYMERIA_SANDBOX_POLICY`` set and no
+    shim to read it: a launch that looks confined in its own environment and is
+    not. Nothing does that today; the point is that it cannot start to.
+    """
+    import nymeria.exec_sandbox as mech
+
+    _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data")
+    monkeypatch.setattr(exec_policy, "sandbox_available", lambda: True)
+    monkeypatch.setattr(mech, "_SHIM_SOURCE", "")
+
+    kwargs = {"env": {"PATH": "/usr/bin"}, "shell": True}
+    with pytest.raises(SandboxError):
+        exec_policy.sandbox_shell_launch("true", kwargs)
+    assert kwargs == {"env": {"PATH": "/usr/bin"}, "shell": True}
+
+
 def test_launch_is_a_noop_when_the_setting_is_off(tmp_path, monkeypatch):
     _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data", enabled=False)
     kwargs = {"shell": True, "env": {"PATH": "/usr/bin"}}
