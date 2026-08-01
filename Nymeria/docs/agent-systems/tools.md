@@ -221,7 +221,7 @@ What it costs, all measured rather than estimated:
 - `pgrep` and `pkill` return EMPTY rather than failing, so a "is it running" check silently answers no. Worth knowing when reading agent output.
 - `sudo`, `su`, `mount`, `ping` and `pkexec` stop working: an unprivileged Landlock ruleset requires the kernel's `no_new_privs` flag, which disables setuid and file capabilities for the whole process tree.
 
-The policy is built per launch in `core/exec_policy.py` (the filesystem twin of `subprocess_env.py`: one owns what a child INHERITS, the other what it may OPEN), and applied by a stdlib-only re-exec shim, `nymeria/exec_sandbox.py`. The file tools refuse the same `/proc` paths, since they run in the API process where Landlock does not reach them. Residuals worth knowing: a sandboxed command can still delete or replace a denied file even though it cannot read one, it can still list a denied directory's filenames, and only `bash_execute` is wired so far (the other agent-reachable spawn sites are gated by `tests/test_exec_sandbox_gate.py`, which makes each one declare at its call site why it is not yet confined).
+The policy is built per launch in `core/exec_policy.py` (the filesystem twin of `subprocess_env.py`: one owns what a child INHERITS, the other what it may OPEN), and applied by a stdlib-only re-exec shim, `nymeria/exec_sandbox.py`. The file tools refuse the same `/proc` paths, since they run in the API process where Landlock does not reach them. Residuals worth knowing: a sandboxed command can still delete or replace a denied file even though it cannot read one, it can still list a denied directory's filenames, and coverage is still partial. `bash_execute`, the Python custom-tool runner and the workflow runner are wired; the remaining agent-reachable spawn sites are gated by `tests/test_exec_sandbox_gate.py`, which makes each one declare at its call site why it is not yet confined.
 
 **Security:** MODERATE  -  the sandbox bounds what a command can READ, not what it can do. Use deployment-level containment for untrusted workloads.
 
@@ -2159,9 +2159,15 @@ not package modules, so Nymeria updates do not overwrite them and publishing
 does not edit `nymeria/tools/__init__.py`. The API registers a stable wrapper
 tool and runs the user code in a child Python process for validation and each
 runtime invocation. Syntax errors, exceptions, `sys.exit`, process crashes, and
-timeouts return tool errors instead of crashing the API process. This is crash
-containment, not a malicious-code security sandbox: the child process still
-runs with the backend container or process user's OS permissions. Publish-time
+timeouts return tool errors instead of crashing the API process. That much is
+crash containment. On Linux the child is additionally confined by the Landlock
+filesystem sandbox (`EXEC_SANDBOX_ENABLED`, see `bash_execute` above): it
+cannot read `/proc` file content, so it cannot reach the process environment,
+and where the data directory sits outside the working tree it cannot read the
+credential stores either. That is a filesystem boundary, not isolation: the
+child still runs with the backend container or process user's OS permissions,
+reaches the network, and on a source checkout (data dir inside the working
+tree) keeps its read of the stores. Publish-time
 validation defaults to `60` seconds and can be overridden with
 `validation_timeout_seconds`; published tool calls use the native
 `tool_timeout` setting.

@@ -1327,9 +1327,18 @@ async def tool_create(
     headers like Accept are OK.
     Python tools are for small deterministic helpers that can be expressed as
     a pure function. Python code is stored in data/custom_tools and executed in
-    a child process. That child runs with the same OS user, environment, and
-    network access as the API, so it is not a security sandbox; creating,
-    testing, and publishing Python tools is therefore restricted to admins.
+    a child process with a scrubbed environment, and on Linux inside a
+    filesystem sandbox. That is a boundary, not isolation: the child still runs
+    as the same OS user with the same network access, so creating, testing and
+    publishing Python tools stays restricted to admins. What the sandbox costs
+    code you write, so you neither retry something that cannot work nor trust a
+    result that is quietly empty: /proc is unreadable, so ps, top and psutil
+    FAIL outright, while pgrep and pkill return EMPTY without erroring (so "is
+    X running" answers no); anything needing extra
+    privilege (sudo and friends) is refused; and a file written directly into
+    Nymeria's data dir cannot be read back until a later call. Imports,
+    network calls, temp files, writes to the working directory and nested
+    subprocesses all behave normally.
     Workflow tools (implementation_type="workflow") run python_code out of
     process against the nym.* SDK (nym.tools.<name>, nym.llm, nym.thread,
     nym.emit, nym.todo.add, nym.notify, nym.memory.*). Anyone may draft one,
@@ -1340,7 +1349,9 @@ async def tool_create(
     entrypoint's type-hinted signature (str/int/float/bool/list/dict,
     Optional[...] or a default makes a parameter optional; docstring Args
     lines become parameter descriptions), so do not pass parameters for
-    workflows. A workflow test is a REAL run: side effects fire.
+    workflows. A workflow test is a REAL run: side effects fire. Workflow code
+    runs under the same sandbox and the same costs as Python tools above, with
+    its working directory in a scratch dir rather than the project tree.
 
     Actions:
       draft:   Save or update a per-user tool draft. HTTP requires http_config.

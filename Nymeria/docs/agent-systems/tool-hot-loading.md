@@ -211,6 +211,18 @@ reloads the custom-tool registry, and enables the new tool on the publishing
 thread. HTTP tools are declarative definitions; Python tools are validated and
 then executed through a subprocess wrapper.
 
+That subprocess is confined on two axes. Its environment is scrubbed to an
+allowlist, so backend secrets are not inherited, and on Linux it runs inside
+the Landlock filesystem sandbox (`EXEC_SANDBOX_ENABLED`). Two consequences are
+worth knowing when writing tool code. `/proc` file content is denied, so
+`ps`, `top` and `psutil` FAIL (`ps` exits non-zero advising you to mount
+`/proc`, which is not the problem and will not help), while `pgrep` and
+`pkill` are the case to watch: they do not error, they return empty, so "is X
+running" answers no. And anything needing privilege (`sudo` and friends)
+fails, because Landlock requires the kernel's `no_new_privs` flag. Third-party imports, network calls,
+temp files, writes to the working directory and nested subprocesses all behave
+normally.
+
 The declarative models behind those definitions, and behind managed MCP
 servers, live in `nymeria/tools/definitions/`:
 
@@ -240,8 +252,9 @@ must be re-published by an admin once, because a stamp cannot be safely
 auto-applied on load (that would re-open the bypass). The gate is
 tamper-evidence and fail-closed-by-default, not an unforgeable boundary: a
 writer who reads the (open) hash code could forge a matching approval, so the
-hard multi-user boundary (write confinement + subprocess env scrub) is tracked
-as a separate #75 slice.
+gate is not the hard multi-user boundary. Two of that boundary's three legs
+have since shipped: the subprocess env scrub, and the Landlock sandbox above.
+Write confinement (stopping the forging write in the first place) has not.
 
 **`http` and `mcp` tools carry the same execution-time gate**
 (`core/custom_tool_gate.py`), so all four implementation types are now covered.

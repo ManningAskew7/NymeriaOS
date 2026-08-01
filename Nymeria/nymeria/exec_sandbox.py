@@ -323,7 +323,9 @@ class SandboxPolicy:
 # produce a few dozen. Hitting this raises rather than truncating, because a
 # truncated carve silently denies whatever fell off the end; callers that would
 # rather drop a costly denial than fail should not offer it in the first place
-# (``core/exec_policy._affordable_to_deny``).
+# (``core/exec_policy.denied_paths`` does exactly that: it prices the whole
+# store deny set with ``_carve_cost`` against its own ``_MAX_CARVE_ENTRIES``
+# budget and drops the set rather than letting it reach this ceiling).
 _MAX_CARVED_ROOTS = 1500
 
 

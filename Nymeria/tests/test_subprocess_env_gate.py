@@ -37,6 +37,7 @@ technique of ``test_import_hygiene.py``.
 from __future__ import annotations
 
 import ast
+import textwrap
 from pathlib import Path
 
 NYMERIA_ROOT = Path(__file__).resolve().parent.parent / "nymeria"
@@ -125,6 +126,58 @@ def _env_argument(node: ast.Call) -> ast.expr | None:
                 return None
             return kw.value
     return None
+
+
+def _local_dict_env_values(tree: ast.AST) -> dict[str, list[ast.expr]]:
+    """Per module-local name, the ``env`` values of dict literals bound to it.
+
+    The full-copy assertion below reads a literal ``env=`` keyword at the call.
+    That stopped seeing a spawn the moment its kwargs moved into a dict built
+    one line above, which is the shape the sandbox wiring introduced::
+
+        spawn_kwargs = {"env": scrubbed, "cwd": ...}
+        subprocess.run(launch, **spawn_kwargs)
+
+    The first assertion still held (a splat counts as supplying an env), so the
+    blindness was silent: ``os.environ.copy()`` written INSIDE that dict would
+    not have been flagged, while the identical value written at the call site
+    would. Resolving the splat here keeps both assertions looking at the same
+    code, which is the only way the pair means what it says.
+
+    Subscript writes (``kwargs["env"] = ...``) are picked up too, since that is
+    the same thing spelled over two statements.
+    """
+    found: dict[str, list[ast.expr]] = {}
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets, value = list(node.targets), node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        if value is None:
+            continue
+        for target in targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "env"
+            ):
+                found.setdefault(target.value.id, []).append(value)
+        if not isinstance(value, ast.Dict):
+            continue
+        env_values = [
+            item
+            for key, item in zip(value.keys, value.values)
+            if isinstance(key, ast.Constant) and key.value == "env"
+        ]
+        if not env_values:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                found.setdefault(target.id, []).extend(env_values)
+    return found
 
 
 def _locally_built_dicts_without_env(tree: ast.AST) -> set[str]:
@@ -303,20 +356,38 @@ def _environ_copy_names(tree: ast.AST) -> set[str]:
 
 
 def _builds_env_from_full_copy(
-    node: ast.Call, copy_names: set[str], copy_functions: set[str]
+    node: ast.Call,
+    copy_names: set[str],
+    copy_functions: set[str],
+    dict_env_values: dict[str, list[ast.expr]] | None = None,
 ) -> bool:
+    """True if the env this spawn supplies traces back to a full copy.
+
+    Looks at the ``env=`` keyword AND at the ``env`` entry of any module-local
+    dict literal the call splats, because those are the same statement written
+    two ways and a gate that saw only one of them would be trivially and
+    silently escapable.
+    """
+    candidates: list[ast.expr] = []
     env = _env_argument(node)
-    if env is None:
-        return False
-    if _is_environ_copy(env):
-        return True
-    if isinstance(env, ast.Name) and env.id in copy_names:
-        return True
-    return (
-        isinstance(env, ast.Call)
-        and isinstance(env.func, ast.Name)
-        and env.func.id in copy_functions
-    )
+    if env is not None:
+        candidates.append(env)
+    for kw in node.keywords:
+        if kw.arg is None and isinstance(kw.value, ast.Name):
+            candidates.extend((dict_env_values or {}).get(kw.value.id, ()))
+
+    for candidate in candidates:
+        if _is_environ_copy(candidate):
+            return True
+        if isinstance(candidate, ast.Name) and candidate.id in copy_names:
+            return True
+        if (
+            isinstance(candidate, ast.Call)
+            and isinstance(candidate.func, ast.Name)
+            and candidate.func.id in copy_functions
+        ):
+            return True
+    return False
 
 
 def _markers_above(lines: list[str], lineno: int) -> str:
@@ -352,12 +423,13 @@ def _walk_spawns():
         copy_names = _environ_copy_names(tree)
         copy_functions = _environ_copy_functions(tree, copy_names)
         empty_kwargs = _locally_built_dicts_without_env(tree)
+        dict_env_values = _local_dict_env_values(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _spawn_name(node):
                 yield (
                     f"{rel}:{node.lineno}",
                     node,
-                    (copy_names, copy_functions),
+                    (copy_names, copy_functions, dict_env_values),
                     _markers_above(lines, node.lineno),
                     empty_kwargs,
                 )
@@ -393,6 +465,60 @@ def test_no_spawn_builds_its_environment_from_a_full_copy():
         "leaks by default. Start from scrubbed_subprocess_env() and add what "
         f"the child needs, or justify it with '# {FULL_COPY_MARKER} - <reason>'."
     )
+
+
+def _only_spawn(source: str) -> tuple[ast.Call, dict[str, list[ast.expr]]]:
+    tree = ast.parse(textwrap.dedent(source))
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _spawn_name(node)
+    )
+    return call, _local_dict_env_values(tree)
+
+
+def test_the_full_copy_check_sees_through_a_splatted_kwargs_dict():
+    """A full copy moved one line up must still be caught.
+
+    Regression pin for a real blind spot rather than a hypothetical one. When
+    the two runner spawns moved their kwargs into a dict literal to be wrapped
+    by the sandbox helper, this file's full-copy assertion silently stopped
+    applying to them: it read only a literal ``env=`` at the call site. The
+    other assertion still passed (a splat does supply an env), so no test
+    failed and the coverage was simply gone. That is the exact failure mode a
+    gate exists to prevent, so it gets its own test.
+    """
+    leaking, env_values = _only_spawn(
+        """
+        import os, subprocess
+        def go(argv):
+            spawn_kwargs = {"env": os.environ.copy(), "cwd": "/tmp"}
+            return subprocess.run(argv, **spawn_kwargs)
+        """
+    )
+    assert _builds_env_from_full_copy(leaking, set(), set(), env_values)
+
+    subscript, subscript_values = _only_spawn(
+        """
+        import os, subprocess
+        def go(argv):
+            spawn_kwargs = {"cwd": "/tmp"}
+            spawn_kwargs["env"] = dict(os.environ)
+            return subprocess.run(argv, **spawn_kwargs)
+        """
+    )
+    assert _builds_env_from_full_copy(subscript, set(), set(), subscript_values)
+
+    scrubbed, scrubbed_values = _only_spawn(
+        """
+        import subprocess
+        from nymeria.subprocess_env import scrubbed_subprocess_env
+        def go(argv):
+            spawn_kwargs = {"env": scrubbed_subprocess_env(), "cwd": "/tmp"}
+            return subprocess.run(argv, **spawn_kwargs)
+        """
+    )
+    assert not _builds_env_from_full_copy(scrubbed, set(), set(), scrubbed_values)
 
 
 def test_every_exemption_marker_carries_a_reason():
