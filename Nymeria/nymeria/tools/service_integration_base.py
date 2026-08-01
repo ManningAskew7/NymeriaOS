@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
@@ -339,6 +340,148 @@ def require_joined_destination(
         "kind, clear the stale environment variable or setting holding the one named "
         "here so the record's own credential is the one that resolves."
     )
+
+
+# ``\Z``, not ``$``. Python's ``$`` also matches immediately BEFORE a trailing
+# newline, and ``.strip()`` runs before ``.rstrip("/")`` below, so a trailing
+# slash shields the newline from the strip: ``"evil.com\n/"`` reached a
+# validated result carrying a character this charset is meant to exclude. It
+# was not exploitable (urlsplit deletes the newline and httpx refuses to build
+# the URL at all), but the whole argument for a positive charset is that no
+# character survives which the three parsers could read differently, and that
+# one falsified it.
+_HOST_LABELS = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*\Z"
+)
+
+
+def vendor_host(
+    value: Optional[str], *, vendor_suffix: str, provider: str, field: str
+) -> str:
+    """Build a complete vendor host from a credential-supplied FRAGMENT.
+
+    Returns the WHOLE host (``"acme.chargebee.com"``), not the bare label, and
+    that is the load-bearing part of the signature rather than a convenience.
+    Returning the label would leave the dangerous
+    ``f"https://{x}.vendor.com"`` template at every call site, making safety a
+    property of the PREVIOUS LINE and forcing any ratchet to recognise vendor
+    domains from a list. Owning the suffix here means no URL template in the
+    corpus contains a vendor domain at all, so the gate is one rule with no
+    vendor knowledge in it: anything interpolated into an authority position
+    must be a call to this function.
+
+    Many integrations build their address as ``f"https://{fragment}.vendor.com"``
+    where ``fragment`` is a tenant name from a vault record or a setting. That
+    template is making a promise, that the request lands somewhere under
+    ``vendor.com``, and a bare interpolation does not keep it: the fragment can
+    terminate the authority and push the vendor suffix into the path, the query
+    or the URL fragment, leaving an attacker's host as the netloc. Measured, on
+    the exact shapes in this tree:
+
+        f"https://{instance}.service-now.com/api/now"  instance="evil.com/x#"
+            -> netloc "evil.com", the vendor suffix now a discarded fragment
+        f"https://{subdomain}.zendesk.com/api/v2"      subdomain="evil.com?"
+        f"https://{prefix}.api.mailchimp.com/3.0"      prefix="evil.com/"
+        f"https://{app_name}.bubbleapps.io"            app_name="evil.com:443#"
+
+    So the escape set is the AUTHORITY TERMINATORS ``/``, ``?``, ``#`` and ``:``,
+    not ``#`` alone.
+
+    It refuses on a positive charset rather than normalising with ``urlparse``,
+    and the reason is stronger than "a blacklist might miss a fifth delimiter". A
+    parser-based normaliser ACCEPTS AND SILENTLY REWRITES, after which urlparse,
+    httpx and DNS no longer agree about what it produced. Measured through the
+    normalising path: ``"evil.com\\ty"`` has the tab deleted and requests
+    ``evil.comy``; ``"evil .com"`` is percent-encoded to ``evil%20.com``;
+    ``"acme。evil.com"`` is UTS-46 mapped by httpx into a real dot, so one
+    label becomes two; ``"a@evil.com"`` silently introduces userinfo. None of
+    those escape the vendor, but in each the string that was validated is not the
+    host the socket got. ``[A-Za-z0-9.-]`` admits no character those three
+    parsers can disagree about, so it DELETES that differential class instead of
+    surviving it.
+
+    Dots ARE allowed, deliberately. ``instance="foo.bar"`` yields
+    ``foo.bar.service-now.com``, which is a genuine subdomain of the vendor and
+    therefore still inside the promise; refusing it would break legitimate
+    multi-label tenants for no gain. By the same reasoning ``foo@evil.com`` and
+    ``evil.com\\`` were measured NOT to be escapes and are simply rejected here
+    as non-label characters rather than treated as a special case.
+
+    A leading ``http://`` or ``https://`` and the vendor suffix are both stripped
+    before validation, preserving the convenience the call sites already had (a
+    user may paste a whole URL), and both are matched case-insensitively because
+    DNS is. Stripping the scheme is safe rather than lenient: anything left over
+    still has to be labels, so ``https://evil.com/x`` is refused for its slash
+    and ``https://evil.com`` becomes ``evil.com.vendor.com``, a vendor subdomain.
+    Three different tolerances for the same user paste used to exist across this
+    corpus; this is now the only one.
+
+    WHAT THIS DOES NOT DO, and it is the bigger half. Keeping the request inside
+    the vendor's domain does not keep it inside the OPERATOR's tenant: a planted
+    fragment still selects another customer of the same vendor. That is a
+    provenance question, not a syntax one, and the answer is
+    ``require_joined_destination``, which refuses when a record supplies the
+    address and did not supply the secret. This function and that one are both
+    needed and neither substitutes for the other.
+    """
+    from .native_credentials import CredentialDestinationRefused
+
+    # The SUFFIX is checked too, and it is not defensive programming. At one
+    # site it is DATA: erpnext composes its host from a vault-supplied
+    # subdomain and a `cloud_domain` that defaults to "erpnext.com", so an
+    # unchecked suffix would let the second half do exactly what this function
+    # stops the first half doing. It also turns three silent own-goals into a
+    # test failure the moment anyone writes them, since a caller passing "",
+    # "okta.com" (no dot) or "@evil.com" would otherwise get back
+    # "attacker.example.net", "evil-corpokta.com" and "acme@evil.com" from a
+    # function whose whole promise is that the result stays under the vendor.
+    if not vendor_suffix.startswith(".") or not _HOST_LABELS.match(vendor_suffix[1:]):
+        raise CredentialDestinationRefused(
+            f'Cannot build the "{provider}" address: the vendor domain '
+            f"{vendor_suffix!r} is not a dot followed by plain host labels, so "
+            "there is no domain to keep the request inside. If it came from "
+            "configuration, correct it there."
+        )
+
+    text = (value or "").strip()
+    for scheme in ("https://", "http://"):
+        if text.lower().startswith(scheme):
+            text = text[len(scheme) :]
+            break
+    text = text.rstrip("/")
+    if vendor_suffix and text.lower().endswith(vendor_suffix.lower()):
+        text = text[: -len(vendor_suffix)]
+    if not text or not _HOST_LABELS.match(text):
+        # The received value is deliberately NOT echoed. At one site
+        # (customer_engagement's mailchimp) the fragment can be derived from the
+        # API key itself, ``api_key.rsplit("-", 1)[-1]``, so echoing a malformed
+        # one would put a slice of the credential into a tool-visible string, in
+        # the one corpus whose whole subject is credentials not going where they
+        # should not.
+        # "configured or saved", not "saved": every call site resolves this as
+        # ``_credential_value(...) or _settings_value(...)``, so the offending
+        # value is as likely to be the operator's own env var (SHOPIFY_SHOP,
+        # ZENDESK_SUBDOMAIN, SERVICENOW_INSTANCE) as a vault record. The other
+        # two users of this exception fire only on vault-supplied addresses, so
+        # the class name carries a provenance it does not have here, and telling
+        # an operator their "saved" value is wrong when they never saved one
+        # sends them looking in the wrong place.
+        raise CredentialDestinationRefused(
+            f'The configured or saved "{provider}" {field} is not usable. It is '
+            f"interpolated into {provider}'s own hostname, so a value carrying "
+            '"/", "?", "#" or ":" would end the hostname early and move the '
+            f'request off "{vendor_suffix.lstrip(".") or provider}" entirely. '
+            f'Give the tenant label on its own ("acme"), the full host '
+            f'("acme{vendor_suffix}"), or that same host with an "https://" '
+            "prefix. All three are accepted."
+            # The examples deliberately do not spell a whole URL as one
+            # interpolated string. A placeholder sitting directly after a
+            # scheme is exactly the shape the build gate looks for, and prose
+            # is syntactically indistinguishable from a request target, so
+            # writing it that way would have made the helper's own error
+            # message the one thing its gate reported.
+        )
+    return f"{text}{vendor_suffix}"
 
 
 def json_object(value: str, *, field_name: str) -> dict[str, Any]:

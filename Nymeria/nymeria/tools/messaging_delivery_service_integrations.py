@@ -461,6 +461,10 @@ def _mailgun_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _settings_value("mailgun_base_url")
         or _MAILGUN_BASE_URL
     )
+    # authority-gate: not-a-fragment - mailgun's `domain` is the sending domain
+    # and lands in a PATH segment, percent-encoded with safe="" so it cannot
+    # even leave that segment (f"{base_url}/{quote(domain)}/messages"). The
+    # authority comes from `base_url`, which is a separate whole-address field.
     domain = _credential_value(
         provider=_MAILGUN.provider,
         provider_aliases=_MAILGUN.aliases,

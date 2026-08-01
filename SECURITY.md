@@ -519,12 +519,40 @@ because "some guard ran here" is not coverage when a function has three
 authentication branches, and a build gate derives the sites that need it from
 the credential register rather than a hand-maintained list.
 
-The residual is a destination that is a host *fragment* rather than a whole URL:
-a subdomain, an instance name or a region interpolated into a vendor template.
-Those are not yet covered, and the assumption that a fragment cannot escape its
-vendor is false where the site does not validate it (a value containing `/` or
-`#` terminates the authority and the vendor suffix is discarded). Treat a
-vault-supplied host fragment as able to name any host until that is closed.
+A destination can also be a host *fragment* rather than a whole URL: a subdomain,
+an instance name or a region interpolated into a vendor template. The assumption
+that such a fragment cannot escape its vendor was false, because a value
+containing any of the URL authority terminators ends the hostname early and the
+vendor suffix is discarded into the path, the query or the URL fragment, leaving
+whatever the value named as the host. Every such template now builds its address
+through one helper that owns the vendor suffix and accepts only DNS labels, so no
+URL template in the integrations contains a vendor domain for a fragment to break
+out of, and a build gate requires that anything interpolated into a URL authority
+comes from that helper. Multi-label tenants still work, since a value with dots
+stays underneath the vendor, and a pasted host or full URL is still accepted.
+
+What that does *not* do is keep the request inside your own tenant. A constrained
+fragment can still name a different customer of the same vendor, which is a
+question about which record chose the address rather than about its syntax, so
+the answer is the join above rather than the character rule. The integrations
+apply that join to fragment-supplied addresses, but the build gate does not yet
+enforce it there, so it rests on review rather than on a check. Treat a
+vault-supplied host fragment as able to name any tenant of that vendor, and no
+longer as able to name any host at all.
+
+There are two such gates rather than one, and the redundancy is deliberate. The
+first reads the source text, so it sees a template whose value came from a
+setting no credential spec declares. The second reads the credential register,
+so it sees every field declared as a host fragment however the URL is spelled.
+Each covers a class the other cannot, because a gate that derives its scope from
+one place inherits that place's blind spots as the control's blind spots.
+
+Neither reads a URL built by a spelling it does not recognise. The text-side
+check understands f-strings, `%`, `.format` and string concatenation, and is
+blind to a scheme supplied through a variable, or to a name deliberately rebound
+after the helper assigned it. Both are recorded at the check itself. They are the
+usual shape of a build-time ratchet: it catches a control being deleted, which is
+what a refactor does, and not a control being routed around, which is not.
 
 *Where the tool request leaves.* The join decides which record may supply an
 address. A separate control decides whether that address may be reached at all,

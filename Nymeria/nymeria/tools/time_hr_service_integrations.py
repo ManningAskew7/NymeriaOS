@@ -252,6 +252,10 @@ def _bamboohr_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _settings_value("bamboohr_base_url")
         or _BAMBOOHR_GATEWAY_BASE_URL
     )
+    # authority-gate: not-a-fragment - despite the name, bamboohr's `subdomain`
+    # is a PATH segment on a fixed gateway host
+    # (f"{base}/{quote(subdomain, safe='')}/v1"), not a label in the authority,
+    # and the percent-encoding keeps it inside that segment.
     subdomain = _credential_value(
         provider=_BAMBOOHR.provider,
         provider_aliases=_BAMBOOHR.aliases,

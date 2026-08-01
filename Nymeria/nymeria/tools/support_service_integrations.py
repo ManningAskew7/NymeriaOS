@@ -28,6 +28,7 @@ from .service_integration_base import (
     request_with_policy as _request_with_policy,
     require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
+    vendor_host as _vendor_host,
     setup_hint as _setup_hint,
 )
 
@@ -262,8 +263,7 @@ def _freshdesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         config=config,
     ) or _settings_value("freshdesk_api_key")
     if not base and domain:
-        domain = domain.strip().replace(".freshdesk.com", "")
-        base = f"https://{domain}.freshdesk.com/api/v2"
+        base = f"https://{_vendor_host(domain, vendor_suffix='.freshdesk.com', provider=_FRESHDESK.provider, field='domain')}/api/v2"
     if not base:
         return "", (
             "[Error]: No Freshdesk base URL found. Save a Freshdesk credential with "
@@ -315,8 +315,7 @@ def _freshservice_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
         config=config,
     ) or _settings_value("freshservice_api_key")
     if not base and domain:
-        domain = domain.strip().replace(".freshservice.com", "")
-        base = f"https://{domain}.freshservice.com/api/v2"
+        base = f"https://{_vendor_host(domain, vendor_suffix='.freshservice.com', provider=_FRESHSERVICE.provider, field='domain')}/api/v2"
     if not base:
         return "", (
             "[Error]: No Freshservice base URL found. Save a Freshservice credential with "
@@ -382,8 +381,7 @@ def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
     )
     password = password_from_vault or _settings_value("servicenow_password")
     if not base and instance:
-        instance = instance.strip().replace(".service-now.com", "")
-        base = f"https://{instance}.service-now.com/api/now"
+        base = f"https://{_vendor_host(instance, vendor_suffix='.service-now.com', provider=_SERVICENOW.provider, field='instance')}/api/now"
     if not base:
         return "", (
             "[Error]: No ServiceNow base URL found. Save a ServiceNow credential with "

@@ -31,6 +31,7 @@ from .service_integration_base import (
     json_object as _json_object,
     request_with_policy as _request_with_policy,
     settings_value as _settings_value,
+    vendor_host as _vendor_host,
     setup_hint as _setup_hint,
 )
 
@@ -420,7 +421,11 @@ def _agile_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
             config=config,
         )
         or _settings_value("agilecrm_base_url")
-        or (f"https://{subdomain}.agilecrm.com/dev" if subdomain else _AGILE_PLACEHOLDER_BASE_URL)
+        or (
+            f"https://{_vendor_host(subdomain, vendor_suffix='.agilecrm.com', provider=_AGILECRM.provider, field='subdomain')}/dev"
+            if subdomain
+            else _AGILE_PLACEHOLDER_BASE_URL
+        )
     )
     email = _credential_value(
         provider=_AGILECRM.provider,

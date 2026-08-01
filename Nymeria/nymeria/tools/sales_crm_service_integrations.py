@@ -27,6 +27,7 @@ from .service_integration_base import (
     request_with_policy as _request_with_policy,
     require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
+    vendor_host as _vendor_host,
     setup_hint as _setup_hint,
 )
 
@@ -38,7 +39,7 @@ _PIPEDRIVE_V2_BASE_URL = "https://api.pipedrive.com/api/v2"
 _PIPEDRIVE_V1_BASE_URL = "https://api.pipedrive.com/v1"
 _SALESFORCE_API_VERSION = "v59.0"
 _ZOHO_CRM_BASE_URL = "https://www.zohoapis.com/crm/v2"
-_FRESHWORKS_CRM_BASE_URL = "https://{domain}.myfreshworks.com/crm/sales/api"
+_FRESHWORKS_CRM_BASE_URL = "https://{host}/crm/sales/api"
 _SALESMATE_BASE_URL = "https://apis.salesmate.io"
 
 # Provider credential specs: the single source of truth for these providers'
@@ -535,7 +536,12 @@ def _freshworks_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
                 '[Error]: No Freshworks CRM domain found. Save a Freshworks CRM credential with "domain" '
                 "or set FRESHWORKS_CRM_DOMAIN."
             )
-        base = _FRESHWORKS_CRM_BASE_URL.format(domain=domain.strip().replace(".myfreshworks.com", ""))
+        base = _FRESHWORKS_CRM_BASE_URL.format(
+            host=_vendor_host(
+                domain, vendor_suffix=".myfreshworks.com",
+                provider=_FRESHWORKS_CRM.provider, field="domain",
+            )
+        )
     if not api_key:
         return _base_url(base), _setup_hint(
             provider=_FRESHWORKS_CRM.provider,

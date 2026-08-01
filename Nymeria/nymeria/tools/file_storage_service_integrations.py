@@ -435,6 +435,11 @@ def _s3_client(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any, s
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_session_token")
+    # authority-gate: not-a-fragment - same as aws_service_integrations: boto3
+    # interpolates the region into the endpoint itself, out of this gate's
+    # sight, and botocore refuses a malformed one (measured: InvalidRegionError
+    # on "evil.com/x#"). Safe by a third party's validation, recorded here
+    # rather than left to be inferred from silence.
     region = _credential_value(
         provider=_S3.provider,
         provider_aliases=_S3.aliases,

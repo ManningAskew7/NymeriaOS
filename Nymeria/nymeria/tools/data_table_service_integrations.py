@@ -28,6 +28,7 @@ from .service_integration_base import (
     request_with_policy as _request_with_policy,
     require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
+    vendor_host as _vendor_host,
     setup_hint as _setup_hint,
 )
 
@@ -621,6 +622,10 @@ def _bubble_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bubble_app_name")
+    # authority-gate: not-a-fragment - bubble accepts EITHER a whole custom
+    # domain (this lookup) or a tenant label under bubbleapps.io (`app_name`
+    # above, which does go through vendor_host). This branch hard-codes no
+    # suffix, so it is an address like any other and the join gate governs it.
     domain = _credential_value(
         provider=_BUBBLE.provider,
         provider_aliases=provider_aliases,
@@ -657,7 +662,11 @@ def _bubble_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
     if base:
         api_base = base
     else:
-        root = _base_url(domain if domain else f"https://{app_name}.bubbleapps.io")
+        root = _base_url(
+            domain
+            if domain
+            else f"https://{_vendor_host(app_name, vendor_suffix='.bubbleapps.io', provider=_BUBBLE.provider, field='app_name')}"
+        )
         segment = _BUBBLE_DEV_SEGMENT if str(environment).lower() in {"dev", "development", "version-test"} else _BUBBLE_LIVE_SEGMENT
         api_base = f"{root}{segment}"
     return _base_url(api_base), _bearer_headers(api_token)

@@ -268,12 +268,19 @@ DESTINATION_URL_FIELDS: frozenset[str] = frozenset({
     "tracking_base_url", "url", "webdav_url", "webhook_url",
 })
 
-# The value is interpolated into a hostname, so how far a planted one reaches
-# depends on whether the site VALIDATES it. Where it does not, `/` or `#`
-# terminates the authority and the value escapes the vendor entirely: measured
-# on `support_service_integrations.py:385`, a planted `instance` of
-# "evil.com/x#" yields https://evil.com/x with the vendor suffix discarded.
-# Tracked as E10-02-E. Do not assume this half is inert.
+# The value is interpolated into a hostname. It USED to reach any host at all:
+# where a site did not validate it, `/` or `#` terminated the authority and the
+# value escaped the vendor entirely (measured on what was then
+# `support_service_integrations.py:385`, a planted `instance` of "evil.com/x#"
+# yielding https://evil.com/x with the vendor suffix discarded). E10-02-E closed
+# that: every such site now builds its host through
+# `service_integration_base.vendor_host`, which owns the vendor suffix and
+# accepts only DNS labels, and `tests/test_service_integration_egress.py`
+# derives from THIS set which lookups must reach it.
+#
+# Do not read that as inert. A constrained fragment still names a different
+# TENANT of the same vendor, which is a provenance question rather than a
+# syntactic one, and the join gate cannot yet see these lookups (task #69).
 DESTINATION_HOST_FRAGMENT_FIELDS: frozenset[str] = frozenset({
     "app_name", "cloud_domain", "domain", "host", "instance", "region",
     "server_prefix", "shop_subdomain", "site", "subdomain",
@@ -310,13 +317,44 @@ def destination_url_fields_for(spec: ProviderCredentialSpec) -> frozenset[str]:
     questions. That one asks "does this lookup decide where the request goes",
     which host fragments do. This one asks "can a planted value name ANY host",
     which today only a whole URL can, so it is the scope of the join gate in
-    ``tests/test_service_integration_egress.py``. The gap between them is
-    E10-02-E.
+    ``tests/test_service_integration_egress.py``. The gap between them is where
+    E10-02-E lived; its syntactic half is closed by
+    ``destination_host_fragment_fields_for`` below, and its provenance half
+    (which TENANT of the vendor) is still open, tracked as task #69.
     """
     return frozenset(
         name
         for group in spec.groups
         if group.names[0] in DESTINATION_URL_FIELDS
+        for name in group.names
+    )
+
+
+def destination_host_fragment_fields_for(
+    spec: ProviderCredentialSpec,
+) -> frozenset[str]:
+    """This provider's host-FRAGMENT destination names, all aliases.
+
+    The fragment half of ``destination_fields_for``, and the scope of the
+    authority gate in ``tests/test_service_integration_egress.py`` exactly as
+    ``destination_url_fields_for`` is the scope of the join gate beside it.
+
+    Per spec, and read the sibling's docstring for why that is load-bearing
+    rather than tidy: ``domain``, ``host`` and ``region`` are fragment primaries
+    here and secret aliases elsewhere, so a global union would classify secret
+    lookups as destinations and drop them from the analysis that was supposed to
+    cover them.
+
+    Deriving the gate's scope from here rather than from a list in the test is
+    the same lesson one function up. The authority gate ALSO walks every module
+    for URL templates, because a site can interpolate a setting that no spec
+    declares; the two rules overlap on purpose, since each sees a class the
+    other cannot.
+    """
+    return frozenset(
+        name
+        for group in spec.groups
+        if group.names[0] in DESTINATION_HOST_FRAGMENT_FIELDS
         for name in group.names
     )
 
