@@ -28,6 +28,7 @@ from nymeria.exec_sandbox import (
     landlock_abi_version,
     sandbox_available,
     sandbox_env_overlay,
+    shim_refusal,
     wrap_argv,
 )
 
@@ -835,3 +836,63 @@ def test_shim_leaves_sigpipe_at_its_default(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr == "", proc.stderr
+
+
+def test_shim_refusal_tells_a_confinement_failure_from_a_command_failure():
+    """The parent's only way to know the sandbox, not the command, said no.
+
+    The shim fails closed in the CHILD, after the fork, so no exception reaches
+    the parent: a refused launch and a command that ran and failed both arrive
+    as a nonzero exit with something on stderr. Surfaces that cannot tell them
+    apart report "your edit broke the tools" or silently return nothing when the
+    truth is that confinement could not be established.
+    """
+    # Every fail-closed path in _shim_main: exit 2, prefixed line.
+    for message in (
+        "no policy set; refusing to run unsandboxed",
+        "bad policy: not JSON",
+        "sandbox not applied (ruleset); failing closed",
+        "missing '--' command separator",
+        "empty command",
+    ):
+        assert shim_refusal(2, f"exec_sandbox shim: {message}\n") == message
+
+    # A prefixed line among the command's own output is still found.
+    assert shim_refusal(2, "warning: x\nexec_sandbox shim: bad policy: y\n") == (
+        "bad policy: y"
+    )
+
+    # Not a refusal: a confined command that ran and exited 2 on its own. This
+    # is why the exit code alone is not enough to match on; plenty of tools use
+    # 2 for usage errors.
+    assert shim_refusal(2, "usage: git status [<options>]\n") is None
+    # Not a refusal: the shim's exec failure is a MISSING COMMAND, which the
+    # caller should report through its ordinary not-found path.
+    assert shim_refusal(8, "exec_sandbox shim: exec 'nope' failed: [Errno 2]\n") is None
+    # Not a refusal: success, or nothing on stderr to go on.
+    assert shim_refusal(0, "exec_sandbox shim: bad policy: x\n") is None
+    assert shim_refusal(2, "") is None
+    assert shim_refusal(2, None) is None
+
+
+@requires_landlock
+def test_a_withheld_policy_is_reported_as_a_refusal_not_a_command_failure(tmp_path):
+    """End to end against the real shim, with the policy deliberately withheld.
+
+    This is the exact shape a caller that passes a COPY of its spawn kwargs
+    produces: the argv gets wrapped, the env mutation is lost, and every command
+    then dies in the shim. Pinned here so the detector is checked against what
+    the shim actually writes rather than against a string in this file.
+    """
+    proc = subprocess.run(
+        wrap_argv(["/bin/echo", "unreachable"]),
+        env={k: v for k, v in os.environ.items() if k != _SANDBOX_POLICY_ENV},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 2, proc
+    assert proc.stdout == "", "the command must never have run"
+    assert shim_refusal(proc.returncode, proc.stderr) == (
+        "no policy set; refusing to run unsandboxed"
+    )

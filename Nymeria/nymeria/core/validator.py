@@ -7,8 +7,10 @@ import sys
 from pathlib import Path
 from typing import Tuple, List, Optional
 
+from ..exec_sandbox import SandboxError, shim_refusal
 from ..oom import oom_score_preexec
 from ..subprocess_env import scrubbed_subprocess_env
+from .exec_policy import sandbox_argv_launch
 
 logger = logging.getLogger(__name__)
 
@@ -149,30 +151,54 @@ class CodeValidator:
         """
         test_code = "from nymeria.tools import SEED_TOOLS; print(f'Loaded {len(SEED_TOOLS)} tools')"
 
+        # This LOOKS like Nymeria importing itself, and its exemption marker
+        # used to say so. It is not. `nymeria/tools/` is absent from
+        # `NYMERIA_PROTECTED_DIRS` (tools/filesystem.py), so `file_write` and
+        # `file_edit` can rewrite any module `nymeria/tools/__init__.py` pulls
+        # in, and `self_test_import` carries no `self_edit_allowed()` gate, so
+        # the setting that bounds the self-edit tools does not bound this. The
+        # import below therefore executes module-level code an agent authored,
+        # which is the category C1-02 ranked highest, not a fixed self-check.
+        spawn_kwargs = dict(
+            cwd=str(self.project_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=oom_score_preexec(),
+            # The child only imports a module and counts tools, so it needs
+            # no secret from this process. The two extras are path
+            # resolution, not credentials: NYMERIA_PROJECT_ROOT is how the
+            # package finds its root when launched outside the source tree,
+            # and PYTHONPATH keeps a non-standard install layout importable.
+            env=scrubbed_subprocess_env(("NYMERIA_PROJECT_ROOT", "PYTHONPATH")),
+        )
         try:
-            # sandbox-gate: unsandboxed - Nymeria importing itself to check a
-            # self-modification did not break the tree. Confining this would
-            # test the sandbox rather than the edit, and a policy failure would
-            # read as a broken modification. Deliberately out of scope.
-            result = subprocess.run(
-                [sys.executable, "-c", test_code],
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=30,
-                preexec_fn=oom_score_preexec(),
-                # The child only imports a module and counts tools, so it needs
-                # no secret from this process. The two extras are path
-                # resolution, not credentials: NYMERIA_PROJECT_ROOT is how the
-                # package finds its root when launched outside the source tree,
-                # and PYTHONPATH keeps a non-standard install layout importable.
-                env=scrubbed_subprocess_env(("NYMERIA_PROJECT_ROOT", "PYTHONPATH")),
-            )
+            launch = sandbox_argv_launch([sys.executable, "-c", test_code], spawn_kwargs)
+        except SandboxError as exc:
+            # Caught separately, and BEFORE the generic arm below, because the
+            # old marker's objection to confining this was right about the
+            # symptom even though it was wrong about the category: a policy
+            # that cannot be built must not report as a broken modification.
+            # It gets its own message instead, so an operator reads "the
+            # sandbox refused" rather than "your edit broke the tools".
+            return False, f"Import test could not be confined, so it was not run: {exc}"
+
+        try:
+            result = subprocess.run(launch, **spawn_kwargs)
 
             if result.returncode == 0:
                 return True, result.stdout.strip()
-            else:
-                return False, f"Import failed:\n{result.stderr}"
+            # The `except SandboxError` arm above covers a policy that could not
+            # be BUILT. The shim also fails closed in the CHILD, after the fork,
+            # where no exception can reach back: that arrives as a plain nonzero
+            # exit and would otherwise be reported as `Import failed`, which is
+            # the same "your edit broke the tools" misreading through a
+            # different door. Measured, with the policy deliberately withheld:
+            # `Import failed: exec_sandbox shim: no policy set`.
+            refusal = shim_refusal(result.returncode, result.stderr)
+            if refusal:
+                return False, f"Import test could not be confined, so it was not run: {refusal}"
+            return False, f"Import failed:\n{result.stderr}"
 
         except subprocess.TimeoutExpired:
             return False, "Import test timed out (30s)"

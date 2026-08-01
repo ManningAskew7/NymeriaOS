@@ -165,6 +165,8 @@ def test_the_wired_surfaces_are_actually_sandboxed():
         "core/hooks/actions.py": 1,        # the run_command hook action
         "core/mcp_runtime.py": 1,          # the npm/pip/git install runner
         "core/mcp_manager.py": 1,          # the MCP stdio server
+        "core/validator.py": 1,            # the self-modification import check
+        "tools/claude_code_bridge.py": 1,  # the git before/after summary
     }
     for prefix, expected in counts.items():
         found = [k for k in sandboxed if k.startswith(prefix)]

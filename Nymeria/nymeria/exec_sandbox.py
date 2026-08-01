@@ -176,6 +176,44 @@ _ACCESS_CONTAINER = _ACCESS_RW & ~(_FS_READ_FILE | _FS_EXECUTE)
 
 _SANDBOX_POLICY_ENV = "NYMERIA_SANDBOX_POLICY"
 
+# Everything the shim writes to stderr carries this prefix, and every way it
+# fails CLOSED exits with this code. Together they are the wire format by which
+# a parent tells "the sandbox refused to run your command" apart from "your
+# command ran and failed", which look identical otherwise: both are a nonzero
+# exit with something on stderr.
+#
+# This matters because the two readings call for opposite responses. A surface
+# that reports the second one for the first tells an operator their edit broke
+# the tools, or silently returns nothing, when the truth is that confinement
+# could not be established. The parent-side ``SandboxError`` covers only
+# failures while BUILDING the policy; these are the ones that happen after the
+# fork, where an exception cannot reach back.
+#
+# ``exec`` failures are deliberately NOT in this class: they exit ``ENOEXEC``
+# and mean the command was not found, which is the child's problem to report
+# normally. See ``shim_refusal``.
+SHIM_ERROR_PREFIX = "exec_sandbox shim: "
+SHIM_REFUSAL_EXIT = 2
+
+
+def shim_refusal(returncode: int, stderr: str | None) -> str | None:
+    """The shim's own message if this exit was the sandbox failing closed.
+
+    Returns ``None`` for anything else, including a shim ``exec`` failure
+    (``ENOEXEC``), which is a missing command rather than a refused policy.
+
+    Callers use this to keep a confinement failure out of whatever error shape
+    they use for ordinary command failure. Matching on both the exit code and
+    the prefix, rather than either alone, so a confined command that happens to
+    exit 2 (a great many do) is not misreported as a sandbox problem.
+    """
+    if returncode != SHIM_REFUSAL_EXIT or not stderr:
+        return None
+    for line in stderr.splitlines():
+        if line.startswith(SHIM_ERROR_PREFIX):
+            return line[len(SHIM_ERROR_PREFIX):].strip()
+    return None
+
 # Default read-only system roots every child needs to load an interpreter and
 # shared libraries. Callers add their own tenant/workspace roots on top.
 DEFAULT_SYSTEM_ROOTS: tuple[str, ...] = (
@@ -723,29 +761,33 @@ def _shim_main(raw_argv: list[str]) -> int:
     try:
         sep = raw_argv.index("--")
     except ValueError:
-        sys.stderr.write("exec_sandbox shim: missing '--' command separator\n")
-        return 2
+        sys.stderr.write(f"{SHIM_ERROR_PREFIX}missing '--' command separator\n")
+        return SHIM_REFUSAL_EXIT
     command = raw_argv[sep + 1:]
     if not command:
-        sys.stderr.write("exec_sandbox shim: empty command\n")
-        return 2
+        sys.stderr.write(f"{SHIM_ERROR_PREFIX}empty command\n")
+        return SHIM_REFUSAL_EXIT
 
     raw_policy = os.environ.get(_SANDBOX_POLICY_ENV)
     if not raw_policy:
         # Fail closed: the shim is only launched for a sandboxed run.
-        sys.stderr.write("exec_sandbox shim: no policy set; refusing to run unsandboxed\n")
-        return 2
+        sys.stderr.write(
+            f"{SHIM_ERROR_PREFIX}no policy set; refusing to run unsandboxed\n"
+        )
+        return SHIM_REFUSAL_EXIT
     try:
         policy = SandboxPolicy.from_env_value(raw_policy)
     except (ValueError, TypeError) as exc:
-        sys.stderr.write(f"exec_sandbox shim: bad policy: {exc}\n")
-        return 2
+        sys.stderr.write(f"{SHIM_ERROR_PREFIX}bad policy: {exc}\n")
+        return SHIM_REFUSAL_EXIT
 
     try:
         apply_landlock_policy(policy)
     except SandboxError as exc:
-        sys.stderr.write(f"exec_sandbox shim: sandbox not applied ({exc}); failing closed\n")
-        return 2
+        sys.stderr.write(
+            f"{SHIM_ERROR_PREFIX}sandbox not applied ({exc}); failing closed\n"
+        )
+        return SHIM_REFUSAL_EXIT
 
     # Do not leak the policy var into the sandboxed program's environment.
     os.environ.pop(_SANDBOX_POLICY_ENV, None)
@@ -753,7 +795,7 @@ def _shim_main(raw_argv: list[str]) -> int:
     try:
         os.execvp(command[0], command)
     except OSError as exc:
-        sys.stderr.write(f"exec_sandbox shim: exec {command[0]!r} failed: {exc}\n")
+        sys.stderr.write(f"{SHIM_ERROR_PREFIX}exec {command[0]!r} failed: {exc}\n")
         return errno.ENOEXEC
 
 
