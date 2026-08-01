@@ -43,6 +43,7 @@ from .http_policy import (
     validate_http_egress_url,
 )
 from .credential_vault import SYSTEM_ACTOR
+from .exec_policy import sandbox_argv_launch
 from .secret_interpolation import resolve_env_and_credential_refs
 
 logger = logging.getLogger(__name__)
@@ -375,14 +376,38 @@ class MCPServerManager:
         # pressure, not the API server that supervises it.
         with_tool_oom_score(popen_kwargs)
 
+        # DEFAULT creation roots, unlike the install runner next door, which
+        # names its own. The difference is how long the child lives, not what it
+        # can be trusted with: an install finishes in seconds, a server runs for
+        # days. Narrowing would keep the store denials on a source checkout, and
+        # keeping a denial carves every ancestor of the data dir, which on that
+        # layout includes the project root, a plausible place for a server to
+        # work. A carve is a SNAPSHOT, so anything created in a carved directory
+        # afterwards is writable and then unreadable, and over a session of days
+        # that is a bad trade for a program whose write area we do not know.
+        #
+        # Note what this does NOT claim: the container layout carves the data
+        # dir either way, so a server creating a new file directly there and
+        # reading it back fails today (measured). The default roots make the
+        # hazard SMALLER, not absent. Filed as a follow-up: managed servers get a
+        # working directory Nymeria itself sets under the runtime tree, so for
+        # that population the write area IS known and could be named, which
+        # would restore the store denials on the slim shape.
+        launch = sandbox_argv_launch(cmd, popen_kwargs)
+
         try:
-            # sandbox-gate: unsandboxed - a supervised long-lived server, not a
-            # one-shot command: its roots are whatever the server needs and are
-            # not knowable from here, and the policy is per launch so it could
-            # not be widened later. Confining it needs a per-server root
-            # declaration, which is its own design. C1-02 follow-up.
-            process = subprocess.Popen(cmd, **popen_kwargs)
+            process = subprocess.Popen(launch, **popen_kwargs)
         except FileNotFoundError as e:
+            # Sandbox off only. Under the sandbox the child is the shim, an
+            # interpreter that always exists, so a missing server_command
+            # instead reaches the caller through _stdio_error_detail: the read
+            # loop notices the dead process, and the shim's own
+            # "exec '<cmd>' failed: [Errno 2]" line is in the captured stderr
+            # tail alongside the exit code. Verified, and the reason a resolve
+            # check here would be wrong twice over: it would buy back an error
+            # that is not lost, and both `which` and a path test resolve against
+            # THIS process's cwd while the child resolves after chdir into
+            # `working_directory`, so a valid relative command would be refused.
             raise RuntimeError(
                 f"MCP server command not found: {config.server_command}"
             ) from e
