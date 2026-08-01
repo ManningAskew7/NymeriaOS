@@ -163,6 +163,7 @@ def test_the_wired_surfaces_are_actually_sandboxed():
         "core/python_custom_tools.py": 1,  # the Python custom-tool runner
         "core/workflows/executor.py": 1,   # the workflow runner
         "core/hooks/actions.py": 1,        # the run_command hook action
+        "core/mcp_runtime.py": 1,          # the npm/pip/git install runner
     }
     for prefix, expected in counts.items():
         found = [k for k in sandboxed if k.startswith(prefix)]
