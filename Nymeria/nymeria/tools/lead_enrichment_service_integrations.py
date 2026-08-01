@@ -25,6 +25,7 @@ from .service_integration_base import (
     filtered as _filtered,
     json_object as _json_object,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -44,6 +45,17 @@ _UPROC_BASE_URL = "https://api.uproc.io/api/v2"
 
 # The api-key alias tuple the _api_key helper defaults to (a superset of
 # API_KEY_ALIAS_FIELDS that also accepts access_token).
+#
+# Uplead, Dropcontact, Humantic and LoneScale declare this tuple as their ONLY
+# anchor group (their other group is the base URL, which the register never
+# treats as proof of possession), so it is exactly the set _api_key looks up.
+# That is why the join guards at those four call sites cannot fire today: the
+# one record slice B allows to supply the address must hold one of these names
+# with a non-empty value, so it is also the first record answering the key
+# lookup, and it can only send its own key to its own address. The guards are
+# wired anyway, because that conclusion is arithmetic over the specs and would
+# have to be redone by hand the day one of these providers gains a second
+# credential.
 _API_KEY_WITH_ACCESS_TOKEN = ("api_key", "apiKey", "token", "access_token", "value")
 
 # Provider credential specs: the single source of truth for these providers'
@@ -219,23 +231,35 @@ def _api_key(
     display_name: str,
     config: Optional[RunnableConfig],
     field_names: tuple[str, ...] = ("api_key", "apiKey", "token", "access_token", "value"),
-) -> str | None:
-    value = _credential_value(
+) -> tuple[str | None, str | None]:
+    """The API key (or a setup hint in its place), and the vault value it came from.
+
+    The provenance rides back rather than being joined here because this helper
+    never sees an address: the callers below resolve one through
+    ``_configured_base``, so they are the only place the two halves meet.
+    ``None`` in the second slot when the key came from settings, or when the
+    first slot is the setup hint.
+    """
+    value_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=field_names,
         tool_name=tool_name,
         config=config,
-    ) or _settings_value(settings_name)
+    )
+    value = value_from_vault or _settings_value(settings_name)
     if not value:
-        return _setup_hint(
-            provider=provider,
-            field_names=field_names,
-            tool_name=tool_name,
-            env_var=env_var,
-            display_name=display_name,
+        return (
+            _setup_hint(
+                provider=provider,
+                field_names=field_names,
+                tool_name=tool_name,
+                env_var=env_var,
+                display_name=display_name,
+            ),
+            None,
         )
-    return value
+    return value, value_from_vault
 
 
 def _configured_base(
@@ -247,22 +271,30 @@ def _configured_base(
     default_base: str,
     tool_name: str,
     config: Optional[RunnableConfig],
-) -> str:
-    return _base_url(
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=field_names,
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_name)
-        or default_base
+) -> tuple[str, str | None]:
+    """The base URL, and the vault value it came from if it came from there.
+
+    Second slot is the join gate's input: a settings or vendor-default address
+    steers nothing, so only a vault-supplied one has to be joined to the secret
+    that rides to it.
+    """
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=field_names,
+        tool_name=tool_name,
+        config=config,
+    )
+    return (
+        _base_url(base_from_vault or _settings_value(settings_name) or default_base),
+        base_from_vault,
     )
 
 
 def _clearbit_headers(tool_name: str, config: Optional[RunnableConfig]) -> dict[str, str] | str:
-    api_key = _api_key(
+    # No join here: this helper resolves no address, and Clearbit's three bases
+    # are resolved by _clearbit_base at the tool call sites.
+    api_key, _key_from_vault = _api_key(
         provider=_CLEARBIT.provider,
         provider_aliases=_CLEARBIT.aliases,
         settings_name="clearbit_api_key",
@@ -294,7 +326,7 @@ def _clearbit_base(kind: str, tool_name: str, config: Optional[RunnableConfig]) 
         settings_name = "clearbit_company_base_url"
         default = _CLEARBIT_COMPANY_BASE_URL
         field_names = _CLEARBIT.group("company_base_url")
-    return _configured_base(
+    base, _base_from_vault = _configured_base(
         provider=_CLEARBIT.provider,
         provider_aliases=_CLEARBIT.aliases,
         field_names=field_names,
@@ -303,19 +335,11 @@ def _clearbit_base(kind: str, tool_name: str, config: Optional[RunnableConfig]) 
         tool_name=tool_name,
         config=config,
     )
+    return base
 
 
 def _uplead_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    api_key = _api_key(
-        provider=_UPLEAD.provider,
-        provider_aliases=_UPLEAD.aliases,
-        settings_name="uplead_api_key",
-        env_var=_UPLEAD.env_var,
-        tool_name=tool_name,
-        display_name=_UPLEAD.display_name,
-        config=config,
-    )
-    base = _configured_base(
+    base, base_from_vault = _configured_base(
         provider=_UPLEAD.provider,
         provider_aliases=_UPLEAD.aliases,
         field_names=_UPLEAD.group("base_url"),
@@ -324,8 +348,23 @@ def _uplead_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         tool_name=tool_name,
         config=config,
     )
+    api_key, key_from_vault = _api_key(
+        provider=_UPLEAD.provider,
+        provider_aliases=_UPLEAD.aliases,
+        settings_name="uplead_api_key",
+        env_var=_UPLEAD.env_var,
+        tool_name=tool_name,
+        display_name=_UPLEAD.display_name,
+        config=config,
+    )
     if api_key and api_key.startswith("[Error]:"):
         return base, api_key
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=key_from_vault,
+        secret=api_key,
+        provider=_UPLEAD.provider,
+    )
     return base, {
         "Accept": "application/json",
         "Authorization": str(api_key),
@@ -335,16 +374,7 @@ def _uplead_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 
 
 def _dropcontact_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    api_key = _api_key(
-        provider=_DROPCONTACT.provider,
-        provider_aliases=_DROPCONTACT.aliases,
-        settings_name="dropcontact_api_key",
-        env_var=_DROPCONTACT.env_var,
-        tool_name=tool_name,
-        display_name=_DROPCONTACT.display_name,
-        config=config,
-    )
-    base = _configured_base(
+    base, base_from_vault = _configured_base(
         provider=_DROPCONTACT.provider,
         provider_aliases=_DROPCONTACT.aliases,
         field_names=_DROPCONTACT.group("base_url"),
@@ -353,8 +383,23 @@ def _dropcontact_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         tool_name=tool_name,
         config=config,
     )
+    api_key, key_from_vault = _api_key(
+        provider=_DROPCONTACT.provider,
+        provider_aliases=_DROPCONTACT.aliases,
+        settings_name="dropcontact_api_key",
+        env_var=_DROPCONTACT.env_var,
+        tool_name=tool_name,
+        display_name=_DROPCONTACT.display_name,
+        config=config,
+    )
     if api_key and api_key.startswith("[Error]:"):
         return base, api_key
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=key_from_vault,
+        secret=api_key,
+        provider=_DROPCONTACT.provider,
+    )
     return base, {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -364,16 +409,7 @@ def _dropcontact_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 
 
 def _humantic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str, str | None]:
-    api_key = _api_key(
-        provider=_HUMANTIC.provider,
-        provider_aliases=_HUMANTIC.aliases,
-        settings_name="humantic_api_key",
-        env_var=_HUMANTIC.env_var,
-        tool_name=tool_name,
-        display_name=_HUMANTIC.display_name,
-        config=config,
-    )
-    base = _configured_base(
+    base, base_from_vault = _configured_base(
         provider=_HUMANTIC.provider,
         provider_aliases=_HUMANTIC.aliases,
         field_names=_HUMANTIC.group("base_url"),
@@ -382,22 +418,30 @@ def _humantic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         tool_name=tool_name,
         config=config,
     )
+    api_key, key_from_vault = _api_key(
+        provider=_HUMANTIC.provider,
+        provider_aliases=_HUMANTIC.aliases,
+        settings_name="humantic_api_key",
+        env_var=_HUMANTIC.env_var,
+        tool_name=tool_name,
+        display_name=_HUMANTIC.display_name,
+        config=config,
+    )
     if api_key and api_key.startswith("[Error]:"):
         return base, api_key, None
+    # Humantic carries its key in the query string rather than a header, which
+    # is the same disclosure by another spelling.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=key_from_vault,
+        secret=api_key,
+        provider=_HUMANTIC.provider,
+    )
     return base, {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"}, str(api_key)
 
 
 def _lonescale_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    api_key = _api_key(
-        provider=_LONESCALE.provider,
-        provider_aliases=_LONESCALE.aliases,
-        settings_name="lonescale_api_key",
-        env_var=_LONESCALE.env_var,
-        tool_name=tool_name,
-        display_name=_LONESCALE.display_name,
-        config=config,
-    )
-    base = _configured_base(
+    base, base_from_vault = _configured_base(
         provider=_LONESCALE.provider,
         provider_aliases=_LONESCALE.aliases,
         field_names=_LONESCALE.group("base_url"),
@@ -406,8 +450,23 @@ def _lonescale_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         tool_name=tool_name,
         config=config,
     )
+    api_key, key_from_vault = _api_key(
+        provider=_LONESCALE.provider,
+        provider_aliases=_LONESCALE.aliases,
+        settings_name="lonescale_api_key",
+        env_var=_LONESCALE.env_var,
+        tool_name=tool_name,
+        display_name=_LONESCALE.display_name,
+        config=config,
+    )
     if api_key and api_key.startswith("[Error]:"):
         return base, api_key
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=key_from_vault,
+        secret=api_key,
+        provider=_LONESCALE.provider,
+    )
     return base, {
         "Accept": "application/json",
         "Authorization": str(api_key),
@@ -425,14 +484,15 @@ def _uproc_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         tool_name=tool_name,
         config=config,
     ) or _settings_value("uproc_email")
-    api_key = _credential_value(
+    api_key_from_vault = _credential_value(
         provider=_UPROC.provider,
         provider_aliases=_UPROC.aliases,
         field_names=_UPROC.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("uproc_api_key")
-    base = _configured_base(
+    )
+    api_key = api_key_from_vault or _settings_value("uproc_api_key")
+    base, base_from_vault = _configured_base(
         provider=_UPROC.provider,
         provider_aliases=_UPROC.aliases,
         field_names=_UPROC.group("base_url"),
@@ -459,6 +519,15 @@ def _uproc_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
             env_var=_UPROC.env_var,
             display_name=_UPROC.display_name,
         )
+    # The email is not guarded: the register counts it as metadata rather than
+    # proof of possession, so it says nothing about who owns the record.
+    # Guarding the api_key covers the Basic header, which carries both.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_UPROC.provider,
+    )
     token = base64.b64encode(f"{email}:{api_key}".encode("utf-8")).decode("ascii")
     return base, {
         "Accept": "application/json",

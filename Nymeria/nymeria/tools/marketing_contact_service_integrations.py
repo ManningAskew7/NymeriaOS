@@ -27,6 +27,7 @@ from .service_integration_base import (
     filtered as _filtered,
     json_object as _json_object,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -517,24 +518,28 @@ def _token_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, str | None]:
-    base = (
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_base_name)
-        or default_base
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        tool_name=tool_name,
+        config=config,
     )
-    token = _credential_value(
+    base = base_from_vault or _settings_value(settings_base_name) or default_base
+    token_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=field_names,
         tool_name=tool_name,
         config=config,
-    ) or _settings_value(settings_token_name)
+    )
+    token = token_from_vault or _settings_value(settings_token_name)
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=provider,
+    )
     if not token:
         return _base_url(base), _setup_hint(
             provider=provider,
@@ -547,28 +552,27 @@ def _token_config(
 
 
 def _mautic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_MAUTIC.provider,
-            provider_aliases=_MAUTIC.aliases,
-            field_names=_MAUTIC.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("mautic_base_url")
+    base_from_vault = _credential_value(
+        provider=_MAUTIC.provider,
+        provider_aliases=_MAUTIC.aliases,
+        field_names=_MAUTIC.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value("mautic_base_url")
     if not base:
         return "", (
             '[Error]: No Mautic base URL found. Save a Mautic credential with "base_url" / "url", '
             "or set MAUTIC_BASE_URL."
         )
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_MAUTIC.provider,
         provider_aliases=_MAUTIC.aliases,
         field_names=_MAUTIC.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mautic_access_token")
+    )
+    token = token_from_vault or _settings_value("mautic_access_token")
     username = _credential_value(
         provider=_MAUTIC.provider,
         provider_aliases=_MAUTIC.aliases,
@@ -576,18 +580,36 @@ def _mautic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mautic_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_MAUTIC.provider,
         provider_aliases=_MAUTIC.aliases,
         field_names=_MAUTIC.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mautic_password")
+    )
+    password = password_from_vault or _settings_value("mautic_password")
     headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"}
+    # The guard runs per BRANCH, on the credential that actually authenticates the
+    # request. Asking instead whether the record supplied EITHER alternative would
+    # reproduce slice B's own weakness one level down: a record holding base_url plus
+    # a password clears "some anchor", and the token branch then sends the operator's
+    # access token to that record's address.
     if token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_MAUTIC.provider,
+        )
         headers["Authorization"] = f"Bearer {token}"
         return _base_url(base), headers
     if username and password:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_MAUTIC.provider,
+        )
         headers["Authorization"] = f"Basic {_basic_auth(username, password)}"
         return _base_url(base), headers
     return _base_url(base), _setup_hint(
@@ -947,25 +969,27 @@ def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or "track.customer.io"
     )
     region_key = str(region).lower()
+    track_base_from_vault = _credential_value(
+        provider=_CUSTOMERIO.provider,
+        provider_aliases=_CUSTOMERIO.aliases,
+        field_names=_CUSTOMERIO.group("tracking_base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     track_base = (
-        _credential_value(
-            provider=_CUSTOMERIO.provider,
-            provider_aliases=_CUSTOMERIO.aliases,
-            field_names=_CUSTOMERIO.group("tracking_base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        track_base_from_vault
         or _settings_value("customerio_tracking_base_url")
         or (_CUSTOMERIO_TRACK_EU_BASE_URL if "eu" in region_key else _CUSTOMERIO_TRACK_BASE_URL)
     )
+    app_base_from_vault = _credential_value(
+        provider=_CUSTOMERIO.provider,
+        provider_aliases=_CUSTOMERIO.aliases,
+        field_names=_CUSTOMERIO.group("app_base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     app_base = (
-        _credential_value(
-            provider=_CUSTOMERIO.provider,
-            provider_aliases=_CUSTOMERIO.aliases,
-            field_names=_CUSTOMERIO.group("app_base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        app_base_from_vault
         or _settings_value("customerio_app_base_url")
         or (_CUSTOMERIO_APP_EU_BASE_URL if "eu" in region_key else _CUSTOMERIO_APP_BASE_URL)
     )
@@ -976,20 +1000,22 @@ def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         tool_name=tool_name,
         config=config,
     ) or _settings_value("customerio_tracking_site_id")
-    tracking_key = _credential_value(
+    tracking_key_from_vault = _credential_value(
         provider=_CUSTOMERIO.provider,
         provider_aliases=_CUSTOMERIO.aliases,
         field_names=_CUSTOMERIO.group("tracking_api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("customerio_tracking_api_key")
-    app_key = _credential_value(
+    )
+    tracking_key = tracking_key_from_vault or _settings_value("customerio_tracking_api_key")
+    app_key_from_vault = _credential_value(
         provider=_CUSTOMERIO.provider,
         provider_aliases=_CUSTOMERIO.aliases,
         field_names=_CUSTOMERIO.group("app_api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("customerio_app_api_key")
+    )
+    app_key = app_key_from_vault or _settings_value("customerio_app_api_key")
 
     tracking_headers = {
         "Accept": "application/json",
@@ -997,10 +1023,26 @@ def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         "User-Agent": "Nymeria",
     }
     app_headers = dict(tracking_headers)
+    # Two destinations, two keys: each key is guarded against the base URL it is
+    # actually sent to, since a record can supply one base without the key that
+    # rides to it. site_id is an account identifier, not a secret, so it is the
+    # tracking key alone that has to be joined to the tracking base.
     if site_id and tracking_key:
+        _require_joined_destination(
+            destination_from_vault=track_base_from_vault,
+            secret_from_vault=tracking_key_from_vault,
+            secret=tracking_key,
+            provider=_CUSTOMERIO.provider,
+        )
         raw = f"{site_id}:{tracking_key}".encode()
         tracking_headers["Authorization"] = f"Basic {base64.b64encode(raw).decode()}"
     if app_key:
+        _require_joined_destination(
+            destination_from_vault=app_base_from_vault,
+            secret_from_vault=app_key_from_vault,
+            secret=app_key,
+            provider=_CUSTOMERIO.provider,
+        )
         app_headers["Authorization"] = f"Bearer {app_key}"
     missing: list[str] = []
     if not (site_id and tracking_key):

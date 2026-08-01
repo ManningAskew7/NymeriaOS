@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from langchain_core.runnables import RunnableConfig
 
@@ -106,11 +106,25 @@ def _destination_anchor_fields(provider: str, field_names: list[str]) -> Optiona
 
 
 def _destination_record_id(
-    records: list[Any], anchor_fields: frozenset[str]
+    records: list[Any],
+    anchor_fields: frozenset[str],
+    holds: Callable[[Any], frozenset[str]],
 ) -> tuple[Optional[str], frozenset[str]]:
     """The one record allowed to answer a destination lookup, and the anchor union.
 
     The union comes back with it so a refusal can say something TRUE about why.
+
+    ``holds`` reports which anchor names a record carries, and it must judge that
+    by VALUE, not by name. This function used to read ``record.secret_fields``
+    itself, which is a list of names, while the lookup loop that consumes the
+    answer takes the first TRUTHY value. `POST /credentials` accepts a bare
+    ``dict[str, str]``, so those two readings disagree on a record that names an
+    anchor with an empty value: the name satisfied the completeness rule here,
+    the empty value was skipped there, and a DIFFERENT record answered the
+    secret. That is the exact split this function exists to prevent, reproduced
+    one level down. Measured before the fix: a record
+    ``{base_url: attacker, api_key: ""}`` carried the operator's system-record
+    Elasticsearch key to the attacker's address, THROUGH the control.
 
     The first record holding any anchor field wins, and only if it holds EVERY
     anchor field held by any other candidate. Both halves are load-bearing, and
@@ -138,9 +152,7 @@ def _destination_record_id(
     is precisely the attack shape, and ``native_credential_setup_hint`` already
     tells users to save one record carrying the required fields.
     """
-    held = [
-        (record, anchor_fields & set(record.secret_fields or ())) for record in records
-    ]
+    held = [(record, holds(record)) for record in records]
     union = frozenset().union(*(names for _, names in held))
     holders = [(record, names) for record, names in held if names]
     if not holders:
@@ -236,8 +248,53 @@ def get_native_credential_value(
         eligible = [
             record for record in records if _target_score(record, tool_name, bound_ids) < 100
         ]
+        held_cache: dict[str, frozenset[str]] = {}
+
+        def _anchors_held(record: Any) -> frozenset[str]:
+            """Anchor names this record holds with a NON-EMPTY value.
+
+            Reads values rather than names on purpose; see
+            ``_destination_record_id``. A field this caller may not read counts
+            as not held, which is the safe direction: it can then only fail the
+            completeness rule, never satisfy it.
+
+            Goes through ``has_secret_values`` and NOT ``get_secret_field``,
+            which is load-bearing rather than a micro-optimisation. This is a
+            possession PROBE: it runs against records that are about to be
+            rejected. ``get_secret_field`` is the accounting path, bumping
+            ``last_used_at`` and writing a ``used`` audit row per field, so
+            asking it turned one address lookup into seven locked SQLite writes
+            and stamped "used" on an operator record whose key never left the
+            process. The audit log is the operator's only evidence surface after
+            a suspected leak, so a probe that forges use there costs more than
+            the work it saves.
+
+            Memoised per record for the same reason: the refusal path re-asks
+            about records the destination scan already judged.
+            """
+            cached = held_cache.get(record.id)
+            if cached is not None:
+                return cached
+            anchors = anchor_fields or frozenset()
+            wanted = anchors & set(record.secret_fields or ())
+            if not wanted:
+                held_cache[record.id] = frozenset()
+                return held_cache[record.id]
+            try:
+                found = repo.has_secret_values(
+                    record.id,
+                    wanted,
+                    actor=user_id,
+                    target_type=NATIVE_TOOL_TARGET_TYPE,
+                    target_id=tool_name,
+                )
+            except (CredentialAccessDenied, CredentialSecretUnavailable):
+                found = frozenset()
+            held_cache[record.id] = found
+            return found
+
         destination_id, anchor_union = (
-            _destination_record_id(eligible, anchor_fields)
+            _destination_record_id(eligible, anchor_fields, _anchors_held)
             if anchor_fields
             else (None, frozenset())
         )
@@ -251,7 +308,10 @@ def get_native_credential_value(
                 held = [name for name in field_list if name in (record.secret_fields or ())]
                 if held and not refused_field:
                     refused_field = held[0]
-                    refused_partial = bool(anchor_fields & set(record.secret_fields or ()))
+                    # By VALUE here too, so the two arms of the refusal message
+                    # agree with the rule that produced it: a record naming an
+                    # empty anchor is not "partial", it holds nothing.
+                    refused_partial = bool(_anchors_held(record))
                 logger.debug(
                     "Credential %s may not supply a destination for %s; skipping",
                     record.id,

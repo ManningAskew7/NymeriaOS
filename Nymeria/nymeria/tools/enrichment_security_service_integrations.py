@@ -25,6 +25,7 @@ from .service_integration_base import (
     filtered as _filtered,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -389,27 +390,32 @@ def _service_base(
     env_var: str,
     config: Optional[RunnableConfig],
     default_base: str | None = None,
-) -> str | None:
-    base = (
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_base_name)
-        or default_base
+) -> tuple[str | None, str | None]:
+    """Resolve a self-hosted provider's base URL, reporting where it came from.
+
+    Returns ``(base_or_error, base_from_vault)``. The second element is the
+    provenance every caller needs for ``_require_joined_destination``: these
+    helpers resolve the address here and the secret in the CALLER, so a
+    per-function view of either one alone cannot see the pairing. It is None
+    whenever the address came from settings or a default.
+    """
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value(settings_base_name) or default_base
     if base:
-        return _base_url(base)
+        return _base_url(base), base_from_vault
     return _setup_hint(
         provider=provider,
         field_names=("base_url", "url"),
         tool_name=tool_name,
         env_var=env_var,
         display_name=display_name,
-    )
+    ), base_from_vault
 
 
 def _api_key_config(
@@ -425,24 +431,28 @@ def _api_key_config(
     config: Optional[RunnableConfig],
     required: bool = True,
 ) -> tuple[str, str | None]:
-    base = (
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=("base_url", "url", "api_url", "apiUrl"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_base_name)
-        or default_base
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "url", "api_url", "apiUrl"),
+        tool_name=tool_name,
+        config=config,
     )
-    api_key = _credential_value(
+    base = base_from_vault or _settings_value(settings_base_name) or default_base
+    api_key_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value(settings_key_name)
+    )
+    api_key = api_key_from_vault or _settings_value(settings_key_name)
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=provider,
+    )
     if required and not api_key:
         return _base_url(base), _setup_hint(
             provider=provider,
@@ -469,7 +479,7 @@ def _misp_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, bool]:
-    base_or_error = _service_base(
+    base_or_error, base_from_vault = _service_base(
         provider=_MISP.provider,
         provider_aliases=_MISP.aliases,
         settings_base_name="misp_base_url",
@@ -480,13 +490,20 @@ def _misp_config(
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: MISP base URL is required.", True
-    api_key = _credential_value(
+    api_key_from_vault = _credential_value(
         provider=_MISP.provider,
         provider_aliases=_MISP.aliases,
         field_names=_MISP.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("misp_api_key")
+    )
+    api_key = api_key_from_vault or _settings_value("misp_api_key")
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_MISP.provider,
+    )
     verify = True
     if not api_key:
         return "", _setup_hint(
@@ -507,7 +524,7 @@ def _thehive_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, bool, str]:
-    base_or_error = _service_base(
+    base_or_error, base_from_vault = _service_base(
         provider=_THEHIVE.provider,
         provider_aliases=_THEHIVE.aliases,
         settings_base_name="thehive_base_url",
@@ -518,13 +535,20 @@ def _thehive_config(
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: TheHive base URL is required.", True, "v1"
-    api_key = _credential_value(
+    api_key_from_vault = _credential_value(
         provider=_THEHIVE.provider,
         provider_aliases=_THEHIVE.aliases,
         field_names=_THEHIVE.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("thehive_api_key")
+    )
+    api_key = api_key_from_vault or _settings_value("thehive_api_key")
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_THEHIVE.provider,
+    )
     api_version = (
         _credential_value(
             provider=_THEHIVE.provider,
@@ -688,7 +712,7 @@ def _elastic_security_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, Any]:
-    base_or_error = _service_base(
+    base_or_error, base_from_vault = _service_base(
         provider=_ELASTIC_SECURITY.provider,
         provider_aliases=_ELASTIC_SECURITY.aliases,
         settings_base_name="elastic_security_base_url",
@@ -699,32 +723,52 @@ def _elastic_security_config(
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Elastic Security base URL is required.", None
-    api_key = _credential_value(
+    api_key_from_vault = _credential_value(
         provider=_ELASTIC_SECURITY.provider,
         provider_aliases=_ELASTIC_SECURITY.aliases,
         field_names=_ELASTIC_SECURITY.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("elastic_security_api_key")
-    username = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("elastic_security_api_key")
+    username_from_vault = _credential_value(
         provider=_ELASTIC_SECURITY.provider,
         provider_aliases=_ELASTIC_SECURITY.aliases,
         field_names=_ELASTIC_SECURITY.group("username"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("elastic_security_username")
-    password = _credential_value(
+    )
+    username = username_from_vault or _settings_value("elastic_security_username")
+    password_from_vault = _credential_value(
         provider=_ELASTIC_SECURITY.provider,
         provider_aliases=_ELASTIC_SECURITY.aliases,
         field_names=_ELASTIC_SECURITY.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("elastic_security_password")
+    )
+    password = password_from_vault or _settings_value("elastic_security_password")
     headers = {"Accept": "application/json", "Content-Type": "application/json", "kbn-xsrf": "true"}
     auth = None
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. Asking instead whether the record supplied ANY of the
+    # alternatives would reproduce slice B's own weakness one level down: a
+    # record holding base_url + password clears "some anchor", and the api_key
+    # branch then sends the operator's key to that record's address.
     if api_key:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_key_from_vault,
+            secret=api_key,
+            provider=_ELASTIC_SECURITY.provider,
+        )
         headers["Authorization"] = f"ApiKey {api_key}"
     elif username and password:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_ELASTIC_SECURITY.provider,
+        )
         auth = (username, password)
     else:
         return "", _setup_hint(

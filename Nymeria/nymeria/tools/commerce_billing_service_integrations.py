@@ -28,6 +28,7 @@ from .service_integration_base import (
     filtered as _filtered,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -578,13 +579,14 @@ def _stripe_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 
 def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     provider_aliases = _SHOPIFY.aliases
-    base = _credential_value(
+    base_from_vault = _credential_value(
         provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
         field_names=_SHOPIFY.group("base_url"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("shopify_base_url")
+    )
+    base = base_from_vault or _settings_value("shopify_base_url")
     shop = _credential_value(
         provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
@@ -610,34 +612,47 @@ def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
                 '"shop_subdomain" / "shop", or set SHOPIFY_SHOP.'
             )
         base = f"https://{_shopify_host_from_shop(shop)}/admin/api/{api_version.strip()}"
-    access_token = _credential_value(
+    access_token_from_vault = _credential_value(
         provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
         field_names=_SHOPIFY.group("access_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("shopify_access_token")
+    )
+    access_token = access_token_from_vault or _settings_value("shopify_access_token")
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. A record holding base_url + password clears slice B's "some
+    # anchor", and the access-token branch would then send the operator's token
+    # to the address that record chose.
     if access_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=access_token_from_vault,
+            secret=access_token,
+            provider=_SHOPIFY.provider,
+        )
         return _base_url(base), {
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent": "Nymeria",
             "X-Shopify-Access-Token": access_token,
         }
-    api_key = _credential_value(
+    api_key_from_vault = _credential_value(
         provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
         field_names=_SHOPIFY.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("shopify_api_key")
-    password = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("shopify_api_key")
+    password_from_vault = _credential_value(
         provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
         field_names=_SHOPIFY.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("shopify_password")
+    )
+    password = password_from_vault or _settings_value("shopify_password")
     if not api_key or not password:
         return _base_url(base), _setup_hint(
             provider=_SHOPIFY.provider,
@@ -646,6 +661,21 @@ def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
             env_var=_SHOPIFY.env_var,
             display_name=_SHOPIFY.display_name,
         )
+    # Both halves of the pair ride in the Basic header, so each needs its own
+    # guard: either one arriving from settings while the address came from the
+    # vault is a disclosure.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_SHOPIFY.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=password_from_vault,
+        secret=password,
+        provider=_SHOPIFY.provider,
+    )
     return _base_url(base), {
         "Accept": "application/json",
         "Authorization": f"Basic {_auth_basic(api_key, password)}",
@@ -655,31 +685,34 @@ def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 
 def _woocommerce_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base_from_vault = _credential_value(
+        provider=_WOOCOMMERCE.provider,
+        provider_aliases=_WOOCOMMERCE.aliases,
+        field_names=_WOOCOMMERCE.group("base_url"),
+        tool_name=tool_name,
+        config=config,
+    )
     base = (
-        _credential_value(
-            provider=_WOOCOMMERCE.provider,
-            provider_aliases=_WOOCOMMERCE.aliases,
-            field_names=_WOOCOMMERCE.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
+        base_from_vault
         or _settings_value("woocommerce_base_url")
         or _settings_value("woocommerce_url")
     )
-    consumer_key = _credential_value(
+    consumer_key_from_vault = _credential_value(
         provider=_WOOCOMMERCE.provider,
         provider_aliases=_WOOCOMMERCE.aliases,
         field_names=_WOOCOMMERCE.group("consumer_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("woocommerce_consumer_key")
-    consumer_secret = _credential_value(
+    )
+    consumer_key = consumer_key_from_vault or _settings_value("woocommerce_consumer_key")
+    consumer_secret_from_vault = _credential_value(
         provider=_WOOCOMMERCE.provider,
         provider_aliases=_WOOCOMMERCE.aliases,
         field_names=_WOOCOMMERCE.group("consumer_secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("woocommerce_consumer_secret")
+    )
+    consumer_secret = consumer_secret_from_vault or _settings_value("woocommerce_consumer_secret")
     if not base:
         return "", (
             "[Error]: No WooCommerce base URL found. Save a WooCommerce credential "
@@ -696,6 +729,21 @@ def _woocommerce_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
             env_var=_WOOCOMMERCE.env_var,
             display_name=_WOOCOMMERCE.display_name,
         )
+    # Both halves of the pair ride in the Basic header, so each needs its own
+    # guard: either one arriving from settings while the address came from the
+    # vault is a disclosure.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=consumer_key_from_vault,
+        secret=consumer_key,
+        provider=_WOOCOMMERCE.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=consumer_secret_from_vault,
+        secret=consumer_secret,
+        provider=_WOOCOMMERCE.provider,
+    )
     return base, {
         "Accept": "application/json",
         "Authorization": f"Basic {_auth_basic(consumer_key, consumer_secret)}",

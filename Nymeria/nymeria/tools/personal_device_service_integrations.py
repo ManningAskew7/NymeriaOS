@@ -25,6 +25,7 @@ from .service_integration_base import (
     dump_json,
     filtered as _filtered,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -130,6 +131,11 @@ _PHILIPS_HUE = register_provider_spec(
             CredentialFieldGroup(
                 role="username",
                 names=("username", "user", "bridge_username", "bridgeUsername"),
+                # Hue's "username" is the bridge APPLICATION KEY, not a login
+                # name: for a local bridge it is the entire credential, and it
+                # travels in the URL path. The global non-proof list reads the
+                # name and gets this one provider wrong, so state it here.
+                proves_possession=True,
             ),
         ),
         hint_fields=("access_token", "username"),
@@ -222,42 +228,57 @@ def _bearer_config(
     config: Optional[RunnableConfig],
     display_name: str,
     env_var: str,
-) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=provider,
-            provider_aliases=provider_aliases,
-            field_names=BASE_URL_ALIAS_FIELDS,
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(base_setting)
-        or default_base
+) -> tuple[str, dict[str, str] | str, str | None]:
+    """Base URL plus bearer headers, and the BASE's vault provenance.
+
+    The third element is returned rather than kept private because a caller may
+    send a SECOND credential to this same base (Philips Hue puts its bridge
+    application key in the URL path), and that caller is then the only place
+    those two meet. Without it the second secret has no address to be joined to.
+    """
+    base_from_vault = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=BASE_URL_ALIAS_FIELDS,
+        tool_name=tool_name,
+        config=config,
     )
-    token = _credential_value(
+    base = base_from_vault or _settings_value(base_setting) or default_base
+    token_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=token_fields,
         tool_name=tool_name,
         config=config,
-    ) or _settings_value(token_setting)
+    )
+    token = token_from_vault or _settings_value(token_setting)
     if not token:
+        # Before the guard on purpose: a deployment with nothing saved gets the
+        # friendly setup hint rather than a refusal.
         return _base_url(base), _setup_hint(
             provider=provider,
             field_names=token_fields,
             tool_name=tool_name,
             env_var=env_var,
             display_name=display_name,
-        )
+        ), base_from_vault
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=provider,
+    )
     return _base_url(base), {
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "User-Agent": "Nymeria",
-    }
+    }, base_from_vault
 
 
 def _oura_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    return _bearer_config(
+    # Provenance dropped: this provider sends nothing to the base but the bearer
+    # _bearer_config already joined. Only Hue has a second secret to join.
+    base, headers_or_hint, _ = _bearer_config(
         provider=_OURA.provider,
         provider_aliases=_OURA.aliases,
         token_fields=_OURA.group("token"),
@@ -269,10 +290,12 @@ def _oura_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         display_name=_OURA.display_name,
         env_var=_OURA.env_var,
     )
+    return base, headers_or_hint
 
 
 def _strava_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    return _bearer_config(
+    # Provenance dropped for the same reason as _oura_config above.
+    base, headers_or_hint, _ = _bearer_config(
         provider=_STRAVA.provider,
         provider_aliases=_STRAVA.aliases,
         token_fields=_STRAVA.group("token"),
@@ -284,6 +307,7 @@ def _strava_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         display_name=_STRAVA.display_name,
         env_var=_STRAVA.env_var,
     )
+    return base, headers_or_hint
 
 
 def _homeassistant_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -326,7 +350,7 @@ def _homeassistant_config(tool_name: str, config: Optional[RunnableConfig]) -> t
 
 
 def _philips_hue_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str]] | str:
-    base, headers_or_hint = _bearer_config(
+    base, headers_or_hint, base_from_vault = _bearer_config(
         provider=_PHILIPS_HUE.provider,
         provider_aliases=_PHILIPS_HUE.aliases,
         token_fields=_PHILIPS_HUE.group("access_token"),
@@ -340,13 +364,14 @@ def _philips_hue_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
     )
     if isinstance(headers_or_hint, str):
         return headers_or_hint
-    username = _credential_value(
+    username_from_vault = _credential_value(
         provider=_PHILIPS_HUE.provider,
         provider_aliases=_PHILIPS_HUE.aliases,
         field_names=_PHILIPS_HUE.group("username"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("philips_hue_username")
+    )
+    username = username_from_vault or _settings_value("philips_hue_username")
     if not username:
         return _setup_hint(
             provider=_PHILIPS_HUE.provider,
@@ -355,6 +380,17 @@ def _philips_hue_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
             env_var=_PHILIPS_HUE.env_var,
             display_name=_PHILIPS_HUE.display_name,
         )
+    # A SECOND secret to the same base, so it needs its own join on its own
+    # provenance. The bridge application key is interpolated straight into the
+    # URL path (`/api/{username}/lights`), which is what made this leak visible:
+    # a record holding {base_url, access_token} took the address while the key
+    # fell through to the deployment setting.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=username_from_vault,
+        secret=username,
+        provider=_PHILIPS_HUE.provider,
+    )
     return base, username, {**headers_or_hint, "Content-Type": "application/json"}
 
 

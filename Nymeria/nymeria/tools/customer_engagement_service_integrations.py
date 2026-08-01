@@ -26,6 +26,7 @@ from .service_integration_base import (
     filtered as _filtered_params,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -190,50 +191,59 @@ def _zendesk_base(
     *,
     tool_name: str,
     config: Optional[RunnableConfig],
-) -> Optional[str]:
-    base = (
-        _credential_value(
-            provider=_ZENDESK.provider,
-            provider_aliases=_ZENDESK.aliases,
-            field_names=_ZENDESK.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("zendesk_base_url")
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve Zendesk's API root, reporting where the address came from.
+
+    Returns ``(base_or_none, base_from_vault)``. The second element is the
+    provenance ``_require_joined_destination`` needs: this helper resolves the
+    address while its CALLER resolves the secrets, so neither half can see the
+    pairing alone. It is None whenever the address came from settings.
+
+    The subdomain branch counts as a vault-supplied address, on the same
+    reasoning ERPNext's composed base records: the value is free text
+    interpolated into the hostname, so a planted one steers this request exactly
+    as a ``base_url`` would.
+    """
+    base_from_vault = _credential_value(
+        provider=_ZENDESK.provider,
+        provider_aliases=_ZENDESK.aliases,
+        field_names=_ZENDESK.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value("zendesk_base_url")
     if base:
         clean = _base_url(base)
-        return clean if clean.endswith("/api/v2") else f"{clean}/api/v2"
-    subdomain = (
-        _credential_value(
-            provider=_ZENDESK.provider,
-            provider_aliases=_ZENDESK.aliases,
-            field_names=_ZENDESK.group("subdomain"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("zendesk_subdomain")
+        return (clean if clean.endswith("/api/v2") else f"{clean}/api/v2"), base_from_vault
+    subdomain_from_vault = _credential_value(
+        provider=_ZENDESK.provider,
+        provider_aliases=_ZENDESK.aliases,
+        field_names=_ZENDESK.group("subdomain"),
+        tool_name=tool_name,
+        config=config,
     )
+    subdomain = subdomain_from_vault or _settings_value("zendesk_subdomain")
     if subdomain:
         subdomain = subdomain.strip().replace(".zendesk.com", "")
-        return f"https://{subdomain}.zendesk.com/api/v2"
-    return None
+        return f"https://{subdomain}.zendesk.com/api/v2", subdomain_from_vault
+    return None, None
 
 
 def _zendesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = _zendesk_base(tool_name=tool_name, config=config)
+    base, base_from_vault = _zendesk_base(tool_name=tool_name, config=config)
     if not base:
         return "", (
             "[Error]: No Zendesk base URL found. Save a Zendesk credential with "
             '"base_url" or "subdomain", or set ZENDESK_BASE_URL or ZENDESK_SUBDOMAIN.'
         )
-    access_token = _credential_value(
+    access_token_from_vault = _credential_value(
         provider=_ZENDESK.provider,
         provider_aliases=_ZENDESK.aliases,
         field_names=_ZENDESK.group("access_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("zendesk_access_token")
+    )
+    access_token = access_token_from_vault or _settings_value("zendesk_access_token")
     email = _credential_value(
         provider=_ZENDESK.provider,
         provider_aliases=_ZENDESK.aliases,
@@ -241,22 +251,41 @@ def _zendesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zendesk_email")
-    api_token = _credential_value(
+    api_token_from_vault = _credential_value(
         provider=_ZENDESK.provider,
         provider_aliases=_ZENDESK.aliases,
         field_names=_ZENDESK.group("api_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("zendesk_api_token")
+    )
+    api_token = api_token_from_vault or _settings_value("zendesk_api_token")
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. Asking instead whether the record supplied EITHER alternative
+    # would reproduce slice B's own weakness one level down: a record holding
+    # base_url plus an api_token clears "some anchor", and the bearer branch
+    # would then send the operator's access token to that record's address. The
+    # basic branch guards the API TOKEN, not the email, which proves nothing.
     if access_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=access_token_from_vault,
+            secret=access_token,
+            provider=_ZENDESK.provider,
+        )
         headers["Authorization"] = f"Bearer {access_token}"
         return base, headers
     if email and api_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_token_from_vault,
+            secret=api_token,
+            provider=_ZENDESK.provider,
+        )
         raw = f"{email}/token:{api_token}".encode()
         headers["Authorization"] = f"Basic {base64.b64encode(raw).decode()}"
         return base, headers
@@ -272,64 +301,101 @@ def _zendesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _mailchimp_base(
     *,
     api_key: Optional[str],
+    api_key_from_vault: Optional[str],
     tool_name: str,
     config: Optional[RunnableConfig],
-) -> Optional[str]:
-    base = (
-        _credential_value(
-            provider=_MAILCHIMP.provider,
-            provider_aliases=_MAILCHIMP.aliases,
-            field_names=_MAILCHIMP.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("mailchimp_base_url")
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve Mailchimp's API root, reporting where the address came from.
+
+    Returns ``(base_or_none, base_from_vault)``. The second element is the
+    provenance ``_require_joined_destination`` needs: this helper resolves the
+    address while its CALLER resolves the secrets, so neither half can see the
+    pairing alone. It is None whenever the address came from settings.
+
+    Both fallbacks count as a vault-supplied address. The server prefix is free
+    text interpolated into the hostname, and the last resort SPLITS THAT PREFIX
+    OUT OF THE API KEY ITSELF, so when the key came from the vault so did the
+    address, which is why ``api_key_from_vault`` has to be passed in: the key
+    lookup is not a destination lookup, so any record can answer it.
+    """
+    base_from_vault = _credential_value(
+        provider=_MAILCHIMP.provider,
+        provider_aliases=_MAILCHIMP.aliases,
+        field_names=_MAILCHIMP.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value("mailchimp_base_url")
     if base:
-        return _base_url(base)
-    server_prefix = (
-        _credential_value(
-            provider=_MAILCHIMP.provider,
-            provider_aliases=_MAILCHIMP.aliases,
-            field_names=_MAILCHIMP.group("server_prefix"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("mailchimp_server_prefix")
+        return _base_url(base), base_from_vault
+    server_prefix_from_vault = _credential_value(
+        provider=_MAILCHIMP.provider,
+        provider_aliases=_MAILCHIMP.aliases,
+        field_names=_MAILCHIMP.group("server_prefix"),
+        tool_name=tool_name,
+        config=config,
     )
+    server_prefix = server_prefix_from_vault or _settings_value("mailchimp_server_prefix")
+    prefix_from_vault = server_prefix_from_vault
     if not server_prefix and api_key and "-" in api_key:
         server_prefix = api_key.rsplit("-", 1)[-1]
+        prefix_from_vault = api_key_from_vault
     if server_prefix:
-        return f"https://{server_prefix.strip()}.api.mailchimp.com/3.0"
-    return None
+        return f"https://{server_prefix.strip()}.api.mailchimp.com/3.0", prefix_from_vault
+    return None, None
 
 
 def _mailchimp_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    access_token = _credential_value(
+    access_token_from_vault = _credential_value(
         provider=_MAILCHIMP.provider,
         provider_aliases=_MAILCHIMP.aliases,
         field_names=_MAILCHIMP.group("access_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mailchimp_access_token")
-    api_key = _credential_value(
+    )
+    access_token = access_token_from_vault or _settings_value("mailchimp_access_token")
+    api_key_from_vault = _credential_value(
         provider=_MAILCHIMP.provider,
         provider_aliases=_MAILCHIMP.aliases,
         field_names=_MAILCHIMP.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mailchimp_api_key")
-    base = _mailchimp_base(api_key=api_key, tool_name=tool_name, config=config) or (
-        _MAILCHIMP_ROOT if access_token else None
     )
+    api_key = api_key_from_vault or _settings_value("mailchimp_api_key")
+    base, base_from_vault = _mailchimp_base(
+        api_key=api_key,
+        api_key_from_vault=api_key_from_vault,
+        tool_name=tool_name,
+        config=config,
+    )
+    if not base and access_token:
+        # The vendor root is a constant, so it carries no vault provenance.
+        base = _MAILCHIMP_ROOT
     if not base:
         return "", (
             "[Error]: No Mailchimp API root found. Save a Mailchimp credential with "
             '"api_key" or "server_prefix", or set MAILCHIMP_API_KEY / MAILCHIMP_SERVER_PREFIX.'
         )
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request. Asking instead whether the record supplied EITHER alternative
+    # would reproduce slice B's own weakness one level down: a record holding
+    # base_url plus an api_key clears "some anchor", and the access-token branch
+    # would then send the operator's token to that record's address.
     if access_token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=access_token_from_vault,
+            secret=access_token,
+            provider=_MAILCHIMP.provider,
+        )
         auth = f"Bearer {access_token}"
     elif api_key:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=api_key_from_vault,
+            secret=api_key,
+            provider=_MAILCHIMP.provider,
+        )
         auth = f"apikey {api_key}"
     else:
         return base, _setup_hint(

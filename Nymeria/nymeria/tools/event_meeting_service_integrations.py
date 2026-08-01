@@ -25,6 +25,7 @@ from .service_integration_base import (
     dump_json,
     filtered as _filtered,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -220,31 +221,45 @@ def _bearer_header_value(token: str) -> str:
 
 
 def _demio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_DEMIO.provider,
-            provider_aliases=_DEMIO.aliases,
-            field_names=_DEMIO.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("demio_base_url")
-        or _DEMIO_BASE_URL
+    base_from_vault = _credential_value(
+        provider=_DEMIO.provider,
+        provider_aliases=_DEMIO.aliases,
+        field_names=_DEMIO.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    api_key = _credential_value(
+    base = base_from_vault or _settings_value("demio_base_url") or _DEMIO_BASE_URL
+    api_key_from_vault = _credential_value(
         provider=_DEMIO.provider,
         provider_aliases=_DEMIO.aliases,
         field_names=_DEMIO.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("demio_api_key")
-    api_secret = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("demio_api_key")
+    api_secret_from_vault = _credential_value(
         provider=_DEMIO.provider,
         provider_aliases=_DEMIO.aliases,
         field_names=_DEMIO.group("api_secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("demio_api_secret")
+    )
+    api_secret = api_secret_from_vault or _settings_value("demio_api_secret")
+    # One guard per component of the pair: both ride the headers below, so
+    # either arriving from settings while the address came from the vault is a
+    # leak.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_DEMIO.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_secret_from_vault,
+        secret=api_secret,
+        provider=_DEMIO.provider,
+    )
     if not api_key or not api_secret:
         return _base_url(base), _setup_hint(
             provider=_DEMIO.provider,

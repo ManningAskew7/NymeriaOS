@@ -26,6 +26,7 @@ from .service_integration_base import (
     dump_json,
     filtered as _filtered,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -181,52 +182,74 @@ def _request_json(
 
 
 def _erpnext_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_ERPNEXT.provider,
-            provider_aliases=_ERPNEXT.aliases,
-            field_names=_ERPNEXT.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("erpnext_base_url")
+    base_from_vault = _credential_value(
+        provider=_ERPNEXT.provider,
+        provider_aliases=_ERPNEXT.aliases,
+        field_names=_ERPNEXT.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    api_key = _credential_value(
+    base = base_from_vault or _settings_value("erpnext_base_url")
+    api_key_from_vault = _credential_value(
         provider=_ERPNEXT.provider,
         provider_aliases=_ERPNEXT.aliases,
         field_names=_ERPNEXT.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("erpnext_api_key")
-    api_secret = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("erpnext_api_key")
+    api_secret_from_vault = _credential_value(
         provider=_ERPNEXT.provider,
         provider_aliases=_ERPNEXT.aliases,
         field_names=_ERPNEXT.group("api_secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("erpnext_api_secret")
+    )
+    api_secret = api_secret_from_vault or _settings_value("erpnext_api_secret")
     if not base:
-        subdomain = _credential_value(
+        subdomain_from_vault = _credential_value(
             provider=_ERPNEXT.provider,
             provider_aliases=_ERPNEXT.aliases,
             field_names=_ERPNEXT.group("subdomain"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("erpnext_subdomain")
-        domain = _credential_value(
+        )
+        subdomain = subdomain_from_vault or _settings_value("erpnext_subdomain")
+        domain_from_vault = _credential_value(
             provider=_ERPNEXT.provider,
             provider_aliases=_ERPNEXT.aliases,
             field_names=_ERPNEXT.group("cloud_domain"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("erpnext_cloud_domain")
+        )
+        domain = domain_from_vault or _settings_value("erpnext_cloud_domain")
         if subdomain and domain:
             base = f"https://{subdomain.strip()}.{domain.strip()}"
+            # Composed, but still a vault-supplied ADDRESS: both halves are
+            # destination fields in the register (they interpolate into the
+            # hostname) and `cloud_domain` is free text, so a record supplying
+            # either half steered this request exactly as a base_url would.
+            if subdomain_from_vault or domain_from_vault:
+                base_from_vault = base
     if not base:
         return "", (
             "[Error]: No ERPNext base URL found. Save an ERPNext credential with "
             '"base_url" / "domain", or set ERPNEXT_BASE_URL.'
         )
+    # One guard per component of the pair: the header carries both, so either
+    # arriving from settings while the address came from the vault is a leak.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_ERPNEXT.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_secret_from_vault,
+        secret=api_secret,
+        provider=_ERPNEXT.provider,
+    )
     if not api_key or not api_secret:
         return _base_url(base), _setup_hint(
             provider=_ERPNEXT.provider,
@@ -277,16 +300,14 @@ def _odoo_database_from_url(url: str) -> str:
 
 
 def _odoo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, str, str | None]:
-    url = (
-        _credential_value(
-            provider=_ODOO.provider,
-            provider_aliases=_ODOO.aliases,
-            field_names=_ODOO.group("url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("odoo_url")
+    url_from_vault = _credential_value(
+        provider=_ODOO.provider,
+        provider_aliases=_ODOO.aliases,
+        field_names=_ODOO.group("url"),
+        tool_name=tool_name,
+        config=config,
     )
+    url = url_from_vault or _settings_value("odoo_url")
     username = _credential_value(
         provider=_ODOO.provider,
         provider_aliases=_ODOO.aliases,
@@ -294,13 +315,14 @@ def _odoo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("odoo_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_ODOO.provider,
         provider_aliases=_ODOO.aliases,
         field_names=_ODOO.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("odoo_password")
+    )
+    password = password_from_vault or _settings_value("odoo_password")
     database = _credential_value(
         provider=_ODOO.provider,
         provider_aliases=_ODOO.aliases,
@@ -323,6 +345,16 @@ def _odoo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
             env_var=_ODOO.env_var,
             display_name=_ODOO.display_name,
         )
+    # Odoo authenticates over XML-RPC with the password in the call body, so the
+    # secret goes to whatever address chose it just as surely as a header would.
+    # Guarded here rather than in the callers because this is the one place both
+    # halves are in scope.
+    _require_joined_destination(
+        destination_from_vault=url_from_vault,
+        secret_from_vault=password_from_vault,
+        secret=password,
+        provider=_ODOO.provider,
+    )
     return base, database, username, password, None
 
 
@@ -423,31 +455,38 @@ def _invoiceninja_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
         or "v5"
     ).strip()
     default_base = _INVOICENINJA_V4_BASE_URL if version == "v4" else _INVOICENINJA_V5_BASE_URL
-    base = (
-        _credential_value(
-            provider=_INVOICENINJA.provider,
-            provider_aliases=_INVOICENINJA.aliases,
-            field_names=_INVOICENINJA.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("invoiceninja_base_url")
-        or default_base
+    base_from_vault = _credential_value(
+        provider=_INVOICENINJA.provider,
+        provider_aliases=_INVOICENINJA.aliases,
+        field_names=_INVOICENINJA.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    token = _credential_value(
+    base = base_from_vault or _settings_value("invoiceninja_base_url") or default_base
+    token_from_vault = _credential_value(
         provider=_INVOICENINJA.provider,
         provider_aliases=_INVOICENINJA.aliases,
         field_names=_INVOICENINJA.group("api_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("invoiceninja_api_token")
-    secret = _credential_value(
+    )
+    token = token_from_vault or _settings_value("invoiceninja_api_token")
+    secret_from_vault = _credential_value(
         provider=_INVOICENINJA.provider,
         provider_aliases=_INVOICENINJA.aliases,
         field_names=_INVOICENINJA.group("secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("invoiceninja_secret")
+    )
+    secret = secret_from_vault or _settings_value("invoiceninja_secret")
+    # The token authenticates every request; the secret rides only on the v5
+    # header shape, so it is guarded down in that branch.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_INVOICENINJA.provider,
+    )
     if not token:
         return _base_url(base), version, _setup_hint(
             provider=_INVOICENINJA.provider,
@@ -460,6 +499,12 @@ def _invoiceninja_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
     if len(token) < 64:
         headers["X-Ninja-Token"] = token
     else:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=secret_from_vault,
+            secret=secret,
+            provider=_INVOICENINJA.provider,
+        )
         headers.update(
             {
                 "Content-Type": "application/json",

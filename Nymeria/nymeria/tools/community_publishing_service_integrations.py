@@ -28,6 +28,7 @@ from .service_integration_base import (
     filtered as _filtered,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -323,13 +324,14 @@ def _bearer_service_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str]] | str:
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=token_fields,
         tool_name=tool_name,
         config=config,
     )
+    token = token_from_vault
     for setting_name in token_settings:
         if token:
             break
@@ -343,17 +345,24 @@ def _bearer_service_config(
             display_name=display_name,
         )
 
-    base_url = _credential_value(
+    base_url_from_vault = _credential_value(
         provider=provider,
         provider_aliases=provider_aliases,
         field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
         tool_name=tool_name,
         config=config,
     )
+    base_url = base_url_from_vault
     for setting_name in base_settings:
         if base_url:
             break
         base_url = _settings_value(setting_name)
+    _require_joined_destination(
+        destination_from_vault=base_url_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=provider,
+    )
     return _base_url(base_url or default_base_url), {
         **_json_headers(),
         "Authorization": f"Bearer {token}",
@@ -412,13 +421,37 @@ def _facebook_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     if isinstance(resolved, str):
         return resolved
     base_url, headers = resolved
-    app_secret = _credential_value(
+    # facebook is the one caller of the shared helper that resolves a SECOND
+    # credential outside it, so it needs an address provenance the helper does
+    # not return. Re-reading it costs one vault lookup on this path only, which
+    # beats widening the helper's return shape for linkedin and twitter, neither
+    # of which has a second secret (and twitter returns the helper's tuple
+    # straight to its own callers).
+    base_from_vault = _credential_value(
+        provider=_FACEBOOK.provider,
+        provider_aliases=_FACEBOOK.aliases,
+        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        tool_name=tool_name,
+        config=config,
+    )
+    app_secret_from_vault = _credential_value(
         provider=_FACEBOOK.provider,
         provider_aliases=_FACEBOOK.aliases,
         field_names=_FACEBOOK.group("app_secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("facebook_app_secret")
+    )
+    app_secret = app_secret_from_vault or _settings_value("facebook_app_secret")
+    # The proof is an HMAC rather than the secret itself, but it is computed
+    # under the operator's app secret over a token the planted record chose, and
+    # it is sent to the address that record chose. That is an oracle, not a
+    # redaction.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=app_secret_from_vault,
+        secret=app_secret,
+        provider=_FACEBOOK.provider,
+    )
     params: dict[str, str] = {}
     if app_secret:
         token = headers["Authorization"].removeprefix("Bearer ").strip()
@@ -430,38 +463,69 @@ def _facebook_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     return base_url, headers, params
 
 
-def _reddit_token_url(tool_name: str, config: Optional[RunnableConfig]) -> str:
-    return _base_url(
-        _credential_value(
-            provider=_REDDIT.provider,
-            provider_aliases=_REDDIT.aliases,
-            field_names=_REDDIT.group("token_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("reddit_token_url")
-        or _REDDIT_TOKEN_URL
+def _reddit_token_url(
+    tool_name: str, config: Optional[RunnableConfig]
+) -> tuple[str, str | None]:
+    """The token endpoint, and the vault value behind it if that is where it came from.
+
+    Returns the provenance because this address is where the client secret is
+    SENT, not merely where the API lives: the caller cannot join the two halves
+    without knowing whether a saved record chose the address.
+    """
+    from_vault = _credential_value(
+        provider=_REDDIT.provider,
+        provider_aliases=_REDDIT.aliases,
+        field_names=_REDDIT.group("token_url"),
+        tool_name=tool_name,
+        config=config,
+    )
+    return (
+        _base_url(
+            from_vault or _settings_value("reddit_token_url") or _REDDIT_TOKEN_URL
+        ),
+        from_vault,
     )
 
 
-def _reddit_base(tool_name: str, config: Optional[RunnableConfig], *, public: bool = False) -> str:
+def _reddit_base(
+    tool_name: str, config: Optional[RunnableConfig], *, public: bool = False
+) -> tuple[str, str | None]:
+    """The API root, and whether a vault record chose it.
+
+    Provenance is returned because the bearer token that rides to this base is
+    resolved in a SIBLING helper (``_reddit_access_token``) and the two only
+    meet in ``_reddit_config``. Neither function looks shaped on its own, which
+    is exactly the blind spot that hid a live leak here: an adversarial review
+    measured ``Authorization: Bearer OPERATOR-REDDIT-BEARER`` reaching
+    ``https://attacker.invalid`` from a record holding
+    ``{base_url, refresh_token}``, because the token lookup missed that record
+    and fell through to the deployment's setting.
+    """
     field_names = _REDDIT.group("public_base_url") if public else _REDDIT.group("base_url")
     settings_name = "reddit_public_base_url" if public else "reddit_base_url"
     default = _REDDIT_PUBLIC_BASE_URL if public else _REDDIT_BASE_URL
-    return _base_url(
-        _credential_value(
-            provider=_REDDIT.provider,
-            provider_aliases=_REDDIT.aliases,
-            field_names=field_names,
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value(settings_name)
-        or default
+    base_from_vault = _credential_value(
+        provider=_REDDIT.provider,
+        provider_aliases=_REDDIT.aliases,
+        field_names=field_names,
+        tool_name=tool_name,
+        config=config,
+    )
+    return (
+        _base_url(base_from_vault or _settings_value(settings_name) or default),
+        base_from_vault,
     )
 
 
-def _reddit_client_credentials(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str | None, str | None]:
+def _reddit_client_credentials(
+    tool_name: str, config: Optional[RunnableConfig]
+) -> tuple[str | None, str | None, str | None]:
+    """The client id and secret, plus the SECRET's provenance.
+
+    Only the secret's provenance is returned. ``client_id`` is public metadata
+    (the registry does not count it as an anchor), so it proves nothing about
+    who owns the record and cannot stand in for the secret in a join.
+    """
     client_id = _credential_value(
         provider=_REDDIT.provider,
         provider_aliases=_REDDIT.aliases,
@@ -469,14 +533,17 @@ def _reddit_client_credentials(tool_name: str, config: Optional[RunnableConfig])
         tool_name=tool_name,
         config=config,
     ) or _settings_value("reddit_client_id")
-    client_secret = _credential_value(
+    client_secret_from_vault = _credential_value(
         provider=_REDDIT.provider,
         provider_aliases=_REDDIT.aliases,
         field_names=_REDDIT.group("client_secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("reddit_client_secret")
-    return client_id, client_secret
+    )
+    client_secret = client_secret_from_vault or _settings_value(
+        "reddit_client_secret"
+    )
+    return client_id, client_secret, client_secret_from_vault
 
 
 def _reddit_cached_token(
@@ -518,45 +585,90 @@ def _reddit_access_token(
     config: Optional[RunnableConfig],
     *,
     allow_client_credentials: bool,
-) -> str | None:
-    access_token = _credential_value(
+) -> tuple[str | None, str | None]:
+    """The bearer token, and the provenance of whatever authenticated it.
+
+    The second element answers "did a vault record supply this", which
+    ``_reddit_config`` needs because it is the only place the token meets the
+    base URL it rides to. For a MINTED token the honest answer is about the
+    credential that minted it, and the parts are combined with ``and``, not
+    ``or``: if any part came from deployment settings then sending the result to
+    a vault-chosen address is the leak shape, so the conjunction is the
+    conservative direction (it makes the guard refuse more often, never less).
+    """
+    access_token_from_vault = _credential_value(
         provider=_REDDIT.provider,
         provider_aliases=_REDDIT.aliases,
         field_names=_REDDIT.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("reddit_access_token")
+    )
+    access_token = access_token_from_vault or _settings_value("reddit_access_token")
     if access_token:
-        return access_token
+        # Returns BEFORE either guard below, which is why the join for this
+        # branch cannot live in this function: its address is the caller's.
+        return access_token, access_token_from_vault
 
-    client_id, client_secret = _reddit_client_credentials(tool_name, config)
+    client_id, client_secret, client_secret_from_vault = _reddit_client_credentials(
+        tool_name, config
+    )
     if not client_id or not client_secret:
-        return None
-    token_url = _reddit_token_url(tool_name, config)
-    refresh_token = _credential_value(
+        return None, None
+    token_url, token_url_from_vault = _reddit_token_url(tool_name, config)
+    # Both branches below POST ``Basic base64(client_id:client_secret)`` to
+    # token_url, so the secret rides to whatever address chose it. client_id is
+    # not an anchor, so a record holding {token_url, refresh_token} clears the
+    # slice B check while missing this lookup entirely.
+    _require_joined_destination(
+        destination_from_vault=token_url_from_vault,
+        secret_from_vault=client_secret_from_vault,
+        secret=client_secret,
+        provider=_REDDIT.provider,
+    )
+    refresh_token_from_vault = _credential_value(
         provider=_REDDIT.provider,
         provider_aliases=_REDDIT.aliases,
         field_names=_REDDIT.group("refresh_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("reddit_refresh_token")
+    )
+    refresh_token = refresh_token_from_vault or _settings_value(
+        "reddit_refresh_token"
+    )
     if refresh_token:
-        return _reddit_cached_token(
-            client_id=client_id,
-            client_secret=client_secret,
-            token_url=token_url,
-            grant_key=f"refresh:{refresh_token}",
-            form_data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+        # A separate branch guard, not a disjunction with the one above: the
+        # refresh token is sent in the form body, so it is a second secret
+        # riding to the same address and needs its own provenance joined.
+        _require_joined_destination(
+            destination_from_vault=token_url_from_vault,
+            secret_from_vault=refresh_token_from_vault,
+            secret=refresh_token,
+            provider=_REDDIT.provider,
+        )
+        return (
+            _reddit_cached_token(
+                client_id=client_id,
+                client_secret=client_secret,
+                token_url=token_url,
+                grant_key=f"refresh:{refresh_token}",
+                form_data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            ),
+            # Both inputs authenticate the mint, so both must be the record's
+            # for the minted token to count as the record's.
+            refresh_token_from_vault and client_secret_from_vault,
         )
     if allow_client_credentials:
-        return _reddit_cached_token(
-            client_id=client_id,
-            client_secret=client_secret,
-            token_url=token_url,
-            grant_key="client_credentials",
-            form_data={"grant_type": "client_credentials"},
+        return (
+            _reddit_cached_token(
+                client_id=client_id,
+                client_secret=client_secret,
+                token_url=token_url,
+                grant_key="client_credentials",
+                form_data={"grant_type": "client_credentials"},
+            ),
+            client_secret_from_vault,
         )
-    return None
+    return None, None
 
 
 def _reddit_config(
@@ -565,24 +677,36 @@ def _reddit_config(
     *,
     require_user_token: bool = False,
 ) -> tuple[str, dict[str, str] | str, bool]:
-    token = _reddit_access_token(
+    token, token_from_vault = _reddit_access_token(
         tool_name,
         config,
         allow_client_credentials=not require_user_token,
     )
     if token:
+        base, base_from_vault = _reddit_base(tool_name, config)
+        # THE join for the bearer branch. It has to be here rather than in
+        # _reddit_access_token: that function returns the direct token before
+        # reaching either of its own guards, and it never sees this address.
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_REDDIT.provider,
+        )
         headers = _json_headers()
         headers["Authorization"] = f"Bearer {token}"
-        return _reddit_base(tool_name, config), headers, True
+        return base, headers, True
+    # No secret rides on either branch below, so neither needs a join: the setup
+    # hint carries no credential, and the public base is unauthenticated.
     if require_user_token:
-        return _reddit_base(tool_name, config), _setup_hint(
+        return _reddit_base(tool_name, config)[0], _setup_hint(
             provider=_REDDIT.provider,
             field_names=_REDDIT.hint_fields,
             tool_name=tool_name,
             env_var=_REDDIT.env_var,
             display_name=_REDDIT.display_name,
         ), False
-    return _reddit_base(tool_name, config, public=True), _json_headers(), False
+    return _reddit_base(tool_name, config, public=True)[0], _json_headers(), False
 
 
 def _reddit_endpoint(base_url: str, path: str, *, oauth: bool) -> str:
@@ -1875,6 +1999,14 @@ def facebook_page_create_post(
             body["link"] = link.strip()
         request_headers = dict(headers)
         params = dict(auth_params)
+        # join-gate: enforced-elsewhere - _facebook_config, two lines up, already
+        # refuses when a vault record supplies base_url without app_secret, using
+        # this same field group. So by here either base_url is not vault-supplied
+        # or app_secret is, and re-resolving app_secret below cannot reach the
+        # operator's settings value while the address is planted. The page token
+        # has no settings leg at all, so it is never the server's to leak. This
+        # is transitive rather than local: it holds only while that guard keeps
+        # using _FACEBOOK.group("app_secret").
         page_access_token = _credential_value(
             provider=_FACEBOOK.provider,
             provider_aliases=_FACEBOOK.aliases,

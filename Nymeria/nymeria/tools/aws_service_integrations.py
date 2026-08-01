@@ -151,6 +151,13 @@ def _aws_client(
     if not access_key or not secret_key:
         return None, _setup_hint(tool_name)
 
+    # join-gate: enforced-elsewhere - signed_endpoint_url IS the join, for boto3.
+    # Same rule expressed the other way round: require_joined_destination refuses
+    # the request, and this DROPS the vault-supplied endpoint and sends to the
+    # vendor instead. The inversion is deliberate and predates that guard.
+    # botocore signs with the keys itself and never reaches request_with_policy,
+    # so there is no later point at which a refusal could be raised.
+    #
     # AFTER the setup-hint guard, deliberately. A deployment with no keys at all
     # has nothing to steer and nothing to steal, so it should get the friendly
     # "save an access key id and secret" hint, not a refusal about an endpoint.

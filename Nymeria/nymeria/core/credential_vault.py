@@ -1365,6 +1365,85 @@ class CredentialVaultRepo:
             conn.commit()
             return plaintext
 
+    def has_secret_values(
+        self,
+        credential_id: str,
+        field_names: Iterable[str],
+        *,
+        actor: Actor,
+        actor_is_admin: bool = False,
+        target_type: Optional[str] = None,
+        target_id: Optional[str] = None,
+    ) -> frozenset[str]:
+        """Which of ``field_names`` this record holds with a NON-EMPTY value.
+
+        A POSSESSION PROBE, not a read. It answers "could this record serve this
+        secret", which is a question the destination-join control has to ask
+        about records it is about to REJECT, so it must not be recorded as use.
+
+        This exists because ``get_secret_field`` is the accounting path: it bumps
+        ``last_used_at`` and writes a ``used`` audit row per call. Answering a
+        possession question through it turned one address lookup into five
+        ``used`` rows on a two-record, three-anchor setup, four of them pure
+        probes, and marked a record used that was never used. That is worse than
+        the wasted work: the audit log is itself a security artifact, and once
+        probes are indistinguishable from reads it can no longer answer "was this
+        credential actually read?".
+
+        The access checks are deliberately IDENTICAL to ``get_secret_field``'s
+        (owner, disabled, allowed_targets). A caller who may not read the secret
+        must not be able to learn whether it exists either, and more directly: a
+        record this actor cannot read must not be able to win the destination
+        right, so "denied" and "holds nothing" have to be the same answer at the
+        call site.
+
+        Differences from a read, all deliberate:
+        - A field that is absent is simply omitted rather than raising, because
+          "no such field" IS the answer to a possession question.
+        - A field whose ciphertext will not decrypt counts as NOT held and is not
+          audited. A probe is not the right place to report key trouble; the real
+          read will fail loudly, and auditing here would fire on every lookup for
+          as long as the key stayed wrong.
+        """
+        wanted = list(dict.fromkeys(field_names))
+        if not wanted:
+            return frozenset()
+        with self._lock, self._connect() as conn:
+            record = self._record_locked(conn, credential_id)
+            if record is None:
+                raise CredentialNotFound(credential_id)
+            self._require_actor_can_read(
+                record,
+                actor=actor,
+                actor_is_admin=actor_is_admin,
+            )
+            if record.status == "disabled":
+                raise CredentialAccessDenied(f"Credential {credential_id} is disabled")
+            if not self._target_allowed(record, target_type, target_id):
+                raise CredentialAccessDenied(
+                    f"Credential {credential_id} is not allowed for {target_type}:{target_id}"
+                )
+            placeholders = ",".join("?" for _ in wanted)
+            rows = conn.execute(
+                f"""
+                SELECT field_name, ciphertext FROM credential_secret_fields
+                WHERE credential_id = ? AND field_name IN ({placeholders})
+                """,
+                (credential_id, *wanted),
+            ).fetchall()
+        held = set()
+        for row in rows:
+            try:
+                if nymeria_secrets.decrypt(row["ciphertext"]):
+                    held.add(row["field_name"])
+            except (
+                nymeria_secrets.SecretsKeyMissing,
+                nymeria_secrets.SecretsKeyInvalid,
+                InvalidToken,
+            ):
+                continue
+        return frozenset(held)
+
     def get_secret_fields_for_test(
         self,
         credential_id: str,

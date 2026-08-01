@@ -27,6 +27,7 @@ from .service_integration_base import (
     filtered as _filtered,
     json_object as _json_object,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -178,23 +179,22 @@ def _raindrop_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 
 
 def _yourls_endpoint(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    raw_url = (
-        _credential_value(
-            provider=_YOURLS.provider,
-            provider_aliases=_YOURLS.aliases,
-            field_names=_YOURLS.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("yourls_url")
+    raw_url_from_vault = _credential_value(
+        provider=_YOURLS.provider,
+        provider_aliases=_YOURLS.aliases,
+        field_names=_YOURLS.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    signature = _credential_value(
+    raw_url = raw_url_from_vault or _settings_value("yourls_url")
+    signature_from_vault = _credential_value(
         provider=_YOURLS.provider,
         provider_aliases=_YOURLS.aliases,
         field_names=_YOURLS.group("signature"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("yourls_signature")
+    )
+    signature = signature_from_vault or _settings_value("yourls_signature")
     username = _credential_value(
         provider=_YOURLS.provider,
         provider_aliases=_YOURLS.aliases,
@@ -202,21 +202,38 @@ def _yourls_endpoint(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         tool_name=tool_name,
         config=config,
     ) or _settings_value("yourls_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_YOURLS.provider,
         provider_aliases=_YOURLS.aliases,
         field_names=_YOURLS.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("yourls_password")
+    )
+    password = password_from_vault or _settings_value("yourls_password")
     if not raw_url:
         return "", "[Error]: No YOURLS URL found. Save a YOURLS credential with url, or set YOURLS_URL."
     endpoint = _base_url(raw_url)
     if not endpoint.endswith("/yourls-api.php"):
         endpoint = f"{endpoint}/yourls-api.php"
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: a record holding url + password clears slice B's "some
+    # anchor", and the signature branch would then send the operator's
+    # signature token to the address that record chose.
     if signature:
+        _require_joined_destination(
+            destination_from_vault=raw_url_from_vault,
+            secret_from_vault=signature_from_vault,
+            secret=signature,
+            provider=_YOURLS.provider,
+        )
         return endpoint, {"signature": signature}
     if username and password:
+        _require_joined_destination(
+            destination_from_vault=raw_url_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_YOURLS.provider,
+        )
         return endpoint, {"username": username, "password": password}
     return endpoint, _setup_hint(
         provider=_YOURLS.provider,

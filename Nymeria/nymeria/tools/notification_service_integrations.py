@@ -26,6 +26,7 @@ from .service_integration_base import (
     filtered as _filtered,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -258,18 +259,24 @@ def _pushcut_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
     }
 
 
-def _gotify_base(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
-    base = (
-        _credential_value(
-            provider=_GOTIFY.provider,
-            provider_aliases=_GOTIFY.aliases,
-            field_names=_GOTIFY.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("gotify_base_url")
+def _gotify_base(
+    tool_name: str, config: Optional[RunnableConfig]
+) -> tuple[str | None, str | None]:
+    """The Gotify base URL, and the vault value it came from if it did.
+
+    The provenance rides back with the address because the caller is the only
+    place the two halves meet: the address resolves here and the token in the
+    branch below, so only the caller can join them.
+    """
+    base_from_vault = _credential_value(
+        provider=_GOTIFY.provider,
+        provider_aliases=_GOTIFY.aliases,
+        field_names=_GOTIFY.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    return _base_url(base) if base else None
+    base = base_from_vault or _settings_value("gotify_base_url")
+    return (_base_url(base) if base else None), base_from_vault
 
 
 def _gotify_config(
@@ -278,39 +285,62 @@ def _gotify_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str]:
-    base = _gotify_base(tool_name, config)
+    base, base_from_vault = _gotify_base(tool_name, config)
     if not base:
         return "", (
             "[Error]: No Gotify base URL found. Save a Gotify credential with "
             '"base_url" / "url", or set GOTIFY_BASE_URL.'
         )
-    # Branch-variant: app vs client token kind. field_names comes from the
-    # matching spec group; env_var stays inline per branch (the spec carries the
-    # app-token env_var for the registry).
+    # Branch-variant: app vs client token kind. The lookup and the setup hint
+    # both take the matching spec group; env_var stays inline per branch (the
+    # spec carries the app-token env_var for the registry).
+    #
+    # The two tokens are independent credentials against one address, so each
+    # branch joins its OWN pair. Asking whether the record supplied EITHER token
+    # would reproduce the weakness one level down: a record holding
+    # base_url + app_token clears slice B, and on the client path the operator's
+    # GOTIFY_CLIENT_TOKEN would then ride to the address that record chose. The
+    # lookups name their group inline rather than through hint_fields because
+    # the join gate reads field_names statically, and only then can it hold each
+    # branch to a guard of its own.
     if token_kind == "app":
-        field_names = _GOTIFY.group("app_token")
+        hint_fields = _GOTIFY.group("app_token")
         env_var = "GOTIFY_APP_TOKEN"
-        token = _credential_value(
+        token_from_vault = _credential_value(
             provider=_GOTIFY.provider,
             provider_aliases=_GOTIFY.aliases,
-            field_names=field_names,
+            field_names=_GOTIFY.group("app_token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("gotify_app_token")
+        )
+        token = token_from_vault or _settings_value("gotify_app_token")
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_GOTIFY.provider,
+        )
     else:
-        field_names = _GOTIFY.group("client_token")
+        hint_fields = _GOTIFY.group("client_token")
         env_var = "GOTIFY_CLIENT_TOKEN"
-        token = _credential_value(
+        token_from_vault = _credential_value(
             provider=_GOTIFY.provider,
             provider_aliases=_GOTIFY.aliases,
-            field_names=field_names,
+            field_names=_GOTIFY.group("client_token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("gotify_client_token")
+        )
+        token = token_from_vault or _settings_value("gotify_client_token")
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_GOTIFY.provider,
+        )
     if not token:
         return base, _setup_hint(
             provider=_GOTIFY.provider,
-            field_names=field_names,
+            field_names=hint_fields,
             tool_name=tool_name,
             env_var=env_var,
             display_name=_GOTIFY.display_name,

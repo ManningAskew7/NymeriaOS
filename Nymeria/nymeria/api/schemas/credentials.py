@@ -4,10 +4,53 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 OwnerType = Literal["user", "system"]
 CredentialStatus = Literal["active", "pending_setup", "invalid", "disabled"]
+
+
+def _reject_blank_secret_fields(
+    value: Optional[dict[str, str]],
+) -> Optional[dict[str, str]]:
+    """Refuse secret fields with a blank name or a blank value.
+
+    A SECURITY control, not input tidiness, and it mirrors the rule the
+    agent-facing twin has always enforced (``tools/auth_manager.py::auth_write``).
+    Until this landed, the REST surface was the looser of the two, and any
+    authenticated user could reach it.
+
+    A blank VALUE is the load-bearing half. The destination-join control asks
+    which record may supply the address for a request, and answers it by asking
+    which record possesses the provider's anchor credentials. A record that names
+    an anchor with an empty value used to satisfy that question by NAME while
+    contributing nothing to the lookup that consumes the answer, so it could take
+    the destination right and let a DIFFERENT record's secret ride to its
+    address. That is fixed on the read side too, by judging possession by value
+    (``core/credential_vault.has_secret_values``), and both halves stay: this one
+    stops the shape being stored, that one covers rows stored before it existed
+    and any writer that does not come through these schemas.
+
+    Note this cannot be a "clear the field" idiom that we are breaking. The write
+    is an UPSERT with no delete arm, so an empty value never cleared anything; it
+    stored an encrypted empty string, which is precisely the shape above.
+    """
+    if value is None:
+        return None
+    bad = [
+        name
+        for name, secret in value.items()
+        if not isinstance(name, str)
+        or not isinstance(secret, str)
+        or not name.strip()
+        or not secret.strip()
+    ]
+    if bad:
+        raise ValueError(
+            "secret_fields must map non-empty field names to non-empty string "
+            f"values; offending field(s): {', '.join(sorted(map(str, bad)))}"
+        )
+    return value
 
 
 class CredentialResponse(BaseModel):
@@ -61,6 +104,8 @@ class CredentialCreateRequest(BaseModel):
     status: CredentialStatus = "active"
     secret_fields: dict[str, str] = Field(default_factory=dict)
 
+    _no_blank_secrets = field_validator("secret_fields")(_reject_blank_secret_fields)
+
 
 class CredentialUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=160)
@@ -71,6 +116,8 @@ class CredentialUpdateRequest(BaseModel):
     expires_at: Optional[str] = None
     status: Optional[CredentialStatus] = None
     secret_fields: Optional[dict[str, str]] = None
+
+    _no_blank_secrets = field_validator("secret_fields")(_reject_blank_secret_fields)
 
 
 class CredentialBindingRequest(BaseModel):

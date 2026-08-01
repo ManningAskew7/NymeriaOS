@@ -26,6 +26,7 @@ from .service_integration_base import (
     filtered as _filtered_params,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -339,16 +340,14 @@ def _freshservice_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
 
 
 def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_SERVICENOW.provider,
-            provider_aliases=_SERVICENOW.aliases,
-            field_names=_SERVICENOW.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("servicenow_base_url")
+    base_from_vault = _credential_value(
+        provider=_SERVICENOW.provider,
+        provider_aliases=_SERVICENOW.aliases,
+        field_names=_SERVICENOW.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
+    base = base_from_vault or _settings_value("servicenow_base_url")
     instance = (
         _credential_value(
             provider=_SERVICENOW.provider,
@@ -359,13 +358,14 @@ def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         )
         or _settings_value("servicenow_instance")
     )
-    token = _credential_value(
+    token_from_vault = _credential_value(
         provider=_SERVICENOW.provider,
         provider_aliases=_SERVICENOW.aliases,
         field_names=_SERVICENOW.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("servicenow_access_token")
+    )
+    token = token_from_vault or _settings_value("servicenow_access_token")
     username = _credential_value(
         provider=_SERVICENOW.provider,
         provider_aliases=_SERVICENOW.aliases,
@@ -373,13 +373,14 @@ def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         tool_name=tool_name,
         config=config,
     ) or _settings_value("servicenow_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_SERVICENOW.provider,
         provider_aliases=_SERVICENOW.aliases,
         field_names=_SERVICENOW.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("servicenow_password")
+    )
+    password = password_from_vault or _settings_value("servicenow_password")
     if not base and instance:
         instance = instance.strip().replace(".service-now.com", "")
         base = f"https://{instance}.service-now.com/api/now"
@@ -396,10 +397,26 @@ def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: a record holding base_url + password clears slice B's "some
+    # anchor", and the bearer branch would then send the operator's access token
+    # to the address that record chose.
     if token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_SERVICENOW.provider,
+        )
         headers["Authorization"] = f"Bearer {token}"
         return base, headers
     if username and password:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_SERVICENOW.provider,
+        )
         auth = base64.b64encode(f"{username}:{password}".encode()).decode()
         headers["Authorization"] = f"Basic {auth}"
         return base, headers
@@ -413,23 +430,22 @@ def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 
 
 def _zammad_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_ZAMMAD.provider,
-            provider_aliases=_ZAMMAD.aliases,
-            field_names=_ZAMMAD.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("zammad_base_url")
+    base_from_vault = _credential_value(
+        provider=_ZAMMAD.provider,
+        provider_aliases=_ZAMMAD.aliases,
+        field_names=_ZAMMAD.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    token = _credential_value(
+    base = base_from_vault or _settings_value("zammad_base_url")
+    token_from_vault = _credential_value(
         provider=_ZAMMAD.provider,
         provider_aliases=_ZAMMAD.aliases,
         field_names=_ZAMMAD.group("token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("zammad_token")
+    )
+    token = token_from_vault or _settings_value("zammad_token")
     username = _credential_value(
         provider=_ZAMMAD.provider,
         provider_aliases=_ZAMMAD.aliases,
@@ -437,13 +453,14 @@ def _zammad_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zammad_username")
-    password = _credential_value(
+    password_from_vault = _credential_value(
         provider=_ZAMMAD.provider,
         provider_aliases=_ZAMMAD.aliases,
         field_names=_ZAMMAD.group("password"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("zammad_password")
+    )
+    password = password_from_vault or _settings_value("zammad_password")
     if not base:
         return "", (
             '[Error]: No Zammad base URL found. Save a Zammad credential with "base_url", '
@@ -457,10 +474,26 @@ def _zammad_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+    # The guard runs per BRANCH, on the credential that actually authenticates
+    # the request: a record holding base_url + password clears slice B's "some
+    # anchor", and the token branch would then send the operator's token to the
+    # address that record chose.
     if token:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=token_from_vault,
+            secret=token,
+            provider=_ZAMMAD.provider,
+        )
         headers["Authorization"] = f"Token token={token}"
         return base, headers
     if username and password:
+        _require_joined_destination(
+            destination_from_vault=base_from_vault,
+            secret_from_vault=password_from_vault,
+            secret=password,
+            provider=_ZAMMAD.provider,
+        )
         auth = base64.b64encode(f"{username}:{password}".encode()).decode()
         headers["Authorization"] = f"Basic {auth}"
         return base, headers

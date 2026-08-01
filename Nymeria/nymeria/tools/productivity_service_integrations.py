@@ -23,6 +23,7 @@ from .service_integration_base import (
     credential_value as _credential_value,
     dump_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -168,31 +169,30 @@ def _todoist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 
 def _trello_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    base = (
-        _credential_value(
-            provider=_TRELLO.provider,
-            provider_aliases=_TRELLO.aliases,
-            field_names=_TRELLO.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("trello_base_url")
-        or _TRELLO_BASE_URL
+    base_from_vault = _credential_value(
+        provider=_TRELLO.provider,
+        provider_aliases=_TRELLO.aliases,
+        field_names=_TRELLO.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    key = _credential_value(
+    base = base_from_vault or _settings_value("trello_base_url") or _TRELLO_BASE_URL
+    key_from_vault = _credential_value(
         provider=_TRELLO.provider,
         provider_aliases=_TRELLO.aliases,
         field_names=_TRELLO.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("trello_api_key")
-    token = _credential_value(
+    )
+    key = key_from_vault or _settings_value("trello_api_key")
+    token_from_vault = _credential_value(
         provider=_TRELLO.provider,
         provider_aliases=_TRELLO.aliases,
         field_names=_TRELLO.group("api_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("trello_api_token")
+    )
+    token = token_from_vault or _settings_value("trello_api_token")
     if not key or not token:
         return _base_url(base), _setup_hint(
             provider=_TRELLO.provider,
@@ -201,6 +201,21 @@ def _trello_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
             env_var=_TRELLO.env_var,
             display_name=_TRELLO.display_name,
         )
+    # Both halves ride every request as query parameters, which is transmission
+    # like any header, so both are guarded: either one arriving from settings
+    # while the address came from the vault is a disclosure.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=key_from_vault,
+        secret=key,
+        provider=_TRELLO.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_TRELLO.provider,
+    )
     return _base_url(base), {"key": key, "token": token}
 
 

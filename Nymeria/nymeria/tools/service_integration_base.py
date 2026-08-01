@@ -234,6 +234,113 @@ def signed_endpoint_url(
     return validate_http_egress_url(str(from_vault).strip(), label=label)
 
 
+def require_joined_destination(
+    *,
+    destination_from_vault: Optional[str],
+    secret_from_vault: Optional[str],
+    secret: Optional[str],
+    provider: str,
+) -> None:
+    """Refuse a request whose address came from the vault and whose secret did not.
+
+    This is E10-02-D, the settings/env leg. Slice B
+    (``native_credentials._destination_record_id``) guarantees that a record
+    supplying an address holds SOME anchor field of the provider's. It does not
+    guarantee the record holds the one a given call site asks for, and every
+    config helper here spells its fallback ``_credential_value(...) or
+    _settings_value(...)``. So a record holding ``base_url`` plus one anchor from
+    a DIFFERENT anchor group clears slice B, the secret lookup then misses the
+    vault, and the operator's environment-configured key rides to an address that
+    record chose. 36 of the 171 destination-bearing specs declare two or more
+    independent anchor groups and are shaped for it.
+
+    The rule is the one cluster A already ships for LLM destinations
+    (``core/llm_provider_utils.destination_redirects_away_from_config``): a
+    caller-named destination does not get the server's credential. Ownership is
+    judged by PROVENANCE, not presence.
+
+    ACCEPTED CAPABILITY COST, and it is not zero. One legitimate shape is
+    refused: a single record holding an address plus a complete credential for
+    one auth branch, while a STALE environment variable still holds a credential
+    for an EARLIER branch. The earlier branch wins the fixed precedence, resolves
+    from settings, and is refused here. Measured on elasticsearch (record with
+    ``base_url`` + ``username`` + ``password``, plus a leftover
+    ``ELASTICSEARCH_API_KEY``), and reproduced on thirteen more providers. The
+    refusal is correct in the sense that it IS the leak shape when the record is
+    planted rather than the operator's, and it cannot be told apart from inside
+    the vault. The message below therefore names the stale setting as a remedy;
+    it is the one people will actually be hitting. The cost-free version is to
+    order the auth branches by provenance so the vault-supplied credential's
+    branch wins, which is task #65.
+
+    Three cases deliberately pass:
+
+    * ``destination_from_vault`` empty. The address is a setting or the vendor
+      default, so nothing caller-supplied is steering anything.
+    * ``secret_from_vault`` set. The secret came from the vault rather than from
+      server configuration. Note what this is NOT: it is a provenance bit, not a
+      record identity, so on its own it does not say the two came from the SAME
+      record. What makes it mean that is slice B, which only lets the first
+      record holding every anchor any candidate holds serve an address, judged by
+      VALUE. While that was judged by NAME, a record could name an anchor with an
+      empty value, take the address, and let a different record answer the
+      secret, so this bit was true and the leak still happened THROUGH the
+      control. ``native_credentials._destination_record_id`` and
+      ``test_an_empty_anchor_field_is_not_possession`` carry the other half of
+      this note. Do not weaken either without revisiting this line.
+    * ``secret`` empty. Nothing resolved, so there is nothing to disclose; the
+      caller's existing "no credential yet" branch returns its setup hint.
+
+    That third case is why this must not be spelled as "raise when the vault
+    supplied an address and the secret lookup missed". 26 specs spell
+    ``_credential_value(A) or _credential_value(B) or _settings_value(...)``
+    (mailchimp access_token or api_key, pagerduty access_token or api_token), and
+    a legitimate first miss is indistinguishable from the leak AT THAT CALL. It
+    is only distinguishable once the whole chain has resolved, which is why this
+    takes the settled values rather than screening each lookup.
+
+    ``signed_endpoint_url`` is the same rule spelled for the two boto3 sites, and
+    is deliberately NOT folded in here: it refuses a vault address whenever the
+    keys did not come from the vault, without regard to whether keys resolved at
+    all. That is stricter than this, harmless there (botocore cannot sign
+    without a key pair anyway), and merging the two would change its behaviour.
+
+    A caller may REPORT this but must not RECOVER from it. The distinction
+    matters because almost every tool body here wraps its work in
+    ``except Exception`` and returns ``"[Error]: ..."``, which is fine: the
+    request never leaves and the refusal reaches the agent as text. What is not
+    fine is catching it and carrying on, because every fallback chain here ends
+    in a hard-coded vendor host, so continuing would retarget the request at the
+    vendor's public API carrying a self-hosted instance's token, which is the
+    disclosure the control exists to prevent. An earlier wording of this
+    paragraph said "callers must not catch this", which the shipped code already
+    contradicted.
+    ``tests/test_service_integration_egress.py`` holds the AST gate that fails
+    the build when a helper resolves a vault destination and a settings-backed
+    secret without calling this.
+    """
+    if not destination_from_vault or secret_from_vault or not secret:
+        return
+    from .native_credentials import CredentialDestinationRefused
+
+    # Three remedies, and the order matters: the LAST one is the common case for
+    # an operator rather than an attacker, and an earlier version of this message
+    # named only the first two. It then told someone whose record already held a
+    # complete credential to "add the credential to that same record", which they
+    # had done, while the actual cause (a leftover environment variable feeding
+    # an earlier auth branch) went unmentioned.
+    raise CredentialDestinationRefused(
+        f'A saved "{provider}" credential supplies the address for this request but the '
+        f"{provider} credential about to be sent there came from server configuration, "
+        "not from that record, so the request would go to an address one record chose "
+        "authenticated by something else. Add that credential to the same record, or "
+        "remove the address from the record and configure the address in settings, or, "
+        f"if the record already holds a working {provider} credential of a different "
+        "kind, clear the stale environment variable or setting holding the one named "
+        "here so the record's own credential is the one that resolves."
+    )
+
+
 def json_object(value: str, *, field_name: str) -> dict[str, Any]:
     if not value or not value.strip():
         return {}

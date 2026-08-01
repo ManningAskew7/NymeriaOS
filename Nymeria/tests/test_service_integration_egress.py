@@ -11,7 +11,10 @@ change: ``http://localhost:8000/x`` ALLOW, ``http://nymeria-postgres:5432/``
 ALLOW, ``http://127.0.0.1:8000/x`` BLOCK.
 
 Three controls answer that, and each has a gate here because each is the kind of
-thing a later change removes without noticing:
+thing a later change removes without noticing. A fourth, added later for a
+different defect in the same family, is described with its own gate at the end of
+this file (``require_joined_destination``, E10-02-D: the address may come from a
+vault record only if the secret riding to it came from the same record).
 
 * ``request_with_policy`` (32 modules, 36 sites) re-evaluates the concrete
   target with DNS resolution ON and holds ``pinned_dns_resolution`` across the
@@ -37,6 +40,7 @@ success.
 from __future__ import annotations
 
 import ast
+import importlib
 import pathlib
 import socket
 
@@ -888,3 +892,690 @@ def test_no_test_in_this_file_needs_live_dns():
     source = pathlib.Path(__file__).read_text()
     for name in ("example.com", "example.org", "google.com", "wasabisys.com"):
         assert f"//{name}" not in source, f"{name} would require live DNS"
+
+
+# ---------------------------------------------------------------------------
+# E10-02-D: the settings/env leg.
+#
+# Slice B guarantees a record supplying an address holds SOME anchor field of
+# the provider's, not the one a given call site asks for. Where a provider
+# declares two or more independent anchor groups, a record can therefore hold
+# base_url plus an anchor this call site never asks for: it clears slice B, the
+# secret lookup misses the vault, and the operator's env-configured secret goes
+# out to that record's address. ``require_joined_destination`` is the join,
+# spelled at the point the credential is committed to a request.
+# ---------------------------------------------------------------------------
+
+
+def test_the_guard_passes_every_shape_that_is_not_the_leak():
+    """Three configurations must survive, or the control costs real deployments."""
+    # No vault address: settings or the vendor default chose the destination, so
+    # nothing caller-supplied is steering anything.
+    base.require_joined_destination(
+        destination_from_vault=None,
+        secret_from_vault=None,
+        secret="operator-key",
+        provider="grafana",
+    )
+    # Address and secret from the same record: exactly what slice B arranges.
+    base.require_joined_destination(
+        destination_from_vault="https://self.hosted",
+        secret_from_vault="record-key",
+        secret="record-key",
+        provider="grafana",
+    )
+    # Nothing resolved: the caller's own "no credential yet" branch returns a
+    # setup hint, and refusing here would pre-empt that friendly first-run
+    # message with a complaint about an endpoint the user never configured.
+    base.require_joined_destination(
+        destination_from_vault="https://self.hosted",
+        secret_from_vault=None,
+        secret=None,
+        provider="grafana",
+    )
+
+
+def test_the_guard_refuses_the_leak_and_names_the_remedy():
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    with pytest.raises(CredentialDestinationRefused) as caught:
+        base.require_joined_destination(
+            destination_from_vault="https://attacker.invalid",
+            secret_from_vault=None,
+            secret="operator-key",
+            provider="grafana",
+        )
+    message = str(caught.value)
+    assert "grafana" in message
+    # All THREE remedies, because the message shipped with only the first two and
+    # was then unactionable for the case it fires on most: a record that already
+    # holds a working credential of a different kind, with a stale environment
+    # variable feeding an earlier auth branch. That reading told the operator to
+    # do something they had already done. See task #65 for the version that
+    # removes the refusal instead of explaining it.
+    assert "Add that credential to the same record" in message
+    assert "configure the address in settings" in message
+    assert "stale environment variable" in message
+
+
+def test_a_planted_elasticsearch_base_url_cannot_carry_the_operators_env_key(
+    vault_setup, monkeypatch
+):
+    """The multi-secret case, where a disjunction guard would still leak.
+
+    elasticsearch declares api_key, bearer_token and password as independent
+    anchors. A record holding base_url + password clears slice B, so a guard
+    asking "did the record supply ANY accepted credential" passes it, and the
+    api_key branch then sends the operator's env key to that record's address.
+    That is slice B's own weakness reproduced one level down, and it is why the
+    guard runs per branch on the credential that actually authenticates.
+    """
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    _mint(
+        vault_setup,
+        name="planted",
+        provider="elasticsearch",
+        secret_fields={"base_url": "https://attacker.invalid", "password": "junk"},
+    )
+    monkeypatch.setattr(
+        tools,
+        "_settings_value",
+        lambda name: "operator-key" if name == "elasticsearch_api_key" else None,
+    )
+
+    with pytest.raises(CredentialDestinationRefused):
+        tools._elasticsearch_config(
+            "elasticsearch_search", {"configurable": {"user_id": "alice"}}
+        )
+
+
+def test_a_self_hosted_record_holding_both_halves_still_works(vault_setup, monkeypatch):
+    """The control must cost nothing to the ordinary self-hosted setup."""
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+
+    _mint(
+        vault_setup,
+        name="mine",
+        provider="elasticsearch",
+        secret_fields={
+            "base_url": "https://elastic.internal",
+            "username": "elastic",
+            "password": "s3cret",
+        },
+    )
+    monkeypatch.setattr(tools, "_settings_value", lambda name: None)
+
+    resolved, headers, auth, _verify = tools._elasticsearch_config(
+        "elasticsearch_search", {"configurable": {"user_id": "alice"}}
+    )
+    assert resolved == "https://elastic.internal"
+    assert auth == ("elastic", "s3cret")
+    assert isinstance(headers, dict)
+
+
+# --- the ratchet -----------------------------------------------------------
+
+_JOIN_GUARD = "require_joined_destination"
+
+# The exemption marker lives at the CALL SITE, not in a table here, for the
+# reason both sibling gates record (``test_exec_sandbox_gate.py``, quoting the
+# env gate): a table keyed on a location breaks on any edit near the site, which
+# trains people to re-point entries mechanically, and it puts the reason
+# somewhere the person deleting the code will never look. A table keyed on a
+# function NAME is the same failure one notch milder: it survives line edits and
+# dies silently on a rename.
+#
+#     # join-gate: enforced-elsewhere - <reason>
+#
+# The siblings anchor their marker to one spawn with ``_markers_above``. This
+# one is scoped to the whole function body instead, because the offence is not a
+# single call: the join spans an address resolved in one statement and a secret
+# resolved in another, and there is no one line to sit above. Comment lines
+# only, so a string literal mentioning the marker cannot satisfy it.
+_ENFORCED_ELSEWHERE = "join-gate: enforced-elsewhere"
+
+# Set from a measured run, not chosen. See the floor assertion at the end of
+# test_every_shaped_call_site_joins_its_destination_to_its_secret for why a
+# rule alone is not a ratchet.
+_SHAPED_SITE_FLOOR = 48
+_GUARD_CALL_FLOOR = 79
+
+
+def _call_name(node):
+    func = getattr(node, "func", None)
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _resolved_field_names(value, module):
+    """``field_names=`` as a concrete set, whether spelled literally or via group()."""
+    if isinstance(value, (ast.Tuple, ast.List)):
+        try:
+            return set(ast.literal_eval(value))
+        except Exception:
+            return None
+    if isinstance(value, ast.Call) and _call_name(value) == "group" and value.args:
+        owner = getattr(value.func, "value", None)
+        if isinstance(owner, ast.Name):
+            spec = getattr(module, owner.id, None)
+            try:
+                return set(spec.group(ast.literal_eval(value.args[0])))
+            except Exception:
+                return None
+    return None
+
+
+def _resolved_spec(value, module):
+    """The provider spec behind ``provider=``, however the call site spells it.
+
+    Both spellings are load-bearing. ``provider=_GRAFANA.provider`` is the
+    common one, but ``provider="aws"`` as a bare string is used too, and a gate
+    resolving only the first silently SKIPS every function using the second.
+    Returns None for ``provider=provider``, a parameter of a generic helper;
+    that case is why the gate below must fail closed rather than skip.
+    """
+    from nymeria.tools.credential_registry import get_provider_spec
+
+    if (
+        isinstance(value, ast.Attribute)
+        and value.attr == "provider"
+        and isinstance(value.value, ast.Name)
+    ):
+        return getattr(module, value.value.id, None)
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return get_provider_spec(value.value)
+    return None
+
+
+def _lookup_wrappers(functions, module):
+    """Same-module helpers that forward to the vault lookup, name -> their spec.
+
+    ``aws`` and ``file_storage`` wrap ``_credential_value`` in a tiny local
+    helper taking ``field_names``, and bind the provider inside it. A gate
+    matching only the name ``_credential_value`` reads those modules as having
+    no lookups at all.
+    """
+    wrappers = {}
+    for fn in functions:
+        parameters = {arg.arg for arg in fn.args.args} | {
+            arg.arg for arg in fn.args.kwonlyargs
+        }
+        if "field_names" not in parameters:
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) and (_call_name(node) or "").endswith(
+                "credential_value"
+            ):
+                keywords = {kw.arg: kw.value for kw in node.keywords or []}
+                wrappers[fn.name] = _resolved_spec(keywords.get("provider"), module)
+                break
+    return wrappers
+
+
+def _classify(spec, fields):
+    """One of "address", "anchor", "anchor-complete", "metadata" or "unknown".
+
+    "anchor" is the shaped one: this lookup asks for SOME of the provider's
+    anchors but not all of them, so there is a gap. A record can hold an anchor
+    outside the asked set, clear slice B's completeness rule with it, and miss
+    this lookup, which then falls through to the operator's settings value.
+
+    "anchor-complete" asks for the whole anchor set and is NOT shaped, and that
+    conclusion DEPENDS ON a rule in another file. Slice B only lets the first
+    record holding every anchor any candidate holds serve the address, so that
+    record also answers any lookup covering the whole anchor set: same record,
+    nothing to join. The dependency is that "holds" is judged by VALUE. While it
+    was judged by NAME, a record could name the exact field with an empty value,
+    clear slice B, and still miss the lookup, which made every one of these
+    shaped after all (measured on hubspot: the operator's access token went to a
+    planted base_url). ``_destination_record_id`` carries the other half of this
+    note, and ``test_an_empty_anchor_field_is_not_possession`` pins it.
+
+    PER SPEC, never against a union of names across providers. The union reads
+    179 anchor groups as address lookups, because ``value``, ``domain``,
+    ``host``, ``region`` and ``server`` are destination aliases for some provider
+    and secret aliases for others. A gate that calls a secret lookup an address
+    then drops it from its own analysis and reports the site clean, which is how
+    the five generic helpers were skipped entirely.
+
+    "unknown" is the important answer. It is returned whenever the provider or
+    the field names are not statically resolvable, which is the shape of the
+    generic ``_api_key_config`` family, and the caller treats it as fail-closed
+    rather than skipping the function.
+    """
+    from nymeria.tools.credential_registry import (
+        DESTINATION_URL_FIELDS,
+        credential_anchor_fields,
+        destination_url_fields_for,
+    )
+
+    if fields is None:
+        return "unknown"
+    if spec is None:
+        # No spec, so only the PRIMARY names can be trusted: they are the ones
+        # that are URL-shaped in every register entry that uses them. Anything
+        # else here is unclassifiable rather than assumed harmless.
+        return "address" if fields & DESTINATION_URL_FIELDS else "unknown"
+    if fields & destination_url_fields_for(spec):
+        return "address"
+    anchors = credential_anchor_fields(spec)
+    if fields & anchors:
+        return "anchor" if anchors - fields else "anchor-complete"
+    return "metadata"
+
+
+def _credential_lookups(function, module, wrappers):
+    """(spec_or_None, asked_field_names, callee) for every vault lookup here.
+
+    The spec is None whenever the call site names its provider through a
+    parameter, and the field names are None whenever they are not a literal
+    tuple or a ``SPEC.group(...)`` call. Both are kept rather than dropped: a
+    dropped entry is what makes a gate fail open, and ``_classify`` turns them
+    into the "unknown" that forces a guard.
+    """
+    found = []
+    for node in ast.walk(function):
+        name = _call_name(node) if isinstance(node, ast.Call) else None
+        if not name:
+            continue
+        direct = name.endswith("credential_value")
+        if not direct and name not in wrappers:
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords or []}
+        spec = _resolved_spec(keywords.get("provider"), module)
+        if spec is None and not direct:
+            spec = wrappers.get(name)
+        fields = _resolved_field_names(keywords.get("field_names"), module)
+        found.append((spec, fields, name))
+    return found
+
+
+def _guarded_provenance_names(function):
+    """Locals passed as ``secret_from_vault=``, mapped to the guard's line.
+
+    Line numbers matter because the name alone is not a key. Contentful's
+    preview and delivery branches both assign ``token_from_vault``, so a
+    name-keyed reading collapsed two credentials into one entry and let a single
+    surviving guard cover both. Same shape in storyblok, spotify, reddit,
+    pagerduty and mailjet.
+    """
+    names: dict[str, list[int]] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if _JOIN_GUARD not in (_call_name(node) or ""):
+            continue
+        for keyword in node.keywords or []:
+            if keyword.arg == "secret_from_vault":
+                for inner in ast.walk(keyword.value):
+                    if isinstance(inner, ast.Name):
+                        names.setdefault(inner.id, []).append(node.lineno)
+    return names
+
+
+def _secret_provenance_locals(function, module, wrappers):
+    """Every ASSIGNMENT of an anchor lookup to a local: (local, provider, line).
+
+    A list rather than a dict, and carrying the line, because the same local name
+    is legitimately reused across mutually exclusive auth branches. Collapsing
+    those to one entry is how a single guard came to cover two credentials.
+    """
+    found = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        call = node.value
+        if not isinstance(target, ast.Name) or not isinstance(call, ast.Call):
+            continue
+        name = _call_name(call)
+        if not name or not (name.endswith("credential_value") or name in wrappers):
+            continue
+        keywords = {kw.arg: kw.value for kw in call.keywords or []}
+        spec = _resolved_spec(keywords.get("provider"), module)
+        if spec is None and name in wrappers:
+            spec = wrappers[name]
+        fields = _resolved_field_names(keywords.get("field_names"), module)
+        if _classify(spec, fields) == "anchor":
+            found.append((target.id, spec.provider, node.lineno))
+    return found
+
+
+def _uncovered_provenance(function, module, wrappers):
+    """Anchor assignments with no guard naming them before the local is rebound.
+
+    The window is (this assignment, next assignment to the same name), so two
+    branches assigning ``token_from_vault`` need two guards, and a guard placed
+    ABOVE its assignment does not count: it would have read a stale or unbound
+    local.
+
+    A local this function RETURNS is exempt, because it has been handed to a
+    caller to join and this function is not where that decision lives.
+    ``_reddit_access_token`` is the case: it resolves the bearer but never sees
+    the base URL that bearer rides to, so its join can only be written in
+    ``_reddit_config``, one frame up. Reporting it here would demand a guard at
+    a site with nothing to guard against.
+
+    The residual is stated rather than closed: this exempts the callee without
+    proving the caller joins THAT local specifically. The caller is still
+    required to carry a guard, so the exemption cannot silently drop a whole
+    function, but pairing a returned provenance to the address it is joined
+    against is the third of the three known ratchet holes (see the task filed
+    against this file).
+    """
+    returned = set()
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        for inner in ast.walk(node.value):
+            if isinstance(inner, ast.Name):
+                returned.add(inner.id)
+    assignments = [
+        entry
+        for entry in _secret_provenance_locals(function, module, wrappers)
+        if entry[0] not in returned
+    ]
+    guards = _guarded_provenance_names(function)
+    rebound = {}
+    for local, _provider, line in assignments:
+        rebound.setdefault(local, []).append(line)
+    uncovered = []
+    for local, provider, line in assignments:
+        later = [other for other in rebound[local] if other > line]
+        end = min(later) if later else function.end_lineno + 1
+        if not any(line < guard < end for guard in guards.get(local, ())):
+            uncovered.append((local, provider))
+    return uncovered
+
+
+def test_every_shaped_call_site_joins_its_destination_to_its_secret():
+    """A call site that can be steered must refuse to carry the server's secret.
+
+    Two rules, because one alone leaves a hole each way.
+
+    PRECISE, where the provider resolves statically: the function resolves a
+    whole ADDRESS for a provider from the vault and also resolves one of that
+    provider's anchors with a field set NARROWER than the whole anchor set. The
+    gap is exactly the set of fields a record can hold to clear slice B while
+    missing this lookup. Every such anchor must be named by some guard, since
+    presence of SOME guard is not coverage: a provider with three alternative
+    credentials has three branches, and deleting one guard leaves two behind.
+
+    FAIL CLOSED, where it does not: the generic ``_api_key_config`` family takes
+    ``provider`` as a parameter and ``field_names`` from its caller, so neither
+    resolves and the precise rule sees nothing. Those functions must carry a
+    guard regardless. Without this the gate was blind to 14 of its own guard
+    calls.
+
+    Classification is PER SPEC (``_classify``), never against a union of names
+    across providers, and the names come from ``credential_registry`` rather than
+    a list here. Both halves were learned the expensive way. A hand-copied list
+    held 18 names against the register's 26 URL primaries, and the 17 it missed
+    included ``token_url``, the address Reddit's client secret is POSTed to. The
+    global union that replaced it reads 179 anchor groups across 176 providers as
+    address lookups, because ``value``, ``domain``, ``host``, ``region`` and
+    ``server`` are destination aliases somewhere and secret aliases elsewhere;
+    a lookup misread that way is dropped from the analysis and its site reported
+    clean.
+
+    Both an ADDRESS helper and a SECRET helper propagate into their caller. Only
+    the first is obvious. Without the second, a pairing split across two sibling
+    helpers is invisible in all three functions involved, which is how ghost's
+    admin JWT and graphql's api-key header stayed unguarded. A helper that holds
+    a guard of its own hands its address up but not its anchor.
+
+    WHAT THIS GATE CANNOT SEE. Read a green run as "no NEW unguarded site of a
+    shape this gate recognises was introduced", not as "no site can leak".
+
+    * Host FRAGMENT destinations (``DESTINATION_HOST_FRAGMENT_FIELDS``), out of
+      scope deliberately and tracked as E10-02-E. Where the site does not
+      validate the fragment, ``/`` or ``#`` terminates the authority and it
+      escapes the vendor; where it does, a planted value still reaches another
+      TENANT of the same vendor. Both want fixing, neither is this rule.
+    * Whether a guard is placed CORRECTLY, beyond ordering. It requires a guard
+      naming each anchor local between that lookup and the next rebinding of the
+      name, which catches a guard above its own assignment and a second branch
+      reusing a name. It does NOT check that the guard sits before the header is
+      built, nor that the code path is reachable: a guard in dead code counts.
+    * Whether a self-joining helper joins against the SAME address its caller
+      uses. A helper holding a guard is trusted to have joined its own pair.
+    * A guard passed a provenance local that is not the one the request actually
+      carries. ``secret_from_vault=x`` is taken at its word.
+    * The ``join-gate: enforced-elsewhere`` marker is matched against every
+      comment line in the function. An unrelated comment quoting it disarms both
+      the exemption and the self-joining inference for that function. The string
+      is distinctive enough that this is a hazard rather than a hole, but it is
+      one, and a marker is meant to be read by a person reviewing the site.
+    * Anything reached through ``getattr``, a dispatch table, or a lookup whose
+      provider or field names are computed at runtime. Where the names are not
+      statically resolvable ``_classify`` returns "unknown" and the function is
+      required to carry a guard, so this fails closed rather than silent, but a
+      required guard is not the same as a correct one.
+
+    Hence the floor below, which is the crude half of the ratchet: the rule
+    catches a guard deleted from a site it still recognises, and the floor
+    catches a refactor that stops it recognising the sites at all. Raise the
+    floor when a change legitimately adds sites; a DROP wants explaining.
+    """
+    problems = []
+    shaped = 0
+    guard_calls = 0
+    # ALL of nymeria/tools/, like the three gates above, not the
+    # *_service_integrations.py glob. The glob was this file's own first mistake
+    # (see the module docstring), and it repeated here: `graphql` in
+    # developer_platform_integrations.py resolves an `endpoint` from the vault
+    # and an `api_key` that falls back to settings, has zero guards, and was
+    # invisible. `_tools_modules()` is the shared scope.
+    for path in _tools_modules():
+        if path.name == "__init__.py":
+            continue
+        module = importlib.import_module(f"nymeria.tools.{path.stem}")
+        source = path.read_text()
+        tree = ast.parse(source)
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        wrappers = _lookup_wrappers(functions, module)
+        # Functions that hold a guard of their own. Two DIFFERENT delegations
+        # hang off this, and they need different evidence:
+        #
+        #  1. A lookup wrapper that resolves BOTH halves itself
+        #     (``_api_key_config``). The caller hands it ``field_names`` and
+        #     nothing else, so demanding a second guard at the call site would be
+        #     asking for one that can see neither half. Delegated only when the
+        #     caller resolves no address of its own, since otherwise the wrapper
+        #     is joining against a DIFFERENT address than the caller's.
+        #  2. A secret helper the caller hands its address provenance down to
+        #     (``_ghost_admin_headers(site_from_vault=...)``). Here the caller
+        #     does have its own address, and passing a ``*_from_vault`` argument
+        #     is the evidence that the two halves met.
+        #
+        # Without the second, the pairing is invisible whenever the secret lives
+        # in a sibling helper rather than in the caller: ghost's admin JWT,
+        # graphql's api-key header and gotify's per-kind token were all missed
+        # that way, which makes it a class rather than an oversight.
+        source_lines = source.splitlines()
+
+        def _has_marker(fn):
+            return any(
+                _ENFORCED_ELSEWHERE in line
+                for line in source_lines[fn.lineno - 1 : fn.end_lineno]
+                if line.lstrip().startswith("#")
+            )
+
+        # A marked function counts as self-joining too. ``_s3_client`` is the
+        # case: signed_endpoint_url is the join there, expressed as a drop rather
+        # than a raise, so it answers for its own pair exactly as a guard call
+        # would and its nine tool callers should not each be asked again.
+        self_joining = {
+            fn.name
+            for fn in functions
+            if _has_marker(fn)
+            or any(
+                _call_name(node) and _JOIN_GUARD in _call_name(node)
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Call)
+            )
+        }
+        guarded_wrappers = {name for name in self_joining if name in wrappers}
+
+        # Helpers that resolve one of a provider's ANCHORS. A call to one is an
+        # anchor lookup in the caller, exactly like an inline one.
+        secret_helpers = {}
+        for fn in functions:
+            specs = {
+                spec
+                for spec, f, _c in _credential_lookups(fn, module, wrappers)
+                if spec is not None and _classify(spec, f) == "anchor"
+            }
+            if specs and fn.name not in wrappers:
+                secret_helpers[fn.name] = specs
+
+        # Helpers that hand a vault-supplied address back, and any spec they
+        # bind themselves. Deliberately NOT keyed on the spec resolving here:
+        # the two ``_service_base`` helpers take ``provider`` as a parameter, so
+        # keying on it emptied this set and made every self-hosted caller
+        # invisible.
+        address_helpers = {}
+        for fn in functions:
+            lookups = _credential_lookups(fn, module, wrappers)
+            if any(_classify(spec, f) == "address" for spec, f, _c in lookups):
+                address_helpers[fn.name] = {
+                    spec
+                    for spec, f, _c in lookups
+                    if spec is not None and _classify(spec, f) == "address"
+                }
+
+        for fn in functions:
+            lookups = _credential_lookups(fn, module, wrappers)
+            kinds = [
+                (_classify(spec, fields), spec, callee)
+                for spec, fields, callee in lookups
+            ]
+            own_url_lookup = any(
+                kind == "address"
+                for kind, _spec, callee in kinds
+                if callee not in guarded_wrappers
+            )
+            resolves_address = any(kind == "address" for kind, _s, _c in kinds)
+            destinations = {
+                spec
+                for kind, spec, _callee in kinds
+                if kind == "address" and spec is not None
+            }
+            # A caller inherits both halves from the helpers it calls: the
+            # destination of an address helper, and the anchor of a secret
+            # helper. The provider may be named at the call site
+            # (``_service_base``) or bound inside the helper
+            # (``_spotify_accounts_base``); take both.
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                callee = _call_name(node)
+                if not callee or callee == fn.name:
+                    continue
+                keywords = {kw.arg: kw.value for kw in node.keywords or []}
+                # A self-joining helper hands its ADDRESS up but not its anchor:
+                # it already joined its own pair, and suppressing the address too
+                # would hide an anchor the CALLER resolves against that same
+                # address (facebook_page_create_post's app_secret is that case).
+                if callee in secret_helpers and callee not in self_joining:
+                    kinds.append(("anchor", next(iter(secret_helpers[callee])), callee))
+                if callee not in address_helpers:
+                    continue
+                resolves_address = True
+                if callee not in guarded_wrappers:
+                    own_url_lookup = True
+                spec = _resolved_spec(keywords.get("provider"), module)
+                if spec is not None:
+                    destinations.add(spec)
+                destinations |= address_helpers[callee]
+            if not resolves_address:
+                continue
+
+            # An anchor is a field that PROVES the caller holds the account:
+            # everything the register classes as neither a destination nor
+            # public metadata. ``username``, ``api_version`` and ``instance``
+            # are not anchors, so a function resolving only those alongside an
+            # address has nothing worth stealing and is not shaped.
+            delegated = lambda callee: (  # noqa: E731
+                callee in guarded_wrappers and not own_url_lookup
+            )
+            anchor_lookups = [
+                spec
+                for kind, spec, callee in kinds
+                if kind == "anchor"
+                and (spec in destinations or not destinations)
+                and not delegated(callee)
+            ]
+            unresolvable = [
+                callee
+                for kind, _spec, callee in kinds
+                if kind == "unknown" and not delegated(callee)
+            ]
+            if not anchor_lookups and not unresolvable:
+                continue
+            shaped += 1
+            guard_calls += sum(
+                1
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Call)
+                and _call_name(node)
+                and _JOIN_GUARD in _call_name(node)
+            )
+
+            if _has_marker(fn):
+                continue
+            guarded = any(
+                _call_name(node) and _JOIN_GUARD in _call_name(node)
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Call)
+            )
+            if not guarded:
+                why = (
+                    "an anchor credential"
+                    if anchor_lookups
+                    else "a credential whose provider this gate cannot resolve"
+                )
+                problems.append(
+                    f"{path.name}::{fn.name} resolves an address from the vault and "
+                    f"then resolves {why}, with no join guard and no "
+                    f"'{_ENFORCED_ELSEWHERE}' marker"
+                )
+                continue
+
+            for local, provider in _uncovered_provenance(fn, module, wrappers):
+                problems.append(
+                    f"{path.name}::{fn.name} resolves {provider}'s {local} but no "
+                    "guard names it between that lookup and the next rebinding, "
+                    "so that credential can still ride to a vault-supplied address"
+                )
+    assert not problems, (
+        "these call sites can send a settings-configured secret to a "
+        "vault-supplied address:\n  " + "\n  ".join(sorted(set(problems)))
+    )
+    # The floor. The rule above only fires on a site it still RECOGNISES, so a
+    # refactor that changes how a destination or a provider is spelled would
+    # empty the analysis and pass. These two numbers are what makes that visible.
+    assert shaped >= _SHAPED_SITE_FLOOR and guard_calls >= _GUARD_CALL_FLOOR, (
+        f"the join analysis now sees {shaped} shaped sites carrying "
+        f"{guard_calls} guards, against a floor of {_SHAPED_SITE_FLOOR} and "
+        f"{_GUARD_CALL_FLOOR}. Sites did not stop being shaped by themselves: "
+        "either a lookup is spelled in a way _resolved_field_names or "
+        "_resolved_spec no longer follows, or coverage really was removed.\n"
+        "READ THIS BEFORE LOWERING IT. A drop is not automatically a defect. "
+        "Moving a guard INTO a secret helper makes that helper self-joining, "
+        "and the gate then stops attributing its anchor to the caller, so the "
+        "caller correctly stops being shaped and the count falls by one. Two "
+        "independent fixes hit this during the pass that introduced the rule. "
+        "So: identify the exact function that changed, confirm it is either "
+        "self-joining now or genuinely no longer shaped, and only then move the "
+        "floor. What you must never do is lower it without naming the function."
+    )

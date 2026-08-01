@@ -26,6 +26,7 @@ from .service_integration_base import (
     filtered as _filtered_params,
     parse_json as _parse_json,
     request_with_policy as _request_with_policy,
+    require_joined_destination as _require_joined_destination,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -537,31 +538,30 @@ def _brevo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _mailjet_email_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     # Email branch: uses the mailjet_email alias subset (kept inline; the spec
     # carries the alias union).
-    base = (
-        _credential_value(
-            provider=_MAILJET.provider,
-            provider_aliases=("mailjet_email", "mailjet_email_api"),
-            field_names=_MAILJET.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("mailjet_base_url")
-        or _MAILJET_BASE_URL
+    base_from_vault = _credential_value(
+        provider=_MAILJET.provider,
+        provider_aliases=("mailjet_email", "mailjet_email_api"),
+        field_names=_MAILJET.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    api_key = _credential_value(
+    base = base_from_vault or _settings_value("mailjet_base_url") or _MAILJET_BASE_URL
+    api_key_from_vault = _credential_value(
         provider=_MAILJET.provider,
         provider_aliases=("mailjet_email", "mailjet_email_api"),
         field_names=_MAILJET.group("email_api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mailjet_api_key")
-    secret_key = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("mailjet_api_key")
+    secret_key_from_vault = _credential_value(
         provider=_MAILJET.provider,
         provider_aliases=("mailjet_email", "mailjet_email_api"),
         field_names=_MAILJET.group("secret_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mailjet_secret_key")
+    )
+    secret_key = secret_key_from_vault or _settings_value("mailjet_secret_key")
     if not api_key or not secret_key:
         return _base_url(base), _setup_hint(
             provider=_MAILJET.provider,
@@ -570,6 +570,20 @@ def _mailjet_email_config(tool_name: str, config: Optional[RunnableConfig]) -> t
             env_var=_MAILJET.env_var,
             display_name=_MAILJET.display_name,
         )
+    # Basic auth sends BOTH halves, so both are guarded: either one arriving
+    # from settings while the address came from the vault is a disclosure.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_MAILJET.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=secret_key_from_vault,
+        secret=secret_key,
+        provider=_MAILJET.provider,
+    )
     auth = base64.b64encode(f"{api_key}:{secret_key}".encode()).decode()
     return _base_url(base), {
         "Accept": "application/json",
@@ -582,24 +596,22 @@ def _mailjet_email_config(tool_name: str, config: Optional[RunnableConfig]) -> t
 def _mailjet_sms_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     # SMS branch: uses the mailjet_sms alias subset and the SMS hint variant;
     # both are kept inline since the spec pins the email hint variant.
-    base = (
-        _credential_value(
-            provider=_MAILJET.provider,
-            provider_aliases=("mailjet_sms", "mailjet_sms_api"),
-            field_names=_MAILJET.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("mailjet_base_url")
-        or _MAILJET_BASE_URL
+    base_from_vault = _credential_value(
+        provider=_MAILJET.provider,
+        provider_aliases=("mailjet_sms", "mailjet_sms_api"),
+        field_names=_MAILJET.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    token = _credential_value(
+    base = base_from_vault or _settings_value("mailjet_base_url") or _MAILJET_BASE_URL
+    token_from_vault = _credential_value(
         provider=_MAILJET.provider,
         provider_aliases=("mailjet_sms", "mailjet_sms_api"),
         field_names=_MAILJET.group("sms_token"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mailjet_sms_token")
+    )
+    token = token_from_vault or _settings_value("mailjet_sms_token")
     if not token:
         return _base_url(base), _setup_hint(
             provider=_MAILJET.provider,
@@ -608,6 +620,12 @@ def _mailjet_sms_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
             env_var="MAILJET_SMS_TOKEN",
             display_name="Mailjet SMS",
         )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=token_from_vault,
+        secret=token,
+        provider=_MAILJET.provider,
+    )
     return _base_url(base), {
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
@@ -682,31 +700,30 @@ def _messagebird_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 
 
 def _mocean_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, str | None]:
-    base = (
-        _credential_value(
-            provider=_MOCEAN.provider,
-            provider_aliases=_MOCEAN.aliases,
-            field_names=_MOCEAN.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("mocean_base_url")
-        or _MOCEAN_BASE_URL
+    base_from_vault = _credential_value(
+        provider=_MOCEAN.provider,
+        provider_aliases=_MOCEAN.aliases,
+        field_names=_MOCEAN.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    api_key = _credential_value(
+    base = base_from_vault or _settings_value("mocean_base_url") or _MOCEAN_BASE_URL
+    api_key_from_vault = _credential_value(
         provider=_MOCEAN.provider,
         provider_aliases=_MOCEAN.aliases,
         field_names=_MOCEAN.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mocean_api_key")
-    api_secret = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("mocean_api_key")
+    api_secret_from_vault = _credential_value(
         provider=_MOCEAN.provider,
         provider_aliases=_MOCEAN.aliases,
         field_names=_MOCEAN.group("api_secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("mocean_api_secret")
+    )
+    api_secret = api_secret_from_vault or _settings_value("mocean_api_secret")
     if not api_key or not api_secret:
         return _base_url(base), "", "", _setup_hint(
             provider=_MOCEAN.provider,
@@ -715,6 +732,21 @@ def _mocean_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
             env_var=_MOCEAN.env_var,
             display_name=_MOCEAN.display_name,
         )
+    # Callers send both halves (form fields or query params), so both are
+    # guarded: either one arriving from settings while the address came from
+    # the vault is a disclosure.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_MOCEAN.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_secret_from_vault,
+        secret=api_secret,
+        provider=_MOCEAN.provider,
+    )
     return _base_url(base), api_key, api_secret, None
 
 
@@ -792,31 +824,30 @@ def _plivo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 
 
 def _vonage_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, str | None]:
-    base = (
-        _credential_value(
-            provider=_VONAGE.provider,
-            provider_aliases=_VONAGE.aliases,
-            field_names=_VONAGE.group("base_url"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or _settings_value("vonage_base_url")
-        or _VONAGE_BASE_URL
+    base_from_vault = _credential_value(
+        provider=_VONAGE.provider,
+        provider_aliases=_VONAGE.aliases,
+        field_names=_VONAGE.group("base_url"),
+        tool_name=tool_name,
+        config=config,
     )
-    api_key = _credential_value(
+    base = base_from_vault or _settings_value("vonage_base_url") or _VONAGE_BASE_URL
+    api_key_from_vault = _credential_value(
         provider=_VONAGE.provider,
         provider_aliases=_VONAGE.aliases,
         field_names=_VONAGE.group("api_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("vonage_api_key")
-    api_secret = _credential_value(
+    )
+    api_key = api_key_from_vault or _settings_value("vonage_api_key")
+    api_secret_from_vault = _credential_value(
         provider=_VONAGE.provider,
         provider_aliases=_VONAGE.aliases,
         field_names=_VONAGE.group("api_secret"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("vonage_api_secret")
+    )
+    api_secret = api_secret_from_vault or _settings_value("vonage_api_secret")
     if not api_key or not api_secret:
         return _base_url(base), "", "", _setup_hint(
             provider=_VONAGE.provider,
@@ -825,6 +856,21 @@ def _vonage_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
             env_var=_VONAGE.env_var,
             display_name=_VONAGE.display_name,
         )
+    # Callers send both halves (form fields or query params), so both are
+    # guarded: either one arriving from settings while the address came from
+    # the vault is a disclosure.
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_key_from_vault,
+        secret=api_key,
+        provider=_VONAGE.provider,
+    )
+    _require_joined_destination(
+        destination_from_vault=base_from_vault,
+        secret_from_vault=api_secret_from_vault,
+        secret=api_secret,
+        provider=_VONAGE.provider,
+    )
     return _base_url(base), api_key, api_secret, None
 
 
