@@ -292,8 +292,12 @@ def _configured_base(
 
 
 def _clearbit_headers(tool_name: str, config: Optional[RunnableConfig]) -> dict[str, str] | str:
-    # No join here: this helper resolves no address, and Clearbit's three bases
-    # are resolved by _clearbit_base at the tool call sites.
+    # join-gate: enforced-elsewhere - this helper resolves a SECRET and no
+    # address whatsoever, so there is no pair here to join. Clearbit's three
+    # bases are resolved by _clearbit_base at the tool call sites. The gate
+    # reaches this function only through its fail-closed rule: `_api_key` binds
+    # its own field names as a default, so the lookup does not resolve HERE and
+    # "could not tell" correctly means "needs an answer" rather than "skip".
     api_key, _key_from_vault = _api_key(
         provider=_CLEARBIT.provider,
         provider_aliases=_CLEARBIT.aliases,
@@ -314,6 +318,15 @@ def _clearbit_headers(tool_name: str, config: Optional[RunnableConfig]) -> dict[
 
 
 def _clearbit_base(kind: str, tool_name: str, config: Optional[RunnableConfig]) -> str:
+    # join-gate: enforced-elsewhere - resolves an ADDRESS and no secret, and
+    # clearbit declares exactly ONE anchor group spanning every alias
+    # `_clearbit_headers` asks for, so a record supplying one of these three
+    # bases without the api key is refused a layer down in native_credentials.
+    # Verified against the real vault: a planted
+    # {clearbit_person_base_url: attacker} record raises
+    # CredentialDestinationRefused. Arithmetic over the present spec rather than
+    # a control, so the join gate watches the tool callers for a second
+    # credential arriving.
     if kind == "person":
         settings_name = "clearbit_person_base_url"
         default = _CLEARBIT_PERSON_BASE_URL

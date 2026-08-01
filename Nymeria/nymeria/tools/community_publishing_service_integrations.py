@@ -501,6 +501,14 @@ def _reddit_base(
     ``{base_url, refresh_token}``, because the token lookup missed that record
     and fell through to the deployment's setting.
     """
+    # join-gate: enforced-elsewhere - this resolves an ADDRESS and no secret,
+    # and hands its provenance up rather than joining. Reddit is the one
+    # provider here where the join is load-bearing rather than arithmetic: it
+    # declares several independent anchor groups, so a record can hold one
+    # credential, clear the vault-layer completeness rule with it, and let the
+    # other branch fall through to the operator's settings. That is the leak
+    # measured in E10-02-D. `_reddit_config` holds the guards, because it is
+    # the only place the bearer meets this address.
     field_names = _REDDIT.group("public_base_url") if public else _REDDIT.group("base_url")
     settings_name = "reddit_public_base_url" if public else "reddit_base_url"
     default = _REDDIT_PUBLIC_BASE_URL if public else _REDDIT_BASE_URL

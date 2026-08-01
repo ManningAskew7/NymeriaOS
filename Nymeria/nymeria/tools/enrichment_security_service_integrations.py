@@ -896,6 +896,17 @@ def _jina_base(tool_name: str, config: Optional[RunnableConfig], settings_name: 
     # The per-service base URL tuple is built inline because its first element
     # (settings_name) varies per caller; the reader/search/deepsearch variants
     # are declared as groups on _JINA.
+    #
+    # join-gate: enforced-elsewhere - resolves an ADDRESS and no secret. Jina
+    # declares exactly ONE anchor group, spanning every alias `_jina_key` asks
+    # for, so a record that supplies this address without the api key is refused
+    # a layer down in native_credentials before this function sees a value.
+    # Verified against the real vault, not reasoned: a planted
+    # {jina_reader_base_url: attacker} record raises CredentialDestinationRefused.
+    # That is ARITHMETIC over the present spec, so it is not what protects the
+    # deployment if jina gains a second credential; the join gate watches the
+    # TOOL CALLERS for that, and adding a second anchor group to _JINA reports
+    # them unguarded.
     base = (
         _credential_value(
             provider=_JINA.provider,
