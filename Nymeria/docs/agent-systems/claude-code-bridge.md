@@ -85,6 +85,16 @@ commands, not a sandbox: an adversarial prompt can route around a prefix match
 working-directory allowlist plus running the runner as an unprivileged user on an
 isolated checkout (and Claude Code's own OS sandbox if you enable it).
 
+Nymeria's own Landlock sandbox (`EXEC_SANDBOX_ENABLED`) does not help here, and
+this is the one surface in the codebase where it cannot: Claude Code aborts on
+`SIGABRT` with no output under the `/proc` denial the policy always applies,
+measured against the real binary. So the bridge is the single declared exemption
+from that control. The `git` before/after summary the bridge runs IS confined,
+which closes one route (a planted `core.fsmonitor` in the target repository can
+no longer read the host's process environment through `git status`), but it does
+not bound the run itself. Treat a Claude Code run as having the reach of the
+account the runner runs as.
+
 ## Sessions
 
 Claude Code sessions are cwd-scoped on the host. The tool persists a

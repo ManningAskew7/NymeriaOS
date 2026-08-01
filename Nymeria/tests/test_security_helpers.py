@@ -14,8 +14,10 @@ import pytest
 
 import nymeria.config as config_module
 import nymeria.core.secrets as secrets
+import nymeria.core.validator as validator_module
 from nymeria.core import http_policy
 from nymeria.core.validator import CodeValidator
+from nymeria.exec_sandbox import SandboxError
 
 
 def test_secrets_encrypt_decrypt_roundtrip_reload_and_wrong_key(monkeypatch):
@@ -419,6 +421,17 @@ def test_validator_rejects_bad_syntax_missing_tool_and_disallowed_path(tmp_path)
     assert "Path not allowed" in path_msg
 
 
+def _real_command(argv):
+    """The command a launch actually runs, whether or not it is sandbox-wrapped.
+
+    ``wrap_argv`` prefixes the shim (``python -I -S -c <source>``) and separates
+    it from the real argv with ``--``. Asserting on a fixed length here would
+    pin whether this host's kernel happens to have Landlock, which is not what
+    any of these tests are about.
+    """
+    return list(argv[argv.index("--") + 1:]) if "--" in argv else list(argv)
+
+
 def test_tool_import_success_runs_seed_tools_import_in_subprocess(tmp_path, monkeypatch):
     """The post-modification guarantee is an import smoke test: it shells out to a
     fresh interpreter importing ``SEED_TOOLS`` from ``project_root`` and reports the
@@ -437,14 +450,86 @@ def test_tool_import_success_runs_seed_tools_import_in_subprocess(tmp_path, monk
 
     assert success is True
     assert msg == "Loaded 42 tools"
-    assert len(captured["cmd"]) == 3
-    assert captured["cmd"][0] == sys.executable
-    assert captured["cmd"][1] == "-c"
-    assert "SEED_TOOLS" in captured["cmd"][2]
+    command = _real_command(captured["cmd"])
+    assert len(command) == 3
+    assert command[0] == sys.executable
+    assert command[1] == "-c"
+    assert "SEED_TOOLS" in command[2]
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["timeout"] == 30
     assert captured["kwargs"]["capture_output"] is True
     assert captured["kwargs"]["text"] is True
+
+
+def test_the_import_check_runs_agent_authored_code_confined(tmp_path, monkeypatch):
+    """The import smoke test is a runner of agent-AUTHORED code, so it is wrapped.
+
+    It reads like Nymeria importing itself, which is why it went unwired for so
+    long, but ``nymeria/tools/`` is absent from ``NYMERIA_PROTECTED_DIRS`` and
+    ``self_test_import`` carries no ``self_edit_allowed()`` gate, so the module
+    this imports is writable through the ordinary file tools. Measured: planted
+    module-level code reads the launching process's ``/proc/<pid>/environ``
+    unsandboxed and is denied it under the policy.
+    """
+    validator = CodeValidator(tmp_path)
+    captured = {}
+
+    def fake_launch(argv, kwargs, *, creation_roots=None):
+        captured["argv"] = list(argv)
+        captured["creation_roots"] = creation_roots
+        captured["env"] = kwargs.get("env")
+        # Stands in for the real wrapper's mutation of the caller's kwargs: the
+        # policy travels to the child in the env, and a launch that gets the
+        # shim without it is refused by the shim rather than confined.
+        kwargs["env"] = {**kwargs["env"], "NYMERIA_SANDBOX_POLICY": "sentinel"}
+        return ["/shim", "--", *argv]
+
+    def fake_run(cmd, **kwargs):
+        captured["spawned"] = list(cmd)
+        captured["spawn_env"] = kwargs.get("env")
+        return SimpleNamespace(returncode=0, stdout="Loaded 1 tools\n", stderr="")
+
+    monkeypatch.setattr(validator_module, "sandbox_argv_launch", fake_launch)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert validator.test_tool_import() == (True, "Loaded 1 tools")
+    assert captured["spawned"] == ["/shim", "--", *captured["argv"]]
+    # Default creation roots: the child is an interpreter reading the project
+    # tree it was pointed at, which is what the default was sized for.
+    assert captured["creation_roots"] is None
+    # The wrapper refuses a launch with no explicit env; the scrub is above it.
+    assert captured["env"] is not None
+    # The policy must reach the CHILD. Handing the wrapper a copy of the kwargs
+    # keeps the shim argv and loses the policy, which every other assertion here
+    # would miss; the real call then returns "Import failed: exec_sandbox shim:
+    # no policy set", i.e. a confinement bug wearing a broken-edit costume.
+    # Measured: with the mutation and without this line, all 22 tests passed.
+    assert captured["spawn_env"]["NYMERIA_SANDBOX_POLICY"] == "sentinel"
+
+
+def test_a_refused_policy_does_not_read_as_a_broken_modification(tmp_path, monkeypatch):
+    """A sandbox refusal gets its own message, and never falls through to a spawn.
+
+    This is the one objection the old exemption marker made that was right: the
+    caller is deciding whether a self-modification broke the tools, so "the
+    policy could not be built" must not arrive as "your edit failed". It is a
+    distinct return, checked before the generic error arm.
+    """
+    validator = CodeValidator(tmp_path)
+    spawned = []
+
+    def refusing_launch(argv, kwargs, *, creation_roots=None):
+        raise SandboxError("carve budget exceeded")
+
+    monkeypatch.setattr(validator_module, "sandbox_argv_launch", refusing_launch)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: spawned.append(cmd))
+
+    success, msg = validator.test_tool_import()
+
+    assert success is False
+    assert spawned == [], "a refused launch must not fall through to a raw spawn"
+    assert "could not be confined" in msg
+    assert "Import failed" not in msg and "Import test error" not in msg
 
 
 def test_tool_import_failure_returns_stderr(tmp_path, monkeypatch):

@@ -47,7 +47,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from ..core.exec_policy import sandbox_argv_launch
 from ..core.http_policy import policy_http_client as _http_client
+from ..exec_sandbox import SandboxError, shim_refusal
 from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
 
 from ..oom import oom_score_preexec
@@ -477,16 +479,41 @@ def parse_cli_result(
 
 
 def _git(args: list[str], cwd: str) -> Optional[str]:
+    # Confined, unlike the claude spawn below, and the split is not arbitrary:
+    # the thing that makes that one impossible (Claude Code aborts under the
+    # /proc denial) does not apply to git, measured working under the same
+    # policy. Worth doing even though the argv is fixed and read-only, because
+    # `cwd` is the agent-named working directory and a repo carries executable
+    # configuration: `core.fsmonitor` and `core.hooksPath` in a planted
+    # `.git/config` turn a `status` into a command run. Default creation roots,
+    # which is what a general-purpose command in someone's checkout gets.
+    #
+    # What this does NOT buy, because the shape invites overreading: `_git` is
+    # only ever reached from `run_local_blocking`, which spawns Claude Code
+    # UNCONFINED a few lines below in the same cwd as the same user, with `mode`
+    # a per-call argument that accepts `bypass`. So no caller reaches this
+    # confined spawn without also holding the unconfined one, confinement here
+    # removes the planted script's `/proc` reach and nothing else (it still runs
+    # with this uid, this network and a readable `.env`), and the real boundary
+    # stays the one the module header names. It is worth wiring anyway: it holds
+    # the gate's ratchet, and it covers the window where the before-snapshot has
+    # run and the `claude` spawn then fails.
+    #
+    # Wrapping inside the try is NOT unique (`core/python_custom_tools.py` and
+    # `core/hooks/actions.py` both do it, each for its own total-function
+    # contract). What is unique here is that the refusal is SWALLOWED rather
+    # than surfaced in this surface's error shape: `SandboxError` becomes the
+    # same `None` a non-repo returns. That is the right call for a best-effort
+    # summary and the wrong one anywhere the launch is the answer, so it is
+    # logged rather than silent. What it must never become is an unconfined
+    # launch, and it cannot: the wrapper raises instead of returning a bare argv.
+    #
+    # Everything including the kwargs build sits in the handler, so the whole
+    # body is covered by the promise above. `git_snapshot` has no handler of its
+    # own and `run_local_blocking` calls it before spawning anything, so an
+    # escape here would abort the run before it started, for a summary.
     try:
-        # sandbox-gate: unsandboxed - a read-only `git` summary in the caller's
-        # repo. The creation-root prerequisite this used to cite has SHIPPED
-        # (the policy takes the launch's cwd, which this passes), and `git` was
-        # measured to work fully under the policy, so nothing blocks this on
-        # the mechanism side. It stays unwired only to be done in one change
-        # with the Claude Code spawn below, whose tolerance is the open
-        # question. C1-02 follow-up, do both together.
-        proc = subprocess.run(
-            ["git", *args],
+        spawn_kwargs: dict[str, Any] = dict(
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -498,10 +525,31 @@ def _git(args: list[str], cwd: str) -> Optional[str]:
             # requirement.
             env=scrubbed_subprocess_env(),
         )
+        launch = sandbox_argv_launch(["git", *args], spawn_kwargs)
+        proc = subprocess.run(launch, **spawn_kwargs)
+    except SandboxError as exc:
+        # Louder than the arm below, because this one is a capability loss
+        # rather than "not a git repo", and `_sandbox_launch` builds a message
+        # naming the remedy that would otherwise reach nobody.
+        logger.warning(
+            "Claude Code git summary skipped: the sandbox policy could not be "
+            "built for %s (%s). files_changed will be empty.", cwd, exc
+        )
+        return None
     except Exception as exc:  # noqa: BLE001 - git summary is best-effort.
         logger.debug("git %s failed in %s: %s", args, cwd, exc)
         return None
     if proc.returncode != 0:
+        # The parent-side arm above catches only a policy that could not be
+        # BUILT. The shim fails closed in the child too, and that arrives here
+        # as an ordinary nonzero exit, indistinguishable from "not a git repo"
+        # unless it is asked for by name. Same capability loss, so same volume.
+        refusal = shim_refusal(proc.returncode, proc.stderr)
+        if refusal:
+            logger.warning(
+                "Claude Code git summary skipped: the sandbox refused the "
+                "launch in %s (%s). files_changed will be empty.", cwd, refusal
+            )
         return None
     return proc.stdout
 
@@ -692,15 +740,17 @@ def run_local_blocking(
         popen_kwargs["start_new_session"] = True
 
     try:
-        # sandbox-gate: unsandboxed - Claude Code itself, which edits the repo
-        # it is pointed at and reads back what it wrote. The creation-root
-        # treatment that requires has SHIPPED (the policy takes this cwd), and
-        # node, npm and git all work under the policy when measured, so the
-        # stated blocker is gone. What remains is UNMEASURED: Claude Code
-        # manages processes and may need /proc, which the policy always denies,
-        # and it is an operator-invoked tool whose job is broad host reach, so
-        # wiring it needs a run against a real session rather than a code
-        # change. C1-02 follow-up.
+        # sandbox-gate: unsandboxed - Claude Code cannot run under this policy,
+        # measured against the real binary rather than inferred. `claude
+        # --version` and a real `claude -p` turn both die on SIGABRT with no
+        # output the moment /proc is denied, and the policy always denies it.
+        # Isolated to the denial itself, not the carve: applying Landlock while
+        # denying NOTHING is rc=0, denying an unrelated path (`/srv`, same carve
+        # of `/`) is rc=0, and granting /proc/self and /proc/sys back does not
+        # rescue it. Node is unaffected, so this is Claude Code's own binary.
+        # Confinement here is unavailable, not deferred: the containment
+        # boundary stays the working-directory allowlist plus running the host
+        # runner unprivileged on an isolated checkout, as the module header says.
         proc = subprocess.Popen(args, **popen_kwargs)
     except FileNotFoundError:
         return ClaudeCodeResult(

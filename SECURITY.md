@@ -118,24 +118,40 @@ any account can read the entire shared data volume and the master key off the
 host. **Do not treat two accounts on one backend as isolated tenants.**
 
 Cross-tenant execution isolation (an unprivileged Landlock filesystem sandbox
-applied per exec) is partly shipped. `bash_execute` now runs its commands inside
-it on Linux, which closes the environment-disclosure route described in Section
+applied per exec) is shipped on Linux, with one declared exception named below.
+The sandbox is a subtraction from what a command could reach before rather than
+an allowlist: it closes the environment-disclosure route described in Section
 2.5, and on a deployment whose data directory sits outside the agent's working
-tree it also closes off-disk reads of the credential stores. The two surfaces
-that run agent-AUTHORED code out of process, the Python custom-tool runner and
-the workflow runner, are inside it too, as are the `run_command` hook action,
-the MCP install runner (the `npm`/`pip`/`git` commands a managed server install
-executes, which matter because they run arbitrary third-party build and
-postinstall scripts) and MCP stdio servers themselves, which the backend
-supervises for the life of the deployment and which are operator- or
-agent-configured, since a server definition is a custom tool behind the
-execution gate. It is a subtraction from what a command
-could reach before, not an allowlist, and it is **not** tenant isolation: the
-sandboxed command still reaches every other account's profile and transcript
-data, and the remaining execution surfaces (the Claude Code bridge and the
-self-modification import check) are not wired to it yet. Until they are, run one trust domain per backend. Each unwired surface has to say at its own call site
-why it is not confined; `tests/test_exec_sandbox_gate.py` fails the build on a
-new agent-reachable spawn that does neither.
+tree it also closes off-disk reads of the credential stores. It is **not**
+tenant isolation. A sandboxed command still reaches every other account's
+profile and transcript data, so run one trust domain per backend.
+
+Rather than a list of confined surfaces, which ages badly, the property the
+build enforces: every agent-reachable spawn under `nymeria/core/` and
+`nymeria/tools/` is either confined or declares at its own call site why it is
+not, and `tests/test_exec_sandbox_gate.py` fails on one that does neither.
+
+**Claude Code itself is the one declared exception, and it cannot be confined**,
+measured against the real binary rather than inferred: it aborts on `SIGABRT`
+with no output the moment `/proc` is denied, and the policy always denies
+`/proc`. That is the denial specifically, not the mechanism (applying Landlock
+while denying nothing runs fine, as does denying an unrelated path, and granting
+`/proc/self` back does not rescue it). Its containment boundary is therefore
+what it always was and what its own documentation describes: a
+working-directory allowlist, plus running the host runner as an unprivileged
+user on an isolated checkout. Treat a Claude Code run as having the reach of the
+account the runner runs as, and note that the `mode` argument is per call and
+accepts `bypass`, so the deny-rule list is not a boundary either.
+
+One consequence of that exception is worth stating plainly, because the
+surrounding machinery invites the opposite reading. The `git` before/after
+summary the bridge runs IS confined, and the repository it inspects is named by
+the caller, so a planted `core.fsmonitor` (a git repository carries executable
+configuration) can no longer read the host's process environment through it.
+But that summary is only ever reached from the same code path that spawns
+Claude Code unconfined moments later, as the same user in the same directory.
+So confinement there removes one specific reach and does not make the path safe:
+treat the whole `claude_code` surface by the paragraph above.
 
 The confined surfaces do not all get the same policy, and the difference is
 worth knowing. What can be denied depends on where a surface's child is

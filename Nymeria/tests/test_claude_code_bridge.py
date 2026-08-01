@@ -8,6 +8,7 @@ assembly, JSON result parsing, and the session store.
 import json
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -260,6 +261,90 @@ def test_git_diff_summary_reports_commits(tmp_path):
     files, commits = b.git_diff_summary(before, cwd)
     assert "f.txt" in files
     assert any("cc commit" in c for c in commits)
+
+
+def test_the_git_summary_is_confined(monkeypatch):
+    """`git` runs as the WRAPPED argv, not as the raw command.
+
+    The argv is fixed and read-only, so the reason is not what this call does,
+    it is where it does it: `cwd` is the agent-named working directory, and a
+    git repository carries executable configuration. A planted `.git/config`
+    with `core.fsmonitor` makes `git status` run a script of the repo's
+    choosing. Measured on this host: that script reads the launching process's
+    `/proc/<pid>/environ` unsandboxed and is denied it under the policy.
+
+    The failure this guards is the two-line shape reading as confined while
+    running unconfined: build a launch, then spawn the original command.
+    """
+    captured: dict = {}
+
+    def fake_launch(argv, kwargs, *, creation_roots=None):
+        captured["argv"] = list(argv)
+        captured["creation_roots"] = creation_roots
+        captured["env"] = kwargs.get("env")
+        captured["cwd"] = kwargs.get("cwd")
+        # The real wrapper MUTATES the caller's kwargs to carry the policy in
+        # the child env, and that half is as load-bearing as the argv: a launch
+        # that gets the shim but not the policy makes the shim refuse to run at
+        # all. Standing in for that mutation here is what makes the assertion
+        # below able to see a caller that passes a COPY of its kwargs.
+        kwargs["env"] = {**kwargs["env"], "NYMERIA_SANDBOX_POLICY": "sentinel"}
+        return ["/shim", *argv]
+
+    def fake_run(cmd, **kwargs):
+        captured["spawned"] = list(cmd)
+        captured["spawn_env"] = kwargs.get("env")
+        return SimpleNamespace(returncode=0, stdout="deadbeef\n", stderr="")
+
+    monkeypatch.setattr(b, "sandbox_argv_launch", fake_launch)
+    monkeypatch.setattr(b.subprocess, "run", fake_run)
+
+    assert b._git(["rev-parse", "HEAD"], "/some/repo") == "deadbeef\n"
+
+    assert captured["argv"] == ["git", "rev-parse", "HEAD"]
+    assert captured["spawned"] == ["/shim", "git", "rev-parse", "HEAD"]
+    assert captured["cwd"] == "/some/repo"
+    # Default creation roots. The child is git in someone else's checkout, so
+    # its write area is the same concession bash_execute gets, not a narrower
+    # one this surface could honestly claim.
+    assert captured["creation_roots"] is None
+    # The wrapper refuses a launch with no explicit env; the scrub is above it.
+    assert captured["env"] is not None
+    # The policy has to reach the CHILD, not just the wrapper. Passing a copy of
+    # the kwargs (`sandbox_argv_launch(argv, dict(spawn_kwargs))`) still gets the
+    # shim argv, so every other assertion here passes, and in production the
+    # shim then refuses every call with "no policy set; refusing to run
+    # unsandboxed". Measured: without this line that mutation is invisible on a
+    # host with no Landlock, and on one with Landlock it surfaces only as a
+    # confusing failure in the unrelated git-diff tests.
+    assert captured["spawn_env"]["NYMERIA_SANDBOX_POLICY"] == "sentinel"
+
+
+def test_a_sandbox_refusal_drops_the_summary_rather_than_the_run(monkeypatch):
+    """A policy that cannot be built costs the summary, not the Claude Code run.
+
+    Wrapping inside the try is not unusual (`core/python_custom_tools.py` and
+    `core/hooks/actions.py` both do it, each to keep a total-function contract).
+    What is unusual, and what this pins, is that the refusal is SWALLOWED into
+    the same `None` a non-repo returns rather than surfaced in the surface's own
+    error shape. That is right for a best-effort diff and wrong anywhere the
+    launch is the answer. What must never happen is the third option: degrading
+    to an unconfined launch, which is why the spawn list is asserted empty.
+    """
+    from nymeria.exec_sandbox import SandboxError
+
+    def refusing_launch(argv, kwargs, *, creation_roots=None):
+        raise SandboxError("carve budget exceeded")
+
+    spawned = []
+    monkeypatch.setattr(b, "sandbox_argv_launch", refusing_launch)
+    monkeypatch.setattr(b.subprocess, "run", lambda cmd, **kw: spawned.append(cmd))
+
+    assert b._git(["rev-parse", "HEAD"], "/some/repo") is None
+    assert spawned == [], "a refused launch must not fall through to a raw spawn"
+    # The caller above it degrades rather than raising.
+    snap = b.git_snapshot("/some/repo")
+    assert snap.head is None and snap.dirty == set()
 
 
 # --- cancellation ------------------------------------------------------------
