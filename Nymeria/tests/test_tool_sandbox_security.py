@@ -259,3 +259,107 @@ def test_self_file_write_rejects_inside_project_but_not_writable(tmp_path, monke
     result = self_agent.self_file_write.func("nymeria/core/agent.py", "x = 1")
 
     assert "Access denied" in result
+
+
+def _rollback_settings(monkeypatch, project_root, backups_dir, *, allow_self_edit):
+    """Point both halves of the rollback tool at a temp tree.
+
+    Two patches because the tool reads settings itself (for the backup dir) and
+    the policy helpers it calls read them through ``self_agent``.
+    """
+    from nymeria.core import self_agent
+
+    settings = SimpleNamespace(
+        nymeria_allow_self_edit=allow_self_edit,
+        project_root=project_root,
+        backups_dir=backups_dir,
+    )
+    monkeypatch.setattr(self_agent, "get_settings", lambda: settings)
+    monkeypatch.setattr("nymeria.config.get_settings", lambda: settings)
+
+
+def _seed_backup(project_root, backups_dir, relative, planted):
+    """Create a backup holding ``planted`` for ``relative``, as a write would.
+
+    Uses the real ``BackupManager``, so the stash layout under test is the one
+    the tool will look in.
+    """
+    from nymeria.core.backup import BackupManager
+
+    target = project_root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(planted, encoding="utf-8")
+    BackupManager(backups_dir, project_root).create_backup(target)
+    target.write_text("current", encoding="utf-8")
+    return target
+
+
+def test_self_modify_rollback_honours_the_kill_switch(tmp_path, monkeypatch):
+    """C12-01: the switch says it stops source mutation; rollback IS one.
+
+    ``NYMERIA_ALLOW_SELF_EDIT=false`` is an operator asserting that these tools
+    may not write source. Before this, the one tool named "rollback" still did.
+    """
+    from nymeria.tools.runtime_admin import self_modify_rollback
+
+    project_root = (tmp_path / "proj").resolve()
+    backups_dir = (tmp_path / "backups").resolve()
+    _rollback_settings(monkeypatch, project_root, backups_dir, allow_self_edit=True)
+    target = _seed_backup(project_root, backups_dir, "nymeria/tools/demo.py", "planted")
+
+    _rollback_settings(monkeypatch, project_root, backups_dir, allow_self_edit=False)
+    result = self_modify_rollback.func("nymeria/tools/demo.py")
+
+    assert result.startswith("[Error]")
+    assert "NYMERIA_ALLOW_SELF_EDIT" in result
+    assert target.read_text(encoding="utf-8") == "current"
+
+
+def test_self_modify_rollback_rejects_targets_outside_the_writable_allowlist(
+    tmp_path, monkeypatch
+):
+    """C12-01's laundering route: a restore is a write to a named destination.
+
+    The backup stash is reachable with an ordinary ``file_write`` (``backups``
+    is not a secret store and sits several components deep), so without a screen
+    on the DESTINATION this tool copied caller-supplied bytes over any path,
+    including the three sets every other write path refuses: protected source
+    dirs, the credential stores, and the global prompt overrides.
+    """
+    from nymeria.tools.runtime_admin import self_modify_rollback
+
+    project_root = (tmp_path / "proj").resolve()
+    backups_dir = (project_root / "data" / "backups").resolve()
+    _rollback_settings(monkeypatch, project_root, backups_dir, allow_self_edit=True)
+
+    for relative in (
+        "nymeria/core/agent.py",                  # protected source dir
+        "data/auth_tokens/u1/google.json",        # credential store
+        "data/system_prompt.md",                  # global prompt override
+        "../outside.py",                          # outside the project entirely
+    ):
+        target = _seed_backup(project_root, backups_dir, relative, "planted")
+        result = self_modify_rollback.func(relative)
+        assert result.startswith("[Error]"), f"{relative} was restored"
+        assert "nymeria/tools/" in result, f"{relative}: no remedy named"
+        assert target.read_text(encoding="utf-8") == "current", f"{relative} was written"
+
+
+def test_self_modify_rollback_still_restores_inside_the_allowlist(tmp_path, monkeypatch):
+    """The other half: every backup that CAN exist is inside the allowlist.
+
+    ``create_backup`` has exactly two callers, ``self_file_write`` and
+    ``self_file_delete``, and both resolve through the same helper first, so the
+    screen costs the tool nothing it was ever able to do.
+    """
+    from nymeria.tools.runtime_admin import self_modify_rollback
+
+    project_root = (tmp_path / "proj").resolve()
+    backups_dir = (tmp_path / "backups").resolve()
+    _rollback_settings(monkeypatch, project_root, backups_dir, allow_self_edit=True)
+    target = _seed_backup(project_root, backups_dir, "nymeria/tools/demo.py", "good")
+
+    result = self_modify_rollback.func("nymeria/tools/demo.py")
+
+    assert result.startswith("[Success]"), result
+    assert target.read_text(encoding="utf-8") == "good"

@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..core.storage_paths import write_text_atomic
 from .execution_environment import resolve_tool_path
 from .image_read import prepare_image_for_native_context, sniff_image_mime
-from .utils import get_thread_id
+from .utils import get_thread_id, is_admin
 
 # The only errors that justify abandoning the atomic overwrite and writing in
 # place: a rename needs write permission on the DIRECTORY, which a plain
@@ -90,6 +90,44 @@ _SECRET_STORE_DIRS = {"auth_tokens", "mcp_servers"}
 _SECRET_STORE_FILE_PREFIXES = ("accounts.db",)
 
 
+def _data_dir_relative(path: Path) -> Optional[Path]:
+    """``path`` relative to the data dir, or None if it is outside (or unknown).
+
+    The one place the data-dir scoping of every file-tool policy below is
+    stated. That scoping is itself a filed limitation (audit B4-01: these rules
+    cannot express anything about a file outside the data dir, such as `.env`,
+    BY CONSTRUCTION), so it is worth having exactly one site to point at rather
+    than a copy per policy.
+
+    Returns None on a settings or resolution failure, which means the policies
+    FAIL OPEN on an unreadable environment (audit C2-02, LOW, inherited). That
+    is a foot-gun guard degrading, not a boundary opening; SECURITY.md 2.2 is
+    the boundary.
+    """
+    try:
+        data_dir = get_settings().data_dir.resolve()
+    except Exception:
+        logger.debug("Failed to resolve data dir for a file-tool policy", exc_info=True)
+        return None
+    try:
+        return path.resolve().relative_to(data_dir)
+    except (ValueError, OSError):
+        return None
+
+
+def _store_key(name: str) -> str:
+    """Normalize a data-dir child name for comparison against a policy table.
+
+    Case-folded, and trailing dots and spaces stripped. Both matter because the
+    CONSUMER of these files is the filesystem, not this table: APFS and NTFS
+    fold case, and the Win32 layer strips trailing dots and spaces, so
+    ``System_Prompt.md`` and ``system_prompt.md.`` are the same file to
+    ``Settings.load_soul()`` on two of the three shipped platforms while an
+    exact-case lookup would see three different names.
+    """
+    return name.rstrip(". ").casefold()
+
+
 def secrets_path_error(path: Path) -> Optional[str]:
     """Return an error message if ``path`` targets a credential store,
     else ``None``.
@@ -98,19 +136,13 @@ def secrets_path_error(path: Path) -> Optional[str]:
     and ``file_edit``. The message is returned without an ``[Error]:``
     prefix; callers format it for their own contract.
     """
-    try:
-        data_dir = get_settings().data_dir.resolve()
-    except Exception:
-        logger.debug("Failed to resolve data dir for secrets check", exc_info=True)
-        return None
-    try:
-        rel = path.resolve().relative_to(data_dir)
-    except (ValueError, OSError):
+    rel = _data_dir_relative(path)
+    if rel is None:
         return None  # outside the data dir; not a credential store
     parts = rel.parts
     if not parts:
         return None
-    head = parts[0]
+    head = _store_key(parts[0])
     if head in _SECRET_STORE_DIRS or head.startswith(_SECRET_STORE_FILE_PREFIXES):
         logger.warning("Blocked file-tool access to credential store: %s", rel)
         return (
@@ -121,6 +153,97 @@ def secrets_path_error(path: Path) -> Optional[str]:
             "credential-management skill has the full flow)."
         )
     return None
+
+
+# Data-dir files whose WRITE is an admin-only action, mirroring the admin gate
+# their settings routes already carry (P4-02). Nothing here is secret, so unlike
+# the credential stores above these stay READABLE by anyone: the agent
+# inspecting the prompt that governs it is useful and harmless.
+#
+# Why a role check rather than the content-hash gate its sibling stores got, and
+# why role-scoped rather than an outright refusal: the rule-2 paragraph of
+# `docs/private/security/control-store-matrix.md`, which owns that argument.
+#
+# Same tool-layer caveat as the credential denylist: `bash_execute` is not
+# path-checkable, so this is policy, not a boundary (SECURITY.md 2.2).
+#
+# The names are literals rather than derived from `Settings`, which owns them
+# (`system_prompt_override_path` and its two dream siblings). Deliberate: the
+# loop is closed by tests instead, and more tightly than a lookup would close
+# it. Renaming one there produces an unclassified data-dir child, the AST
+# discovery gate in `tests/test_resource_layout.py` fails, the register needs a
+# row, and the reconcile test then fails until this table matches it.
+_ADMIN_ONLY_WRITE_FILES = {
+    "system_prompt.md": "PUT /settings/system-prompt (Settings > System Prompt)",
+    "dream_prompt.md": "PUT /settings/dream-prompts (Settings > Dreaming)",
+    "dream_kickoff.md": "PUT /settings/dream-prompts (Settings > Dreaming)",
+}
+
+
+def config_principal(config: Optional[RunnableConfig]) -> Optional[str]:
+    """The user the run config NAMES, or None if it names nobody.
+
+    Deliberately not ``utils.get_user_id``, which substitutes the literal
+    ``"default"`` for an absent principal. That substitution is fine for
+    scoping a store by user, and wrong for a role check: ``"default"`` is also
+    ``core/accounts.BOOTSTRAP_USER_ID``, the id of the account first-run
+    bootstrap creates AS AN ADMIN. So on every bootstrapped deployment a caller
+    that named nobody resolved to the admin and was waved through, which is the
+    opposite of the intended contract. Returning None here keeps the two cases
+    apart: a real solo-admin turn carries an explicit ``user_id="default"`` and
+    still resolves to admin, while a caller with no run config resolves to
+    nothing and ``is_admin`` fails it closed.
+    """
+    if config is None:
+        return None
+    return (config.get("configurable") or {}).get("user_id") or None
+
+
+def admin_only_write_error(path: Path, user_id: Optional[str]) -> Optional[str]:
+    """Error message if ``user_id`` may not write this global prompt override.
+
+    Write-side only: ``file_read`` is deliberately not a caller. Fails closed
+    through ``is_admin``, so an unresolvable principal (no agent, or a caller
+    that named nobody, see ``config_principal``) is refused rather than waved
+    through.
+
+    Matching is on the FIRST path component under the data dir, not on the whole
+    relative path, so a path THROUGH the guarded name is caught as well.
+    """
+    rel = _data_dir_relative(path)
+    if rel is None or not rel.parts:
+        return None
+    route = _ADMIN_ONLY_WRITE_FILES.get(_store_key(rel.parts[0]))
+    if route is None:
+        return None
+
+    if len(rel.parts) > 1:
+        # A path through the guarded name rather than the file itself. Writing
+        # it creates a DIRECTORY where `Settings.load_soul()` expects a file,
+        # after which reading the prompt raises an unhandled IsADirectoryError
+        # and takes agent construction and the settings route with it. Refused
+        # for EVERYONE, outside the role branch, because that is an
+        # availability foot-gun rather than a role question and no caller of
+        # any role has a use for the path.
+        logger.warning("Blocked file-tool write through a prompt-override name: %s", rel)
+        return (
+            f"Cannot write {rel}: {rel.parts[0]} is a global prompt override, "
+            "a FILE, and writing through it would replace it with a directory "
+            "that no longer loads. Pick another path."
+        )
+
+    if is_admin(user_id):
+        return None
+    logger.warning(
+        "Blocked non-admin file-tool write to a global prompt override: %s", rel
+    )
+    return (
+        f"Cannot write {rel}: it replaces a GLOBAL prompt for every user of "
+        "this deployment, so changing it is an admin-only action (the "
+        f"sanctioned surface, {route}, is admin-gated for the same reason). "
+        "Reading it is still allowed. To steer one thread instead, use its "
+        "per-thread instructions or dreaming config, which need no admin."
+    )
 
 
 def get_workspace_dir() -> Path:
@@ -379,6 +502,7 @@ def file_write(
     create_directories: bool = True,
     append: bool = False,
     attach: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     Write content to a file.
@@ -417,6 +541,11 @@ def file_write(
         secrets_error = secrets_path_error(path)
         if secrets_error:
             return f"[Error]: {secrets_error}"
+
+        # Global prompt overrides are readable, but changing one is admin-only.
+        admin_only_error = admin_only_write_error(path, config_principal(config))
+        if admin_only_error:
+            return f"[Error]: {admin_only_error}"
 
         # Create parent directories if requested
         if create_directories:

@@ -19,12 +19,19 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 
-def _self_edit_allowed() -> bool:
+# The three below are the self-edit POLICY, and they are public because the
+# capability is wider than this module. `tools/runtime_admin.py` holds two of
+# the same family (`self_modify_rollback` writes source, `reload_all` applies
+# it), and audit finding C12-01 was exactly that: the gate had been applied per
+# MODULE rather than per capability, so the rollback tool wrote source with the
+# kill switch off and reached directories every other write path refuses. A
+# helper two modules enforce is not module-private.
+def self_edit_allowed() -> bool:
     settings = get_settings()
     return bool(getattr(settings, "nymeria_allow_self_edit", False))
 
 
-def _self_edit_disabled_error() -> str:
+def self_edit_disabled_error() -> str:
     return (
         "[Error]: Self-modification writes are disabled. Set "
         "NYMERIA_ALLOW_SELF_EDIT=true and enable these admin-only tools only "
@@ -70,7 +77,7 @@ def _writable_dirs(project_root: Path) -> tuple[Path, ...]:
     return tuple(project_root.joinpath(*parts) for parts in _WRITABLE_SUBDIRS)
 
 
-def _resolve_in_writable_dir(file_path: str, project_root: Path) -> "Path | None":
+def resolve_in_writable_dir(file_path: str, project_root: Path) -> "Path | None":
     """Return the resolved path if it lands inside a writable dir, else None."""
     path = _canonical_path(file_path, project_root)
     for allowed_dir in _writable_dirs(project_root):
@@ -129,15 +136,15 @@ def self_file_write(file_path: str, content: str) -> str:
     Returns:
         Success or error message
     """
-    if not _self_edit_allowed():
-        return _self_edit_disabled_error()
+    if not self_edit_allowed():
+        return self_edit_disabled_error()
 
     settings = get_settings()
     project_root = settings.project_root
     tools_dir, agents_dir, trigger_sources_dir = _writable_dirs(project_root)
 
     # Security check: must be within tools, agents, or trigger sources directory
-    path = _resolve_in_writable_dir(file_path, project_root)
+    path = resolve_in_writable_dir(file_path, project_root)
     if path is None:
         return f"[Error]: Access denied. Can only write to files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"
 
@@ -243,15 +250,15 @@ def self_file_delete(file_path: str) -> str:
     Returns:
         Success or error message
     """
-    if not _self_edit_allowed():
-        return _self_edit_disabled_error()
+    if not self_edit_allowed():
+        return self_edit_disabled_error()
 
     settings = get_settings()
     project_root = settings.project_root
     tools_dir, agents_dir, trigger_sources_dir = _writable_dirs(project_root)
 
     # Security check: must be within tools, agents, or trigger sources directory
-    path = _resolve_in_writable_dir(file_path, project_root)
+    path = resolve_in_writable_dir(file_path, project_root)
     if path is None:
         return f"[Error]: Access denied. Can only delete files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"
 
@@ -291,8 +298,8 @@ def self_reload() -> str:
     Returns:
         Updated tool list or error message
     """
-    if not _self_edit_allowed():
-        return _self_edit_disabled_error()
+    if not self_edit_allowed():
+        return self_edit_disabled_error()
 
     from ..tools.runtime_admin import _do_full_reload
 

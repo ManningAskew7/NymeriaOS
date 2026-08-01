@@ -5,7 +5,8 @@ description: Map of Nymeria's on-disk resource stores and the rules for editing 
   skills, custom tools, workflow definitions, MCP server configs, thread configs, or
   prompt overrides through the filesystem (file_read, file_write, file_edit,
   bash_execute) instead of the purpose-built tools, or to find where any Nymeria
-  resource lives on disk. This skill carries guidance only; it binds no tools.
+  resource lives on disk, or to find out why a file tool refused a path under the
+  resource root. This skill carries guidance only; it binds no tools.
 ---
 
 # Nymeria Resource Filesystem
@@ -42,7 +43,7 @@ fast path. This skill is the durable map; the live per-deployment index is
 | Skills and kits | `skills/global/<name>/SKILL.md`, `skills/users/<id>/<name>/SKILL.md` |
 | MCP servers | `mcp_servers/<id>.json` |
 | Thread configs | `thread_configs/<thread_id>.json` |
-| Prompt overrides | `system_prompt.md`, `dream_prompt.md`, `dream_kickoff.md` (absent = built-in default) |
+| Prompt overrides | `system_prompt.md`, `dream_prompt.md`, `dream_kickoff.md` (absent = built-in default; readable by anyone, writable only on an admin's turn) |
 
 Kits are ordinary skills whose frontmatter declares
 `metadata.nymeria.required_tools`. Bundled skills ship inside the package,
@@ -64,19 +65,27 @@ to change a bundled skill's behavior, write a same-name skill under
    tool_create publish or the workflow approval surfaces. This is by
    design; do not try to work around it.
 3. **Credentials are off limits.** The account vault and OAuth token caches
-   are not part of this interface and the file tools refuse them. Use
-   auth_write and auth_test (credential-management skill).
-4. **Do not fight the tools.** Never raw-edit a store that the current turn
+   are not part of this interface and the file tools refuse them for everyone.
+   Use auth_write and auth_test (credential-management skill).
+4. **The global prompt overrides are admin-only to write.** Each of
+   `system_prompt.md`, `dream_prompt.md` and `dream_kickoff.md` replaces a
+   prompt for every user of the deployment, so the file tools apply the same
+   rule their settings routes do: reads always work, writes and edits succeed
+   on an admin's turn and are refused otherwise. If you are refused, do not
+   route around it with bash_execute; say what you wanted to change and ask.
+   To steer one thread instead, use its per-thread instructions or dreaming
+   config, neither of which needs an admin.
+5. **Do not fight the tools.** Never raw-edit a store that the current turn
    is also mutating through its tools; store writes are whole-file
    last-writer-wins.
-5. **Clients will not see raw edits immediately.** Raw edits emit no UI
+6. **Clients will not see raw edits immediately.** Raw edits emit no UI
    events; desktop/mobile panels refresh on next fetch.
-6. **Mind the blast radius on per-user files.** `hooks/<user>.json` and
+7. **Mind the blast radius on per-user files.** `hooks/<user>.json` and
    `triggers/<user>.json` hold that user's entire store in one file; a
    malformed write degrades the whole store. Validate JSON against
    `schema/` before writing, and prefer file_edit (targeted replace) over
    whole-file rewrites.
-7. **Operational state is not yours to edit.** Execution logs, approvals,
+8. **Operational state is not yours to edit.** Execution logs, approvals,
    run traces, backups, logs, databases, and the `<store>.json.sig`
    fingerprint sidecars beside the hook and trigger stores: readable for
    debugging, but edits can corrupt runtime state. The README lists them.
@@ -85,7 +94,8 @@ to change a bundled skill's behavior, write a same-name skill under
 
 A written hook is a standing prompt injection into future turns; a written
 trigger is scheduled autonomous action; a prompt-override edit silently
-changes the agent's persona. Treat raw writes to those stores with the same
+changes the persona of every thread in the deployment, which is why that one
+is admin-only. Treat raw writes to those stores with the same
 care as granting yourself new powers: do it because the user asked, say so
 in your reply, and keep the change minimal.
 
