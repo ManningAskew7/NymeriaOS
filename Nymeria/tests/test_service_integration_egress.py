@@ -1039,11 +1039,86 @@ _JOIN_GUARD = "require_joined_destination"
 # only, so a string literal mentioning the marker cannot satisfy it.
 _ENFORCED_ELSEWHERE = "join-gate: enforced-elsewhere"
 
-# Set from a measured run, not chosen. See the floor assertion at the end of
-# test_every_shaped_call_site_joins_its_destination_to_its_secret for why a
-# rule alone is not a ratchet.
-_SHAPED_SITE_FLOOR = 48
-_GUARD_CALL_FLOOR = 79
+# The crude half of the ratchet: WHICH sites this analysis recognises, and how
+# many join guards each one carries.
+#
+# The rule catches a guard deleted from a site it still recognises. It cannot
+# catch a refactor that stops it recognising the site at all, so something has
+# to pin the recognised set. That used to be two integers
+# (``_SHAPED_SITE_FLOOR = 48``, ``_GUARD_CALL_FLOOR = 79``), and audit task #69
+# replaced them for the reason the sibling gates already record about tables
+# keyed on locations: a count cannot tell one site from another. When the set
+# moved by four during that task, the failure said only that four sites had
+# gone, and naming them took a bisect against the committed version of this file
+# with a debug print patched into both copies.
+#
+# The COUNT half is not decoration, and review supplied the witness. A site can
+# stay recognised while one of its guards disappears: contentful resolves a
+# preview token and a delivery token against two addresses, so refactoring its
+# two branches into a ladder and deleting one branch's guard left the site in
+# the register, the rule satisfied by the surviving guard, and the old
+# ``_GUARD_CALL_FLOOR`` was the only thing that failed. Dropping that integer
+# for a name-only set was a net LOSS of coverage until this became a mapping.
+#
+# Measured, never hand-written: the entries come from a run, and the assertion
+# compares mappings, so an addition, a removal and a changed count are each
+# loud. Adding a site is expected whenever a new integration resolves both
+# halves; removing one, or lowering a count, is what wants a reason.
+_SHAPED_SITES = {
+    "aws_service_integrations.py::_aws_client": 0,
+    "bookmark_link_service_integrations.py::_yourls_endpoint": 2,
+    "business_service_integrations.py::_bearer_config": 1,
+    "chat_platform_service_integrations.py::_api_token_config": 1,
+    "commerce_billing_service_integrations.py::_shopify_config": 3,
+    "commerce_billing_service_integrations.py::_woocommerce_config": 2,
+    "community_publishing_service_integrations.py::_bearer_service_config": 1,
+    "community_publishing_service_integrations.py::_facebook_config": 1,
+    "community_publishing_service_integrations.py::_reddit_access_token": 2,
+    "community_publishing_service_integrations.py::_reddit_base": 0,
+    "community_publishing_service_integrations.py::facebook_page_create_post": 0,
+    "content_management_service_integrations.py::_contentful_config": 2,
+    "content_management_service_integrations.py::_storyblok_content_config": 1,
+    "content_management_service_integrations.py::_storyblok_management_config": 1,
+    "content_management_service_integrations.py::_strapi_config": 2,
+    "customer_engagement_service_integrations.py::_mailchimp_config": 2,
+    "customer_engagement_service_integrations.py::_zendesk_config": 2,
+    "data_table_service_integrations.py::_api_key_config": 1,
+    "enrichment_security_service_integrations.py::_api_key_config": 1,
+    "enrichment_security_service_integrations.py::_elastic_security_config": 2,
+    "enrichment_security_service_integrations.py::_jina_base": 0,
+    "enterprise_business_service_integrations.py::_erpnext_config": 2,
+    "enterprise_business_service_integrations.py::_invoiceninja_config": 2,
+    "event_meeting_service_integrations.py::_demio_config": 2,
+    "file_storage_service_integrations.py::_nextcloud_config": 2,
+    "file_storage_service_integrations.py::_s3_client": 0,
+    "lead_enrichment_service_integrations.py::_clearbit_base": 0,
+    "lead_enrichment_service_integrations.py::_clearbit_headers": 0,
+    "lead_enrichment_service_integrations.py::_dropcontact_config": 1,
+    "lead_enrichment_service_integrations.py::_humantic_config": 1,
+    "lead_enrichment_service_integrations.py::_lonescale_config": 1,
+    "lead_enrichment_service_integrations.py::_uplead_config": 1,
+    "marketing_contact_service_integrations.py::_customerio_config": 2,
+    "marketing_contact_service_integrations.py::_mautic_config": 2,
+    "marketing_contact_service_integrations.py::_token_config": 1,
+    "media_discovery_service_integrations.py::_spotify_config": 3,
+    "messaging_delivery_service_integrations.py::_mailjet_email_config": 2,
+    "messaging_delivery_service_integrations.py::_mailjet_sms_config": 1,
+    "messaging_delivery_service_integrations.py::_mocean_config": 2,
+    "messaging_delivery_service_integrations.py::_vonage_config": 2,
+    "notification_service_integrations.py::_gotify_config": 2,
+    "operations_monitoring_service_integrations.py::_bearer_config": 1,
+    "operations_monitoring_service_integrations.py::_elasticsearch_config": 3,
+    "operations_monitoring_service_integrations.py::_metabase_config": 3,
+    "operations_monitoring_service_integrations.py::_pagerduty_config": 2,
+    "personal_device_service_integrations.py::_bearer_config": 1,
+    "productivity_service_integrations.py::_trello_config": 2,
+    "project_management_service_integrations.py::_jira_config": 2,
+    "project_management_service_integrations.py::_taiga_config": 2,
+    "project_management_service_integrations.py::_wekan_config": 2,
+    "sales_crm_service_integrations.py::_pipedrive_config": 2,
+    "support_service_integrations.py::_servicenow_config": 2,
+    "support_service_integrations.py::_zammad_config": 2,
+}
 
 
 def _call_name(node):
@@ -1056,7 +1131,36 @@ def _call_name(node):
 
 
 def _resolved_field_names(value, module):
-    """``field_names=`` as a concrete set, whether spelled literally or via group()."""
+    """``field_names=`` as a concrete set, whether spelled literally or via group().
+
+    Deliberately NARROW, and audit task #69 is the record of why. It was widened to
+    follow an ``ast.IfExp``, a local bound by an if/elif/else ladder, a
+    partially literal tuple and a callee's default argument, so that four
+    helpers using those spellings would be classified precisely instead of
+    falling to the fail-closed "unknown" rule. Review measured that the widening
+    LOST coverage on net, and it is worth stating both halves because the second
+    is the one that is easy to talk yourself out of.
+
+    It over-resolves. Unioning the arms of a branch produces a field set wider
+    than any single execution path, and ``_classify`` flips "anchor" to
+    "anchor-complete" the moment ``anchors - fields`` empties, which drops the
+    lookup from the analysis entirely. Measured on contentful, whose
+    ``preview_token`` and ``delivery_token`` groups union to its complete anchor
+    set by construction: refactor the two branches into a ladder, delete one
+    branch's guard, and the widened gate goes green where this one fails.
+
+    And under-resolution is NOT safe in both directions, which the widened
+    version's own docstring claimed. There is a third outcome besides "wider
+    gap" and "unknown": a partial tuple resolving to ``{"space_id"}``
+    classifies "metadata" and is dropped, where ``None`` classified "unknown"
+    and demanded a guard. A short field set can shrink the analysis.
+
+    The four helpers are marked at their call sites instead, which is what the
+    exemption marker is for. That is not a retreat to prose: they are clean
+    because they carry NO anchor lookup at all, and the arithmetic that could
+    change that is watched on their tool CALLERS, which stay in the analysis
+    either way.
+    """
     if isinstance(value, (ast.Tuple, ast.List)):
         try:
             return set(ast.literal_eval(value))
@@ -1120,6 +1224,46 @@ def _lookup_wrappers(functions, module):
     return wrappers
 
 
+def _parameterised_lookups(function, own_params):
+    """The CALL NODES in ``function`` that delegate their subject to the caller.
+
+    A lookup like ``credential_value(provider=provider, field_names=field_names)``
+    is unresolvable HERE by construction: the subject comes from the caller. That
+    is delegation, not an unknown, and it is detected by argument SHAPE rather
+    than by a list of helper names, so a new generic helper is covered the day it
+    is written.
+
+    Nodes, not callee names, and that distinction is the whole correctness of the
+    exemption. Keyed by name, ONE genuine delegation exempts every other call to
+    the same callee in the same function, including a real unknown::
+
+        def h(provider, field_names):
+            a = _credential_value(provider=provider, field_names=field_names)
+            b = _credential_value(provider="contentful", field_names=computed())
+
+    Under a name-keyed reading ``b`` is exempted by its association with ``a``,
+    which is precisely the fail-open the rule below exists to prevent. Detecting
+    delegation by shape and then recording it by name would have undone the
+    detection.
+    """
+    delegated = set()
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords or []:
+            # EITHER half being a parameter is enough. aws keeps a module-local
+            # `_credential_value` that binds the provider itself and takes only
+            # `field_names` from its caller, so keying on `provider` alone left
+            # it demanding a guard for a decision it does not make.
+            if (
+                keyword.arg in {"provider", "field_names"}
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id in own_params
+            ):
+                delegated.add(id(node))
+    return delegated
+
+
 def _classify(spec, fields):
     """One of "address", "anchor", "anchor-complete", "metadata" or "unknown".
 
@@ -1173,13 +1317,18 @@ def _classify(spec, fields):
 
 
 def _credential_lookups(function, module, wrappers):
-    """(spec_or_None, asked_field_names, callee) for every vault lookup here.
+    """(spec_or_None, asked_field_names, callee, call_node) per vault lookup.
 
     The spec is None whenever the call site names its provider through a
     parameter, and the field names are None whenever they are not a literal
     tuple or a ``SPEC.group(...)`` call. Both are kept rather than dropped: a
     dropped entry is what makes a gate fail open, and ``_classify`` turns them
     into the "unknown" that forces a guard.
+
+    The NODE rides along so the delegation exemption can key on this exact call
+    rather than on its callee's name, which would let one genuine delegation
+    exempt an unrelated unknown to the same helper. See
+    ``_parameterised_lookups``.
     """
     found = []
     for node in ast.walk(function):
@@ -1194,7 +1343,7 @@ def _credential_lookups(function, module, wrappers):
         if spec is None and not direct:
             spec = wrappers.get(name)
         fields = _resolved_field_names(keywords.get("field_names"), module)
-        found.append((spec, fields, name))
+        found.append((spec, fields, name, node))
     return found
 
 
@@ -1367,14 +1516,15 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
       required to carry a guard, so this fails closed rather than silent, but a
       required guard is not the same as a correct one.
 
-    Hence the floor below, which is the crude half of the ratchet: the rule
-    catches a guard deleted from a site it still recognises, and the floor
-    catches a refactor that stops it recognising the sites at all. Raise the
-    floor when a change legitimately adds sites; a DROP wants explaining.
+    Hence ``_SHAPED_SITES`` below, which is the crude half of the ratchet: the
+    rule catches a guard deleted from a site it still recognises, and the
+    mapping catches a refactor that stops it recognising the site, or that
+    leaves the site recognised while one of its guards goes. Both halves are
+    needed and review supplied the witness for the second, so read the comment
+    on the mapping before changing it.
     """
     problems = []
-    shaped = 0
-    guard_calls = 0
+    shaped = {}
     # ALL of nymeria/tools/, like the three gates above, not the
     # *_service_integrations.py glob. The glob was this file's own first mistake
     # (see the module docstring), and it repeated here: `graphql` in
@@ -1442,7 +1592,7 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
         for fn in functions:
             specs = {
                 spec
-                for spec, f, _c in _credential_lookups(fn, module, wrappers)
+                for spec, f, _c, _n in _credential_lookups(fn, module, wrappers)
                 if spec is not None and _classify(spec, f) == "anchor"
             }
             if specs and fn.name not in wrappers:
@@ -1456,28 +1606,28 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
         address_helpers = {}
         for fn in functions:
             lookups = _credential_lookups(fn, module, wrappers)
-            if any(_classify(spec, f) == "address" for spec, f, _c in lookups):
+            if any(_classify(spec, f) == "address" for spec, f, _c, _n in lookups):
                 address_helpers[fn.name] = {
                     spec
-                    for spec, f, _c in lookups
+                    for spec, f, _c, _n in lookups
                     if spec is not None and _classify(spec, f) == "address"
                 }
 
         for fn in functions:
             lookups = _credential_lookups(fn, module, wrappers)
             kinds = [
-                (_classify(spec, fields), spec, callee)
-                for spec, fields, callee in lookups
+                (_classify(spec, fields), spec, callee, node)
+                for spec, fields, callee, node in lookups
             ]
             own_url_lookup = any(
                 kind == "address"
-                for kind, _spec, callee in kinds
+                for kind, _spec, callee, _node in kinds
                 if callee not in guarded_wrappers
             )
-            resolves_address = any(kind == "address" for kind, _s, _c in kinds)
+            resolves_address = any(kind == "address" for kind, _s, _c, _n in kinds)
             destinations = {
                 spec
-                for kind, spec, _callee in kinds
+                for kind, spec, _callee, _node in kinds
                 if kind == "address" and spec is not None
             }
             # A caller inherits both halves from the helpers it calls: the
@@ -1497,7 +1647,9 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
                 # would hide an anchor the CALLER resolves against that same
                 # address (facebook_page_create_post's app_secret is that case).
                 if callee in secret_helpers and callee not in self_joining:
-                    kinds.append(("anchor", next(iter(secret_helpers[callee])), callee))
+                    kinds.append(
+                        ("anchor", next(iter(secret_helpers[callee])), callee, node)
+                    )
                 if callee not in address_helpers:
                     continue
                 resolves_address = True
@@ -1507,7 +1659,60 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
                 if spec is not None:
                     destinations.add(spec)
                 destinations |= address_helpers[callee]
-            if not resolves_address:
+            # RATCHET HOLE 2, closed. This skip used to run BEFORE the
+            # fail-closed "unknown" rule below, so a function whose ADDRESS
+            # lookup was itself unresolvable dropped out of the analysis
+            # entirely rather than being required to carry a guard. Fail-closed
+            # has to be checked FIRST or it is not fail-closed: "I could not
+            # tell what this resolves" must mean "so it needs a guard", never
+            # "so skip it".
+            #
+            # The exemption beside it is where the real hole was, and it took
+            # two tries to state correctly. The STRUCTURAL rule is the durable
+            # one: a lookup whose provider or field names are this function's
+            # own PARAMETER is not decided here, so a function making exactly
+            # ONE such lookup cannot be a pair and has nothing to join. Its
+            # caller does. `credential_value`, `resolve_native_credential` and
+            # lead enrichment's `_api_key` are that shape.
+            #
+            # A function making TWO OR MORE holds both values at once, so it CAN
+            # join, whoever chose the subject. The first version missed that and
+            # exempted every parameterised helper, which also exempted the
+            # shared `_bearer_config` helpers, the only thing holding the philips
+            # hue leak closed (that leak is `personal_device_service_
+            # integrations.py`, whose `_philips_hue_config` calls the
+            # `_bearer_config` in the same module; there are three functions by
+            # that name in `tools/` and an earlier draft of this comment named
+            # the wrong one).
+            #
+            # Corroboration, NOT the rule, because a corpus statistic rots: of
+            # the 24 functions containing a parameterised lookup today, the 8
+            # making two or more lookups all carry a guard and the 16 making one
+            # carry none. Where it fails it fails OPEN, so a single-lookup helper
+            # that grows a second half is exempted until the count moves.
+            #
+            # What this bought: `personal_device_service_integrations.py::
+            # _bearer_config` was not merely unwatched, its whole module was. It
+            # is not recognised as a lookup wrapper either (the wrapper detector
+            # keys on the helper binding a concrete provider, which this one does
+            # not), so nothing propagated to its three callers and the guard on a
+            # leak this pass MEASURED could be deleted with the suite green.
+            # Verified by deleting it, before and after.
+            own_params = {
+                arg.arg
+                for arg in fn.args.args + fn.args.kwonlyargs + fn.args.posonlyargs
+            }
+            # `id()` keys are safe here only because `kinds` holds every node
+            # for the life of this loop; do not hoist this set out of it.
+            delegating = (
+                _parameterised_lookups(fn, own_params) if len(kinds) < 2 else set()
+            )
+            unresolved_here = [
+                callee
+                for kind, _spec, callee, node in kinds
+                if kind == "unknown" and id(node) not in delegating
+            ]
+            if not resolves_address and not unresolved_here:
                 continue
 
             # An anchor is a field that PROVES the caller holds the account:
@@ -1520,20 +1725,24 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
             )
             anchor_lookups = [
                 spec
-                for kind, spec, callee in kinds
+                for kind, spec, callee, _node in kinds
                 if kind == "anchor"
                 and (spec in destinations or not destinations)
                 and not delegated(callee)
             ]
             unresolvable = [
                 callee
-                for kind, _spec, callee in kinds
+                for kind, _spec, callee, _node in kinds
                 if kind == "unknown" and not delegated(callee)
             ]
             if not anchor_lookups and not unresolvable:
                 continue
-            shaped += 1
-            guard_calls += sum(
+            # The guard COUNT, not just the site name. A site can stay
+            # recognised while one of its guards disappears: contentful resolves
+            # a preview token and a delivery token against two addresses, and
+            # deleting one branch's guard leaves the other holding the site in
+            # the register. Counting per site is what makes that visible.
+            shaped[f"{path.name}::{fn.name}"] = sum(
                 1
                 for node in ast.walk(fn)
                 if isinstance(node, ast.Call)
@@ -1571,23 +1780,43 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
         "these call sites can send a settings-configured secret to a "
         "vault-supplied address:\n  " + "\n  ".join(sorted(set(problems)))
     )
-    # The floor. The rule above only fires on a site it still RECOGNISES, so a
-    # refactor that changes how a destination or a provider is spelled would
-    # empty the analysis and pass. These two numbers are what makes that visible.
-    assert shaped >= _SHAPED_SITE_FLOOR and guard_calls >= _GUARD_CALL_FLOOR, (
-        f"the join analysis now sees {shaped} shaped sites carrying "
-        f"{guard_calls} guards, against a floor of {_SHAPED_SITE_FLOOR} and "
-        f"{_GUARD_CALL_FLOOR}. Sites did not stop being shaped by themselves: "
-        "either a lookup is spelled in a way _resolved_field_names or "
-        "_resolved_spec no longer follows, or coverage really was removed.\n"
-        "READ THIS BEFORE LOWERING IT. A drop is not automatically a defect. "
-        "Moving a guard INTO a secret helper makes that helper self-joining, "
-        "and the gate then stops attributing its anchor to the caller, so the "
-        "caller correctly stops being shaped and the count falls by one. Two "
-        "independent fixes hit this during the pass that introduced the rule. "
-        "So: identify the exact function that changed, confirm it is either "
-        "self-joining now or genuinely no longer shaped, and only then move the "
-        "floor. What you must never do is lower it without naming the function."
+    # The rule above only fires on a site it still RECOGNISES, and on a guard
+    # it can attribute to a specific anchor local. A refactor that stops it
+    # recognising the site, or that leaves the site recognised while one of its
+    # guards disappears, would otherwise quietly empty the analysis and pass.
+    # The mapping is what makes both visible, and it names the function rather
+    # than moving a number.
+    dropped = sorted(set(_SHAPED_SITES) - set(shaped))
+    added = sorted(set(shaped) - set(_SHAPED_SITES))
+    thinned = sorted(
+        f"{site}: {_SHAPED_SITES[site]} -> {shaped[site]}"
+        for site in set(_SHAPED_SITES) & set(shaped)
+        if shaped[site] < _SHAPED_SITES[site]
+    )
+    grew = sorted(
+        f"{site}: {_SHAPED_SITES[site]} -> {shaped[site]}"
+        for site in set(_SHAPED_SITES) & set(shaped)
+        if shaped[site] > _SHAPED_SITES[site]
+    )
+    assert not dropped and not added and not thinned and not grew, (
+        "the join analysis no longer sees what it saw.\n"
+        f"  NO LONGER RECOGNISED ({len(dropped)}): {dropped}\n"
+        f"  FEWER GUARDS ({len(thinned)}): {thinned}\n"
+        f"  NEWLY RECOGNISED ({len(added)}): {added}\n"
+        f"  MORE GUARDS ({len(grew)}): {grew}\n"
+        "The first two are the ones that matter. A site does not stop being "
+        "recognised, and does not shed a guard, by itself: either a lookup is "
+        "now spelled in a way _resolved_field_names or _resolved_spec no longer "
+        "follows, or coverage really was removed.\n"
+        "READ THIS BEFORE EDITING _SHAPED_SITES. A drop is not automatically a "
+        "defect, and there is one benign cause on record: moving a guard INTO a "
+        "secret helper makes that helper self-joining, so the gate stops "
+        "attributing its anchor to the caller and the caller correctly leaves "
+        "the mapping. Two independent fixes hit that during the pass that "
+        "introduced the rule. It is not a licence to edit the mapping to match. "
+        "Name the function, say which cause applies, and put the reason in the "
+        "commit message. The last two lines need no ceremony: more coverage is "
+        "the direction this is supposed to move."
     )
 
 # --- E10-02-E: a vault-supplied host FRAGMENT must not leave the vendor domain
@@ -2371,3 +2600,39 @@ def test_a_vendor_suffix_that_is_itself_a_destination_is_refused():
         "acme", vendor_suffix=".okta.com", provider="probe", field="tenant"
     ) == "acme.okta.com"
 
+
+
+def test_every_join_gate_exemption_marker_carries_a_reason():
+    """A bare marker is an opt-out with nothing to review.
+
+    Both sibling gates carry this test (``test_subprocess_env_gate.py``,
+    ``test_exec_sandbox_gate.py``, each rejecting a reason under 20 characters)
+    and this one did not, which mattered more here than it looks: the whole
+    argument for putting exemptions at the call site rather than in a table is
+    that the next reader finds the justification where the code is. An
+    unexplained marker gives that up and keeps the opt-out.
+
+    Audit task #69 more than doubled the marker count, from 3 to 7, by reverting
+    a resolver widening in favour of marking the four helpers it had been widened
+    to resolve. That is a defensible trade only if each marker says why, so the
+    test arrives with the markers rather than after them.
+
+    Scoped to the marker LINE, not the block above it, unlike the sibling gates.
+    Those anchor to a single spawn; this marker is scoped to a whole function
+    body (the join spans two statements, so there is no one line to sit above),
+    which means a block-scoped reading would count any nearby comment as the
+    reason.
+    """
+    unexplained = []
+    for path in _tools_modules():
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            stripped = line.lstrip()
+            if not stripped.startswith("#") or _ENFORCED_ELSEWHERE not in stripped:
+                continue
+            reason = stripped.split(_ENFORCED_ELSEWHERE, 1)[1].lstrip("#-: ").strip()
+            if len(reason) < 20:
+                unexplained.append(f"{path.name}:{number}")
+    assert not unexplained, (
+        "These join-gate exemption markers have no usable reason:\n  "
+        + "\n  ".join(unexplained)
+    )
