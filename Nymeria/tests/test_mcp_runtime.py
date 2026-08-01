@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -874,3 +875,213 @@ def test_prepare_runtime_http_runtime_precedes_source_type(monkeypatch, tmp_path
     out_defn, logs = prepare_runtime(defn, _runtime_plan("git", "http"))
 
     assert "HTTP MCP server; no local setup required." in logs
+
+
+# --- install-command confinement (C1-02) -------------------------------------
+#
+# An install command is the surface where an unconfined child is worth the most
+# on this module: npm and pip run arbitrary third-party build and postinstall
+# scripts, chosen by whoever authored the package the server points at. Confined
+# they see neither the deployment's process environment nor its credential
+# stores.
+
+
+def test_install_commands_go_through_the_sandbox_wrapper(monkeypatch, tmp_path):
+    """``_run`` spawns the WRAPPED argv, naming the runtime tree as its root.
+
+    Two assertions, and both are load-bearing. That the wrapper was called at
+    all is the confinement; that the wrapped argv is what reaches ``subprocess``
+    is what stops the shipped shape (build a launch, spawn the original) from
+    reading as confined while running unconfined.
+    """
+    from nymeria.core import mcp_runtime
+
+    monkeypatch.setattr(
+        mcp_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path)
+    )
+    captured: dict = {}
+
+    def fake_launch(cmd, kwargs, *, creation_roots=None):
+        captured["creation_roots"] = creation_roots
+        captured["env"] = kwargs.get("env")
+        return ["/shim", *cmd]
+
+    monkeypatch.setattr(
+        "nymeria.core.exec_policy.sandbox_argv_launch", fake_launch
+    )
+    spawned: dict = {}
+
+    def fake_run(argv, **kwargs):
+        spawned["argv"] = argv
+        return SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr(mcp_runtime.subprocess, "run", fake_run)
+
+    mcp_runtime._run(["npm", "install"], [])
+
+    assert captured["creation_roots"] == (str(tmp_path / "mcp_runtimes"),)
+    # `_run` hands the wrapper an env rather than leaving it to inherit. Only
+    # that much: the real wrapper is stubbed here, so this cannot speak to what
+    # it does with a missing one, and an install that "scrubbed" with
+    # os.environ.copy() would satisfy it. That shape is
+    # tests/test_subprocess_env_gate.py's job, not this test's.
+    assert captured["env"] is not None
+    assert spawned["argv"] == ["/shim", "npm", "install"]
+
+
+def test_install_caches_are_redirected_out_of_home(monkeypatch, tmp_path):
+    """Every package cache lands in the runtime tree, not under ``$HOME``.
+
+    This is what makes the creation root above TRUE rather than aspirational.
+    ``HOME`` survives the env scrub, so left alone npm writes ``~/.npm`` and pip
+    ``~/.cache/pip`` and both read them back; naming only the runtime tree keeps
+    the store denials, and keeping them carves every ancestor of the data dir,
+    which on a source install under ``$HOME`` includes ``$HOME``. A cache
+    directory created after the policy was built is then writable and
+    unreadable, so this would have shipped as a first-run-only install failure
+    on one deployment layout.
+    """
+    from nymeria.core import mcp_runtime
+
+    monkeypatch.setattr(
+        mcp_runtime, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path)
+    )
+    monkeypatch.setattr(
+        "nymeria.core.exec_policy.sandbox_argv_launch",
+        lambda cmd, kwargs, **_: list(cmd),
+    )
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["env"] = kwargs.get("env") or {}
+        return SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr(mcp_runtime.subprocess, "run", fake_run)
+
+    mcp_runtime._run(["pip", "install", "x"], [])
+
+    runtime_base = tmp_path / "mcp_runtimes"
+    for var in ("NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "UV_CACHE_DIR", "XDG_CACHE_HOME"):
+        value = captured["env"].get(var)
+        assert value, f"{var} is not set, so that cache falls back to $HOME"
+        assert Path(value).is_relative_to(runtime_base), (
+            f"{var}={value} is outside the runtime tree named as the creation "
+            "root, so the child writes somewhere it may not be able to read back"
+        )
+
+
+def test_the_creation_root_keeps_the_store_denials_on_a_source_checkout(
+    monkeypatch, tmp_path
+):
+    """The security property itself, driven through the real deny-set computation.
+
+    Scope, stated because the name could promise more: the real ``denied_paths``
+    runs with the real creation roots, so the DENY SET is genuine, but the policy
+    handed back is deliberately built with the default roots and the carve
+    ceiling is raised (see the spy). So this proves the right paths are chosen,
+    not that Landlock then enforces them; the enforcement arm lives in
+    ``tests/test_exec_policy.py``, which drives real confined children.
+
+    The layout that matters is the SOURCE CHECKOUT (data dir under the project
+    root, so the slim shape): there the default creation roots (project root
+    plus cwd) contain every store, so every store denial is DROPPED and an
+    install script reads the vault. Naming the runtime tree instead is the only
+    thing denying them, and deleting that argument from ``_run`` fails here.
+
+    The negative control is in the same test: the same launch with the default
+    roots is asserted NOT to deny the vault, so a denial appearing for some
+    unrelated reason cannot pass for containment.
+    """
+    from nymeria.core import exec_policy, mcp_runtime
+
+    project = tmp_path / "project"
+    data = project / "data"
+    data.mkdir(parents=True)
+    vault = data / "accounts.db"
+    vault.write_text("VAULT", encoding="utf-8")
+
+    fake = SimpleNamespace(
+        project_root=project, data_dir=data, exec_sandbox_enabled=True
+    )
+    monkeypatch.setattr(exec_policy, "get_settings", lambda: fake)
+    monkeypatch.setattr(mcp_runtime, "get_settings", lambda: fake)
+    monkeypatch.setattr(exec_policy, "sandbox_available", lambda: True)
+    monkeypatch.setattr(exec_policy, "_dropped_logged", set())
+    monkeypatch.setattr(exec_policy, "_expensive_logged", set())
+    monkeypatch.setattr(exec_policy, "_MAX_CARVE_ENTRIES", 10**6)
+
+    seen: dict = {}
+    real_policy = exec_policy.tool_sandbox_policy
+
+    def spy(cwd=None, *, creation_roots=None):
+        seen["denied"] = exec_policy.denied_paths(cwd, creation_roots=creation_roots)
+        # Built with the DEFAULT roots on purpose: the override's real policy
+        # would carve tmp_path's parents, and /tmp on a dev box holds enough
+        # entries to blow the mechanism's own ceiling. What is under test is
+        # the deny set, and that is `seen`.
+        return real_policy(cwd)
+
+    monkeypatch.setattr(exec_policy, "tool_sandbox_policy", spy)
+    monkeypatch.setattr(
+        mcp_runtime.subprocess,
+        "run",
+        lambda argv, **kwargs: SimpleNamespace(stdout="", returncode=0),
+    )
+
+    mcp_runtime._run(["npm", "install"], [])
+
+    assert str(vault) in seen["denied"], (
+        "the install child can read the account vault: the creation root is "
+        "not narrowing the deny set"
+    )
+    assert str(vault) not in exec_policy.denied_paths(), (
+        "the default roots already deny the vault on this layout, so the "
+        "assertion above would pass with the override deleted"
+    )
+
+
+def test_no_store_is_rooted_inside_the_mcp_runtime_tree(monkeypatch, tmp_path):
+    """The invariant `_run`'s derived creation root rests on.
+
+    `_run` names the runtime base as its only creation root because that is
+    where every install writes. What lets it do so WITHOUT weakening the policy
+    is that no credential store lives underneath: stores are direct children of
+    the data dir, and `mcp_runtimes` is a sibling of them, so narrowing to it
+    drops nothing that matters.
+
+    If a store were ever rooted at or under the runtime base, the consequence is
+    not a lost denial. It is the opposite, and worse. `_inside` is strict (a
+    path equal to a creation root is not inside it), so the denial would be
+    KEPT, and keeping it carves every ancestor, which makes the runtime tree
+    read-opaque to anything created after the policy is built. Every managed
+    install would then fail, first-run-only, on the layouts where stores are
+    denied at all. That is a hard failure a long way from its cause.
+
+    Covers both arms of `secret_at_rest_paths`: the declared names, and the
+    prefix match over existing children. The second is the easier one to break,
+    since a future store named with an `mcp_` prefix would swallow
+    `mcp_runtimes` without anyone editing this module.
+    """
+    from nymeria.core import mcp_runtime, resource_map
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(
+        mcp_runtime, "get_settings", lambda: SimpleNamespace(data_dir=data_dir)
+    )
+    runtime_base = mcp_runtime._runtime_base()
+    assert runtime_base.is_relative_to(data_dir), "sanity: base moved out of data_dir"
+
+    offenders = [
+        str(p)
+        for p in resource_map.secret_at_rest_paths(data_dir)
+        if p == runtime_base or p.is_relative_to(runtime_base)
+    ]
+    assert not offenders, (
+        "These credential stores sit at or under the MCP runtime tree, which "
+        f"_run names as its sole sandbox creation root:\n  {offenders}\n\n"
+        "Landlock cannot express 'deny this, but let the command create and "
+        "read files around it', so the denial would carve the runtime tree and "
+        "every managed MCP install would fail. Move the store to another data "
+        "dir child, or give _run a creation root that excludes it."
+    )

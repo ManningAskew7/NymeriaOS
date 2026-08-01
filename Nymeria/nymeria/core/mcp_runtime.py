@@ -1529,36 +1529,137 @@ def _download(url: str, dest: Path) -> None:
                     fh.write(chunk)
 
 
+def _install_cache_env() -> Dict[str, str]:
+    """Point the package-manager caches these commands use inside the runtime tree.
+
+    Not tidiness: it is what makes the sandbox creation root in ``_run`` TRUE
+    rather than aspirational. ``HOME`` is in the base passthrough and the
+    ``XDG_*`` cache vars are opted in, so left alone ``npm`` writes ``~/.npm``
+    and ``pip`` writes ``~/.cache/pip``, and both READ THEM BACK. Naming the
+    runtime tree as the only creation root is what keeps the credential-store
+    denials, and keeping them carves every ANCESTOR of the data dir; on a source
+    install under ``$HOME`` that includes ``$HOME`` itself, so a first-ever
+    ``~/.npm`` created after the policy is built is writable and then
+    UNREADABLE.
+
+    Measured, and the failure is real rather than theoretical. Without this,
+    ``pip install`` on the packaged ``~/.nymeria`` layout with a fresh ``$HOME``
+    dies with ``PermissionError`` on its own freshly written wheel, because pip
+    installs FROM the cache path it just created. Unsandboxed, default roots,
+    and a pre-existing ``~/.cache`` all succeed; ``npm`` happened to tolerate
+    it. So the shape this removes is a first-run-only failure, on one deployment
+    layout, in one of two package managers, which is about the most expensive
+    kind there is to diagnose. It removes the dependency rather than widening
+    the policy to accommodate it.
+
+    Pre-existing dotfiles (``~/.npmrc``, ``~/.gitconfig``) are unaffected: the
+    carve snapshots what is already there, so only entries created AFTERWARDS
+    are unreachable. That is also why redirecting ``HOME`` itself, which would
+    be one line and cover every tool's convention, is the wrong trade: it would
+    cost the private-registry and private-Git reads those files carry.
+
+    Covers what these commands actually invoke, each verified against a pristine
+    ``$HOME``: npm (including a native ``node-gyp`` build, whose dev headers
+    resolve through ``XDG_CACHE_HOME``), pip and git. ``UV_CACHE_DIR`` has no
+    caller today (the uvx path is served by ``_prepare_uvx_cache`` and never
+    reaches ``_run``) and is insurance for a future ``uv pip install`` arm.
+
+    Two residuals, both first-run-only and both narrower than what is closed.
+    ``XDG_CONFIG_HOME`` and ``XDG_DATA_HOME`` are also in the passthrough and
+    still resolve under ``$HOME``, so a manager creating one of those for the
+    first time hits the same trap; judged acceptable because installs read those
+    far more often than they create them. And a postinstall script that shells
+    out to another toolchain with a hardcoded non-XDG home (``CARGO_HOME``,
+    ``GOMODCACHE``, ``~/.m2``, ``~/.gradle``) is not covered; add the variable
+    here if one shows up.
+
+    Shared across installs rather than per server, which is what a package cache
+    is for, and named so it cannot collide with a server's own runtime dir:
+    ``_runtime_dir`` keys this same base by ``new_mcp_server_id``, whose slug
+    alphabet is ``[a-z0-9-]``, so a leading underscore is unreachable by
+    construction. It stays INSIDE ``mcp_runtimes`` deliberately: a new data-dir
+    child would have to be classified in ``resource_map._STORE_ROWS`` or
+    ``tests/test_resource_layout.py``'s discovery gate fails it, and this is not
+    a store. ``_prepare_npx_cache``/``_prepare_uvx_cache`` set two of the same
+    variable NAMES per server; that is the RUNNING server's cache on code paths
+    that never call ``_run``, so the two do not meet.
+    """
+    cache = _runtime_base() / "_install_cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    return {
+        "NPM_CONFIG_CACHE": str(cache / "npm"),
+        "PIP_CACHE_DIR": str(cache / "pip"),
+        "UV_CACHE_DIR": str(cache / "uv"),
+        "XDG_CACHE_HOME": str(cache / "xdg"),
+    }
+
+
 def _run(cmd: List[str], logs: List[str], *, cwd: Optional[Path] = None, timeout: int = 120) -> None:
     # Install commands (npm/pip/git) run untrusted package build/postinstall
     # scripts, so they get the same deny-by-default env as the runtime exec
     # surfaces (never the API secrets), plus the non-secret network/CA vars a
     # package fetch legitimately needs.
     from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
+    from .exec_policy import sandbox_argv_launch
 
     logs.append(f"$ {' '.join(cmd)}")
-    # sandbox-gate: unsandboxed - npm/pip/git install, which writes into the
-    # runtime dir it is installing to and then reads it back, so the policy
-    # would have to grant that dir READ_FILE for files created after the
-    # launch, which Landlock cannot express. Needs the runtime dir treated as a
-    # creation root. C1-02 follow-up.
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd) if cwd else None,
-        env=scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=timeout,
+    spawn_kwargs: Dict[str, Any] = {
+        "cwd": str(cwd) if cwd else None,
+        # Cache vars go AFTER the scrub on purpose: XDG_CACHE_HOME is itself in
+        # the passthrough, so an inherited one would otherwise win and put the
+        # cache back outside the creation root. The same precedence means an
+        # operator's pinned cache location is overridden here, which is the
+        # price of the creation root being true.
+        "env": {
+            **scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH),
+            **_install_cache_env(),
+        },
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "timeout": timeout,
         # An install command (npm/pip, ...) can spike memory; make it the OOM
         # victim rather than the API server (see nymeria/oom.py).
-        preexec_fn=oom_score_preexec(),
+        "preexec_fn": oom_score_preexec(),
+    }
+    # The runtime base is the whole write area of every install command: the
+    # source tree, the venv inside it, and (via _install_cache_env) the package
+    # caches. Naming it is what keeps the credential stores denied, and this
+    # surface wants that more than most, because an install executes arbitrary
+    # third-party build and postinstall scripts. Left on the default roots
+    # (project root plus cwd) all seven denials drop wherever the data dir sits
+    # inside the project root, which is the source checkout and so the slim
+    # shape.
+    #
+    # Derived here rather than passed per call site. Every store is a DIRECT
+    # child of the data dir BY CONSTRUCTION (``resource_map._child_names`` splits
+    # on the first separator), so nothing denied can live under the runtime base,
+    # which makes every narrower choice produce an identical deny set (measured:
+    # source_dir, the per-server runtime dir and this all give /proc plus the
+    # same seven). A per-call-site argument would have been a required security
+    # parameter with one right answer: six chances to get it wrong, for no gain.
+    # ``test_no_store_is_rooted_inside_the_mcp_runtime_tree`` pins that, because
+    # a store row rooted here would be KEPT rather than dropped (``_inside`` is
+    # strict, so a path equal to its root is not inside it) and would carve the
+    # runtime tree read-opaque, breaking every install.
+    launch = sandbox_argv_launch(
+        cmd, spawn_kwargs, creation_roots=(str(_runtime_base()),)
     )
+    proc = subprocess.run(launch, **spawn_kwargs)
     output = (proc.stdout or "").strip()
     if output:
         logs.extend(output.splitlines()[-40:])
     if proc.returncode != 0:
-        raise MCPInstallError(f"setup command failed ({proc.returncode}): {' '.join(cmd)}")
+        # Carry the last log line into the message. The shim execs in place, so
+        # the most common real failure (npm/git not installed) arrives as its
+        # ENOEXEC exit rather than the parent's FileNotFoundError, and without
+        # this the user-visible line is "setup command failed (8)" with the
+        # actionable reason buried in install_logs.
+        detail = logs[-1].strip() if logs else ""
+        suffix = f": {detail}" if detail and not detail.startswith("$ ") else ""
+        raise MCPInstallError(
+            f"setup command failed ({proc.returncode}): {' '.join(cmd)}{suffix}"
+        )
 
 
 def _safe_extract_zip(bundle_path: Path, target: Path) -> None:

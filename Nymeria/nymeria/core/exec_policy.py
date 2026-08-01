@@ -386,15 +386,22 @@ def _sandbox_launch(
             "scrub) in the spawn kwargs rather than inheriting this process's "
             "environment."
         )
-    policy = tool_sandbox_policy(
-        popen_kwargs.get("cwd"), creation_roots=creation_roots
-    )
-    # Wrap BEFORE touching the caller's kwargs. ``wrap_argv`` can raise (it
-    # refuses rather than degrading when the shim source is unavailable), and
-    # assigning env first would leave a refused launch carrying the policy var
-    # with no shim to read it: kwargs describing a confinement that is not
-    # there. Same invariant ``sandbox_shell_launch`` keeps for ``shell``.
+    # Both fallible steps under one handler. Building the policy can raise too
+    # (the carve budget refuses a root with too many entries to enumerate), and
+    # with only the wrap covered that arm returned the mechanism's bare message
+    # with no way out named, while the neighbouring arm named one. Which failure
+    # an operator hits should not decide whether they are told what to do about
+    # it.
+    #
+    # Wrap BEFORE touching the caller's kwargs. ``wrap_argv`` refuses rather
+    # than degrading when the shim source is unavailable, and assigning env
+    # first would leave a refused launch carrying the policy var with no shim to
+    # read it: kwargs describing a confinement that is not there. Same invariant
+    # ``sandbox_shell_launch`` keeps for ``shell``.
     try:
+        policy = tool_sandbox_policy(
+            popen_kwargs.get("cwd"), creation_roots=creation_roots
+        )
         launch = wrap_argv(list(argv))
     except SandboxError as exc:
         # The mechanism reports what it could not build; naming the way out is

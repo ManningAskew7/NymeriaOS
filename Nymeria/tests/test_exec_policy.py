@@ -353,6 +353,43 @@ def test_a_refused_launch_leaves_the_callers_kwargs_alone(tmp_path, monkeypatch)
     assert kwargs == {"env": {"PATH": "/usr/bin"}, "shell": True}
 
 
+def test_every_refusal_names_the_way_out(tmp_path, monkeypatch):
+    """Both fallible steps of a launch carry the remedy, not just one.
+
+    A launch can be refused two ways: the shim source is unreadable, or the
+    policy cannot be built (the carve budget refuses a root with more entries
+    than it can enumerate). Only the first was inside the handler that appends
+    "Set EXEC_SANDBOX_ENABLED=false", so an operator who hit the other got the
+    mechanism's bare message with no way out named. Which failure you hit should
+    not decide whether you are told what to do about it.
+    """
+    import nymeria.exec_sandbox as mech
+
+    _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data")
+    monkeypatch.setattr(exec_policy, "sandbox_available", lambda: True)
+
+    def refuse(*_a, **_kw):
+        raise SandboxError("policy could not be built")
+
+    for label, patch in (
+        ("shim source", lambda: monkeypatch.setattr(mech, "_SHIM_SOURCE", "")),
+        ("policy build", lambda: monkeypatch.setattr(
+            exec_policy, "tool_sandbox_policy", refuse
+        )),
+    ):
+        with monkeypatch.context():
+            patch()
+            kwargs = {"env": {"PATH": "/usr/bin"}}
+            with pytest.raises(SandboxError) as excinfo:
+                exec_policy.sandbox_argv_launch(["/bin/true"], kwargs)
+            assert "EXEC_SANDBOX_ENABLED=false" in str(excinfo.value), (
+                f"the {label} refusal does not name the way out"
+            )
+            # The other invariant still holds on the new arm: a refusal leaves
+            # the caller's kwargs untouched.
+            assert kwargs == {"env": {"PATH": "/usr/bin"}}
+
+
 def test_launch_is_a_noop_when_the_setting_is_off(tmp_path, monkeypatch):
     _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data", enabled=False)
     kwargs = {"shell": True, "env": {"PATH": "/usr/bin"}}
