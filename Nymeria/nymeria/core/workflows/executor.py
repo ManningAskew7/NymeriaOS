@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from ...subprocess_env import scrubbed_subprocess_env
+from ..exec_policy import sandbox_argv_launch
 from .budget import BudgetUsage, WorkflowBudget
 from .envelope import (
     ERROR_KINDS,
@@ -325,24 +326,42 @@ async def execute_workflow(
         }
         from ...oom import oom_score_preexec
 
-        # sandbox-gate: unsandboxed - same shape as the python custom-tool
-        # runner (interpreter roots), plus an async wrapper: sandbox_shell_launch
-        # is shell-shaped and this is an argv spawn, so it wants a
-        # sandbox_argv_launch sibling. C1-02 follow-up.
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            str(RUNNER_PATH),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        spawn_kwargs: dict = {
+            "stdin": asyncio.subprocess.PIPE,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
             # The child needs no project files and runs untrusted author code;
             # keep its cwd in the ephemeral 0700 run dir, never data_dir (the
             # secret-dense store).
-            cwd=str(rt_dir),
-            env=_scrubbed_env(run_id, user_id),
-            start_new_session=True,
-            preexec_fn=oom_score_preexec(),
+            "cwd": str(rt_dir),
+            "env": _scrubbed_env(run_id, user_id),
+            "start_new_session": True,
+            "preexec_fn": oom_score_preexec(),
+        }
+        # The env scrub says what this child INHERITS; the Landlock policy says
+        # what it may OPEN (C1-02). Both matter here: workflow source is
+        # authored through an agent-reachable surface, and an approved revision
+        # could otherwise read /proc/1/environ for the whole deployment
+        # environment the scrub exists to withhold.
+        #
+        # creation_roots is the run dir ALONE, making good on the cwd comment
+        # above: this child writes nowhere else, so it does not need the
+        # project tree treated as a place it creates files and reads them back.
+        # Taking the default would matter on a source checkout (so the slim
+        # shape), where the data dir lives INSIDE the project root and that
+        # concession would drop every store denial, leaving /proc as the whole
+        # policy. The run dir is under the system temp root, which the carve
+        # does not touch on any layout that puts the data dir elsewhere, so the
+        # RPC socket and anything the child writes are unaffected (measured,
+        # not assumed). A data dir parked under the temp root would carve it,
+        # but rt_dir and its socket predate the policy build, so they keep
+        # their rules either way.
+        launch = sandbox_argv_launch(
+            [sys.executable, str(RUNNER_PATH)],
+            spawn_kwargs,
+            creation_roots=(str(rt_dir),),
         )
+        proc = await asyncio.create_subprocess_exec(*launch, **spawn_kwargs)
         try:
             pgid = os.getpgid(proc.pid)
         except (OSError, AttributeError):

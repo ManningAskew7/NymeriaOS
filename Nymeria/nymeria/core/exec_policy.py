@@ -141,7 +141,10 @@ def sandbox_enabled() -> bool:
     return True
 
 
-def _creation_roots(cwd: str | os.PathLike[str] | None) -> tuple[str, ...]:
+def _creation_roots(
+    cwd: str | os.PathLike[str] | None,
+    override: Sequence[str | os.PathLike[str]] | None = None,
+) -> tuple[str, ...]:
     """Directories where a command is expected to create files and read them back.
 
     This is the limit on what can be denied, and it comes from Landlock rather
@@ -175,7 +178,23 @@ def _creation_roots(cwd: str | os.PathLike[str] | None) -> tuple[str, ...]:
     The residual is a command that ``cd``s somewhere new and reads back a file
     it created there in the same invocation; across invocations the policy is
     rebuilt, so the file is readable next call.
+
+    ``override`` replaces both roots for a surface that knows its child's whole
+    write area, and it is a TIGHTENING, not a convenience. The pair above is
+    sized for ``bash_execute``, whose child is a general-purpose shell working
+    in the project tree. A runner that hands its child an ephemeral directory
+    and nothing else inherits that concession for free, and on the layout where
+    the data dir sits INSIDE the project root (a source checkout, so the slim
+    shape) the concession is the whole control: every store is inside a
+    creation root, so the deny set collapses to ``/proc`` alone. Naming the run
+    directory instead gets the stores denied there too.
+
+    Only pass it where the claim is actually true. The cost of being wrong is
+    the measured one: an entry created directly inside a carved directory after
+    the policy is built is writable and unreadable for the rest of that launch.
     """
+    if override is not None:
+        return tuple(dict.fromkeys(str(root) for root in override))
     roots = [str(get_settings().project_root)]
     if cwd:
         roots.append(str(cwd))
@@ -255,13 +274,19 @@ def _log_once(seen: set[tuple[str, ...]], key: tuple[str, ...]) -> bool:
     return True
 
 
-def denied_paths(cwd: str | os.PathLike[str] | None = None) -> tuple[str, ...]:
+def denied_paths(
+    cwd: str | os.PathLike[str] | None = None,
+    *,
+    creation_roots: Sequence[str | os.PathLike[str]] | None = None,
+) -> tuple[str, ...]:
     """Paths no sandboxed child may read, resolved for this deployment.
 
     ``/proc`` is always denied: its only ancestor is ``/``, which is not a
     place commands create files. The on-disk stores are denied only where that
     does not cost a working directory (see ``_creation_roots``), which is a
-    per-deployment answer rather than a per-install setting.
+    per-deployment answer rather than a per-install setting, and which
+    ``creation_roots`` lets a surface narrow when it knows its child's whole
+    write area.
     """
     settings = get_settings()
     candidates: list[str] = [str(path) for path in secret_at_rest_paths(settings.data_dir)]
@@ -277,7 +302,7 @@ def denied_paths(cwd: str | os.PathLike[str] | None = None) -> tuple[str, ...]:
     # spawned command cannot read the environment but can still read the file
     # the environment was loaded from. Filed, with the file-tool half, as its
     # own item (backlog: "is .env an admin-gated store").
-    working = _creation_roots(cwd)
+    working = _creation_roots(cwd, creation_roots)
     kept: list[str] = ["/proc"]
     dropped: list[str] = []
     for path in dict.fromkeys(candidates):
@@ -316,7 +341,11 @@ def denied_paths(cwd: str | os.PathLike[str] | None = None) -> tuple[str, ...]:
     return tuple(kept)
 
 
-def tool_sandbox_policy(cwd: str | os.PathLike[str] | None = None) -> SandboxPolicy:
+def tool_sandbox_policy(
+    cwd: str | os.PathLike[str] | None = None,
+    *,
+    creation_roots: Sequence[str | os.PathLike[str]] | None = None,
+) -> SandboxPolicy:
     """The policy for an agent-invoked command launched in ``cwd``.
 
     Starts from the whole filesystem and subtracts, rather than listing what a
@@ -328,7 +357,69 @@ def tool_sandbox_policy(cwd: str | os.PathLike[str] | None = None) -> SandboxPol
     return carved_policy(
         read_only=(*DEFAULT_SYSTEM_ROOTS, *_interpreter_roots(), *PROC_READABLE_FILES),
         read_write=("/", *DEFAULT_DEVICE_NODES),
-        denied=denied_paths(cwd),
+        denied=denied_paths(cwd, creation_roots=creation_roots),
+    )
+
+
+def _sandbox_launch(
+    argv: Sequence[str],
+    popen_kwargs: MutableMapping[str, Any],
+    caller: str,
+    creation_roots: Sequence[str | os.PathLike[str]] | None = None,
+) -> list[str]:
+    """Overlay the policy onto ``popen_kwargs`` and wrap ``argv`` in the shim.
+
+    Raises rather than degrading if the policy cannot be built: a launch that
+    was meant to be sandboxed must not quietly become one that is not. The
+    caller must have already set ``env``, for the same reason: falling back to
+    ``os.environ`` here would hand a child the API process's whole environment
+    through a helper, which is precisely the shape
+    ``tests/test_subprocess_env_gate.py`` exists to refuse and precisely the
+    shape it cannot see (its tracking is per module, so an env dict built in a
+    helper is opaque to it). Every spawn site already scrubs.
+    """
+    base_env = popen_kwargs.get("env")
+    if base_env is None:
+        raise SandboxError(
+            f"{caller} requires an explicit env: pass "
+            "subprocess_env.scrubbed_subprocess_env(...) (or the surface's own "
+            "scrub) in the spawn kwargs rather than inheriting this process's "
+            "environment."
+        )
+    policy = tool_sandbox_policy(
+        popen_kwargs.get("cwd"), creation_roots=creation_roots
+    )
+    popen_kwargs["env"] = {**base_env, **sandbox_env_overlay(policy)}
+    return wrap_argv(list(argv))
+
+
+def sandbox_argv_launch(
+    argv: Sequence[str],
+    popen_kwargs: MutableMapping[str, Any],
+    *,
+    creation_roots: Sequence[str | os.PathLike[str]] | None = None,
+) -> list[str]:
+    """Sandbox an explicit-argv launch in place; return the argv to spawn.
+
+    For the surfaces that already build a real argv (the Python custom-tool
+    runner, the workflow runner) rather than handing a string to a shell. On an
+    unsandboxed deployment the argv comes back unchanged and ``popen_kwargs`` is
+    not modified.
+
+    Works for ``asyncio.create_subprocess_exec`` too, which takes the program
+    and its arguments positionally: build the kwargs as a dict, pass it here,
+    then splat both (``*launch, **kwargs``).
+
+    Pass ``creation_roots`` when the child's whole write area is known and is
+    NARROWER than "the project tree plus cwd", which is what a surface gets by
+    default. See ``_creation_roots``: on a source checkout that default drops
+    every store denial, so a runner working entirely in a scratch directory
+    should say so and keep them.
+    """
+    if not sandbox_enabled():
+        return list(argv)
+    return _sandbox_launch(
+        argv, popen_kwargs, "sandbox_argv_launch", creation_roots=creation_roots
     )
 
 
@@ -342,30 +433,17 @@ def sandbox_shell_launch(
     equivalent explicit argv is wrapped in the shim, because the shim needs a
     real argv and ``shell=True`` with a list means something else entirely
     (the tail becomes ``$0``, ``$1``, ... rather than the command).
-
-    Raises rather than degrading if the policy cannot be built: a launch that
-    was meant to be sandboxed must not quietly become one that is not. The
-    caller must have already set ``env``, for the same reason: falling back to
-    ``os.environ`` here would hand a child the API process's whole environment
-    through a helper, which is precisely the shape
-    ``tests/test_subprocess_env_gate.py`` exists to refuse and precisely the
-    shape it cannot see (its tracking is per module, so an env dict built in a
-    helper is opaque to it). Every spawn site already scrubs.
     """
     if not sandbox_enabled():
         return command
 
-    base_env = popen_kwargs.get("env")
-    if base_env is None:
-        raise SandboxError(
-            "sandbox_shell_launch requires an explicit env: pass "
-            "subprocess_env.scrubbed_env() (or the surface's own scrub) in "
-            "popen_kwargs rather than inheriting this process's environment."
-        )
-
-    policy = tool_sandbox_policy(popen_kwargs.get("cwd"))
-    popen_kwargs["env"] = {**base_env, **sandbox_env_overlay(policy)}
-    popen_kwargs["shell"] = False
     # What subprocess itself runs for shell=True on POSIX, so the shell, its
     # quoting and its builtins are unchanged.
-    return wrap_argv(["/bin/sh", "-c", command])
+    launch = _sandbox_launch(
+        ["/bin/sh", "-c", command], popen_kwargs, "sandbox_shell_launch"
+    )
+    # After the wrap, not before: _sandbox_launch raises on a caller that did
+    # not scrub its env, and a raise that had already flipped shell off would
+    # leave the caller's kwargs describing a launch it never asked for.
+    popen_kwargs["shell"] = False
+    return launch

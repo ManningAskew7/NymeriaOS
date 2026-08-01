@@ -41,10 +41,12 @@ NYMERIA_ROOT = Path(__file__).resolve().parent.parent / "nymeria"
 # Directories whose spawns a turn can reach. See SCOPE in the module docstring.
 GATED_DIRS = ("core/", "tools/")
 
-# The wrappers that put a child under the policy. ``sandbox_shell_launch`` is
-# the shell-shaped entry point; ``wrap_argv`` is the argv-shaped one underneath
-# it, which a future non-shell surface will call directly.
-SANDBOX_WRAPPERS = frozenset({"sandbox_shell_launch", "wrap_argv"})
+# The wrappers that put a child under the policy: the two policy-layer entry
+# points (shell-shaped and argv-shaped) plus the mechanism-layer one underneath
+# them, which a surface needing its own policy would call directly.
+SANDBOX_WRAPPERS = frozenset({
+    "sandbox_shell_launch", "sandbox_argv_launch", "wrap_argv",
+})
 
 UNSANDBOXED_MARKER = "sandbox-gate: unsandboxed"
 
@@ -90,8 +92,16 @@ def _sandbox_wrapped_names(tree: ast.AST) -> set[str]:
 
 
 def _is_sandboxed(node: ast.Call, wrapped: set[str]) -> bool:
-    """True if the argv handed to this spawn came through a sandbox wrapper."""
+    """True if the argv handed to this spawn came through a sandbox wrapper.
+
+    ``ast.Starred`` is unwrapped because ``asyncio.create_subprocess_exec``
+    takes the program and its arguments positionally rather than as one list,
+    so its sandboxed form is ``create_subprocess_exec(*launch, **kwargs)``.
+    Without this the async surfaces could never satisfy the gate.
+    """
     for arg in node.args:
+        if isinstance(arg, ast.Starred):
+            arg = arg.value
         if isinstance(arg, ast.Name) and arg.id in wrapped:
             return True
         if _call_name(arg) in SANDBOX_WRAPPERS:
@@ -139,20 +149,26 @@ def test_every_agent_reachable_spawn_is_sandboxed_or_explained():
     )
 
 
-def test_the_bash_tool_is_actually_sandboxed():
+def test_the_wired_surfaces_are_actually_sandboxed():
     """The gate is only worth having if it can tell wired from unwired.
 
-    Without this, deleting the wiring in ``bash.py`` would leave three sites
-    that the gate reports as unsandboxed, which is only a failure if something
-    asserts the positive case too.
+    Without this, deleting the wiring would leave sites the gate reports as
+    unsandboxed, which is only a failure if something asserts the positive case
+    too. Counts per file rather than a total, so moving a spawn between these
+    files cannot keep the sum right while losing one.
     """
-    sandboxed = {
-        key for key, is_sandboxed, _ in _walk_gated_spawns() if is_sandboxed
+    sandboxed = [key for key, is_sandboxed, _ in _walk_gated_spawns() if is_sandboxed]
+    counts = {
+        "tools/bash.py": 3,              # foreground, tracked bg, legacy bg
+        "core/python_custom_tools.py": 1,  # the Python custom-tool runner
+        "core/workflows/executor.py": 1,   # the workflow runner
     }
-    assert len([k for k in sandboxed if k.startswith("tools/bash.py")]) == 3, (
-        f"Expected bash.py's three spawn sites to be sandboxed, found: "
-        f"{sorted(sandboxed)}"
-    )
+    for prefix, expected in counts.items():
+        found = [k for k in sandboxed if k.startswith(prefix)]
+        assert len(found) == expected, (
+            f"Expected {expected} sandboxed spawn(s) in {prefix}, found "
+            f"{found}. All sandboxed sites: {sorted(sandboxed)}"
+        )
 
 
 def test_every_unsandboxed_marker_carries_a_reason():

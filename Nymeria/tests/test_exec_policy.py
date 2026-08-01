@@ -25,6 +25,7 @@ from nymeria.core import exec_policy
 from nymeria.exec_sandbox import (
     DEFAULT_DEVICE_NODES,
     DEFAULT_SYSTEM_ROOTS,
+    SandboxError,
     carved_policy,
     landlock_abi_version,
     sandbox_available,
@@ -36,6 +37,17 @@ from nymeria.tools.bash import bash_execute
 requires_landlock = pytest.mark.skipif(
     not sandbox_available(),
     reason=f"Landlock unavailable (ABI {landlock_abi_version()}); enforcement not testable here",
+)
+
+# The tests that drive the SHIPPED entry points (bash_execute, the two runners)
+# read the ambient setting rather than a monkeypatched one, so an operator with
+# EXEC_SANDBOX_ENABLED=false exported would see them fail rather than skip.
+# That is a false alarm, not a finding: the code is behaving as configured.
+# ``requires_landlock`` guards the kernel; this guards the configuration.
+requires_sandbox_on = pytest.mark.skipif(
+    not exec_policy.get_settings().exec_sandbox_enabled,
+    reason="EXEC_SANDBOX_ENABLED=false here; the shipped surfaces honour it, so "
+    "enforcement is correctly absent rather than broken",
 )
 
 _PY_ROOTS = tuple({
@@ -116,6 +128,76 @@ def test_stores_inside_the_working_tree_are_dropped(tmp_path, monkeypatch):
     assert exec_policy.denied_paths() == ("/proc",)
 
 
+def test_a_narrower_creation_root_keeps_the_stores_denied_on_a_source_layout(
+    tmp_path, monkeypatch
+):
+    """The workflow runner's override, and the reason the knob exists.
+
+    On a source checkout the data dir lives under the project root, so the
+    default roots drop every store denial (the test above pins that, and for
+    ``bash_execute`` it is the right answer). A runner whose child writes only
+    in an ephemeral scratch dir does not need that concession, and taking it
+    anyway would leave ``/proc`` as the entire policy on the slim shape.
+    """
+    project = tmp_path / "project"
+    data = project / "data"
+    _seed_data_dir(data)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _settings(monkeypatch, project_root=project, data_dir=data)
+
+    # Default roots: project_root is one, so everything under it is dropped.
+    assert exec_policy.denied_paths(cwd=str(run_dir)) == ("/proc",)
+
+    narrowed = exec_policy.denied_paths(
+        cwd=str(run_dir), creation_roots=(str(run_dir),)
+    )
+    assert str(data / "accounts.db") in narrowed
+    assert str(data / "accounts.db-wal") in narrowed
+    assert str(data / "auth_tokens") in narrowed
+
+
+def test_argv_launch_threads_the_creation_root_override_to_the_policy(
+    tmp_path, monkeypatch
+):
+    """The override has to survive the launch helper, not just the deny set.
+
+    Wiring it in ``executor.py`` is worthless if the helper drops it on the
+    way through, and that would be invisible: the launch still succeeds and the
+    child still runs, just without the denials the caller asked for.
+    """
+    project = tmp_path / "project"
+    data = project / "data"
+    _seed_data_dir(data)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _settings(monkeypatch, project_root=project, data_dir=data)
+    monkeypatch.setattr(exec_policy, "sandbox_available", lambda: True)
+
+    seen: dict = {}
+    real = exec_policy.tool_sandbox_policy
+
+    def spy(cwd=None, *, creation_roots=None):
+        seen["creation_roots"] = creation_roots
+        seen["denied"] = exec_policy.denied_paths(cwd, creation_roots=creation_roots)
+        # Build with the DEFAULT roots, whose deny set is just /proc here. The
+        # override's real policy would carve this tmp_path's parents, and /tmp
+        # on a dev box holds enough entries to blow the mechanism's own root
+        # ceiling. What is under test is the threading, and that is `seen`.
+        return real(cwd)
+
+    monkeypatch.setattr(exec_policy, "tool_sandbox_policy", spy)
+    kwargs = {"env": {"PATH": "/usr/bin"}, "cwd": str(run_dir)}
+
+    exec_policy.sandbox_argv_launch(
+        ["/bin/true"], kwargs, creation_roots=(str(run_dir),)
+    )
+
+    assert seen["creation_roots"] == (str(run_dir),)
+    assert str(data / "accounts.db") in seen["denied"]
+    assert kwargs["env"]["NYMERIA_SANDBOX_POLICY"]
+
+
 def test_the_launch_cwd_is_never_carved(tmp_path, monkeypatch):
     """A command's own working directory is not made read-opaque under it.
 
@@ -179,6 +261,50 @@ def test_launch_rewrites_shell_true_into_the_shim(tmp_path, monkeypatch):
     assert launch[0] == sys.executable
     assert kwargs["env"]["NYMERIA_SANDBOX_POLICY"]
     assert kwargs["env"]["PATH"] == "/usr/bin"
+
+
+def test_argv_launch_wraps_without_touching_shell(tmp_path, monkeypatch):
+    """The argv-shaped sibling, for surfaces that never involve a shell.
+
+    ``shell`` must be left alone rather than set False: these callers never
+    passed it, and ``asyncio.create_subprocess_exec`` does not accept it at all.
+    """
+    _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data")
+    monkeypatch.setattr(exec_policy, "sandbox_available", lambda: True)
+    kwargs = {"env": {"PATH": "/usr/bin"}, "cwd": str(tmp_path)}
+
+    launch = exec_policy.sandbox_argv_launch(["/usr/bin/python3", "runner.py"], kwargs)
+
+    assert launch[-2:] == ["/usr/bin/python3", "runner.py"]
+    assert launch[0] == sys.executable
+    assert "shell" not in kwargs
+    assert kwargs["env"]["NYMERIA_SANDBOX_POLICY"]
+    assert kwargs["env"]["PATH"] == "/usr/bin"
+
+
+def test_argv_launch_is_a_noop_when_the_setting_is_off(tmp_path, monkeypatch):
+    _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data", enabled=False)
+    kwargs = {"env": {"PATH": "/usr/bin"}}
+
+    assert exec_policy.sandbox_argv_launch(["a", "b"], kwargs) == ["a", "b"]
+    assert kwargs == {"env": {"PATH": "/usr/bin"}}
+
+
+def test_a_launch_without_an_explicit_env_is_refused(tmp_path, monkeypatch):
+    """Never fall back to os.environ, in either helper.
+
+    A helper that inherited would hand a child the API process's whole
+    environment while reading as compliant to ``test_subprocess_env_gate.py``,
+    whose variable tracking is per module and cannot see inside a helper. Every
+    caller already scrubs, so the missing env is a bug, not a default.
+    """
+    _settings(monkeypatch, project_root=tmp_path, data_dir=tmp_path / "data")
+    monkeypatch.setattr(exec_policy, "sandbox_available", lambda: True)
+
+    with pytest.raises(SandboxError):
+        exec_policy.sandbox_argv_launch(["/bin/true"], {})
+    with pytest.raises(SandboxError):
+        exec_policy.sandbox_shell_launch("true", {})
 
 
 def test_launch_is_a_noop_when_the_setting_is_off(tmp_path, monkeypatch):
@@ -259,6 +385,7 @@ def test_enforcement_tool_policy_hides_the_stores_and_keeps_the_rest(
 
 
 @requires_landlock
+@requires_sandbox_on
 def test_enforcement_bash_execute_cannot_read_the_process_environment():
     """The end of the wiring: the shipped tool, no policy plumbed by hand.
 
@@ -273,6 +400,7 @@ def test_enforcement_bash_execute_cannot_read_the_process_environment():
 
 
 @requires_landlock
+@requires_sandbox_on
 def test_enforcement_bash_execute_denies_the_stores_through_the_real_policy(
     monkeypatch,
 ):
@@ -316,6 +444,133 @@ def test_enforcement_bash_execute_denies_the_stores_through_the_real_policy(
     # ...and the whole-filesystem carve leaves everything else alone.
     assert "TODO" in todo, todo
     assert "Permission denied" not in system, system
+
+
+_ENVIRON_PROBE_BODY = (
+    "    try:\n"
+    "        with open('/proc/self/environ', 'rb') as fh:\n"
+    "            return 'READ:' + repr(fh.read(32))\n"
+    "    except OSError as exc:\n"
+    "        return 'DENIED:' + type(exc).__name__\n"
+)
+
+
+@requires_landlock
+@requires_sandbox_on
+def test_enforcement_a_python_custom_tool_cannot_read_the_environment():
+    """The second wired surface, driven through the shipped runner.
+
+    A published Python tool is agent-authored code running out of process. The
+    env scrub already withholds this process's secrets from it; without the
+    sandbox it could read them back out of ``/proc/self/environ`` anyway, since
+    the API process is its own parent's sibling in the same container.
+    """
+    from nymeria.core.python_custom_tools import run_python_tool_subprocess
+    from nymeria.tools.definitions.custom_tool_schema import PythonToolConfig
+
+    result = run_python_tool_subprocess(
+        tool_id="sandbox-probe",
+        config=PythonToolConfig(source_code="def run():\n" + _ENVIRON_PROBE_BODY),
+        params={},
+        timeout_seconds=60,
+    )
+
+    assert result.ok, f"{result.error_type}: {result.error_message} {result.stderr}"
+    assert result.result.startswith("DENIED"), result.result
+
+
+@requires_landlock
+def test_enforcement_a_python_custom_tool_reads_it_with_the_sandbox_off(monkeypatch):
+    """The falsification half: the denial above is the sandbox, not the runner."""
+    from nymeria.core.python_custom_tools import run_python_tool_subprocess
+    from nymeria.tools.definitions.custom_tool_schema import PythonToolConfig
+
+    monkeypatch.setattr(exec_policy, "sandbox_enabled", lambda: False)
+    result = run_python_tool_subprocess(
+        tool_id="sandbox-probe",
+        config=PythonToolConfig(source_code="def run():\n" + _ENVIRON_PROBE_BODY),
+        params={},
+        timeout_seconds=60,
+    )
+
+    assert result.ok, f"{result.error_type}: {result.error_message} {result.stderr}"
+    assert result.result.startswith("READ"), result.result
+
+
+@requires_landlock
+@requires_sandbox_on
+@pytest.mark.asyncio
+async def test_enforcement_a_workflow_cannot_read_the_environment():
+    """The third wired surface, and the one with the most to lose.
+
+    The workflow child connects back to an RPC socket in an ephemeral run dir
+    and is killed by process group, so this asserts the run still SUCCEEDS as
+    well as that the read is refused: a sandbox that broke the socket or the
+    supervision would pass a denial-only assertion.
+    """
+    from nymeria.core.workflows.budget import WorkflowBudget
+    from nymeria.core.workflows.executor import execute_workflow
+
+    result = await execute_workflow(
+        source="def run():\n" + _ENVIRON_PROBE_BODY,
+        entrypoint="run",
+        params={},
+        user_id="tester",
+        thread_id="sandbox-probe-thread",
+        budget=WorkflowBudget(wall_clock_seconds=60),
+        persist_record=False,
+    )
+
+    envelope = result.envelope
+    assert envelope.ok, envelope.to_dict()
+    assert str(envelope.output).startswith("DENIED"), envelope.output
+
+
+@requires_landlock
+@requires_sandbox_on
+@pytest.mark.asyncio
+async def test_enforcement_a_workflow_cannot_read_the_credential_store():
+    """The runner's narrowed creation roots, driven end to end.
+
+    The workflow child works only in its ephemeral run dir, so ``executor.py``
+    passes ``creation_roots=(rt_dir,)`` and keeps the store denials that the
+    default roots would drop.
+
+    Where this bites is the SOURCE-CHECKOUT layout (data dir under the project
+    root, so the slim shape): there the override is the only thing denying the
+    vault to workflow code, and deleting it from ``executor.py`` fails this
+    test. On a layout with the data dir outside the tree the stores are denied
+    either way, so this still passes but proves less. Worth having in both.
+    """
+    from nymeria.config import get_settings
+    from nymeria.core.workflows.budget import WorkflowBudget
+    from nymeria.core.workflows.executor import execute_workflow
+
+    vault = Path(get_settings().data_dir) / "accounts.db"
+    if not vault.exists():
+        pytest.skip(f"no account vault at {vault} to probe on this deployment")
+
+    source = (
+        "def run():\n"
+        "    try:\n"
+        f"        open({str(vault)!r}, 'rb').read(16)\n"
+        "        return 'READ'\n"
+        "    except OSError as exc:\n"
+        "        return 'DENIED:' + type(exc).__name__\n"
+    )
+    result = await execute_workflow(
+        source=source,
+        entrypoint="run",
+        params={},
+        user_id="tester",
+        thread_id="sandbox-store-probe-thread",
+        budget=WorkflowBudget(wall_clock_seconds=60),
+        persist_record=False,
+    )
+
+    envelope = result.envelope
+    assert envelope.ok, envelope.to_dict()
+    assert str(envelope.output).startswith("DENIED"), envelope.output
 
 
 @requires_landlock

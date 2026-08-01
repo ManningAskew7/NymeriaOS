@@ -16,6 +16,7 @@ from ..config import get_settings
 from ..oom import oom_score_preexec
 from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
 from ..tools.definitions.custom_tool_schema import PythonToolConfig, ToolParameter
+from .exec_policy import sandbox_argv_launch
 from .http_policy import SECRET_PATTERNS
 from .time_utils import utc_now
 
@@ -285,23 +286,33 @@ def run_python_tool_subprocess(
     # secrets stay excluded.
     env = scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH)
     env["PYTHONUNBUFFERED"] = "1"
+    spawn_kwargs: Dict[str, Any] = {
+        "input": json.dumps(payload, ensure_ascii=False),
+        "cwd": str(get_settings().project_root),
+        "env": env,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        # User tool code can allocate heavily; make it the OOM victim, not
+        # the API server that runs it (see nymeria/oom.py).
+        "preexec_fn": oom_score_preexec(),
+    }
+    # The env scrub says what this child INHERITS; the sandbox says what it may
+    # OPEN. Both are needed because the code is agent-authored: without the
+    # sandbox a published tool reads /proc/1/environ and recovers exactly what
+    # the scrub withholds (C1-02). Costs are in the tool_create description.
+    #
+    # cwd is the project root, so the default creation roots are already right
+    # here; do not narrow them the way the workflow runner does.
+    #
+    # Inside the try, not above it: building the policy can raise (SandboxError
+    # on an unscrubbed env, or settings failing to resolve), and this function
+    # is contracted to ALWAYS return a PythonToolRunResult. Letting that escape
+    # would turn a refused launch into an exception the tool layer never
+    # expects, which is a worse failure than the one it is refusing.
     try:
-        # sandbox-gate: unsandboxed - the highest-value site left, and the
-        # nearest to ready: it needs only the interpreter roots the policy
-        # already knows how to compute (_interpreter_roots) plus a decision on
-        # what a custom tool may write. C1-02 follow-up, do this one first.
-        completed = subprocess.run(
-            [sys.executable, str(_RUNNER_PATH)],
-            input=json.dumps(payload, ensure_ascii=False),
-            cwd=str(get_settings().project_root),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            # User tool code can allocate heavily; make it the OOM victim, not
-            # the API server that runs it (see nymeria/oom.py).
-            preexec_fn=oom_score_preexec(),
-        )
+        launch = sandbox_argv_launch([sys.executable, str(_RUNNER_PATH)], spawn_kwargs)
+        completed = subprocess.run(launch, **spawn_kwargs)
     except subprocess.TimeoutExpired:
         return PythonToolRunResult(
             ok=False,

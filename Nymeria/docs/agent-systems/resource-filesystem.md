@@ -134,8 +134,11 @@ this revisited.
   server definition carries the launch command a server runs), pointing at
   `auth_write`/`auth_test` (or `manage_mcp`) instead. `file_read` gained its
   first denylist here. This is tool-layer policy, not a security boundary:
-  `bash_execute` cannot be path-confined (the honest limit recorded in the
-  plan; the execution sandbox is the shared future dependency).
+  `bash_execute` cannot be path-confined by the tool layer (the honest limit
+  recorded in the plan). The execution sandbox, which was that limit's shared
+  future dependency, has since shipped: where the data dir sits outside the
+  working tree it denies these stores to commands spawned by `bash_execute`,
+  the Python custom-tool runner and the workflow runner.
 - **Writing a global prompt override is admin-only**
   (`tools/filesystem.py::admin_only_write_error`, P4-02): `system_prompt.md`,
   `dream_prompt.md` and `dream_kickoff.md` in the data-dir root. Each replaces a

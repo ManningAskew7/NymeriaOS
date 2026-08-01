@@ -121,13 +121,14 @@ Cross-tenant execution isolation (an unprivileged Landlock filesystem sandbox
 applied per exec) is partly shipped. `bash_execute` now runs its commands inside
 it on Linux, which closes the environment-disclosure route described in Section
 2.5, and on a deployment whose data directory sits outside the agent's working
-tree it also closes off-disk reads of the credential stores. It is a subtraction
-from what a command could reach before, not an allowlist, and it is **not**
-tenant isolation: the sandboxed command still reaches every other account's
-profile and transcript data, and the other execution surfaces (MCP stdio
-servers, Python custom tools, the workflow runner, the `run_command` hook
-action, the Claude Code bridge) are not wired to it yet. Until they are, run one
-trust domain per backend. Each unwired surface has to say at its own call site
+tree it also closes off-disk reads of the credential stores. The two surfaces
+that run agent-AUTHORED code out of process, the Python custom-tool runner and
+the workflow runner, are inside it too. It is a subtraction from what a command
+could reach before, not an allowlist, and it is **not** tenant isolation: the
+sandboxed command still reaches every other account's profile and transcript
+data, and the remaining execution surfaces (MCP stdio servers, the MCP package
+installer, the `run_command` hook action, the Claude Code bridge, and the
+self-modification import check) are not wired to it yet. Until they are, run one trust domain per backend. Each unwired surface has to say at its own call site
 why it is not confined; `tests/test_exec_sandbox_gate.py` fails the build on a
 new agent-reachable spawn that does neither.
 
@@ -235,14 +236,35 @@ not on the other. State both when reasoning about it.
     the Docker shape as conceding the whole environment to any in-container
     shell. The slim shape has no init shim and is not affected.
 
-  Off-disk reads of the encrypted stores are closed for `bash_execute` where
-  the data directory sits outside the agent's working tree, which is the layout
-  the Docker deployment already uses (project root `/app`, data dir `/data`).
+  Off-disk reads of the encrypted stores are closed for the sandboxed surfaces
+  where the data directory sits outside the agent's working tree, which is the
+  layout the Docker deployment already uses (project root `/app`, data dir
+  `/data`).
   Where it sits inside the working tree, as in a source checkout, they stay
-  open: Landlock cannot deny a path without making its parent directories
-  read-opaque for files created afterwards, which would stop ordinary commands
-  reading what they had just written, so the denial is dropped rather than
-  paid for. Move the data directory out of the working tree to get it.
+  open for `bash_execute` and the Python custom-tool runner: Landlock cannot
+  deny a path without making its parent directories read-opaque for files
+  created afterwards, which would stop ordinary commands reading what they had
+  just written, so the denial is dropped rather than paid for. Move the data
+  directory out of the working tree to get it. The workflow runner is the
+  exception and keeps the denials in every layout, because its child works
+  only in an ephemeral run directory and so needs no concession for the
+  project tree.
+
+  **The sandbox does not defend its own launcher.** The shim that applies the
+  policy is an ordinary file in the project tree, re-read from disk on every
+  launch, and it runs before the policy exists. A sandboxed process that can
+  write it therefore lifts the sandbox for the next launch, with no restart
+  needed. That makes the shim materially different from the rest of the
+  backend, where a rewritten module does nothing until the process reloads it.
+  Landlock cannot close this: denying the file would not stop it being
+  replaced, and the project tree has to stay writable because self-modification
+  is a supported feature. Deployment decides exposure, and the reference Docker
+  deployment is not exposed, because the container user does not own the
+  bind-mounted source (verified: the write is refused). A source or slim
+  install where the service runs as the user who owns the checkout IS exposed.
+  Run those as a separate user from the one owning the tree, or accept that the
+  sandbox is a control against accident and unprivileged code rather than
+  against code that has already been given the repo to write.
 
   The same rule leaves the deployment's `.env` readable to a sandboxed shell in
   EVERY shape, including Docker (the repo is bind-mounted at `/app`, so
