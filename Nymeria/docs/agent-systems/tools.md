@@ -207,7 +207,23 @@ When `run_in_background=True` is called from an agent thread, stdout and stderr 
 
 The job registry, the per-job exit watcher, and the 7-day temp-file sweep live in `tools/bash_background.py`; `tools/bash_job.py` is the companion tool module that reads and controls them.
 
-**Security:** MODERATE  -  runs commands without an in-process sandbox. Use deployment-level containment for untrusted workloads.
+**Filesystem sandbox (Linux):** commands run inside an unprivileged Landlock ruleset applied per launch (`EXEC_SANDBOX_ENABLED`, on by default; ignored where the kernel cannot enforce it, with one warning). It SUBTRACTS rather than allowlists, so a command reaches everything it reached before except:
+
+- the CONTENT of `/proc`, apart from the machine-wide files that carry no per-process state (`meminfo`, `cpuinfo`, `stat`, `loadavg`, `uptime`, `version`). This is the point of the control: `/proc/1/environ` is the deployment's whole environment, including the credential vault's master key. The hierarchy stays listable (`ls /proc` still enumerates PIDs), which is the general container behavior described below.
+- the credential stores under the data dir (`accounts.db` and its SQLite sidecars, `auth_tokens/`, the token files, `mcp_servers/`, `snapshots/`), but ONLY on a deployment where those sit outside the agent's working tree. That is the Docker layout (project root `/app`, data dir `/data`); in a source checkout the data dir is inside the project root and the denial is dropped, logged once at startup. Landlock has no deny rule and rights union up the directory tree, so excluding a path means its parent directories cannot grant file reads, and only the entries that existed when the policy was built get their own rule: inside a working directory that would stop a command reading a file it had just written. Set a data dir outside the working tree to get the stronger boundary.
+
+The `.env` files are deliberately NOT denied. They are `project_root/<name>` by construction, so the working-tree rule above always drops them; the sandbox closes the process environment and leaves the file the environment was loaded from. Keep credential files out of the project root if that matters to you.
+
+What it costs, all measured rather than estimated:
+
+- roughly 0.1s per call (the policy is applied by a re-exec shim, which is a whole Python interpreter start).
+- `ps`, `top`, `lsof` and `mount` fail; `df` prints a warning and a partial table. `ps` suggests remounting `/proc`, which is not the problem.
+- `pgrep` and `pkill` return EMPTY rather than failing, so a "is it running" check silently answers no. Worth knowing when reading agent output.
+- `sudo`, `su`, `mount`, `ping` and `pkexec` stop working: an unprivileged Landlock ruleset requires the kernel's `no_new_privs` flag, which disables setuid and file capabilities for the whole process tree.
+
+The policy is built per launch in `core/exec_policy.py` (the filesystem twin of `subprocess_env.py`: one owns what a child INHERITS, the other what it may OPEN), and applied by a stdlib-only re-exec shim, `nymeria/exec_sandbox.py`. The file tools refuse the same `/proc` paths, since they run in the API process where Landlock does not reach them. Residuals worth knowing: a sandboxed command can still delete or replace a denied file even though it cannot read one, it can still list a denied directory's filenames, and only `bash_execute` is wired so far (the other agent-reachable spawn sites are gated by `tests/test_exec_sandbox_gate.py`, which makes each one declare at its call site why it is not yet confined).
+
+**Security:** MODERATE  -  the sandbox bounds what a command can READ, not what it can do. Use deployment-level containment for untrusted workloads.
 
 ---
 

@@ -325,6 +325,10 @@ async def execute_workflow(
         }
         from ...oom import oom_score_preexec
 
+        # sandbox-gate: unsandboxed - same shape as the python custom-tool
+        # runner (interpreter roots), plus an async wrapper: sandbox_shell_launch
+        # is shell-shaped and this is an argv spawn, so it wants a
+        # sandbox_argv_launch sibling. C1-02 follow-up.
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             str(RUNNER_PATH),

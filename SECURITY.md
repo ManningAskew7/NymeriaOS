@@ -118,9 +118,39 @@ any account can read the entire shared data volume and the master key off the
 host. **Do not treat two accounts on one backend as isolated tenants.**
 
 Cross-tenant execution isolation (an unprivileged Landlock filesystem sandbox
-applied per exec) is in active development. Its primitive exists in the tree but
-is **not yet wired to any execution surface, so it enforces nothing today**. Do
-not rely on it. Until it ships and is enabled, run one trust domain per backend.
+applied per exec) is partly shipped. `bash_execute` now runs its commands inside
+it on Linux, which closes the environment-disclosure route described in Section
+2.5, and on a deployment whose data directory sits outside the agent's working
+tree it also closes off-disk reads of the credential stores. It is a subtraction
+from what a command could reach before, not an allowlist, and it is **not**
+tenant isolation: the sandboxed command still reaches every other account's
+profile and transcript data, and the other execution surfaces (MCP stdio
+servers, Python custom tools, the workflow runner, the `run_command` hook
+action, the Claude Code bridge) are not wired to it yet. Until they are, run one
+trust domain per backend. Each unwired surface has to say at its own call site
+why it is not confined; `tests/test_exec_sandbox_gate.py` fails the build on a
+new agent-reachable spawn that does neither.
+
+Three things the sandbox does not do, worth knowing before relying on it:
+
+- It confines reads, not writes. The policy grants write access across the
+  filesystem and leaves ordinary file permissions to restrain it, so in a
+  source checkout owned by the account Nymeria runs as, a command can rewrite
+  Nymeria's own code, including the sandbox module, and disarm it for every
+  later call. The Docker shape mounts the package read-only, which is why it
+  is the stronger deployment here as well. Self-modification is a shipped
+  feature, so this is a consequence of the trust model rather than a bug in
+  the sandbox.
+- It does not confine the process tree's privileges beyond what Landlock
+  requires. Requiring `no_new_privs` does disable setuid binaries and file
+  capabilities as a side effect (`sudo`, `ping`, `mount` stop working), but
+  that is a consequence, not a designed control.
+- A kernel that permits unprivileged user namespaces would let a command mount
+  a fresh `procfs` under a granted directory and read process state through it,
+  because Landlock resolves rights up the mount chain. Ubuntu's AppArmor
+  restriction and Docker's default seccomp profile both block this on the
+  reference deployment; a host without either should not be treated as
+  covered.
 
 ### 2.5 Credential handling: two channels
 
@@ -180,8 +210,19 @@ not on the other. State both when reasoning about it.
     `/proc` entries root-owned. Root and `CAP_SYS_PTRACE` are unaffected, and
     `NYMERIA_DISABLE_PROCESS_HARDENING=1` turns it off for debugging at the cost
     of reopening the channel.
-  - **In the Docker shape this channel is only partly closed, and you should
-    assume it is open.** The compose services run with `init: true`, so PID 1 is
+  - **A command the agent runs can no longer read `/proc` file content**
+    (Linux; `EXEC_SANDBOX_ENABLED`, on by default). The Landlock sandbox of
+    Section 2.4 denies every file under the hierarchy apart from a few
+    machine-wide ones (`meminfo`, `cpuinfo`, `stat`, `loadavg`, `uptime`,
+    `version`), so the process-table tools do not work in a sandboxed shell and
+    neither does reading another process's environment. Content, precisely:
+    `/proc` stays LISTABLE, so a command can still enumerate PIDs and see the
+    symlink targets in `/proc/self/fd`. The file tools refuse the same paths
+    (they run in the API process, where Landlock cannot reach them), so the two
+    channels agree. What remains open is any surface not yet sandboxed, listed
+    in 2.4, and the API process's own in-process code.
+  - **In the Docker shape this channel is open to anything not sandboxed, and
+    you should assume it is open.** The compose services run with `init: true`, so PID 1 is
     the container runtime's init shim (tini), not Python, and it holds a
     byte-identical copy of the container environment: every provider API key,
     the service token, and the vault master key. It runs as the same
@@ -194,9 +235,24 @@ not on the other. State both when reasoning about it.
     the Docker shape as conceding the whole environment to any in-container
     shell. The slim shape has no init shim and is not affected.
 
-  Off-disk reads of the encrypted stores remain open in both shapes, which is
-  what the Landlock work (Section 2.4) targets. **The vault protects secrets
-  from the model, not from a shell.**
+  Off-disk reads of the encrypted stores are closed for `bash_execute` where
+  the data directory sits outside the agent's working tree, which is the layout
+  the Docker deployment already uses (project root `/app`, data dir `/data`).
+  Where it sits inside the working tree, as in a source checkout, they stay
+  open: Landlock cannot deny a path without making its parent directories
+  read-opaque for files created afterwards, which would stop ordinary commands
+  reading what they had just written, so the denial is dropped rather than
+  paid for. Move the data directory out of the working tree to get it.
+
+  The same rule leaves the deployment's `.env` readable to a sandboxed shell in
+  EVERY shape, including Docker (the repo is bind-mounted at `/app`, so
+  `/app/.env` comes with it). Dotenv files live in the project root by
+  construction, and the project root is always a working tree, so this is not a
+  denial that was forgotten: it is one the mechanism cannot express. The
+  sandbox closes the process environment and leaves the file the environment
+  was loaded from, and the file tools read it in every shape too. **The vault
+  protects secrets from the model, and now from a sandboxed shell reading
+  `/proc` or the data directory, but not from one reading the project root.**
 
   The gate is syntactic, so treat a green build as "no new bare spawn was
   introduced" rather than "nothing inherits". It cannot see a spawn dispatched

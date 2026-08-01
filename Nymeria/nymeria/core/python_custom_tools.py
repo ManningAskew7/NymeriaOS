@@ -286,6 +286,10 @@ def run_python_tool_subprocess(
     env = scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH)
     env["PYTHONUNBUFFERED"] = "1"
     try:
+        # sandbox-gate: unsandboxed - the highest-value site left, and the
+        # nearest to ready: it needs only the interpreter roots the policy
+        # already knows how to compute (_interpreter_roots) plus a decision on
+        # what a custom tool may write. C1-02 follow-up, do this one first.
         completed = subprocess.run(
             [sys.executable, str(_RUNNER_PATH)],
             input=json.dumps(payload, ensure_ascii=False),

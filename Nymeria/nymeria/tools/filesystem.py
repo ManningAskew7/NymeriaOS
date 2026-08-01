@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
+from ..core.exec_policy import PROC_READABLE_FILES
 from ..core.storage_paths import write_text_atomic
 from .execution_environment import resolve_tool_path
 from .image_read import prepare_image_for_native_context, sniff_image_mime
@@ -89,6 +90,9 @@ def protected_path_error(path: Path) -> Optional[str]:
 _SECRET_STORE_DIRS = {"auth_tokens", "mcp_servers"}
 _SECRET_STORE_FILE_PREFIXES = ("accounts.db",)
 
+# Process state is a credential store too; see _process_state_error.
+_PROC_ROOT = "/proc"
+
 
 def _data_dir_relative(path: Path) -> Optional[Path]:
     """``path`` relative to the data dir, or None if it is outside (or unknown).
@@ -128,6 +132,41 @@ def _store_key(name: str) -> str:
     return name.rstrip(". ").casefold()
 
 
+def _process_state_error(path: Path) -> Optional[str]:
+    """Refuse ``/proc``, except the machine-wide files that hold no secrets.
+
+    The same target as the exec sandbox's ``/proc`` denial, in the other
+    channel (C1-01). ``/proc/1/environ`` is the deployment's entire
+    environment: the credential vault's master key, every provider key and the
+    service token, in the clear, for any caller. Landlock closes that for a
+    spawned command, and a file tool runs IN the API process where Landlock
+    cannot reach, so without this the sandbox would be one tool call wide.
+
+    Scoped to ``/proc`` rather than to a list of interesting files because the
+    interesting ones are per-pid (``environ``, ``cmdline``, ``maps``, ``fd/``,
+    ``mem``) and the pid is not knowable in advance; ``cwd`` alone would leak
+    less but ``fd/`` would still hand over open descriptors. The allowlist is
+    the same one the sandbox grants back, so the two channels agree on what is
+    readable rather than each having an opinion.
+    """
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return None
+    if real != _PROC_ROOT and not real.startswith(_PROC_ROOT + os.sep):
+        return None
+    if real in PROC_READABLE_FILES:
+        return None
+    logger.warning("Blocked file-tool access to process state: %s", real)
+    return (
+        f"Cannot access {real}: /proc exposes the running processes' own "
+        "state, including the environment the deployment's secrets live in, "
+        "so the file tools are limited to the machine-wide entries "
+        f"({', '.join(PROC_READABLE_FILES)}). Commands run through "
+        "bash_execute are held to the same boundary."
+    )
+
+
 def secrets_path_error(path: Path) -> Optional[str]:
     """Return an error message if ``path`` targets a credential store,
     else ``None``.
@@ -136,6 +175,10 @@ def secrets_path_error(path: Path) -> Optional[str]:
     and ``file_edit``. The message is returned without an ``[Error]:``
     prefix; callers format it for their own contract.
     """
+    process_error = _process_state_error(path)
+    if process_error:
+        return process_error
+
     rel = _data_dir_relative(path)
     if rel is None:
         return None  # outside the data dir; not a credential store

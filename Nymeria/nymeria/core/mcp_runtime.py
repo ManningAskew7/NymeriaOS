@@ -1537,6 +1537,11 @@ def _run(cmd: List[str], logs: List[str], *, cwd: Optional[Path] = None, timeout
     from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
 
     logs.append(f"$ {' '.join(cmd)}")
+    # sandbox-gate: unsandboxed - npm/pip/git install, which writes into the
+    # runtime dir it is installing to and then reads it back, so the policy
+    # would have to grant that dir READ_FILE for files created after the
+    # launch, which Landlock cannot express. Needs the runtime dir treated as a
+    # creation root. C1-02 follow-up.
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
