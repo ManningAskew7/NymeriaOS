@@ -123,14 +123,17 @@ it on Linux, which closes the environment-disclosure route described in Section
 2.5, and on a deployment whose data directory sits outside the agent's working
 tree it also closes off-disk reads of the credential stores. The two surfaces
 that run agent-AUTHORED code out of process, the Python custom-tool runner and
-the workflow runner, are inside it too, as are the `run_command` hook action and
+the workflow runner, are inside it too, as are the `run_command` hook action,
 the MCP install runner (the `npm`/`pip`/`git` commands a managed server install
 executes, which matter because they run arbitrary third-party build and
-postinstall scripts). It is a subtraction from what a command
+postinstall scripts) and MCP stdio servers themselves, which the backend
+supervises for the life of the deployment and which are operator- or
+agent-configured, since a server definition is a custom tool behind the
+execution gate. It is a subtraction from what a command
 could reach before, not an allowlist, and it is **not** tenant isolation: the
 sandboxed command still reaches every other account's profile and transcript
-data, and the remaining execution surfaces (MCP stdio servers, the Claude Code
-bridge, and the self-modification import check) are not wired to it yet. Until they are, run one trust domain per backend. Each unwired surface has to say at its own call site
+data, and the remaining execution surfaces (the Claude Code bridge and the
+self-modification import check) are not wired to it yet. Until they are, run one trust domain per backend. Each unwired surface has to say at its own call site
 why it is not confined; `tests/test_exec_sandbox_gate.py` fails the build on a
 new agent-reachable spawn that does neither.
 
@@ -145,6 +148,24 @@ directory sits outside that tree it loses the stores as well. The two surfaces
 that know exactly where their child writes, the workflow runner and the MCP
 install runner, say so explicitly and get the credential stores denied on every
 layout, including a source checkout.
+
+An MCP stdio server deliberately takes the weaker of the two. Its write area is
+whatever it was configured to manage, so declaring one would be a guess, and the
+cost of guessing is higher here than anywhere else: a carve is a snapshot, and a
+server runs for days rather than seconds, so anything it created after startup
+inside a carved directory would become unreadable to it. It therefore loses
+`/proc` on every layout, and the credential stores only where the data directory
+sits outside the project tree, which is the container deployment.
+
+Two things that leaves, stated because the shape is easy to overstate. The carve
+hazard is reduced rather than removed: on the container layout the data
+directory is carved regardless, so a server that creates a file directly there
+and reads it back still fails. And on a source checkout, which is the slim
+shape, this buys `/proc` alone, so the account vault, the service and bootstrap
+tokens, the per-user token directory and the stored environment of every other
+MCP server all remain readable to any MCP stdio server. Narrowing the roots for
+the servers Nymeria installs itself, whose working directory it sets, would
+close that and is filed rather than shipped.
 
 One residual inside that denial, measured rather than assumed: a denied FILE is
 unreadable, and so are files inside a denied DIRECTORY, but the denied directory
