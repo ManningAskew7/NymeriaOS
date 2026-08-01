@@ -150,6 +150,10 @@ class CodeValidator:
         test_code = "from nymeria.tools import SEED_TOOLS; print(f'Loaded {len(SEED_TOOLS)} tools')"
 
         try:
+            # sandbox-gate: unsandboxed - Nymeria importing itself to check a
+            # self-modification did not break the tree. Confining this would
+            # test the sandbox rather than the edit, and a policy failure would
+            # read as a broken modification. Deliberately out of scope.
             result = subprocess.run(
                 [sys.executable, "-c", test_code],
                 cwd=str(self.project_root),

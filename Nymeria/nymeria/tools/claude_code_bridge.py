@@ -478,6 +478,10 @@ def parse_cli_result(
 
 def _git(args: list[str], cwd: str) -> Optional[str]:
     try:
+        # sandbox-gate: unsandboxed - a read-only `git` summary in the
+        # caller's repo, and the whole point is to read that working tree, so
+        # it wants the working-directory-as-creation-root treatment the tool
+        # spawn below needs anyway. C1-02 follow-up, do both together.
         proc = subprocess.run(
             ["git", *args],
             cwd=cwd,
@@ -685,6 +689,10 @@ def run_local_blocking(
         popen_kwargs["start_new_session"] = True
 
     try:
+        # sandbox-gate: unsandboxed - Claude Code itself, which edits the repo
+        # it is pointed at and reads back what it wrote, so the sandbox's
+        # snapshot carve would break it outright unless its working directory
+        # is a creation root. C1-02 follow-up.
         proc = subprocess.Popen(args, **popen_kwargs)
     except FileNotFoundError:
         return ClaudeCodeResult(

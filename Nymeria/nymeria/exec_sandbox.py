@@ -16,8 +16,11 @@ ABI 4 enforces filesystem denial with no container or kernel-surface change.
 Dual purpose, one file:
 
 * **Library** (imported as ``nymeria.exec_sandbox``): ``sandbox_available()`` for
-  startup fail-closed detection, the ``SandboxPolicy`` dataclass, and
-  ``wrap_argv``/``sandbox_env_overlay`` for a parent to build a sandboxed launch.
+  startup fail-closed detection, the ``SandboxPolicy`` dataclass,
+  ``carved_policy`` for the allow-everything-except shape Landlock cannot
+  express directly, and ``wrap_argv``/``sandbox_env_overlay`` for a parent to
+  build a sandboxed launch. What each Nymeria exec surface actually passes is
+  ``core/exec_policy.py``'s business, not this module's.
 * **Shim** (launched by file path, ``python3 exec_sandbox.py -- <cmd> ...``):
   runs in a FRESH, single-threaded interpreter, reads the policy from the
   ``NYMERIA_SANDBOX_POLICY`` env var, applies Landlock, then ``execvp``s the real
@@ -58,6 +61,7 @@ import ctypes
 import errno
 import json
 import os
+import signal
 import stat
 import struct
 import sys
@@ -115,13 +119,50 @@ _ACCESS_RW = (
     | _FS_REFER
 )
 
-# The subset of _ACCESS_RW that is meaningful on a non-directory. Landlock
+# The subset of each mask that is meaningful on a non-directory. Landlock
 # rejects landlock_add_rule with EINVAL when a directory-only right (MAKE_*,
 # REMOVE_*, READ_DIR, REFER) is requested on a file, and the failure surfaces as
 # an opaque "errno 22" that fails the whole launch closed. So an allow root that
 # happens to be a file needs its own mask; see _add_rules. This is what makes it
-# possible to allow individual device nodes rather than all of /dev.
+# possible to allow individual device nodes rather than all of /dev, and single
+# ``/proc`` files while the rest of ``/proc`` stays denied.
 _ACCESS_RW_FILE = _FS_READ_FILE | _FS_WRITE_FILE | _FS_EXECUTE | _FS_TRUNCATE
+_ACCESS_RO_FILE = _FS_READ_FILE | _FS_EXECUTE
+
+# Access granted on a CONTAINER: a directory that exists only to hold allow
+# roots further down (see carved_policy). It gets every right except the two
+# that would read file CONTENT out of it, so listing it and creating, writing,
+# removing and renaming entries in it all keep working. Content reads come from
+# the per-entry rules instead, which is what lets a denied entry sit inside a
+# reachable directory.
+#
+# _FS_READ_FILE is the exclusion the control is made of: a container that
+# granted it would re-open every denied file beneath it, because Landlock
+# unions rights UP the tree (an ancestor's rule grants, and a deeper rule can
+# never take away; measured on ABI 4, not assumed). _FS_EXECUTE goes with it
+# because an executable that IS reachable has its own rule, so granting exec on
+# the whole container only ever covers the denied entries.
+#
+# Everything else stays, and each was measured rather than reasoned about:
+# without _FS_WRITE_FILE a shell cannot create a file at all (``echo x > new``
+# fails, and so does every temp-file-then-rename tool); without _FS_TRUNCATE it
+# cannot overwrite one it created during the same command; without _FS_REFER it
+# cannot move a file into or out of the directory. None of the three weakens the
+# denial. _FS_REFER in particular cannot be used to move a denied file
+# somewhere readable: the kernel additionally requires the destination's rights
+# to be a SUBSET of the source's, so a refer out of a container into a
+# fully-granted directory is EXDEV (verified with a direct rename(2), because
+# ``mv`` masks it by falling back to copy, which the read denial then stops).
+#
+# What that guard does NOT cover is a link or rename WITHIN one directory,
+# which Landlock governs with _FS_MAKE_REG rather than _FS_REFER. So a
+# sandboxed command can run ``ln <container>/secret <container>/alias``, and
+# withholding REFER would not stop it (measured: the link still succeeds) while
+# costing every ``mv`` into the data dir. The alias is unreadable in the
+# creating launch (it has no rule; the carve is a snapshot) and unreadable in
+# every later one because ``carved_policy`` skips an entry whose inode matches
+# a denied path. That inode check, not this mask, is what closes it.
+_ACCESS_CONTAINER = _ACCESS_RW & ~(_FS_READ_FILE | _FS_EXECUTE)
 
 _SANDBOX_POLICY_ENV = "NYMERIA_SANDBOX_POLICY"
 
@@ -232,13 +273,22 @@ class SandboxPolicy:
     A root may be a directory (the whole subtree is reachable) or a single
     file, which is how the device nodes are granted without opening all of
     ``/dev``.
+
+    ``containers`` is the third kind, and it exists because Landlock has no
+    deny-under-an-allow: see ``carved_policy``, which is the only thing that
+    should be populating it.
     """
 
     read_only: tuple[str, ...] = field(default=DEFAULT_SYSTEM_ROOTS)
     read_write: tuple[str, ...] = field(default=DEFAULT_DEVICE_NODES)
+    containers: tuple[str, ...] = field(default=())
 
     def to_env_value(self) -> str:
-        return json.dumps({"ro": list(self.read_only), "rw": list(self.read_write)})
+        return json.dumps({
+            "ro": list(self.read_only),
+            "rw": list(self.read_write),
+            "cont": list(self.containers),
+        })
 
     @classmethod
     def from_env_value(cls, raw: str) -> "SandboxPolicy":
@@ -248,6 +298,7 @@ class SandboxPolicy:
         return cls(
             read_only=tuple(data.get("ro") or ()),
             read_write=tuple(data.get("rw") or ()),
+            containers=tuple(data.get("cont") or ()),
         )
 
     def with_roots(
@@ -255,11 +306,129 @@ class SandboxPolicy:
         *,
         read_only: tuple[str, ...] = (),
         read_write: tuple[str, ...] = (),
+        containers: tuple[str, ...] = (),
     ) -> "SandboxPolicy":
         return SandboxPolicy(
             read_only=tuple(dict.fromkeys((*self.read_only, *read_only))),
             read_write=tuple(dict.fromkeys((*self.read_write, *read_write))),
+            containers=tuple(dict.fromkeys((*self.containers, *containers))),
         )
+
+
+# Ceiling on how many allow roots a carve may produce. Two reasons for a number
+# this low rather than an arbitrary large one: the policy travels to the shim as
+# a single environment string, and execve rejects one over MAX_ARG_STRLEN
+# (128 KiB), so a carve of a few thousand paths would fail the spawn with an
+# opaque E2BIG rather than with anything a reader could act on. Real policies
+# produce a few dozen. Hitting this raises rather than truncating, because a
+# truncated carve silently denies whatever fell off the end; callers that would
+# rather drop a costly denial than fail should not offer it in the first place
+# (``core/exec_policy._affordable_to_deny``).
+_MAX_CARVED_ROOTS = 1500
+
+
+def carved_policy(
+    *,
+    read_only: tuple[str, ...] = (),
+    read_write: tuple[str, ...] = (),
+    denied: tuple[str, ...] = (),
+) -> SandboxPolicy:
+    """Build a policy that reaches ``read_only``/``read_write`` EXCEPT ``denied``.
+
+    Landlock has no deny rule and no deny-under-an-allow: rights union UP the
+    tree, so a rule on an ancestor grants and no deeper rule can take away
+    (verified on ABI 4, not assumed). Excluding a path from inside an allowed
+    root is therefore done by NOT naming it: each ancestor of a denied path is
+    replaced by rules on its other entries, one per entry, and the ancestor
+    itself becomes a ``container`` (see ``_ACCESS_CONTAINER``) so that listing
+    it and creating/removing entries in it keep working.
+
+    Consequences worth knowing before choosing a ``denied`` set:
+
+    * The carve is a SNAPSHOT taken here, in the parent, at policy-build time.
+      An entry created in a container after this returns is unreachable to the
+      child. That is the fail-closed direction, and the window is one spawn
+      because the policy is rebuilt per launch.
+    * A directory that cannot be listed is dropped entirely rather than allowed
+      whole, so an unreadable ancestor denies its subtree.
+    * Symlinked entries are skipped, not resolved: Landlock matches the resolved
+      inode, so a symlink grants nothing its target is not already granted, and
+      resolving here would silently widen the carve to wherever it points.
+    * ``denied`` need not exist. A missing path still carves its ancestors, so a
+      store that has not been created yet cannot be reached by creating it.
+    * A denial is by INODE, not by name, and the carve enforces that: an entry
+      sharing ``(st_dev, st_ino)`` with a denied path is skipped even under a
+      different name. Landlock itself keys on the inode, so without this a
+      single ``ln secret alias`` inside a container would hand the next launch
+      a carve rule on the secret's own inode, re-opening it under BOTH names
+      permanently. (``_ACCESS_CONTAINER`` withholds ``REFER`` so the hardlink
+      cannot be made in the first place; this is the second half, and it also
+      covers a link that predates the sandbox.)
+    """
+    denied_real = {os.path.realpath(path) for path in denied}
+    denied_inodes = set()
+    for path in denied_real:
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except OSError:
+            continue  # missing or unreadable: the name carve above still holds
+        denied_inodes.add((info.st_dev, info.st_ino))
+    containers: list[str] = []
+    produced = 0
+
+    def _is_denied_inode(real: str) -> bool:
+        """True for another name for a denied file (a hardlink to it)."""
+        if not denied_inodes:
+            return False
+        try:
+            info = os.stat(real, follow_symlinks=False)
+        except OSError:
+            return False
+        return (info.st_dev, info.st_ino) in denied_inodes
+
+    def _expand(roots) -> tuple[str, ...]:
+        out: list[str] = []
+
+        def _visit(path: str) -> None:
+            nonlocal produced
+            produced += 1
+            if produced > _MAX_CARVED_ROOTS:
+                raise SandboxError(
+                    f"sandbox carve exceeded {_MAX_CARVED_ROOTS} roots; "
+                    "a denied path is too deep under a large directory"
+                )
+            real = os.path.realpath(path)
+            if real in denied_real or _is_denied_inode(real):
+                return
+            prefix = real if real.endswith(os.sep) else real + os.sep
+            if not any(d.startswith(prefix) for d in denied_real):
+                out.append(real)
+                return
+            try:
+                with os.scandir(real) as entries:
+                    children = sorted(
+                        entry.path for entry in entries if not entry.is_symlink()
+                    )
+            except OSError:
+                # Cannot enumerate, so cannot carve: deny the whole subtree.
+                return
+            containers.append(real)
+            for child in children:
+                _visit(child)
+
+        for root in roots:
+            _visit(root)
+        return tuple(dict.fromkeys(out))
+
+    # Order matters only for readability of the resulting policy: rights union,
+    # so a path reached from both lists ends up with both grants.
+    ro = _expand(read_only)
+    rw = _expand(read_write)
+    return SandboxPolicy(
+        read_only=ro,
+        read_write=rw,
+        containers=tuple(dict.fromkeys(containers)),
+    )
 
 
 def apply_landlock_policy(policy: SandboxPolicy) -> None:
@@ -303,10 +472,15 @@ def apply_landlock_policy(policy: SandboxPolicy) -> None:
         # silently expand the boundary to the symlink's target (see caller
         # contract).
         _add_rules(lib, ruleset_fd, policy.read_only, _ACCESS_RO & handled_fs,
-                   allow_symlink=True)
+                   allow_symlink=True,
+                   file_access=_ACCESS_RO_FILE & handled_fs)
         _add_rules(lib, ruleset_fd, policy.read_write, _ACCESS_RW & handled_fs,
                    allow_symlink=False,
                    file_access=_ACCESS_RW_FILE & handled_fs)
+        # Containers are directories by construction (carved_policy only names
+        # one it has successfully listed), so they need no file mask.
+        _add_rules(lib, ruleset_fd, policy.containers, _ACCESS_CONTAINER & handled_fs,
+                   allow_symlink=False)
         if lib.syscall(
             ctypes.c_long(_NR_landlock_restrict_self),
             ctypes.c_int(ruleset_fd),
@@ -382,14 +556,54 @@ def wrap_argv(argv, *, python_executable: str | None = None) -> list[str]:
 
     The returned argv runs the real command inside the Landlock sandbox. Pair
     with ``sandbox_env_overlay`` on the child env.
+
+    ``-I -S`` is LOAD-BEARING, not tidiness, and removing it is a complete
+    bypass of everything below. The shim is an interpreter, and an interpreter
+    executes a great deal of code before it reaches this module's ``main``:
+    ``site`` imports ``sitecustomize`` and ``usercustomize`` and runs every
+    ``.pth`` file it finds. Those live in directories the agent's own uid can
+    write (in the reference container, ``$HOME/.local/lib/python3.13/
+    site-packages`` is mode 700 and owned by the running user), so without the
+    flags a command could write ``usercustomize.py`` on one call and have it
+    execute UNSANDBOXED inside the shim on the next, before
+    ``apply_landlock_policy`` runs. That is the C1-01 finding restored in full,
+    two tool calls wide.
+
+    ``-S`` skips ``site`` entirely (no ``.pth``, no ``sitecustomize``,
+    no ``usercustomize``); ``-I`` additionally ignores ``PYTHON*`` environment
+    variables (``PYTHONSTARTUP`` is interactive-only, but ``PYTHONPATH`` is not)
+    and drops the user site directory. Nothing is lost: the shim imports only
+    stdlib, which ``-S`` leaves fully importable, and it ``execvp``s the real
+    command as a fresh image with its own flags.
     """
     python = python_executable or sys.executable
-    return [python, _shim_path(), "--", *argv]
+    return [python, "-I", "-S", _shim_path(), "--", *argv]
 
 
 def sandbox_env_overlay(policy: SandboxPolicy) -> dict[str, str]:
     """Env additions carrying the policy to the shim (merge into the child env)."""
     return {_SANDBOX_POLICY_ENV: policy.to_env_value()}
+
+
+def _restore_default_signals() -> None:
+    """Undo the interpreter's own signal dispositions before handing over.
+
+    ``subprocess`` resets SIGPIPE and SIGXFSZ to SIG_DFL in the forked child
+    (``restore_signals=True``), and then this shim starts a Python interpreter,
+    which sets SIGPIPE back to SIG_IGN so writes raise BrokenPipeError instead
+    of killing the process. SIG_IGN, unlike a handler, SURVIVES exec, so
+    without this the sandboxed command inherits an ignored SIGPIPE and every
+    ``producer | head`` prints "standard output: Broken pipe" instead of ending
+    quietly. Restoring the same signals ``subprocess`` does keeps the shim
+    invisible to the command it launches.
+    """
+    for name in ("SIGPIPE", "SIGXFSZ"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            try:
+                signal.signal(signum, signal.SIG_DFL)
+            except (OSError, ValueError):
+                pass  # not settable here; the command simply keeps what it got
 
 
 def _shim_main(raw_argv: list[str]) -> int:
@@ -427,6 +641,7 @@ def _shim_main(raw_argv: list[str]) -> int:
 
     # Do not leak the policy var into the sandboxed program's environment.
     os.environ.pop(_SANDBOX_POLICY_ENV, None)
+    _restore_default_signals()
     try:
         os.execvp(command[0], command)
     except OSError as exc:

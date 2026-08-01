@@ -376,6 +376,11 @@ class MCPServerManager:
         with_tool_oom_score(popen_kwargs)
 
         try:
+            # sandbox-gate: unsandboxed - a supervised long-lived server, not a
+            # one-shot command: its roots are whatever the server needs and are
+            # not knowable from here, and the policy is per launch so it could
+            # not be widened later. Confining it needs a per-server root
+            # declaration, which is its own design. C1-02 follow-up.
             process = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError as e:
             raise RuntimeError(

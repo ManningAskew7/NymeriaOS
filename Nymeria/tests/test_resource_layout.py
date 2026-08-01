@@ -14,7 +14,11 @@ import re
 import stat
 from pathlib import Path
 
-from nymeria.core.resource_map import render_resource_readme, write_resource_map
+from nymeria.core.resource_map import (
+    _NON_STORE_DATA_DIR_CHILDREN,
+    render_resource_readme,
+    write_resource_map,
+)
 from nymeria.tools.bash import bash_execute
 from nymeria.tools.execution_environment import (
     ExecutionEnvironment,
@@ -472,6 +476,51 @@ def test_secrets_denylist_blocks_read_write_edit(tmp_path, monkeypatch):
     assert (data_dir / "auth_tokens" / "u1" / "google.json").read_text(
         encoding="utf-8"
     ) == "{}"
+
+
+def test_file_tools_refuse_process_state(tmp_path, monkeypatch):
+    """/proc is the environment, and a file tool runs where Landlock cannot.
+
+    The exec sandbox denies /proc to any command the agent spawns, but the file
+    tools run IN the API process, so without the same refusal the sandbox would
+    be one tool call wide: /proc/1/environ is the vault master key, every
+    provider key and the service token in the clear.
+    """
+    _patch_data_dir(monkeypatch, tmp_path / "data")
+
+    for target in ("/proc/1/environ", "/proc/self/environ", "/proc/self/fd"):
+        content, _ = file_read.func(target)
+        assert content.startswith("[Error]"), target
+        assert "/proc" in content, target
+
+        write_result = file_write.func(target, "x")
+        assert write_result.startswith("[Error]"), target
+
+        edit_result = file_edit.func(
+            target, [{"operation": "replace", "old_text": "a", "new_text": "b"}]
+        )
+        assert '"type": "secrets_path"' in edit_result, target
+
+
+def test_file_tools_still_read_the_machine_wide_proc_files(tmp_path, monkeypatch):
+    """The allowlist is shared with the sandbox, so both channels agree."""
+    from nymeria.core.exec_policy import PROC_READABLE_FILES
+
+    _patch_data_dir(monkeypatch, tmp_path / "data")
+    content, _ = file_read.func("/proc/meminfo")
+    assert "MemTotal" in content
+    assert "/proc/meminfo" in PROC_READABLE_FILES
+
+
+def test_a_symlink_does_not_launder_a_process_path(tmp_path, monkeypatch):
+    """The refusal is on the resolved path, not the spelling."""
+    _patch_data_dir(monkeypatch, tmp_path / "data")
+    link = tmp_path / "innocent.txt"
+    link.symlink_to("/proc/self/environ")
+
+    content, _ = file_read.func(str(link))
+    assert content.startswith("[Error]"), content
+    assert "/proc" in content
 
 
 def test_secrets_denylist_leaves_ordinary_data_files_alone(tmp_path, monkeypatch):
@@ -952,45 +1001,15 @@ def test_workflow_gate_refusal_explains_raw_edits_and_next_step():
 
 # Data-dir children that exist but are not resource stores, each with the
 # reason. The discovery gate below refuses any child that is in neither
-# `_STORE_ROWS`, `_OPERATIONAL_DIRS`, nor here, which is what makes "a new
+# `_STORE_ROWS`, `_OPERATIONAL_DIRS`, nor this set, which is what makes "a new
 # store cannot ship unclassified" a property of the tree rather than of
 # `_STORE_ROWS` (a list you only edit if you already remembered to).
 #
-# Entries reading "not yet classified" are debt, not a verdict: they are
-# children the audit's sweep never covered, recorded so they are visible and
-# so a NEW one still fails the build.
-_NON_STORE_DATA_DIR_CHILDREN = {
-    ".doctor-write-test": "transient probe file nymeria doctor writes and removes",
-    "accounts.db": "credential store, denylisted; read-side, drives nothing",
-    # The token files. All read-side: possessing one is authority, but writing
-    # one grants nothing (the server compares against its own record), so they
-    # want denylist coverage rather than a control. Surfaced only once the gate
-    # followed a module constant, which is why that hop was worth adding.
-    "fcm_tokens.json": "push token to user mapping, read-side (E8-02)",
-    "SLIM_SERVICE_TOKEN.txt": "live admin service token, read-side (A1-01)",
-    "BOOTSTRAP_TOKEN.txt": "first-run bootstrap token, read-side (A1-04)",
-    # Data stores, not config. A write to either DOES reach a rule 1 surface
-    # (checkpoints are the prompt; a schedule row picks the thread an
-    # autonomous turn runs in), so these are out of the register's scope as
-    # management stores, NOT because writing them is inert.
-    "nymeria.db": "every user's checkpoints: transcript data, not config (D10-01)",
-    "todo_schedule.db": "ticker schedule rows, polled not hand-authored (D10-01)",
-    "snapshots": "encrypted backup archives; restore is its own trust path (F3)",
-    "capability_usage.json": (
-        "ranks capabilities that already exist and are separately gated; it "
-        "cannot introduce one, so a planted record changes ordering only"
-    ),
-    "tool_search_embeddings.db": (
-        "same as capability_usage.json: influences which existing tool is "
-        "surfaced, never which one may run (that is the role gate's job)"
-    ),
-    "scheduler_state.json": "not yet classified: scheduler lifecycle state",
-    "claude_code_sessions.json": (
-        "not yet classified: maps (thread, cwd) to a host Claude Code session "
-        "id and is read automatically on resume, so it resolves a destination "
-        "under rule 1 and likely wants a row"
-    ),
-}
+# The set itself lives in `resource_map.py` beside the other two (imported at
+# the top of this file), not here. It moved there when the register grew the
+# read-side `secret_at_rest` column (C1-02): six of the seven credential stores
+# are children of this kind, and `exec_policy.py` has to derive its deny set
+# from them, which it cannot do from a test module.
 
 # Non-literal children, pinned by expression text rather than path:line (which
 # rots on any edit above the site). The gate does not resolve these; it refuses
@@ -1000,6 +1019,11 @@ _INDIRECT_DATA_DIR_CHILDREN = {
     "safe_user_id(user_id)": "per-user auth cache dir, sanitized user id",
     "auth_utils.safe_user_id(user_id)": "per-user MCP auth bridge dir",
     "trace.workflow_id": "per-workflow trace dir",
+    "name": (
+        "resource_map.secret_at_rest_paths, iterating SECRET_AT_REST_CHILDREN, "
+        "which is derived from this gate's own three sources and pinned by "
+        "test_the_exec_deny_set_is_exactly_the_credential_stores"
+    ),
     "workflow_id": "per-workflow trace dir",
     "SLIM_SERVICE_TOKEN_FILENAME": "imported constant, resolved at its own site",
     "BOOTSTRAP_TOKEN_FILENAME": "imported constant, resolved at its own site",
@@ -1159,6 +1183,111 @@ def test_every_declared_gate_resolves_to_a_callable():
         assert callable(gate), f"{name} does not resolve to a callable"
 
 
+
+def _known_data_dir_children() -> set[str]:
+    """Every data-dir path the register accounts for, as slash-joined literals.
+
+    Shared by the discovery gate and by the secret-store reconcile below, so a
+    store that gets renamed cannot stay "known" to one and unknown to the other.
+    """
+    from nymeria.core.resource_map import _OPERATIONAL_DIRS, _STORE_ROWS
+
+    known = {d.strip("/") for d in _OPERATIONAL_DIRS}
+    known |= {d.strip("/").split("/")[0] for d in _OPERATIONAL_DIRS}
+    known |= set(_NON_STORE_DATA_DIR_CHILDREN)
+    for row in _STORE_ROWS:
+        for alternative in re.split(r"[;,]", row.path):
+            alternative = alternative.strip()
+            if not alternative:
+                continue
+            # Both the head and every literal prefix, so "workflows/state/"
+            # admits `data_dir / "workflows" / "state"` without admitting a
+            # sibling `data_dir / "workflows" / "anything_new"`.
+            segments = [s for s in alternative.split("/") if "<" not in s]
+            for depth in range(1, len(segments) + 1):
+                known.add("/".join(segments[:depth]))
+    return known
+
+
+def test_the_exec_deny_set_is_exactly_the_credential_stores():
+    """SECRET_AT_REST_CHILDREN is the exec-sandbox deny set (C1-01/C1-02).
+
+    It is DERIVED from the register's ``secret_at_rest`` column, so the failure
+    this guards is not an unknown name (a derived name is known by
+    construction) but a flipped answer: setting ``secret_at_rest=False`` on
+    ``accounts.db`` is a one-word edit that silently hands the credential vault
+    back to every spawned command. Pinning the whole set makes both directions
+    of that edit conspicuous, and the pin is cheap to update deliberately.
+
+    Also asserts each name is a real data-dir child, which is what catches a
+    store that gets renamed out from under the column.
+    """
+    from nymeria.core.resource_map import SECRET_AT_REST_CHILDREN
+
+    assert set(SECRET_AT_REST_CHILDREN) == {
+        "accounts.db",             # accounts repo AND the credential vault
+        "auth_tokens",             # per-user OAuth and service tokens
+        "SLIM_SERVICE_TOKEN.txt",  # live admin service token
+        "BOOTSTRAP_TOKEN.txt",     # first-run bootstrap token
+        "fcm_tokens.json",         # push tokens, per user
+        "mcp_servers",             # env_vars/headers carry inline secrets (C7-02)
+        "snapshots",               # encrypted archives of all of the above
+    }, (
+        "The exec sandbox deny set changed. If a credential store was added or "
+        "renamed, update this pin; if a secret_at_rest answer was flipped, "
+        "check that the store really stopped holding credentials."
+    )
+
+    known = _known_data_dir_children()
+    unknown = [name for name in SECRET_AT_REST_CHILDREN if name not in known]
+    assert not unknown, (
+        f"SECRET_AT_REST_CHILDREN names data-dir children the register does not "
+        f"know: {unknown}. Either the store was renamed or the name is a typo; "
+        "in both cases the sandbox is denying a path that no longer exists."
+    )
+
+
+def test_a_new_credential_store_cannot_ship_without_answering():
+    """The required column, which is the whole point of deriving the set.
+
+    Reverting ``secret_at_rest`` to a defaulted field would make this pass, so
+    it fails on the construction rather than on the value.
+    """
+    import dataclasses
+
+    from nymeria.core.resource_map import _NonStoreChild, _StoreRow
+
+    for cls in (_StoreRow, _NonStoreChild):
+        field = {f.name: f for f in dataclasses.fields(cls)}["secret_at_rest"]
+        assert field.default is dataclasses.MISSING, (
+            f"{cls.__name__}.secret_at_rest has a default, so a new store can "
+            "be added without answering whether it holds credentials."
+        )
+        assert field.default_factory is dataclasses.MISSING
+
+
+def test_secret_store_paths_cover_the_sqlite_sidecars(tmp_path):
+    """Prefix matching, which is what picks up ``accounts.db-wal``.
+
+    A WAL holds recently written rows relative to the DB file, so denying the
+    database and not its sidecars would be a control with a hole in it.
+    """
+    from nymeria.core.resource_map import secret_at_rest_paths
+
+    (tmp_path / "accounts.db").write_text("db", encoding="utf-8")
+    (tmp_path / "accounts.db-wal").write_text("wal", encoding="utf-8")
+    (tmp_path / "accounts.db-shm").write_text("shm", encoding="utf-8")
+    (tmp_path / "nymeria.db").write_text("other", encoding="utf-8")
+
+    paths = set(secret_at_rest_paths(tmp_path))
+    assert tmp_path / "accounts.db-wal" in paths
+    assert tmp_path / "accounts.db-shm" in paths
+    assert tmp_path / "nymeria.db" not in paths
+    # Declared names are returned whether or not they exist, so a store that
+    # has not been created yet cannot be reached by creating it.
+    assert tmp_path / "SLIM_SERVICE_TOKEN.txt" in paths
+
+
 def test_no_data_dir_child_escapes_classification():
     """Every ``data_dir / "<name>"`` in the package is accounted for somewhere.
 
@@ -1184,10 +1313,6 @@ def test_no_data_dir_child_escapes_classification():
     """
     import ast
 
-    from nymeria.core.resource_map import (
-        _OPERATIONAL_DIRS,
-        _STORE_ROWS,
-    )
 
     def _is_data_dir(node) -> bool:
         if isinstance(node, ast.Attribute) and node.attr == "data_dir":
@@ -1230,20 +1355,7 @@ def test_no_data_dir_child_escapes_classification():
                 continue
             return _is_data_dir(current), parts
 
-    known = {d.strip("/") for d in _OPERATIONAL_DIRS}
-    known |= {d.strip("/").split("/")[0] for d in _OPERATIONAL_DIRS}
-    known |= set(_NON_STORE_DATA_DIR_CHILDREN)
-    for row in _STORE_ROWS:
-        for alternative in re.split(r"[;,]", row.path):
-            alternative = alternative.strip()
-            if not alternative:
-                continue
-            # Both the head and every literal prefix, so "workflows/state/"
-            # admits `data_dir / "workflows" / "state"` without admitting a
-            # sibling `data_dir / "workflows" / "anything_new"`.
-            segments = [s for s in alternative.split("/") if "<" not in s]
-            for depth in range(1, len(segments) + 1):
-                known.add("/".join(segments[:depth]))
+    known = _known_data_dir_children()
 
     package = Path(__file__).resolve().parents[1] / "nymeria"
     literals: dict[str, str] = {}
@@ -1301,10 +1413,12 @@ def test_no_data_dir_child_escapes_classification():
 
     unclassified = {name: at for name, at in literals.items() if name not in known}
     assert not unclassified, (
-        f"Unclassified data-dir children: {unclassified}. Add a row to "
-        "_STORE_ROWS (with its control), an entry to _OPERATIONAL_DIRS, or an "
-        "entry to _NON_STORE_DATA_DIR_CHILDREN in this file saying why it is "
-        "neither."
+        f"Unclassified data-dir children: {unclassified}. In "
+        "nymeria/core/resource_map.py, add a row to _STORE_ROWS (with its "
+        "control), an entry to _OPERATIONAL_DIRS, or an entry to "
+        "_NON_STORE_DATA_DIR_CHILDREN saying why it is neither. All three ask "
+        "whether the content is a credential (secret_at_rest), which is what "
+        "the exec sandbox denies to spawned commands."
     )
     new_indirection = {
         expr: at for expr, at in indirect.items() if expr not in _INDIRECT_DATA_DIR_CHILDREN

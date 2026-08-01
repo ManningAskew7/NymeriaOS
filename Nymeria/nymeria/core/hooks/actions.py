@@ -568,6 +568,11 @@ def _execute_command(ctx: HookContext, command: str, timeout: float) -> _Command
         cwd = None
     proc = None
     try:
+        # sandbox-gate: unsandboxed - blocked on the cwd above. It is the data
+        # dir, which on a deployment where the data dir sits outside the
+        # project root (Docker) is exactly the directory the sandbox carves, so
+        # confining this without first moving the cwd would break hook scripts
+        # that read their own output. C1-02 follow-up.
         proc = subprocess.Popen(  # noqa: S602 - shell command is the feature; admin+flag gated
             command,
             shell=True,

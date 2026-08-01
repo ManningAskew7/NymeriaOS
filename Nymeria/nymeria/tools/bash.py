@@ -27,6 +27,7 @@ from .command_guard import check_command_guard
 from .execution_environment import resolve_tool_working_directory
 from .utils import get_thread_id_or_none
 from ..config import get_settings
+from ..core.exec_policy import sandbox_shell_launch
 from ..oom import with_tool_oom_score
 from ..subprocess_env import scrubbed_subprocess_env
 
@@ -88,10 +89,34 @@ def bash_execute(
     """
     Execute a shell command and return the output.
 
-    Use this tool to run bash/shell commands on the local system. The command
-    runs directly without sandboxing (trusted execution). stdout and stderr are
-    returned interleaved, in the order the command emitted them, followed by a
-    non-zero exit-code line when the command fails.
+    Use this tool to run bash/shell commands on the local system. stdout and
+    stderr are returned interleaved, in the order the command emitted them,
+    followed by a non-zero exit-code line when the command fails.
+
+    On Linux the command runs inside a filesystem sandbox that subtracts
+    rather than allowlists: everything stays reachable except /proc and, where
+    they sit outside the working tree, Nymeria's credential stores. What that
+    costs, so you do not retry a command that cannot work or trust one that
+    quietly cannot:
+
+    - Anything reading /proc per process fails. ps and top print "Error, do
+      this: mount -t proc proc /proc" (do NOT try that, it is not the
+      problem), lsof and mount fail outright, df prints a warning and a
+      partial table.
+    - pgrep and pkill are the dangerous case: they do not error, they return
+      an empty result, so "is X running" answers no and pkill kills nothing.
+      Use `ps` alternatives that do not need /proc, or check for a pidfile,
+      socket or log line instead.
+    - Anything needing extra privilege is blocked, because the sandbox sets
+      the kernel's no_new_privs flag (Landlock requires it): sudo, su, mount,
+      ping and pkexec all refuse, sudo saying so explicitly.
+    - A file created DIRECTLY inside Nymeria's data dir during the command
+      cannot be read back until a later call (write it to a subdirectory or
+      /tmp instead).
+
+    The sandbox costs roughly 0.1s per call. If a command genuinely needs one
+    of the above, say so rather than working around it: an operator can set
+    EXEC_SANDBOX_ENABLED=false, which is a deliberate security decision.
 
     Output over ~50k characters is truncated to its tail (the end, where errors
     and summaries live); the complete output is saved to a file whose path is
@@ -222,9 +247,10 @@ def _run_foreground(
     if sys.platform != "win32":
         kwargs["start_new_session"] = True  # own process group for group-kill
     with_tool_oom_score(kwargs)
+    launch = sandbox_shell_launch(command, kwargs)
 
     try:
-        proc = subprocess.Popen(command, **kwargs)
+        proc = subprocess.Popen(launch, **kwargs)
     except Exception as e:  # noqa: BLE001
         return f"[Error]: Failed to launch command: {e}"
 
@@ -623,8 +649,9 @@ def _launch_tracked_background(
     try:
         stdout_path, stderr_path, stdout_file, stderr_file = open_output_files(job_id)
         kwargs = _background_popen_kwargs(cwd_str, stdout=stdout_file, stderr=stderr_file)
+        launch = sandbox_shell_launch(command, kwargs)
         started_at = time.time()
-        proc = subprocess.Popen(command, **kwargs)
+        proc = subprocess.Popen(launch, **kwargs)
     except Exception:
         if stdout_file is not None:
             stdout_file.close()
@@ -710,7 +737,8 @@ def _launch_legacy_background(command: str, cwd_str: str) -> str:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    proc = subprocess.Popen(command, **kwargs)
+    launch = sandbox_shell_launch(command, kwargs)
+    proc = subprocess.Popen(launch, **kwargs)
     logger.info(
         f"Background process started without thread context: PID={proc.pid}, "
         f"command={command[:80]}"

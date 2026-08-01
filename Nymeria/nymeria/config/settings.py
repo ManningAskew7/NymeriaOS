@@ -1575,6 +1575,32 @@ class Settings(BaseSettings):
         ),
     )
 
+    exec_sandbox_enabled: bool = Field(
+        default=True,
+        description=(
+            "Confine commands the agent runs to a Landlock filesystem sandbox "
+            "(Linux only). The sandbox subtracts rather than allowlists: a "
+            "command reaches everything it did before except /proc, which is "
+            "what stops a shell reading the deployment's secrets out of the "
+            "process environment. The credential stores under the data dir are "
+            "denied too WHERE THEY SIT OUTSIDE the working tree, as they do on "
+            "the Docker deployment; where they sit inside it (a source "
+            "checkout, whose data dir is under the project root) they stay "
+            "readable, because denying a path there would stop commands "
+            "reading files they had just written. Move the data dir outside "
+            "the working tree to have them denied, and see the startup log "
+            "line naming what was left reachable. The dotenv files are never "
+            "denied: they live in the project root by construction, so they "
+            "fall under the same rule. Costs about 0.1s per call, the "
+            "process-table tools (ps, top, and pgrep/pkill, which return empty "
+            "rather than erroring), and anything needing privilege (sudo, "
+            "ping, mount), because Landlock requires the kernel's no_new_privs "
+            "flag. Ignored where the kernel cannot enforce it (non-Linux, or "
+            "Landlock absent): commands run unsandboxed with one warning at "
+            "startup."
+        ),
+    )
+
     # Claude Code bridge (the claude_code tool). When NYMERIA_CLAUDE_CODE_URL is
     # set the tool relays runs to a host-side runner service (where the repo and
     # real Claude Code auth live); unset, it runs Claude Code locally in-process
