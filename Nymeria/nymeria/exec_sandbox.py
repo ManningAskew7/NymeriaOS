@@ -411,9 +411,10 @@ def carved_policy(
       different name. Landlock itself keys on the inode, so without this a
       single ``ln secret alias`` inside a container would hand the next launch
       a carve rule on the secret's own inode, re-opening it under BOTH names
-      permanently. (``_ACCESS_CONTAINER`` withholds ``REFER`` so the hardlink
-      cannot be made in the first place; this is the second half, and it also
-      covers a link that predates the sandbox.)
+      permanently. (``_ACCESS_CONTAINER`` retains ``REFER``, and withholding
+      it would not stop a same-directory link anyway, which needs only
+      ``MAKE_REG``: see the mask comment above. This inode skip is the actual
+      control, and it also covers a link that predates the sandbox.)
     """
     denied_real = {os.path.realpath(path) for path in denied}
     denied_inodes = set()
