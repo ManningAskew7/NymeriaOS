@@ -27,6 +27,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ..cliproxy.catalog import CLIProxyProviderSpec
     from ..config.llm_providers import LLMProviderSpec
 
 from .command_forms import (
@@ -129,10 +130,13 @@ class LLMCommandsMixin:
     user_id: str
     actor: str
     is_admin: bool | None
+    surface: str | None
+    _service: Any
 
     if TYPE_CHECKING:
         def _require_thread(self) -> str | None: ...
         def _usage_error(self, name: str, *, hint: str | None = None) -> str: ...
+        def _command_offerable(self, name: str) -> bool: ...
         def _agent(self) -> Any: ...
         async def _list_threads(self) -> list[Any]: ...
 
@@ -887,13 +891,21 @@ class LLMCommandsMixin:
     # ── Provider ──────────────────────────────────────────────────────────
 
     async def _cmd_provider(self, args: list[str], rest: str) -> str | CommandOutput:
+        if len(args) == 1:
+            # /provider <name>: the per-provider action step (the picker's
+            # Providers tab submits exactly this). Registered subcommands
+            # never reach here: longest-prefix dispatch routes them first.
+            return await self._provider_action(args[0])
         if args:
             return self._usage_error("provider")
         from ..config.llm_providers import get_llm_provider_spec
 
         settings = await self.api.get_settings()
         status = await self._provider_status_map()
-        active_provider = self._normalize_provider(settings.get("llm_provider", ""))
+        # Canonical id, not the raw token: llm_provider may hold an alias
+        # (claude, qwen, aws, ...) and an alias-keyed lookup read a fully
+        # authenticated provider as "not managed by /provider".
+        active_provider = self._canonical_provider(settings.get("llm_provider", ""))
         active = status.get(active_provider)
         active_spec = get_llm_provider_spec(active_provider) if active_provider else None
 
@@ -921,19 +933,16 @@ class LLMCommandsMixin:
         ]
         if active_spec is not None and active_spec.notes_for_user:
             rows.append(("Note", active_spec.notes_for_user))
-        width = max(len(label) for label, _value in rows)
         lines = ["Provider"]
-        for label, value in rows:
-            lines.append(f"  {label:<{width}}  {value}")
+        lines.extend(self._kv_lines(rows))
         lines.append(
             "Manage with: /provider [setup|list|set|switch|test|reasoning-passback]"
         )
         text = "[Info]: " + "\n".join(lines)
-        # The picker's submit targets (switch/test) are admin-registered, so
-        # mirror the dispatch gate (which blocks only on a definite False)
-        # and skip the form for callers who could never submit it.
-        if self.is_admin is False:
-            return text
+        # The picker submits into the ungated per-provider action step
+        # (/provider <name>), which itself scopes its tabs to the caller,
+        # so every caller gets the browse form; only the CLIProxy tab is
+        # cosmetically dropped for callers its submit target refuses.
         form = self._provider_picker_form(settings, status)
         if form is None:
             return text
@@ -944,15 +953,18 @@ class LLMCommandsMixin:
         settings: Mapping[str, Any],
         status: Mapping[str, Mapping[str, str]],
     ) -> dict[str, Any] | None:
-        """The two-tab entry point attached to bare ``/provider``.
+        """The browse entry point attached to bare ``/provider``.
 
         Tab "Providers" lists every registered API-key provider spec grouped
         by tier (native, gateway, unverified; registration order within a
-        tier) and submits into the chained ``/provider setup`` configure
-        flow. Tab "CLIProxy" lists the subscription-OAuth catalog and
-        submits the ``/provider cliproxy`` guidance command. The markdown
+        tier) and submits into the per-provider ACTION step (``/provider
+        <name>``: use globally / use for this thread / set up / test), so
+        browsing serves switching and authenticating alike. Tab "CLIProxy"
+        lists the subscription-OAuth catalog and submits the ``/provider
+        cliproxy`` guidance command; it is dropped cosmetically for callers
+        its submit target refuses (non-admins, the agent). The markdown
         fallback always rides alongside, so form-less frontends lose
-        nothing; ``/provider switch``/``test`` stay as typed subcommands.
+        nothing.
         """
         from ..cliproxy.catalog import list_cliproxy_providers
         from ..config.llm_providers import get_llm_provider_spec
@@ -995,38 +1007,305 @@ class LLMCommandsMixin:
         if not provider_options:
             return None
 
-        cliproxy_options = [
-            form_option(
-                proxy_spec.id,
-                label=proxy_spec.label,
-                meta=(
-                    f"routes as {proxy_spec.nymeria_provider}"
-                    + (f" ({proxy_spec.api_mode})" if proxy_spec.api_mode else "")
-                ),
+        tabs = [
+            form_tab(
+                "Providers",
+                [
+                    search_field("filter", placeholder="Filter providers…"),
+                    radio_field("provider", provider_options),
+                ],
+                submit_command="provider {provider}",
             )
-            for proxy_spec in list_cliproxy_providers()
         ]
+        if self._command_offerable("provider cliproxy"):
+            tabs.append(
+                form_tab(
+                    "CLIProxy",
+                    [
+                        radio_field(
+                            "target",
+                            self._cliproxy_options(list(list_cliproxy_providers())),
+                        )
+                    ],
+                    submit_command="provider cliproxy {target}",
+                )
+            )
 
         return form_payload(
             "Provider",
-            [
-                form_tab(
-                    "Providers",
-                    [
-                        search_field("filter", placeholder="Filter providers…"),
-                        radio_field("provider", provider_options),
-                    ],
-                    submit_command="provider setup {provider}",
-                ),
-                form_tab(
-                    "CLIProxy",
-                    [radio_field("target", cliproxy_options)],
-                    submit_command="provider cliproxy {target}",
-                ),
-            ],
-            submit_command="provider setup {provider}",
+            tabs,
+            submit_command="provider {provider}",
             footer_hint="←→ tab · Enter select · Esc cancel",
         )
+
+    async def _provider_action(self, raw: str) -> str | CommandOutput:
+        """The per-provider action step: one provider's status plus a form
+        of next moves (use for this thread, make it the global default,
+        set up credentials, CLIProxy login, test).
+
+        Every tab submits a REAL registered command, so authorization
+        stays entirely at the dispatch gate (admin, agent_allowed,
+        blocked_surfaces); tab and option visibility here is cosmetic,
+        the executor's established is_admin stance. Each tab's radio
+        carries a live token of its command (scope, provider id, target
+        id): the client's confirm treats a template with no substituted
+        value as an empty selection and dismisses quietly, so a
+        placeholder-free "button" tab would never submit.
+        """
+        from ..cliproxy.catalog import list_cliproxy_providers
+        from ..config.llm_providers import get_llm_provider_spec
+
+        spec = get_llm_provider_spec(raw)
+        if spec is None:
+            # A mistyped SUBCOMMAND lands here too now that one token is
+            # valid grammar; keep the guidance layer's suggestion instead
+            # of misdiagnosing "lst" as an unknown provider.
+            import difflib
+
+            service = self._service
+            info = service.find_command("provider") if service else None
+            close = difflib.get_close_matches(
+                self._normalize_provider(raw),
+                list(info.subcommands) if info else [],
+                n=1,
+                cutoff=0.6,
+            )
+            if close:
+                return self._usage_error(
+                    "provider", hint=f"Did you mean `/provider {close[0]}`?"
+                )
+            return self._unknown_provider_error(raw)
+        provider = spec.id
+
+        settings = await self.api.get_settings()
+        # Alias-safe comparisons: llm_provider and the thread override may
+        # hold a registry ALIAS (claude, qwen, aws, ...) while `provider`
+        # is the canonical spec id; a casefold-only compare read an
+        # in-use provider as idle and parked the scope radio on the wrong
+        # option.
+        active_provider = self._canonical_provider(settings.get("llm_provider", ""))
+        thread_provider = ""
+        if self.thread_id:
+            tc = await self.api.get_thread_config(self.thread_id)
+            llm_cfg = (tc or {}).get("llm_config") or {}
+            thread_provider = self._canonical_provider(llm_cfg.get("provider", ""))
+        targets = [
+            proxy
+            for proxy in list_cliproxy_providers()
+            if proxy.nymeria_provider == provider
+        ]
+
+        if provider in PROVIDER_SECRET_SETTINGS:
+            status = await self._provider_status_map()
+            credential = self._status_text(status.get(provider))
+        else:
+            # The status map is an admin-gated env listing that only knows
+            # the managed trio; skip the fetch when its answer is unused.
+            credential = "not managed by /provider"
+        rows = [
+            ("Id", provider),
+            ("Tier", f"{spec.tier} {_TIER_BADGES[spec.tier]}"),
+            ("Credential", credential),
+        ]
+        if provider not in PROVIDER_SECRET_SETTINGS and spec.requires_api_key:
+            env_name = spec.api_key_env_vars[0] if spec.api_key_env_vars else ""
+            if env_name:
+                rows.append(("Key env var", env_name))
+        if spec.notes_for_user:
+            rows.append(("Note", spec.notes_for_user))
+        scope_note = []
+        if provider == active_provider:
+            scope_note.append("the global default")
+        if provider == thread_provider:
+            scope_note.append("this thread's override")
+        if scope_note:
+            rows.append(("In use as", " and ".join(scope_note)))
+        offer_setup = self._command_offerable("provider setup")
+        offer_cliproxy = self._command_offerable("provider cliproxy")
+        offer_test = self._command_offerable("provider test")
+        base_url = str(settings.get("llm_base_url", "") or "").strip()
+        if base_url:
+            # Scope-honest: only the GLOBAL switch keeps this URL as-is; a
+            # thread override resolves an appropriate URL per provider
+            # (agent_llm_config derives the CLIProxy sibling or falls back
+            # to the provider default).
+            caveat = " (global; kept by a global switch"
+            if offer_setup:
+                caveat += ", revisit via /provider setup if it belongs to another provider"
+            caveat += "; a thread override resolves its own)"
+            rows.append(("Base URL", base_url + caveat))
+        lines = [f"Provider: {self._provider_label(provider)}"]
+        lines.extend(self._kv_lines(rows))
+        scopes = []
+        if self.thread_id:
+            scopes.append("thread")
+        if self.is_admin is not False:
+            scopes.append("global")
+        acts = []
+        if scopes:
+            token = "[global|thread]" if len(scopes) == 2 else scopes[0]
+            acts.append(f"/provider switch {provider} {token}")
+        if offer_setup:
+            acts.append(f"/provider setup {provider}")
+        if offer_cliproxy:
+            acts.extend(f"/provider cliproxy {proxy.id}" for proxy in targets)
+        if offer_test:
+            acts.append(f"/provider test {provider}")
+        if acts:
+            lines.append("Act: " + " · ".join(acts))
+        text = "[Info]: " + "\n".join(lines)
+
+        form = self._provider_action_form(
+            spec,
+            targets,
+            active_provider=active_provider,
+            thread_provider=thread_provider,
+        )
+        if form is None:
+            return text
+        return CommandOutput(text, data=command_data(form=form))
+
+    def _provider_action_form(
+        self,
+        spec: "LLMProviderSpec",
+        targets: list["CLIProxyProviderSpec"],
+        *,
+        active_provider: str,
+        thread_provider: str,
+    ) -> dict[str, Any] | None:
+        """Tabs of next moves for one provider; None when nothing applies.
+
+        Tab visibility derives from ``_command_offerable`` (the registry
+        flags), never from hand-copied conditions. Field keys are distinct
+        per tab (scope/method/target/probe): the CLI form state keys its
+        cursor by field key alone, so a shared key would park every tab's
+        cursor on the last tab's current value.
+        """
+        provider = spec.id
+        tabs: list[dict[str, Any]] = []
+
+        scope_options: list[dict[str, Any]] = []
+        if self.thread_id:
+            scope_options.append(
+                form_option(
+                    "thread",
+                    label="Use for this thread",
+                    meta="per-thread override",
+                    current=provider == thread_provider,
+                )
+            )
+        if self.is_admin is not False:
+            # The one non-registry condition: the global scope's admin
+            # gate is per-scope inside _cmd_provider_switch, not a
+            # registry flag.
+            scope_options.append(
+                form_option(
+                    "global",
+                    label="Make the global default",
+                    meta="admin · writes llm_provider only",
+                    current=provider == active_provider,
+                )
+            )
+        if scope_options:
+            tabs.append(
+                form_tab(
+                    "Use",
+                    [radio_field("scope", scope_options)],
+                    submit_command=f"provider switch {provider} {{scope}}",
+                )
+            )
+
+        if self._command_offerable("provider setup"):
+            tabs.append(
+                form_tab(
+                    "Set up",
+                    [
+                        radio_field(
+                            "method",
+                            [
+                                form_option(
+                                    provider,
+                                    label="API key (chained setup)",
+                                    meta="key · mode · base URL · model · test",
+                                )
+                            ],
+                        )
+                    ],
+                    submit_command="provider setup {method}",
+                )
+            )
+        if targets and self._command_offerable("provider cliproxy"):
+            tabs.append(
+                form_tab(
+                    "CLIProxy",
+                    [radio_field("target", self._cliproxy_options(targets))],
+                    submit_command="provider cliproxy {target}",
+                )
+            )
+        if self._command_offerable("provider test"):
+            tabs.append(
+                form_tab(
+                    "Test",
+                    [
+                        radio_field(
+                            "probe",
+                            [
+                                form_option(
+                                    provider,
+                                    label="Run a connectivity test",
+                                    meta="writes nothing",
+                                )
+                            ],
+                        )
+                    ],
+                    submit_command="provider test {probe}",
+                )
+            )
+
+        if not tabs:
+            return None
+        return form_payload(
+            f"Provider: {self._provider_label(provider)}",
+            tabs,
+            submit_command=f"provider switch {provider} {{scope}}",
+            footer_hint="←→ tab · Enter apply · Esc cancel",
+        )
+
+    @staticmethod
+    def _cliproxy_options(
+        specs: list["CLIProxyProviderSpec"],
+    ) -> list[dict[str, Any]]:
+        """CLIProxy target radio options, shared by the picker and the
+        per-provider action step."""
+        return [
+            form_option(
+                proxy.id,
+                label=proxy.label,
+                meta=(
+                    f"routes as {proxy.nymeria_provider}"
+                    + (f" ({proxy.api_mode})" if proxy.api_mode else "")
+                ),
+            )
+            for proxy in specs
+        ]
+
+    @staticmethod
+    def _kv_lines(rows: list[tuple[str, str]]) -> list[str]:
+        """The two-space aligned label/value block the provider cards share."""
+        width = max(len(label) for label, _value in rows)
+        return [f"  {label:<{width}}  {value}" for label, value in rows]
+
+    def _canonical_provider(self, value: Any) -> str:
+        """Resolve a stored provider value (possibly an ALIAS) to its spec id.
+
+        Falls back to the casefolded raw token for unregistered values so
+        equality against a canonical id still fails cleanly.
+        """
+        from ..config.llm_providers import get_llm_provider_spec
+
+        raw = self._normalize_provider(value)
+        spec = get_llm_provider_spec(raw) if raw else None
+        return spec.id if spec else raw
 
     async def _cmd_provider_list(self, args: list[str], rest: str) -> str:
         settings = await self.api.get_settings()
@@ -1088,44 +1367,72 @@ class LLMCommandsMixin:
         return f"[Success]: {message}"
 
     async def _cmd_provider_switch(self, args: list[str], rest: str) -> str:
-        """Switch the active provider; any registered spec is accepted.
+        """Switch the active provider globally or for this thread.
 
+        Scope is a single trailing token (the /model grammar), default
+        global. Global keeps its original semantics: it writes ONLY
+        llm_provider, and it is admin-gated HERE rather than via registry
+        requires_admin so the thread scope (a per-thread override on the
+        caller's own thread, the /model precedent) stays open to every
+        user; backlog #138 tracks the real per-user provider story.
         Credential feedback is rich only for the /provider-managed trio
-        (their keys live in settings fields the status map can see); other
-        providers get a generic env-var hint.
+        (their keys live in settings fields the status map can see);
+        other providers get a generic env-var hint.
         """
-        if len(args) != 1:
-            return "[Error]: Usage: /provider switch <provider>"
+        if not args or len(args) > 2:
+            return "[Error]: Usage: /provider switch <provider> [global|thread]"
         from ..config.llm_providers import get_llm_provider_spec
 
         spec = get_llm_provider_spec(args[0])
         if spec is None:
             return self._unknown_provider_error(args[0])
         provider = spec.id
+        scope = args[1].lower() if len(args) > 1 else "global"
+        if scope not in ("global", "thread"):
+            return "[Error]: scope must be 'global' or 'thread'."
 
+        if scope == "thread":
+            thread_error = self._require_thread()
+            if thread_error:
+                return thread_error
+            tc = await self.api.get_thread_config(self.thread_id)
+            llm_cfg = (tc or {}).get("llm_config") or {}
+            await self.api.update_thread_config(
+                self.thread_id,
+                user_id=self.user_id,
+                llm_config={"provider": provider},
+            )
+            suffix = await self._switch_credential_suffix(spec)
+            settings = await self.api.get_settings()
+            model = str(
+                llm_cfg.get("model") or settings.get("llm_model") or ""
+            ).strip()
+            if model:
+                suffix += (
+                    f" The thread's effective model ({model}) stays"
+                    " unchanged; update it if it belongs to the previous"
+                    " provider (/model <name> thread)."
+                )
+            return (
+                "[Success]: Provider for this thread set to "
+                f"{self._provider_label(provider)}.{suffix}"
+            )
+
+        # Global scope: the settings write is the admin-only surface. The
+        # gate blocks only on a definite False, mirroring the dispatch
+        # gate, so the agent context (is_admin=None) keeps the access it
+        # has always had here.
+        if self.is_admin is False:
+            return (
+                "[Error]: /provider switch <provider> global requires an"
+                " admin user. You can still switch this thread:"
+                f" /provider switch {provider} thread."
+            )
         settings = await self.api.get_settings()
         result = await self.api.update_settings(
             user_id=self.user_id, llm_provider=provider
         )
-        if provider in PROVIDER_SECRET_SETTINGS:
-            status = await self._provider_status_map()
-            entry = status.get(provider) or {}
-            if entry.get("status") == "authenticated":
-                suffix = " A server credential is configured."
-            else:
-                suffix = (
-                    " Warning: no server credential found for this provider;"
-                    f" set one with /provider set {provider} api_key=<key>."
-                )
-        elif spec.requires_api_key:
-            env_name = spec.api_key_env_vars[0] if spec.api_key_env_vars else ""
-            hint = f" ({env_name})" if env_name else ""
-            suffix = (
-                " Credential status is not tracked for this provider;"
-                f" make sure its API key env var{hint} is set."
-            )
-        else:
-            suffix = ""
+        suffix = await self._switch_credential_suffix(spec)
         # Honest scope note: switch changes ONLY llm_provider. The model and
         # base URL usually belong to the previous provider, so name them
         # instead of implying a complete switch (deliberately not rewritten
@@ -1153,6 +1460,32 @@ class LLMCommandsMixin:
             f"[Success]: Switched provider to {self._provider_label(provider)}."
             f"{suffix}"
         )
+
+    async def _switch_credential_suffix(self, spec: "LLMProviderSpec") -> str:
+        """Credential feedback for a switch, shared by both scopes.
+
+        A switch to an unconfigured provider fails at turn time, so both
+        scopes warn up front rather than letting the next message be the
+        first evidence.
+        """
+        provider = spec.id
+        if provider in PROVIDER_SECRET_SETTINGS:
+            status = await self._provider_status_map()
+            entry = status.get(provider) or {}
+            if entry.get("status") == "authenticated":
+                return " A server credential is configured."
+            return (
+                " Warning: no server credential found for this provider;"
+                f" set one with /provider set {provider} api_key=<key>."
+            )
+        if spec.requires_api_key:
+            env_name = spec.api_key_env_vars[0] if spec.api_key_env_vars else ""
+            hint = f" ({env_name})" if env_name else ""
+            return (
+                " Credential status is not tracked for this provider;"
+                f" make sure its API key env var{hint} is set."
+            )
+        return ""
 
     async def _cmd_provider_test(self, args: list[str], rest: str) -> str:
         if len(args) > 1:

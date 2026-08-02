@@ -1547,13 +1547,17 @@ model will actually run at, or `{"switch_thread": {"thread_id": ...}}` after
 markdown fallback is always present, so frontends may ignore `data`
 entirely; the Rich CLI is the consumer. Backend-declared forms so far: bare
 `/model` (model picker), bare `/provider` (Providers tab submitting into
-the chained `/provider setup` configure flow, plus a CLIProxy tab over the
-subscription catalog behind `/provider cliproxy`), the `/provider setup`
-chain itself (masked key entry or Keep/Replace/Clear, API mode, base URL,
-live model list fetched with the pending credentials, review, then a
-test-first atomic apply in one settings patch), and bare `/think` (thinking
-level per writable scope, a "This thread" tab only when a thread is
-active). Clients that render forms should treat unknown
+the per-provider action step `/provider <name>`, plus a CLIProxy tab over
+the subscription catalog behind `/provider cliproxy`; every caller gets the
+picker, with the CLIProxy tab dropped for callers its submit target
+refuses), `/provider <name>` itself (the action step: Use tab submitting
+`/provider switch <name> global|thread`, plus admin-visible Set up /
+CLIProxy / Test tabs, each submitting its real registered command), the
+`/provider setup` chain (masked key entry or Keep/Replace/Clear, API mode,
+base URL, live model list fetched with the pending credentials, review,
+then a test-first atomic apply in one settings patch), and bare `/think`
+(thinking level per writable scope, a "This thread" tab only when a thread
+is active). Clients that render forms should treat unknown
 versions or field kinds as "render the markdown instead".
 
 ### Chat Slash Commands

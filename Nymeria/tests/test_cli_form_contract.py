@@ -142,6 +142,73 @@ def test_confirm_substitutes_selection_and_dispatches_backend_command() -> None:
     assert result.ok is True
 
 
+def test_confirm_single_option_tab_needs_a_live_token_to_dispatch() -> None:
+    """The /provider action step's Set up / Test tabs are single-option
+    radios whose option id IS the command argument (a live token): the
+    confirm treats a template with no substituted value as an empty
+    selection, so a placeholder-free "button" tab silently never
+    dispatches. Both halves pinned here so the backend shape and the
+    client rule cannot drift apart."""
+
+    payload = _form_payload(
+        title="Provider: Anthropic",
+        tabs=[
+            {
+                "label": "Set up",
+                "submit": {"command": "provider setup {method}"},
+                "fields": [
+                    {
+                        "kind": "radio",
+                        "key": "method",
+                        "options": [{"id": "anthropic", "label": "API key"}],
+                    }
+                ],
+            },
+            {
+                "label": "Button",
+                "submit": {"command": "provider setup anthropic"},
+                "fields": [
+                    {
+                        "kind": "radio",
+                        "key": "method",
+                        "options": [{"id": "anthropic", "label": "API key"}],
+                    }
+                ],
+            },
+        ],
+        submit={"command": "provider setup {method}"},
+    )
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    spec = form_spec_from_payload(payload, context=context)
+    assert spec is not None
+
+    run(
+        spec.on_confirm(
+            FormResult(
+                spec_title="Provider: Anthropic",
+                tab_label="Set up",
+                radio_value="anthropic",
+            )
+        )
+    )
+    assert client.calls == ["/provider setup anthropic"]
+
+    # The placeholder-free variant is dismissed as an empty selection:
+    # this is the client rule the backend's live-token option ids exist
+    # to satisfy.
+    run(
+        spec.on_confirm(
+            FormResult(
+                spec_title="Provider: Anthropic",
+                tab_label="Button",
+                radio_value="anthropic",
+            )
+        )
+    )
+    assert client.calls == ["/provider setup anthropic"]
+
+
 def test_confirm_with_empty_selection_is_a_quiet_noop() -> None:
     client = _RecordingClient()
     context, _dispatched = _context(client)

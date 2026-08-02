@@ -811,8 +811,12 @@ CLI, desktop, and bots) exposes the LLM provider flow. `/provider set
 migration retired the CLI-local `~/.nymeria/credentials.json` store).
 `/provider test [provider]` calls the same probe as `POST /settings/llm/test`,
 resolving the credential server-side from the vault, settings, and environment
-in that order. `/provider switch <provider>` patches `llm_provider` and warns
-when no server credential exists for the target provider.
+in that order. `/provider switch <provider> [global|thread]` patches
+`llm_provider` (global scope, admin-only) or writes the per-thread
+`ThreadLLMConfig.provider` override (thread scope, any user's own thread),
+warning when no server credential exists for the target provider.
+`/provider <name>` opens the per-provider action step (use globally, use for
+this thread, set up, test) that the bare `/provider` picker submits into.
 
 The desktop app exposes this flow in Settings > Provider > Open Wizard for admin
 accounts. The wizard can save direct provider keys or configure the backend to
