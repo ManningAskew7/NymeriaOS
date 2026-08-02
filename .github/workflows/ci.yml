@@ -255,6 +255,9 @@ jobs:
       - name: Check desktop/mobile drift
         run: python scripts/check_cross_app_drift.py
 
+      - name: Check agent guide family
+        run: python scripts/check_claude_md.py
+
   docker-validation:
     name: Docker validation
     runs-on: ubuntu-latest
