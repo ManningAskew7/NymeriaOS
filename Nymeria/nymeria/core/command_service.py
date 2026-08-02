@@ -1734,7 +1734,10 @@ class CommandBackendClient:
         # user_id is accepted for HTTP-twin signature parity; this client's
         # acting user was fixed at construction.
         self._require_admin()
-        from ..cliproxy.management_client import CLIProxyManagementError
+        from ..cliproxy.management_client import (
+            CLIProxyManagementError,
+            auth_entry_matches_spec,
+        )
 
         client = self._cliproxy_client_or_400()
         try:
@@ -1744,10 +1747,7 @@ class CommandBackendClient:
         if provider:
             spec = self._cliproxy_spec_or_404(provider)
             files = [
-                entry
-                for entry in files
-                if str(entry.get("provider") or "").lower()
-                == spec.auth_file_provider
+                entry for entry in files if auth_entry_matches_spec(entry, spec)
             ]
         return files
 

@@ -27,6 +27,10 @@ class CLIProxyProviderInfo(BaseModel):
     tos_warning: str = ""
     # The provider string this CLI's entries carry in the auth-file list.
     auth_file_provider: str = ""
+    # All accepted spellings of that string (version-dependent; the union
+    # of auth_file_provider and the id). Clients filter with THIS, never
+    # by re-deriving the union from the single field.
+    auth_file_providers: list[str] = []
     # Live state (None when the proxy is unreachable / not yet probed).
     supported: Optional[bool] = None
     logged_in: Optional[bool] = None

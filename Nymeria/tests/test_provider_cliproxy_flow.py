@@ -90,15 +90,27 @@ class FakeCliproxyApi:
         self.calls.append(("auth_files", {"provider": provider}))
         files = [dict(entry) for entry in self.auth_files]
         if provider:
+            # Mirrors the real backend filter (auth_entry_matches_spec), so
+            # a version-dependent listing spelling exercises the same code
+            # the slim shape runs.
             from nymeria.cliproxy.catalog import get_cliproxy_provider
+            from nymeria.cliproxy.management_client import (
+                auth_entry_matches_spec,
+            )
 
             spec = get_cliproxy_provider(provider)
-            wanted = spec.auth_file_provider if spec else provider
-            files = [
-                entry
-                for entry in files
-                if str(entry.get("provider") or "").lower() == wanted
-            ]
+            if spec is not None:
+                files = [
+                    entry
+                    for entry in files
+                    if auth_entry_matches_spec(entry, spec)
+                ]
+            else:
+                files = [
+                    entry
+                    for entry in files
+                    if str(entry.get("provider") or "").lower() == provider
+                ]
         return files
 
     async def cliproxy_oauth_start(
@@ -280,6 +292,28 @@ def test_target_logged_in_offers_use_and_relogin() -> None:
     assert option_ids == ["use", "relogin", "cancel"]
     pending = provider_setup.get_cliproxy_login("alice")
     assert pending is not None and pending.account == "alice@example.com"
+
+
+def test_target_logged_in_under_the_v7_listing_spelling() -> None:
+    """The dogfood repro (2026-08-02): v7.1.61 lists a completed Gemini
+    login as provider "gemini-cli" while the catalog says "gemini"; the
+    target step must still offer use/relogin, not just login."""
+    api = FakeCliproxyApi()
+    api.auth_files = [
+        {
+            "provider": "gemini-cli",
+            "account": "alice@example.com",
+            "disabled": False,
+            "unavailable": False,
+        }
+    ]
+
+    result = _run(api, "/provider cliproxy gemini-cli")
+
+    tab = _active_tab(_form(result))
+    option_ids = [o["id"] for o in tab["fields"][0]["options"]]
+    assert option_ids == ["use", "relogin", "cancel"]
+    assert "alice@example.com" in result.markdown
 
 
 def test_target_shows_tos_warning() -> None:
