@@ -33,6 +33,9 @@ def test_default_theme_uses_soft_repl_palette() -> None:
     assert "user_header" not in DEFAULT_THEME_VALUES  # retired with the "You" rule
     assert DEFAULT_THEME_VALUES["artifact"] == "#9CCFFB"
     assert DEFAULT_THEME_VALUES["error"] == "#FCA5A5"
+    # Command-result level accents: pastel siblings of the error red.
+    assert DEFAULT_THEME_VALUES["success"] == "#A9DCB4"
+    assert DEFAULT_THEME_VALUES["warning"] == "#F5D08C"
     assert DEFAULT_THEME_VALUES["tool"] != "#FBBF24"
 
 

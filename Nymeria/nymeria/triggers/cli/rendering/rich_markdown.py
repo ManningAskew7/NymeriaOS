@@ -22,6 +22,38 @@ from ..theme import CLITheme, DEFAULT_CLI_THEME, rich_style
 DEFAULT_CODE_THEME = "nord"
 DEFAULT_MARKDOWN_INDENT = 2
 
+# Block-kind spacing vocabulary behind should_print_markdown_separator:
+# which kinds Rich already renders with a leading/trailing blank line (so
+# callers must not add a second one), and which read as dense.
+_DENSE_MARKDOWN_BLOCK_KINDS = frozenset({"table", "code", "list", "blockquote", "hr"})
+_RICH_NATIVE_LEADING_BLANK_KINDS = frozenset({"table", "list", "blockquote"})
+_RICH_NATIVE_TRAILING_BLANK_KINDS = frozenset({"hr"})
+
+
+def should_print_markdown_separator(
+    previous: "MarkdownBlock | None",
+    current: "MarkdownBlock",
+) -> bool:
+    """Blank-line rule between MarkdownBlocks printed one at a time.
+
+    Shared by every renderer that prints blocks individually (the
+    streaming transcript, the command-output sink), so their spacing
+    cannot diverge. Source blank lines win; blocks Rich pads natively
+    never get a second blank; dense blocks get breathing room.
+    """
+
+    if previous is None:
+        return False
+    if previous.kind == "heading" and current.kind == "heading":
+        return False
+    if previous.kind in _RICH_NATIVE_TRAILING_BLANK_KINDS:
+        return False
+    if current.kind in _RICH_NATIVE_LEADING_BLANK_KINDS:
+        return False
+    if previous.trailing_blank_lines > 0 or current.leading_blank_lines > 0:
+        return True
+    return previous.kind in _DENSE_MARKDOWN_BLOCK_KINDS
+
 _MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
 _FENCE_RE = re.compile(r"^\s*(```+|~~~+)")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+.+")
@@ -541,5 +573,6 @@ __all__ = [
     "RichMarkdownAdapter",
     "print_rich_markdown",
     "rich_markdown_theme",
+    "should_print_markdown_separator",
     "split_stable_markdown_blocks",
 ]
