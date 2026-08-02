@@ -70,12 +70,12 @@ def _slash_command_sync(
     general status. Uses the same commands the Discord/Telegram bots
     expose to users.
 
-    ALWAYS call `/help` first to see the full list of commands and their
-    exact syntax. Pass natural command strings with or without the
-    leading slash.
+    ALWAYS call `/help all` first to see the full list of commands and
+    their exact syntax (bare `/help` is only a compact name index). Pass
+    natural command strings with or without the leading slash.
 
     Examples:
-        /help
+        /help all
         /status
         /config show
         /config set llm_model claude-opus-4-6

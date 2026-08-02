@@ -81,6 +81,8 @@ def create_commands_router(
                 aliases=cmd.aliases,
                 scope=cmd.scope,
                 surfaces=cmd.surfaces,
+                blocked_surfaces=cmd.blocked_surfaces,
+                blocked_reason=cmd.blocked_reason,
                 agent_allowed=cmd.agent_allowed,
                 requires_thread=cmd.requires_thread,
                 requires_admin=cmd.requires_admin,
@@ -88,6 +90,7 @@ def create_commands_router(
                 danger_level=cmd.danger_level,
                 execution_kind=cmd.execution_kind,
                 note=cmd.note,
+                examples=cmd.examples,
             )
             for cmd in get_command_service().list_commands(
                 source,

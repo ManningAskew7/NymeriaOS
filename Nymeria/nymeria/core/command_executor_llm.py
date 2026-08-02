@@ -132,6 +132,7 @@ class LLMCommandsMixin:
 
     if TYPE_CHECKING:
         def _require_thread(self) -> str | None: ...
+        def _usage_error(self, name: str, *, hint: str | None = None) -> str: ...
         def _agent(self) -> Any: ...
         async def _list_threads(self) -> list[Any]: ...
 
@@ -211,10 +212,7 @@ class LLMCommandsMixin:
             label = " -> ".join(next_chain)
             return await self._save_fallback_chain(next_chain, f"Fallback chain set: {label}")
 
-        return (
-            "[Error]: Usage: /fallback "
-            "[list|add|remove|clear|set|status|revert|approvals|approve|deny]"
-        )
+        return self._usage_error("fallback")
 
     async def _fallback_status_markdown(self) -> str:
         """The consent modes plus the active thread's fallback hold, if any."""
@@ -890,10 +888,7 @@ class LLMCommandsMixin:
 
     async def _cmd_provider(self, args: list[str], rest: str) -> str | CommandOutput:
         if args:
-            return (
-                "[Error]: Usage: /provider "
-                "[setup|list|set|switch|test|reasoning-passback]"
-            )
+            return self._usage_error("provider")
         from ..config.llm_providers import get_llm_provider_spec
 
         settings = await self.api.get_settings()
