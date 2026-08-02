@@ -591,7 +591,12 @@ class NymeriaTeamsBot:
                 return
 
         sender = activity.from_name or activity.from_id
-        if activity.is_direct:
+        if stripped_text.startswith("/"):
+            # A chat_stream command fell through: the chat route detects it
+            # by FIRST TOKEN, so the group-context prefix below would hide
+            # it mid-string and turn "/skill x" into ordinary chat.
+            prompt = stripped_text
+        elif activity.is_direct:
             prompt = clean_text
         else:
             prompt = f"[Microsoft Teams {sender} in {activity.conversation_type}]\n{clean_text}"

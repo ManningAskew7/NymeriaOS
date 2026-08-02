@@ -484,3 +484,88 @@ def test_unlinked_user_slash_command_is_rejected_without_backend_call():
     assert api.command_calls == []
     assert api.chat_stream_calls == []
     assert "not linked" in client.posts[0]["text"]
+
+
+def test_bang_chat_stream_command_falls_through_normalized():
+    # "!skill x" must reach the chat route as "/skill x": the route detects
+    # chat_stream commands by first token, and "!" is Slack-only spelling.
+    bot, api, client = make_bot()
+    api.command_result = {
+        "success": False,
+        "markdown": "**Error:** `/skill` is handled outside the command service.",
+        "data": {"execution_kind": "chat_stream"},
+    }
+
+    asyncio.run(bot.handle_slack_event(_dm_event("!skill research"), source="message"))
+
+    assert len(api.chat_stream_calls) == 1
+    assert api.chat_stream_calls[0]["message"] == "/skill research"
+
+
+def test_channel_chat_stream_command_falls_through_without_context_prefix():
+    # The "[Slack <@U> in C]" prefix would hide the command token
+    # mid-string, so a fell-through command must not carry it.
+    bot, api, client = make_bot()
+    api.command_result = {
+        "success": False,
+        "markdown": "**Error:** `/skill` is handled outside the command service.",
+        "data": {"execution_kind": "chat_stream"},
+    }
+
+    asyncio.run(
+        bot.handle_slack_event(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "user": "U1",
+                "team": "T1",
+                "ts": "171.600",
+                "text": "<@UBOT> /skill research",
+            },
+            source="app_mention",
+        )
+    )
+
+    assert len(api.chat_stream_calls) == 1
+    assert api.chat_stream_calls[0]["message"] == "/skill research"
+
+
+def test_slack_command_results_rewrite_help_mentions_to_bang():
+    # Slack swallows leading-"/" messages, so "Use `/help`." is untypeable
+    # advice there; the send wrapper rewrites it to the reachable prefix.
+    bot, api, client = make_bot()
+    api.command_result = {
+        "success": False,
+        "markdown": "**Error:** Unknown command `/provder`. Did you mean `/provider`? Use `/help`.",
+        "data": None,
+    }
+
+    asyncio.run(bot.handle_slack_event(_dm_event("!provder list"), source="message"))
+
+    assert "`!help`" in client.posts[-1]["text"]
+    assert "`/help`" not in client.posts[-1]["text"]
+    # The rewrite covers EVERY backticked command reference, not just /help:
+    # the did-you-mean suggestion must also be typeable on Slack.
+    assert "`!provider`" in client.posts[-1]["text"]
+
+
+def test_slack_command_result_rewrite_covers_usage_and_spares_paths():
+    bot, api, client = make_bot()
+    api.command_result = {
+        "success": False,
+        "markdown": (
+            "[Error]: Usage: `/provider [setup|list]`. See `/help provider`. "
+            "Log at `/opt/nymeria/api.log`."
+        ),
+        "data": None,
+    }
+
+    asyncio.run(bot.handle_slack_event(_dm_event("!provider bogus"), source="message"))
+
+    text = client.posts[-1]["text"]
+    assert "`!provider [setup|list]`" in text
+    assert "`!help provider`" in text
+    # Backticked file paths keep their slash: the first segment continues
+    # with "/" rather than ending at whitespace or the closing backtick.
+    assert "`/opt/nymeria/api.log`" in text

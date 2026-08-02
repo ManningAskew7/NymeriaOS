@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
+import pytest
+
 from nymeria.triggers.discord_bot import NymeriaDiscordBot
 from nymeria.triggers.discord_cogs.chat import ChatCog
 from nymeria.triggers.discord_cogs.config import ConfigCog
@@ -377,9 +379,53 @@ def test_resolver_failure_renders_infra_copy_in_interaction_funnel():
     assert interaction.messages[0]["ephemeral"] is True
 
 
-def test_help_merges_backend_catalog_with_discord_local_commands_without_duplicates():
+class _FakeTreeCommand:
+    """Stand-in for a registered app command (only the attrs the cog reads)."""
+
+    def __init__(self, qualified_name: str, description: str, binding: Any = None):
+        self.qualified_name = qualified_name
+        self.description = description
+        self.binding = binding
+
+
+class _FakeTree:
+    def __init__(self, commands: list[Any]):
+        self._commands = commands
+
+    def walk_commands(self):
+        return list(self._commands)
+
+
+def test_help_lists_only_invokable_commands_within_discord_embed_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The old merged backend catalog advertised ~110 rows unreachable on
+    # Discord and overflowed the 6,000-char embed total, so /help itself
+    # failed with Discord's generic error.
+    from discord import app_commands
+
+    class ToolsCog:  # category derives from the binding's class name
+        pass
+
+    class ChatCog:
+        pass
+
     api = _FakeAPI()
     bot = _bot(api)
+    fake_tree = _FakeTree(
+        [
+            _FakeTreeCommand("help", "Show Nymeria bot commands"),
+            # Curated override: replaced by the DISCORD_LOCAL_COMMANDS row.
+            _FakeTreeCommand("tools search", "Search tools.", binding=ToolsCog()),
+            # Sibling subcommand under a curated root: MUST still render (a
+            # first-token curated match used to swallow the whole family).
+            _FakeTreeCommand("tools core", "Show core tools.", binding=ToolsCog()),
+            _FakeTreeCommand("ask", "Send a message.", binding=ChatCog()),
+            app_commands.Group(name="tools", description="Tool management"),
+        ]
+    )
+    # ``tree`` is a read-only property on discord.py's Bot; patch the class.
+    monkeypatch.setattr(NymeriaDiscordBot, "tree", property(lambda self: fake_tree))
     interaction = _FakeInteraction()
     cog = InfoCog(bot)
 
@@ -388,19 +434,34 @@ def test_help_merges_backend_catalog_with_discord_local_commands_without_duplica
 
     asyncio.run(run())
 
-    assert api.list_command_calls == [
-        {
-            "source": None,
-            "actor": "user",
-            "surface": "discord",
-            "user_id": "user-1",
-        }
-    ]
+    # Defers first (backend resolution can miss the 3s deadline), and never
+    # fetches the backend catalog (those commands are not invokable here).
+    assert interaction.deferred_ephemeral is True
+    assert api.list_command_calls == []
+
     embed = interaction.messages[0]["embed"]
     help_text = "\n".join(field.value for field in embed.fields)
-    assert "`/tools core` - Show core tools." in help_text
     assert "`/tools search <query>` - Search tools by name, category, or description." in help_text
+    # The curated /tools search row must not swallow its siblings.
+    assert "`/tools core` - Show core tools." in help_text
+    # The tree's own "tools search" and "help" rows are skipped, groups too.
+    assert "`/tools search` - Search tools." not in help_text
+    assert "- Show Nymeria bot commands" not in help_text
     assert help_text.count("`/compact`") == 1
+    # Category names derive from the binding cog's class name.
+    field_names = [field.name for field in embed.fields]
+    assert "Tools" in field_names
+    assert "Chat" in field_names
+    # Unreachable backend-only commands must not be advertised.
+    assert "`/provider" not in help_text
+
+    total = (
+        len(embed.title or "")
+        + len(embed.description or "")
+        + sum(len(field.name or "") + len(field.value or "") for field in embed.fields)
+        + len(embed.footer.text or "")
+    )
+    assert total <= 6000
 
 
 class _Choice:

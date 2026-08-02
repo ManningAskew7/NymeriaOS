@@ -207,6 +207,41 @@ class NymeriaDiscordBot(_BotBase):
 
         for cog_cls in ALL_COGS:
             await self.add_cog(cog_cls(self))
+        # Without this, an app-command failure (e.g. an embed over Discord's
+        # limits, or a backend error) surfaces only Discord's generic
+        # "The application did not respond" and a server-side traceback.
+        self.tree.on_error = self._on_app_command_error
+
+    async def _on_app_command_error(
+        self, interaction: "discord.Interaction", error: Exception
+    ) -> None:
+        """Render app-command failures honestly instead of Discord's generic copy."""
+        logger.error(
+            "App command failed: %s",
+            getattr(interaction.command, "name", "?"),
+            exc_info=error,
+        )
+        try:
+            message = "Command failed. Check the bot logs for details."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not send app-command error notice: %s", e)
+
+    async def on_guild_join(self, guild: "discord.Guild") -> None:
+        """Sync slash commands to a guild joined after startup.
+
+        ``on_ready`` syncs per-guild only, so without this a guild joined
+        mid-run has no slash commands (not even /help) until a restart.
+        """
+        try:
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info("Slash commands synced to newly joined guild: %s", guild.name)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not sync commands to joined guild %s: %s", guild, e)
 
     # =========================================================================
     # Platform identity resolution
