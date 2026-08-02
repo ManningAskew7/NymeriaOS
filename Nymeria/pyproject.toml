@@ -70,7 +70,7 @@ dependencies = [
   "Jinja2>=3.1.6,<4.0.0",
   "Pillow>=10.4.0,<13.0.0",
   "qrcode>=8.0,<9.0",
-  "mcp>=1.2.0",
+  "mcp>=1.2.0,<2",
   # Chat-platform bot SDKs are NOT in core. They install via per-platform extras
   # (nymeriaos[discord], nymeriaos[telegram], ...) so a default install stays lean.
   # The full Docker image pulls them via requirements-bots.txt.

@@ -16,6 +16,16 @@ FROM kalilinux/kali-rolling
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Create the non-root user BEFORE any packages install. Debian allocates
+# system uids/gids downward from 999, so a package in the apt layer below
+# can otherwise claim 999 first and break this pin (bit for real on
+# 2026-08-02 when a fresh, uncached base rebuild failed at groupadd).
+# uid/gid pinned to 999 so the Docker named volumes (which carry forward
+# this ownership from the image's chown below) line up with the runtime
+# USER directive at the bottom of the file.
+RUN groupadd -r -g 999 nymeria \
+    && useradd -r -g nymeria -u 999 -m -s /bin/bash nymeria
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Python (use default Kali Python 3)
@@ -79,12 +89,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Clean up
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user. uid/gid pinned to 999 so the Docker named volumes
-# (which carry forward this ownership from the image's chown below) line up
-# with the runtime USER directive at the bottom of the file.
-RUN groupadd -r -g 999 nymeria \
-    && useradd -r -g nymeria -u 999 -m -s /bin/bash nymeria
 
 # Set up Python symlinks
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
