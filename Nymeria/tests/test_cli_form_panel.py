@@ -120,18 +120,43 @@ def test_text_only_tab_renders_input_line_and_text_footer() -> None:
 
     # header + input line + footer, no list rows.
     assert form_panel_height(spec, state) == 3
-    rendered = _rendered(form_panel_fragments(spec, state, width=40))
-    assert "API key: " in rendered
-    assert "sk-..." in rendered  # placeholder while empty
+    rendered = _rendered(form_panel_fragments(spec, state, width=60))
+    # The row is an instruction pointing at the composer, never a text-box
+    # look-alike (`label: placeholder` read as a second, unreachable input;
+    # the label lives on the composer prompt, which IS the field).
+    assert "API key:" not in rendered
+    assert "↓ type or paste in the prompt below" in rendered
+    assert "e.g. sk-..." in rendered  # placeholder demoted to an example
     assert "Enter submit" in rendered
 
     # A text step's value is NOT echoed here. The composer owns the caret and is
     # the single surface that shows it; the panel reports its shape, so the two
     # do not read as two separate input boxes.
     sync_filter(spec, state, "sk-test-123")
-    rendered = _rendered(form_panel_fragments(spec, state, width=40))
+    rendered = _rendered(form_panel_fragments(spec, state, width=60))
     assert "sk-test-123" not in rendered
     assert "11 chars entered" in rendered
+
+
+def test_busy_text_row_stops_advertising_enter() -> None:
+    """While the step is in flight the row must not contradict the Working
+    footer: Enter is a no-op until the result lands."""
+
+    spec = _text_spec()
+    state = init_state(spec)
+    sync_filter(spec, state, "sk-test-123")
+    state.busy = True
+
+    rendered = _rendered(form_panel_fragments(spec, state, width=60))
+    assert "Enter to submit" not in rendered
+    assert "11 chars entered · submitted, working…" in rendered
+    assert "Working…" in rendered  # the busy footer
+
+    # A busy step with no typed value skips the empty count.
+    state.filter_text = ""
+    rendered = _rendered(form_panel_fragments(spec, state, width=60))
+    assert "0 chars" not in rendered
+    assert "submitted, working…" in rendered
 
 
 def test_search_field_keeps_its_inline_filter_text() -> None:

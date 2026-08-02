@@ -542,10 +542,53 @@ def test_paste_unconfirmed_keeps_the_rail(
 
     assert result.success is True
     assert "not confirmed" in result.markdown
-    # Two polls, one second apart (collapsed by the patched sleep).
-    assert len(_calls(api, "oauth_status")) == 2
+    # The full ~10s confirm window (collapsed by the patched sleep): some
+    # providers finish onboarding seconds after the callback (Gemini).
+    from nymeria.core.command_executor_cliproxy import CliproxyCommandsMixin
+
+    assert (
+        len(_calls(api, "oauth_status"))
+        == CliproxyCommandsMixin._PASTE_CONFIRM_ATTEMPTS
+    )
+    # The rail lands on Status: the next sensible action is a check, and
+    # the note says the wait is not a failure sign.
     tab = _active_tab(_form(result))
-    assert tab["label"] == "Paste"
+    assert tab["label"] == "Status"
+    assert "not a failure sign" in result.markdown
+    # The delta rides form.notes so form-rendering clients can print it
+    # alone instead of reprinting the whole rail.
+    notes = _form(result).get("notes")
+    assert isinstance(notes, list) and len(notes) == 1
+    assert notes[0].startswith("Callback delivered")
+    assert notes[0] in result.markdown
+
+
+def test_paste_confirms_on_a_late_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A login whose auth file lands mid-window (post-callback onboarding)
+    still reaches the success rail from the paste itself."""
+
+    api = FakeCliproxyApi()
+    api.status_results = [
+        {"status": "wait"},
+        {"status": "wait"},
+        {"status": "wait"},
+        {"status": "ok", "detail": "alice@example.com"},
+    ]
+    _start_login(api)
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(chain_module.asyncio, "sleep", _no_sleep)
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert result.success is True
+    assert "Logged in to" in result.markdown
+    assert len(_calls(api, "oauth_status")) == 4
+    tab = _active_tab(_form(result))
+    assert tab["label"] == "Model"
 
 
 def test_paste_delivery_failure_rearms_the_rail() -> None:
@@ -709,8 +752,9 @@ def test_paste_404_on_a_relogin_still_gets_the_stale_session_refusal() -> None:
     assert "Callback delivery failed" not in result.markdown
     assert "stale-session" in result.markdown
     assert "Restart the login" in result.markdown
-    # Still on the login rail, never advanced to the model picker.
-    assert _active_tab(_form(result))["label"] == "Paste"
+    # Still on the login rail (never the model picker), landing on Status:
+    # re-pasting cannot fix a post-delivery failure.
+    assert _active_tab(_form(result))["label"] == "Status"
 
 
 def test_paste_409_also_confirms_instead_of_reporting_failure() -> None:
@@ -744,7 +788,8 @@ def test_paste_404_still_reports_failure_when_no_login_landed() -> None:
     result = _run(api, "/provider cliproxy paste abc-code")
 
     assert "Login failed" in result.markdown
-    assert _active_tab(_form(result))["label"] == "Paste"
+    # Post-delivery failure: the rail lands on Status, not Paste.
+    assert _active_tab(_form(result))["label"] == "Status"
 
 
 def test_paste_on_device_flow_points_at_status() -> None:
@@ -786,6 +831,7 @@ def test_check_wait_ok_and_error_paths() -> None:
     failed = _run(api, "/provider cliproxy check")
     assert "Login failed: no active auth file" in failed.markdown
     assert "Restart the login" in failed.markdown
+    assert _active_tab(_form(failed))["label"] == "Status"
 
 
 def test_check_renders_server_side_stale_session_refusal() -> None:
@@ -812,7 +858,8 @@ def test_check_renders_server_side_stale_session_refusal() -> None:
     refused = _run(api, "/provider cliproxy check")
     assert "stale-session" in refused.markdown
     assert "Restart the login" in refused.markdown
-    assert _active_tab(_form(refused))["label"] == "Paste"
+    # A check failure lands on Status like every post-delivery rail.
+    assert _active_tab(_form(refused))["label"] == "Status"
 
 
 def test_check_before_login_is_refused() -> None:

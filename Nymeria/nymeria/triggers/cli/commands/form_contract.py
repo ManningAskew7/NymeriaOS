@@ -72,6 +72,22 @@ def form_spec_from_payload(
     )
 
 
+def form_notes(payload: Any) -> list[str]:
+    """The form payload's step-delta lines (``form["notes"]``), or [].
+
+    Defensive like every reader in this module: the payload crosses a
+    wire, so non-list shapes and non-string entries yield nothing.
+    """
+
+    if not isinstance(payload, Mapping):
+        return []
+    return [
+        entry
+        for entry in _sequence(payload.get("notes"))
+        if isinstance(entry, str) and entry.strip()
+    ]
+
+
 async def apply_state_hints(state: Any, context: CommandContext) -> None:
     """Apply known ``data["state"]`` sync hints; unknown keys are ignored.
 

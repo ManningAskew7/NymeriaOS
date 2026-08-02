@@ -369,6 +369,9 @@ class ProviderSetupCommandsMixin:
 
         active_tab, _decided, guidance = chain[-1]
         tabs = [tab for tab, _d, _l in chain]
+        # No notes here, deliberately: this rail's step guidance is
+        # load-bearing beyond the panel (key-hygiene warnings, the Review
+        # tab's confirmation table), so every response prints in full.
         return chain_form_output(
             f"Setup: {spec.label}",
             tabs,

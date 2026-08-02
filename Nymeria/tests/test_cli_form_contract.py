@@ -382,6 +382,56 @@ def test_execute_backend_command_opens_declared_form() -> None:
     assert isinstance(action["spec"], FormSpec)
 
 
+def test_execute_backend_command_prints_only_notes_when_form_carries_them() -> None:
+    """A chained step's delta lines replace the full rail reprint (the
+    markdown fallback stays untouched for form-less surfaces)."""
+
+    payload = _form_payload()
+    payload["notes"] = ["Callback delivered; check the status in a moment."]
+    client = _RecordingClient(
+        response={
+            "success": True,
+            "markdown": "### Rail\n\nlong reprint of the whole rail",
+            "command": "provider",
+            "level": "info",
+            "data": {"form": payload},
+        }
+    )
+    context, dispatched = _context(client)
+
+    result = run(_execute_backend_command(context, ("provider",), []))
+
+    assert result.ok is True
+    assert [message.content for message in result.messages] == [
+        "Callback delivered; check the status in a moment."
+    ]
+    (action,) = dispatched
+    assert action["type"] == "open_form"
+
+
+def test_execute_backend_command_ignores_malformed_or_empty_notes() -> None:
+    for notes in ("not-a-list", [], [42, "  "], None):
+        payload = _form_payload()
+        if notes is not None:
+            payload["notes"] = notes
+        client = _RecordingClient(
+            response={
+                "success": True,
+                "markdown": "fallback text",
+                "command": "model",
+                "level": "info",
+                "data": {"form": payload},
+            }
+        )
+        context, _dispatched = _context(client)
+
+        result = run(_execute_backend_command(context, ("model",), []))
+
+        assert [message.content for message in result.messages] == [
+            "fallback text"
+        ], f"notes={notes!r}"
+
+
 def test_execute_backend_command_falls_back_to_markdown_without_form_support() -> None:
     client = _RecordingClient(
         response={

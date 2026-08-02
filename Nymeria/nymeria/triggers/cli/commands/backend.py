@@ -207,7 +207,11 @@ async def _execute_backend_command(
         data = payload.get("data")
         thread_switched = False
         if isinstance(data, Mapping):
-            from .form_contract import apply_state_hints, form_spec_from_payload
+            from .form_contract import (
+                apply_state_hints,
+                form_notes,
+                form_spec_from_payload,
+            )
 
             state = data.get("state")
             await apply_state_hints(state, context)
@@ -221,6 +225,15 @@ async def _execute_backend_command(
                     # /provider's active table) and the form replaces none
                     # of that output, so suppressing it would make the bare
                     # command the only surface that CANNOT show its status.
+                    # EXCEPT when the form carries step notes: a chained
+                    # step's markdown is mostly a reprint of the rail the
+                    # panel already shows, so print only the delta lines
+                    # (the full markdown remains for form-less surfaces).
+                    notes = form_notes(data.get("form"))
+                    if notes:
+                        message = CommandMessage(
+                            "\n".join(notes), level=level
+                        )
                     return CommandResult.completed(
                         message,
                         command_path=path,

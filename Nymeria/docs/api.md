@@ -1529,7 +1529,16 @@ Left/Right cross steps only from the value's start/end boundary, Tab/Shift-Tab
 always cross, and each step keeps its own draft so navigating the rail cannot
 destroy a typed value. `footer_hint` is advisory copy for exactly this reason:
 the server words it for the active step's field kind, and the client owns the
-actual key map. `data.state` is a dict of
+actual key map. Chained steps may carry `notes` on the form (the step's
+delta lines: "Callback delivered", "Login failed: ..."); a form-rendering
+client may print only the notes and let its panel carry the static rail
+instead of reprinting the full markdown every step. Because printing notes
+suppresses the rest of the markdown on those clients, the server attaches
+them only to re-renders of a rail the surface has already printed, never to
+a step whose guidance is load-bearing (a review table, a fresh auth URL, a
+degraded-list caveat). Notes never carry information absent from the
+markdown fallback, so form-less surfaces lose nothing. `data.state` is a
+dict of
 client-state sync hints (for example `{"model": ...}` after a model change,
 `{"reasoning": {"enabled": ..., "effort": ...}}` after `/think` or its
 `/reasoning`/`/thinking` aliases change thinking mode, carrying the level the

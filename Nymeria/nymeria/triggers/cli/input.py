@@ -21,7 +21,6 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import (
     ConditionalProcessor,
-    PasswordProcessor,
     Processor,
     Transformation,
 )
@@ -203,6 +202,56 @@ class SlashUsageHintProcessor(Processor):
         return Transformation(cast(Any, fragments + [("class:slash-hint", fitted_hint)]))
 
 
+class PartialMaskProcessor(Processor):
+    """Mask a secret value except its last few characters.
+
+    A fully masked paste is unverifiable: 40 or 400 bullets look the same,
+    and a wrong paste (the auth URL instead of the callback, a truncated
+    key) is invisible until it fails server-side. Showing only the tail
+    (the grok-TUI token-mask idiom) lets the user confirm WHAT landed while
+    the value stays out of shoulder-surf view; short values mask fully,
+    because a 6-char secret with 4 visible is no mask at all. History and
+    form payloads never see the value regardless (form Enter bypasses
+    history; secrets are never echoed into payloads).
+    """
+
+    def __init__(
+        self,
+        char: str = "•",
+        *,
+        visible_tail: int = 4,
+        min_masked_length: int = 9,
+    ) -> None:
+        self.char = char
+        self.visible_tail = visible_tail
+        self.min_masked_length = min_masked_length
+
+    def apply_transformation(self, transformation_input) -> Transformation:
+        ti = transformation_input
+        fragments = list(ti.fragments)
+        total = sum(len(text) for _style, text, *_rest in fragments)
+        # The processor runs once per LOGICAL LINE, so the tail reveal must
+        # be scoped to the buffer's last line only: revealing "the last 4
+        # chars" of every line of a multi-line paste leaks 4 chars per line.
+        # The short-value gate is on the whole buffer for the same reason.
+        is_last_line = ti.lineno == ti.document.line_count - 1
+        visible_from = (
+            total - self.visible_tail
+            if is_last_line and len(ti.document.text) >= self.min_masked_length
+            else total
+        )
+        masked: list[Any] = []
+        position = 0
+        for style, text, *rest in fragments:
+            replaced = "".join(
+                ch if position + index >= visible_from else self.char
+                for index, ch in enumerate(text)
+            )
+            masked.append((style, replaced, *rest))
+            position += len(text)
+        return Transformation(cast(Any, masked))
+
+
 class ComposerController:
     """Bottom composer widget plus input behavior for the full-screen shell."""
 
@@ -268,14 +317,15 @@ class ComposerController:
         if show_slash_usage_hints and command_registry is not None:
             input_processors.append(SlashUsageHintProcessor(command_registry))
         # Secret form fields (e.g. the /provider setup API-key step) mask the
-        # composer's own echo: the panel renders bullets, and this processor
-        # keeps the buffer display masked too. History is safe structurally
-        # (form Enter routes to submit_form_selection, never handle_enter /
-        # append_to_history), and history GHOSTS are suppressed below so a
-        # prior prompt cannot render as gray suggestion text mid-secret.
+        # composer's own echo, except the value's tail (see the processor
+        # docstring: a fully masked paste is unverifiable). History is safe
+        # structurally (form Enter routes to submit_form_selection, never
+        # handle_enter / append_to_history), and history GHOSTS are
+        # suppressed below so a prior prompt cannot render as gray
+        # suggestion text mid-secret.
         input_processors.append(
             ConditionalProcessor(
-                PasswordProcessor("•"),
+                PartialMaskProcessor("•"),
                 Condition(lambda: bool(self.active_field_is_secret())),
             )
         )
@@ -316,16 +366,23 @@ class ComposerController:
             return [("class:composer.error", "› ")]
         if self.show_queued_prompt and state.queued_count:
             return [("class:composer.queued", f"› {state.queued_count}: ")]
-        # While a form step feeds off this buffer, name the field here. The
-        # composer is the ONLY surface that shows the value (the panel reports
-        # its length), so the prompt has to say what is being edited. Busy is
-        # not dropped for it, just merged: a chained step submits and waits for
+        # While a form step feeds off this buffer, say so HERE: the caret
+        # cannot move to the panel (one focused widget), so the glyph next to
+        # the caret is the only honest signal of where keystrokes land (the
+        # hermes prompt-glyph idiom). A text step names the field it is
+        # feeding (the composer is the ONLY surface that shows the value; the
+        # panel reports its length); a select/filter step gets the radio
+        # glyph, because typing there filters the option list. Busy is not
+        # dropped for it, just merged: a chained step submits and waits for
         # the next one, so the label and the in-flight turn are both true at
         # once and the label carries the busy STYLE rather than losing to it.
         field_label = str(self.active_field_label() or "").strip()
         if field_label:
             style = "class:composer.busy" if state.busy else "class:composer.form"
-            return [(style, f"{field_label} › ")]
+            return [(style, f"✎ {field_label} › ")]
+        if self.form_active():
+            style = "class:composer.busy" if state.busy else "class:composer.form"
+            return [(style, "◉ › ")]
         if state.busy:
             return [("class:composer.busy", "› ")]
         return [("class:composer", "› ")]
@@ -337,7 +394,7 @@ class ComposerController:
         # The prompt renders HERE rather than through ``TextArea(prompt=...)``.
         # That argument becomes a BeforeInput processor which TextArea puts
         # BEFORE any caller-supplied input_processors, so the secret-field
-        # PasswordProcessor masked the prompt along with the value: a form's
+        # mask processor masked the prompt along with the value: a form's
         # field label came out as a run of bullets with no caret, which reads as
         # text that cannot be deleted. get_line_prefix is applied at render
         # time, outside the processor chain, so a mask can never reach it.

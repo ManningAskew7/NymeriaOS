@@ -263,3 +263,80 @@ def test_completion_items_and_palette_entries_include_descriptions() -> None:
     )
 
 
+
+
+# ── Rich console sink: legacy-markdown artifact translation ─────────────────
+
+
+class _RecordingConsole:
+    def __init__(self) -> None:
+        self.printed: list[Any] = []
+
+    def print(self, content: Any = "", **_kwargs: Any) -> None:
+        self.printed.append(content)
+
+
+def _sink_output(message: CommandMessage) -> list[Any]:
+    from nymeria.triggers.cli.commands.registry import (
+        RichConsoleCommandOutputSink,
+    )
+
+    console = _RecordingConsole()
+    RichConsoleCommandOutputSink(console).emit(message)
+    return console.printed
+
+
+def _span_styles(text: Any) -> list[str]:
+    return [str(span.style) for span in text.spans]
+
+
+def test_sink_renders_heading_as_style_not_literal_hashes() -> None:
+    printed = _sink_output(
+        CommandMessage("### Provider\n\nActive provider  Anthropic")
+    )
+    assert [item.plain for item in printed] == [
+        "Provider",
+        "\nActive provider  Anthropic",
+    ]
+    assert "bold" in _span_styles(printed[0])
+    # Alignment survives: the body is line-preserving, never reflowed.
+    assert "  " in printed[1].plain
+
+
+def test_sink_translates_error_and_done_prefixes() -> None:
+    printed = _sink_output(
+        CommandMessage("**Error:** something broke", level="error")
+    )
+    assert [item.plain for item in printed] == ["Error: something broke"]
+    assert "red" in _span_styles(printed[0])
+
+    printed = _sink_output(
+        CommandMessage("**Done.** Model set.", level="success")
+    )
+    assert [item.plain for item in printed] == ["Done. Model set."]
+    assert "green" in _span_styles(printed[0])
+
+
+def test_sink_keeps_literal_brackets_out_of_markup() -> None:
+    # Command output carries literal bracket runs ([logged in: ...] badges,
+    # [NATIVE] tier tags); the escaped inline renderer must print them
+    # verbatim instead of feeding them to Rich's markup parser.
+    printed = _sink_output(
+        CommandMessage("Tier native [NATIVE]\n  [logged in: alice@example.com]")
+    )
+    assert [item.plain for item in printed] == [
+        "Tier native [NATIVE]\n  [logged in: alice@example.com]"
+    ]
+
+
+def test_sink_styles_mid_body_inline_markdown() -> None:
+    printed = _sink_output(CommandMessage("state is **enabled** now"))
+    assert [item.plain for item in printed] == ["state is enabled now"]
+    assert "bold" in _span_styles(printed[0])
+
+
+def test_sink_styles_heading_line_alone() -> None:
+    # A heading-only message emits just the styled heading, no blank body.
+    printed = _sink_output(CommandMessage("### Ready", level="success"))
+    assert [item.plain for item in printed] == ["Ready"]
+    assert "bold green" in _span_styles(printed[0])

@@ -164,6 +164,12 @@ class _RichReplRuntime:
         self._slash_panel_selected_index = 0
         self._active_form: form_panel.FormSpec | None = None
         self._form_state: form_panel.FormState | None = None
+        # A half-typed chat message stashed when a form takes the composer
+        # (text, cursor), restored when the form session ends. Forms opened
+        # by events (hook approvals, consent prompts) land mid-typing; the
+        # composer is the only text buffer, so without this the form EATS
+        # the draft (the hermes snapshot idiom).
+        self._chat_draft: tuple[str, int] | None = None
         # record_id of the require_approval hold whose decision form is open.
         self._pending_hook_approval_record: str | None = None
         self._pending_fallback_prompt_record: str | None = None
@@ -786,7 +792,15 @@ class _RichReplRuntime:
     def _sync_form_filter(self) -> None:
         if self._active_form is None or self._form_state is None:
             return
+        if self._form_state.busy:
+            # A submitted form is a frozen snapshot: the composer was reset
+            # for the next step, and syncing "" over the submitted value
+            # would blank the shape row and reflow the panel mid-await.
+            return
         form_panel.sync_filter(self._active_form, self._form_state, self._composer_text())
+
+    def form_is_busy(self) -> bool:
+        return self._form_state is not None and self._form_state.busy
 
     def _reset_composer_buffer(self) -> None:
         self._set_composer_text("")
@@ -798,7 +812,25 @@ class _RichReplRuntime:
             buffer.text = text
             buffer.cursor_position = len(text)
 
+    def _composer_cursor(self) -> int:
+        controller = self.composer_controller
+        buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
+        return int(getattr(buffer, "cursor_position", 0) or 0)
+
+    def _set_composer_cursor(self, cursor: int) -> None:
+        controller = self.composer_controller
+        buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
+        if buffer is not None:
+            buffer.cursor_position = max(0, min(cursor, len(buffer.text)))
+
     def open_form(self, spec: form_panel.FormSpec) -> None:
+        if self._active_form is None:
+            # A form is taking the composer over: stash any half-typed chat
+            # message. A chain step replacing an active (busy) form keeps
+            # the original stash: the whole chain is one form session.
+            text = self._composer_text()
+            if text:
+                self._chat_draft = (text, self._composer_cursor())
         self._active_form = spec
         self._form_state = form_panel.init_state(spec)
         self._reset_composer_buffer()
@@ -807,9 +839,17 @@ class _RichReplRuntime:
     def close_form(self) -> None:
         self._active_form = None
         self._form_state = None
+        draft = self._chat_draft
+        self._chat_draft = None
+        if draft is not None:
+            text, cursor = draft
+            self._set_composer_text(text)
+            self._set_composer_cursor(cursor)
 
     def move_form_selection(self, delta: int) -> bool:
         if self._active_form is None or self._form_state is None:
+            return False
+        if self.form_is_busy():
             return False
         self._sync_form_filter()
         moved = form_panel.move_selection(self._active_form, self._form_state, delta)
@@ -822,6 +862,8 @@ class _RichReplRuntime:
         # The composer is the live value (filter_text only tracks it as of the
         # last render), so hand it in and take the incoming step's draft back.
         if self._active_form is None or self._form_state is None:
+            return False
+        if self.form_is_busy():
             return False
         incoming = form_panel.move_tab(
             self._active_form,
@@ -838,6 +880,8 @@ class _RichReplRuntime:
     def toggle_form_option(self) -> bool:
         if self._active_form is None or self._form_state is None:
             return False
+        if self.form_is_busy():
+            return False
         self._sync_form_filter()
         toggled = form_panel.toggle_current(self._active_form, self._form_state)
         if toggled:
@@ -847,6 +891,13 @@ class _RichReplRuntime:
     def schedule_form_submit(self) -> bool:
         if self._active_form is None or self._form_state is None:
             return False
+        if self.form_is_busy():
+            # Already submitted; a second Enter must not double-fire the
+            # command. Returning True is what consumes the key here: the
+            # Enter binding chains on return value (False means "fall
+            # through to chat submit", which would send anything typed
+            # during the busy window as a chat message under an open form).
+            return True
         app = self.application
         if app is None:
             return False
@@ -857,6 +908,9 @@ class _RichReplRuntime:
         if self._active_form is None:
             return False
         title = self._active_form.title
+        # Drop the form-typed value FIRST: close_form restores any stashed
+        # chat draft into the composer, and a reset after would eat it.
+        self._reset_composer_buffer()
         self.close_form()
         # A dismissed approval/consent form is no longer "pending" for the
         # resolved-event close path: without clearing these, a later resolved
@@ -864,7 +918,6 @@ class _RichReplRuntime:
         # is open at that moment.
         self._pending_hook_approval_record = None
         self._pending_fallback_prompt_record = None
-        self._reset_composer_buffer()
         self.invalidate()
         app = self.application
         if app is not None:
@@ -888,11 +941,19 @@ class _RichReplRuntime:
     async def _submit_form_async(self) -> None:
         spec = self._active_form
         state = self._form_state
-        if spec is None or state is None:
+        if spec is None or state is None or state.busy:
             return
         self._sync_form_filter()
         result = form_panel.build_result(spec, state)
-        self.close_form()
+        # Busy phase (the opencode dialog idiom): the panel STAYS UP as a
+        # frozen snapshot with a "Working…" footer while the backend round
+        # trip runs, so a multi-second confirm window (the OAuth paste step
+        # polls for up to ~10s) reads as work in progress, not a dead
+        # prompt. Interaction no-ops except Esc, which dismisses the panel
+        # without cancelling the call. A follow-up step's open_form
+        # replaces the panel in place; closing before the await also used
+        # to shrink and regrow the pinned footer once per chain step.
+        state.busy = True
         self._reset_composer_buffer()
         self.invalidate()
         try:
@@ -900,6 +961,20 @@ class _RichReplRuntime:
         except Exception as exc:  # noqa: BLE001 - a form callback must not kill the REPL.
             await self._render_form_note(f"Form error: {exc.__class__.__name__}: {exc}")
             return
+        finally:
+            # Close the submitted form unless the result already replaced it
+            # (next chain step) or Esc dismissed it mid-flight. Reset the
+            # composer FIRST (the reset-then-close ordering every close site
+            # uses): the buffer stays live through the busy window, and
+            # anything typed there would otherwise survive into the chat
+            # composer UNMASKED the instant the spec (and its secret flag)
+            # drops, one Enter from chat history. A busy-window paste is
+            # discarded like form-typed text on cancel: predictable, and
+            # never a leak.
+            if self._active_form is spec:
+                self._reset_composer_buffer()
+                self.close_form()
+            self.invalidate()
         messages = list(getattr(command_result, "messages", ()) or ())
         if messages:
             await self._render_form_messages(messages)
@@ -1281,8 +1356,11 @@ class _RichReplRuntime:
         if record_id and self._pending_hook_approval_record == record_id:
             self._pending_hook_approval_record = None
             if self._active_form is not None:
-                self.close_form()
+                # Reset BEFORE close: close_form restores any stashed chat
+                # draft, and a reset after would eat it (this event-opened
+                # form is exactly the mid-typing case the stash exists for).
                 self._reset_composer_buffer()
+                self.close_form()
                 self.invalidate()
         outcome = str(getattr(event, "outcome", "") or "")
         tool_name = str(getattr(event, "tool_name", "") or "tool call")
@@ -1435,8 +1513,9 @@ class _RichReplRuntime:
         if record_id and self._pending_fallback_prompt_record == record_id:
             self._pending_fallback_prompt_record = None
             if self._active_form is not None:
-                self.close_form()
+                # Reset BEFORE close: see _on_hook_approval_resolved_event.
                 self._reset_composer_buffer()
+                self.close_form()
                 self.invalidate()
         outcome = str(getattr(event, "outcome", "") or "")
         resolved_by = str(getattr(event, "resolved_by", "") or "").strip()
