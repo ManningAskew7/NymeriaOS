@@ -46,6 +46,10 @@
   let commands = $state<SlashCommandInfo[]>([]);
   let commandsLoaded = $state(false);
   let commandsLoading = $state(false);
+  // Escape closes the palette until the "/" name-entry context is left and
+  // re-entered. Clearing commandsLoaded instead (the old behavior) re-armed
+  // the fetch effect, so the palette reopened on the next tick.
+  let paletteDismissed = $state(false);
   let highlightedCommandIndex = $state(0);
   let paletteRef = $state<HTMLDivElement | null>(null);
 
@@ -199,6 +203,7 @@
   );
   let showCommandPalette = $derived(
     isCommandNameEntry &&
+    !paletteDismissed &&
     filteredCommands.length > 0 &&
     !disabled &&
     !isStreaming
@@ -207,6 +212,12 @@
   $effect(() => {
     if (isCommandNameEntry && !commandsLoaded && !commandsLoading) {
       void loadCommands();
+    }
+  });
+
+  $effect(() => {
+    if (!isCommandNameEntry) {
+      paletteDismissed = false;
     }
   });
 
@@ -291,8 +302,7 @@
         return;
       }
       if (event.key === 'Escape') {
-        commands = [];
-        commandsLoaded = false;
+        paletteDismissed = true;
         return;
       }
     }
