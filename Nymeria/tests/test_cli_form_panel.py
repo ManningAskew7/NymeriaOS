@@ -437,4 +437,24 @@ def test_fragments_show_overflow_indicator() -> None:
     spec = _radio_spec([f"m{index:02d}" for index in range(15)])
     state = init_state(spec)
     rendered = _rendered(form_panel_fragments(spec, state, width=40))
-    assert "more below" in rendered
+    assert "↓ 5 more below" in rendered
+    assert "above" not in rendered
+
+
+def test_fragments_overflow_counts_both_directions() -> None:
+    # The window anchors the cursor at its last row once scrolling starts,
+    # so rows hide on BOTH sides; the indicator must name each side with
+    # its own count instead of blaming every hidden row on "below".
+    spec = _radio_spec([f"m{index:02d}" for index in range(15)])
+    state = init_state(spec)
+    for _ in range(11):  # cursor to index 11: window shows rows 2-11
+        move_selection(spec, state, 1)
+    rendered = _rendered(form_panel_fragments(spec, state, width=40))
+    assert "↑ 2 more above" in rendered
+    assert "↓ 3 more below" in rendered
+
+    for _ in range(3):  # cursor to the last row: everything hidden is above
+        move_selection(spec, state, 1)
+    bottom = _rendered(form_panel_fragments(spec, state, width=40))
+    assert "↑ 5 more above" in bottom
+    assert "below" not in bottom
