@@ -533,8 +533,10 @@ def _input_fragments(
     composer below is the only place the value can be typed, and a row shaped
     like `label: placeholder` read as a second, unreachable text box (reported
     from a real login, 2026-08-02: the user concluded the form was broken and
-    that typing in the composer was a workaround). The row points down at the
-    composer, keeps the placeholder as a dim example, and once text exists
+    that typing in the composer was a workaround). The row points UP at the
+    composer (the panel renders under the input area, so "below" pointed away
+    from it, reported same-day), keeps the placeholder as a dim example, and
+    once text exists
     reports only its shape (a character count): the value itself is drawn by
     the composer, where the caret actually is. A search field keeps its filter
     inline, because that one has no composer-side rendering of its own.
@@ -543,14 +545,14 @@ def _input_fragments(
     is_text = field_obj.kind == "text"
     text = state.filter_text
     if is_text:
-        prefix = "↓ "
+        prefix = "↑ "
         if state.busy:
             # The step is in flight: "Enter to submit" here would contradict
             # the Working footer (Enter is a no-op until the result lands).
             summary = f"{_value_summary(text)} · " if text else ""
             body_text = f"{summary}submitted, working…"
         elif not text:
-            body_text = "type or paste in the prompt below"
+            body_text = "type or paste in the prompt above"
             if field_obj.placeholder:
                 body_text += f" · e.g. {field_obj.placeholder}"
         else:
