@@ -599,7 +599,12 @@ def _list_fragments(
     desc_width = max(1, panel_width - name_width - FORM_PANEL_NAME_GUTTER)
 
     visible, window_start = _visible_window(options, max_rows=max_rows, selected_index=cursor)
-    hidden = len(options) - len(visible)
+    # Direction-honest overflow counts: the sliding window hides rows on
+    # BOTH sides once the cursor scrolls past the first page, and a single
+    # total labelled "below" miscounted the moment anything scrolled off
+    # the top.
+    hidden_above = window_start
+    hidden_below = len(options) - (window_start + len(visible))
 
     for offset, option in enumerate(visible):
         absolute = window_start + offset
@@ -620,8 +625,15 @@ def _list_fragments(
             line.append((base_style, " " * (panel_width - used)))
         lines.append(line)
 
-    if hidden > 0:
-        lines.append([("class:form-panel.more", _pad_line(f"↓ {hidden} more below", panel_width))])
+    if hidden_above or hidden_below:
+        parts = []
+        if hidden_above:
+            parts.append(f"↑ {hidden_above} more above")
+        if hidden_below:
+            parts.append(f"↓ {hidden_below} more below")
+        lines.append(
+            [("class:form-panel.more", _pad_line(" · ".join(parts), panel_width))]
+        )
     return lines
 
 
