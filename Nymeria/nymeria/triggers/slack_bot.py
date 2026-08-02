@@ -13,7 +13,6 @@ import json as _json
 import logging
 import re
 from dataclasses import dataclass
-from functools import partial
 from typing import Any, Dict, List, Mapping, Optional
 
 import httpx
@@ -420,13 +419,25 @@ class NymeriaSlackBot:
         if re.match(r"^![A-Za-z]", stripped_text):
             stripped_text = "/" + stripped_text[1:]
         if stripped_text.startswith("/"):
+
+            async def send_command_result(text: str) -> None:
+                # Slack's client swallows ANY message starting with "/", so
+                # every backticked command reference in backend copy ("Did
+                # you mean `/provider`?", usage strings, /help tables) must
+                # read "!" here or the advice is untypeable on this surface.
+                # The first path segment must end at whitespace or the
+                # closing backtick, so backticked file paths ("`/opt/...`")
+                # pass through untouched.
+                rewritten = re.sub(r"`/([a-z][a-z0-9_-]*)(`|\s)", r"`!\1\2", text)
+                await self._send_text(target, rewritten)
+
             handled = await forward_backend_command(
                 self.api,
                 stripped_text,
                 thread_id=thread_id,
                 user_id=user_id,
                 surface="slack",
-                send=partial(self._send_text, target),
+                send=send_command_result,
                 logger=logger,
             )
             if handled:
@@ -435,9 +446,16 @@ class NymeriaSlackBot:
         if active_key:
             self._remember_active_thread(active_key)
 
-        prompt = clean_text
-        if not is_dm:
-            prompt = f"[Slack <@{slack_user_id}> in {channel_id}]\n{clean_text}"
+        if stripped_text.startswith("/"):
+            # A chat_stream command fell through: the chat route detects it
+            # by FIRST TOKEN, so it must be the "!"-normalized text ("/skill
+            # x", not "!skill x") and must not carry the channel-context
+            # prefix below, which would hide the token mid-string.
+            prompt = stripped_text
+        else:
+            prompt = clean_text
+            if not is_dm:
+                prompt = f"[Slack <@{slack_user_id}> in {channel_id}]\n{clean_text}"
 
         await self._stream_to_slack(
             message=prompt,

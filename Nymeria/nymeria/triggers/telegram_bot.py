@@ -36,6 +36,7 @@ from .bot_helpers import (
     RESOLVER_UNAVAILABLE_SHORT,
     PlatformResolveUnavailableError,
     UserResolver,
+    forward_backend_command,
     http_error_detail,
 )
 from .telegram_format import (
@@ -1103,6 +1104,14 @@ class NymeriaTelegramBot:
             self._on_message,
         ))
 
+        # Catch-all backend passthrough for every command WITHOUT a native
+        # CommandHandler above. Must be registered after them: within a
+        # handler group the first match wins, so the named handlers keep
+        # their behavior and only unclaimed commands land here. Without
+        # this, Telegram silently drops unregistered slash commands while
+        # the "/" menu advertises the full backend catalog.
+        app.add_handler(MessageHandler(filters.COMMAND, self._on_unregistered_command))
+
         # Emoji reactions (message_reaction updates already arrive because
         # polling requests Update.ALL_TYPES). Registered unconditionally; the
         # TELEGRAM_REACTION_TRIGGER_ENABLED toggle gates inside the handler.
@@ -1258,6 +1267,90 @@ class NymeriaTelegramBot:
             text = "Done." if result.get("success") else "Command returned no output."
         for chunk in split_message(text, TELEGRAM_TEXT_LIMIT):
             await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+    async def _on_unregistered_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Generic backend passthrough for commands with no native handler.
+
+        Telegram silently drops a command update no ``CommandHandler``
+        claims, so before this handler existed a typo (``/provder``) and
+        most of the backend catalog (``/provider``, ``/skills``, ...)
+        produced nothing at all, while the "/" autocomplete menu advertised
+        them. Registered LAST in the group: the native handlers keep
+        winning, and everything else forwards to the backend command
+        service, which owns unknown-command copy ("Did you mean ...") and
+        every gate (admin, blocked surfaces). ``chat_stream`` commands
+        (``/skill``, ``/quick``, ...) fall through to the normal chat
+        stream, matching the Slack/WhatsApp/Teams generic passthrough.
+        """
+        if update.message is None or update.effective_chat is None:
+            return
+        text = (update.message.text or "").strip()
+        if not text.startswith("/"):
+            return
+        first, _, remainder = text.partition(" ")
+        addressed = False
+        if "@" in first:
+            # "/status@nymeria_bot" in groups: answer only when addressed to
+            # this bot (or when the suffix is empty/unknowable).
+            name, _, target_bot = first.partition("@")
+            bot_username = getattr(context.bot, "username", "") or ""
+            if target_bot and bot_username and target_bot.casefold() != bot_username.casefold():
+                return
+            addressed = bool(target_bot)
+            first = name
+        raw_command = f"{first} {remainder}".strip()
+
+        # In groups, claim only commands explicitly addressed to this bot
+        # (@suffix) or sent as a reply to it, mirroring _on_message's gate:
+        # a catch-all that answered every bare "/othercmd" would collide
+        # with other bots sharing the chat. DMs keep the full passthrough.
+        if update.effective_chat.type != "private" and not addressed:
+            reply = update.message.reply_to_message
+            if not (reply and reply.from_user and reply.from_user.id == context.bot.id):
+                return
+
+        user_id = await self._resolve_or_reject_update(update)
+        if user_id is None:
+            return
+        chat_id = update.effective_chat.id
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
+
+        async def send(markdown: str) -> None:
+            for chunk in split_message(markdown, TELEGRAM_TEXT_LIMIT):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+        handled = await forward_backend_command(
+            self.api,
+            raw_command,
+            thread_id=thread_id,
+            user_id=user_id,
+            surface="telegram",
+            send=send,
+            logger=logger,
+        )
+        if handled:
+            return
+        # Chat-stream commands ride the normal chat path, so they carry the
+        # same platform_origin as _on_message: omitting it CLEARS the
+        # per-thread origin registry (chat.py::_apply_platform_origin) and
+        # would kill the emoji-reaction path for exactly these turns.
+        message_id = getattr(update.message, "message_id", None)
+        await self._stream_to_chat(
+            chat_id=chat_id,
+            message=raw_command,
+            thread_id=thread_id,
+            user_id=user_id,
+            context=context,
+            telegram_user_id=update.effective_user.id if update.effective_user else None,
+            platform_origin={
+                "platform": "telegram",
+                "channel_id": str(chat_id),
+                "message_id": str(message_id),
+                "kind": "message",
+            } if message_id is not None else None,
+        )
 
     def _set_local_binding(self, chat_id: int, thread_id: str) -> None:
         """Update this bot's in-memory chat<->thread maps after an API move."""

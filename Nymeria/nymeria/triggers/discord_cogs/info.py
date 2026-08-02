@@ -34,6 +34,20 @@ DISCORD_LOCAL_COMMANDS = (
 )
 
 
+def _curated_command_name(usage: str) -> str:
+    """The qualified command name a curated usage string describes.
+
+    Takes the leading command tokens and stops at the first argument
+    placeholder: "/tools search <query>" -> "tools search".
+    """
+    parts: list[str] = []
+    for token in usage.lstrip("/").split():
+        if token.startswith(("<", "[")):
+            break
+        parts.append(token)
+    return " ".join(parts)
+
+
 class InfoCog(commands.Cog):
     def __init__(self, bot: NymeriaDiscordBot):
         self.bot = bot
@@ -272,6 +286,9 @@ class InfoCog(commands.Cog):
         name="help", description="Show Nymeria bot commands"
     )
     async def cmd_help(self, interaction: discord.Interaction):
+        # Defer immediately: user resolution is a backend call, and Discord's
+        # 3-second acknowledgement deadline is easy to miss without it.
+        await interaction.response.defer(ephemeral=True)
         user_id = await self.bot._resolve_or_reject_interaction(interaction)
         if user_id is None:
             return
@@ -282,71 +299,88 @@ class InfoCog(commands.Cog):
             color=discord.Color.purple(),
         )
 
+        # Only the registered app commands are listed. On Discord they are
+        # the ONLY invokable commands: the client refuses unregistered slash
+        # commands, and plain "/" text goes to the agent as chat. The old
+        # merged backend catalog advertised ~110 rows that could not be run
+        # here, and at ~9,600 chars it exceeded Discord's 6,000-char embed
+        # total, so /help itself failed with Discord's generic error. The
+        # live command tree is the source of truth; the curated
+        # DISCORD_LOCAL_COMMANDS rows override it where they exist (their
+        # usage strings show arguments).
         by_category: dict[str, list[str]] = {}
-
-        def _path_from_usage(usage: str) -> str:
-            parts = []
-            for token in usage.split():
-                token = token.lstrip("/")
-                if token.startswith(("<", "[")):
-                    break
-                parts.append(token)
-            return " ".join(parts)
-
-        local_paths = {
-            _path_from_usage(usage)
+        # A curated row replaces exactly the tree command it names (full
+        # qualified name, argument placeholders stripped), never its whole
+        # root: "/tools search <query>" must not swallow the other five
+        # /tools subcommands.
+        curated_names = {
+            _curated_command_name(usage)
             for _category, usage, _description in DISCORD_LOCAL_COMMANDS
         }
-        try:
-            commands = await self.bot.api.list_commands(
-                actor="user",
-                surface="discord",
-                user_id=user_id,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Could not fetch backend command catalog: %s", e)
-            commands = []
-
-        for item in commands:
-            name = str(item.get("name") or "").strip()
-            if not name or name in local_paths:
-                continue
-            usage = str(item.get("usage") or f"/{name}")
-            description = str(item.get("description") or "").rstrip(".")
-            by_category.setdefault(str(item.get("category") or "Global"), []).append(
-                f"`{usage}` - {description}."
-            )
-
+        tree = getattr(self.bot, "tree", None)
+        if tree is not None:
+            for command in sorted(
+                tree.walk_commands(), key=lambda c: c.qualified_name
+            ):
+                if isinstance(command, app_commands.Group):
+                    continue  # groups render through their subcommands
+                if command.qualified_name in curated_names or command.qualified_name == "help":
+                    continue
+                binding = getattr(command, "binding", None)
+                category = type(binding).__name__.removesuffix("Cog") if binding else "Other"
+                by_category.setdefault(category, []).append(
+                    f"`/{command.qualified_name}` - {command.description}"
+                )
         for category, usage, description in DISCORD_LOCAL_COMMANDS:
             by_category.setdefault(category, []).append(f"`{usage}` - {description}")
 
+        # Discord limits: 1,024 chars per field value, 6,000 per embed total.
+        total_chars = len(embed.title or "") + len(embed.description or "")
+        embed_full = False
         for category in sorted(by_category):
+            if embed_full:
+                break
             lines = by_category[category]
             chunk: list[str] = []
             current_len = 0
             part = 1
+
+            def _flush(name: str, values: list[str]) -> bool:
+                nonlocal total_chars
+                value = "\n".join(values)
+                if total_chars + len(name) + len(value) > 5600:
+                    embed.add_field(
+                        name="…",
+                        value="Truncated to fit Discord's embed size limit.",
+                        inline=False,
+                    )
+                    return False
+                embed.add_field(name=name, value=value, inline=False)
+                total_chars += len(name) + len(value)
+                return True
+
             for line in lines:
                 line_len = len(line) + 1
                 if chunk and current_len + line_len > 1000:
                     suffix = f" ({part})" if part > 1 else ""
-                    embed.add_field(
-                        name=f"{category}{suffix}",
-                        value="\n".join(chunk),
-                        inline=False,
-                    )
+                    if not _flush(f"{category}{suffix}", chunk):
+                        embed_full = True
+                        chunk = []
+                        break
                     chunk = []
                     current_len = 0
                     part += 1
                 chunk.append(line)
                 current_len += line_len
-            if chunk:
+            if chunk and not embed_full:
                 suffix = f" ({part})" if part > 1 else ""
-                embed.add_field(
-                    name=f"{category}{suffix}",
-                    value="\n".join(chunk),
-                    inline=False,
-                )
-
-        await interaction.response.send_message(
-            embed=embed, ephemeral=True
+                if not _flush(f"{category}{suffix}", chunk):
+                    embed_full = True
+        embed.set_footer(
+            text=(
+                "The full command catalog lives on the desktop app, CLI, and "
+                "other chat surfaces."
+            )
         )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)

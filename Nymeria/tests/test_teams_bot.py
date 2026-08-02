@@ -550,3 +550,31 @@ def test_non_capacity_stream_error_still_falls_back_to_sync() -> None:
         assert [entry["text"] for entry in client.sent] == ["fallback"]
 
     asyncio.run(run())
+
+
+def test_channel_chat_stream_command_falls_through_without_context_prefix() -> None:
+    # The "[Microsoft Teams ...]" prefix would hide the command token
+    # mid-string, and the chat route detects chat_stream commands by FIRST
+    # token, so a fell-through command must reach chat unprefixed.
+    api = FakeTeamsAPI()
+    client = FakeTeamsClient()
+    bot = NymeriaTeamsBot(api=api, teams_client=client)
+    api.command_result = {
+        "success": False,
+        "markdown": "**Error:** `/skill` is handled outside the command service.",
+        "data": {"execution_kind": "chat_stream"},
+    }
+
+    asyncio.run(
+        bot.handle_payload(
+            payload(
+                text="<at>Nymeria</at> /skill research",
+                conversation_id="19:channel;messageid=root-1",
+                conversation_type="channel",
+                mentioned=True,
+            )
+        )
+    )
+
+    assert len(api.chat_stream_calls) == 1
+    assert api.chat_stream_calls[0]["message"] == "/skill research"

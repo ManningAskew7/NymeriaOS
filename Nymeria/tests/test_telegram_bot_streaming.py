@@ -224,13 +224,14 @@ def _fake_update(
     telegram_user_id: int = 42,
     chat_id: int = 123,
     text: str = "hello",
+    chat_type: str = "private",
     callback_query: _FakeCallbackQuery | None = None,
 ):
     bot = _FakeBot()
     message = None if callback_query else _FakeMessage(bot, text=text, chat_id=chat_id)
     return SimpleNamespace(
         effective_user=SimpleNamespace(id=telegram_user_id),
-        effective_chat=SimpleNamespace(id=chat_id, type="private"),
+        effective_chat=SimpleNamespace(id=chat_id, type=chat_type),
         message=message,
         callback_query=callback_query,
     )
@@ -909,3 +910,201 @@ def test_telegram_command_registration_caps_at_telegram_limit():
     ]
     commands = _telegram_bot_commands_from_catalog(catalog)
     assert len(commands) == TELEGRAM_MAX_BOT_COMMANDS
+
+
+# ── Catch-all backend command passthrough ───────────────────────────────────
+
+
+def _command_context(bot=None, args=None):
+    return SimpleNamespace(bot=bot or _FakeBot(), args=args or [])
+
+
+def test_unregistered_command_forwards_to_backend():
+    api = _CaptureAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/provider list")
+    context = _command_context()
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    assert api.command_calls, "command should reach the backend service"
+    call = api.command_calls[0]
+    assert call["command"] == "/provider list"
+    assert call["surface"] == "telegram"
+    sent = "".join(msg.text for msg in context.bot.messages)
+    assert "backend result for /provider list" in sent
+
+
+def test_unregistered_command_typo_relays_backend_copy():
+    class _TypoAPI(_CaptureAPI):
+        async def execute_command(self, command: str, **kwargs):
+            self.command_calls.append({"command": command, **kwargs})
+            return {
+                "success": False,
+                "markdown": "**Error:** Unknown command `/provder`. Did you mean `/provider`? Use `/help`.",
+                "command": "provder",
+                "level": "error",
+                "data": None,
+            }
+
+    api = _TypoAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/provder list")
+    context = _command_context()
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    sent = "".join(msg.text for msg in context.bot.messages)
+    assert "Did you mean `/provider`?" in sent
+
+
+def test_unregistered_command_strips_own_bot_username_suffix():
+    api = _CaptureAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/provider@nymeria_bot list")
+    fake_bot = _FakeBot()
+    fake_bot.username = "nymeria_bot"
+    context = _command_context(bot=fake_bot)
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    assert api.command_calls[0]["command"] == "/provider list"
+
+
+def test_unregistered_command_ignores_other_bots_commands():
+    api = _CaptureAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/provider@other_bot list")
+    fake_bot = _FakeBot()
+    fake_bot.username = "nymeria_bot"
+    context = _command_context(bot=fake_bot)
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    assert api.command_calls == []
+    assert context.bot.messages == []
+
+
+def test_unregistered_command_chat_stream_falls_through_to_chat():
+    class _ChatStreamAPI(_CaptureAPI):
+        async def execute_command(self, command: str, **kwargs):
+            self.command_calls.append({"command": command, **kwargs})
+            return {
+                "success": False,
+                "markdown": "**Error:** `/quick` is handled outside the command service.",
+                "command": "quick",
+                "level": "error",
+                "data": {"execution_kind": "chat_stream"},
+            }
+
+    api = _ChatStreamAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    streamed: list[dict] = []
+
+    async def fake_stream(**kwargs):
+        streamed.append(kwargs)
+
+    bot._stream_to_chat = fake_stream
+    update = _fake_update(text="/quick what is 2+2")
+    update.message.message_id = 555
+    context = _command_context()
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    assert streamed and streamed[0]["message"] == "/quick what is 2+2"
+    # The non-executable refusal must NOT be relayed to the user.
+    assert context.bot.messages == []
+    # The fall-through rides the normal chat path, so it must carry the same
+    # platform_origin _on_message supplies (omitting it clears the origin
+    # registry and kills the emoji-reaction path for these turns).
+    origin = streamed[0]["platform_origin"]
+    assert origin is not None
+    assert origin["platform"] == "telegram"
+    assert origin["message_id"] == "555"
+
+
+def test_unregistered_command_ignored_in_groups_unless_addressed():
+    api = _CaptureAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/otherbotcmd", chat_type="group")
+    context = _command_context()
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    # A bare unregistered command in a group likely belongs to another bot:
+    # stay silent unless addressed (@suffix) or replied-to.
+    assert api.command_calls == []
+    assert context.bot.messages == []
+
+
+def test_unregistered_command_in_group_answers_when_addressed():
+    api = _CaptureAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/provider@nymeria_bot list", chat_type="group")
+    fake_bot = _FakeBot()
+    fake_bot.username = "nymeria_bot"
+    context = _command_context(bot=fake_bot)
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    assert api.command_calls and api.command_calls[0]["command"] == "/provider list"
+
+
+def test_unregistered_command_in_group_answers_reply_to_bot():
+    api = _CaptureAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/provider list", chat_type="group")
+    context = _command_context()
+    update.message.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=context.bot.id)
+    )
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    assert api.command_calls and api.command_calls[0]["command"] == "/provider list"
+
+
+def test_unregistered_command_unlinked_user_gets_link_copy():
+    api = _CaptureAPI(user_map={"42": None})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="/provider list")
+    context = _command_context()
+
+    asyncio.run(bot._on_unregistered_command(update, context))
+
+    assert api.command_calls == []
+    assert any("isn't linked" in reply for reply in update.message.replies)
+
+
+def test_catch_all_command_handler_is_registered_last():
+    from telegram.ext import CommandHandler, MessageHandler
+
+    api = _CaptureAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+
+    class _FakeApp:
+        def __init__(self):
+            self.handlers = []
+            self.error_handlers = []
+
+        def add_handler(self, handler):
+            self.handlers.append(handler)
+
+        def add_error_handler(self, handler):
+            self.error_handlers.append(handler)
+
+    app = _FakeApp()
+    bot._register_handlers(app)
+
+    message_handlers = [h for h in app.handlers if isinstance(h, MessageHandler)]
+    assert message_handlers, "expected message handlers"
+    catch_all = message_handlers[-1]
+    assert catch_all.callback == bot._on_unregistered_command
+    # The catch-all must come after every named CommandHandler so those keep
+    # winning within the handler group.
+    last_command_index = max(
+        index
+        for index, handler in enumerate(app.handlers)
+        if isinstance(handler, CommandHandler)
+    )
+    assert app.handlers.index(catch_all) > last_command_index
