@@ -34,6 +34,7 @@ from ..cliproxy.management_client import (
     CLIProxyUnsupported,
     SESSION_OK_GUARD_SECONDS,
     active_login_entry,
+    auth_entry_matches_spec,
     confirm_login_landed,
     import_auth_file,
     login_account_label,
@@ -119,8 +120,11 @@ async def ensure_claude_tool_prefix_disabled(client: CLIProxyManagementClient) -
     `CLIProxyManagementError` on failure; callers treat it as best-effort
     hardening and never fail a completed login over it.
     """
+    claude_spec = get_cliproxy_provider("claude")
     for entry in await client.list_auth_files():
-        if str(entry.get("provider") or "").lower() == "claude":
+        if claude_spec is not None and auth_entry_matches_spec(
+            entry, claude_spec
+        ):
             name = str(entry.get("name") or "")
             if name:
                 await client.ensure_tool_prefix_disabled(name)

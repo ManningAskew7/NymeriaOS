@@ -25,6 +25,8 @@ from nymeria.cliproxy.management_client import (
     CLIProxyNotFound,
     CLIProxyUnreachable,
     CLIProxyUnsupported,
+    active_login_entry,
+    auth_entry_matches_spec,
     confirm_login_landed,
 )
 
@@ -177,6 +179,64 @@ async def test_list_auth_files_accepts_both_response_shapes():
     assert await client.list_auth_files() == files
     client, _ = make_client(lambda request: httpx.Response(200, json=files))
     assert await client.list_auth_files() == files
+
+
+# ── auth-entry provider matching ────────────────────────────────────────────
+# The listed spelling is proxy-version-dependent: the pinned v7.1.61 binary
+# reports the gemini entry as provider "gemini-cli" (observed live
+# 2026-08-02, which made a completed Gemini login read as logged out) while
+# the catalog field, the auth file's own type field, and older binaries say
+# "gemini". Matching must accept the union per target.
+
+GEMINI_SPEC = get_cliproxy_provider("gemini-cli")
+GROK_SPEC = get_cliproxy_provider("grok")
+assert GEMINI_SPEC is not None and GROK_SPEC is not None
+
+
+def _entry(**fields):
+    return {"disabled": False, "unavailable": False, **fields}
+
+
+def test_active_login_entry_accepts_the_v7_listing_spelling():
+    entry = _entry(name="gemini-a.json", provider="gemini-cli")
+    assert active_login_entry([entry], GEMINI_SPEC) is entry
+
+
+def test_active_login_entry_accepts_the_catalog_spelling():
+    entry = _entry(name="gemini-a.json", provider="gemini")
+    assert active_login_entry([entry], GEMINI_SPEC) is entry
+
+
+def test_auth_entry_match_falls_back_to_type_when_provider_is_missing():
+    # Defensive: real v7 listings set provider and type together, but the
+    # auth file's own JSON carries only "type", so a file-shaped dict (or a
+    # binary that lists without provider) must still resolve.
+    entry = _entry(name="gemini-a.json", type="gemini")
+    assert active_login_entry([entry], GEMINI_SPEC) is entry
+
+
+def test_auth_entry_match_never_crosses_providers():
+    claude = _entry(name="claude-a.json", provider="claude")
+    assert active_login_entry([claude], GEMINI_SPEC) is None
+    assert auth_entry_matches_spec(claude, GEMINI_SPEC) is False
+    assert auth_entry_matches_spec(_entry(name="x.json"), GEMINI_SPEC) is False
+
+
+def test_auth_entry_match_accepts_both_grok_spellings():
+    # grok diverges by design (id "grok", file provider "xai"); both listed
+    # spellings must resolve to the grok target and to nothing else.
+    for spelling in ("xai", "grok"):
+        entry = _entry(name="xai-a.json", provider=spelling)
+        assert auth_entry_matches_spec(entry, GROK_SPEC) is True
+        assert auth_entry_matches_spec(entry, GEMINI_SPEC) is False
+
+
+def test_active_login_entry_still_skips_disabled_and_unavailable():
+    files = [
+        _entry(name="gemini-a.json", provider="gemini-cli", disabled=True),
+        _entry(name="gemini-b.json", provider="gemini-cli", unavailable=True),
+    ]
+    assert active_login_entry(files, GEMINI_SPEC) is None
 
 
 @pytest.mark.asyncio

@@ -138,6 +138,23 @@ def mint_gatekeeper_key() -> str:
     return "cpx-nymeria-" + secrets.token_urlsafe(24)
 
 
+def auth_entry_matches_spec(
+    entry: dict[str, Any], spec: CLIProxyProviderSpec
+) -> bool:
+    """Whether a listed auth-file entry belongs to this catalog target.
+
+    THE one provider-spelling comparison (consumers: login detection, the
+    two auth-file list filters, the import wrong-provider check, the
+    status badges). The listed spelling is version-dependent: v7 listings
+    report the target id ("gemini-cli") where the catalog field, the
+    file's own type, and older binaries say "gemini", so match against
+    the spec's accepted set and fall back to the entry's `type` when a
+    listing carries no `provider`.
+    """
+    provider = str(entry.get("provider") or entry.get("type") or "").lower()
+    return provider in spec.auth_file_providers
+
+
 def active_login_entry(
     files: Sequence[dict[str, Any]], spec: CLIProxyProviderSpec
 ) -> Optional[dict[str, Any]]:
@@ -149,7 +166,7 @@ def active_login_entry(
     """
     for entry in files:
         if (
-            str(entry.get("provider") or "").lower() == spec.auth_file_provider
+            auth_entry_matches_spec(entry, spec)
             and not entry.get("disabled")
             and not entry.get("unavailable")
         ):
@@ -644,8 +661,10 @@ async def import_auth_file(
             " that name; check the proxy's own management panel.",
             "",
         )
-    listed_provider = str(entry.get("provider") or "").lower()
-    if listed_provider != spec.auth_file_provider:
+    if not auth_entry_matches_spec(entry, spec):
+        listed_provider = str(
+            entry.get("provider") or entry.get("type") or ""
+        ).lower()
         return (
             "inactive",
             f"The proxy accepted {name} but parsed it as"
@@ -719,6 +738,7 @@ __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "SESSION_OK_GUARD_SECONDS",
     "active_login_entry",
+    "auth_entry_matches_spec",
     "configured_gatekeeper_keys",
     "confirm_login_landed",
     "import_auth_file",

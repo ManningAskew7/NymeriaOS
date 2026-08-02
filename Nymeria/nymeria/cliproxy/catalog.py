@@ -53,7 +53,33 @@ class CLIProxyProviderSpec:
     default_model: str = ""
     tos_warning: str = ""
     # The `provider` string this CLI's entries carry in GET /auth-files.
+    # NOT a single stable spelling across proxy versions: the auth FILE's
+    # own JSON carries the token type ("gemini", gemini_token.go), but the
+    # proxy's synthesizer rewrites gemini to "gemini-cli" on load
+    # (oauth_model_alias.go) and the listing is built from that rewritten
+    # value (auth_files.go); match via `auth_file_providers`.
     auth_file_provider: str = ""
+
+    @property
+    def auth_file_providers(self) -> tuple[str, ...]:
+        """Accepted spellings of a listed entry's provider for this target.
+
+        The union of `auth_file_provider` and the target id: the live
+        v7.1.61 proxy lists the gemini file as provider "gemini-cli" where
+        the catalog (and the file's own type field, and older binaries)
+        says "gemini"; dogfood-observed 2026-08-02, when the exact-match
+        read a completed Gemini login as logged-out. Also covers grok,
+        whose id ("grok") and file provider ("xai") diverge by design.
+        """
+        return tuple(
+            sorted(
+                {
+                    s.lower()
+                    for s in (self.auth_file_provider, self.id)
+                    if s
+                }
+            )
+        )
 
     @property
     def key_env_var(self) -> str:

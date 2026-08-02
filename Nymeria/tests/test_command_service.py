@@ -3423,6 +3423,37 @@ def test_http_client_cliproxy_facade_hits_the_admin_routes(
     assert verdict == {"verdict": "ok", "detail": "claude-opus-4-7"}
 
 
+def test_in_process_cliproxy_auth_files_filter_accepts_v7_spelling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The in-process twin's provider filter is the one the slim CLI hits;
+    it must keep both listed gemini spellings and drop other providers."""
+
+    class _FakeManagement:
+        async def list_auth_files(self):
+            return [
+                {"name": "gemini-a.json", "provider": "gemini-cli"},
+                {"name": "gemini-b.json", "provider": "gemini"},
+                {"name": "claude-c.json", "provider": "claude"},
+            ]
+
+    client = CommandBackendClient(
+        SimpleNamespace(),
+        user=_CommandBackendUser(id="alice", role="admin"),
+        settings_fn=lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        client, "_cliproxy_client_or_400", lambda: _FakeManagement()
+    )
+
+    files = run(client.cliproxy_auth_files("gemini-cli"))
+
+    assert [entry["name"] for entry in files] == [
+        "gemini-a.json",
+        "gemini-b.json",
+    ]
+
+
 def test_in_process_cliproxy_requires_admin() -> None:
     client = CommandBackendClient(
         SimpleNamespace(),

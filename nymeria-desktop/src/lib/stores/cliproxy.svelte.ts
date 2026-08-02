@@ -416,9 +416,18 @@ function createCLIProxyStore() {
     },
     authFilesFor(providerId: string): CLIProxyAuthFile[] {
       const spec = status?.providers.find((entry) => entry.id === providerId);
-      const fileProvider = spec?.auth_file_provider || providerId;
-      return authFiles.filter(
-        (file) => (file.provider || '').toLowerCase() === fileProvider
+      // The listed spelling varies by proxy version: v7 reports the target
+      // id ("gemini-cli") where the catalog field and older binaries say
+      // "gemini". The backend ships the accepted set; the local union is
+      // only a fallback for older backends without auth_file_providers.
+      const spellings = spec?.auth_file_providers?.length
+        ? spec.auth_file_providers
+        : [spec?.auth_file_provider, providerId];
+      const accepted = new Set(
+        spellings.filter(Boolean).map((value) => String(value).toLowerCase())
+      );
+      return authFiles.filter((file) =>
+        accepted.has(String(file.provider || file.type || '').toLowerCase())
       );
     },
     refresh,

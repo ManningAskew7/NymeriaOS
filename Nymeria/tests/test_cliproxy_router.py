@@ -437,6 +437,39 @@ def test_auth_files_filter_by_provider():
     assert [entry["name"] for entry in payload] == ["xai-c.json"]
 
 
+def test_auth_files_filter_accepts_both_gemini_spellings():
+    # v7 binaries list the entry as "gemini-cli", older ones as "gemini";
+    # the filter must keep both and still exclude other providers.
+    FakeManagementClient.auth_files = [
+        {"name": "gemini-a.json", "provider": "gemini-cli"},
+        {"name": "gemini-b.json", "provider": "gemini"},
+        {"name": "claude-c.json", "provider": "claude"},
+    ]
+    client, _, _ = make_app()
+    payload = client.get(
+        "/cliproxy/auth-files", params={"provider": "gemini-cli"}
+    ).json()
+    assert [entry["name"] for entry in payload] == [
+        "gemini-a.json",
+        "gemini-b.json",
+    ]
+
+
+def test_status_counts_a_v7_spelled_gemini_login():
+    # The live v7.1.61 listing spelling; exact-matching it against the
+    # catalog's "gemini" read a completed login as logged out.
+    FakeManagementClient.probed = {"gemini-cli": True}
+    FakeManagementClient.auth_files = [
+        {"name": "gemini-a.json", "provider": "gemini-cli", "disabled": False},
+    ]
+    client, _, _ = make_app()
+    by_id = {
+        p["id"]: p for p in client.get("/cliproxy/status").json()["providers"]
+    }
+    assert by_id["gemini-cli"]["logged_in"] is True
+    assert by_id["antigravity"]["logged_in"] is False
+
+
 def test_import_auth_file_confirms_active_login_and_runs_claude_fixup():
     """POST /cliproxy/auth-files ports the headless --cliproxy-auth-file
     ladder: upload, then CONFIRM an active login is listed (the confirm-

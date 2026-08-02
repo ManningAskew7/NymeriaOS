@@ -32,6 +32,7 @@ from ...cliproxy.management_client import (
     CLIProxyManagementError,
     CLIProxyNotFound,
     CLIProxyUnsupported,
+    auth_entry_matches_spec,
     configured_gatekeeper_keys,
     confirm_login_landed,
     import_auth_file,
@@ -83,6 +84,7 @@ def _provider_info(
         default_model=spec.default_model,
         tos_warning=spec.tos_warning,
         auth_file_provider=spec.auth_file_provider,
+        auth_file_providers=list(spec.auth_file_providers),
         supported=supported,
         logged_in=logged_in,
     )
@@ -229,9 +231,12 @@ async def _fixup_claude_auth_files(client: CLIProxyManagementClient) -> None:
     Inert on v7 binaries but required if the proxy is ever rolled back to
     v6.9.36. Best-effort: a failure here must not fail the login.
     """
+    claude_spec = get_cliproxy_provider("claude")
     try:
         for entry in await client.list_auth_files():
-            if str(entry.get("provider") or "").lower() != "claude":
+            if claude_spec is None or not auth_entry_matches_spec(
+                entry, claude_spec
+            ):
                 continue
             name = str(entry.get("name") or "")
             if name:
@@ -486,16 +491,19 @@ def create_cliproxy_router(
                 detail=str(error),
                 providers=[_provider_info(s) for s in list_cliproxy_providers()],
             )
-        active_providers = {
-            str(entry.get("provider") or "").lower()
+        active_entries = [
+            entry
             for entry in auth_files
             if not entry.get("disabled") and not entry.get("unavailable")
-        }
+        ]
         providers = [
             _provider_info(
                 spec,
                 supported=probed.get(spec.id),
-                logged_in=spec.auth_file_provider in active_providers,
+                logged_in=any(
+                    auth_entry_matches_spec(entry, spec)
+                    for entry in active_entries
+                ),
             )
             for spec in list_cliproxy_providers()
         ]
@@ -648,10 +656,7 @@ def create_cliproxy_router(
         if provider:
             spec = _require_spec(provider)
             files = [
-                entry
-                for entry in files
-                if str(entry.get("provider") or "").lower()
-                == spec.auth_file_provider
+                entry for entry in files if auth_entry_matches_spec(entry, spec)
             ]
         return files
 

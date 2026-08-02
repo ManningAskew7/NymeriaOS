@@ -1131,6 +1131,10 @@ export interface CLIProxyProviderInfo {
   default_model: string;
   tos_warning: string;
   auth_file_provider: string;
+  /** Accepted listed-provider spellings (version-dependent); filter with
+   * this, not by re-deriving from auth_file_provider. Absent on older
+   * backends. */
+  auth_file_providers?: string[];
   /** null when the proxy has not been probed (unconfigured/unreachable). */
   supported: boolean | null;
   logged_in: boolean | null;
