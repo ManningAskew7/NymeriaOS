@@ -177,7 +177,43 @@
     activeMcpToolCount !== null || activeSkillCount !== null ||
     triggerCount > 0 || hasInstructions || isCallable
   );
-  const chatStreamCommandRoots = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick']);
+  // Slash commands whose execution_kind is `chat_stream` on the backend must
+  // route through the /chat SSE endpoint, not /commands/execute. Derived
+  // from the backend catalog so new registrations cannot drift (the old
+  // hardcoded list was missing /done and /resume, which broke both here);
+  // the static fallback covers a failed catalog fetch.
+  const chatStreamFallbackRoots = new Set([
+    '/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick', '/done', '/resume'
+  ]);
+  let chatStreamRoots: Set<string> | null = null;
+  let chatStreamRootsPromise: Promise<Set<string>> | null = null;
+
+  function loadChatStreamRoots(): Promise<Set<string>> {
+    if (chatStreamRoots) return Promise.resolve(chatStreamRoots);
+    if (!chatStreamRootsPromise) {
+      chatStreamRootsPromise = api
+        .listCommands()
+        .then((commands) => {
+          const roots = new Set<string>();
+          for (const cmd of commands) {
+            if (cmd.execution_kind === 'chat_stream' && cmd.path.length > 0) {
+              roots.add(`/${cmd.path[0]}`);
+            }
+          }
+          chatStreamRoots = roots.size > 0 ? roots : chatStreamFallbackRoots;
+          return chatStreamRoots;
+        })
+        .catch(() => {
+          // Cache the fallback for this session: retrying on every send
+          // would re-toast the same transport error each time (listCommands
+          // routes failures through the shared error toast), and the
+          // fallback set matches the live chat_stream catalog.
+          chatStreamRoots = chatStreamFallbackRoots;
+          return chatStreamRoots;
+        });
+    }
+    return chatStreamRootsPromise;
+  }
 
   async function handleSend(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
@@ -193,19 +229,25 @@
 
     const trimmed = message.trim();
     const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
+    // Snapshot the streaming state BEFORE the first-send catalog await: a
+    // turn starting mid-await must not reroute this send into the queue
+    // gate (the backend's busy-thread prompt queue covers the stale-read
+    // race in the other direction).
+    const streamingAtSend = chatStore.isStreaming;
+    const isChatStreamCommand = slashRoot !== '' && (await loadChatStreamRoots()).has(slashRoot);
 
     // While streaming: queue the prompt sub-turn-style. Slash commands and
     // attachments cannot be queued (backend rejects), so fall back to the
     // pre-existing gate for those cases.
-    if (chatStore.isStreaming) {
+    if (streamingAtSend) {
       if (attachments && attachments.length > 0) return;
-      if (trimmed.startsWith('/') && !chatStreamCommandRoots.has(slashRoot)) return;
+      if (trimmed.startsWith('/') && !isChatStreamCommand) return;
       if (!threadsStore.currentThreadId) return;
       void queueOnBusyThread(trimmed);
       return;
     }
 
-    if (trimmed.startsWith('/') && !chatStreamCommandRoots.has(slashRoot) && (!attachments || attachments.length === 0)) {
+    if (trimmed.startsWith('/') && !isChatStreamCommand && (!attachments || attachments.length === 0)) {
       if (!threadsStore.currentThreadId) {
         const thread = threadsStore.createThread();
         threadsStore.selectThread(thread.id);

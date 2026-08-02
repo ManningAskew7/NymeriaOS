@@ -517,10 +517,42 @@
   // be routed through the /chat SSE endpoint, not /commands/execute (which
   // rejects them with "handled outside the command service"). The chat-stream
   // intercept in nymeria/api/routers/chat.py handles their state work + agent
-  // kickoff in one round-trip. Keep this list in sync with the
-  // `execution_kind="chat_stream"` registrations in command_service.py.
-  // TODO: make this data-driven via api.listCommands() with execution_kind.
-  const CHAT_STREAM_COMMAND_ROOTS = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick']);
+  // kickoff in one round-trip. Derived from the backend catalog so new
+  // registrations cannot drift (the old hardcoded list was missing /done and
+  // /resume, which broke both on this surface); the static fallback covers a
+  // failed catalog fetch.
+  const CHAT_STREAM_FALLBACK_ROOTS = new Set([
+    '/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick', '/done', '/resume'
+  ]);
+  let chatStreamRoots: Set<string> | null = null;
+  let chatStreamRootsPromise: Promise<Set<string>> | null = null;
+
+  function loadChatStreamRoots(): Promise<Set<string>> {
+    if (chatStreamRoots) return Promise.resolve(chatStreamRoots);
+    if (!chatStreamRootsPromise) {
+      chatStreamRootsPromise = api
+        .listCommands()
+        .then((commands) => {
+          const roots = new Set<string>();
+          for (const cmd of commands) {
+            if (cmd.execution_kind === 'chat_stream' && cmd.path.length > 0) {
+              roots.add(`/${cmd.path[0]}`);
+            }
+          }
+          chatStreamRoots = roots.size > 0 ? roots : CHAT_STREAM_FALLBACK_ROOTS;
+          return chatStreamRoots;
+        })
+        .catch(() => {
+          // Cache the fallback for this session: retrying on every send
+          // would re-toast the same transport error each time (listCommands
+          // routes failures through the shared error toast), and the
+          // fallback set matches the live chat_stream catalog.
+          chatStreamRoots = CHAT_STREAM_FALLBACK_ROOTS;
+          return chatStreamRoots;
+        });
+    }
+    return chatStreamRootsPromise;
+  }
 
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
@@ -536,12 +568,17 @@
 
     const trimmed = message.trim();
     const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
-    const isChatStreamCommand = CHAT_STREAM_COMMAND_ROOTS.has(slashRoot);
+    // Snapshot the streaming state BEFORE the first-send catalog await: a
+    // turn starting mid-await must not reroute this send into the queue
+    // gate (the backend's busy-thread prompt queue covers the stale-read
+    // race in the other direction).
+    const streamingAtSend = chatStore.isStreaming;
+    const isChatStreamCommand = slashRoot !== '' && (await loadChatStreamRoots()).has(slashRoot);
 
     // While streaming: queue the prompt sub-turn-style. Slash commands and
     // attachments cannot be queued (backend rejects), so fall back to today's
     // "do nothing" gate for those cases.
-    if (chatStore.isStreaming) {
+    if (streamingAtSend) {
       if (attachments && attachments.length > 0) return;
       if (trimmed.startsWith('/') && !isChatStreamCommand) return;
       if (!threadsStore.currentThreadId) return;

@@ -174,6 +174,9 @@ export interface SlashCommandInfo {
   danger_level: 'safe' | 'normal' | 'dangerous';
   execution_kind: 'command' | 'chat_stream' | 'surface_local';
   note?: string | null;
+  blocked_surfaces?: string[];
+  blocked_reason?: string | null;
+  examples?: string[];
 }
 
 export interface CommandExecuteResponse {
