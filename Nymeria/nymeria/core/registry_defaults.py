@@ -320,10 +320,10 @@ def register_default_commands(service: "CommandService") -> None:
     )
     service.register(
         "provider",
-        description="Show the active LLM provider and credential status",
+        description="Show the active LLM provider, or browse one provider's actions",
         category="LLM",
-        usage="/provider [setup|list|set|switch|test|cliproxy|reasoning-passback]",
-        examples=("/provider list", "/provider switch anthropic"),
+        usage="/provider [<provider>|setup|list|set|switch|test|cliproxy|reasoning-passback]",
+        examples=("/provider anthropic", "/provider switch anthropic thread"),
     )
     # No chat-bot surfaces and no agent: the typed fallback path is
     # "/provider setup key <secret>", which on a chat platform would persist
@@ -398,13 +398,20 @@ def register_default_commands(service: "CommandService") -> None:
     )
     service.register(
         "provider switch",
-        description="Switch the active LLM provider",
+        description="Switch the active LLM provider globally or for this thread",
         category="LLM",
-        usage="/provider switch <provider>",
+        usage="/provider switch <provider> [global|thread]",
         aliases=("provider_switch",),
-        requires_admin=True,
+        # No requires_admin: the gate is per-scope in the handler (global
+        # needs admin, thread scope is any user's own override; the /model
+        # shape). Backlog #138 tracks per-user provider config.
         mutates_state=True,
         danger_level="normal",
+        note="Global scope is admin-only; thread scope is any user's own override.",
+        examples=(
+            "/provider switch openrouter",
+            "/provider switch anthropic thread",
+        ),
     )
     service.register(
         "provider reasoning-passback",

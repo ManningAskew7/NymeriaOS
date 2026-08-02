@@ -1317,8 +1317,8 @@ def test_provider_show_degrades_when_env_listing_is_admin_gated() -> None:
 def test_provider_root_attaches_the_providers_cliproxy_form() -> None:
     """Bare /provider keeps its markdown and declares the two-layer entry
     point: a Providers tab (registry-wide, tier-grouped) submitting into
-    the chained /provider setup flow, and a CLIProxy tab listing the
-    subscription-OAuth catalog behind /provider cliproxy."""
+    the per-provider ACTION step (/provider <name>), and a CLIProxy tab
+    listing the subscription-OAuth catalog behind /provider cliproxy."""
     api = FakeCommandApi()
     api.env_set_keys = {"openai_api_key"}
 
@@ -1330,10 +1330,10 @@ def test_provider_root_attaches_the_providers_cliproxy_form() -> None:
     assert form is not None
     assert form["version"] == 1
     assert form["title"] == "Provider"
-    assert form["submit"] == {"command": "provider setup {provider}"}
+    assert form["submit"] == {"command": "provider {provider}"}
     labels = [tab["label"] for tab in form["tabs"]]
     assert labels == ["Providers", "CLIProxy"]
-    assert form["tabs"][0]["submit"] == {"command": "provider setup {provider}"}
+    assert form["tabs"][0]["submit"] == {"command": "provider {provider}"}
     assert form["tabs"][1]["submit"] == {"command": "provider cliproxy {target}"}
 
     fields = form["tabs"][0]["fields"]
@@ -1386,16 +1386,321 @@ def test_provider_cliproxy_reports_target_route_and_management_status() -> None:
     assert "Unknown CLIProxy target" in unknown.markdown
 
 
-def test_provider_root_skips_the_form_for_non_admins() -> None:
-    """The picker's submit targets (switch/test) are admin-registered, so a
-    caller the context marks non-admin gets markdown only."""
+def test_provider_root_gives_non_admins_the_picker_without_cliproxy() -> None:
+    """The picker now submits into the ungated action step, so non-admins
+    browse too (their action step offers the thread scope); only the
+    CLIProxy tab, whose submit target refuses them, is dropped. The agent
+    actor gets the same treatment (provider cliproxy is agent_allowed
+    False)."""
     api = FakeCommandApi()
 
     result = _run_command(api, "/provider", is_admin=False)
 
     assert result.success is True
     assert "Active provider" in result.markdown
+    form = (result.data or {}).get("form")
+    assert form is not None
+    labels = [tab["label"] for tab in form["tabs"]]
+    assert labels == ["Providers"]
+    assert form["tabs"][0]["submit"] == {"command": "provider {provider}"}
+
+    agent_result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="agent",
+                surface="agent",
+                is_admin=None,
+            ),
+            "/provider",
+            api=api,
+        )
+    )
+    agent_form = (agent_result.data or {}).get("form")
+    assert agent_form is not None
+    assert [tab["label"] for tab in agent_form["tabs"]] == ["Providers"]
+
+
+def test_provider_action_step_offers_use_setup_cliproxy_and_test() -> None:
+    """/provider <name> is the per-provider action step: status markdown
+    plus tabs of next moves, each submitting a REAL registered command so
+    the dispatch gate stays the only authorization layer."""
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider anthropic")
+
+    assert result.success is True
+    assert "Provider: Anthropic" in result.markdown
+    assert "missing key" in result.markdown  # credential row, trio provider
+    # The markdown fallback names every typed equivalent.
+    assert "/provider switch anthropic [global|thread]" in result.markdown
+    assert "/provider setup anthropic" in result.markdown
+    assert "/provider cliproxy claude" in result.markdown
+    assert "/provider test anthropic" in result.markdown
+
+    form = (result.data or {}).get("form")
+    assert form is not None
+    assert form["title"] == "Provider: Anthropic"
+    labels = [tab["label"] for tab in form["tabs"]]
+    # anthropic has a CLIProxy OAuth target (claude), so all four tabs.
+    assert labels == ["Use", "Set up", "CLIProxy", "Test"]
+    submits = {tab["label"]: tab["submit"]["command"] for tab in form["tabs"]}
+    assert submits == {
+        "Use": "provider switch anthropic {scope}",
+        "Set up": "provider setup {method}",
+        "CLIProxy": "provider cliproxy {target}",
+        "Test": "provider test {probe}",
+    }
+    by_label = {tab["label"]: tab for tab in form["tabs"]}
+    scope_ids = [
+        option["id"] for option in by_label["Use"]["fields"][0]["options"]
+    ]
+    assert scope_ids == ["thread", "global"]
+    # Single-option tabs carry a LIVE token of their command (the client's
+    # confirm dismisses quietly when no substituted value is selected, so a
+    # placeholder-free button tab would never submit).
+    assert [o["id"] for o in by_label["Set up"]["fields"][0]["options"]] == [
+        "anthropic"
+    ]
+    assert [o["id"] for o in by_label["Test"]["fields"][0]["options"]] == [
+        "anthropic"
+    ]
+    assert "claude" in [
+        o["id"] for o in by_label["CLIProxy"]["fields"][0]["options"]
+    ]
+    # Distinct field keys per tab (the /think cursor-parking trap).
+    keys = [tab["fields"][0]["key"] for tab in form["tabs"]]
+    assert len(keys) == len(set(keys))
+    assert "sk-" not in str(form)
+
+
+def test_provider_action_step_without_cliproxy_target_or_thread() -> None:
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id=None,
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/provider groq",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    assert "GROQ_API_KEY" in result.markdown  # untracked provider env hint
+    form = (result.data or {}).get("form")
+    assert form is not None
+    labels = [tab["label"] for tab in form["tabs"]]
+    # groq has no OAuth target; no thread context, so scope offers global only.
+    assert labels == ["Use", "Set up", "Test"]
+    by_label = {tab["label"]: tab for tab in form["tabs"]}
+    scope_ids = [
+        option["id"] for option in by_label["Use"]["fields"][0]["options"]
+    ]
+    assert scope_ids == ["global"]
+
+
+def test_provider_action_step_marks_current_scopes() -> None:
+    api = FakeCommandApi()
+    api.thread_config["llm_config"] = {"provider": "anthropic"}
+
+    result = _run_command(api, "/provider anthropic")
+
+    assert "this thread's override" in result.markdown
+    form = (result.data or {}).get("form")
+    scope = {
+        option["id"]: option
+        for option in form["tabs"][0]["fields"][0]["options"]
+    }
+    assert scope["thread"]["current"] is True
+    assert scope["global"]["current"] is False
+
+    active = _run_command(api, "/provider openai")
+    assert "the global default" in active.markdown
+    active_form = (active.data or {}).get("form")
+    active_scope = {
+        option["id"]: option
+        for option in active_form["tabs"][0]["fields"][0]["options"]
+    }
+    assert active_scope["global"]["current"] is True
+
+
+def test_provider_action_step_non_admin_gets_thread_scope_only() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider anthropic", is_admin=False)
+
+    assert result.success is True
+    # The markdown offers only what the caller can run.
+    assert "/provider switch anthropic" in result.markdown
+    assert "/provider setup" not in result.markdown
+    assert "/provider test" not in result.markdown
+    form = (result.data or {}).get("form")
+    assert form is not None
+    labels = [tab["label"] for tab in form["tabs"]]
+    assert labels == ["Use"]
+    scope_ids = [
+        option["id"] for option in form["tabs"][0]["fields"][0]["options"]
+    ]
+    assert scope_ids == ["thread"]
+
+
+def test_provider_action_step_agent_actor_omits_the_secret_flows() -> None:
+    # provider setup / cliproxy are agent_allowed=False at dispatch; the
+    # action step mirrors that cosmetically so the agent is never handed a
+    # submit it cannot run. Switch and test stay (agent context is
+    # is_admin=None, and the gates block only on a definite False).
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="agent",
+                surface="agent",
+                is_admin=None,
+            ),
+            "/provider anthropic",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    assert "/provider setup" not in result.markdown
+    assert "/provider cliproxy" not in result.markdown
+    assert "/provider test anthropic" in result.markdown
+    form = (result.data or {}).get("form")
+    assert form is not None
+    labels = [tab["label"] for tab in form["tabs"]]
+    assert labels == ["Use", "Test"]
+
+
+def test_provider_action_step_unknown_provider() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider bogus")
+
+    assert result.success is False
+    assert "Unknown provider" in result.markdown
+    assert "/provider list" in result.markdown
+
+
+def test_provider_action_step_suggests_mistyped_subcommands() -> None:
+    # One token is valid grammar now, so "/provider lst" reaches the
+    # action step; the guidance layer's suggestion must survive instead
+    # of misdiagnosing the typo as an unknown provider.
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider lst")
+
+    assert result.success is False
+    assert "Usage:" in result.markdown
+    assert "Did you mean `/provider list`?" in result.markdown
+
+
+def test_provider_action_step_resolves_stored_aliases() -> None:
+    # llm_provider and the thread override may hold a registry ALIAS
+    # (claude -> anthropic); a casefold-only compare read the provider as
+    # idle, dropped the "In use as" row, and parked the scope radio on
+    # "thread" instead of the current "global" (review finding F1).
+    class AliasedApi(FakeCommandApi):
+        async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+            settings = await super().get_settings(user_id=user_id)
+            settings["llm_provider"] = "claude"
+            return settings
+
+    api = AliasedApi()
+
+    result = _run_command(api, "/provider anthropic")
+
+    assert "the global default" in result.markdown
+    form = (result.data or {}).get("form")
+    scope = {
+        option["id"]: option
+        for option in form["tabs"][0]["fields"][0]["options"]
+    }
+    assert scope["global"]["current"] is True
+
+    # Same for a thread override stored as an alias.
+    plain = FakeCommandApi()
+    plain.thread_config["llm_config"] = {"provider": "claude"}
+    threaded = _run_command(plain, "/provider anthropic")
+    assert "this thread's override" in threaded.markdown
+    thread_scope = {
+        option["id"]: option
+        for option in (threaded.data or {})["form"]["tabs"][0]["fields"][0]["options"]
+    }
+    assert thread_scope["thread"]["current"] is True
+
+    # The bare card shares the fix: an aliased active provider keeps its
+    # real credential status instead of "not managed by /provider".
+    bare_api = AliasedApi()
+    bare_api.env_set_keys = {"anthropic_api_key"}
+    bare = _run_command(bare_api, "/provider")
+    assert "authenticated" in bare.markdown
+    assert "not managed by /provider" not in bare.markdown
+
+
+def test_provider_action_step_blocked_surface_drops_secret_flows() -> None:
+    # provider setup / cliproxy carry blocked_surfaces for chat platforms
+    # (typed keys persist in platform history); the action step's offers
+    # derive from the registry flags, so a telegram admin is not invited
+    # to run commands execute() will refuse.
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="telegram",
+                is_admin=True,
+            ),
+            "/provider anthropic",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    assert "/provider setup" not in result.markdown
+    assert "/provider cliproxy" not in result.markdown
+    assert "/provider test anthropic" in result.markdown
+    form = (result.data or {}).get("form")
+    assert [tab["label"] for tab in form["tabs"]] == ["Use", "Test"]
+
+
+def test_provider_action_step_act_line_matches_available_scopes() -> None:
+    # Non-admin without a thread: neither switch scope applies, no form,
+    # and the markdown must not advertise a switch the gate refuses.
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id=None,
+                actor="user",
+                surface="cli",
+                is_admin=False,
+            ),
+            "/provider groq",
+            api=api,
+        )
+    )
+
+    assert result.success is True
     assert not (result.data or {}).get("form")
+    assert "Act:" not in result.markdown
+    assert "/provider switch" not in result.markdown
+
+    # Non-admin WITH a thread: the act line names the one usable scope.
+    threaded = _run_command(api, "/provider groq", is_admin=False)
+    assert "/provider switch groq thread" in threaded.markdown
+    assert "[global|thread]" not in threaded.markdown
 
 
 def test_provider_list_groups_by_tier_without_secrets() -> None:
@@ -1489,6 +1794,136 @@ def test_provider_switch_accepts_any_registered_provider() -> None:
     assert unknown.success is False
     assert "Unknown provider" in unknown.markdown
     assert "/provider list" in unknown.markdown
+
+
+def test_provider_switch_thread_scope_writes_the_thread_override() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider switch anthropic thread")
+
+    assert result.success is True
+    assert "Provider for this thread set to Anthropic" in result.markdown
+    # Same up-front credential honesty as the global scope: a thread
+    # switched to an unconfigured provider fails at turn time.
+    assert "no server credential" in result.markdown
+    # The thread inherits the global model; say it stays put.
+    assert "effective model (gpt-test) stays" in result.markdown
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "llm_config": {"provider": "anthropic"}},
+    ) in api.calls
+    # The global provider is untouched.
+    assert not [
+        call
+        for call in api.calls
+        if call[0] == "update_settings" and "llm_provider" in call[2]
+    ]
+
+
+def test_provider_switch_thread_scope_requires_an_active_thread() -> None:
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id=None,
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/provider switch anthropic thread",
+            api=api,
+        )
+    )
+    assert result.success is False
+    assert "requires an active thread" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+def test_provider_switch_scopes_gate_admin_per_scope() -> None:
+    # Global is the admin surface; thread scope is any user's own override
+    # (the /model precedent). The registry deliberately carries no
+    # requires_admin so the split lives in the handler.
+    api = FakeCommandApi()
+
+    denied = _run_command(api, "/provider switch groq global", is_admin=False)
+    assert denied.success is False
+    assert "requires an admin user" in denied.markdown
+    # The refusal offers the scope the caller CAN use.
+    assert "/provider switch groq thread" in denied.markdown
+    assert not [
+        call
+        for call in api.calls
+        if call[0] == "update_settings" and "llm_provider" in call[2]
+    ]
+
+    allowed = _run_command(api, "/provider switch groq thread", is_admin=False)
+    assert allowed.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "llm_config": {"provider": "groq"}},
+    ) in api.calls
+
+
+def test_provider_switch_agent_context_keeps_both_scopes() -> None:
+    # The agent runs commands with is_admin=None (tools/slash_command.py
+    # builds the context without resolving the role); the gate blocks only
+    # on a definite False, so the agent keeps the global switch it has
+    # always had, and gains nothing stronger from the thread scope.
+    api = FakeCommandApi()
+    service = CommandService()
+
+    def _agent_run(command: str):
+        return run(
+            service.execute(
+                CommandContext(
+                    user_id="alice",
+                    thread_id="thread-1",
+                    actor="agent",
+                    surface="agent",
+                    is_admin=None,
+                ),
+                command,
+                api=api,
+            )
+        )
+
+    global_result = _agent_run("/provider switch anthropic")
+    assert global_result.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_provider": "anthropic"},
+    ) in api.calls
+
+    thread_result = _agent_run("/provider switch anthropic thread")
+    assert thread_result.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "llm_config": {"provider": "anthropic"}},
+    ) in api.calls
+
+
+def test_provider_switch_rejects_bad_scope_and_extra_args() -> None:
+    api = FakeCommandApi()
+
+    bad_scope = _run_command(api, "/provider switch anthropic sideways")
+    assert bad_scope.success is False
+    assert "scope must be 'global' or 'thread'" in bad_scope.markdown
+
+    extra = _run_command(api, "/provider switch anthropic thread now")
+    assert extra.success is False
+    assert "Usage: /provider switch <provider> [global|thread]" in extra.markdown
+
+    assert not [
+        call
+        for call in api.calls
+        if call[0] in ("update_thread_config",)
+        or (call[0] == "update_settings" and "llm_provider" in call[2])
+    ]
 
 
 def test_provider_test_uses_spec_default_model_for_inactive_provider() -> None:
@@ -3098,10 +3533,13 @@ def test_help_command_renders_card_with_subcommands_and_examples() -> None:
     result = run(CommandService().execute(_ctx(), "/help provider", api=FakeCommandApi()))
     assert result.success is True
     assert result.markdown.startswith("## /provider")
-    assert "Usage: `/provider [setup|list|set|switch|test|cliproxy|reasoning-passback]`" in result.markdown
+    assert (
+        "Usage: `/provider [<provider>|setup|list|set|switch|test|cliproxy|reasoning-passback]`"
+        in result.markdown
+    )
     assert "| setup |" in result.markdown
     assert "Examples:" in result.markdown
-    assert "`/provider switch anthropic`" in result.markdown
+    assert "`/provider switch anthropic thread`" in result.markdown
 
 
 def test_help_command_card_filters_subcommands_by_surface() -> None:
@@ -3203,9 +3641,16 @@ def test_blocked_surface_does_not_gate_cli() -> None:
 
 
 def test_root_usage_errors_render_from_registry() -> None:
-    result = run(CommandService().execute(_ctx(), "/provider bogus", api=FakeCommandApi()))
+    # One arg is the per-provider action step now, so the /provider usage
+    # error needs two stray tokens.
+    result = run(
+        CommandService().execute(_ctx(), "/provider bogus extra", api=FakeCommandApi())
+    )
     assert result.success is False
-    assert "Usage: `/provider [setup|list|set|switch|test|cliproxy|reasoning-passback]`" in result.markdown
+    assert (
+        "Usage: `/provider [<provider>|setup|list|set|switch|test|cliproxy|reasoning-passback]`"
+        in result.markdown
+    )
     assert "See `/help provider`." in result.markdown
 
     result = run(CommandService().execute(_ctx(), "/mcp bogus", api=FakeCommandApi()))

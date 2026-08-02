@@ -2791,6 +2791,7 @@ class CommandService:
             actor=actor,
             is_admin=ctx.is_admin,
             service=self,
+            surface=ctx.effective_surface,
         )
 
         method_name = "_cmd_" + "_".join(definition.path)
@@ -3217,6 +3218,7 @@ class _CommandExecutor(
         actor: str = "user",
         is_admin: bool | None = None,
         service: "CommandService | None" = None,
+        surface: str | None = None,
     ):
         self.api = api
         self.thread_id = thread_id or ""
@@ -3224,8 +3226,14 @@ class _CommandExecutor(
         self.actor = actor
         # The context's admin verdict (None = unknown). Handlers use it only
         # for cosmetic gating (e.g. not attaching a form whose submit targets
-        # are admin-only); authorization stays at the dispatch gate.
+        # are admin-only); authorization stays at the dispatch gate. The one
+        # handler-level use that LOOKS like enforcement (/provider switch's
+        # global scope) is still cosmetic: the settings write it guards is
+        # independently admin-gated in the backend client.
         self.is_admin = is_admin
+        # The context's effective surface, for _command_offerable's
+        # blocked_surfaces axis (None = unknown, treated as unblocked).
+        self.surface = surface
         # The service that dispatched this request (None when a test builds
         # the executor directly; _usage_error then falls back to the process
         # default registry).
@@ -3258,6 +3266,30 @@ class _CommandExecutor(
             parts.append(hint)
         parts.append(f"See `/help {info.name}`.")
         return " ".join(parts)
+
+    def _command_offerable(self, name: str) -> bool:
+        """Whether the dispatch gate would let THIS caller run ``name``.
+
+        The cosmetic-visibility twin of ``execute()``'s enforcement,
+        derived from the registry so it cannot drift from the flags (the
+        ``_subcommand_denied_for_actor`` rationale: a hand-written
+        condition is a second copy of the flags and drifts the moment a
+        registration changes). Covers all three gate axes: admin (blocking
+        only on a definite False, mirroring the gate), agent_allowed, and
+        blocked_surfaces. Used to decide which actions a form tab or an
+        "Act:" line OFFERS; authorization stays in ``execute()``.
+        """
+        service = self._service or get_command_service()
+        info = service.find_command(name)
+        if info is None:
+            return False
+        if info.requires_admin and self.is_admin is False:
+            return False
+        if self.actor == "agent" and not info.agent_allowed:
+            return False
+        if self.surface and self.surface in info.blocked_surfaces:
+            return False
+        return True
 
     def _agent(self) -> Any | None:
         agent = getattr(self.api, "agent", None)
