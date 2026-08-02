@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -96,6 +96,11 @@ class CliproxyCommandsMixin:
         "[Error]: No CLIProxy login is in progress (or it expired). "
         "Start one with /provider cliproxy <target>."
     )
+    # Paste-time confirm window: ~10s total. Long enough for post-callback
+    # provider onboarding (see the loop comment in _cliproxy_paste), short
+    # enough that a genuinely stuck login still hands back a prompt.
+    _PASTE_CONFIRM_ATTEMPTS = 6
+    _PASTE_CONFIRM_DELAY_SECONDS = 2.0
 
     async def _cmd_provider_cliproxy(
         self, args: list[str], rest: str
@@ -125,7 +130,7 @@ class CliproxyCommandsMixin:
                     )
                 if pending.oauth_state:
                     return self._cliproxy_login_rail(
-                        pending, spec, note_lines=note
+                        pending, spec, note_lines=note, fresh_rail=True
                     )
                 return await self._cliproxy_target(spec)
             return await self._cliproxy_overview()
@@ -434,10 +439,25 @@ class CliproxyCommandsMixin:
         spec: "CLIProxyProviderSpec",
         *,
         note_lines: list[str] | None = None,
+        active_step: Literal["input", "status"] = "input",
+        fresh_rail: bool = False,
     ) -> CommandOutput:
-        """The login rail: full auth URL, remote guidance, paste + status."""
-        lines = list(note_lines or [])
-        lines.append(f"Log in to {spec.label}: open this URL in a browser.")
+        """The login rail: full auth URL, remote guidance, paste + status.
+
+        ``active_step`` picks the tab the form opens on: ``"input"`` (the
+        paste tab; the default for a fresh rail) or ``"status"`` (used when
+        the next sensible action is a status check, e.g. a delivered but
+        not-yet-confirmed callback). Device flows have no paste tab and
+        always land on Status.
+
+        ``fresh_rail`` marks a render whose rail content is NEW to this
+        surface (the bare-command resume): such a response must not attach
+        ``notes``, or a form-rendering client would print only the note and
+        drop the auth URL, the one thing a resumed user came back for. The
+        paste/check re-rails leave it False: there the rail was printed one
+        step ago and only the delta is news.
+        """
+        lines = [f"Log in to {spec.label}: open this URL in a browser."]
         lines.append(pending.auth_url or "(no auth URL; restart the login)")
         hint = self._cliproxy_tunnel_hint(pending.auth_url)
         if hint:
@@ -489,13 +509,14 @@ class CliproxyCommandsMixin:
                 submit_command="provider cliproxy paste {callback}",
             )
             tabs.extend([paste_tab, status_tab])
-            active_tab = paste_tab
+            active_tab = status_tab if active_step == "status" else paste_tab
         return chain_form_output(
             f"CLIProxy login: {spec.label}",
             tabs,
             active_tab,
             lines,
             fallback_text=f"Logging in to {spec.label}.",
+            notes=[] if fresh_rail else list(note_lines or []),
         )
 
     async def _cliproxy_paste(
@@ -606,12 +627,18 @@ class CliproxyCommandsMixin:
         # the server-confirmed status keeps trusting this session); give
         # the proxy a moment to persist the auth file, then confirm (the
         # status is server-confirmed against the auth-file list, never the
-        # bare poll).
-        for attempt in range(2):
+        # bare poll). The window is ~10s, not one or two polls: some
+        # providers do real work between the callback and the auth file
+        # (measured 2026-08-02: Gemini's GCP project onboarding took ~5s,
+        # so a ~1.5s window made the success rail unreachable on paste).
+        for attempt in range(self._PASTE_CONFIRM_ATTEMPTS):
             status, detail = await self._cliproxy_poll_once(pending, spec)
             if status == "ok":
                 return await self._cliproxy_confirmed(pending, spec, detail)
             if status == "error":
+                # Past the paste: re-pasting the same callback cannot fix a
+                # failed login, so land on Status (like every post-delivery
+                # rail; the note says how to restart).
                 return self._cliproxy_login_rail(
                     pending,
                     spec,
@@ -620,6 +647,7 @@ class CliproxyCommandsMixin:
                         f"Login failed: {detail}" if detail else "Login failed.",
                         "Restart the login to try again.",
                     ],
+                    active_step="status",
                 )
             if status == "unreachable":
                 return self._cliproxy_login_rail(
@@ -630,17 +658,21 @@ class CliproxyCommandsMixin:
                         f"Could not check the login status: {detail}",
                         "Try: /provider cliproxy check",
                     ],
+                    active_step="status",
                 )
-            if attempt == 0:
-                await asyncio.sleep(1)
+            if attempt < self._PASTE_CONFIRM_ATTEMPTS - 1:
+                await asyncio.sleep(self._PASTE_CONFIRM_DELAY_SECONDS)
         return self._cliproxy_login_rail(
             pending,
             spec,
             note_lines=notes
             + [
                 "Callback delivered; the proxy has not confirmed the login"
-                " yet. Check the status in a moment."
+                " yet (some providers finish account onboarding a few"
+                " seconds after the callback). Check the status in a"
+                " moment; this is not a failure sign."
             ],
+            active_step="status",
         )
 
     async def _cliproxy_check(
@@ -661,6 +693,7 @@ class CliproxyCommandsMixin:
                 pending,
                 spec,
                 note_lines=["Still waiting for the login to complete."],
+                active_step="status",
             )
         if status == "unreachable":
             return self._cliproxy_login_rail(
@@ -670,6 +703,7 @@ class CliproxyCommandsMixin:
                     f"Could not check the login status: {detail}",
                     "Try again in a moment.",
                 ],
+                active_step="status",
             )
         return self._cliproxy_login_rail(
             pending,
@@ -678,6 +712,7 @@ class CliproxyCommandsMixin:
                 f"Login failed: {detail}" if detail else "Login failed.",
                 "Restart the login to try again.",
             ],
+            active_step="status",
         )
 
     async def _cliproxy_poll_once(
@@ -784,6 +819,10 @@ class CliproxyCommandsMixin:
         active_tab, _decided, guidance = chain[-1]
         tabs = [self._cliproxy_target_tab(pending, spec)]
         tabs.extend(tab for tab, _d, _l in chain)
+        # No notes here, deliberately: this chain's guidance is load-bearing
+        # beyond the panel (the degraded-model-list honesty line, and the
+        # Apply step's review table, which is the confirmation summary for a
+        # GLOBAL route change). Notes-only printing would drop both.
         return chain_form_output(
             f"CLIProxy route: {spec.label}",
             tabs,

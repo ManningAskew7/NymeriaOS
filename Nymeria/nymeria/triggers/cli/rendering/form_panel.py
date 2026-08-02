@@ -133,6 +133,9 @@ class FormState:
     # restores it: navigating the rail must never destroy a typed value (a
     # pasted OAuth callback is unrecoverable once dropped).
     drafts: dict[int, str] = field(default_factory=dict)
+    # Submitted and awaiting the backend: the panel stays up as a frozen
+    # snapshot (footer says so), interaction is a no-op except Esc-dismiss.
+    busy: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -385,7 +388,14 @@ def build_result(spec: FormSpec, state: FormState) -> FormResult:
 # --------------------------------------------------------------------------- #
 
 
+_BUSY_FOOTER = "Working… · Esc dismiss"
+
+
 def _footer_hint(spec: FormSpec, state: FormState) -> str:
+    if state.busy:
+        # The submitted step is in flight; the server-worded hint describes
+        # keys that are currently no-ops, so the busy line wins over it.
+        return _BUSY_FOOTER
     if spec.footer_hint:
         return spec.footer_hint
     if not has_navigable_list(spec, state):
@@ -517,34 +527,46 @@ def _input_fragments(
     state: FormState,
     panel_width: int,
 ) -> list[tuple[str, str]]:
-    """Render the composer-fed line: the search filter or a text value.
+    """Render the composer-fed line: the search filter or a text step's row.
 
-    A text field reports its SHAPE (a character count), never its value: the
-    composer already draws the value, and drawing it twice reads as two input
-    boxes. A search field keeps its filter inline, because that one has no
-    composer-side rendering of its own.
+    A text step's row is an INSTRUCTION, never an input look-alike: the
+    composer below is the only place the value can be typed, and a row shaped
+    like `label: placeholder` read as a second, unreachable text box (reported
+    from a real login, 2026-08-02: the user concluded the form was broken and
+    that typing in the composer was a workaround). The row points down at the
+    composer, keeps the placeholder as a dim example, and once text exists
+    reports only its shape (a character count): the value itself is drawn by
+    the composer, where the caret actually is. A search field keeps its filter
+    inline, because that one has no composer-side rendering of its own.
     """
 
     is_text = field_obj.kind == "text"
-    prefix = f"{field_obj.label or 'Input'}: " if is_text else "Filter: "
     text = state.filter_text
-    if not text:
-        body_text = field_obj.placeholder or (
-            "type, then Enter" if is_text else "type to filter"
-        )
-        body_style = "class:form-panel.placeholder"
-    elif is_text:
-        # A text step's value is drawn by the composer, which is where the caret
-        # actually is; echoing it here too is what read as two separate input
-        # boxes. Report its shape instead, so a long masked paste (an OAuth
-        # callback runs ~330 chars of bullets) is still verifiable at a glance.
-        body_text = _value_summary(text)
+    if is_text:
+        prefix = "↓ "
+        if state.busy:
+            # The step is in flight: "Enter to submit" here would contradict
+            # the Working footer (Enter is a no-op until the result lands).
+            summary = f"{_value_summary(text)} · " if text else ""
+            body_text = f"{summary}submitted, working…"
+        elif not text:
+            body_text = "type or paste in the prompt below"
+            if field_obj.placeholder:
+                body_text += f" · e.g. {field_obj.placeholder}"
+        else:
+            body_text = f"{_value_summary(text)} · Enter to submit"
         body_style = "class:form-panel.placeholder"
     else:
-        # A search field keeps its inline text: it is short, unmasked, and sits
-        # directly above the list it filters, where it reads as context.
-        body_text = text
-        body_style = "class:form-panel.search"
+        prefix = "Filter: "
+        if not text:
+            body_text = field_obj.placeholder or "type to filter"
+            body_style = "class:form-panel.placeholder"
+        else:
+            # A search field keeps its inline text: it is short, unmasked, and
+            # sits directly above the list it filters, where it reads as
+            # context.
+            body_text = text
+            body_style = "class:form-panel.search"
     body = _fit_cell(body_text, max(1, panel_width - cell_len(prefix)))
     padding = " " * max(0, panel_width - cell_len(prefix) - cell_len(body))
     return [

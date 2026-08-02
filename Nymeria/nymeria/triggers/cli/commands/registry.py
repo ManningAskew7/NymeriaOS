@@ -7,7 +7,10 @@ import shlex
 import textwrap
 from collections.abc import Iterable
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from rich.text import Text
 
 from .base import (
     Command,
@@ -53,11 +56,69 @@ class RichConsoleCommandOutputSink:
             "warning": "yellow",
             "error": "red",
         }.get(message.level, "")
-        content = message.content
+        content = _strip_markdown_artifacts(message.content)
+        heading, content = _split_markdown_heading(content)
+        if heading:
+            heading_text = _inline_markdown_text(heading)
+            heading_text.stylize(f"bold {style}".strip())
+            self.console.print(heading_text)
+            if not content:
+                return
+        body = _inline_markdown_text(content)
         if style:
-            self.console.print(f"[{style}]{content}[/{style}]")
-        else:
-            self.console.print(content)
+            body.stylize(style)
+        self.console.print(body)
+
+
+def _inline_markdown_text(content: str) -> "Text":
+    """Backend command markdown as a styled, markup-safe Rich Text.
+
+    Reuses the streaming path's line-preserving inline renderer
+    (``render_inline_rich``): `**bold**`/`*italic*`/`` `code` `` become
+    styled spans, and the input is rich-escaped first, so literal
+    brackets in command output (``[logged in: ...]`` badges) can never be
+    swallowed as Rich markup. Deliberately NOT the block renderer
+    (``print_rich_markdown``): that one reflows, and command output
+    depends on space-aligned columns.
+    """
+
+    from ..rendering.markdown import render_inline_rich
+    from ..theme import DEFAULT_CLI_THEME
+
+    from rich.text import Text
+
+    return Text("\n").join(
+        render_inline_rich(line, theme=DEFAULT_CLI_THEME)
+        for line in content.split("\n")
+    )
+
+
+def _strip_markdown_artifacts(content: str) -> str:
+    """Convert the backend's legacy-prefix markdown into plain styled text.
+
+    ``command_service._format_legacy_output`` wraps results in a small,
+    fixed markdown vocabulary (`**Error:**`/`**Done.**` prefixes, a
+    ``### `` first-line heading) for GUI surfaces that render markdown.
+    This console prints raw text, so translate the artifacts instead of
+    showing their syntax (the prefix becomes the message level's style,
+    which inline bold alone would not carry). Backlog #132 (typed command
+    results) retires the prefixes at the source; this stays a display
+    concern until then.
+    """
+
+    for marker, plain in (("**Error:**", "Error:"), ("**Done.**", "Done.")):
+        if content.startswith(marker):
+            return plain + content[len(marker):]
+    return content
+
+
+def _split_markdown_heading(content: str) -> tuple[str, str]:
+    """Split a leading ``### `` heading off: (heading, remainder)."""
+
+    first, sep, rest = content.partition("\n")
+    if first.startswith("### "):
+        return first[4:].strip(), rest if sep else ""
+    return "", content
 
 
 class CommandRegistry:

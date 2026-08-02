@@ -16,6 +16,7 @@ behind the version number later):
       "version": 1,
       "title": str,
       "footer_hint": str | None,
+      "notes": [str, ...] | absent,
       "tabs": [{"label": str,
                 "submit": {"command": str} | absent,
                 "active": bool | absent,
@@ -50,6 +51,9 @@ out of its input history; secrets must NEVER be echoed back into form
 payloads, which ship to every frontend). A tab holds at most ONE typed
 input (search or text) because rich clients feed it from their single
 composer line, and needs a typed input or an option list to be renderable.
+
+``notes`` (optional, chained commands) carries the step's DELTA lines; see
+:func:`chain_form_output`. Clients that predate it ignore an unknown key.
 
 ``active: true`` on a tab asks the client to OPEN the form on that tab
 (first active tab wins; absent means the first tab). Chained multi-step
@@ -219,12 +223,27 @@ def chain_form_output(
     title: str,
     tabs: list[dict[str, Any]],
     active_tab: dict[str, Any],
-    lines: list[str],
+    guidance: list[str],
     *,
     fallback_text: str,
+    notes: list[str] | None = None,
 ) -> CommandOutput:
     """Render one chained-command response: tabs, one active, guidance
-    markdown (the step-rail idiom the module docstring describes)."""
+    markdown (the step-rail idiom the module docstring describes).
+
+    ``notes`` are this step's DELTA lines (what just happened: "Callback
+    delivered", "Login failed: ..."), attached as ``form["notes"]``. A
+    form-rendering client MAY print only the notes instead of the full
+    markdown, so the EMITTER'S DUTY is to attach notes only on a response
+    whose ``guidance`` is redundant with what that surface already printed
+    (a re-render of a rail shown one step ago). A step whose guidance is
+    load-bearing beyond the panel (a review/confirmation table, an auth
+    URL the user has not seen, an honesty caveat like a degraded model
+    list) must pass everything through ``guidance`` and no notes. When
+    notes are attached, the markdown is composed HERE as notes + guidance,
+    so the fallback always contains every note by construction: a
+    form-less surface can never see less than a form-rendering one.
+    """
 
     active_tab["active"] = True
     submit = active_tab.get("submit") or {}
@@ -234,7 +253,12 @@ def chain_form_output(
         submit_command=str(submit.get("command") or ""),
         footer_hint=chain_footer(active_tab, len(tabs)),
     )
-    text = "\n".join(line for line in lines if line) or fallback_text
+    cleaned_notes = [note for note in (notes or []) if note]
+    if cleaned_notes:
+        form["notes"] = cleaned_notes
+    text = "\n".join(
+        line for line in [*cleaned_notes, *guidance] if line
+    ) or fallback_text
     return CommandOutput("[Info]: " + text, data=command_data(form=form))
 
 
