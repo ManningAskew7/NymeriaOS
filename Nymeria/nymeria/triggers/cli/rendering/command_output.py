@@ -83,9 +83,9 @@ class RichConsoleCommandOutputSink:
         # normalizes newlines, and the inline renderer never emits \r).
         content = str(message.content or "")
         glyph, level_slot, content = _pop_level_signal(content, message.level)
-        if glyph and not content.strip():
-            # A bare glyph line carries no information; empty content
-            # prints nothing at every level.
+        if not content.strip():
+            # Nothing to say prints nothing at every level: a bare ✗ / !
+            # glyph line carries no information.
             return
         previous: MarkdownBlock | None = None
         if glyph:
@@ -109,6 +109,18 @@ class RichConsoleCommandOutputSink:
             else:
                 print_rich_markdown(self.console, block.text, theme=self.theme)
             previous = effective
+        # Every rendered message ends with one blank line, the transcript's
+        # TRAILING-edge separation idiom (the streaming renderer blanks
+        # after each assistant body, the welcome header after itself).
+        # Without it, consecutive command outputs printed flush, gluing
+        # one output's heading to the previous output's last line
+        # (dogfood report, 2026-08-02). A leading blank was tried first
+        # and review-rejected: the predecessor sites above already end
+        # blank, so it double-blanked after headers and agent text. A
+        # final rule is the one kind Rich already trails with a blank, so
+        # it carries the separation itself.
+        if previous is not None and previous.kind != "hr":
+            self.console.print()
 
     def _glyph_line(self, text: str, glyph: str, level_slot: str) -> Text:
         """Gutter glyph plus the inline-rendered first line.

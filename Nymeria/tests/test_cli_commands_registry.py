@@ -307,7 +307,15 @@ def _sink(console: Any, theme: Any = None):
 def _sink_output(message: CommandMessage, theme: Any = None) -> list[Any]:
     console = _RecordingConsole()
     _sink(console, theme).emit(message)
-    return console.printed
+    printed = console.printed
+    if printed:
+        # Every rendered message ends with one blank line (transcript
+        # block separation, asserted in its own test); drop it here so
+        # the tests assert the content shape. An hr-final message ends
+        # on the rule instead (Rich trails rules with the blank itself).
+        if printed[-1] == "":
+            printed = printed[:-1]
+    return printed
 
 
 def _plains(printed: list[Any]) -> list[str]:
@@ -635,3 +643,41 @@ def test_sink_empty_content_prints_nothing() -> None:
     # A level glyph with nothing to say must not print a bare ✗ / ! line.
     assert _sink_output(CommandMessage("", level="error")) == []
     assert _sink_output(CommandMessage("   \n  ", level="warning")) == []
+
+
+def test_sink_each_emit_ends_with_one_blank_line() -> None:
+    # Consecutive command outputs share one console (the transcript);
+    # without a per-message trailing blank the next output's heading
+    # prints flush against this output's last line (dogfood report,
+    # 2026-08-02). Trailing edge, not leading: the surrounding transcript
+    # sites (assistant bodies, the welcome header) already end blank, so
+    # a leading blank double-blanked after both (review-caught). Empty
+    # emits contribute nothing, not even the blank.
+    console = _command_console(60)
+    sink = _sink(console)
+    sink.emit(CommandMessage("### First\n\nbody one"))
+    sink.emit(CommandMessage(""))
+    sink.emit(CommandMessage("### Second\n\nbody two"))
+    lines = [line.rstrip() for line in console.export_text().splitlines()]
+    assert lines == [
+        "  First",
+        "",
+        "  body one",
+        "",
+        "  Second",
+        "",
+        "  body two",
+        "",
+    ]
+
+
+def test_sink_final_rule_carries_the_trailing_blank_itself() -> None:
+    # Rich already trails a rendered rule with a blank line (width-padded
+    # spaces); the sink must not stack a second one after an hr-final
+    # message.
+    tail = [
+        line.rstrip()
+        for line in _rendered_output(CommandMessage("text\n\n---")).splitlines()
+    ]
+    assert tail[-1] == ""
+    assert tail[-2] != ""
