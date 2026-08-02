@@ -1438,10 +1438,25 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "mutates_state": false,
     "danger_level": "safe",
     "execution_kind": "command",
-    "note": null
+    "note": null,
+    "blocked_surfaces": [],
+    "blocked_reason": null,
+    "examples": []
   }
 ]
 ```
+
+`surfaces` filters DISCOVERY only (menus, the `/help` index and `/help all`
+table, this endpoint): `execute()` deliberately ignores it so bots can
+forward surface-hidden subcommands like `/hook create`. The per-command help
+card (`/help <cmd>`) filters its subcommand table by the ENFORCED axes
+instead, so a chat surface sees every subcommand the bot passthrough can
+actually execute there. `blocked_surfaces` is the enforced axis: execution
+on a listed surface is refused with a markdown error that includes
+`blocked_reason` and the surfaces the command is available on. As of
+2026-08-02 it is set on `provider setup` and `provider cliproxy`, whose
+typed flows would persist secrets in chat-platform message history.
+`examples` carries ready-to-paste invocations for help renderers.
 
 ```http
 POST /commands/execute
@@ -1478,6 +1493,19 @@ the caller to route it through chat streaming instead; that refusal carries
 `data: {"execution_kind": "chat_stream"}` so generic passthroughs (the
 chat-platform bots) can detect it structurally and re-route the raw command
 text into their normal chat path instead of string-matching the error copy.
+The desktop and mobile composers derive their chat-stream routing set from
+this discovery field too, so new `chat_stream` registrations need no client
+change.
+
+**Guidance behavior (2026-08-02).** Unknown commands and unknown subcommands
+answer with a nearest-match suggestion ("Did you mean `/provider`?") derived
+from the registry. Bare `/help` returns a compact per-category index of root
+commands; `/help all` returns the full usage table; `/help <command>` (and
+`/<command> help`, including group roots like `/tools help`) returns one
+command's card: usage, subcommands visible on the calling surface, aliases,
+access notes, and `examples`. Family roots given a bad or missing subcommand
+render their usage error from the registered `usage` string plus the derived
+subcommand list, ending with a pointer to `/help <command>`.
 
 `data` is usually `null`. On success it may carry the structured payloads of
 the declarative form contract (schema owned by `core/command_forms.py`):

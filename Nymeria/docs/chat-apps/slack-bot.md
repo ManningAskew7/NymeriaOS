@@ -144,7 +144,14 @@ forwarding; in channels, the mention form (`@Nymeria /status`) also arrives
 intact because the `/` is not at the start of the raw message. Any message
 starting with `!` immediately followed by a letter is treated as a command
 attempt, so chat that begins that way (`!important ...`) returns an unknown
-command error; reword it or drop the leading `!`.
+command error; reword it or drop the leading `!`. Because a leading `/` is
+untypeable on Slack, command results rewrite every backtick-quoted command
+reference (`/help`, a suggested `/provider`, usage strings) to the `!`
+prefix before posting; backticked file paths keep their slash.
+Chat-stream commands that fall through (`!skill`,
+`!quick`, ...) reach the chat route as their normalized `/` form with no
+channel-context prefix, so they are detected correctly in channels too
+(fixed 2026-08-02).
 
 Other messages are sent to Nymeria as chat turns.
 

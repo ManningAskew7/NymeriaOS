@@ -73,6 +73,8 @@ Discord slash commands are synced **per-guild** in the `on_ready` hook  -  the b
 - **After adding/removing/renaming slash commands**, you must restart the bot container so `on_ready` fires and pushes the updated tree to Discord.
 - Sync is near-instant for guild commands (unlike global commands which can take up to an hour).
 - The Discord client may take a few seconds to refresh its autocomplete cache  -  if new commands don't appear immediately, close and reopen the slash command menu.
+- Guilds joined **after** startup are synced by an `on_guild_join` handler (2026-08-02), so they get slash commands without a restart.
+- App-command failures render an honest ephemeral "Command failed" via a `tree.on_error` handler instead of Discord's generic "did not respond" copy.
 
 ```bash
 # Restart to sync new/changed commands
@@ -87,10 +89,13 @@ docker logs nymeria-discord-bot --tail 15
 
 Discord keeps the slash-command declarations local because Discord needs a
 static command tree, but duplicated global command bodies are thin wrappers over
-the backend command registry (`POST /commands/execute`). `/help` builds a merged
-catalog from backend global commands plus Discord-local commands such as
-`/ask`, `/stop`, `/clear`, `/compact`, `/export`, `/show-tools`, and
-`/channel-context`.
+the backend command registry (`POST /commands/execute`). `/help` lists the
+registered app commands only, derived from the live command tree plus the
+curated Discord-local rows (2026-08-02). It used to merge in the full backend
+catalog, which advertised ~110 commands unreachable on Discord and overflowed
+Discord's 6,000-character embed total, so `/help` itself failed; the full
+catalog lives on the desktop app, CLI, and the passthrough-capable chat
+surfaces.
 
 ### Chat
 

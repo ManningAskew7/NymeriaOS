@@ -114,10 +114,27 @@ canonical backend paths such as `/tools core`, `/memory save`, `/todos add`,
 commands such as `/bind`, `/switch`, `/new`, `/showtools`, and chat-control
 commands remain local to the bot.
 
+Every command WITHOUT a native handler is caught by a generic passthrough
+(registered last, 2026-08-02) and forwarded verbatim to the backend command
+service, so the full catalog works from Telegram: `/provider list`,
+`/skills`, `/doctor`, `/thread list`, and every future registered command.
+A typo answers with the backend's "Unknown command ... Did you mean ...?"
+copy instead of Telegram's old silent drop, and commands that execute as
+chat turns (`/skill`, `/quick`, ...) fall through into the normal chat
+stream. In group chats the passthrough only claims commands explicitly
+addressed to the bot (`/cmd@botname`) or sent as a reply to it, so other
+bots' commands in a shared chat stay unanswered; DMs need no addressing.
+Per-surface and admin gating apply (`surface="telegram"`); the two
+secret-typing flows (`/provider setup`, `/provider cliproxy`) are refused
+here with an explanation, since anything typed in chat persists in platform
+history.
+
 The Telegram command menu and `/help` output are generated from the merged
 catalog of backend global commands plus Telegram-local commands. Backend grouped
 paths are displayed as Telegram-safe flat command names, for example
 `/tools_core` and `/todo_add`, without duplicating their canonical backend rows.
+Telegram caps the menu at 100 entries, so the menu can omit some commands;
+they still execute via the passthrough.
 
 During streamed replies, Telegram surfaces compaction events instead of hiding them: `compacting` sends a short italic status, `compacted` sends a compact "Context compacted" HTML notice with a summary preview, and resumed assistant output continues in normal response bubbles after the notice.
 
