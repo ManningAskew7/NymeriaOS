@@ -47,6 +47,13 @@ data/
 *.db
 *.db-journal
 
+# Local operational state and scratch, never image content. NB dockerignore
+# patterns are NOT gitignore: *.db above matches only at the context root,
+# so nested artifacts (runs/blended_eval/*.db) must be excluded by directory.
+runs/
+local_models/
+tmp/
+
 # Logs
 *.log
 
