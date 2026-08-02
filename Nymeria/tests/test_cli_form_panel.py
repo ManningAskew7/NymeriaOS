@@ -125,7 +125,9 @@ def test_text_only_tab_renders_input_line_and_text_footer() -> None:
     # look-alike (`label: placeholder` read as a second, unreachable input;
     # the label lives on the composer prompt, which IS the field).
     assert "API key:" not in rendered
-    assert "↓ type or paste in the prompt below" in rendered
+    # Points UP: the panel renders under the composer, so the instruction
+    # must aim at it (a "below" arrow pointed away, reported 2026-08-02).
+    assert "↑ type or paste in the prompt above" in rendered
     assert "e.g. sk-..." in rendered  # placeholder demoted to an example
     assert "Enter submit" in rendered
 
