@@ -1,7 +1,13 @@
 # Tools Index
 
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
-Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
+Regenerate from `Nymeria/` with:
+`python3 scripts/generate_tools_index.py > docs/agent-systems/tools-index.md`
+
+This is an AST walk over statically defined tools, so it cannot list
+dynamically constructed ones: the per-thread `Skill` meta-tool,
+callable-thread and kit-template tools, custom HTTP/Python tools,
+`mcp__*` tools, or workflow tools.
 
 **1238 tools found.**
 
