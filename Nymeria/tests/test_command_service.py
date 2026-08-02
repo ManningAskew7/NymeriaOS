@@ -1285,7 +1285,7 @@ def test_settings_get_and_set_delegate_to_config_handlers() -> None:
 
     unknown = _run_command(api, "/settings frobnicate")
     assert unknown.success is False
-    assert "Usage: /settings" in unknown.markdown
+    assert "Usage: `/settings [show|get <key>|set <key> <value>]`" in unknown.markdown
 
 
 # ── /provider family ────────────────────────────────────────────────────────
@@ -1636,7 +1636,7 @@ def test_help_is_generated_from_canonical_metadata_without_group_duplicates() ->
                 surface="desktop",
                 is_admin=False,
             ),
-            "/help",
+            "/help all",
             api=FakeCommandApi(),
         )
     )
@@ -2460,7 +2460,7 @@ def test_usage_rejects_stray_argument() -> None:
     result = run(service.execute(_cli_ctx(), "/usage bogus", api=_UsageStatsCommandApi()))
 
     assert result.success is False
-    assert "Usage: /usage" in result.markdown
+    assert "Usage: `/usage [session]`" in result.markdown
 
 
 def test_format_thread_usage_compact_cap_honors_trigger_tokens() -> None:
@@ -3035,3 +3035,221 @@ def test_in_process_cliproxy_unknown_provider_404s() -> None:
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         run(client.cliproxy_oauth_start("bogus"))
     assert excinfo.value.response.status_code == 404
+
+
+# ── Guidance: fuzzy suggestions, per-command help, blocked surfaces ─────────
+
+
+def _ctx(surface: str = "cli", *, is_admin: bool = True) -> CommandContext:
+    return CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface=surface,  # type: ignore[arg-type]
+        is_admin=is_admin,
+    )
+
+
+def test_unknown_command_suggests_nearest_root() -> None:
+    result = run(CommandService().execute(_ctx(), "/provder list", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Unknown command `/provder`" in result.markdown
+    assert "Did you mean `/provider`?" in result.markdown
+
+
+def test_unknown_subcommand_suggests_nearest() -> None:
+    result = run(CommandService().execute(_ctx(), "/memory serch cats", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Unknown subcommand `serch` for `/memory`" in result.markdown
+    assert "Did you mean `/memory search`?" in result.markdown
+
+
+def test_group_root_error_points_at_help() -> None:
+    result = run(CommandService().execute(_ctx(), "/tools", api=FakeCommandApi()))
+    assert result.success is False
+    assert "`/tools` requires a subcommand" in result.markdown
+    assert "See `/help tools`." in result.markdown
+
+
+def test_help_bare_is_compact_index() -> None:
+    result = run(CommandService().execute(_ctx(), "/help", api=FakeCommandApi()))
+    assert result.success is True
+    assert len(result.markdown) < 4000
+    assert "**LLM:**" in result.markdown
+    assert "`/provider`" in result.markdown
+    assert "`/help <command>`" in result.markdown
+    assert "`/help all`" in result.markdown
+    # The index lists roots only, never subcommand rows.
+    assert "| Command | Usage | Description |" not in result.markdown
+
+
+def test_help_all_renders_full_table_with_escaped_pipes() -> None:
+    result = run(CommandService().execute(_ctx(), "/help all", api=FakeCommandApi()))
+    assert result.success is True
+    assert "| Command | Usage | Description |" in result.markdown
+    # Pipe-alternative usage strings must not break the markdown table.
+    assert "list\\|status\\|logs" in result.markdown
+    # The note join must not double the period ("immediately.. Handled").
+    assert "immediately.. Handled" not in result.markdown
+    assert "immediately. Handled" in result.markdown
+
+
+def test_help_command_renders_card_with_subcommands_and_examples() -> None:
+    result = run(CommandService().execute(_ctx(), "/help provider", api=FakeCommandApi()))
+    assert result.success is True
+    assert result.markdown.startswith("## /provider")
+    assert "Usage: `/provider [setup|list|set|switch|test|cliproxy|reasoning-passback]`" in result.markdown
+    assert "| setup |" in result.markdown
+    assert "Examples:" in result.markdown
+    assert "`/provider switch anthropic`" in result.markdown
+
+
+def test_help_command_card_filters_subcommands_by_surface() -> None:
+    result = run(
+        CommandService().execute(_ctx("telegram"), "/help provider", api=FakeCommandApi())
+    )
+    assert result.success is True
+    # provider setup / cliproxy are blocked_surfaces-refused on chat
+    # surfaces, so the card drops them there.
+    assert "| setup |" not in result.markdown
+    assert "| cliproxy |" not in result.markdown
+    assert "| switch |" in result.markdown
+
+
+def test_help_card_children_ignore_discovery_surfaces() -> None:
+    # /hook subcommands are menu-filtered off chat surfaces (``surfaces`` is
+    # discovery-only) but stay executable there through the generic bot
+    # passthroughs, so the telegram card must still list them.
+    result = run(
+        CommandService().execute(_ctx("telegram"), "/help hook", api=FakeCommandApi())
+    )
+    assert result.success is True
+    assert "| list |" in result.markdown
+    assert "| disable |" in result.markdown
+
+
+def test_help_card_alias_renders_single_slash() -> None:
+    result = run(CommandService().execute(_ctx(), "/help think", api=FakeCommandApi()))
+    assert result.success is True
+    assert "`/reasoning`" in result.markdown
+    assert "//reasoning" not in result.markdown
+
+
+def test_help_card_admin_only_target_renders_for_non_admin() -> None:
+    # Deliberate: execution acknowledges admin-only commands to non-admins
+    # (the admin gate names the command in its refusal), so help does too,
+    # with the Access line carrying the restriction. Menus still hide it.
+    result = run(
+        CommandService().execute(
+            _ctx(is_admin=False), "/help provider setup", api=FakeCommandApi()
+        )
+    )
+    assert result.success is True
+    assert "admin only" in result.markdown
+
+
+def test_hidden_command_has_no_help_card() -> None:
+    service = CommandService()
+    service.register(
+        "shadow",
+        description="Hidden test command",
+        category="General",
+        usage="/shadow",
+        hidden=True,
+    )
+    result = run(service.execute(_ctx(), "/help shadow", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Unknown command" in result.markdown
+
+
+def test_root_help_argument_renders_card() -> None:
+    result = run(CommandService().execute(_ctx(), "/provider help", api=FakeCommandApi()))
+    assert result.success is True
+    assert result.markdown.startswith("## /provider")
+
+
+def test_group_help_argument_renders_card() -> None:
+    result = run(CommandService().execute(_ctx(), "/tools help", api=FakeCommandApi()))
+    assert result.success is True
+    assert result.markdown.startswith("## /tools")
+    assert "| enable |" in result.markdown
+
+
+def test_help_unknown_target_suggests() -> None:
+    result = run(CommandService().execute(_ctx(), "/help provder", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Did you mean `/provider`?" in result.markdown
+
+
+def test_blocked_surface_refuses_with_reason() -> None:
+    for surface in ("slack", "telegram", "whatsapp", "teams", "discord"):
+        result = run(
+            CommandService().execute(
+                _ctx(surface), "/provider setup openai", api=FakeCommandApi()
+            )
+        )
+        assert result.success is False, surface
+        assert f"not available on {surface}" in result.markdown
+        assert "message history" in result.markdown
+        assert "Available on: desktop, mobile, cli, api" in result.markdown
+
+
+def test_blocked_surface_does_not_gate_cli() -> None:
+    result = run(
+        CommandService().execute(_ctx("cli"), "/provider setup", api=FakeCommandApi())
+    )
+    # Reaches the real handler (which asks for a provider), not the surface gate.
+    assert "not available on" not in result.markdown
+
+
+def test_root_usage_errors_render_from_registry() -> None:
+    result = run(CommandService().execute(_ctx(), "/provider bogus", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Usage: `/provider [setup|list|set|switch|test|cliproxy|reasoning-passback]`" in result.markdown
+    assert "See `/help provider`." in result.markdown
+
+    result = run(CommandService().execute(_ctx(), "/mcp bogus", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Usage: `/mcp list|status|logs|discover|test|remove|retry [...]`" in result.markdown
+    assert "See `/help mcp`." in result.markdown
+
+
+def test_notepad_write_append_prefix_is_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: dict[str, str] = {}
+
+    def fake_write(thread_id: str, content: str, mode: str = "append") -> str:
+        saved["content"] = content
+        saved["mode"] = mode
+        return "[Saved]: ok"
+
+    import nymeria.tools.thread_notes as thread_notes
+
+    monkeypatch.setattr(thread_notes, "write_notepad", fake_write)
+    result = run(
+        CommandService().execute(_ctx(), "/notepad write append: milk", api=FakeCommandApi())
+    )
+    assert result.success is True
+    assert saved["mode"] == "append"
+    assert saved["content"] == "milk"
+
+
+def test_rest_extraction_survives_newlines(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Chat clients send Shift+Enter newlines; the rest extractor must treat
+    # any whitespace as a token boundary or the word glued to the newline is
+    # silently dropped.
+    saved: dict[str, str] = {}
+
+    def fake_write(thread_id: str, content: str, mode: str = "append") -> str:
+        saved["content"] = content
+        return "[Saved]: ok"
+
+    import nymeria.tools.thread_notes as thread_notes
+
+    monkeypatch.setattr(thread_notes, "write_notepad", fake_write)
+    result = run(
+        CommandService().execute(
+            _ctx(), "/notepad write\nmilk and bread", api=FakeCommandApi()
+        )
+    )
+    assert result.success is True
+    assert saved["content"] == "milk and bread"

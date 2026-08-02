@@ -9,6 +9,7 @@ out-of-process compatibility shims.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -75,6 +76,19 @@ DEFAULT_GLOBAL_SURFACES: tuple[CommandSurface, ...] = (
     "agent",
 )
 
+# The chat platforms, for blocked_surfaces declarations: every surface whose
+# transport persists typed text in a third-party message history. Includes
+# twitch (in the CommandSurface Literal but not DEFAULT_GLOBAL_SURFACES) so a
+# future chat surface is blocked by construction rather than by remembering.
+CHAT_PLATFORM_SURFACES: tuple[CommandSurface, ...] = (
+    "discord",
+    "telegram",
+    "slack",
+    "whatsapp",
+    "teams",
+    "twitch",
+)
+
 AGENT_BLOCKED = {"ask", "stop", "clear", "restart", "compact", "start"}
 SKILL_SHOW_MAX_CHARS = 12_000
 
@@ -123,6 +137,8 @@ class CommandInfo:
     aliases: list[str] = field(default_factory=list)
     scope: CommandScope = "global"
     surfaces: list[str] = field(default_factory=list)
+    blocked_surfaces: list[str] = field(default_factory=list)
+    blocked_reason: str | None = None
     agent_allowed: bool = True
     requires_thread: bool = False
     requires_admin: bool = False
@@ -131,6 +147,7 @@ class CommandInfo:
     execution_kind: CommandExecutionKind = "command"
     level: CommandResultLevel = "info"
     note: str | None = None
+    examples: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -144,6 +161,13 @@ class CommandDefinition:
     subcommands: tuple[str, ...] = ()
     scope: CommandScope = "global"
     surfaces: tuple[CommandSurface, ...] = DEFAULT_GLOBAL_SURFACES
+    # ``surfaces`` filters DISCOVERY only (menus, /help, GET /commands);
+    # execute() deliberately ignores it so bots can forward surface-hidden
+    # subcommands like "/hook create". ``blocked_surfaces`` is the enforced
+    # axis: execute() refuses these surfaces outright, with
+    # ``blocked_reason`` rendered into the refusal copy.
+    blocked_surfaces: tuple[CommandSurface, ...] = ()
+    blocked_reason: str | None = None
     agent_allowed: bool = True
     requires_thread: bool = False
     requires_admin: bool = False
@@ -152,6 +176,7 @@ class CommandDefinition:
     execution_kind: CommandExecutionKind = "command"
     note: str | None = None
     hidden: bool = False
+    examples: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -306,11 +331,13 @@ def _alias_display(path: tuple[str, ...]) -> str:
 def _split_rest_after_tokens(command_text: str, token_count: int) -> str:
     rest = command_text.strip().lstrip("/")
     for _ in range(token_count):
-        rest = rest.lstrip()
-        _head, sep, tail = rest.partition(" ")
-        if not sep:
+        # Split on ANY whitespace, not just " ": chat clients send Shift+Enter
+        # newlines ("/notepad write\nmy note"), and partitioning on a literal
+        # space silently dropped the word glued to the newline.
+        parts = rest.split(None, 1)
+        if len(parts) < 2:
             return ""
-        rest = tail
+        rest = parts[1]
     return rest.strip()
 
 
@@ -2020,6 +2047,8 @@ class CommandService:
         subcommands: tuple[str, ...] = (),
         scope: CommandScope = "global",
         surfaces: tuple[CommandSurface, ...] = DEFAULT_GLOBAL_SURFACES,
+        blocked_surfaces: tuple[CommandSurface, ...] = (),
+        blocked_reason: str | None = None,
         agent_allowed: bool = True,
         requires_thread: bool = False,
         requires_admin: bool = False,
@@ -2028,6 +2057,7 @@ class CommandService:
         execution_kind: CommandExecutionKind = "command",
         note: str | None = None,
         hidden: bool = False,
+        examples: tuple[str, ...] = (),
     ) -> None:
         del handler
         path = _normalize_path(name)
@@ -2070,6 +2100,8 @@ class CommandService:
             subcommands=subcommands,
             scope=scope,
             surfaces=surfaces,
+            blocked_surfaces=blocked_surfaces,
+            blocked_reason=blocked_reason,
             agent_allowed=agent_allowed,
             requires_thread=requires_thread,
             requires_admin=requires_admin,
@@ -2078,6 +2110,7 @@ class CommandService:
             execution_kind=execution_kind,
             note=note,
             hidden=hidden,
+            examples=examples,
         )
         self._commands[command_id] = definition
         self._path_index[path] = command_id
@@ -2106,6 +2139,16 @@ class CommandService:
                 raise ValueError(f"Agent-blocked command is agent-allowed: {command_id}")
             if cmd.requires_admin and cmd.danger_level == "dangerous" and not cmd.mutates_state:
                 raise ValueError(f"Dangerous admin command must declare mutates_state: {command_id}")
+            overlap = set(cmd.blocked_surfaces) & set(cmd.surfaces)
+            if overlap:
+                raise ValueError(
+                    f"Command {command_id} is both visible and blocked on: "
+                    f"{', '.join(sorted(overlap))}"
+                )
+            if cmd.blocked_reason and not cmd.blocked_surfaces:
+                raise ValueError(
+                    f"Command {command_id} has a blocked_reason but no blocked_surfaces"
+                )
             for alias_path in cmd.aliases:
                 path_conflict = seen_paths.get(alias_path)
                 if path_conflict and path_conflict != command_id:
@@ -2215,6 +2258,8 @@ class CommandService:
             aliases=[_alias_display(alias) for alias in cmd.aliases],
             scope=cmd.scope,
             surfaces=list(cmd.surfaces),
+            blocked_surfaces=list(cmd.blocked_surfaces),
+            blocked_reason=cmd.blocked_reason,
             agent_allowed=cmd.agent_allowed,
             requires_thread=cmd.requires_thread,
             requires_admin=cmd.requires_admin,
@@ -2222,6 +2267,7 @@ class CommandService:
             danger_level=cmd.danger_level,
             execution_kind=cmd.execution_kind,
             note=cmd.note,
+            examples=list(cmd.examples),
         )
 
     def _subcommands_for_path(self, path: tuple[str, ...]) -> list[str]:
@@ -2255,7 +2301,7 @@ class CommandService:
             agent=agent,
         )
         lines = ["## Nymeria Slash Commands", ""]
-        categories = sorted({cmd.category for cmd in commands})
+        categories = sorted({cmd.category for cmd in commands}, key=str.casefold)
         for category in categories:
             lines.append(f"### {category}")
             lines.append("")
@@ -2264,12 +2310,158 @@ class CommandService:
             for cmd in [c for c in commands if c.category == category]:
                 desc = cmd.description
                 if cmd.aliases:
-                    desc = f"{desc}. Alias: {cmd.aliases[0]}"
+                    desc = f"{desc.rstrip('.')}. Alias: {cmd.aliases[0]}"
                 if cmd.note:
-                    desc = f"{desc}. {cmd.note}"
-                lines.append(f"| `/{cmd.name}` | `{cmd.usage}` | {desc} |")
+                    desc = f"{desc.rstrip('.')}. {cmd.note}"
+                usage = cmd.usage.replace("|", "\\|")
+                lines.append(f"| `/{cmd.name}` | `{usage}` | {desc} |")
             lines.append("")
         lines.append("Values with spaces can be quoted, for example `/memory save color \"deep blue\"`.")
+        return "\n".join(lines).strip()
+
+    def _help_index_markdown(
+        self,
+        source: str | None,
+        *,
+        actor: str | None = None,
+        surface: str | None = None,
+        is_admin: bool | None = None,
+        user_id: str | None = None,
+        agent: Any | None = None,
+    ) -> str:
+        """Compact category index: root names only, with a drill-down hint."""
+        commands = self.list_commands(
+            source,
+            actor=actor,
+            surface=surface,
+            is_admin=is_admin,
+            user_id=user_id,
+            agent=agent,
+        )
+        by_category: dict[str, set[str]] = {}
+        for cmd in commands:
+            by_category.setdefault(cmd.category, set()).add(cmd.path[0])
+        lines = ["## Nymeria Slash Commands", ""]
+        for category in sorted(by_category, key=str.casefold):
+            roots = ", ".join(
+                f"`/{root}`" for root in sorted(by_category[category])
+            )
+            lines.append(f"**{category}:** {roots}")
+        lines.append("")
+        lines.append(
+            "Type `/help <command>` for one command's usage and subcommands, "
+            "or `/help all` for the full table. Values with spaces can be "
+            'quoted, for example `/memory save color "deep blue"`.'
+        )
+        return "\n".join(lines).strip()
+
+    def _resolve_help_target(
+        self, tokens: tuple[str, ...]
+    ) -> tuple[CommandDefinition | None, str | None]:
+        """Resolve /help arguments to a definition or a group-root prefix."""
+        normalized = tuple(
+            _normalize_token(token.lstrip("/"))
+            for token in tokens
+            if _normalize_token(token.lstrip("/"))
+        )
+        if not normalized:
+            return None, None
+        canonical, _, _ = self._expand_alias_prefix(normalized)
+        for prefix_len in range(len(canonical), 0, -1):
+            candidate = canonical[:prefix_len]
+            command_id = self._path_index.get(candidate) or self._aliases.get(candidate)
+            if command_id is not None:
+                return self._commands[command_id], None
+        root = canonical[0]
+        if self._prefix_subcommands(root):
+            return None, root
+        return None, None
+
+    def _command_help_markdown(
+        self,
+        tokens: tuple[str, ...],
+        *,
+        actor: str | None = None,
+        surface: str | None = None,
+        is_admin: bool | None = None,
+    ) -> str | None:
+        """One command's help card, or None when nothing matches."""
+        definition, group_root = self._resolve_help_target(tokens)
+        if definition is None and group_root is None:
+            return None
+        if definition is not None and definition.hidden:
+            # A hidden command stays out of every listing, help cards
+            # included; the caller renders the unknown-command error.
+            return None
+
+        title = definition.name if definition is not None else group_root
+        lines = [f"## /{title}", ""]
+        if definition is not None:
+            lines.append(definition.description)
+            lines.append("")
+            lines.append(f"Usage: `{definition.usage}`")
+            if definition.note:
+                lines.append("")
+                lines.append(definition.note)
+            access = []
+            if definition.requires_admin:
+                access.append("admin only")
+            if definition.requires_thread:
+                access.append("requires an active thread")
+            if not definition.agent_allowed:
+                access.append("not available to the agent")
+            if definition.blocked_surfaces:
+                access.append(
+                    "not available on " + ", ".join(definition.blocked_surfaces)
+                )
+            if access:
+                lines.append("")
+                lines.append("Access: " + "; ".join(access) + ".")
+            if definition.aliases:
+                aliases = ", ".join(
+                    f"`{_alias_display(alias)}`" for alias in definition.aliases
+                )
+                lines.append("")
+                lines.append(f"Aliases: {aliases}")
+        else:
+            lines.append(f"`/{group_root}` requires a subcommand.")
+
+        target_path = definition.path if definition is not None else (group_root,)
+        if len(target_path) == 1:
+            children = [
+                cmd
+                for cmd in sorted(self._commands.values(), key=lambda c: c.name)
+                if len(cmd.path) > 1
+                and cmd.path[0] == target_path[0]
+                # ``surfaces`` is a DISCOVERY filter and never governs
+                # execution, so the card filters children by the enforced
+                # axes only (hidden/agent/admin via _is_visible with
+                # surface=None, plus blocked_surfaces). Otherwise the card
+                # for /hook on telegram showed zero subcommands while the
+                # generic passthrough made all of them executable there.
+                and self._is_visible(
+                    cmd,
+                    actor=actor or "user",
+                    surface=None,
+                    is_admin=is_admin,
+                    include_hidden=False,
+                )
+                and (not surface or surface not in cmd.blocked_surfaces)
+            ]
+            if children:
+                lines.append("")
+                lines.append("| Subcommand | Usage | Description |")
+                lines.append("| --- | --- | --- |")
+                for cmd in children:
+                    usage = cmd.usage.replace("|", "\\|")
+                    label = " ".join(cmd.path[1:])
+                    lines.append(f"| {label} | `{usage}` | {cmd.description} |")
+
+        if definition is not None and definition.examples:
+            lines.append("")
+            lines.append("Examples:")
+            for example in definition.examples:
+                lines.append(f"- `{example}`")
         return "\n".join(lines).strip()
 
     def _expand_alias_prefix(self, tokens: tuple[str, ...]) -> tuple[tuple[str, ...], int, int]:
@@ -2368,7 +2560,41 @@ class CommandService:
             }
         )
 
-    def _unknown_or_group_error(self, parsed: ParsedCommand) -> CommandResult:
+    def find_command(self, name: str) -> CommandInfo | None:
+        """Look up one command (by path or alias) as a CommandInfo."""
+        path = _normalize_path(name)
+        if not path:
+            return None
+        command_id = self._path_index.get(path) or self._aliases.get(path)
+        if command_id is None:
+            return None
+        return self._to_info(self._commands[command_id])
+
+    def _suggest_roots(self, token: str) -> list[str]:
+        """Nearest registered root names for a typo, aliases as a fallback.
+
+        Canonical roots are tried first so a typo of "provider" suggests
+        `/provider`, not the flat bot alias `/provider_set` alongside it.
+        """
+        roots = sorted(
+            {cmd.path[0] for cmd in self._commands.values() if not cmd.hidden}
+        )
+        matches = difflib.get_close_matches(token, roots, n=2, cutoff=0.6)
+        if matches:
+            return matches
+        aliases = sorted({alias[0] for alias in self._aliases if len(alias) == 1})
+        return difflib.get_close_matches(token, aliases, n=2, cutoff=0.6)
+
+    @staticmethod
+    def _did_you_mean(suggestions: list[str], *, prefix: str = "/") -> str:
+        if not suggestions:
+            return ""
+        quoted = " or ".join(f"`{prefix}{s}`" for s in suggestions)
+        return f" Did you mean {quoted}?"
+
+    def _unknown_or_group_error(
+        self, parsed: ParsedCommand, ctx: CommandContext | None = None
+    ) -> CommandResult:
         if not parsed.tokens:
             return CommandResult(False, "**Error:** Empty command. Try `/help`.", "", level="error")
 
@@ -2378,23 +2604,43 @@ class CommandService:
             valid = ", ".join(valid_subcommands)
             return CommandResult(
                 False,
-                f"**Error:** `/{root}` requires a subcommand. Valid: {valid}.",
+                (
+                    f"**Error:** `/{root}` requires a subcommand. Valid: {valid}. "
+                    f"See `/help {root}`."
+                ),
                 root,
                 level="error",
             )
         if valid_subcommands and len(parsed.tokens) > 1:
+            if parsed.tokens[1] == "help":
+                card = self._command_help_markdown(
+                    (root,),
+                    actor=ctx.effective_actor if ctx else "user",
+                    surface=ctx.effective_surface if ctx else None,
+                    is_admin=ctx.is_admin if ctx else None,
+                )
+                if card:
+                    return CommandResult(True, card, root, level="info")
+            suggestions = difflib.get_close_matches(
+                parsed.tokens[1], valid_subcommands, n=2, cutoff=0.6
+            )
+            hint = self._did_you_mean(suggestions, prefix=f"/{root} ")
             valid = ", ".join(valid_subcommands)
             command_label = f"{root} {parsed.tokens[1]}".strip()
             return CommandResult(
                 False,
-                f"**Error:** Unknown subcommand `{parsed.tokens[1]}` for `/{root}`. Valid: {valid}.",
+                (
+                    f"**Error:** Unknown subcommand `{parsed.tokens[1]}` for "
+                    f"`/{root}`.{hint} Valid: {valid}."
+                ),
                 command_label,
                 level="error",
             )
 
+        hint = self._did_you_mean(self._suggest_roots(root))
         return CommandResult(
             False,
-            f"**Error:** Unknown command `/{root}`. Use `/help`.",
+            f"**Error:** Unknown command `/{root}`.{hint} Use `/help`.",
             root,
             level="error",
         )
@@ -2408,11 +2654,40 @@ class CommandService:
     ) -> CommandResult:
         parsed = self._parse_for_registry(raw_command)
         if parsed.definition is None:
-            return self._unknown_or_group_error(parsed)
+            return self._unknown_or_group_error(parsed, ctx)
 
         definition = parsed.definition
         command_label = definition.name
         actor = ctx.effective_actor
+        surface = ctx.effective_surface
+
+        if surface and surface in definition.blocked_surfaces:
+            reason = f" {definition.blocked_reason}" if definition.blocked_reason else ""
+            available = ", ".join(definition.surfaces)
+            return CommandResult(
+                False,
+                (
+                    f"**Error:** Command `/{definition.name}` is not available "
+                    f"on {surface}.{reason} Available on: {available}."
+                ),
+                command_label,
+                level="error",
+            )
+
+        if (
+            definition.id != "help"
+            and definition.executable
+            and len(definition.path) == 1
+            and [arg.lower() for arg in parsed.args] == ["help"]
+        ):
+            card = self._command_help_markdown(
+                definition.path,
+                actor=actor,
+                surface=surface,
+                is_admin=ctx.is_admin,
+            )
+            if card:
+                return CommandResult(True, card, command_label, level="info")
 
         if actor == "agent" and definition.path[0] in AGENT_BLOCKED:
             return CommandResult(
@@ -2462,19 +2737,41 @@ class CommandService:
             )
 
         if definition.id == "help":
-            return CommandResult(
-                True,
-                self._help_markdown(
+            help_kwargs: dict[str, Any] = dict(
+                actor=actor,
+                surface=surface,
+                is_admin=ctx.is_admin,
+            )
+            args = [arg for arg in parsed.args if arg.strip()]
+            if args and args[0].lower() == "all":
+                markdown = self._help_markdown(
                     ctx.source,
-                    actor=actor,
-                    surface=ctx.effective_surface,
-                    is_admin=ctx.is_admin,
                     user_id=ctx.user_id,
                     agent=getattr(api, "agent", None),
-                ),
-                command_label,
-                level="info",
-            )
+                    **help_kwargs,
+                )
+            elif args:
+                card = self._command_help_markdown(tuple(args), **help_kwargs)
+                if card is None:
+                    target = args[0].lstrip("/")
+                    hint = self._did_you_mean(
+                        self._suggest_roots(_normalize_token(target))
+                    )
+                    return CommandResult(
+                        False,
+                        f"**Error:** Unknown command `/{target}`.{hint} Use `/help`.",
+                        command_label,
+                        level="error",
+                    )
+                markdown = card
+            else:
+                markdown = self._help_index_markdown(
+                    ctx.source,
+                    user_id=ctx.user_id,
+                    agent=getattr(api, "agent", None),
+                    **help_kwargs,
+                )
+            return CommandResult(True, markdown, command_label, level="info")
 
         owns_api = api is None
         client = api
@@ -2493,6 +2790,7 @@ class CommandService:
             user_id=ctx.user_id,
             actor=actor,
             is_admin=ctx.is_admin,
+            service=self,
         )
 
         method_name = "_cmd_" + "_".join(definition.path)
@@ -2918,6 +3216,7 @@ class _CommandExecutor(
         user_id: str,
         actor: str = "user",
         is_admin: bool | None = None,
+        service: "CommandService | None" = None,
     ):
         self.api = api
         self.thread_id = thread_id or ""
@@ -2927,11 +3226,38 @@ class _CommandExecutor(
         # for cosmetic gating (e.g. not attaching a form whose submit targets
         # are admin-only); authorization stays at the dispatch gate.
         self.is_admin = is_admin
+        # The service that dispatched this request (None when a test builds
+        # the executor directly; _usage_error then falls back to the process
+        # default registry).
+        self._service = service
 
     def _require_thread(self) -> str | None:
         if self.thread_id:
             return None
         return "[Error]: This command requires an active thread. Send a message first."
+
+    def _usage_error(self, name: str, *, hint: str | None = None) -> str:
+        """Render the standard usage error for a registered command.
+
+        Pulls the usage string and derived subcommand list from the command
+        registry (the dispatching service when known), so handler error copy
+        cannot drift from the catalog: the old pattern was a hand-written
+        ``Usage:`` literal per handler, and several had drifted from the
+        registered usage. ``hint`` appends one command-specific sentence
+        after the usage line.
+        """
+        service = self._service or get_command_service()
+        info = service.find_command(name)
+        if info is None:
+            # Defensive: never raise while rendering an error message.
+            return f"[Error]: Usage: `/{name}`."
+        parts = [f"[Error]: Usage: `{info.usage}`."]
+        if info.subcommands:
+            parts.append("Subcommands: " + ", ".join(info.subcommands) + ".")
+        if hint:
+            parts.append(hint)
+        parts.append(f"See `/help {info.name}`.")
+        return " ".join(parts)
 
     def _agent(self) -> Any | None:
         agent = getattr(self.api, "agent", None)
@@ -2957,12 +3283,7 @@ class _CommandExecutor(
             return await self._cmd_skills_show(args[1:], rest)
         if args == ["off", "all"]:
             return await self._cmd_skills_off_all([], "")
-        return (
-            "[Error]: Usage: `/skills`, `/skills list`, `/skills show <name>`, "
-            "`/skills off all`, `/skills search [query]`, "
-            "`/skills install <name>`, `/skills enable [--global] <name>`, "
-            "`/skills disable [--global] <name>`, or `/skills inspect <name>`."
-        )
+        return self._usage_error("skills")
 
     async def _cmd_skills_list(self, args: list[str], rest: str) -> str:
         thread_error = self._require_thread()
@@ -3221,9 +3542,7 @@ class _CommandExecutor(
     async def _cmd_mcp(self, args: list[str], rest: str) -> str:
         if not args or args == ["list"]:
             return await self._cmd_mcp_list([], "")
-        return (
-            "[Error]: Usage: /mcp list|status|logs|discover|test|remove|retry [...]"
-        )
+        return self._usage_error("mcp")
 
     async def _cmd_mcp_list(self, args: list[str], rest: str) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
@@ -3450,9 +3769,7 @@ class _CommandExecutor(
     async def _cmd_triggers(self, args: list[str], rest: str) -> str:
         if not args or args == ["list"]:
             return await self._cmd_triggers_list([], "")
-        return (
-            "[Error]: Usage: /triggers list|enable|disable|delete|history [...]"
-        )
+        return self._usage_error("triggers")
 
     async def _cmd_triggers_list(self, args: list[str], rest: str) -> str:
         enabled_only, args = _consume_flag(args, "--enabled-only")
@@ -3620,10 +3937,7 @@ class _CommandExecutor(
             if denied:
                 return denied
             return await handler(args[1:], rest)
-        return (
-            "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete"
-            "|test|log|templates|install|approvals|approve|deny [...]"
-        )
+        return self._usage_error("hook")
 
     async def _cmd_hook_list(self, args: list[str], rest: str) -> str:
         enabled_only, args = _consume_flag(args, "--enabled-only")
@@ -4173,7 +4487,7 @@ class _CommandExecutor(
     async def _cmd_account(self, args: list[str], rest: str) -> str:
         if not args or args == ["current"]:
             return await self._cmd_account_current([], "")
-        return "[Error]: Usage: /account current|tokens|platforms"
+        return self._usage_error("account")
 
     async def _cmd_account_current(self, args: list[str], rest: str) -> str:
         repo = self._accounts_repo()
@@ -4277,10 +4591,7 @@ class _CommandExecutor(
             return await self._cmd_activity_list([], "")
         if args == ["notifications"]:
             return await self._cmd_activity_notifications([], "")
-        return (
-            "[Error]: Usage: /activity list [limit] [--type TYPE] [--thread ID] "
-            "or /activity notifications"
-        )
+        return self._usage_error("activity")
 
     async def _cmd_activity_list(self, args: list[str], rest: str) -> str:
         from ..core.activity_log import ActivityType, get_activity_log
@@ -4365,7 +4676,7 @@ class _CommandExecutor(
         if args == ["model"]:
             return await self._cmd_doctor_model([], "")
         if args:
-            return "[Error]: Usage: /doctor [auth|model]"
+            return self._usage_error("doctor")
         auth = await self._cmd_doctor_auth([], "")
         model = await self._cmd_doctor_model([], "")
         return f"{auth}\n\n{model}"
@@ -4773,7 +5084,7 @@ class _CommandExecutor(
             return msg
 
         if sub not in {"", "on", "off"}:
-            return f"[Error]: Usage: /{tier} [on|off|set <model-id>]"
+            return self._usage_error(tier)
 
         if not self.thread_id:
             resolved = resolve_tier(tier, settings)
@@ -4862,9 +5173,7 @@ class _CommandExecutor(
             return "[Success]: Background model cleared (falls back to the main model)."
 
         if sub not in {"", "show"}:
-            return (
-                "[Error]: Usage: /background [set <model-id> | set-url <base-url> | clear]"
-            )
+            return self._usage_error("background")
 
         configured = str(settings.get("llm_background_model") or "").strip()
         base_url = str(settings.get("llm_background_base_url") or "").strip()
@@ -4963,7 +5272,7 @@ class _CommandExecutor(
             return await self._cmd_config_get(args[1:], "")
         if sub == "set":
             return await self._cmd_config_set(args[1:], "")
-        return "[Error]: Usage: /settings [show|get <key>|set <key> <value>]"
+        return self._usage_error("settings")
 
     # ── Env ───────────────────────────────────────────────────────────────
 
@@ -5559,7 +5868,12 @@ class _CommandExecutor(
         from ..tools.thread_notes import write_notepad
         if raw.lower().startswith("replace:"):
             write_mode = "replace"
-            content = raw[8:].strip()
+            content = raw[len("replace:"):].strip()
+        elif raw.lower().startswith("append:"):
+            # append is already the default; the prefix is advertised in the
+            # registered usage, so strip it instead of writing it literally.
+            write_mode = "append"
+            content = raw[len("append:"):].strip()
         else:
             write_mode = "append"
             content = raw

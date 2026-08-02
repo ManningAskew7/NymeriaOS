@@ -53,6 +53,8 @@ class CommandInfoResponse(BaseModel):
     aliases: list[str]
     scope: CommandScope
     surfaces: list[str]
+    blocked_surfaces: list[str] = []
+    blocked_reason: str | None = None
     agent_allowed: bool
     requires_thread: bool
     requires_admin: bool
@@ -60,3 +62,4 @@ class CommandInfoResponse(BaseModel):
     danger_level: CommandDangerLevel
     execution_kind: CommandExecutionKind
     note: str | None = None
+    examples: list[str] = []

@@ -29,7 +29,18 @@ def register_default_commands(service: "CommandService") -> None:
     test's parametrize ids; the registry sorts on read (``list_commands``) and
     ``validate_registry`` is order-independent.
     """
-    service.register("help", description="Show available commands", category="General", aliases=("h",))
+    # Function-local to dodge the module cycle (command_service imports this
+    # module at top level).
+    from .command_service import CHAT_PLATFORM_SURFACES
+
+    service.register(
+        "help",
+        description="Show available commands",
+        category="General",
+        usage="/help [command|all]",
+        aliases=("h",),
+        examples=("/help provider", "/help all"),
+    )
     service.register(
         "status",
         description="Model, context, tools, and task summary",
@@ -213,6 +224,7 @@ def register_default_commands(service: "CommandService") -> None:
         usage="/model [name] [global|thread]",
         mutates_state=True,
         danger_level="normal",
+        examples=("/model claude-fable-5", "/model gpt-5.5 thread"),
     )
     service.register("models", description="List available provider models", category="LLM")
     service.register(
@@ -304,16 +316,20 @@ def register_default_commands(service: "CommandService") -> None:
         aliases=("reasoning", "thinking"),
         mutates_state=True,
         danger_level="normal",
+        examples=("/think high", "/think off global"),
     )
     service.register(
         "provider",
         description="Show the active LLM provider and credential status",
         category="LLM",
-        usage="/provider [setup|list|set|switch|test|reasoning-passback]",
+        usage="/provider [setup|list|set|switch|test|cliproxy|reasoning-passback]",
+        examples=("/provider list", "/provider switch anthropic"),
     )
     # No chat-bot surfaces and no agent: the typed fallback path is
     # "/provider setup key <secret>", which on a chat platform would persist
-    # the key in the platform's message history.
+    # the key in the platform's message history. ``surfaces`` only hides the
+    # command from menus, so ``blocked_surfaces`` ENFORCES the refusal at
+    # execute() (the generic bot passthroughs forward any typed command).
     service.register(
         "provider setup",
         description=(
@@ -323,6 +339,11 @@ def register_default_commands(service: "CommandService") -> None:
         usage="/provider setup <provider>",
         aliases=("provider_setup",),
         surfaces=("desktop", "mobile", "cli", "api"),
+        blocked_surfaces=CHAT_PLATFORM_SURFACES,
+        blocked_reason=(
+            "It prompts for an API key, and anything typed on a chat surface "
+            "persists in the platform's message history."
+        ),
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
@@ -341,6 +362,11 @@ def register_default_commands(service: "CommandService") -> None:
         ),
         aliases=("provider_cliproxy",),
         surfaces=("desktop", "mobile", "cli", "api"),
+        blocked_surfaces=CHAT_PLATFORM_SURFACES,
+        blocked_reason=(
+            "It handles OAuth authorization URLs, and anything typed on a "
+            "chat surface persists in the platform's message history."
+        ),
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
@@ -484,6 +510,7 @@ def register_default_commands(service: "CommandService") -> None:
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
+        examples=("/tools enable web_search", "/tools enable productivity"),
     )
     service.register(
         "tools disable",
@@ -530,8 +557,9 @@ def register_default_commands(service: "CommandService") -> None:
         "skills",
         description="List skills visible on this thread",
         category="Skills",
-        usage="/skills",
+        usage="/skills [list|show <name>|off all]",
         requires_thread=True,
+        examples=("/skills show summarize", "/skills enable --global summarize"),
     )
     service.register(
         "skills list",
@@ -759,6 +787,9 @@ def register_default_commands(service: "CommandService") -> None:
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        examples=(
+            '/hook create greet --event user_prompt_submit --action inject_text --text "Be brief."',
+        ),
     )
     service.register(
         "hook edit",
@@ -993,6 +1024,7 @@ def register_default_commands(service: "CommandService") -> None:
         aliases=("memory_save",),
         mutates_state=True,
         danger_level="normal",
+        examples=('/memory save color "deep blue"',),
     )
     service.register(
         "memory forget",
@@ -1034,6 +1066,7 @@ def register_default_commands(service: "CommandService") -> None:
         aliases=("todos_add",),
         mutates_state=True,
         danger_level="normal",
+        examples=("/todos add Check logs | 2h | daily",),
     )
     service.register(
         "todos complete",

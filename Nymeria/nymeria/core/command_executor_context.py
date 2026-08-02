@@ -272,12 +272,13 @@ class ContextCommandsMixin:
 
     if TYPE_CHECKING:
         def _require_thread(self) -> str | None: ...
+        def _usage_error(self, name: str, *, hint: str | None = None) -> str: ...
 
     # ── Token usage / cost ────────────────────────────────────────────────
 
     async def _cmd_usage(self, args: list[str], rest: str) -> str:
         if args:
-            return "[Error]: Usage: /usage [session]"
+            return self._usage_error("usage")
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -303,7 +304,7 @@ class ContextCommandsMixin:
 
     async def _cmd_artifacts(self, args: list[str], rest: str) -> str:
         if args:
-            return "[Error]: Usage: /artifacts recent"
+            return self._usage_error("artifacts")
         return await self._cmd_artifacts_recent([], "")
 
     async def _cmd_artifacts_recent(self, args: list[str], rest: str) -> str:
