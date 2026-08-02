@@ -25,7 +25,6 @@ from .base import (
 from .registry import (
     CommandParseError,
     CommandRegistry,
-    RichConsoleCommandOutputSink,
 )
 from .json_sink import JsonCommandOutputSink
 
@@ -50,6 +49,5 @@ __all__ = [
     "ListCommandOutputSink",
     "PromptHandler",
     "JsonCommandOutputSink",
-    "RichConsoleCommandOutputSink",
     "StateDispatcher",
 ]

@@ -41,7 +41,12 @@ from .markdown import (
     wrap_plain_text,
     wrap_rich_lines,
 )
-from .rich_markdown import MarkdownBlock, MarkdownStreamBuffer, print_rich_markdown
+from .rich_markdown import (
+    MarkdownBlock,
+    MarkdownStreamBuffer,
+    print_rich_markdown,
+    should_print_markdown_separator,
+)
 from .shared_helpers import (
     _assistant_response_lengths,
     _dispatch_reference_text,
@@ -59,9 +64,6 @@ from .transcript import (
 )
 
 THINKING_PREVIEW_MIN_CELLS = 12
-_DENSE_MARKDOWN_BLOCK_KINDS = {"table", "code", "list", "blockquote", "hr"}
-_RICH_NATIVE_LEADING_BLANK_KINDS = {"table", "list", "blockquote"}
-_RICH_NATIVE_TRAILING_BLANK_KINDS = {"hr"}
 _INLINE_MARKDOWN_MARKERS = ("**", "__", "~~", "](", "`")
 
 
@@ -1024,7 +1026,7 @@ class RichReplRenderer:
                     flush_pending_markdown=False,
                 )
                 rendered = True
-            if _should_print_markdown_separator(
+            if should_print_markdown_separator(
                 self._last_markdown_block,
                 markdown_block,
             ):
@@ -1542,23 +1544,6 @@ def _coerce_markdown_block(block: MarkdownBlock | str) -> MarkdownBlock:
     if isinstance(block, MarkdownBlock):
         return block
     return MarkdownBlock.from_text(block)
-
-
-def _should_print_markdown_separator(
-    previous: MarkdownBlock | None,
-    current: MarkdownBlock,
-) -> bool:
-    if previous is None:
-        return False
-    if previous.kind == "heading" and current.kind == "heading":
-        return False
-    if previous.kind in _RICH_NATIVE_TRAILING_BLANK_KINDS:
-        return False
-    if current.kind in _RICH_NATIVE_LEADING_BLANK_KINDS:
-        return False
-    if previous.trailing_blank_lines > 0 or current.leading_blank_lines > 0:
-        return True
-    return previous.kind in _DENSE_MARKDOWN_BLOCK_KINDS
 
 
 __all__ = [

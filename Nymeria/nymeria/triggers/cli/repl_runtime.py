@@ -39,7 +39,6 @@ from .command_routing import (
     is_chat_stream_command as _is_chat_stream_command,
     queued_notice as _queued_notice,
 )
-from .commands import RichConsoleCommandOutputSink
 from .follow_footer import FollowFooterEngine
 from .rendering import form_panel
 from .rendering.indicator import FRAME_INTERVAL_SECONDS
@@ -980,8 +979,12 @@ class _RichReplRuntime:
             await self._render_form_messages(messages)
 
     async def _render_form_messages(self, messages: Sequence[Any]) -> None:
+        from .rendering.command_output import RichConsoleCommandOutputSink
+
         def render() -> None:
-            sink = RichConsoleCommandOutputSink(self.app.state.console)
+            sink = RichConsoleCommandOutputSink(
+                self.app.state.console, theme=self.app.theme
+            )
             for message in messages:
                 sink.emit(message)
 

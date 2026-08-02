@@ -45,6 +45,8 @@ SUPPORTED_THEME_SLOTS: tuple[str, ...] = (
     "tool",
     "tool_icon",
     "error",
+    "success",
+    "warning",
     "artifact",
     "diagnostic",
     "code_inline",
@@ -69,6 +71,10 @@ DEFAULT_THEME_VALUES: dict[str, str] = {
     "tool": "#D8C8FF",
     "tool_icon": "#FFFFFF",
     "error": "#FCA5A5",
+    # Command-result level accents (the sink's ✓/! glyphs): pastel siblings
+    # of the soft error red, never used as whole-body washes.
+    "success": "#A9DCB4",
+    "warning": "#F5D08C",
     "artifact": "#9CCFFB",
     "diagnostic": "#AAB4C3",
     "code_inline": "#E7D6FF",

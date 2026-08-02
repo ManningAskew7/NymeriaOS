@@ -27,8 +27,8 @@ from .commands import (
     ListCommandOutputSink,
     CommandMessage,
     CommandRegistry,
-    RichConsoleCommandOutputSink,
 )
+from .rendering.command_output import RichConsoleCommandOutputSink
 from .follow_footer import _RICH_SCROLL_REGION_MIN_ROWS
 from .repl_runtime import (
     _RichReplPromptToolkitShell,
@@ -953,7 +953,7 @@ class CLIApp:
     def _command_output_sink(self, capabilities: TerminalCapabilities):
         if capabilities.renderer == "plain":
             return PlainCommandOutputSink()
-        return RichConsoleCommandOutputSink(self.state.console)
+        return RichConsoleCommandOutputSink(self.state.console, theme=self.theme)
 
     async def _dispatch_repl_action(self, action: Any) -> None:
         if not isinstance(action, dict):
@@ -1135,7 +1135,7 @@ class CLIApp:
             return
 
         def render_messages() -> None:
-            sink = RichConsoleCommandOutputSink(self.state.console)
+            sink = RichConsoleCommandOutputSink(self.state.console, theme=self.theme)
             for message in messages:
                 sink.emit(message)
 
