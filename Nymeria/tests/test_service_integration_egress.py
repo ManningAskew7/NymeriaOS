@@ -1398,6 +1398,70 @@ def _secret_provenance_locals(function, module, wrappers):
     return found
 
 
+def _flatten_or(value):
+    """Every operand of an ``or`` chain, flattened through nesting."""
+    if not isinstance(value, ast.BoolOp) or not isinstance(value.op, ast.Or):
+        return [value]
+    out = []
+    for operand in value.values:
+        out.extend(_flatten_or(operand))
+    return out
+
+
+def _or_chained_anchors(function, module, wrappers, provenance_names):
+    """Anchor lookups buried in an ``or`` chain: (local, provider, line, keeps).
+
+    RATCHET HOLE 1a. ``_secret_provenance_locals`` only reads an assignment whose
+    whole value is a call, so ``x = _credential_value(...) or _settings_value(...)``
+    was outside the per-local rule entirely. That spelling is not exotic, it is
+    the house style for "vault, else the deployment's setting", and it is exactly
+    the shape that made the reddit leak invisible.
+
+    ``keeps`` is the half that makes this a two-part answer rather than one more
+    thing to flag. An ``or`` chain preserves vault provenance only if EVERY
+    operand is vault-sourced. Pagerduty writes
+    ``api_token_from_vault = access_token_from_vault or _credential_value(...)``,
+    where both arms come from the vault, so the local genuinely is a provenance
+    bit and may be passed to a guard. The moment one operand is
+    ``_settings_value(...)``, the local may hold the operator's own value, and
+    passing it as ``secret_from_vault=`` would ASSERT vault provenance the code
+    does not have, which is worse than not guarding: it is a guard that always
+    says yes.
+    """
+    found = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        operands = _flatten_or(node.value)
+        if len(operands) < 2:
+            continue  # a bare call, already handled
+        anchors = []
+        vault_sourced = True
+        for operand in operands:
+            if isinstance(operand, ast.Name) and operand.id in provenance_names:
+                continue
+            if not isinstance(operand, ast.Call):
+                vault_sourced = False
+                continue
+            name = _call_name(operand)
+            if not name or not (name.endswith("credential_value") or name in wrappers):
+                vault_sourced = False
+                continue
+            keywords = {kw.arg: kw.value for kw in operand.keywords or []}
+            spec = _resolved_spec(keywords.get("provider"), module)
+            if spec is None and name in wrappers:
+                spec = wrappers[name]
+            fields = _resolved_field_names(keywords.get("field_names"), module)
+            if _classify(spec, fields) == "anchor":
+                anchors.append(spec.provider)
+        for provider in anchors:
+            found.append((target.id, provider, node.lineno, vault_sourced))
+    return found
+
+
 def _uncovered_provenance(function, module, wrappers):
     """Anchor assignments with no guard naming them before the local is rebound.
 
@@ -1427,10 +1491,31 @@ def _uncovered_provenance(function, module, wrappers):
         for inner in ast.walk(node.value):
             if isinstance(inner, ast.Name):
                 returned.add(inner.id)
-    assignments = [
-        entry
-        for entry in _secret_provenance_locals(function, module, wrappers)
-        if entry[0] not in returned
+    bare = _secret_provenance_locals(function, module, wrappers)
+    # HOLE 1a. An anchor resolved inside an ``or`` chain was invisible here.
+    # Two outcomes, because the chain either preserves vault provenance or
+    # destroys it, and only one of them is answerable by a guard.
+    chained = _or_chained_anchors(
+        function, module, wrappers, {name for name, _p, _l in bare}
+    )
+    assignments = [entry for entry in bare if entry[0] not in returned]
+    assignments += [
+        (local, provider, line)
+        for local, provider, line, keeps in chained
+        if keeps and local not in returned
+    ]
+    # NO ``returned`` exemption on this class, and the difference is the whole
+    # point of the exemption. It exists because a helper can hand its provenance
+    # UP for the caller to join (``_reddit_access_token``). A local whose
+    # provenance was DISCARDED hands up a value with no provenance attached, so
+    # returning it does not move the decision anywhere, it deletes it. Caught by
+    # mutation: collapsing taiga's ``token_from_vault`` into an ``or`` chain went
+    # unreported because ``token`` also appears inside a ``_setup_hint(...)``
+    # call in a return, which the crude name-anywhere-in-a-return scan counts.
+    discarded = [
+        (local, provider)
+        for local, provider, _line, keeps in chained
+        if not keeps
     ]
     guards = _guarded_provenance_names(function)
     rebound = {}
@@ -1441,7 +1526,8 @@ def _uncovered_provenance(function, module, wrappers):
         later = [other for other in rebound[local] if other > line]
         end = min(later) if later else function.end_lineno + 1
         if not any(line < guard < end for guard in guards.get(local, ())):
-            uncovered.append((local, provider))
+            uncovered.append((local, provider, "unguarded"))
+    uncovered += [(local, provider, "discarded") for local, provider in discarded]
     return uncovered
 
 
@@ -1770,7 +1856,16 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
                 )
                 continue
 
-            for local, provider in _uncovered_provenance(fn, module, wrappers):
+            for local, provider, why in _uncovered_provenance(fn, module, wrappers):
+                if why == "discarded":
+                    problems.append(
+                        f"{path.name}::{fn.name} resolves {provider}'s anchor inside "
+                        f"an 'or' chain assigned to {local}, alongside a non-vault "
+                        "operand, so NO local carries its vault provenance and no "
+                        f"guard can name it. Split the lookup out ({local}_from_vault "
+                        "= ...) and guard on that"
+                    )
+                    continue
                 problems.append(
                     f"{path.name}::{fn.name} resolves {provider}'s {local} but no "
                     "guard names it between that lookup and the next rebinding, "
