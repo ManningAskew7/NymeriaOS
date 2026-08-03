@@ -77,12 +77,23 @@ def _now() -> str:
 
 
 def _stamp(
-    user_id: str, name: str, tokens: Sequence[str], author_actor: str
+    user_id: str,
+    name: str,
+    command_id: str,
+    tokens: Sequence[str],
+    author_actor: str,
 ) -> str:
-    """The authoring-path execution-trust stamp (module docstring)."""
+    """The authoring-path execution-trust stamp (module docstring).
+
+    ``command_id`` is covered even though dispatch expands from ``tokens``:
+    the listing derives its dormancy verdict from it, and a field the
+    listing trusts but the stamp ignores is a field an out-of-band writer
+    can lie through.
+    """
     canonical = json.dumps(
         {
             "author": author_actor,
+            "command_id": command_id,
             "name": name,
             "tokens": list(tokens),
             "user_id": user_id,
@@ -152,7 +163,7 @@ class UserAliasesRepo:
         now = _now()
         alias_id = uuid.uuid4().hex[:16]
         token_tuple = tuple(str(token) for token in tokens)
-        stamp = _stamp(user_id, name, token_tuple, author_actor)
+        stamp = _stamp(user_id, name, command_id, token_tuple, author_actor)
         with self._lock, self._connect() as conn:
             (count,) = conn.execute(
                 "SELECT COUNT(*) FROM user_command_aliases WHERE user_id = ?",
@@ -250,7 +261,13 @@ class UserAliasesRepo:
             tokens = tuple(str(token) for token in json.loads(row["tokens_json"]))
         except (ValueError, TypeError):
             tokens = ()
-        expected = _stamp(row["user_id"], row["name"], tokens, row["author_actor"])
+        expected = _stamp(
+            row["user_id"],
+            row["name"],
+            row["command_id"],
+            tokens,
+            row["author_actor"],
+        )
         return UserCommandAlias(
             id=row["id"],
             user_id=row["user_id"],

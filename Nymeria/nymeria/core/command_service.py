@@ -25,6 +25,7 @@ from urllib.parse import quote
 import httpx
 
 from ..config import get_settings
+from .command_executor_aliases import AliasCommandsMixin
 from .command_executor_cliproxy import CliproxyCommandsMixin
 from .command_executor_context import ContextCommandsMixin
 from .command_executor_llm import LLMCommandsMixin
@@ -2276,6 +2277,7 @@ class CommandService:
         include_hidden: bool = False,
         user_id: str | None = None,
         agent: Any | None = None,
+        include_user_aliases: bool = False,
     ) -> list[CommandInfo]:
         effective_actor = (actor or _actor_from_source(source)).lower()
         effective_surface = surface or _surface_from_source(source)
@@ -2291,18 +2293,37 @@ class CommandService:
                 include_hidden=include_hidden,
             )
         ]
-        if user_id:
+        # Opt-in, not keyed on user_id alone: user_id also gates skill
+        # visibility, and the /help renderers pass it without wanting a
+        # per-listing accounts.db read for an annotation they never show.
+        if include_user_aliases and user_id:
             infos = self._with_user_aliases(infos, user_id)
         return infos
+
+    def user_alias_status(self, row: Any) -> str | None:
+        """One liveness verdict for a user-alias row (#133).
+
+        Shared by the catalog annotation and ``/alias list`` so the two
+        cannot drift. ``None`` means live; otherwise ``"inert"`` (failed its
+        authoring stamp), ``"shadowed"`` (the catalog claims the name now),
+        or ``"target_gone"``.
+        """
+        if not getattr(row, "stamp_valid", False):
+            return "inert"
+        if self._builtin_claims_token(row.name):
+            return "shadowed"
+        if row.command_id not in self._commands:
+            return "target_gone"
+        return None
 
     def _with_user_aliases(
         self, infos: list[CommandInfo], user_id: str
     ) -> list[CommandInfo]:
         """Annotate each command with the caller's own aliases for it (#133).
 
-        Only LIVE rows ride: stamp-valid, target still registered, name still
-        unclaimed by the catalog. A store fault degrades to no annotation;
-        the catalog listing must never 500 over the alias table.
+        Only LIVE rows ride (``user_alias_status``). A store fault degrades
+        to no annotation; the catalog listing must never 500 over the alias
+        table.
         """
         try:
             from .user_aliases import get_user_aliases_repo
@@ -2313,15 +2334,10 @@ class CommandService:
                 "user-alias catalog annotation failed for %s: %s", user_id, e
             )
             return infos
-        if not rows:
-            return infos
         by_target: dict[str, list[str]] = {}
         for row in rows:
-            if not row.stamp_valid or row.command_id not in self._commands:
-                continue
-            if self._builtin_claims_token(row.name):
-                continue
-            by_target.setdefault(row.command_id, []).append(row.name)
+            if self.user_alias_status(row) is None:
+                by_target.setdefault(row.command_id, []).append(row.name)
         if not by_target:
             return infos
         return [
@@ -3554,6 +3570,7 @@ class _CommandExecutor(
     LLMCommandsMixin,
     ProviderSetupCommandsMixin,
     CliproxyCommandsMixin,
+    AliasCommandsMixin,
 ):
     """Per-request command executor with the migrated command bodies."""
 
@@ -5554,118 +5571,6 @@ class _CommandExecutor(
         # typo is answered by the dispatcher with did-you-mean plus the
         # valid-subcommand list. The root carries `env show`'s admin gate.
         return await self._cmd_env_show(BoundArgs())
-
-    # -- User-defined aliases (backlog #133) --------------------------------
-
-    _ALIAS_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
-
-    async def _cmd_alias(self, bound: BoundArgs) -> str | CommandOutput:
-        # Bare family root = overview (structure rule 1): the listing.
-        return await self._cmd_alias_list(bound)
-
-    async def _cmd_alias_list(self, bound: BoundArgs) -> str | CommandOutput:
-        from .user_aliases import get_user_aliases_repo
-
-        service = self._service or get_command_service()
-        aliases = get_user_aliases_repo().list_aliases(self.user_id)
-        if not aliases:
-            return command_info(
-                "No aliases yet. Create one with "
-                "`/alias create <name> <command...>`, for example "
-                "`/alias create gpt5 model openai/gpt-5.5`."
-            )
-        lines = [f"### Your Command Aliases ({len(aliases)})", ""]
-        for alias in aliases:
-            expansion = " ".join(alias.tokens)
-            note = ""
-            if not alias.stamp_valid:
-                note = " [INERT: failed its authoring stamp; delete and re-create it]"
-            elif service._builtin_claims_token(alias.name):
-                note = " [dormant: a built-in command now claims this spelling]"
-            elif alias.command_id not in service._commands:
-                note = " [dormant: its target command no longer exists]"
-            author = " (agent-authored)" if alias.author_actor == "agent" else ""
-            lines.append(f"- `/{alias.name}` -> `/{expansion}`{author}{note}")
-        return "\n".join(lines)
-
-    async def _cmd_alias_create(self, bound: BoundArgs) -> str | CommandOutput:
-        from .user_aliases import (
-            AliasAlreadyExists,
-            AliasLimitReached,
-            get_user_aliases_repo,
-        )
-
-        service = self._service or get_command_service()
-        raw_name = str(bound.get("name") or "")
-        name = _normalize_token(raw_name)
-        if not name or not set(name) <= self._ALIAS_NAME_CHARS:
-            return command_error(
-                f"Alias names are one word of letters, digits, hyphens or "
-                f"underscores; got {raw_name!r}."
-            )
-        if service._builtin_claims_token(name):
-            return command_error(
-                f"`/{name}` is a registered command or built-in alias "
-                "spelling; an alias must not shadow the catalog."
-            )
-        # The binder recomposes the rest param from shlex-split args, so a
-        # quoted phrase reaches this handler already FLATTENED into separate
-        # words, and the alias would silently rebind them at dispatch
-        # (`memory save "two words"` becoming key=two value=words). Check
-        # the RAW invocation text for quoting instead; multi-word values are
-        # a recorded v1 non-goal of the mechanism.
-        if '"' in bound.rest or "'" in bound.rest:
-            return command_error(
-                "Expansion values must be single unquoted words; quoted "
-                "phrases are not supported in aliases."
-            )
-        expansion_text = str(bound.get("expansion") or "").strip().lstrip("/")
-        parsed = service._parse_for_registry("/" + expansion_text)
-        if parsed.definition is None:
-            return command_error(
-                f"`/{expansion_text}` does not resolve to a registered "
-                "command; an alias must expand to a real one."
-            )
-        if not parsed.definition.executable:
-            return command_error(
-                f"`/{parsed.definition.name}` runs as a chat turn, not a "
-                "dispatched command; aliasing it is not supported."
-            )
-        # Store the CANONICAL expansion (path + bound values): a built-in
-        # alias typed in the expansion is resolved once, here, so later
-        # catalog renames cannot silently re-point the user's spelling.
-        tokens = tuple(parsed.definition.path) + tuple(parsed.args)
-        author = "agent" if self.actor == "agent" else "user"
-        try:
-            created = get_user_aliases_repo().create_alias(
-                user_id=self.user_id,
-                name=name,
-                command_id=parsed.definition.id,
-                tokens=tokens,
-                author_actor=author,
-            )
-        except AliasAlreadyExists:
-            return command_error(
-                f"You already have an alias `/{name}`. "
-                f"Delete it first: `/alias delete {name}`."
-            )
-        except AliasLimitReached as e:
-            return command_error(str(e))
-        display = " ".join(created.tokens)
-        return command_success(f"Alias created: `/{name}` -> `/{display}`.")
-
-    async def _cmd_alias_delete(self, bound: BoundArgs) -> str | CommandOutput:
-        from .user_aliases import get_user_aliases_repo
-
-        name = _normalize_token(str(bound.get("name") or ""))
-        removed = get_user_aliases_repo().delete_alias(
-            user_id=self.user_id, name=name
-        )
-        if not removed:
-            return command_error(
-                f"No alias `/{name}`. `/alias list` shows yours."
-            )
-        return command_success(f"Alias `/{name}` deleted.")
 
     async def _cmd_env_show(self, bound: BoundArgs) -> str:
         data = await self.api.get_env_vars(user_id=self.user_id)

@@ -438,24 +438,21 @@ def test_freed_backend_spellings_do_not_fall_through_to_a_local_handler():
 def test_retired_root_spellings_still_reach_their_replacement():
     """`/branch`, `/fork`, `/models`, `/tasks` were roots before the rename.
 
-    They are whole-path aliases of deeper commands now. Every other surface
-    resolves those server-side; the CLI resolves the first token itself, so
-    without the hidden root proxies these would be unknown commands here.
+    They are whole-path aliases of deeper commands now, kept typeable and
+    Tab-completable here as hidden proxies. Since the #133 unification the
+    proxies forward the ALIAS spelling raw (the backend's own expansion is
+    the authority; a substituted canonical path would drop the tokens an
+    injected alias carries), so the pin is the raw forward, not a rewritten
+    path.
     """
     registry = merged_registry()
-    expected = {
-        "/branch": "/thread branch",
-        "/fork": "/thread branch",
-        "/models": "/model list",
-        "/tasks": "/todos list",
-    }
 
-    for raw, canonical in expected.items():
+    for raw in ("/branch", "/fork", "/models", "/tasks"):
         match = registry.resolve(raw)
         assert match is not None, f"{raw} did not resolve"
         assert match.command.hidden is True, f"{raw} should not be advertised"
         assert match.command.metadata.get("backend_path") == tuple(
-            canonical.lstrip("/").split()
+            raw.lstrip("/").split()
         )
 
     client = _FakeCommandClient()
@@ -467,7 +464,7 @@ def test_retired_root_spellings_still_reach_their_replacement():
     )
 
     assert result.ok is True
-    assert client.calls[0]["command"] == "/todos list all"
+    assert client.calls[0]["command"] == "/tasks all"
 
 
 def test_unknown_first_token_forwards_raw_to_the_backend():
@@ -501,6 +498,18 @@ def test_unknown_first_token_forwards_raw_to_the_backend():
     )
     assert client.calls[0]["command"] == "/memory save color blue"
 
+    # The CLI-local --json flag never reaches the wire: it was stripped
+    # from the parsed invocation, and the forward strips it from the raw
+    # text too.
+    client.calls.clear()
+    run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/gpt5 some args --json",
+        )
+    )
+    assert client.calls[0]["command"] == "/gpt5 some args"
+
     # Offline (no transport): the local unknown-command error is kept.
     offline = run(
         registry.dispatch_async(
@@ -521,11 +530,16 @@ def test_user_alias_proxies_forward_the_typed_spelling():
     info = command_info("model")
     info["user_aliases"] = ["/gpt5"]
     registry = CommandRegistry(include_builtins=False)
-    BackendCommandProvider([info]).register(registry)
+    provider = BackendCommandProvider([info])
+    provider.register(registry)
+    provider.register_user_alias_proxies(registry)
 
     proxy = registry.get("gpt5")
     assert proxy is not None
-    assert proxy.hidden is True
+    # VISIBLE, unlike retired-spelling proxies: a user's own vocabulary is
+    # not a retired spelling, and discoverability is the mirror's value.
+    assert proxy.hidden is False
+    assert "/gpt5" in {entry.text for entry in registry.get_palette_entries()}
 
     client = _FakeCommandClient()
     result = run(
@@ -538,20 +552,52 @@ def test_user_alias_proxies_forward_the_typed_spelling():
     assert client.calls[0]["command"] == "/gpt5 thread"
 
 
-def test_user_alias_proxy_never_shadows_a_local_or_backend_command():
-    """The catalog and local commands win the name; a stale mirror row must
-    not take over a real spelling."""
+def test_user_alias_proxy_never_shadows_a_local_command_in_production_order():
+    """The catalog and local commands win the name, under the ORDER app.py
+    actually uses: backend provider first, local modules second, and the
+    user-alias proxy pass DEFERRED to the very end.
+
+    The first version of this test registered the local module first and
+    passed while the live wiring was broken: a proxy registered in the
+    provider's own pass landed before the local root, and the registry's
+    backend-wins merge then DISCARDED the local command entirely (the #133
+    correctness review's H1). The deferred pass is the fix; this pins it
+    against the production sequence.
+    """
     info = command_info("model")
     info["user_aliases"] = ["/memory"]
     registry = CommandRegistry(include_builtins=False)
+    provider = BackendCommandProvider([info])
+    provider.register(registry)
     memory.register(registry)
-    BackendCommandProvider([info]).register(registry)
+    provider.register_user_alias_proxies(registry)
 
     resolved = registry.get("memory")
     assert resolved is not None
-    # The local family root survived; no hidden alias proxy took the key.
+    # The local family root survived; no alias proxy took the key.
     assert resolved.hidden is False
     assert resolved.subcommands
+    assert resolved.metadata.get("backend_path") != ("memory",)
+
+
+def test_a_transport_fault_on_the_fallback_degrades_not_crashes():
+    """A backend hiccup on an UNKNOWN token must mirror the known-command
+    containment (`command_exception`), not escape dispatch_async and kill
+    the REPL (the #133 correctness review's M1)."""
+
+    class _ExplodingClient:
+        async def execute_command(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    registry = CommandRegistry(include_builtins=False)
+    result = run(
+        registry.dispatch_async(
+            make_context(_ExplodingClient(), ListCommandOutputSink()),
+            "/gpt5",
+        )
+    )
+    assert result.ok is False
+    assert result.error_code == "command_exception"
 
 
 def test_depth_three_commands_nest_instead_of_clobbering_their_parent():
