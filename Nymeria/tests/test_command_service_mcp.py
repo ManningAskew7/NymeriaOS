@@ -314,3 +314,80 @@ def test_mcp_retry_rejects_server_without_plan(patched_registry) -> None:
     result = run(CommandService().execute(_ctx(), "/mcp retry alpha"))
     assert result.success is False
     assert "no install plan" in result.markdown
+
+
+# ── #129 wave 2a: declared params ────────────────────────────────────────────
+
+
+def test_mcp_logs_rejects_a_non_integer_limit(patched_registry) -> None:
+    # The old parser swallowed a junk limit and silently used 20; the declared
+    # int positional says so instead of showing the wrong number of lines.
+    registry = patched_registry(_FakeMCPRegistry([
+        _make_server("alpha", install_logs=[f"line {i}" for i in range(50)]),
+    ]))
+
+    result = run(CommandService().execute(_ctx(), "/mcp logs alpha five"))
+
+    assert result.success is False
+    assert "limit must be an integer, got `five`" in result.markdown
+    assert registry.saved == []
+    assert "line 49" not in result.markdown
+
+
+def test_mcp_logs_defaults_the_limit_to_twenty(patched_registry) -> None:
+    patched_registry(_FakeMCPRegistry([
+        _make_server("alpha", install_logs=[f"line {i}" for i in range(50)]),
+    ]))
+
+    result = run(CommandService().execute(_ctx(), "/mcp logs alpha"))
+
+    assert result.success is True, result.markdown
+    assert "(last 20 of 50)" in result.markdown
+    assert "line 30" in result.markdown
+    assert "line 29" not in result.markdown
+
+
+def test_mcp_list_rejects_arguments(patched_registry) -> None:
+    registry = patched_registry(_FakeMCPRegistry([_make_server("alpha")]))
+
+    result = run(CommandService().execute(_ctx(), "/mcp list alpha"))
+
+    assert result.success is False
+    assert "Unexpected argument `alpha`" in result.markdown
+    assert "| ID | State | Tools | Name |" not in result.markdown
+    assert registry.saved == []
+
+
+def test_mcp_remove_rejects_a_second_server_id(patched_registry) -> None:
+    registry = patched_registry(
+        _FakeMCPRegistry([_make_server("alpha"), _make_server("beta")])
+    )
+
+    result = run(CommandService().execute(_ctx(), "/mcp remove alpha beta"))
+
+    assert result.success is False
+    assert "Unexpected argument `beta`" in result.markdown
+    assert registry.deleted == []
+
+
+def test_mcp_discover_rejects_an_unknown_option(patched_registry) -> None:
+    registry = patched_registry(_FakeMCPRegistry([_make_server("alpha")]))
+
+    result = run(CommandService().execute(_ctx(), "/mcp discover alpha --force"))
+
+    assert result.success is False
+    assert "Unknown option `--force`" in result.markdown
+    assert registry.discover_calls == []
+
+
+def test_mcp_root_lists_and_guides_a_typo(patched_registry) -> None:
+    patched_registry(_FakeMCPRegistry([_make_server("alpha")]))
+
+    listed = run(CommandService().execute(_ctx(), "/mcp"))
+    assert listed.success is True, listed.markdown
+    assert "| ID | State | Tools | Name |" in listed.markdown
+
+    typo = run(CommandService().execute(_ctx(), "/mcp lgos"))
+    assert typo.success is False
+    assert "Usage: `/mcp [list|status|logs|discover|test|remove|retry]`" in typo.markdown
+    assert "Subcommands: discover, list, logs, remove, retry, status, test." in typo.markdown

@@ -95,6 +95,42 @@ _HOOK_APPROVAL_PARAMS = (
     ),
 )
 
+# ``/skills enable`` and ``/skills disable`` are one handler with a boolean, so
+# they share one declaration. The flag comes first so the generated usage keeps
+# advertising ``[--global] <name>``.
+_SKILL_STATE_PARAMS = (
+    CommandParam(
+        "global",
+        kind="flag",
+        type="bool",
+        description="Apply to every thread instead of only this one",
+    ),
+    CommandParam(
+        "name",
+        required=True,
+        choices_ref="skills",
+        description="Installed skill name",
+    ),
+)
+
+# Every ``/mcp`` verb that names one server takes the same argument and resolves
+# it through the same registry lookup, so one declaration keeps those usage
+# strings from drifting apart.
+_MCP_SERVER_ID_PARAM = CommandParam(
+    "server_id",
+    required=True,
+    label="server-id",
+    description="Configured MCP server id",
+)
+
+# ``/triggers enable``, ``disable``, and ``delete`` each name one trigger.
+_TRIGGER_ID_PARAM = CommandParam(
+    "trigger_id",
+    required=True,
+    label="trigger-id",
+    description="Event trigger id",
+)
+
 
 def register_default_commands(service: "CommandService") -> None:
     """Register every built-in slash command on ``service`` in catalog order.
@@ -866,186 +902,302 @@ def register_default_commands(service: "CommandService") -> None:
         "skills",
         description="List skills visible on this thread",
         category="Skills",
-        usage="/skills [list|show <name>|off all]",
         requires_thread=True,
         examples=("/skills show summarize", "/skills enable --global summarize"),
+        # Bare "/skills" lists. Registered subcommands never reach this handler
+        # (longest-prefix dispatch routes them first), so the only token the
+        # binder sees here is a typo; the label keeps advertising the family,
+        # since the usage line is where the verbs are discovered.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="list|show <name>|off all",
+                description="Skills subcommand (bare /skills lists)",
+            ),
+        ),
     )
     service.register(
         "skills list",
         description="List skills visible on this thread",
         category="Skills",
-        usage="/skills list",
         aliases=("skills_list",),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "skills show",
         description="Show a skill's markdown body without activating it",
         category="Skills",
-        usage="/skills show <name>",
         aliases=("skills_show",),
+        params=(
+            CommandParam(
+                "name",
+                required=True,
+                choices_ref="skills",
+                description="Installed skill name",
+            ),
+        ),
     )
     service.register(
         "skills off all",
         description="Deactivate every visible skill active on this thread",
         category="Skills",
-        usage="/skills off all",
         aliases=("skills_off_all",),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
+        params=(),
     )
     service.register(
         "skills search",
         description="Search a skills marketplace for installable skills",
         category="Skills",
-        usage="/skills search [query] [--source <source>]",
         aliases=("skills_search",),
+        # The query is a repeatable POSITIONAL, not a rest tail: the hand
+        # parser pulled --source out from any position and joined what was
+        # left, so "/skills search creator --source clawhub" must keep working.
+        params=(
+            CommandParam(
+                "query",
+                repeatable=True,
+                description="Words to match against marketplace skill names",
+            ),
+            CommandParam(
+                "source",
+                kind="option",
+                default="anthropic",
+                description="Marketplace source to search",
+            ),
+        ),
     )
     service.register(
         "skills install",
         description="Install a skill from a marketplace",
         category="Skills",
-        usage="/skills install <name> [--source <source>] [--scope user|global]",
         aliases=("skills_install",),
         mutates_state=True,
         danger_level="normal",
+        # The marketplace source set lives in skills/marketplace.py and its
+        # errors are the live-data validation, so --source stays an open string;
+        # --scope is a closed pair the handler already checked by equality.
+        params=(
+            CommandParam(
+                "name",
+                required=True,
+                choices_ref="skills",
+                description="Marketplace skill name to install",
+            ),
+            CommandParam(
+                "source",
+                kind="option",
+                default="anthropic",
+                description="Marketplace source to install from",
+            ),
+            CommandParam(
+                "scope",
+                kind="option",
+                choices=("user", "global"),
+                default="user",
+                description="Install for this user or for everyone",
+            ),
+        ),
     )
     service.register(
         "skills enable",
         description="Enable a skill on this thread (default) or globally",
         category="Skills",
-        usage="/skills enable [--global] <name>",
         aliases=("skills_enable",),
         mutates_state=True,
+        params=_SKILL_STATE_PARAMS,
     )
     service.register(
         "skills disable",
         description="Disable a skill on this thread (default) or globally",
         category="Skills",
-        usage="/skills disable [--global] <name>",
         aliases=("skills_disable",),
         mutates_state=True,
+        params=_SKILL_STATE_PARAMS,
     )
     service.register(
         "skills inspect",
         description="Show full skill details (metadata, scope, tools, references)",
         category="Skills",
-        usage="/skills inspect <name>",
         aliases=("skills_inspect",),
+        params=(
+            CommandParam(
+                "name",
+                required=True,
+                choices_ref="skills",
+                description="Installed skill name",
+            ),
+        ),
     )
     service.register(
         "mcp",
         description="MCP server management commands",
         category="MCP",
-        usage="/mcp list|status|logs|discover|test|remove|retry [...]",
         requires_admin=True,
+        # Bare "/mcp" lists; registered verbs are routed before this handler.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="list|status|logs|discover|test|remove|retry",
+                description="MCP subcommand (bare /mcp lists)",
+            ),
+        ),
     )
     service.register(
         "mcp list",
         description="List configured MCP servers",
         category="MCP",
-        usage="/mcp list",
         aliases=("mcp_list",),
         requires_admin=True,
+        params=(),
     )
     service.register(
         "mcp status",
         description="Show MCP server status, with errors if any",
         category="MCP",
-        usage="/mcp status [server-id]",
         aliases=("mcp_status",),
         requires_admin=True,
+        params=(
+            CommandParam(
+                "server_id",
+                label="server-id",
+                description="Configured MCP server id (omit for every server)",
+            ),
+        ),
     )
     service.register(
         "mcp logs",
         description="Show install logs for an MCP server",
         category="MCP",
-        usage="/mcp logs <server-id> [limit]",
         aliases=("mcp_logs",),
         requires_admin=True,
+        params=(
+            _MCP_SERVER_ID_PARAM,
+            CommandParam(
+                "limit",
+                type="int",
+                default=20,
+                description="How many trailing log lines to show",
+            ),
+        ),
     )
     service.register(
         "mcp discover",
         description="Force tool rediscovery for an MCP server",
         category="MCP",
-        usage="/mcp discover <server-id>",
         aliases=("mcp_discover",),
         requires_admin=True,
         mutates_state=True,
+        params=(_MCP_SERVER_ID_PARAM,),
     )
     service.register(
         "mcp test",
         description="Test connectivity to an MCP server",
         category="MCP",
-        usage="/mcp test <server-id>",
         aliases=("mcp_test",),
         requires_admin=True,
+        params=(_MCP_SERVER_ID_PARAM,),
     )
     service.register(
         "mcp remove",
         description="Remove an MCP server and its tools",
         category="MCP",
-        usage="/mcp remove <server-id>",
         aliases=("mcp_remove", "mcp_rm", "mcp_delete"),
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
+        params=(_MCP_SERVER_ID_PARAM,),
     )
     service.register(
         "mcp retry",
         description="Retry setup for a draft or failed MCP server",
         category="MCP",
-        usage="/mcp retry <server-id>",
         aliases=("mcp_retry",),
         requires_admin=True,
         mutates_state=True,
         danger_level="normal",
+        params=(_MCP_SERVER_ID_PARAM,),
     )
     service.register(
         "triggers",
         description="Event-trigger automation commands",
         category="Automation",
-        usage="/triggers list|enable|disable|delete|history [...]",
+        # Bare "/triggers" lists; registered verbs are routed before this one.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="list|enable|disable|delete|history",
+                description="Triggers subcommand (bare /triggers lists)",
+            ),
+        ),
     )
     service.register(
         "triggers list",
         description="List configured event triggers",
         category="Automation",
-        usage="/triggers list [--enabled-only] [--thread <id>]",
         aliases=("triggers_list",),
+        params=(
+            CommandParam(
+                "enabled_only",
+                kind="flag",
+                type="bool",
+                description="Hide disabled triggers",
+            ),
+            CommandParam(
+                "thread",
+                kind="option",
+                label="id|current",
+                description="Only triggers bound to this thread (`current` for the active one)",
+            ),
+        ),
     )
     service.register(
         "triggers enable",
         description="Enable an event trigger",
         category="Automation",
-        usage="/triggers enable <trigger-id>",
         aliases=("triggers_enable",),
         mutates_state=True,
+        params=(_TRIGGER_ID_PARAM,),
     )
     service.register(
         "triggers disable",
         description="Disable an event trigger",
         category="Automation",
-        usage="/triggers disable <trigger-id>",
         aliases=("triggers_disable",),
         mutates_state=True,
+        params=(_TRIGGER_ID_PARAM,),
     )
     service.register(
         "triggers delete",
         description="Delete an event trigger permanently",
         category="Automation",
-        usage="/triggers delete <trigger-id>",
         aliases=("triggers_delete",),
         mutates_state=True,
         danger_level="dangerous",
+        params=(_TRIGGER_ID_PARAM,),
     )
     service.register(
         "triggers history",
         description="Show recent trigger execution history",
         category="Automation",
-        usage="/triggers history [trigger-id] [--limit N]",
         aliases=("triggers_history",),
+        params=(
+            CommandParam(
+                "trigger_id",
+                label="trigger-id",
+                description="Only this trigger's executions",
+            ),
+            CommandParam(
+                "limit",
+                kind="option",
+                type="int",
+                default=20,
+                description="How many executions to show",
+            ),
+        ),
     )
     # Lifecycle hooks. The bare `/hook` is visible everywhere so a chat bot's
     # command menu shows one row; the multi-token subcommands are hidden from
@@ -1488,41 +1640,71 @@ def register_default_commands(service: "CommandService") -> None:
         description="List saved memories",
         category="Memory",
         aliases=("memory_list",),
+        params=(),
     )
     service.register(
         "memory save",
         description="Save a memory",
         category="Memory",
-        usage="/memory save <key> <value>",
         aliases=("memory_save",),
         mutates_state=True,
         danger_level="normal",
         examples=('/memory save color "deep blue"',),
+        params=(
+            CommandParam("key", required=True, description="Memory key"),
+            CommandParam(
+                "value",
+                kind="rest",
+                required=True,
+                description="Value to store under the key",
+            ),
+        ),
     )
     service.register(
         "memory forget",
         description="Forget a memory",
         category="Memory",
-        usage="/memory forget <key>",
         aliases=("memory_forget",),
         mutates_state=True,
         danger_level="normal",
+        params=(CommandParam("key", required=True, description="Memory key to remove"),),
     )
     service.register(
         "memory search",
         description="Search saved memories",
         category="Memory",
-        usage="/memory search <query>",
         aliases=("memory_search",),
+        params=(
+            CommandParam(
+                "query",
+                kind="rest",
+                required=True,
+                description="Text to match against keys and values",
+            ),
+        ),
     )
     service.register(
         "memory limit",
         description="Show or change memory character limits",
         category="Memory",
-        usage="/memory limit [global <chars>|thread <chars>|thread inherit]",
         aliases=("memory_limit",),
         mutates_state=True,
         danger_level="normal",
+        # A scope word then its value. The value stays a plain string because
+        # the thread scope also accepts `inherit`, so the range check (and the
+        # inherit synonyms) stay in the handler.
+        params=(
+            CommandParam(
+                "scope",
+                choices=("global", "thread"),
+                description="Which limit to change (omit to show both)",
+            ),
+            CommandParam(
+                "value",
+                label="chars|inherit",
+                description="Character limit, or `inherit` to drop a thread override",
+            ),
+        ),
     )
     service.register(
         "todos list",
@@ -1565,6 +1747,7 @@ def register_default_commands(service: "CommandService") -> None:
         category="Thread",
         aliases=("notepad_read",),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "notepad write",
@@ -1575,7 +1758,7 @@ def register_default_commands(service: "CommandService") -> None:
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
-    )
+    )  # params-exempt: raw-rest prefix grammar (append:/replace: parsed off `rest`)
     service.register(
         "notepad clear",
         description="Clear this thread's notepad",
@@ -1584,6 +1767,7 @@ def register_default_commands(service: "CommandService") -> None:
         requires_thread=True,
         mutates_state=True,
         danger_level="dangerous",
+        params=(),
     )
     service.register(
         "compact",

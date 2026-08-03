@@ -368,3 +368,188 @@ def test_skills_inspect_reports_missing_skill(
 
     assert result.success is False
     assert "not found" in result.markdown
+
+
+# ── #129 wave 2a: declared params ────────────────────────────────────────────
+
+
+def _cli_ctx(thread_id: str = "thread-1") -> CommandContext:
+    return CommandContext(
+        user_id="alice",
+        thread_id=thread_id,
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+
+def test_skills_search_reads_a_source_given_after_the_query(
+    patched_marketplace,
+) -> None:
+    # The query is a repeatable positional, not a raw tail, so the option keeps
+    # parsing after the free words exactly as the hand parser did.
+    anthropic = _FakeMarketplaceFetcher(
+        entries=[_FakeMarketplaceEntry("wrong-shelf", "From the default source.")],
+        installed_skill=None,
+    )
+    clawhub = _FakeMarketplaceFetcher(
+        entries=[_FakeMarketplaceEntry("skill-creator", "From clawhub.")],
+        installed_skill=None,
+    )
+    patched_marketplace("anthropic", anthropic)
+    patched_marketplace("clawhub", clawhub)
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/skills search creator --source clawhub", api=_SkillCommandFakeApi()
+        )
+    )
+
+    assert result.success is True, result.markdown
+    assert "skill-creator" in result.markdown
+    assert "(clawhub)" in result.markdown
+    assert "wrong-shelf" not in result.markdown
+
+
+def test_skills_search_accepts_the_equals_form_source(patched_marketplace) -> None:
+    clawhub = _FakeMarketplaceFetcher(
+        entries=[_FakeMarketplaceEntry("skill-creator", "From clawhub.")],
+        installed_skill=None,
+    )
+    patched_marketplace("clawhub", clawhub)
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/skills search --source=clawhub", api=_SkillCommandFakeApi()
+        )
+    )
+
+    assert result.success is True, result.markdown
+    assert "skill-creator" in result.markdown
+    assert "(clawhub)" in result.markdown
+
+
+def test_skills_install_rejects_an_unknown_scope(
+    monkeypatch: pytest.MonkeyPatch, patched_marketplace
+) -> None:
+    installed = _FakeSkillKitSkill("skill-creator")
+    fetcher = _FakeMarketplaceFetcher(entries=[], installed_skill=installed)
+    patched_marketplace("anthropic", fetcher)
+    skill_manager = _FakeSkillManager()
+    monkeypatch.setattr(
+        agent_module, "get_current_agent", lambda: _make_agent(skill_manager=skill_manager)
+    )
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/skills install skill-creator --scope everyone",
+            api=_SkillCommandFakeApi(),
+        )
+    )
+
+    assert result.success is False
+    assert "`everyone` is not a valid --scope" in result.markdown
+    assert "Valid: user, global" in result.markdown
+    assert fetcher.fetch_calls == []
+    assert skill_manager.reloaded == 0
+
+
+def test_skills_install_rejects_a_second_name(
+    monkeypatch: pytest.MonkeyPatch, patched_marketplace
+) -> None:
+    fetcher = _FakeMarketplaceFetcher(
+        entries=[], installed_skill=_FakeSkillKitSkill("skill-creator")
+    )
+    patched_marketplace("anthropic", fetcher)
+    monkeypatch.setattr(
+        agent_module,
+        "get_current_agent",
+        lambda: _make_agent(skill_manager=_FakeSkillManager()),
+    )
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/skills install skill-creator artifact-builder",
+            api=_SkillCommandFakeApi(),
+        )
+    )
+
+    assert result.success is False
+    assert "Unexpected argument `artifact-builder`" in result.markdown
+    assert fetcher.fetch_calls == []
+
+
+def test_skills_enable_accepts_the_global_flag_after_the_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_manager = _FakeProfileManager()
+    monkeypatch.setattr(
+        agent_module,
+        "get_current_agent",
+        lambda: _make_agent(
+            skill_manager=_FakeSkillManager(), profile_manager=profile_manager
+        ),
+    )
+    api = _SkillCommandFakeApi()
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/skills enable skill-creator --global", api=api
+        )
+    )
+
+    assert result.success is True, result.markdown
+    assert profile_manager.profile.enabled_global_skills == ["skill-creator"]
+    assert api.updates == []
+
+
+def test_skills_inspect_rejects_extra_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_manager = _FakeSkillManager()
+    skill_manager.skill = _FakeSkillKitSkill("skill-creator")
+    monkeypatch.setattr(
+        agent_module, "get_current_agent", lambda: _make_agent(skill_manager=skill_manager)
+    )
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/skills inspect skill-creator verbose", api=_SkillCommandFakeApi()
+        )
+    )
+
+    assert result.success is False
+    assert "Unexpected argument `verbose`" in result.markdown
+    assert "Required tools" not in result.markdown
+
+
+def test_skills_show_requires_a_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    skill_manager = _FakeSkillManager()
+    skill_manager.skill = _FakeSkillKitSkill("skill-creator")
+    monkeypatch.setattr(
+        agent_module, "get_current_agent", lambda: _make_agent(skill_manager=skill_manager)
+    )
+
+    result = run(
+        CommandService().execute(_cli_ctx(), "/skills show", api=_SkillCommandFakeApi())
+    )
+
+    assert result.success is False
+    assert "Missing required argument: name" in result.markdown
+    assert "Usage: `/skills show <name>`" in result.markdown
+
+
+def test_skills_root_guides_a_typo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        agent_module,
+        "get_current_agent",
+        lambda: _make_agent(skill_manager=_FakeSkillManager()),
+    )
+
+    result = run(
+        CommandService().execute(_cli_ctx(), "/skills serch", api=_SkillCommandFakeApi())
+    )
+
+    assert result.success is False
+    assert "Usage: `/skills [list|show <name>|off all]`" in result.markdown
+    assert "See `/help skills`." in result.markdown
