@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .command_forms import CommandOutput, command_error
 from .command_params import BoundArgs
 
 logger = logging.getLogger(__name__)
@@ -255,38 +256,38 @@ class ContextCommandsMixin:
     user_id: str
 
     if TYPE_CHECKING:
-        def _require_thread(self) -> str | None: ...
+        def _require_thread(self) -> CommandOutput | None: ...
 
     # ── Token usage / cost ────────────────────────────────────────────────
 
-    async def _cmd_usage(self, bound: BoundArgs) -> str:
+    async def _cmd_usage(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         stats = await self.api.get_context_stats(self.thread_id)
         if not isinstance(stats, Mapping):
-            return "[Error]: Could not retrieve usage statistics."
+            return command_error("Could not retrieve usage statistics.")
         trigger = stats.get("compact_trigger_tokens")
         compact_trigger = trigger if isinstance(trigger, int) and not isinstance(trigger, bool) else None
-        return "[Info]: " + _format_thread_usage(stats, compact_trigger=compact_trigger)
+        return _format_thread_usage(stats, compact_trigger=compact_trigger)
 
-    async def _cmd_usage_session(self, bound: BoundArgs) -> str:
+    async def _cmd_usage_session(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         stats = await self.api.get_context_stats(self.thread_id)
         if not isinstance(stats, Mapping):
-            return "[Error]: Could not retrieve usage statistics."
-        return "[Info]: " + _format_session_usage(stats)
+            return command_error("Could not retrieve usage statistics.")
+        return _format_session_usage(stats)
 
     # ── Workspace artifacts (server-state listing) ────────────────────────
 
-    async def _cmd_artifacts(self, bound: BoundArgs) -> str:
+    async def _cmd_artifacts(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/artifacts" is the recent listing; "recent" is a registered
         # path, routed before this handler.
         return await self._cmd_artifacts_recent(BoundArgs())
 
-    async def _cmd_artifacts_recent(self, bound: BoundArgs) -> str:
+    async def _cmd_artifacts_recent(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -295,7 +296,7 @@ class ContextCommandsMixin:
         limit = max(1, int(bound.get("limit", 10)))
         artifacts = await self._artifacts_from_history(limit=limit)
         if not artifacts:
-            return "[Info]: No recent workspace artifacts found."
+            return "No recent workspace artifacts found."
 
         lines = [
             "Recent Artifacts",
@@ -310,7 +311,7 @@ class ContextCommandsMixin:
                 f"  {index:<3} {_one_line(name, limit=28):<28} "
                 f"{size:<10} {_one_line(path, limit=80)}"
             )
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     async def _artifacts_from_history(self, *, limit: int) -> list[dict[str, Any]]:
         if not self.thread_id:

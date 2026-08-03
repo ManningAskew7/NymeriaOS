@@ -290,6 +290,10 @@ def test_doctor_root_combines_auth_and_model(patched_agent) -> None:
     assert "Auth" in result.markdown
     assert "Model" in result.markdown
     assert "openai" in result.markdown
+    # The composed root must not leak a raw sentinel mid-body: composing
+    # two prefixed halves used to print a literal "[Info]:" before the
+    # Model section (#132 survey, the one unprefixed-return bug).
+    assert "[Info]:" not in result.markdown
 
 
 # ── #129 wave 2b: declared params ─────────────────────────────────────────

@@ -33,6 +33,9 @@ from .command_forms import (
     CommandOutput,
     CommandResultLevel,
     command_data,
+    command_error,
+    command_info,
+    command_success,
     form_payload,
     form_tab,
     radio_field,
@@ -224,6 +227,13 @@ class ParsedCommand:
 
 @dataclass(frozen=True)
 class SkillSlashResult:
+    """A prepared `/skill` or `/kit` dispatch for the chat-stream surface.
+
+    ``success`` is the outcome, so ``message`` is a plain BODY carrying no
+    legacy ``[Error]:``/``[Success]:`` prefix (#132): the caller authors
+    whatever outcome artifact its surface renders.
+    """
+
     success: bool
     should_stream: bool
     message: str
@@ -2985,22 +2995,26 @@ def activate_skill_kit(
     override. ``bind_tools_for_thread`` queues the graph rebuild on success,
     so the next agent turn picks up the new tools automatically.
 
-    Returns ``(ok, message)``.
+    Returns ``(ok, message)``: ``ok`` IS the outcome, so ``message`` is a
+    plain body with no legacy ``[Error]:``/``[Success]:`` prefix (#132).
+    Callers outside the dispatcher (chat.py, spawn_thread, the workflow
+    thread verbs) quote it into their own copy, where a prefix used to
+    surface mid-string.
     """
     if not thread_id:
-        return False, "[Error]: No active thread; cannot activate skill."
+        return False, "No active thread; cannot activate skill."
 
     skill_manager = getattr(agent, "skill_manager", None)
     if skill_manager is None:
-        return False, "[Error]: Skill manager unavailable; cannot activate skill."
+        return False, "Skill manager unavailable; cannot activate skill."
 
     try:
         skill = skill_manager.get(skill_name, user_id=user_id)
     except Exception as e:
-        return False, f"[Error]: Skill manager lookup failed: {e}"
+        return False, f"Skill manager lookup failed: {e}"
 
     if skill is None:
-        return False, f"[Error]: Skill '{skill_name}' not found."
+        return False, f"Skill '{skill_name}' not found."
 
     # Nested required skills resolve one level deep, strictly, BEFORE any
     # mutation: a kit that names a missing skill must not half-activate.
@@ -3011,7 +3025,7 @@ def activate_skill_kit(
     )
     if missing_nested:
         return False, (
-            f"[Error]: Skill '{skill_name}' requires skills that are not "
+            f"Skill '{skill_name}' requires skills that are not "
             f"installed: {', '.join(missing_nested)}. Nothing was activated."
         )
     union_tools = expanded_required_tools(skill, nested_skills)
@@ -3023,13 +3037,13 @@ def activate_skill_kit(
             _activate_skill_on_thread(agent, thread_id, skill_name)
             return None
         except Exception as e:  # noqa: BLE001 - surfaced to the caller
-            return f"[Error]: Failed to add skill to thread: {e}"
+            return f"Failed to add skill to thread: {e}"
 
     if not skill.is_skill_kit:
         error = _enable_on_thread()
         if error:
             return False, error
-        return True, f"[Success]: Skill '{skill_name}' activated."
+        return True, f"Skill '{skill_name}' activated."
 
     nested_note = (
         (
@@ -3046,14 +3060,14 @@ def activate_skill_kit(
         if error:
             return False, error
         return True, (
-            f"[Success]: Skill kit '{skill_name}' activated (no tools to "
+            f"Skill kit '{skill_name}' activated (no tools to "
             f"bind).{nested_note}"
         )
 
     try:
         from ..tools.tool_search import bind_tools_for_thread
     except Exception as e:
-        return False, f"[Error]: tool_search unavailable: {e}"
+        return False, f"tool_search unavailable: {e}"
 
     # Bind FIRST, enable after (the Skill() meta-tool order): a strict
     # binding failure must leave the kit fully inactive. Enabling first
@@ -3072,7 +3086,7 @@ def activate_skill_kit(
     )
     if not binding.ok:
         return False, (
-            f"[Error]: Skill kit '{skill_name}' was NOT activated; tool "
+            f"Skill kit '{skill_name}' was NOT activated; tool "
             f"binding failed:\n{binding.text}"
         )
 
@@ -3095,7 +3109,7 @@ def activate_skill_kit(
         return False, error
 
     return True, (
-        f"[Success]: Skill kit '{skill_name}' activated.{nested_note}\n"
+        f"Skill kit '{skill_name}' activated.{nested_note}\n"
         f"{binding.text}"
     )
 
@@ -3113,14 +3127,15 @@ def deactivate_skill_kit(
     evicts required tools from ``ThreadConfig.temporary_tools``. The graph
     rebuilds on the next turn naturally as the tool set has changed.
 
-    Returns ``(ok, message)``.
+    Returns ``(ok, message)``: ``ok`` IS the outcome, so ``message`` is a
+    plain body with no legacy sentinel prefix (#132).
     """
     if not thread_id:
-        return False, "[Error]: No active thread; cannot deactivate skill."
+        return False, "No active thread; cannot deactivate skill."
 
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
-        return False, f"[Error]: No thread config for {thread_id}."
+        return False, f"No thread config for {thread_id}."
 
     changed = False
     if skill_name in tc.enabled_skills:
@@ -3153,7 +3168,7 @@ def deactivate_skill_kit(
 
     if changed:
         if not agent.thread_config_manager.save_config(tc):
-            return False, "[Error]: Failed to save thread config after deactivate."
+            return False, "Failed to save thread config after deactivate."
         if hasattr(agent, "invalidate_thread_config_cache"):
             try:
                 agent.invalidate_thread_config_cache(thread_id)
@@ -3164,11 +3179,11 @@ def deactivate_skill_kit(
                 )
 
     label = "Skill kit" if skill is not None and skill.is_skill_kit else "Skill"
-    msg_parts = [f"[Success]: {label} '{skill_name}' deactivated."]
+    msg_parts = [f"{label} '{skill_name}' deactivated."]
     if evicted:
         msg_parts.append(f"Evicted tools: {', '.join(evicted)}.")
     elif not changed:
-        msg_parts = [f"[Info]: {label} '{skill_name}' was not active."]
+        msg_parts = [f"{label} '{skill_name}' was not active."]
     return True, " ".join(msg_parts)
 
 
@@ -3227,7 +3242,7 @@ def prepare_skill_slash_command(
         return SkillSlashResult(
             False,
             False,
-            f"[Error]: Usage: `{usage}`.",
+            f"Usage: `{usage}`.",
         )
 
     skill_name = args[0].strip().lower()
@@ -3239,7 +3254,7 @@ def prepare_skill_slash_command(
         return SkillSlashResult(
             False,
             False,
-            "[Error]: Skill manager unavailable.",
+            "Skill manager unavailable.",
             skill_name,
         )
     try:
@@ -3248,7 +3263,7 @@ def prepare_skill_slash_command(
         return SkillSlashResult(
             False,
             False,
-            f"[Error]: Skill manager lookup failed: {e}",
+            f"Skill manager lookup failed: {e}",
             skill_name,
         )
     if skill is None or getattr(skill, "is_internal", False):
@@ -3256,7 +3271,7 @@ def prepare_skill_slash_command(
         return SkillSlashResult(
             False,
             False,
-            f"[Error]: {noun} '{skill_name}' not found.",
+            f"{noun} '{skill_name}' not found.",
             skill_name,
         )
 
@@ -3265,14 +3280,14 @@ def prepare_skill_slash_command(
         return SkillSlashResult(
             False,
             False,
-            f"[Error]: '{skill_name}' is a Skill Kit. Use `/kit {skill_name}`.",
+            f"'{skill_name}' is a Skill Kit. Use `/kit {skill_name}`.",
             skill_name,
         )
     if mode == "kit" and not is_kit:
         return SkillSlashResult(
             False,
             False,
-            f"[Error]: '{skill_name}' is a markdown-only skill. Use `/skill {skill_name}`.",
+            f"'{skill_name}' is a markdown-only skill. Use `/skill {skill_name}`.",
             skill_name,
         )
 
@@ -3357,12 +3372,14 @@ class _CommandExecutor(
         # default registry).
         self._service = service
 
-    def _require_thread(self) -> str | None:
+    def _require_thread(self) -> CommandOutput | None:
         if self.thread_id:
             return None
-        return "[Error]: This command requires an active thread. Send a message first."
+        return command_error(
+            "This command requires an active thread. Send a message first."
+        )
 
-    def _usage_error(self, name: str, *, hint: str | None = None) -> str:
+    def _usage_error(self, name: str, *, hint: str | None = None) -> CommandOutput:
         """Render the standard usage error for a registered command.
 
         Pulls the usage string and derived subcommand list from the command
@@ -3376,14 +3393,14 @@ class _CommandExecutor(
         info = service.find_command(name)
         if info is None:
             # Defensive: never raise while rendering an error message.
-            return f"[Error]: Usage: `/{name}`."
-        parts = [f"[Error]: Usage: `{info.usage}`."]
+            return command_error(f"Usage: `/{name}`.")
+        parts = [f"Usage: `{info.usage}`."]
         if info.subcommands:
             parts.append("Subcommands: " + ", ".join(info.subcommands) + ".")
         if hint:
             parts.append(hint)
         parts.append(f"See `/help {info.name}`.")
-        return " ".join(parts)
+        return command_error(" ".join(parts))
 
     def _command_offerable(self, name: str) -> bool:
         """Whether the dispatch gate would let THIS caller run ``name``.
@@ -3425,26 +3442,26 @@ class _CommandExecutor(
 
     # ── Skills ────────────────────────────────────────────────────────────
 
-    async def _cmd_skills(self, bound: BoundArgs) -> str:
+    async def _cmd_skills(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/skills" lists. Every skills verb is a registered child, so
         # longest-prefix dispatch routes them before this handler runs; the root
         # takes zero arguments and a typo never reaches here (the dispatcher
         # answers it with did-you-mean plus the valid-subcommand list).
         return await self._cmd_skills_list(BoundArgs())
 
-    async def _cmd_skills_list(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_list(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
 
         agent = self._agent()
         if agent is None:
-            return "[Error]: No current NymeriaAgent is available for skill commands."
+            return command_error("No current NymeriaAgent is available for skill commands.")
 
         service = get_command_service()
         skills = service._visible_slash_skills(self.user_id, agent=agent)
         if not skills:
-            return "[Info]: No user-activatable skills are installed."
+            return "No user-activatable skills are installed."
 
         tc = agent.thread_config_manager.get_config(self.thread_id)
         active = set(tc.enabled_skills or []) if tc is not None else set()
@@ -3455,33 +3472,33 @@ class _CommandExecutor(
             kind = "kit" if skill.is_skill_kit else "skill"
             ttl = f"; ttl: `{skill.tool_ttl}`" if skill.is_skill_kit else ""
             lines.append(f"- `{skill.name}` - {kind}, {status}{ttl}; {skill.description}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_skills_show(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_show(self, bound: BoundArgs) -> str | CommandOutput:
         agent = self._agent()
         service = get_command_service()
         skill_manager = service._skill_manager(agent)
         if skill_manager is None:
-            return "[Error]: Skill manager unavailable."
+            return command_error("Skill manager unavailable.")
 
         skill_name = str(bound.get("name") or "").strip().lower()
         try:
             skill = skill_manager.get(skill_name, user_id=self.user_id)
         except Exception as e:  # noqa: BLE001
-            return f"[Error]: Skill manager lookup failed: {e}"
+            return command_error(f"Skill manager lookup failed: {e}")
         if skill is None:
-            return f"[Error]: Skill '{skill_name}' not found."
+            return command_error(f"Skill '{skill_name}' not found.")
 
         return skill.body.strip() or f"# {skill.name}\n\n(No body.)"
 
-    async def _cmd_skills_off_all(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_off_all(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
 
         agent = self._agent()
         if agent is None:
-            return "[Error]: No current NymeriaAgent is available for skill commands."
+            return command_error("No current NymeriaAgent is available for skill commands.")
 
         service = get_command_service()
         skills = service._visible_slash_skills(self.user_id, agent=agent)
@@ -3489,7 +3506,7 @@ class _CommandExecutor(
         active = set(tc.enabled_skills or []) if tc is not None else set()
         active_skills = [skill for skill in skills if skill.name in active]
         if not active_skills:
-            return "[Info]: No visible skills are active on this thread."
+            return "No visible skills are active on this thread."
 
         lines: list[str] = []
         had_error = False
@@ -3503,10 +3520,10 @@ class _CommandExecutor(
             had_error = had_error or not ok
             lines.append(f"- `{skill.name}`: {msg}")
 
-        prefix = "[Error]:" if had_error else "[Success]:"
-        return prefix + " Deactivated skills:\n" + "\n".join(lines)
+        text = "Deactivated skills:\n" + "\n".join(lines)
+        return command_error(text) if had_error else command_success(text)
 
-    async def _cmd_skills_search(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_search(self, bound: BoundArgs) -> str | CommandOutput:
         source = str(bound.get("source") or "anthropic")
         # The declared query is a repeatable positional: the bare words the
         # options left behind, joined the way the hand parser joined them.
@@ -3517,17 +3534,17 @@ class _CommandExecutor(
         try:
             fetcher = get_fetcher(source)
         except (NotImplementedError, MarketplaceError) as exc:
-            return f"[Error]: {exc}"
+            return command_error(str(exc))
 
         try:
             entries = fetcher.list(query)
         except MarketplaceError as exc:
-            return f"[Error]: Marketplace search failed: {exc}"
+            return command_error(f"Marketplace search failed: {exc}")
         except Exception as exc:  # noqa: BLE001 - surface fetcher errors
-            return f"[Error]: Marketplace search failed: {exc}"
+            return command_error(f"Marketplace search failed: {exc}")
 
         if not entries:
-            return f"[Info]: No marketplace skills matched on source '{source}'."
+            return f"No marketplace skills matched on source '{source}'."
 
         lines = [f"Marketplace Skills ({source}): {len(entries)} found", ""]
         for entry in entries[:50]:
@@ -3536,26 +3553,26 @@ class _CommandExecutor(
             lines.append(f"- `{entry.name}` — {short}")
         if len(entries) > 50:
             lines.append(f"... and {len(entries) - 50} more")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_skills_install(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_install(self, bound: BoundArgs) -> str | CommandOutput:
         scope = str(bound.get("scope") or "user")
         source = str(bound.get("source") or "anthropic")
         name = str(bound.get("name") or "")
 
         agent = self._agent()
         if agent is None:
-            return "[Error]: No current NymeriaAgent is available for skill commands."
+            return command_error("No current NymeriaAgent is available for skill commands.")
         skill_manager = getattr(agent, "skill_manager", None)
         if skill_manager is None:
-            return "[Error]: Skill manager unavailable."
+            return command_error("Skill manager unavailable.")
 
         from ..skills.marketplace import MarketplaceError, get_fetcher
 
         try:
             fetcher = get_fetcher(source)
         except (NotImplementedError, MarketplaceError) as exc:
-            return f"[Error]: {exc}"
+            return command_error(str(exc))
 
         target_dir = skill_manager.target_dir(
             scope,
@@ -3565,31 +3582,31 @@ class _CommandExecutor(
         try:
             skill = fetcher.fetch(name, target_dir)
         except MarketplaceError as exc:
-            return f"[Error]: Install failed: {exc}"
+            return command_error(f"Install failed: {exc}")
         except Exception as exc:  # noqa: BLE001
-            return f"[Error]: Install failed: {exc}"
+            return command_error(f"Install failed: {exc}")
 
         skill_manager.reload()
-        return f"[Success]: Installed skill '{skill.name}' (scope: {scope})."
+        return command_success(f"Installed skill '{skill.name}' (scope: {scope}).")
 
-    async def _cmd_skills_enable(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_enable(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_skill_state(bound, enabled=True)
 
-    async def _cmd_skills_disable(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_disable(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_skill_state(bound, enabled=False)
 
-    async def _set_skill_state(self, bound: BoundArgs, *, enabled: bool) -> str:
+    async def _set_skill_state(self, bound: BoundArgs, *, enabled: bool) -> str | CommandOutput:
         global_scope = bool(bound.get("global"))
         name = str(bound.get("name") or "")
 
         agent = self._agent()
         if agent is None:
-            return "[Error]: No current NymeriaAgent is available for skill commands."
+            return command_error("No current NymeriaAgent is available for skill commands.")
 
         if global_scope:
             profile_manager = getattr(agent, "profile_manager", None)
             if profile_manager is None:
-                return "[Error]: Profile manager unavailable."
+                return command_error("Profile manager unavailable.")
             profile = profile_manager.get_profile(self.user_id)
             current = list(getattr(profile, "enabled_global_skills", []) or [])
             if enabled:
@@ -3600,7 +3617,7 @@ class _CommandExecutor(
             profile.enabled_global_skills = sorted(set(current))
             profile_manager.save_profile(profile)
             action = "Enabled globally" if enabled else "Disabled globally"
-            return f"[Success]: {action}: {name}"
+            return command_success(f"{action}: {name}")
 
         thread_error = self._require_thread()
         if thread_error:
@@ -3625,22 +3642,22 @@ class _CommandExecutor(
             disabled_skills=disabled_skills,
         )
         action = "Enabled" if enabled else "Disabled"
-        return f"[Success]: {action}: {name}"
+        return command_success(f"{action}: {name}")
 
-    async def _cmd_skills_inspect(self, bound: BoundArgs) -> str:
+    async def _cmd_skills_inspect(self, bound: BoundArgs) -> str | CommandOutput:
         agent = self._agent()
         service = get_command_service()
         skill_manager = service._skill_manager(agent)
         if skill_manager is None:
-            return "[Error]: Skill manager unavailable."
+            return command_error("Skill manager unavailable.")
 
         skill_name = str(bound.get("name") or "").strip().lower()
         try:
             skill = skill_manager.get(skill_name, user_id=self.user_id)
         except Exception as exc:  # noqa: BLE001
-            return f"[Error]: Skill manager lookup failed: {exc}"
+            return command_error(f"Skill manager lookup failed: {exc}")
         if skill is None:
-            return f"[Error]: Skill '{skill_name}' not found."
+            return command_error(f"Skill '{skill_name}' not found.")
 
         scripts = skill.list_scripts() if hasattr(skill, "list_scripts") else []
         references = skill.list_references() if hasattr(skill, "list_references") else []
@@ -3662,7 +3679,7 @@ class _CommandExecutor(
         if description:
             lines.append("")
             lines.append(f"Description: {description}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── MCP servers ───────────────────────────────────────────────────────
 
@@ -3678,7 +3695,7 @@ class _CommandExecutor(
         registry = get_mcp_server_registry()
         servers = registry.get_all_servers()
         if not servers:
-            return "[Info]: No MCP servers configured."
+            return "No MCP servers configured."
 
         lines = [
             f"MCP Servers: {len(servers)} configured",
@@ -3691,9 +3708,9 @@ class _CommandExecutor(
             tool_count = len(server.discovered_tools or [])
             name = server.name or server.id
             lines.append(f"| `{server.id}` | {state} | {tool_count} | {name} |")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_mcp_status(self, bound: BoundArgs) -> str:
+    async def _cmd_mcp_status(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -3701,7 +3718,7 @@ class _CommandExecutor(
         if server_id:
             server = registry.get_server(server_id)
             if server is None:
-                return f"[Error]: MCP server '{server_id}' not found."
+                return command_error(f"MCP server '{server_id}' not found.")
             rows = [
                 ("ID", server.id),
                 ("Name", server.name or ""),
@@ -3728,20 +3745,20 @@ class _CommandExecutor(
                 lines.append("")
                 lines.append("Discovered tools:")
                 lines.extend(f"  - {name}" for name in tool_names)
-            return "[Info]: " + "\n".join(lines)
+            return "\n".join(lines)
 
         servers = registry.get_all_servers()
         if not servers:
-            return "[Info]: No MCP servers configured."
+            return "No MCP servers configured."
 
         lines = ["MCP Servers", ""]
         for server in sorted(servers, key=lambda s: s.id):
             state = server.install_status or ("enabled" if server.enabled else "disabled")
             err = f" — error: {server.last_error}" if server.last_error else ""
             lines.append(f"- `{server.id}`: {state}{err}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_mcp_logs(self, bound: BoundArgs) -> str:
+    async def _cmd_mcp_logs(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.mcp_servers import get_mcp_server_registry
 
         server_id = str(bound.get("server_id") or "")
@@ -3750,24 +3767,24 @@ class _CommandExecutor(
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
         if server is None:
-            return f"[Error]: MCP server '{server_id}' not found."
+            return command_error(f"MCP server '{server_id}' not found.")
 
         logs = list(server.install_logs or [])
         if not logs:
-            return f"[Info]: No install logs for `{server_id}`."
+            return f"No install logs for `{server_id}`."
         selected = logs[-limit:]
         lines = [f"Install logs for `{server_id}` (last {len(selected)} of {len(logs)})", ""]
         lines.extend(f"- {line}" for line in selected)
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_mcp_discover(self, bound: BoundArgs) -> str:
+    async def _cmd_mcp_discover(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.mcp_servers import get_mcp_server_registry
 
         server_id = str(bound.get("server_id") or "")
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
         if server is None:
-            return f"[Error]: MCP server '{server_id}' not found."
+            return command_error(f"MCP server '{server_id}' not found.")
 
         agent = self._agent()
         try:
@@ -3779,7 +3796,7 @@ class _CommandExecutor(
             registry.save_server(server)
             if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
                 agent.reload_mcp_server_tools()
-            return f"[Error]: Tool discovery failed for `{server_id}`: {exc}"
+            return command_error(f"Tool discovery failed for `{server_id}`: {exc}")
 
         if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
             agent.reload_mcp_server_tools()
@@ -3790,24 +3807,24 @@ class _CommandExecutor(
             if str(getattr(tool, "name", "") or "")
         ]
         suffix = f": {', '.join(names)}" if names else "."
-        return (
-            f"[Success]: Discovered {count} tool{'s' if count != 1 else ''} "
+        return command_success(
+            f"Discovered {count} tool{'s' if count != 1 else ''} "
             f"for `{server_id}`{suffix}"
         )
 
-    async def _cmd_mcp_test(self, bound: BoundArgs) -> str:
+    async def _cmd_mcp_test(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.mcp_servers import get_mcp_server_registry
 
         server_id = str(bound.get("server_id") or "")
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
         if server is None:
-            return f"[Error]: MCP server '{server_id}' not found."
+            return command_error(f"MCP server '{server_id}' not found.")
 
         try:
             result = registry.test_connection(server_id)
         except Exception as exc:  # noqa: BLE001
-            return f"[Error]: MCP test failed for `{server_id}`: {exc}"
+            return command_error(f"MCP test failed for `{server_id}`: {exc}")
 
         result_dict = result if isinstance(result, dict) else {}
         status = str(result_dict.get("status") or "ok")
@@ -3815,23 +3832,23 @@ class _CommandExecutor(
         error = str(result_dict.get("error") or "")
         if status.casefold() in {"ok", "success", "connected"} and not error:
             suffix = f" ({tools_count} tools)" if str(tools_count) else ""
-            return f"[Success]: MCP test passed: `{server_id}`{suffix}"
-        return f"[Error]: MCP test failed for `{server_id}`: {error or result}"
+            return command_success(f"MCP test passed: `{server_id}`{suffix}")
+        return command_error(f"MCP test failed for `{server_id}`: {error or result}")
 
-    async def _cmd_mcp_remove(self, bound: BoundArgs) -> str:
+    async def _cmd_mcp_remove(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.mcp_servers import get_mcp_server_registry
 
         server_id = str(bound.get("server_id") or "")
         registry = get_mcp_server_registry()
         if not registry.delete_server(server_id):
-            return f"[Error]: MCP server '{server_id}' not found."
+            return command_error(f"MCP server '{server_id}' not found.")
 
         agent = self._agent()
         if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
             agent.reload_mcp_server_tools()
-        return f"[Success]: Removed MCP server `{server_id}`."
+        return command_success(f"Removed MCP server `{server_id}`.")
 
-    async def _cmd_mcp_retry(self, bound: BoundArgs) -> str:
+    async def _cmd_mcp_retry(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.mcp_runtime import MCPInstallPlan
         from ..core.mcp_servers import get_mcp_server_registry
 
@@ -3839,9 +3856,9 @@ class _CommandExecutor(
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
         if server is None:
-            return f"[Error]: MCP server '{server_id}' not found."
+            return command_error(f"MCP server '{server_id}' not found.")
         if not server.install_plan:
-            return f"[Error]: MCP server `{server_id}` has no install plan to retry."
+            return command_error(f"MCP server `{server_id}` has no install plan to retry.")
 
         # The full retry flow uses _run_mcp_install on the API router with
         # admin-confirmation, credential bindings, and thread auto-enable.
@@ -3851,7 +3868,7 @@ class _CommandExecutor(
         try:
             discovered = registry.discover_tools(server_id)
         except Exception as exc:  # noqa: BLE001
-            return f"[Error]: Retry failed for `{server_id}`: {exc}"
+            return command_error(f"Retry failed for `{server_id}`: {exc}")
         server.install_status = "ready" if discovered else "draft"
         server.last_error = ""
         registry.save_server(server)
@@ -3864,8 +3881,8 @@ class _CommandExecutor(
             if str(getattr(tool, "name", "") or "")
         ]
         suffix = f": {', '.join(names)}" if names else "."
-        return (
-            f"[Success]: Retried `{server_id}` "
+        return command_success(
+            f"Retried `{server_id}` "
             f"(runtime: {plan.runtime_type}); "
             f"discovered {len(discovered)} tool(s){suffix}"
         )
@@ -3897,7 +3914,7 @@ class _CommandExecutor(
         if thread_id:
             triggers = [t for t in triggers if t.thread_id == thread_id]
         if not triggers:
-            return "[Info]: No triggers found."
+            return "No triggers found."
 
         lines = [
             f"Triggers: {len(triggers)} total",
@@ -3911,29 +3928,29 @@ class _CommandExecutor(
             lines.append(
                 f"| `{t.id}` | {status} | {t.source_type} | {action_type} | {t.name} |"
             )
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_triggers_enable(self, bound: BoundArgs) -> str:
+    async def _cmd_triggers_enable(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_trigger_enabled(bound, enabled=True)
 
-    async def _cmd_triggers_disable(self, bound: BoundArgs) -> str:
+    async def _cmd_triggers_disable(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_trigger_enabled(bound, enabled=False)
 
-    async def _set_trigger_enabled(self, bound: BoundArgs, *, enabled: bool) -> str:
+    async def _set_trigger_enabled(self, bound: BoundArgs, *, enabled: bool) -> str | CommandOutput:
         trigger_id = str(bound.get("trigger_id") or "")
         manager = self._trigger_manager()
         if not manager.update_trigger(self.user_id, trigger_id, enabled=enabled):
-            return f"[Error]: Trigger '{trigger_id}' not found."
+            return command_error(f"Trigger '{trigger_id}' not found.")
         action = "Enabled" if enabled else "Disabled"
-        return f"[Success]: {action} trigger `{trigger_id}`."
+        return command_success(f"{action} trigger `{trigger_id}`.")
 
-    async def _cmd_triggers_delete(self, bound: BoundArgs) -> str:
+    async def _cmd_triggers_delete(self, bound: BoundArgs) -> str | CommandOutput:
         trigger_id = str(bound.get("trigger_id") or "")
         manager = self._trigger_manager()
         if not manager.delete_trigger(self.user_id, trigger_id):
-            return f"[Error]: Trigger '{trigger_id}' not found."
+            return command_error(f"Trigger '{trigger_id}' not found.")
         manager.delete_executions_for_triggers(self.user_id, [trigger_id])
-        return f"[Success]: Deleted trigger `{trigger_id}`."
+        return command_success(f"Deleted trigger `{trigger_id}`.")
 
     async def _cmd_triggers_history(self, bound: BoundArgs) -> str:
         limit = max(1, int(bound.get("limit", 20)))
@@ -3947,7 +3964,7 @@ class _CommandExecutor(
         )
         if not executions:
             scope = f" for `{trigger_id}`" if trigger_id else ""
-            return f"[Info]: No trigger executions found{scope}."
+            return f"No trigger executions found{scope}."
 
         lines = [
             f"Trigger executions: {len(executions)}"
@@ -3960,7 +3977,7 @@ class _CommandExecutor(
             status = entry.get("status") or entry.get("result") or "?"
             summary = (entry.get("summary") or entry.get("message") or "")[:120]
             lines.append(f"- {timestamp} `{tid}` — {status}: {summary}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── Lifecycle hooks ────────────────────────────────────────────────────
 
@@ -3971,8 +3988,8 @@ class _CommandExecutor(
 
         return _get_hook_manager()
 
-    def _resolve_hook(self, prefix: str):
-        """Resolve a hook by id prefix. Returns ``(hook, error_message)``.
+    def _resolve_hook(self, prefix: str) -> tuple[Any, CommandOutput | None]:
+        """Resolve a hook by id prefix. Returns ``(hook, error)``.
 
         Errors on >1 match (8-char hex prefixes collide) so an edit/delete
         cannot silently hit the wrong hook.
@@ -3980,10 +3997,12 @@ class _CommandExecutor(
         hooks = self._hook_manager().get_hooks(self.user_id) or []
         matches = [h for h in hooks if h.id.startswith(prefix)]
         if not matches:
-            return None, f"[Error]: No hook matching '{prefix}'."
+            return None, command_error(f"No hook matching '{prefix}'.")
         if len(matches) > 1:
             ids = ", ".join(sorted(h.id for h in matches))
-            return None, f"[Error]: '{prefix}' matches multiple hooks: {ids}. Use a longer id."
+            return None, command_error(
+                f"'{prefix}' matches multiple hooks: {ids}. Use a longer id."
+            )
         return matches[0], None
 
     async def _cmd_hook(self, bound: BoundArgs) -> str:
@@ -4011,7 +4030,7 @@ class _CommandExecutor(
         if thread_id:
             hooks = [h for h in hooks if h.scope == "global" or h.thread_id == thread_id]
         if not hooks:
-            return "[Info]: No hooks found."
+            return "No hooks found."
         lines = [
             f"Hooks: {len(hooks)} total",
             "",
@@ -4024,14 +4043,14 @@ class _CommandExecutor(
             lines.append(
                 f"| `{h.id}` | {state} | {h.event} | {h.logic.action} | {scope} | {h.name} |"
             )
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     async def _cmd_hook_templates(self, bound: BoundArgs) -> str:
         from .hook_templates import load_templates
 
         templates = load_templates()
         if not templates:
-            return "[Info]: No bundled hook templates available."
+            return "No bundled hook templates available."
         lines = [
             f"Bundled hook templates: {len(templates)}",
             "",
@@ -4047,9 +4066,9 @@ class _CommandExecutor(
             )
         lines.append("")
         lines.append("Install one with `/hook install <id>`.")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_hook_install(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_install(self, bound: BoundArgs) -> str | CommandOutput:
         from ..tools.hooks import _logic_preview
         from ..tools.utils import is_admin
         from .hook_templates import install_template
@@ -4059,8 +4078,8 @@ class _CommandExecutor(
         disabled = bool(bound.get("disabled"))
         scope_value = bound.get("scope")
         if scope_value == "thread" and not self.thread_id:
-            return (
-                "[Error]: A thread-scoped install needs an active thread. "
+            return command_error(
+                "A thread-scoped install needs an active thread. "
                 "Use --scope global or send a message first."
             )
         try:
@@ -4078,23 +4097,23 @@ class _CommandExecutor(
                 is_admin=is_admin(self.user_id, agent=self._agent()),
             )
         except Exception as e:  # noqa: BLE001 - surface validation as a human string
-            return f"[Error]: {e}"
+            return command_error(str(e))
         if hook is None:
-            return "[Error]: Hook limit reached (max 50)."
+            return command_error("Hook limit reached (max 50).")
         scope_desc = "all threads" if hook.scope == "global" else f"thread {hook.thread_id}"
         if not created:
             return (
-                f"[Info]: Template '{template_id}' is already installed as hook "
+                f"Template '{template_id}' is already installed as hook "
                 f"`{hook.id}` for {scope_desc}. Use /hook edit or /hook delete to "
                 "change or reinstall it."
             )
-        return (
-            f"[Success]: Installed template '{template_id}' as hook '{hook.name}' "
+        return command_success(
+            f"Installed template '{template_id}' as hook '{hook.name}' "
             f"({hook.id}) on {hook.event} for {scope_desc}: "
             f"{_logic_preview(hook.logic)}."
         )
 
-    def _gated_action_error(self, action: str) -> str | None:
+    def _gated_action_error(self, action: str) -> CommandOutput | None:
         """Admin + flag gate for run_command on the command surface (or None).
 
         Admin is resolved from the account repo (fail-closed), mirroring the
@@ -4106,9 +4125,9 @@ class _CommandExecutor(
         reason = run_command_authoring_error(
             action, is_admin=is_admin(self.user_id, agent=self._agent())
         )
-        return f"[Error]: {reason}" if reason else None
+        return command_error(reason) if reason else None
 
-    async def _cmd_hook_create(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_create(self, bound: BoundArgs) -> str | CommandOutput:
         from ..tools.hooks import _logic_preview
 
         from .hook_manager import EVENT_ACTIONS, TEXT_ACTIONS, params_from_fields
@@ -4117,15 +4136,15 @@ class _CommandExecutor(
         # options left behind, joined the way the hand parser joined them.
         name = " ".join(bound.get("name") or []).strip()
         if not name:
-            return "[Error]: create requires a name."
+            return command_error("create requires a name.")
         event = str(bound.get("event") or "")
         if event not in EVENT_ACTIONS:
-            return f"[Error]: --event must be one of: {', '.join(EVENT_ACTIONS)}."
+            return command_error(f"--event must be one of: {', '.join(EVENT_ACTIONS)}.")
         action = str(bound.get("action") or "")
         legal = EVENT_ACTIONS.get(event, set())
         if action not in legal:
-            return (
-                f"[Error]: action '{action}' is not valid for event '{event}'. "
+            return command_error(
+                f"action '{action}' is not valid for event '{event}'. "
                 f"Valid: {', '.join(sorted(legal))}."
             )
         gate = self._gated_action_error(action)
@@ -4138,35 +4157,35 @@ class _CommandExecutor(
         sets_raw = bound.get("set") or []
         # Per-action required-field prechecks (friendlier than a pydantic error).
         if action in TEXT_ACTIONS and not text:
-            return f"[Error]: {action} requires --text."
+            return command_error(f"{action} requires --text.")
         if action == "webhook" and not url:
-            return "[Error]: webhook requires --url."
+            return command_error("webhook requires --url.")
         if action == "rewrite_arg" and not sets_raw:
-            return "[Error]: rewrite_arg requires at least one --set arg=value."
+            return command_error("rewrite_arg requires at least one --set arg=value.")
         if action == "run_command" and not command:
-            return "[Error]: run_command requires --command."
+            return command_error("run_command requires --command.")
         if action == "run_workflow" and not workflow:
-            return "[Error]: run_workflow requires --workflow <workflow_id>."
+            return command_error("run_workflow requires --workflow <workflow_id>.")
         case_sensitive = bool(bound.get("case_sensitive"))
         conditions, cerr = _parse_hook_conditions(bound.get("cond") or [], case_sensitive)
         if cerr:
-            return f"[Error]: {cerr}"
+            return command_error(cerr)
         fire_conditions, ferr = _parse_hook_conditions(
             bound.get("fire_cond") or [], case_sensitive
         )
         if ferr:
-            return f"[Error]: {ferr}"
+            return command_error(ferr)
         updates_map, uerr = _parse_hook_sets(sets_raw)
         if uerr:
-            return f"[Error]: {uerr}"
+            return command_error(uerr)
         timeout_val, terr = _parse_hook_timeout(str(bound.get("timeout") or ""))
         if terr:
-            return f"[Error]: {terr}"
+            return command_error(terr)
         workflow_params_val, wperr = _parse_hook_workflow_params(
             str(bound.get("workflow_params") or "")
         )
         if wperr:
-            return f"[Error]: {wperr}"
+            return command_error(wperr)
         params = params_from_fields(
             action,
             text=text or None,
@@ -4182,8 +4201,8 @@ class _CommandExecutor(
         )
         scope = str(bound.get("scope") or "thread")
         if scope == "thread" and not self.thread_id:
-            return (
-                "[Error]: A thread-scoped hook needs an active thread. "
+            return command_error(
+                "A thread-scoped hook needs an active thread. "
                 "Use --scope global or send a message first."
             )
         thread_id = self.thread_id if scope == "thread" else ""
@@ -4204,44 +4223,44 @@ class _CommandExecutor(
                 created_by="user",
             )
         except Exception as e:  # noqa: BLE001 - surface validation as a human string
-            return f"[Error]: {e}"
+            return command_error(str(e))
         if hook is None:
-            return "[Error]: Hook limit reached (max 50)."
+            return command_error("Hook limit reached (max 50).")
         scope_desc = "all threads" if hook.scope == "global" else f"thread {hook.thread_id}"
-        return (
-            f"[Success]: Created hook '{hook.name}' ({hook.id}) on {hook.event} "
+        return command_success(
+            f"Created hook '{hook.name}' ({hook.id}) on {hook.event} "
             f"for {scope_desc}: {_logic_preview(hook.logic)}."
         )
 
-    def _hook_detail(self, ref: str) -> str:
+    def _hook_detail(self, ref: str) -> str | CommandOutput:
         """Render one hook by id or prefix (shared with the ``detail`` synonym)."""
         hook, error = self._resolve_hook(ref)
         if hook is None:
-            return error or f"[Error]: No hook matching '{ref}'."
+            return error or command_error(f"No hook matching '{ref}'.")
         from ..tools.hooks import render_hook_detail
 
         return render_hook_detail(hook)
 
-    async def _cmd_hook_show(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_show(self, bound: BoundArgs) -> str | CommandOutput:
         return self._hook_detail(str(bound.get("id") or ""))
 
-    async def _cmd_hook_test(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_test(self, bound: BoundArgs) -> str | CommandOutput:
         ref = str(bound.get("id") or "")
         hook, error = self._resolve_hook(ref)
         if hook is None:
-            return error or f"[Error]: No hook matching '{ref}'."
+            return error or command_error(f"No hook matching '{ref}'.")
         from ..tools.hooks import render_hook_test
 
         return render_hook_test(hook)
 
-    async def _cmd_hook_log(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_log(self, bound: BoundArgs) -> str | CommandOutput:
         limit = max(1, int(bound.get("limit", 20)))
         hook_id = None
         ref = str(bound.get("id") or "")
         if ref:
             hook, err = self._resolve_hook(ref)
             if hook is None:
-                return err or f"[Error]: No hook matching '{ref}'."
+                return err or command_error(f"No hook matching '{ref}'.")
             hook_id = hook.id
 
         entries = self._hook_manager().get_executions(
@@ -4250,7 +4269,7 @@ class _CommandExecutor(
         if not entries:
             scope = f" for `{hook_id}`" if hook_id else ""
             return (
-                f"[Info]: No hook executions recorded{scope}. A hook that never "
+                f"No hook executions recorded{scope}. A hook that never "
                 "appears here never fired; a `no_op` entry fired and produced "
                 "nothing."
             )
@@ -4272,7 +4291,7 @@ class _CommandExecutor(
                 f"| {ts} | `{e.get('hook_id') or '?'}` | {event} "
                 f"| {e.get('status', '?')} | {detail} |"
             )
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── Hook approvals (require_approval holds) ────────────────────────────
 
@@ -4288,7 +4307,7 @@ class _CommandExecutor(
     async def _cmd_hook_approvals(self, bound: BoundArgs) -> str:
         records = self._visible_hook_approvals()
         if not records:
-            return "[Info]: No pending hook approvals."
+            return "No pending hook approvals."
         lines = [
             f"Pending hook approvals: {len(records)}",
             "",
@@ -4304,15 +4323,17 @@ class _CommandExecutor(
             )
         lines.append("")
         lines.append("Resolve with /hook approve <id> [note] or /hook deny <id> [note].")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_hook_approve(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_approve(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._resolve_hook_approval(bound, approved=True)
 
-    async def _cmd_hook_deny(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_deny(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._resolve_hook_approval(bound, approved=False)
 
-    async def _resolve_hook_approval(self, bound: BoundArgs, *, approved: bool) -> str:
+    async def _resolve_hook_approval(
+        self, bound: BoundArgs, *, approved: bool
+    ) -> str | CommandOutput:
         """Shared approve/deny path: prefix-resolve, authorize, wake the hold.
 
         Mirrors the REST endpoint's semantics (owner-or-admin; a resolve with
@@ -4330,11 +4351,11 @@ class _CommandExecutor(
         visible = self._visible_hook_approvals()
         matches = [r for r in visible if str(r.get("record_id") or "").startswith(prefix)]
         if not matches:
-            return f"[Error]: No pending approval matching '{prefix}'."
+            return command_error(f"No pending approval matching '{prefix}'.")
         if len(matches) > 1:
             ids = ", ".join(sorted(str(r.get("record_id")) for r in matches))
-            return (
-                f"[Error]: '{prefix}' matches multiple approvals: {ids}. "
+            return command_error(
+                f"'{prefix}' matches multiple approvals: {ids}. "
                 "Use a longer id."
             )
         record = matches[0]
@@ -4345,58 +4366,58 @@ class _CommandExecutor(
         if not woke:
             delete_record(record_id)
             publish_resolved_event(record, outcome="stale", resolved_by=self.user_id)
-            return (
-                f"[Error]: Approval `{record_id}` is no longer pending (it timed "
+            return command_error(
+                f"Approval `{record_id}` is no longer pending (it timed "
                 "out, was resolved elsewhere, or its turn ended)."
             )
         decision = "Approved" if approved else "Denied"
-        return (
-            f"[Success]: {decision} `{record.get('tool_name') or 'tool call'}` "
+        return command_success(
+            f"{decision} `{record.get('tool_name') or 'tool call'}` "
             f"({record_id})."
         )
 
-    async def _cmd_hook_enable(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_enable(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_hook_enabled(str(bound.get("id") or ""), enabled=True)
 
-    async def _cmd_hook_disable(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_disable(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_hook_enabled(str(bound.get("id") or ""), enabled=False)
 
-    async def _set_hook_enabled(self, ref: str, *, enabled: bool) -> str:
+    async def _set_hook_enabled(self, ref: str, *, enabled: bool) -> str | CommandOutput:
         hook, error = self._resolve_hook(ref)
         if hook is None:
-            return error or f"[Error]: No hook matching '{ref}'."
+            return error or command_error(f"No hook matching '{ref}'.")
         if not self._hook_manager().update_hook(self.user_id, hook.id, enabled=enabled):
-            return f"[Error]: No hook matching '{ref}'."
-        return f"[Success]: {'Enabled' if enabled else 'Disabled'} hook `{hook.id}`."
+            return command_error(f"No hook matching '{ref}'.")
+        return command_success(f"{'Enabled' if enabled else 'Disabled'} hook `{hook.id}`.")
 
-    async def _cmd_hook_delete(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_delete(self, bound: BoundArgs) -> str | CommandOutput:
         # The declared ``--yes`` flag is accepted for CLI muscle memory (and
         # the Discord cog sends it) but no longer prompts: backend handlers
         # cannot prompt, so danger_level drives any frontend confirmation.
         ref = str(bound.get("id") or "")
         hook, error = self._resolve_hook(ref)
         if hook is None:
-            return error or f"[Error]: No hook matching '{ref}'."
+            return error or command_error(f"No hook matching '{ref}'.")
         from .hook_manager import is_system_hook_id
         if not self._hook_manager().delete_hook(self.user_id, hook.id):
             if is_system_hook_id(hook.id):
                 # Nothing stored: the system hook is already pristine.
                 return (
-                    f"[Info]: System hook `{hook.id}` is already at its built-in "
+                    f"System hook `{hook.id}` is already at its built-in "
                     "defaults (nothing to reset)."
                 )
-            return f"[Error]: No hook matching '{ref}'."
+            return command_error(f"No hook matching '{ref}'.")
         if is_system_hook_id(hook.id):
-            return f"[Success]: Reset system hook `{hook.id}` to its built-in defaults."
-        return f"[Success]: Deleted hook `{hook.id}`."
+            return command_success(f"Reset system hook `{hook.id}` to its built-in defaults.")
+        return command_success(f"Deleted hook `{hook.id}`.")
 
-    async def _cmd_hook_edit(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_edit(self, bound: BoundArgs) -> str | CommandOutput:
         from .hook_manager import build_update_kwargs
 
         ref = str(bound.get("id") or "")
         hook, error = self._resolve_hook(ref)
         if hook is None:
-            return error or f"[Error]: No hook matching '{ref}'."
+            return error or command_error(f"No hook matching '{ref}'.")
         conds_raw = bound.get("cond") or []
         sets_raw = bound.get("set") or []
         fire_conds_raw = bound.get("fire_cond") or []
@@ -4410,13 +4431,21 @@ class _CommandExecutor(
         kv: dict[str, str] = {}
         for token in bound.get("fields") or []:
             if "=" not in token:
-                return f"[Error]: unexpected argument '{token}' (use key=value or --cond/--set)."
+                return command_error(
+                    f"unexpected argument '{token}' "
+                    "(use key=value or --cond/--set)."
+                )
             key, _, value = token.partition("=")
             key = key.strip().lower()
             if key in ("scope", "thread_id"):
-                return "[Error]: cannot re-scope a hook via edit; delete and recreate instead."
+                return command_error(
+                    "cannot re-scope a hook via edit; delete and recreate instead."
+                )
             if key not in edit_keys:
-                return f"[Error]: unknown field '{key}'. Editable: {', '.join(sorted(edit_keys))}."
+                return command_error(
+                    f"unknown field '{key}'. "
+                    f"Editable: {', '.join(sorted(edit_keys))}."
+                )
             kv[key] = value
         # Switching TO a gated action AND any behavior edit of an existing
         # gated hook is admin + flag gated; enabled/name-only edits stay
@@ -4437,24 +4466,24 @@ class _CommandExecutor(
                 return gate
         conditions, cerr = _parse_hook_conditions(conds_raw, case_sensitive)
         if cerr:
-            return f"[Error]: {cerr}"
+            return command_error(cerr)
         fire_conditions, ferr = _parse_hook_conditions(fire_conds_raw, case_sensitive)
         if ferr:
-            return f"[Error]: {ferr}"
+            return command_error(ferr)
         updates_map, uerr = _parse_hook_sets(sets_raw)
         if uerr:
-            return f"[Error]: {uerr}"
+            return command_error(uerr)
         timeout_val, terr = _parse_hook_timeout(kv.get("timeout", ""))
         if terr:
-            return f"[Error]: {terr}"
+            return command_error(terr)
         workflow_params_val, wperr = _parse_hook_workflow_params(
             kv.get("workflow_params", "")
         )
         if wperr:
-            return f"[Error]: {wperr}"
+            return command_error(wperr)
         on_fault_val, oferr = _parse_hook_on_fault(kv.get("on_fault", ""))
         if oferr:
-            return f"[Error]: {oferr}"
+            return command_error(oferr)
         scalars: dict = {}
         if "name" in kv:
             scalars["name"] = kv["name"]
@@ -4489,14 +4518,14 @@ class _CommandExecutor(
             scalars=scalars,
         )
         if not update_kwargs:
-            return "[Error]: No updates provided."
+            return command_error("No updates provided.")
         try:
             ok = self._hook_manager().update_hook(self.user_id, hook.id, **update_kwargs)
         except Exception as e:  # noqa: BLE001
-            return f"[Error]: {e}"
+            return command_error(str(e))
         if not ok:
-            return f"[Error]: No hook matching '{ref}'."
-        return f"[Success]: Updated hook `{hook.id}`."
+            return command_error(f"No hook matching '{ref}'.")
+        return command_success(f"Updated hook `{hook.id}`.")
 
     # ── Account ───────────────────────────────────────────────────────────
 
@@ -4506,20 +4535,20 @@ class _CommandExecutor(
             return None
         return getattr(agent, "accounts_repo", None)
 
-    async def _cmd_account(self, bound: BoundArgs) -> str:
+    async def _cmd_account(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/account" shows the current user. Every account verb is a
         # registered child, so longest-prefix dispatch routes it before this
         # handler runs; the root takes zero arguments and a typo is answered by
         # the dispatcher with did-you-mean plus the valid-subcommand list.
         return await self._cmd_account_current(BoundArgs())
 
-    async def _cmd_account_current(self, bound: BoundArgs) -> str:
+    async def _cmd_account_current(self, bound: BoundArgs) -> str | CommandOutput:
         repo = self._accounts_repo()
         if repo is None:
-            return "[Error]: Account repository unavailable."
+            return command_error("Account repository unavailable.")
         user = repo.get_user_by_id(self.user_id)
         if user is None:
-            return f"[Error]: User '{self.user_id}' not found."
+            return command_error(f"User '{self.user_id}' not found.")
         rows = [
             ("Selected user", self.user_id),
             ("ID", getattr(user, "id", "")),
@@ -4531,15 +4560,15 @@ class _CommandExecutor(
         lines = ["Current account", ""]
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_account_tokens(self, bound: BoundArgs) -> str:
+    async def _cmd_account_tokens(self, bound: BoundArgs) -> str | CommandOutput:
         repo = self._accounts_repo()
         if repo is None:
-            return "[Error]: Account repository unavailable."
+            return command_error("Account repository unavailable.")
         tokens = repo.list_tokens_for_user(self.user_id) or []
         if not tokens:
-            return "[Info]: No API tokens issued."
+            return "No API tokens issued."
         lines = [
             f"API tokens: {len(tokens)}",
             "",
@@ -4553,20 +4582,20 @@ class _CommandExecutor(
             last_used = getattr(token, "last_used_at", "") or ""
             revoked = getattr(token, "revoked_at", "") or ""
             lines.append(f"| `{prefix}` | {label} | {created} | {last_used} | {revoked} |")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_account_tokens_issue(self, bound: BoundArgs) -> str:
+    async def _cmd_account_tokens_issue(self, bound: BoundArgs) -> str | CommandOutput:
         repo = self._accounts_repo()
         if repo is None:
-            return "[Error]: Account repository unavailable."
+            return command_error("Account repository unavailable.")
         label = str(bound.get("label") or "").strip() or None
         try:
             raw_token = repo.issue_token(self.user_id, label=label)
         except Exception as exc:  # noqa: BLE001
-            return f"[Error]: Could not issue token: {exc}"
+            return command_error(f"Could not issue token: {exc}")
         prefix = raw_token[:8] if isinstance(raw_token, str) else ""
         lines = [
-            f"[Success]: Issued API token (prefix `{prefix}`).",
+            f"Issued API token (prefix `{prefix}`).",
             "",
             "Raw token (shown only once — save it now):",
             "",
@@ -4574,25 +4603,25 @@ class _CommandExecutor(
             str(raw_token),
             "```",
         ]
-        return "\n".join(lines)
+        return command_success("\n".join(lines))
 
-    async def _cmd_account_tokens_revoke(self, bound: BoundArgs) -> str:
+    async def _cmd_account_tokens_revoke(self, bound: BoundArgs) -> str | CommandOutput:
         prefix = str(bound.get("prefix") or "")
         repo = self._accounts_repo()
         if repo is None:
-            return "[Error]: Account repository unavailable."
+            return command_error("Account repository unavailable.")
         revoked = bool(repo.revoke_token(self.user_id, prefix))
         if not revoked:
-            return f"[Error]: No matching token for prefix `{prefix}`."
-        return f"[Success]: Revoked token `{prefix}`."
+            return command_error(f"No matching token for prefix `{prefix}`.")
+        return command_success(f"Revoked token `{prefix}`.")
 
-    async def _cmd_account_platforms(self, bound: BoundArgs) -> str:
+    async def _cmd_account_platforms(self, bound: BoundArgs) -> str | CommandOutput:
         repo = self._accounts_repo()
         if repo is None:
-            return "[Error]: Account repository unavailable."
+            return command_error("Account repository unavailable.")
         platforms = repo.list_platforms_for_user(self.user_id) or []
         if not platforms:
-            return "[Info]: No linked chat platforms."
+            return "No linked chat platforms."
         lines = [
             f"Linked platforms: {len(platforms)}",
             "",
@@ -4604,18 +4633,18 @@ class _CommandExecutor(
             puid = getattr(p, "provider_user_id", "")
             created = getattr(p, "created_at", "") or ""
             lines.append(f"| {provider} | `{puid}` | {created} |")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── Activity / notifications ──────────────────────────────────────────
 
-    async def _cmd_activity(self, bound: BoundArgs) -> str:
+    async def _cmd_activity(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/activity" lists. Both verbs are registered children routed
         # before this handler, and `recent` is a whole-path alias of
         # `activity list`; the root takes zero arguments and a typo is answered
         # by the dispatcher with did-you-mean plus the valid-subcommand list.
         return await self._cmd_activity_list(BoundArgs())
 
-    async def _cmd_activity_list(self, bound: BoundArgs) -> str:
+    async def _cmd_activity_list(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.activity_log import ActivityType, get_activity_log
 
         limit = max(1, int(bound.get("limit", 20)))
@@ -4629,7 +4658,7 @@ class _CommandExecutor(
             try:
                 type_filter = ActivityType(activity_type_str)
             except ValueError:
-                return f"[Error]: Invalid activity type: {activity_type_str}"
+                return command_error(f"Invalid activity type: {activity_type_str}")
 
         log = get_activity_log()
         entries = log.get_entries(
@@ -4639,7 +4668,7 @@ class _CommandExecutor(
             thread_id=thread_id,
         )
         if not entries:
-            return "[Info]: No recent activity."
+            return "No recent activity."
 
         lines = [
             f"Recent activity: {len(entries)}",
@@ -4653,7 +4682,7 @@ class _CommandExecutor(
             tid = (getattr(entry, "thread_id", "") or "")[:8]
             msg = (getattr(entry, "message", "") or "").replace("\n", " ")[:80]
             lines.append(f"| {ts} | {etype} | `{tid}` | {msg} |")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     async def _cmd_activity_notifications(self, bound: BoundArgs) -> str:
         from ..core.notifications import get_notification_store
@@ -4662,7 +4691,7 @@ class _CommandExecutor(
         notifications = store.get_all(self.user_id, limit=50) or []
         unread = store.get_unread_count(self.user_id)
         if not notifications:
-            return f"[Info]: No notifications. (Unread: {unread})"
+            return f"No notifications. (Unread: {unread})"
 
         lines = [
             f"Notifications ({unread} unread): {len(notifications)} total",
@@ -4675,7 +4704,7 @@ class _CommandExecutor(
             read = "yes" if getattr(n, "read", False) else "no"
             summary = (getattr(n, "summary", "") or "").replace("\n", " ")[:80]
             lines.append(f"| `{nid}` | {read} | {summary} |")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── Doctor (server-side diagnostics) ──────────────────────────────────
 
@@ -4683,14 +4712,25 @@ class _CommandExecutor(
         # Both sections are registered children routed before this handler, so
         # the root takes zero arguments and runs the pair; a typo is answered by
         # the dispatcher with did-you-mean plus the valid-subcommand list.
-        auth = await self._cmd_doctor_auth(BoundArgs())
-        model = await self._cmd_doctor_model(BoundArgs())
-        return f"{auth}\n\n{model}"
+        #
+        # The root is a READOUT of both sections, so it composes their BODIES:
+        # a section that could not be read (doctor model on a settings error)
+        # returns a typed error whose text is itself the diagnostic, and
+        # composing the rendered value instead would print its artifact
+        # mid-body (the pre-#132 bug: a literal sentinel before "Model").
+        sections = [
+            await self._cmd_doctor_auth(BoundArgs()),
+            await self._cmd_doctor_model(BoundArgs()),
+        ]
+        return "\n\n".join(
+            section.text if isinstance(section, CommandOutput) else section
+            for section in sections
+        )
 
     async def _cmd_doctor_auth(self, bound: BoundArgs) -> str:
         repo = self._accounts_repo()
         if repo is None:
-            return "[Info]: Auth\n  Selected user  " + self.user_id
+            return "Auth\n  Selected user  " + self.user_id
         user = repo.get_user_by_id(self.user_id)
         rows = [
             ("Selected user", self.user_id),
@@ -4702,13 +4742,13 @@ class _CommandExecutor(
         lines = ["Auth", ""]
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_doctor_model(self, bound: BoundArgs) -> str:
+    async def _cmd_doctor_model(self, bound: BoundArgs) -> str | CommandOutput:
         try:
             settings = await self.api.get_settings(user_id=self.user_id)
         except Exception as exc:  # noqa: BLE001
-            return f"[Error]: Could not load settings: {exc}"
+            return command_error(f"Could not load settings: {exc}")
         settings_dict = settings if isinstance(settings, dict) else {}
         rows = [
             ("Provider", settings_dict.get("llm_provider", "")),
@@ -4722,11 +4762,11 @@ class _CommandExecutor(
         lines = ["Model", ""]
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── Status / inspection ───────────────────────────────────────────────
 
-    async def _cmd_status(self, bound: BoundArgs) -> str:
+    async def _cmd_status(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -4799,9 +4839,9 @@ class _CommandExecutor(
             f"thread: {self.thread_id}",
             f"user:   {self.user_id}",
         ]
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_thread(self, bound: BoundArgs) -> str:
+    async def _cmd_thread(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -4815,9 +4855,9 @@ class _CommandExecutor(
             f"  compactions: {stats.get('compaction_count', 0)}",
             f"  mode: {stats.get('context_management', 'unknown')}",
         ]
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_context(self, bound: BoundArgs) -> str:
+    async def _cmd_context(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -4919,7 +4959,7 @@ class _CommandExecutor(
 
         lines.append("")
         lines.append(f"thread: {self.thread_id}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     async def _cmd_tasks(self, bound: BoundArgs) -> str:
         filter_val = str(bound.get("filter") or "active").lower()
@@ -4930,7 +4970,7 @@ class _CommandExecutor(
             items = [i for i in items if i.get("status") == filter_val]
 
         if not items:
-            return f"[Info]: No {filter_val} tasks."
+            return f"No {filter_val} tasks."
 
         lines = [f"Scheduled Tasks ({filter_val}): {len(items)} items"]
         for item in items[:25]:
@@ -4948,7 +4988,7 @@ class _CommandExecutor(
             lines.append("  " + " | ".join(detail_parts))
         if len(items) > 25:
             lines.append(f"(showing 25 of {len(items)})")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── Model / thinking ──────────────────────────────────────────────────
 
@@ -4971,11 +5011,11 @@ class _CommandExecutor(
             else:
                 lines.append("this thread: using global default")
             lines.append("set with: /model <name> [global|thread]")
-            text = "[Info]: " + "\n".join(lines)
+            text = "\n".join(lines)
             form = await self._model_picker_form(settings, thread_model, scope=scope)
             if form is None:
                 return text
-            return CommandOutput(text, data=command_data(form=form))
+            return command_info(text, data=command_data(form=form))
 
         if not bound.get("force"):
             # Deny an off-list model with near-matches: a typo used to be
@@ -4987,8 +5027,8 @@ class _CommandExecutor(
             if known and name not in known:
                 close = difflib.get_close_matches(name, known, n=3, cutoff=0.6)
                 suggestion = f" Did you mean: {', '.join(close)}?" if close else ""
-                return (
-                    f"[Error]: Unknown model: {name}.{suggestion}"
+                return command_error(
+                    f"Unknown model: {name}.{suggestion}"
                     " Use --force to set it anyway."
                 )
 
@@ -4999,15 +5039,15 @@ class _CommandExecutor(
             await self.api.update_thread_config(
                 self.thread_id, user_id=self.user_id, llm_config={"model": name}
             )
-            return CommandOutput(
-                f"[Success]: Model for this thread set to {name}.",
+            return command_success(
+                f"Model for this thread set to {name}.",
                 data=command_data(state={"model": name}),
             )
         result = await self.api.update_settings(user_id=self.user_id, llm_model=name)
-        msg = f"[Success]: Global model set to {name}."
+        msg = f"Global model set to {name}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return msg
+        return command_success(msg)
 
     async def _available_model_ids(self) -> list[str]:
         """Model ids the active provider currently lists, or [] when unknown.
@@ -5067,7 +5107,7 @@ class _CommandExecutor(
         settings = await self.api.get_settings()
         current = settings.get("llm_model", "")
         if not models:
-            return "[Info]: No models returned from provider."
+            return "No models returned from provider."
         lines = [
             f"Available Models: {len(models)} from {settings.get('llm_provider', '?')}"
         ]
@@ -5079,40 +5119,40 @@ class _CommandExecutor(
             lines.append(f"- {model_id}{marker}{ctx_str}")
         if len(models) > 25:
             lines.append(f"(showing 25 of {len(models)})")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_fast(self, bound: BoundArgs) -> str:
+    async def _cmd_fast(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._apply_tier_command("fast", bound)
 
-    async def _cmd_smart(self, bound: BoundArgs) -> str:
+    async def _cmd_smart(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._apply_tier_command("smart", bound)
 
-    async def _cmd_fast_set(self, bound: BoundArgs) -> str:
+    async def _cmd_fast_set(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_tier_model("fast", bound)
 
-    async def _cmd_smart_set(self, bound: BoundArgs) -> str:
+    async def _cmd_smart_set(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_tier_model("smart", bound)
 
-    async def _set_tier_model(self, tier: str, bound: BoundArgs) -> str:
+    async def _set_tier_model(self, tier: str, bound: BoundArgs) -> str | CommandOutput:
         """Shared /fast set and /smart set handler: store one tier value."""
         from ..config.model_tiers import is_tier_alias
 
         model_id = str(bound.get("model") or "").strip()
         if is_tier_alias(model_id):
-            return (
-                f"[Error]: Cannot set the {tier} tier to another tier alias "
+            return command_error(
+                f"Cannot set the {tier} tier to another tier alias "
                 f"({model_id}). Use a model id or provider:model."
             )
         key = "llm_fast_model" if tier == "fast" else "llm_smart_model"
         result = await self.api.update_settings(
             user_id=self.user_id, **{key: model_id}
         )
-        msg = f"[Success]: {tier.capitalize()} model set to {model_id}."
+        msg = f"{tier.capitalize()} model set to {model_id}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return msg
+        return command_success(msg)
 
-    async def _apply_tier_command(self, tier: str, bound: BoundArgs) -> str:
+    async def _apply_tier_command(self, tier: str, bound: BoundArgs) -> str | CommandOutput:
         """Shared /fast and /smart handler: show / toggle / on / off."""
         from ..config.model_tiers import plan_tier_switch, resolve_tier
 
@@ -5127,8 +5167,8 @@ class _CommandExecutor(
         if not self.thread_id:
             resolved = resolve_tier(tier, settings)
             if resolved is None or not resolved[1]:
-                return f"[Error]: {label} model is not configured."
-            return f"[Info]: {label} tier resolves to {resolved[1]} ({resolved[0]})."
+                return command_error(f"{label} model is not configured.")
+            return f"{label} tier resolves to {resolved[1]} ({resolved[0]})."
 
         # Resolve against the thread's effective provider so an unset tier honors
         # a per-thread provider override (matching the CLI handler).
@@ -5145,7 +5185,7 @@ class _CommandExecutor(
             mode=sub or "toggle",
         )
         if plan is None:
-            return f"[Error]: {label} model is not configured."
+            return command_error(f"{label} model is not configured.")
         target_provider, target_model, enabled = plan
 
         await self.api.update_thread_config(
@@ -5154,8 +5194,8 @@ class _CommandExecutor(
             llm_config={"provider": target_provider, "model": target_model},
         )
         mode = label if enabled else "default"
-        return (
-            f"[Success]: This thread switched to {mode} model "
+        return command_success(
+            f"This thread switched to {mode} model "
             f"({target_model}, {target_provider})."
         )
 
@@ -5184,36 +5224,36 @@ class _CommandExecutor(
             lines.append(f"Resolves to: {resolved[1]} ({resolved[0]})")
         if base_url:
             lines.append(f"Base URL override: {base_url}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_background_set(self, bound: BoundArgs) -> str:
+    async def _cmd_background_set(self, bound: BoundArgs) -> str | CommandOutput:
         from ..config.model_tiers import is_tier_alias
 
         model_id = str(bound.get("model") or "").strip()
         if is_tier_alias(model_id):
-            return (
-                "[Error]: Cannot set the background tier to another tier alias "
+            return command_error(
+                "Cannot set the background tier to another tier alias "
                 f"({model_id}). Use a model id or provider:model."
             )
         result = await self.api.update_settings(
             user_id=self.user_id, llm_background_model=model_id
         )
-        msg = f"[Success]: Background model set to {model_id}."
+        msg = f"Background model set to {model_id}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return msg
+        return command_success(msg)
 
-    async def _cmd_background_set_url(self, bound: BoundArgs) -> str:
+    async def _cmd_background_set_url(self, bound: BoundArgs) -> str | CommandOutput:
         base_url = str(bound.get("base_url") or "").strip()
         result = await self.api.update_settings(
             user_id=self.user_id, llm_background_base_url=base_url
         )
-        msg = f"[Success]: Background base URL set to {base_url}."
+        msg = f"Background base URL set to {base_url}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return msg
+        return command_success(msg)
 
-    async def _cmd_background_clear(self, bound: BoundArgs) -> str:
+    async def _cmd_background_clear(self, bound: BoundArgs) -> str | CommandOutput:
         # Empty strings clear both keys in the env file (mirrors how the
         # frontend clears a tier field); None would be filtered out.
         await self.api.update_settings(
@@ -5221,7 +5261,7 @@ class _CommandExecutor(
             llm_background_model="",
             llm_background_base_url="",
         )
-        return "[Success]: Background model cleared (falls back to the main model)."
+        return command_success("Background model cleared (falls back to the main model).")
 
     # /fallback, /think and the /provider family live in
     # command_executor_llm.py (LLMCommandsMixin).
@@ -5266,24 +5306,24 @@ class _CommandExecutor(
         lines.append(f"  watchdog: {'on' if settings.get('watchdog_enabled') else 'off'}")
         if settings.get("watchdog_enabled"):
             lines.append(f"  watchdog interval: {settings.get('watchdog_interval_minutes', '?')}m")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_config_get(self, bound: BoundArgs) -> str:
+    async def _cmd_config_get(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         settings = await self.api.get_settings()
         if key in settings:
-            return f"[Info]: {key} = {settings[key]}"
+            return f"{key} = {settings[key]}"
         available = ", ".join(sorted(settings.keys())[:30])
-        return f"[Error]: Unknown setting '{key}'. Available: {available}"
+        return command_error(f"Unknown setting '{key}'. Available: {available}")
 
-    async def _cmd_config_set(self, bound: BoundArgs) -> str:
+    async def _cmd_config_set(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         parsed = coerce_value(str(bound.get("value") or ""))
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
-        msg = f"[Success]: {key} set to {parsed}."
+        msg = f"{key} set to {parsed}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return msg
+        return command_success(msg)
 
     async def _cmd_settings(self, bound: BoundArgs) -> str:
         """Delegating alias of the /config family (one implementation).
@@ -5301,10 +5341,10 @@ class _CommandExecutor(
     async def _cmd_settings_show(self, bound: BoundArgs) -> str:
         return await self._cmd_config_show(bound)
 
-    async def _cmd_settings_get(self, bound: BoundArgs) -> str:
+    async def _cmd_settings_get(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._cmd_config_get(bound)
 
-    async def _cmd_settings_set(self, bound: BoundArgs) -> str:
+    async def _cmd_settings_set(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._cmd_config_set(bound)
 
     # ── Env ───────────────────────────────────────────────────────────────
@@ -5328,32 +5368,32 @@ class _CommandExecutor(
                     lines.append(f"  [unset]  {e['name']}")
         lines.append("")
         lines.append("Use /env get <key> for unmasked values.")
-        return _truncate("[Info]: " + "\n".join(lines))
+        return _truncate("\n".join(lines))
 
-    async def _cmd_env_get(self, bound: BoundArgs) -> str:
+    async def _cmd_env_get(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         try:
             data = await self.api.get_env_var(key, user_id=self.user_id)
         except httpx.HTTPStatusError as e:
             if e.response is not None and e.response.status_code == 404:
-                return f"[Error]: Unknown variable '{key}'."
+                return command_error(f"Unknown variable '{key}'.")
             raise
         val = data.get("value")
         name = data.get("name", key)
         if val:
-            return f"[Info]: {name} = {val}"
-        return f"[Info]: {name} is not set."
+            return f"{name} = {val}"
+        return f"{name} is not set."
 
-    async def _cmd_env_set(self, bound: BoundArgs) -> str:
+    async def _cmd_env_set(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         parsed = coerce_value(str(bound.get("value") or ""))
         # Mirror telegram: env set uses update_settings; the /settings model
         # maps env-var keys through.
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
-        msg = f"[Success]: {key} set to {parsed}."
+        msg = f"{key} set to {parsed}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return msg
+        return command_success(msg)
 
     # ── Tools ─────────────────────────────────────────────────────────────
 
@@ -5383,9 +5423,9 @@ class _CommandExecutor(
                     lines.append(f"  {t['name']}: {desc}")
                 else:
                     lines.append(f"  {t['name']}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_tools_optional(self, bound: BoundArgs) -> str:
+    async def _cmd_tools_optional(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5411,9 +5451,9 @@ class _CommandExecutor(
             lines.append("")
             lines.append(f"{cat_name} ({len(entries)}){tag}")
             lines.append(f"  {names}")
-        return _truncate("[Info]: " + "\n".join(lines))
+        return _truncate("\n".join(lines))
 
-    async def _cmd_tools_enabled(self, bound: BoundArgs) -> str:
+    async def _cmd_tools_enabled(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5458,9 +5498,9 @@ class _CommandExecutor(
         else:
             lines.append("")
             lines.append("Optional enabled: none")
-        return _truncate("[Info]: " + "\n".join(lines))
+        return _truncate("\n".join(lines))
 
-    async def _cmd_tools_category(self, bound: BoundArgs) -> str:
+    async def _cmd_tools_category(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5479,7 +5519,10 @@ class _CommandExecutor(
             cat = t.get("category", "other")
             cats.setdefault(cat, []).append(t)
         if cat_key not in cats:
-            return f"[Error]: Unknown category '{cat_name}'. Available: {', '.join(sorted(cats))}"
+            return command_error(
+                f"Unknown category '{cat_name}'. "
+                f"Available: {', '.join(sorted(cats))}"
+            )
 
         entries = cats[cat_key]
         lines = [f"Tools in category '{cat_key}': {len(entries)} tools"]
@@ -5494,16 +5537,16 @@ class _CommandExecutor(
                 lines.append(f"  {mark} {tool_name}{tag}: {desc}")
             else:
                 lines.append(f"  {mark} {tool_name}{tag}")
-        return _truncate("[Info]: " + "\n".join(lines))
+        return _truncate("\n".join(lines))
 
-    async def _cmd_tools_enable(self, bound: BoundArgs) -> str:
+    async def _cmd_tools_enable(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         name = str(bound.get("name") or "")
         tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
         if error:
-            return f"[Error]: {error}"
+            return command_error(error)
         tc = await self.api.get_thread_config(self.thread_id)
         current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
         current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
@@ -5516,17 +5559,17 @@ class _CommandExecutor(
             disabled_tools=sorted(new_disabled),
         )
         if is_category:
-            return f"[Success]: Enabled category '{cat_name}' ({len(tool_names)} tools)."
-        return f"[Success]: Enabled tool '{tool_names[0]}'."
+            return command_success(f"Enabled category '{cat_name}' ({len(tool_names)} tools).")
+        return command_success(f"Enabled tool '{tool_names[0]}'.")
 
-    async def _cmd_tools_disable(self, bound: BoundArgs) -> str:
+    async def _cmd_tools_disable(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         name = str(bound.get("name") or "")
         tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
         if error:
-            return f"[Error]: {error}"
+            return command_error(error)
         tc = await self.api.get_thread_config(self.thread_id)
         current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
         current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
@@ -5539,15 +5582,15 @@ class _CommandExecutor(
             disabled_tools=sorted(new_disabled),
         )
         if is_category:
-            return f"[Success]: Disabled category '{cat_name}' ({len(tool_names)} tools)."
-        return f"[Success]: Disabled tool '{tool_names[0]}'."
+            return command_success(f"Disabled category '{cat_name}' ({len(tool_names)} tools).")
+        return command_success(f"Disabled tool '{tool_names[0]}'.")
 
     # ── Memory ────────────────────────────────────────────────────────────
 
     async def _cmd_memory_list(self, bound: BoundArgs) -> str:
         memories = await self.api.list_memories(self.user_id)
         if not memories:
-            return "[Info]: No memories saved yet."
+            return "No memories saved yet."
         lines = [f"Memories: {len(memories)} stored"]
         for mem in memories[:25]:
             value = mem.get("value", "")
@@ -5555,37 +5598,37 @@ class _CommandExecutor(
             lines.append(f"  {mem.get('key', '?')}: {preview}")
         if len(memories) > 25:
             lines.append(f"(showing 25 of {len(memories)})")
-        return _truncate("[Info]: " + "\n".join(lines))
+        return _truncate("\n".join(lines))
 
-    async def _cmd_memory_save(self, bound: BoundArgs) -> str:
+    async def _cmd_memory_save(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         value = str(bound.get("value") or "")
         await self.api.save_memory(self.user_id, key, value)
-        return f"[Success]: Saved memory '{key}'."
+        return command_success(f"Saved memory '{key}'.")
 
-    async def _cmd_memory_forget(self, bound: BoundArgs) -> str:
+    async def _cmd_memory_forget(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         try:
             await self.api.forget_memory(self.user_id, key)
         except httpx.HTTPStatusError as e:
             if e.response is not None and e.response.status_code == 404:
-                return f"[Error]: No memory found with key '{key}'."
+                return command_error(f"No memory found with key '{key}'.")
             raise
-        return f"[Success]: Forgot memory '{key}'."
+        return command_success(f"Forgot memory '{key}'.")
 
     async def _cmd_memory_search(self, bound: BoundArgs) -> str:
         query = str(bound.get("query") or "")
         results = await self.api.search_memories(self.user_id, query)
         if not results:
-            return f"[Info]: No memories matching '{query}'."
+            return f"No memories matching '{query}'."
         lines = [f"Memory search for '{query}': {len(results)} results"]
         for mem in results[:25]:
             value = mem.get("value", "")
             preview = (value[:200] + "...") if len(value) > 200 else value
             lines.append(f"  {mem.get('key', '?')}: {preview}")
-        return _truncate("[Info]: " + "\n".join(lines))
+        return _truncate("\n".join(lines))
 
-    async def _cmd_memory_limit(self, bound: BoundArgs) -> str:
+    async def _cmd_memory_limit(self, bound: BoundArgs) -> str | CommandOutput:
         from .memory_limits import (
             MAX_MEMORY_CHAR_LIMIT,
             get_effective_thread_memory_char_limit,
@@ -5640,7 +5683,7 @@ class _CommandExecutor(
                 lines.append(
                     f"  thread: {len(notepad)} / {effective_limit} chars ({source})"
                 )
-            return "[Info]: " + "\n".join(lines)
+            return "\n".join(lines)
 
         if scope == "global":
             if value is None:
@@ -5649,15 +5692,15 @@ class _CommandExecutor(
                 )
             limit = parse_limit(value)
             if limit is None:
-                return f"[Error]: Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}."
+                return command_error(f"Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}.")
             result = await self.api.update_settings(
                 user_id=self.user_id,
                 memory_char_limit=limit,
             )
-            msg = f"[Success]: Global memory character limit set to {limit}."
+            msg = f"Global memory character limit set to {limit}."
             if result.get("restart_required"):
                 msg += " (restart required to take effect)"
-            return msg
+            return command_success(msg)
 
         # The declared choices leave no third scope, so this is the thread arm.
         thread_error = self._require_thread()
@@ -5674,18 +5717,18 @@ class _CommandExecutor(
                 clear_memory_char_limit=True,
                 user_id=self.user_id,
             )
-            return "[Success]: This thread now inherits the global memory character limit."
+            return command_success("This thread now inherits the global memory character limit.")
         limit = parse_limit(value)
         if limit is None:
-            return f"[Error]: Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}."
+            return command_error(f"Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}.")
         await self.api.update_thread_config(
             self.thread_id,
             memory_char_limit=limit,
             user_id=self.user_id,
         )
-        return f"[Success]: This thread's memory character limit set to {limit}."
+        return command_success(f"This thread's memory character limit set to {limit}.")
 
-    async def _cmd_sequential_tools(self, bound: BoundArgs) -> str:
+    async def _cmd_sequential_tools(self, bound: BoundArgs) -> str | CommandOutput:
         """Show / set sequential (ordered, one-at-a-time) tool execution.
 
         No args shows status; `on`/`off`/`inherit` set this thread's override;
@@ -5737,7 +5780,7 @@ class _CommandExecutor(
                     lines.append(f"  thread: {fmt(g)} (inherits global)")
                 else:
                     lines.append(f"  thread: {fmt(bool(override))} (override)")
-            return "[Info]: " + "\n".join(lines)
+            return "\n".join(lines)
 
         if mode == "global":
             if value.lower() not in ("on", "off"):
@@ -5749,10 +5792,10 @@ class _CommandExecutor(
                 user_id=self.user_id,
                 sequential_tool_execution=enabled,
             )
-            msg = f"[Success]: Global sequential tool execution turned {fmt(enabled)}."
+            msg = f"Global sequential tool execution turned {fmt(enabled)}."
             if isinstance(result, dict) and result.get("restart_required"):
                 msg += " (restart required to take effect)"
-            return msg
+            return command_success(msg)
 
         if mode in ("inherit", "default"):
             thread_error = self._require_thread()
@@ -5763,7 +5806,10 @@ class _CommandExecutor(
                 clear_sequential_tool_execution=True,
                 user_id=self.user_id,
             )
-            return "[Success]: This thread now inherits the global sequential tool execution setting."
+            return command_success(
+                "This thread now inherits the global sequential tool execution "
+                "setting."
+            )
 
         if mode in ("on", "off"):
             thread_error = self._require_thread()
@@ -5776,8 +5822,8 @@ class _CommandExecutor(
                 user_id=self.user_id,
             )
             label = "sequential" if enabled else "concurrent"
-            return (
-                f"[Success]: This thread's tool execution set to {label} "
+            return command_success(
+                f"This thread's tool execution set to {label} "
                 f"(override {fmt(enabled)})."
             )
 
@@ -5795,7 +5841,7 @@ class _CommandExecutor(
         elif filter_val != "all":
             items = [i for i in items if i.get("status") == filter_val]
         if not items:
-            return f"[Info]: No {filter_val} TODOs."
+            return f"No {filter_val} TODOs."
         lines = [f"TODOs ({filter_val}): {len(items)} items"]
         for item in items[:25]:
             st = item.get("status", "pending")
@@ -5810,12 +5856,12 @@ class _CommandExecutor(
             lines.append("  " + " | ".join(parts))
         if len(items) > 25:
             lines.append(f"(showing 25 of {len(items)})")
-        return _truncate("[Info]: " + "\n".join(lines))
+        return _truncate("\n".join(lines))
 
-    async def _cmd_todos_add(self, args: list[str], rest: str) -> str:
+    async def _cmd_todos_add(self, args: list[str], rest: str) -> str | CommandOutput:
         if not rest.strip():
-            return (
-                "[Error]: Usage: /todos add <task> [| <schedule>] [| <repeat>] [| <notes>]\n"
+            return command_error(
+                "Usage: /todos add <task> [| <schedule>] [| <repeat>] [| <notes>]\n"
                 "Example: /todos add Check logs | 2h | daily"
             )
         parts = [p.strip() for p in rest.split("|")]
@@ -5839,50 +5885,53 @@ class _CommandExecutor(
             out.append(f"Fires: {scheduled[:16]}")
         if recurrence:
             out.append(f"Repeats: {recurrence}")
-        return "[Success]: " + "\n".join(out)
+        return command_success("\n".join(out))
 
-    async def _cmd_todos_complete(self, bound: BoundArgs) -> str:
+    async def _cmd_todos_complete(self, bound: BoundArgs) -> str | CommandOutput:
         todo_id = str(bound.get("todo_id") or "")
         items = await self.api.list_todos(self.user_id)
         match = next((i for i in items if i.get("id", "").startswith(todo_id)), None)
         if not match:
-            return f"[Error]: No TODO found matching '{todo_id}'."
+            return command_error(f"No TODO found matching '{todo_id}'.")
         result = await self.api.complete_todo(self.user_id, match["id"])
         task = match.get("task", "")
         recurrence = result.get("recurrence")
         if recurrence and result.get("status") == "pending":
             next_fire = result.get("scheduled_for", "")[:16]
-            return f"[Success]: Completed '{task}'. Rescheduled ({recurrence}): next fire {next_fire}."
-        return f"[Success]: Completed '{task}'."
+            return command_success(
+                f"Completed '{task}'. Rescheduled ({recurrence}): "
+                f"next fire {next_fire}."
+            )
+        return command_success(f"Completed '{task}'.")
 
-    async def _cmd_todos_delete(self, bound: BoundArgs) -> str:
+    async def _cmd_todos_delete(self, bound: BoundArgs) -> str | CommandOutput:
         todo_id = str(bound.get("todo_id") or "")
         items = await self.api.list_todos(self.user_id)
         match = next((i for i in items if i.get("id", "").startswith(todo_id)), None)
         if not match:
-            return f"[Error]: No TODO found matching '{todo_id}'."
+            return command_error(f"No TODO found matching '{todo_id}'.")
         await self.api.delete_todo(self.user_id, match["id"])
-        return f"[Success]: Deleted '{match.get('task', '')}'."
+        return command_success(f"Deleted '{match.get('task', '')}'.")
 
     # ── Notepad ───────────────────────────────────────────────────────────
 
-    async def _cmd_notepad_read(self, bound: BoundArgs) -> str:
+    async def _cmd_notepad_read(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         from ..tools.thread_notes import read_notepad
         content = read_notepad(self.thread_id)
         if not content:
-            return "[Info]: Notepad is empty."
-        return f"[Info]: Notepad ({len(content)} chars):\n\n{content}"
+            return "Notepad is empty."
+        return f"Notepad ({len(content)} chars):\n\n{content}"
 
-    async def _cmd_notepad_write(self, args: list[str], rest: str) -> str:
+    async def _cmd_notepad_write(self, args: list[str], rest: str) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         raw = rest
         if not raw:
-            return "[Error]: Usage: /notepad write <content>  (or: replace:<content>)"
+            return command_error("Usage: /notepad write <content>  (or: replace:<content>)")
         from ..tools.thread_notes import write_notepad
         if raw.lower().startswith("replace:"):
             write_mode = "replace"
@@ -5896,22 +5945,28 @@ class _CommandExecutor(
             write_mode = "append"
             content = raw
         result = write_notepad(self.thread_id, content, mode=write_mode)
+        # This site PARSES the tool-channel sentinel protocol, which the #132
+        # sweep leaves in place: write_notepad is a TOOL whose contract is its
+        # prefixed string, so the relay maps that outcome onto a command level
+        # rather than forwarding a foreign channel's sentinel to a surface.
         if result.startswith("[Saved]:"):
-            return result.replace("[Saved]:", "[Success]:", 1)
+            return command_success(result.removeprefix("[Saved]:").strip())
+        if result.startswith("[Error]:"):
+            return command_error(result.removeprefix("[Error]:").strip())
         return result
 
-    async def _cmd_notepad_clear(self, bound: BoundArgs) -> str:
+    async def _cmd_notepad_clear(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         from ..tools.thread_notes import delete_notepad
         if delete_notepad(self.thread_id):
-            return "[Success]: Notepad cleared."
-        return "[Info]: Notepad was already empty."
+            return command_success("Notepad cleared.")
+        return "Notepad was already empty."
 
     # ── Thread lifecycle ──────────────────────────────────────────────────
 
-    async def _cmd_stop(self, args: list[str], rest: str) -> str:
+    async def _cmd_stop(self, args: list[str], rest: str) -> str | CommandOutput:
         from .pending_prompt_queue import restored_prompts_notice
 
         thread_error = self._require_thread()
@@ -5922,23 +5977,23 @@ class _CommandExecutor(
             holder = result.get("holder") or "current turn"
             held = result.get("held_seconds", 0)
             message = (
-                f"[Success]: Stop requested. {holder} has been running for "
+                f"Stop requested. {holder} has been running for "
                 f"{held:.0f}s; will halt at the next iteration boundary."
             )
             notice = restored_prompts_notice(result.get("restored_prompts") or [])
             if notice:
                 message = f"{message}\n\n{notice}"
-            return message
-        return "[Info]: Thread is idle; nothing to stop."
+            return command_success(message)
+        return "Thread is idle; nothing to stop."
 
-    async def _cmd_clear(self, args: list[str], rest: str) -> str:
+    async def _cmd_clear(self, args: list[str], rest: str) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         await self.api.clear_thread(self.thread_id)
-        return "[Success]: Conversation history cleared. Notepad and tool config preserved."
+        return command_success("Conversation history cleared. Notepad and tool config preserved.")
 
-    async def _cmd_prune(self, bound: BoundArgs) -> str:
+    async def _cmd_prune(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5946,7 +6001,7 @@ class _CommandExecutor(
         result = await self.api.prune_thread(self.thread_id, mode=mode)
         if not result.get("success"):
             reason = result.get("reason", "unknown error")
-            return f"[Error]: Could not prune: {reason}"
+            return command_error(f"Could not prune: {reason}")
         pruned = int(result.get("pruned_count", 0))
         saved = int(result.get("chars_saved", 0))
         already = int(result.get("skipped_already_pruned", 0))
@@ -5954,16 +6009,16 @@ class _CommandExecutor(
         if pruned == 0:
             if already or too_short:
                 return (
-                    f"[Info]: Nothing to prune. Already-pruned: {already}, "
+                    f"Nothing to prune. Already-pruned: {already}, "
                     f"too small to compress: {too_short}."
                 )
-            return "[Info]: Nothing to prune - no tool results found in this thread."
+            return "Nothing to prune - no tool results found in this thread."
         word = "result" if pruned == 1 else "results"
-        return (
-            f"[Success]: Pruned {pruned} tool {word} ({mode}), "
+        return command_success(
+            f"Pruned {pruned} tool {word} ({mode}), "
             f"reclaimed {saved:,} chars."
         )
 
-    async def _cmd_restart_api(self, args: list[str], rest: str) -> str:
+    async def _cmd_restart_api(self, args: list[str], rest: str) -> str | CommandOutput:
         await self.api.restart_api()
-        return "[Success]: Restarting API server..."
+        return command_success("Restarting API server...")

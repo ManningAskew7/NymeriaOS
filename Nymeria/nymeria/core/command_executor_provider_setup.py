@@ -37,6 +37,9 @@ from .command_forms import (
     CommandOutput,
     chain_form_output,
     command_data,
+    command_error,
+    command_info,
+    command_success,
     form_option,
     form_payload,
     form_tab,
@@ -62,7 +65,7 @@ class ProviderSetupCommandsMixin:
 
     if TYPE_CHECKING:
         @staticmethod
-        def _unknown_provider_error(provider: str) -> str: ...
+        def _unknown_provider_error(provider: str) -> CommandOutput: ...
 
     # ── Provider setup flow (chained configure forms, backlog #110) ───────
     #
@@ -92,8 +95,10 @@ class ProviderSetupCommandsMixin:
             "cancel",
         }
     )
-    _SETUP_GONE = (
-        "[Error]: No provider setup is in progress (or it expired). "
+    # Returned as-is by every step whose pending record vanished; a frozen
+    # CommandOutput is safe to share.
+    _SETUP_GONE = command_error(
+        "No provider setup is in progress (or it expired). "
         "Start one with /provider setup <provider>."
     )
 
@@ -107,8 +112,8 @@ class ProviderSetupCommandsMixin:
         if not args:
             pending = setup_store.get_setup(self.user_id)
             if pending is None:
-                return (
-                    "[Error]: Usage: /provider setup <provider> "
+                return command_error(
+                    "Usage: /provider setup <provider> "
                     "(see /provider list for the registered providers)."
                 )
             spec = get_llm_provider_spec(pending.provider)
@@ -172,9 +177,9 @@ class ProviderSetupCommandsMixin:
         if token == "cancel":
             cleared = setup_store.clear_setup(self.user_id)
             return (
-                "[Info]: Provider setup cancelled. Nothing was saved."
+                "Provider setup cancelled. Nothing was saved."
                 if cleared
-                else "[Info]: No provider setup was in progress."
+                else "No provider setup was in progress."
             )
         pending = setup_store.get_setup(self.user_id)
         if pending is None:
@@ -217,8 +222,8 @@ class ProviderSetupCommandsMixin:
         if token == "mode":
             value = (args[0] if args else "").strip().lower()
             if value not in OPENAI_API_MODES:
-                return (
-                    "[Error]: Usage: /provider setup mode"
+                return command_error(
+                    "Usage: /provider setup mode"
                     " <responses|chat_completions>"
                 )
             if not self._setup_update(api_mode=value):
@@ -229,7 +234,9 @@ class ProviderSetupCommandsMixin:
         if token == "model":
             value = rest_value(rest)
             if not value:
-                return "[Error]: Usage: /provider setup model <model-id|custom>"
+                return command_error(
+                    "Usage: /provider setup model <model-id|custom>"
+                )
             if value.lower() == "custom":
                 updated = self._setup_update(model_custom=True)
             else:
@@ -295,7 +302,9 @@ class ProviderSetupCommandsMixin:
         value = rest_value(rest)
         lowered = value.lower()
         if not value:
-            return "[Error]: Usage: /provider setup baseurl <url|default|custom>"
+            return command_error(
+                "Usage: /provider setup baseurl <url|default|custom>"
+            )
         if lowered == "custom":
             if not self._setup_update(base_url_custom=True):
                 return self._SETUP_GONE
@@ -881,8 +890,8 @@ class ProviderSetupCommandsMixin:
                     submit_command="provider setup {action}",
                     footer_hint="Enter select · Esc cancel",
                 )
-                return CommandOutput(
-                    f"[Info]: {spec.label} provider test FAILED: {message}\n"
+                return command_info(
+                    f"{spec.label} provider test FAILED: {message}\n"
                     "Nothing was saved.",
                     data=command_data(form=form),
                 )
@@ -904,8 +913,8 @@ class ProviderSetupCommandsMixin:
                 await self._setup_existing_key_fields(spec)
             )
             if not clearable:
-                return (
-                    f"[Error]: No clearable stored key was found for"
+                return command_error(
+                    "No clearable stored key was found for"
                     f" {spec.label}: its key field cannot be patched through"
                     " settings, so nothing was written. Unset the environment"
                     " variable directly (see /env) and rerun /provider setup."
@@ -923,7 +932,7 @@ class ProviderSetupCommandsMixin:
             message = f"Provider test passed. {message}"
         if result.get("restart_required"):
             message += " Restart required for some changes."
-        return f"[Success]: {message}"
+        return command_success(message)
 
     @staticmethod
     def _fmt_ctx(value: Any) -> str:
