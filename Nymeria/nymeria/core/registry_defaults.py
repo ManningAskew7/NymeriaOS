@@ -36,7 +36,12 @@ _BRANCH_PARAMS = (
         aliases=("-f",),
         description="Branch from this message index (1-based)",
     ),
-    CommandParam("title", kind="rest", description="Title for the new branch"),
+    # Repeatable positional, NOT rest: the retired hand parser accepted
+    # --from on either side of the title, and a rest tail would swallow a
+    # trailing "--from 3" into the title silently (review-confirmed bug).
+    CommandParam(
+        "title", repeatable=True, description="Title for the new branch"
+    ),
 )
 
 
@@ -547,16 +552,12 @@ def register_default_commands(service: "CommandService") -> None:
         category="LLM",
         mutates_state=True,
         danger_level="normal",
-        # `show` is the only token the root itself accepts; set, set-url, and
-        # clear are registered paths routed before this handler. The label
-        # keeps the usage line advertising them.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="show|set <model-id>|set-url <base-url>|clear",
-                description="Background tier subcommand (bare /background shows)",
-            ),
-        ),
+        # Bare "/background" shows; set, set-url, and clear are registered
+        # children routed before this handler, and `show` is a whole-path alias
+        # of the root. Strict zero-arg binding, so a root typo gets the
+        # dispatcher's did-you-mean plus the valid-subcommand list.
+        aliases=("background show",),
+        params=(),
     )
     service.register(
         "background set",
@@ -937,16 +938,11 @@ def register_default_commands(service: "CommandService") -> None:
             "The set branch requires an admin user, enforced at the update "
             "surface (CommandBackendClient.update_settings and PATCH /settings)."
         ),
-        # Bare "/settings" shows, and "view" is a show synonym; the three verbs
-        # below are registered paths, routed before this handler. The label
-        # keeps the usage line advertising them.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="show|get <key>|set <key> <value>",
-                description="Settings subcommand (bare /settings shows)",
-            ),
-        ),
+        # Bare "/settings" shows; the three verbs below are registered children
+        # routed before this handler ("view" is a whole-path alias of `settings
+        # show`). Strict zero-arg binding, so a root typo gets the dispatcher's
+        # did-you-mean plus the valid-subcommand list.
+        params=(),
     )
     # /settings verbs (backlog #129), registered so each carries its own schema.
     # They delegate to the /config handlers, which is where the one
@@ -957,6 +953,7 @@ def register_default_commands(service: "CommandService") -> None:
         "settings show",
         description="Show server settings",
         category="Settings",
+        aliases=("settings view",),
         params=(),
     )
     service.register(
@@ -1081,12 +1078,16 @@ def register_default_commands(service: "CommandService") -> None:
         category="Tools",
         mutates_state=True,
         danger_level="normal",
-        # A mode word then its value, the /memory limit shape. No choices: the
-        # handler also accepts `default` as an `inherit` synonym, so the
-        # advertised set lives in the label and the map stays in the handler.
+        # A mode word then its value, the /memory limit shape. The accepted mode
+        # set is closed, so it is declared: `default` is an undocumented synonym
+        # of `inherit`, kept in choices (the binder enforces what the handler
+        # really takes) but out of the label, which stays the advertised form.
+        # Only the `global` arm consumes `value`; the handler rejects a second
+        # token on the others rather than discarding it.
         params=(
             CommandParam(
                 "mode",
+                choices=("on", "off", "inherit", "default", "global"),
                 label="on|off|inherit|global",
                 description="Thread override, `inherit`, or the global scope",
             ),
@@ -1126,17 +1127,11 @@ def register_default_commands(service: "CommandService") -> None:
         category="Skills",
         requires_thread=True,
         examples=("/skills show summarize", "/skills enable --global summarize"),
-        # Bare "/skills" lists. Registered subcommands never reach this handler
-        # (longest-prefix dispatch routes them first), so the only token the
-        # binder sees here is a typo; the label keeps advertising the family,
-        # since the usage line is where the verbs are discovered.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="list|show <name>|off all",
-                description="Skills subcommand (bare /skills lists)",
-            ),
-        ),
+        # Bare "/skills" lists. Every verb is a registered child routed before
+        # this handler by longest-prefix dispatch, so the root binds strictly
+        # with zero arguments and a typo gets the dispatcher's did-you-mean
+        # plus the valid-subcommand list.
+        params=(),
     )
     service.register(
         "skills list",
@@ -1259,14 +1254,10 @@ def register_default_commands(service: "CommandService") -> None:
         description="MCP server management commands",
         category="MCP",
         requires_admin=True,
-        # Bare "/mcp" lists; registered verbs are routed before this handler.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="list|status|logs|discover|test|remove|retry",
-                description="MCP subcommand (bare /mcp lists)",
-            ),
-        ),
+        # Bare "/mcp" lists; every verb is a registered child routed before this
+        # handler, so the root binds strictly with zero arguments and a typo
+        # gets the dispatcher's did-you-mean plus the valid-subcommand list.
+        params=(),
     )
     service.register(
         "mcp list",
@@ -1347,14 +1338,11 @@ def register_default_commands(service: "CommandService") -> None:
         "triggers",
         description="Event-trigger automation commands",
         category="Automation",
-        # Bare "/triggers" lists; registered verbs are routed before this one.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="list|enable|disable|delete|history",
-                description="Triggers subcommand (bare /triggers lists)",
-            ),
-        ),
+        # Bare "/triggers" lists; every verb is a registered child routed before
+        # this handler, so the root binds strictly with zero arguments and a
+        # typo gets the dispatcher's did-you-mean plus the valid-subcommand
+        # list.
+        params=(),
     )
     service.register(
         "triggers list",
@@ -1432,24 +1420,12 @@ def register_default_commands(service: "CommandService") -> None:
         description="Lifecycle-hook authoring and approval commands",
         category="Automation",
         aliases=("hooks",),
-        # Bare "/hook" lists. Registered subcommands never reach the root
-        # (longest-prefix dispatch routes them first), so the only tokens the
-        # binder sees here are the unregistered "detail" synonym of show and
-        # typos; the label keeps advertising the family, since the usage line
-        # is where the verbs are discovered.
-        params=(
-            CommandParam(
-                "subcommand",
-                label=(
-                    "list|create|show|edit|enable|disable|delete|test|log"
-                    "|templates|install|approvals|approve|deny"
-                ),
-                description="Hook subcommand (bare /hook lists)",
-            ),
-            CommandParam(
-                "id", description="Hook id, for the `detail` synonym of show"
-            ),
-        ),
+        # Bare "/hook" lists. Every verb is a registered child routed before
+        # this handler by longest-prefix dispatch (the "detail" synonym of show
+        # is a whole-path alias on `hook show`), so the root binds strictly with
+        # zero arguments and a typo gets the dispatcher's did-you-mean plus the
+        # valid-subcommand list.
+        params=(),
     )
     service.register(
         "hook list",
@@ -1482,7 +1458,7 @@ def register_default_commands(service: "CommandService") -> None:
         "hook show",
         description="Show one hook's full configuration",
         category="Automation",
-        aliases=("hook_show", "hook_detail"),
+        aliases=("hook_show", "hook_detail", "hook detail"),
         surfaces=_hook_sub_surfaces,
         params=(_HOOK_ID_PARAM,),
     )
@@ -1762,14 +1738,10 @@ def register_default_commands(service: "CommandService") -> None:
         category="Personal",
         aliases=("acct",),
         # Bare "/account" shows the current user; the verbs are registered
-        # paths, routed before this handler ever runs.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="current|tokens|platforms",
-                description="Account subcommand (bare /account shows the user)",
-            ),
-        ),
+        # children routed before this handler ever runs, so the root binds
+        # strictly with zero arguments and a typo gets the dispatcher's
+        # did-you-mean plus the valid-subcommand list.
+        params=(),
     )
     service.register(
         "account current",
@@ -1827,21 +1799,18 @@ def register_default_commands(service: "CommandService") -> None:
         "activity",
         description="Show recent activity and notifications",
         category="Personal",
-        # Bare "/activity" lists, and `recent` is a list synonym the handler
-        # keeps; "/activity notifications" is a registered path routed first.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="list|notifications",
-                description="Activity subcommand (bare /activity lists)",
-            ),
-        ),
+        # Bare "/activity" lists; list and notifications are registered children
+        # routed before this handler (`recent` is a whole-path alias of
+        # `activity list`), so the root binds strictly with zero arguments and a
+        # typo gets the dispatcher's did-you-mean plus the valid-subcommand
+        # list.
+        params=(),
     )
     service.register(
         "activity list",
         description="Show the most recent activity entries",
         category="Personal",
-        aliases=("activity_list", "activity_recent"),
+        aliases=("activity_list", "activity_recent", "activity recent"),
         # --type is validated against the ActivityType enum in the handler
         # (live value set), and --thread accepts `current`/`.` for this thread.
         params=(
@@ -1897,15 +1866,11 @@ def register_default_commands(service: "CommandService") -> None:
         "doctor",
         description="Run server-side diagnostics (auth + model)",
         category="System",
-        # Bare "/doctor" runs both sections; each section is a registered path
-        # routed before this handler.
-        params=(
-            CommandParam(
-                "subcommand",
-                label="auth|model",
-                description="Diagnostic section (bare /doctor runs both)",
-            ),
-        ),
+        # Bare "/doctor" runs both sections; each section is a registered child
+        # routed before this handler, so the root binds strictly with zero
+        # arguments and a typo gets the dispatcher's did-you-mean plus the
+        # valid-subcommand list.
+        params=(),
     )
     service.register(
         "doctor auth",

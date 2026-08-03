@@ -63,6 +63,27 @@ def test_option_missing_value_and_unknown_option() -> None:
     assert error is not None and "Unknown option `--bogus`" in error.problem
 
 
+def test_option_immediately_followed_by_another_option_errors() -> None:
+    # The lookahead must not consume a following option as the value; a
+    # mutation dropping it survived the original suite (review finding).
+    params = (
+        CommandParam("tag", kind="option"),
+        CommandParam("yes", kind="flag", type="bool", aliases=("-y",)),
+    )
+    _, error = _bind(params, "--tag --yes")
+    assert error is not None and "--tag requires a value" in error.problem
+
+    # Single-dash tokens are legal option VALUES (negative numbers), so the
+    # lookahead blocks only double-dash tokens: "-y" binds as --tag's value
+    # even though it is a declared alias, and "x" is then an extra.
+    _, error = _bind(params, "--tag -y x")
+    assert error is not None and "Unexpected argument `x`" in error.problem
+
+    bound, error = _bind((CommandParam("tag", kind="option"),), "--tag -5")
+    assert error is None and bound is not None
+    assert bound.get("tag") == "-5"
+
+
 def test_flag_short_alias_and_inline_value_rejection() -> None:
     params = (CommandParam("yes", kind="flag", type="bool", aliases=("-y",)),)
     for text in ("--yes", "-y"):
@@ -180,6 +201,33 @@ def test_repeatable_positional_keeps_parsing_options_around_it() -> None:
 def test_unbalanced_quote_is_an_honest_error() -> None:
     params = (CommandParam("key"),)
     _, error = bind_args(params, ["k", '"unclosed'], 'k "unclosed')
+    assert error is not None and "Unbalanced quote" in error.problem
+
+
+def test_repeatable_positional_tail_tolerates_apostrophes() -> None:
+    # Same argument as the rest exemption: the tail collects bare words, so
+    # the whitespace fallback is the intended tokenization ("don't" in a
+    # skills search must not error).
+    params = (CommandParam("query", repeatable=True),)
+    bound, error = bind_args(params, ["don't", "panic"], "don't panic")
+    assert error is None and bound is not None
+    assert bound.get("query") == ["don't", "panic"]
+
+
+def test_unbalanced_double_quote_errors_even_with_a_free_tail() -> None:
+    # An unbalanced DOUBLE quote is attempted phrase-quoting, not English:
+    # the fallback would mis-assign tokens across options and the tail
+    # (measured on /hook create, where it quietly renamed the hook), so the
+    # honest error survives the apostrophe exemption.
+    params = (
+        CommandParam("name", repeatable=True),
+        CommandParam("cond", kind="option", repeatable=True),
+    )
+    _, error = bind_args(
+        params,
+        ["Guard", "--cond", '"command', "contains", "rm"],
+        'Guard --cond "command contains rm',
+    )
     assert error is not None and "Unbalanced quote" in error.problem
 
 
@@ -347,6 +395,14 @@ def test_generated_usage_always_starts_with_the_path() -> None:
             (CommandParam("many", repeatable=True), CommandParam("late")),
             "no positional may follow",
         ),
+        (
+            (CommandParam("cond", kind="option", repeatable=True, default="x"),),
+            "never applied",
+        ),
+        (
+            (CommandParam("id", required=True, default="x"),),
+            "never applied",
+        ),
     ],
 )
 def test_validate_params_rejects(params: tuple[CommandParam, ...], fragment: str) -> None:
@@ -413,6 +469,20 @@ def test_params_payload_distinguishes_unadopted_from_zero_args() -> None:
     assert model.name == "x" and model.kind == "positional"
 
 
+def test_param_model_and_dataclass_declare_the_same_fields() -> None:
+    """Field-parity gate: the wire schema cannot silently lag the dataclass.
+
+    params_to_payload serializes via dataclasses.asdict, so a new
+    CommandParam field reaches the wire automatically; pydantic ignores
+    unknown fields, so without this gate the model would silently drop it.
+    """
+    import dataclasses
+
+    dataclass_fields = {f.name for f in dataclasses.fields(CommandParam)}
+    model_fields = set(CommandParamModel.model_fields)
+    assert model_fields == dataclass_fields
+
+
 # ── Adoption ratchet ─────────────────────────────────────────────────────────
 
 # The full-catalog adoption invariant (#129): every executable command
@@ -462,7 +532,9 @@ def test_every_executable_command_declares_params_unless_exempt() -> None:
         for cmd in service._commands.values()
         if cmd.executable and cmd.params is not None
     )
-    assert adopted >= 120  # anti-vacuity floor, mirrors the binding guard's
+    assert adopted >= 125  # anti-vacuity floor, mirrors the binding guard's
+    # The exemption list may only shrink without a recorded design decision.
+    assert len(_PARAMS_EXEMPT) <= 10
 
 
 def test_slash_command_tool_description_derives_the_blocked_list() -> None:

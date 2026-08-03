@@ -156,6 +156,24 @@ export interface DispatchInfo {
   matchedRef?: string;
 }
 
+// One declared argument of a schema'd command (backlog #129); mirrors the
+// backend CommandParamModel. choices is the enforced set; choices_ref names
+// a dynamic set for autocomplete/forms; label is the advertised display form.
+export interface SlashCommandParam {
+  name: string;
+  kind: 'positional' | 'option' | 'flag' | 'rest' | 'scope';
+  type: 'str' | 'int' | 'bool';
+  required: boolean;
+  choices: string[];
+  choices_ref?: string | null;
+  default?: string | number | boolean | null;
+  repeatable: boolean;
+  aliases: string[];
+  description: string;
+  no_echo: boolean;
+  label?: string | null;
+}
+
 export interface SlashCommandInfo {
   name: string;
   description: string;
@@ -177,6 +195,8 @@ export interface SlashCommandInfo {
   blocked_surfaces?: string[];
   blocked_reason?: string | null;
   examples?: string[];
+  // null/absent = no declared schema; [] = schema'd with zero arguments.
+  params?: SlashCommandParam[] | null;
 }
 
 export interface CommandExecuteResponse {

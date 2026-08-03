@@ -93,15 +93,25 @@ HAND_WRITTEN_FAMILIES: dict[str, str] = {
     # the model-swap consent copy advertises as the buttonless resolve path.
     # None of them are discord-surfaced in the registry.
     "fallback": "fallback.py owns the consent-prompt resolve path (not discord-surfaced)",
+    # config.py's /restart carries the bot self-restart branch, and the
+    # registry family is "restart api" (id restart.api): generating it would
+    # emit a `restart` group colliding with the hand command at cog load.
+    "restart": "config.py restarts the bot process itself (self-restart branch)",
 }
 
 # Individual commands the generator must never claim, even if they later gain a
-# param schema. Each names the hand behavior a defer-and-relay cannot reproduce.
+# param schema. Each names the hand behavior a defer-and-relay cannot reproduce,
+# or the reason a relay must not exist at all.
 EXCLUDED_COMMANDS: dict[str, str] = {
-    "restart": "config.py restarts the bot process itself (self-restart branch)",
     "clear": "chat.py: act-now command, deliberately never strict-parsed",
     "stop": "chat.py: act-now command, deliberately never strict-parsed",
     "compact": "chat.py streams the turn (execution_kind chat_stream)",
+    # Typed key=value pairs on /provider set carry credentials; a first-class
+    # Discord command would invite pasting secrets into a chat platform's
+    # transport, the exact threat blocked_surfaces exists for. The backend
+    # enforcement sweep beyond the two chain flows is backlog #130; until it
+    # lands, the generator simply never offers the command on Discord.
+    "provider.set": "credential key=value pairs must not ride Discord (#130)",
 }
 
 # Descriptions for group roots the registry does not describe. The first three
@@ -112,6 +122,28 @@ GROUP_DESCRIPTIONS: dict[tuple[str, ...], str] = {
     ("memory",): "Manage Nymeria's memories about you",
     ("skills", "off"): "Turn skills off",
 }
+
+# Family roots the group rule drops from Discord (a group is not invokable,
+# so each of these loses its OWN bare action there; children still generate).
+# select_commands() asserts the computed set equals this list, so growth is a
+# deliberate edit here, never a silent registry side effect.
+EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
+    "account",
+    "account.tokens",
+    "activity",
+    "artifacts",
+    "background",
+    "doctor",
+    "fast",
+    "mcp",
+    "provider",
+    "settings",
+    "skills",
+    "smart",
+    "team",
+    "triggers",
+    "usage",
+)
 
 # `choices_ref` names that have a live resolver in
 # `nymeria/triggers/discord_cogs/autocomplete.py`. A ref that is not listed
@@ -171,6 +203,9 @@ class GeneratorError(RuntimeError):
 
 def select_commands(service: CommandService | None = None) -> list[CommandDefinition]:
     """The registry commands this generator owns, sorted by command id."""
+    # The drop-list pin below guards the REAL catalog only; tests inject
+    # stub registries to exercise the selection rules in isolation.
+    is_default_registry = service is None
     service = service or CommandService()
     candidates: dict[tuple[str, ...], CommandDefinition] = {}
     for definition in service._commands.values():
@@ -197,6 +232,18 @@ def select_commands(service: CommandService | None = None) -> list[CommandDefini
         for other in paths
         if len(other) > len(path) and other[: len(path)] == path
     }
+    # The drop is silent by construction, and a dropped root's own action
+    # (bare /fast, bare /usage) simply does not exist on Discord. Pin the
+    # list so a registry change cannot silently grow it, and so the doc
+    # claims in public/chat-apps/discord-bot.md stay honest.
+    dropped_ids = sorted(candidates[path].id for path in roots)
+    if is_default_registry and set(dropped_ids) != set(EXPECTED_DROPPED_ROOTS):
+        raise SystemExit(
+            "Discord root-drop list changed (a group is not invokable, so each "
+            f"dropped root's own action vanishes from Discord). Actual: "
+            f"{dropped_ids}. Update EXPECTED_DROPPED_ROOTS deliberately and "
+            "re-check docs/chat-apps/discord-bot.md still tells the truth."
+        )
     return sorted(
         (d for path, d in candidates.items() if path not in roots),
         key=lambda d: d.id,

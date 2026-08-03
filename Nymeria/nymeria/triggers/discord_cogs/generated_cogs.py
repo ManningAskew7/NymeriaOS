@@ -345,7 +345,7 @@ class GeneratedCommandsCog(commands.Cog):
         if from_ is not None:
             parts.extend(("--from", shlex.quote(str(from_))))
         if title is not None:
-            parts.append(shlex.quote(title))
+            parts.append(title)
         await self.bot._send_backend_command(
             interaction,
             "branch",
@@ -882,31 +882,6 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @provider_group.command(
-        name="set",
-        description="Apply provider credentials to backend settings",
-    )
-    @app_commands.describe(
-        provider="Provider whose credentials to write",
-        values="Credential fields, e.g. api_key=<key>",
-    )
-    async def cmd_provider_set(
-        self,
-        interaction: discord.Interaction,
-        provider: str,
-        values: str,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        parts.append(shlex.quote(provider))
-        parts.append(values)
-        await self.bot._send_backend_command(
-            interaction,
-            "provider set",
-            args=" ".join(parts),
-            require_admin=True,
-        )
-
-    @provider_group.command(
         name="switch",
         description="Switch the active LLM provider globally or for this thread",
     )
@@ -997,6 +972,15 @@ class GeneratedCommandsCog(commands.Cog):
     @app_commands.describe(
         mode="Thread override, `inherit`, or the global scope",
         value="Value for the global scope",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="on", value="on"),
+            app_commands.Choice(name="off", value="off"),
+            app_commands.Choice(name="inherit", value="inherit"),
+            app_commands.Choice(name="default", value="default"),
+            app_commands.Choice(name="global", value="global"),
+        ],
     )
     async def cmd_sequential_tools(
         self,
@@ -1575,7 +1559,6 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "models",
     "provider list",
     "provider reasoning-passback",
-    "provider set",
     "provider switch",
     "provider test",
     "prune",
@@ -1646,7 +1629,6 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "models": "LLM",
     "provider list": "LLM",
     "provider reasoning-passback": "LLM",
-    "provider set": "LLM",
     "provider switch": "LLM",
     "provider test": "LLM",
     "prune": "Thread",

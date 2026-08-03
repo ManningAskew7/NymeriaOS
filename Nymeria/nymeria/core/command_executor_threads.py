@@ -583,7 +583,9 @@ class ThreadCommandsMixin:
         from_message_index = bound.get("from")
         if from_message_index is not None and from_message_index < 1:
             return "[Error]: --from must be 1 or greater"
-        title = str(bound.get("title") or "").strip() or None
+        # Repeatable positional: join the collected words (--from parses on
+        # either side of the title, matching the retired hand parser).
+        title = " ".join(bound.get("title") or []).strip() or None
 
         result = await self.api.branch_thread(
             self.thread_id,

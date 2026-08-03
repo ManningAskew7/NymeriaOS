@@ -3242,10 +3242,9 @@ class _CommandExecutor(
         """Whether the dispatch gate would let THIS caller run ``name``.
 
         The cosmetic-visibility twin of ``execute()``'s enforcement,
-        derived from the registry so it cannot drift from the flags (the
-        ``_subcommand_denied_for_actor`` rationale: a hand-written
-        condition is a second copy of the flags and drifts the moment a
-        registration changes). Covers all three gate axes: admin (blocking
+        derived from the registry so it cannot drift from the flags (a
+        hand-written condition is a second copy of the flags and drifts the
+        moment a registration changes). Covers all three gate axes: admin (blocking
         only on a definite False, mirroring the gate), agent_allowed, and
         blocked_surfaces. Used to decide which actions a form tab or an
         "Act:" line OFFERS; authorization stays in ``execute()``.
@@ -3280,13 +3279,11 @@ class _CommandExecutor(
     # ── Skills ────────────────────────────────────────────────────────────
 
     async def _cmd_skills(self, bound: BoundArgs) -> str:
-        # Bare "/skills" lists. Every skills verb is a registered path, so
-        # longest-prefix dispatch routes them before this handler runs and the
-        # only token that reaches the binder here is a typo.
-        sub = str(bound.get("subcommand") or "")
-        if not sub or sub == "list":
-            return await self._cmd_skills_list(BoundArgs())
-        return self._usage_error("skills")
+        # Bare "/skills" lists. Every skills verb is a registered child, so
+        # longest-prefix dispatch routes them before this handler runs; the root
+        # takes zero arguments and a typo never reaches here (the dispatcher
+        # answers it with did-you-mean plus the valid-subcommand list).
+        return await self._cmd_skills_list(BoundArgs())
 
     async def _cmd_skills_list(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
@@ -3523,11 +3520,10 @@ class _CommandExecutor(
     # ── MCP servers ───────────────────────────────────────────────────────
 
     async def _cmd_mcp(self, bound: BoundArgs) -> str:
-        # Bare "/mcp" lists; every verb is a registered path routed before this.
-        sub = str(bound.get("subcommand") or "")
-        if not sub or sub == "list":
-            return await self._cmd_mcp_list(BoundArgs())
-        return self._usage_error("mcp")
+        # Bare "/mcp" lists; every verb is a registered child routed before this
+        # handler. The root takes zero arguments, so a typo is answered by the
+        # dispatcher with did-you-mean plus the valid-subcommand list.
+        return await self._cmd_mcp_list(BoundArgs())
 
     async def _cmd_mcp_list(self, bound: BoundArgs) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
@@ -3735,11 +3731,10 @@ class _CommandExecutor(
         return _get_trigger_manager()
 
     async def _cmd_triggers(self, bound: BoundArgs) -> str:
-        # Bare "/triggers" lists; every verb is a registered path routed first.
-        sub = str(bound.get("subcommand") or "")
-        if not sub or sub == "list":
-            return await self._cmd_triggers_list(BoundArgs())
-        return self._usage_error("triggers")
+        # Bare "/triggers" lists; every verb is a registered child routed first.
+        # The root takes zero arguments, so a typo is answered by the dispatcher
+        # with did-you-mean plus the valid-subcommand list.
+        return await self._cmd_triggers_list(BoundArgs())
 
     async def _cmd_triggers_list(self, bound: BoundArgs) -> str:
         enabled_only = bool(bound.get("enabled_only"))
@@ -3844,46 +3839,16 @@ class _CommandExecutor(
             return None, f"[Error]: '{prefix}' matches multiple hooks: {ids}. Use a longer id."
         return matches[0], None
 
-    def _subcommand_denied_for_actor(self, family: str, sub: str) -> str | None:
-        """Fail-closed backstop for a parent handler that re-dispatches itself.
-
-        The parser resolves ``/x <sub>`` to the registered ``x.sub`` definition
-        and gates on its flags, so a parent handler should only ever see
-        subcommands that are NOT registered paths. If one slips through anyway
-        (a new alias shape, a registration that lands late, a caller that
-        invokes the handler directly), this catches it.
-
-        Derived from the registry rather than a hand-written name list on
-        purpose: a list is a second copy of the flags and drifts the moment a
-        subcommand is added. This cannot.
-        """
-        if self.actor != "agent":
-            return None
-        definition = get_command_service()._commands.get(f"{family}.{sub}")
-        if definition is None or definition.agent_allowed:
-            return None
-        return f"[Error]: Command `/{family} {sub}` is not available to the agent."
-
     async def _cmd_hook(self, bound: BoundArgs) -> str:
-        # Direct ``/hook <sub>`` and the ``/hooks <sub>`` plural alias both
-        # resolve to the registered subcommand path, so this bare handler
-        # catches only ``/hook`` (list), the unregistered ``detail`` synonym,
-        # and garbage.
-        sub = str(bound.get("subcommand") or "")
-        if not sub or sub == "list":
-            return await self._cmd_hook_list(BoundArgs())
-        # Fail-closed backstop, keyed on the typed token so it still covers
-        # every registered subcommand: if one ever routes through the parent
-        # again, the actor gate runs before anything else does.
-        denied = self._subcommand_denied_for_actor("hook", sub)
-        if denied:
-            return denied
-        if sub in ("show", "detail"):
-            hook_id = str(bound.get("id") or "")
-            if not hook_id:
-                return self._usage_error("hook show")
-            return self._hook_detail(hook_id)
-        return self._usage_error("hook")
+        # Bare "/hook" lists. Direct ``/hook <sub>``, the ``/hooks <sub>``
+        # plural alias, and the ``detail`` synonym of show all resolve to a
+        # registered subcommand path and are gated on ITS flags, so nothing
+        # else reaches here: the root takes zero arguments, and strict binding
+        # is now the fail-closed behavior that the removed
+        # ``_subcommand_denied_for_actor`` backstop used to provide (a stray
+        # token is a dispatcher usage error, so it can never execute a
+        # restricted subcommand; history: commit b0194056).
+        return await self._cmd_hook_list(BoundArgs())
 
     async def _cmd_hook_list(self, bound: BoundArgs) -> str:
         enabled_only = bool(bound.get("enabled_only"))
@@ -4396,12 +4361,10 @@ class _CommandExecutor(
 
     async def _cmd_account(self, bound: BoundArgs) -> str:
         # Bare "/account" shows the current user. Every account verb is a
-        # registered path, so longest-prefix dispatch routes it before this
-        # handler runs and the only token the binder sees here is a typo.
-        sub = str(bound.get("subcommand") or "")
-        if not sub or sub == "current":
-            return await self._cmd_account_current(BoundArgs())
-        return self._usage_error("account")
+        # registered child, so longest-prefix dispatch routes it before this
+        # handler runs; the root takes zero arguments and a typo is answered by
+        # the dispatcher with did-you-mean plus the valid-subcommand list.
+        return await self._cmd_account_current(BoundArgs())
 
     async def _cmd_account_current(self, bound: BoundArgs) -> str:
         repo = self._accounts_repo()
@@ -4499,12 +4462,11 @@ class _CommandExecutor(
     # ── Activity / notifications ──────────────────────────────────────────
 
     async def _cmd_activity(self, bound: BoundArgs) -> str:
-        # Bare "/activity" lists, and `recent` stays a list synonym.
-        # "/activity notifications" is a registered path, routed before this.
-        sub = str(bound.get("subcommand") or "")
-        if not sub or sub in ("list", "recent"):
-            return await self._cmd_activity_list(BoundArgs())
-        return self._usage_error("activity")
+        # Bare "/activity" lists. Both verbs are registered children routed
+        # before this handler, and `recent` is a whole-path alias of
+        # `activity list`; the root takes zero arguments and a typo is answered
+        # by the dispatcher with did-you-mean plus the valid-subcommand list.
+        return await self._cmd_activity_list(BoundArgs())
 
     async def _cmd_activity_list(self, bound: BoundArgs) -> str:
         from ..core.activity_log import ActivityType, get_activity_log
@@ -4571,10 +4533,9 @@ class _CommandExecutor(
     # ── Doctor (server-side diagnostics) ──────────────────────────────────
 
     async def _cmd_doctor(self, bound: BoundArgs) -> str:
-        # Both sections are registered paths, routed before this handler, so a
-        # token here is a typo; bare "/doctor" runs the pair.
-        if bound.get("subcommand"):
-            return self._usage_error("doctor")
+        # Both sections are registered children routed before this handler, so
+        # the root takes zero arguments and runs the pair; a typo is answered by
+        # the dispatcher with did-you-mean plus the valid-subcommand list.
         auth = await self._cmd_doctor_auth(BoundArgs())
         model = await self._cmd_doctor_model(BoundArgs())
         return f"{auth}\n\n{model}"
@@ -5071,12 +5032,11 @@ class _CommandExecutor(
         Unlike /fast and /smart this never switches the thread's agent model: the
         background tier is a utility model (extraction now, more later), so it is
         global-only with no thread toggle. The set, set-url, and clear verbs are
-        registered children with their own schemas.
+        registered children with their own schemas, and `show` is a whole-path
+        alias of the root, so this takes zero arguments.
         """
         from ..config.model_tiers import resolve_tier
 
-        if str(bound.get("subcommand") or "").lower() not in {"", "show"}:
-            return self._usage_error("background")
         settings = await self.api.get_settings()
 
         configured = str(settings.get("llm_background_model") or "").strip()
@@ -5200,12 +5160,10 @@ class _CommandExecutor(
         single-token aliases on single-token paths). Its show/get/set verbs are
         registered children, routed before this handler; they delegate to the
         /config handlers, whose settings applier enforces admin on both
-        transports. Bare "/settings" and the "view" synonym land here.
+        transports. Only bare "/settings" lands here: "view" is a whole-path
+        alias of `settings show`, so this takes zero arguments.
         """
-        sub = str(bound.get("subcommand") or "").lower()
-        if not sub or sub in ("show", "view"):
-            return await self._cmd_config_show(BoundArgs())
-        return self._usage_error("settings")
+        return await self._cmd_config_show(BoundArgs())
 
     async def _cmd_settings_show(self, bound: BoundArgs) -> str:
         return await self._cmd_config_show(bound)
@@ -5640,6 +5598,16 @@ class _CommandExecutor(
         mode = str(bound.get("mode") or "").lower()
         value = str(bound.get("value") or "")
 
+        # Only the `global` arm consumes a second token. Without this check the
+        # binder happily fills `value` for a thread-scope mode and the arm drops
+        # it, so `/sequential-tools on off` reported success while doing the
+        # opposite of what the second word asked for.
+        if value and mode != "global":
+            return self._usage_error(
+                "sequential-tools",
+                hint=f"`{mode}` does not take a value; only `global` does.",
+            )
+
         if not mode:
             g = global_flag()
             lines = ["Sequential tool execution", f"  global: {fmt(g)}"]
@@ -5697,8 +5665,8 @@ class _CommandExecutor(
                 f"(override {fmt(enabled)})."
             )
 
-        # No declared choices (the handler also takes `default`), so an unknown
-        # mode still lands here.
+        # Defensive tail: the declared choices cover every arm above, so the
+        # binder rejects an unknown mode before this handler runs.
         return self._usage_error("sequential-tools")
 
     # ── TODOs ─────────────────────────────────────────────────────────────

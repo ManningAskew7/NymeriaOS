@@ -387,7 +387,12 @@ def test_mcp_root_lists_and_guides_a_typo(patched_registry) -> None:
     assert listed.success is True, listed.markdown
     assert "| ID | State | Tools | Name |" in listed.markdown
 
+    # The root is a strict zero-arg command, so a mistyped verb is rejected by
+    # the binder and the dispatcher layers the family guidance on top.
     typo = run(CommandService().execute(_ctx(), "/mcp lgos"))
     assert typo.success is False
-    assert "Usage: `/mcp [list|status|logs|discover|test|remove|retry]`" in typo.markdown
-    assert "Subcommands: discover, list, logs, remove, retry, status, test." in typo.markdown
+    assert "Unexpected argument `lgos`" in typo.markdown
+    assert "Did you mean `/mcp logs`?" in typo.markdown
+    assert "Valid subcommands: discover, list, logs, remove, retry, status, test." in typo.markdown
+    assert "Usage: `/mcp`." in typo.markdown
+    assert "See `/help mcp`." in typo.markdown

@@ -300,17 +300,18 @@ def test_account_root_rejects_an_unknown_verb_with_family_guidance(
 ) -> None:
     patched_agent(SimpleNamespace(accounts_repo=_FakeAccountsRepo()))
 
-    # One stray token binds to the declared subcommand slot, so the handler's
-    # own rejection answers and names the family.
+    # The root declares no arguments, so a stray verb is a binder rejection
+    # and the dispatcher layers the family guidance on top.
     unknown = run(CommandService().execute(_ctx(), "/account bogus"))
     assert unknown.success is False
-    assert "Usage: `/account [current|tokens|platforms]`" in unknown.markdown
-    assert "Subcommands: current, platforms, tokens." in unknown.markdown
+    assert "Unexpected argument `bogus`" in unknown.markdown
+    assert "Valid subcommands: current, platforms, tokens." in unknown.markdown
+    assert "Usage: `/account`." in unknown.markdown
 
-    # A second token is a binder rejection, which layers the same guidance.
+    # A second token stops at the same rejection, on the first extra word.
     extra = run(CommandService().execute(_ctx(), "/account bogus more"))
     assert extra.success is False
-    assert "Unexpected argument `more`" in extra.markdown
+    assert "Unexpected argument `bogus`" in extra.markdown
     assert "Valid subcommands: current, platforms, tokens." in extra.markdown
 
 
@@ -395,6 +396,40 @@ def test_activity_list_binds_limit_and_both_option_spellings(
     ]
 
 
+def test_activity_recent_alias_survives_the_root_flip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``recent`` was a handler-side synonym; it is a whole-path alias now.
+
+    The root takes no arguments any more, so the alias is what keeps
+    ``/activity recent`` working, and it has to bind ``activity list``'s own
+    schema (limit and options), not just resolve to the bare listing.
+    """
+    from nymeria.core.activity_log import ActivityType
+
+    service = CommandService()
+    resolved = service.find_command("activity recent")
+    assert resolved is not None
+    assert resolved.name == "activity list"
+
+    log = _RecordingActivityLog()
+    monkeypatch.setattr("nymeria.core.activity_log.get_activity_log", lambda: log)
+
+    result = run(
+        service.execute(_ctx(), "/activity recent 3 --type user_message")
+    )
+
+    assert result.success is True, result.markdown
+    assert log.queries == [
+        {
+            "user_id": "alice",
+            "limit": 3,
+            "activity_type": ActivityType.USER_MESSAGE,
+            "thread_id": None,
+        }
+    ]
+
+
 def test_activity_list_rejects_a_non_integer_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -428,7 +463,8 @@ def test_doctor_rejects_an_unknown_section(patched_agent) -> None:
     result = run(CommandService().execute(_ctx(), "/doctor network"))
 
     assert result.success is False
-    assert "Usage: `/doctor [auth|model]`" in result.markdown
-    assert "Subcommands: auth, model." in result.markdown
+    assert "Unexpected argument `network`" in result.markdown
+    assert "Valid subcommands: auth, model." in result.markdown
+    assert "Usage: `/doctor`." in result.markdown
     # The combined report never ran.
     assert "Auth" not in result.markdown

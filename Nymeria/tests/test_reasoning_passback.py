@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from nymeria.config.llm_providers import get_llm_provider_spec
+from nymeria.core.command_params import BoundArgs
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent import reasoning_passback as rp
 
@@ -337,7 +338,7 @@ def test_command_renders_active_mechanism() -> None:
         }),
     ])
     executor = _make_executor(cfg, thread_id="t-cmd")
-    out = asyncio.run(executor._cmd_provider_reasoning_passback([], ""))
+    out = asyncio.run(executor._cmd_provider_reasoning_passback(BoundArgs()))
     assert "Reasoning passback" in out
     assert "OpenRouter reasoning_details" in out
     assert "active" in out
@@ -347,14 +348,21 @@ def test_command_flags_dropped() -> None:
     cfg = _cfg(provider="mistral", model="magistral-medium",
                openai_api_mode="chat_completions")
     executor = _make_executor(cfg, thread_id="t-drop")
-    out = asyncio.run(executor._cmd_provider_reasoning_passback([], ""))
+    out = asyncio.run(executor._cmd_provider_reasoning_passback(BoundArgs()))
     assert "DROPPED" in out
 
 
 def test_command_rejects_extra_args() -> None:
-    executor = _make_executor(_cfg(), thread_id="t-args")
-    out = asyncio.run(executor._cmd_provider_reasoning_passback(["x"], "x"))
-    assert out.startswith("[Error]")
+    # Rejection moved from the handler to the dispatcher when the command
+    # adopted declared params (#129): the registration is strict zero-arg
+    # and the binder refuses extras before the handler runs.
+    from nymeria.core.command_params import bind_args
+    from nymeria.core.command_service import get_command_service
+
+    definition = get_command_service()._commands["provider.reasoning_passback"]
+    assert definition.params == ()
+    _, error = bind_args(definition.params, ["x"], "x")
+    assert error is not None and "Unexpected argument" in error.problem
 
 
 def test_command_falls_back_to_thread_overview() -> None:
@@ -384,7 +392,7 @@ def test_command_falls_back_to_thread_overview() -> None:
 
     api = SimpleNamespace(agent=SimpleNamespace(), get_thread_overview=_overview)
     executor = _CommandExecutor(api=api, thread_id="t-remote", user_id="u1")
-    out = asyncio.run(executor._cmd_provider_reasoning_passback([], ""))
+    out = asyncio.run(executor._cmd_provider_reasoning_passback(BoundArgs()))
     assert "OpenRouter reasoning_details" in out
     assert "active" in out
 
@@ -394,6 +402,6 @@ def test_command_reports_unavailable_without_resolver_or_overview() -> None:
 
     api = SimpleNamespace(agent=SimpleNamespace())  # no resolver, no overview
     executor = _CommandExecutor(api=api, thread_id="t-void", user_id="u1")
-    out = asyncio.run(executor._cmd_provider_reasoning_passback([], ""))
+    out = asyncio.run(executor._cmd_provider_reasoning_passback(BoundArgs()))
     assert out.startswith("[Error]")
     assert "unavailable" in out.lower()

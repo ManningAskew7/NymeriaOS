@@ -1299,7 +1299,9 @@ def test_settings_get_and_set_delegate_to_config_handlers() -> None:
 
     unknown = _run_command(api, "/settings frobnicate")
     assert unknown.success is False
-    assert "Usage: `/settings [show|get <key>|set <key> <value>]`" in unknown.markdown
+    assert "Unexpected argument `frobnicate`" in unknown.markdown
+    assert "Valid subcommands: get, set, show." in unknown.markdown
+    assert "Usage: `/settings`" in unknown.markdown
 
 
 # ── /provider family ────────────────────────────────────────────────────────
@@ -2781,18 +2783,28 @@ def test_an_alias_that_stands_for_a_multi_token_path_keeps_its_arguments() -> No
 
 
 def test_an_unregistered_subcommand_still_reaches_the_parent_handler() -> None:
-    """Alias expansion must not turn a parent's own grammar into an error.
+    """Alias expansion must not swallow tokens the parent still has to answer.
 
-    Families re-dispatch subcommands they never registered (``/hook detail`` is
-    a synonym of ``show``), and the parent is also what renders the "unknown
-    subcommand" message. Both rely on falling through to the single-token path.
+    An unknown verb behind a family alias has to fall through to the
+    single-token path so the root's strict binder can reject it with the
+    family guidance. A whole-path alias, by contrast, is a true synonym: it
+    resolves to the child definition and its arguments bind to that child's
+    schema.
     """
     service = CommandService()
-    for raw in ("/hooks detail abc", "/hooks frobnicate abc"):
-        parsed = service._parse_for_registry(raw)
-        assert parsed.definition is not None
-        assert parsed.definition.id == "hook"
-        assert parsed.args == [raw.split()[1], "abc"]
+
+    parsed = service._parse_for_registry("/hooks frobnicate abc")
+    assert parsed.definition is not None
+    assert parsed.definition.id == "hook"
+    assert parsed.args == ["frobnicate", "abc"]
+
+    # `/hook detail` is a whole-path alias of `hook show`, reachable through
+    # the `/hooks` plural alias too.
+    for raw in ("/hook detail abc", "/hooks detail abc"):
+        aliased = service._parse_for_registry(raw)
+        assert aliased.definition is not None, raw
+        assert aliased.definition.id == "hook.show", raw
+        assert aliased.args == ["abc"], raw
 
 
 class _ModelCatalogCommandApi(FakeCommandApi):
@@ -3589,14 +3601,21 @@ def test_thread_branch_rejects_bad_from_values_and_unknown_options() -> None:
     assert "Unknown option `--form`" in typo.markdown
     assert not any(name == "branch_thread" for name, *_ in api.calls)
 
-    # An option-looking word AFTER the title still belongs to the title.
-    titled = run(service.execute(_cli_ctx(), "/branch --from 2 a --form b", api=api))
-    assert titled.success is True
+    # The title is a repeatable positional, not a rest tail: --from parses on
+    # EITHER side of the title (the retired hand parser's contract; a rest
+    # tail silently swallowed a trailing "--from 3" into the title), and a
+    # typo'd option errors anywhere, never joining the title.
+    trailing = run(service.execute(_cli_ctx(), "/branch Side quest --from 2", api=api))
+    assert trailing.success is True
     assert (
         "branch_thread",
         ("thread-1",),
-        {"user_id": "alice", "title": "a --form b", "from_message_index": 2},
+        {"user_id": "alice", "title": "Side quest", "from_message_index": 2},
     ) in api.calls
+
+    typo_after = run(service.execute(_cli_ctx(), "/branch Side --form 2", api=api))
+    assert typo_after.success is False
+    assert "Unknown option `--form`" in typo_after.markdown
 
 
 def test_thread_delete_and_compact_accept_the_short_yes_alias() -> None:
@@ -4027,7 +4046,7 @@ def test_help_all_renders_full_table_with_escaped_pipes() -> None:
     assert result.success is True
     assert "| Command | Usage | Description |" in result.markdown
     # Pipe-alternative usage strings must not break the markdown table.
-    assert "list\\|status\\|logs" in result.markdown
+    assert "active\\|pending\\|in_progress" in result.markdown
     # The note join must not double the period ("immediately.. Handled").
     assert "immediately.. Handled" not in result.markdown
     assert "immediately. Handled" in result.markdown
@@ -4157,9 +4176,12 @@ def test_root_usage_errors_render_from_registry() -> None:
     )
     assert "See `/help provider`." in result.markdown
 
+    # /mcp is a strict zero-arg root now, so a stray verb is a binder rejection
+    # carrying the generated (argument-free) usage line.
     result = run(CommandService().execute(_ctx(), "/mcp bogus", api=FakeCommandApi()))
     assert result.success is False
-    assert "Usage: `/mcp [list|status|logs|discover|test|remove|retry]`" in result.markdown
+    assert "Unexpected argument `bogus`" in result.markdown
+    assert "Usage: `/mcp`." in result.markdown
     assert "See `/help mcp`." in result.markdown
 
 
@@ -4444,16 +4466,71 @@ def test_background_verbs_bind_and_reject_extras() -> None:
 
     unknown = run(service.execute(_ctx(), "/background bogus", api=api))
     assert unknown.success is False
-    assert (
-        "Usage: `/background [show|set <model-id>|set-url <base-url>|clear]`"
-        in unknown.markdown
-    )
+    assert "Unexpected argument `bogus`" in unknown.markdown
+    assert "Usage: `/background`." in unknown.markdown
     # The derived subcommand list prints registry path tokens, so the
     # hyphenated verb shows underscored (the pre-existing #131 naming wart;
-    # both spellings dispatch). The generated usage line above is the
-    # hyphenated form users type.
-    assert "Subcommands: clear, set, set_url." in unknown.markdown
+    # both spellings dispatch).
+    assert "Valid subcommands: clear, set, set_url." in unknown.markdown
 
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_flipped_family_roots_declare_no_arguments() -> None:
+    """The nine roots that used to carry a catch-all ``subcommand`` positional.
+
+    Each one now binds strictly with zero arguments, so a root typo is a
+    dispatcher usage error rather than a handler-side re-dispatch. The
+    declaration is what makes the strict-extras guidance fire, so assert it
+    directly alongside the guidance it buys.
+    """
+    service = CommandService()
+    flipped = (
+        "account", "activity", "doctor", "hook", "mcp",
+        "settings", "skills", "triggers", "background",
+    )
+    for name in flipped:
+        info = service.find_command(name)
+        assert info is not None, name
+        assert info.params == [], (name, info.params)
+        assert info.usage == f"/{name}", name
+
+    # End to end: a near-miss verb on a flipped root gets the nearest match
+    # plus the full valid list, which is the whole point of the flip.
+    typo = run(service.execute(_ctx(), "/mcp discovr", api=FakeCommandApi()))
+    assert typo.success is False
+    assert "Unexpected argument `discovr`" in typo.markdown
+    assert "Did you mean `/mcp discover`?" in typo.markdown
+    assert (
+        "Valid subcommands: discover, list, logs, remove, retry, status, test."
+        in typo.markdown
+    )
+
+
+def test_settings_view_alias_survives_the_root_flip() -> None:
+    """``/settings view`` is a whole-path alias of ``settings show`` now."""
+    service = CommandService()
+    resolved = service.find_command("settings view")
+    assert resolved is not None
+    assert resolved.name == "settings show"
+
+    result = _run_command(FakeCommandApi(), "/settings view")
+    assert result.success is True, result.markdown
+    assert "provider: openai" in result.markdown
+    assert "model: gpt-test" in result.markdown
+
+
+def test_background_show_alias_survives_the_root_flip() -> None:
+    """``/background show`` is a whole-path alias of the bare root now."""
+    service = CommandService()
+    resolved = service.find_command("background show")
+    assert resolved is not None
+    assert resolved.name == "background"
+
+    api = FakeCommandApi()
+    shown = run(service.execute(_ctx(), "/background show", api=api))
+    assert shown.success is True, shown.markdown
+    assert "Background model:" in shown.markdown
     assert not [call for call in api.calls if call[0] == "update_settings"]
 
 
@@ -4474,13 +4551,59 @@ def test_sequential_tools_global_without_a_value_shows_generated_usage() -> None
 
 
 def test_sequential_tools_still_accepts_the_default_synonym() -> None:
-    # No declared choices: `default` is an undocumented `inherit` synonym the
-    # handler keeps, so the binder must not narrow the accepted set.
+    # `default` is an undocumented `inherit` synonym the handler keeps, so it
+    # is inside the declared choices even though the label omits it.
     api = FakeCommandApi()
     result = run(CommandService().execute(_ctx(), "/sequential-tools default", api=api))
 
     assert result.success is True, result.markdown
     assert "inherits the global sequential tool execution setting" in result.markdown
+
+
+def test_sequential_tools_rejects_a_value_the_mode_would_discard() -> None:
+    """Only the ``global`` arm consumes the second token.
+
+    Two bare positionals smuggled a verb grammar: ``/sequential-tools on off``
+    bound both words, the thread arm used only the first, and the second was
+    silently dropped while the command reported success. It must be refused
+    instead, and nothing may be written.
+    """
+    service = CommandService()
+    api = FakeCommandApi()
+
+    for command in (
+        "/sequential-tools on off",
+        "/sequential-tools off on",
+        "/sequential-tools inherit on",
+        "/sequential-tools default off",
+    ):
+        result = run(service.execute(_ctx(), command, api=api))
+        assert result.success is False, (command, result.markdown)
+        assert "does not take a value; only `global` does." in result.markdown, command
+        assert (
+            "Usage: `/sequential-tools [on|off|inherit|global] [on|off]`"
+            in result.markdown
+        ), command
+
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+    # The single-token forms and the global arm are untouched.
+    ok_thread = run(service.execute(_ctx(), "/sequential-tools on", api=api))
+    assert ok_thread.success is True, ok_thread.markdown
+    ok_global = run(service.execute(_ctx(), "/sequential-tools global on", api=api))
+    assert ok_global.success is True, ok_global.markdown
+
+
+def test_sequential_tools_mode_is_a_closed_declared_set() -> None:
+    """An unknown mode is a binder rejection now, not a handler usage error."""
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/sequential-tools sideways", api=api))
+
+    assert result.success is False
+    assert "`sideways` is not a valid on|off|inherit|global" in result.markdown
+    assert "Valid: on, off, inherit, default, global." in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
 
 
 def test_prune_rejects_an_unknown_mode_before_touching_the_thread() -> None:
