@@ -188,6 +188,7 @@ def _run(api: FakeCliproxyApi, command: str, *, is_admin: bool = True):
                 actor="user",
                 surface="cli",
                 is_admin=is_admin,
+                supports_forms=True,
             ),
             command,
             api=api,

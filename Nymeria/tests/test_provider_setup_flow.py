@@ -87,6 +87,7 @@ def _run(api: FakeSetupApi, command: str, *, is_admin: bool = True):
                 actor="user",
                 surface="cli",
                 is_admin=is_admin,
+                supports_forms=True,
             ),
             command,
             api=api,

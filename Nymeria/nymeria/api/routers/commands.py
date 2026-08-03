@@ -43,6 +43,7 @@ def create_commands_router(
             surface=request.surface,
             is_admin=user.role == "admin",
             via_act_as=user.via_act_as,
+            supports_forms=request.supports_forms,
         )
         backend = CommandBackendClient.from_context(
             ctx,

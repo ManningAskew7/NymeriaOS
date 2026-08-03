@@ -194,6 +194,7 @@ async def _execute_backend_command(
         actor="user",
         surface="cli",
         user_id=context.user_id,
+        supports_forms=context.supports_forms(),
     )
     payload = _mapping(result)
     markdown = str(payload.get("markdown") or "").strip()

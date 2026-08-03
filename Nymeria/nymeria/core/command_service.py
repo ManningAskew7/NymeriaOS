@@ -110,6 +110,13 @@ class CommandContext:
     surface: CommandSurface | None = None
     is_admin: bool | None = None
     via_act_as: bool = False
+    # Capability flag: the caller renders declarative form payloads
+    # (data["form"]). Only form-rendering clients send it (the Rich CLI);
+    # execute() strips form payloads for everyone else, and the
+    # missing-required bind rescue (generated pickers, backlog #110) only
+    # fires when it is set. Default False so bots, GUIs, agents, and older
+    # clients keep the pre-#110 wire behavior byte-for-byte.
+    supports_forms: bool = False
 
     @property
     def effective_actor(self) -> CommandActor:
@@ -2782,6 +2789,15 @@ class CommandService:
             if isinstance(raw_output, CommandOutput):
                 data = raw_output.data
                 raw_output = raw_output.text
+            if data and "form" in data and not ctx.supports_forms:
+                # Form payloads ship only to clients that declared they can
+                # render them (the measured bare-/provider form is ~20KB, and
+                # every other surface discards it unread). Safe by contract:
+                # the markdown fallback always carries everything the form
+                # does (chain_form_output composes notes into markdown by
+                # construction). State hints stay: the CLI applies them even
+                # where forms are off, and they are small.
+                data = {k: v for k, v in data.items() if k != "form"} or None
             success, markdown = _format_legacy_output(raw_output)
             limit = SKILL_SHOW_MAX_CHARS if definition.id == "skills.show" else 4000
             return CommandResult(

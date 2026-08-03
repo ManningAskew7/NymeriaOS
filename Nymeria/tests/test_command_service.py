@@ -13,12 +13,21 @@ from cli_fixtures import run
 from nymeria.api.routers import todos as todos_router
 from nymeria.api.routers.commands import create_commands_router
 from nymeria.core.accounts import AuthenticatedUser
+from nymeria.core.command_forms import (
+    CommandOutput,
+    command_data,
+    form_option,
+    form_payload,
+    form_tab,
+    radio_field,
+)
 from nymeria.core.command_service import (
     CommandBackendClient,
     CommandContext,
     CommandHttpClient,
     CommandService,
     _CommandBackendUser,
+    _CommandExecutor,
 )
 from nymeria.core.todo_manager import TodoManager
 
@@ -1029,6 +1038,7 @@ def _run_think(api: FakeCommandApi, command: str):
                 actor="user",
                 surface="cli",
                 is_admin=True,
+                supports_forms=True,
             ),
             command,
             api=api,
@@ -1207,6 +1217,7 @@ def test_think_bare_without_thread_offers_only_the_global_tab() -> None:
                 actor="user",
                 surface="cli",
                 is_admin=True,
+                supports_forms=True,
             ),
             "/think",
             api=api,
@@ -1263,6 +1274,7 @@ def _run_command(api: FakeCommandApi, command: str, *, is_admin: bool = True):
                 actor="user",
                 surface="cli",
                 is_admin=is_admin,
+                supports_forms=True,
             ),
             command,
             api=api,
@@ -1428,6 +1440,9 @@ def test_provider_root_gives_non_admins_the_picker_without_cliproxy() -> None:
                 actor="agent",
                 surface="agent",
                 is_admin=None,
+                # The flag controls DELIVERY, the actor controls CONTENT:
+                # an agent-driven form client still gets the agent-shaped tabs.
+                supports_forms=True,
             ),
             "/provider",
             api=api,
@@ -1501,6 +1516,7 @@ def test_provider_action_step_without_cliproxy_target_or_thread() -> None:
                 actor="user",
                 surface="cli",
                 is_admin=True,
+                supports_forms=True,
             ),
             "/provider groq",
             api=api,
@@ -1580,6 +1596,7 @@ def test_provider_action_step_agent_actor_omits_the_secret_flows() -> None:
                 actor="agent",
                 surface="agent",
                 is_admin=None,
+                supports_forms=True,
             ),
             "/provider anthropic",
             api=api,
@@ -1676,6 +1693,7 @@ def test_provider_action_step_blocked_surface_drops_secret_flows() -> None:
                 actor="user",
                 surface="telegram",
                 is_admin=True,
+                supports_forms=True,
             ),
             "/provider anthropic",
             api=api,
@@ -2451,6 +2469,33 @@ def test_commands_api_execute_returns_markdown_shape(monkeypatch: pytest.MonkeyP
     assert api.closed is False
 
 
+def test_commands_api_supports_forms_flag_gates_form_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The request-level capability flag reaches the dispatcher: the same
+    /think call returns its picker only when the caller declares support."""
+    api = FakeCommandApi()
+    client = _client(api=api, monkeypatch=monkeypatch)
+
+    base = {"command": "/think", "thread_id": "thread-1", "surface": "cli"}
+    headers = {"Authorization": "Bearer token"}
+
+    without = client.post("/commands/execute", json=base, headers=headers)
+    assert without.status_code == 200
+    assert without.json()["success"] is True
+    assert without.json()["data"] is None
+
+    with_flag = client.post(
+        "/commands/execute",
+        json={**base, "supports_forms": True},
+        headers=headers,
+    )
+    assert with_flag.status_code == 200
+    body = with_flag.json()
+    assert body["success"] is True
+    assert body["data"] is not None and "form" in body["data"]
+
+
 # ── Slice 03 F10: write-path excepts forward HTTPException, propagate real bugs ──
 #
 # CommandBackendClient.add_todo/complete_todo/delete_todo wrap router helpers
@@ -2823,6 +2868,7 @@ def _cli_ctx(thread_id: str | None = "thread-1") -> CommandContext:
         actor="user",
         surface="cli",
         is_admin=True,
+        supports_forms=True,
     )
 
 
@@ -2884,6 +2930,75 @@ def test_model_set_thread_scope_returns_state_hint() -> None:
     global_result = run(service.execute(_cli_ctx(), "/model gpt-next", api=api))
     assert global_result.success is True
     assert global_result.data is None
+
+
+# ── supports_forms capability gating (backlog #110) ──────────────────────────
+
+
+def _no_forms_ctx() -> CommandContext:
+    """A CLI-shaped caller that did NOT declare form support."""
+    return CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+
+def test_form_payload_stripped_without_supports_forms() -> None:
+    """A caller without the capability flag gets the markdown fallback only:
+    the form payload is stripped at the dispatcher choke point."""
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    result = run(service.execute(_no_forms_ctx(), "/model", api=api))
+
+    assert result.success is True
+    assert "gpt-test" in result.markdown  # fallback intact
+    assert result.data is None
+
+
+def _register_formstate_synthetic(
+    service: CommandService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service.register(
+        "zzformstate",
+        description="synthetic form+state command",
+        category="Test",
+        params=(),
+    )
+
+    async def _cmd_zzformstate(self, bound):  # noqa: ANN001, ANN202
+        form = form_payload(
+            "Synthetic",
+            [form_tab("Pick", [radio_field("value", [form_option("a")])])],
+            submit_command="zzformstate {value}",
+        )
+        return CommandOutput(
+            "[Success]: synthetic",
+            data=command_data(form=form, state={"model": "kept"}),
+        )
+
+    monkeypatch.setattr(
+        _CommandExecutor, "_cmd_zzformstate", _cmd_zzformstate, raising=False
+    )
+
+
+def test_form_strip_keeps_state_hints(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stripping is surgical: data.form goes, data.state survives (the CLI
+    applies state hints even where forms are off, and they are small)."""
+    service = CommandService()
+    _register_formstate_synthetic(service, monkeypatch)
+
+    stripped = run(service.execute(_no_forms_ctx(), "/zzformstate", api=object()))
+    assert stripped.success is True
+    assert stripped.data == {"state": {"model": "kept"}}
+
+    kept = run(service.execute(_cli_ctx(), "/zzformstate", api=object()))
+    assert kept.success is True
+    assert kept.data is not None and "form" in kept.data
+    assert kept.data["state"] == {"model": "kept"}
 
 
 # ── LLM family declared-argument adoption (backlog #129 wave 1b) ─────────────
