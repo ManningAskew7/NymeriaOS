@@ -690,8 +690,8 @@ class GeneratedCommandsCog(commands.Cog):
         description="Show or change memory character limits",
     )
     @app_commands.describe(
-        scope="Which limit to change (omit to show both)",
         value="Character limit, or `inherit` to drop a thread override",
+        scope="Which limit to change (omit both to show them)",
     )
     @app_commands.choices(
         scope=[
@@ -702,21 +702,15 @@ class GeneratedCommandsCog(commands.Cog):
     async def cmd_memory_limit(
         self,
         interaction: discord.Interaction,
-        scope: Optional[str] = None,
         value: Optional[str] = None,
+        scope: Optional[str] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
-        if value is not None and scope is None:
-            await self.bot._send_interaction_text(
-                interaction,
-                "Error: `value` also needs `scope`. Give both, or neither.",
-            )
-            return
         parts: list[str] = []
-        if scope is not None:
-            parts.append(shlex.quote(scope))
         if value is not None:
             parts.append(shlex.quote(value))
+        if scope is not None:
+            parts.append(shlex.quote(scope))
         await self.bot._send_backend_command(
             interaction,
             "memory limit",
@@ -928,8 +922,8 @@ class GeneratedCommandsCog(commands.Cog):
         description="Show or set sequential (ordered, one-at-a-time) tool execution",
     )
     @app_commands.describe(
-        mode="Thread override, `inherit`, or the global scope",
-        value="Value for the global scope",
+        mode="Turn it on/off, or `inherit` to drop the override",
+        scope="Write the global default or this thread's override",
     )
     @app_commands.choices(
         mode=[
@@ -937,27 +931,24 @@ class GeneratedCommandsCog(commands.Cog):
             app_commands.Choice(name="off", value="off"),
             app_commands.Choice(name="inherit", value="inherit"),
             app_commands.Choice(name="default", value="default"),
+        ],
+        scope=[
             app_commands.Choice(name="global", value="global"),
+            app_commands.Choice(name="thread", value="thread"),
         ],
     )
     async def cmd_sequential_tools(
         self,
         interaction: discord.Interaction,
         mode: Optional[str] = None,
-        value: Optional[str] = None,
+        scope: Optional[str] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
-        if value is not None and mode is None:
-            await self.bot._send_interaction_text(
-                interaction,
-                "Error: `value` also needs `mode`. Give both, or neither.",
-            )
-            return
         parts: list[str] = []
         if mode is not None:
             parts.append(shlex.quote(mode))
-        if value is not None:
-            parts.append(shlex.quote(value))
+        if scope is not None:
+            parts.append(shlex.quote(scope))
         await self.bot._send_backend_command(
             interaction,
             "sequential-tools",
@@ -1018,22 +1009,25 @@ class GeneratedCommandsCog(commands.Cog):
     )
     @app_commands.describe(
         name="Installed skill name, or `all` for every active skill",
-        global_="Apply to every thread instead of only this one",
+        scope="Write this thread's skill set (default) or the global one",
     )
-    @app_commands.rename(
-        global_="global",
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="global", value="global"),
+            app_commands.Choice(name="thread", value="thread"),
+        ],
     )
     async def cmd_skills_disable(
         self,
         interaction: discord.Interaction,
         name: str,
-        global_: Optional[bool] = None,
+        scope: Optional[str] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         parts: list[str] = []
-        if global_ is True:
-            parts.append("--global")
         parts.append(shlex.quote(name))
+        if scope is not None:
+            parts.append(shlex.quote(scope))
         await self.bot._send_backend_command(
             interaction,
             "skills disable",
@@ -1057,22 +1051,25 @@ class GeneratedCommandsCog(commands.Cog):
     )
     @app_commands.describe(
         name="Installed skill name",
-        global_="Apply to every thread instead of only this one",
+        scope="Write this thread's skill set (default) or the global one",
     )
-    @app_commands.rename(
-        global_="global",
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="global", value="global"),
+            app_commands.Choice(name="thread", value="thread"),
+        ],
     )
     async def cmd_skills_enable(
         self,
         interaction: discord.Interaction,
         name: str,
-        global_: Optional[bool] = None,
+        scope: Optional[str] = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         parts: list[str] = []
-        if global_ is True:
-            parts.append("--global")
         parts.append(shlex.quote(name))
+        if scope is not None:
+            parts.append(shlex.quote(scope))
         await self.bot._send_backend_command(
             interaction,
             "skills enable",

@@ -243,7 +243,7 @@ def test_list_table_and_filters(manager: HookManager) -> None:
     assert "B off" not in enabled.markdown
     assert "A on" in enabled.markdown
 
-    glob = _run("/hook list --global")
+    glob = _run("/hook list global")
     assert "C global" in glob.markdown
     assert "A on" not in glob.markdown
 
@@ -252,6 +252,70 @@ def test_list_table_and_filters(manager: HookManager) -> None:
     assert "A on" in this_thread.markdown
     assert "C global" in this_thread.markdown
     assert "D other" not in this_thread.markdown
+
+    # The `thread` scope token is the same question as `--thread current`.
+    scoped_thread = _run("/hook list thread")
+    assert "A on" in scoped_thread.markdown
+    assert "C global" in scoped_thread.markdown
+    assert "D other" not in scoped_thread.markdown
+
+
+def test_list_scope_token_and_thread_selector_compose(manager: HookManager) -> None:
+    """Two different questions: WHICH KIND of hook, and WHICH thread (#131 B).
+
+    The scope token replaced the `--global` flag; `--thread` still selects a
+    thread by id. Composed, they intersect, and the binder's option guard must
+    keep `--thread global` binding the OPTION rather than popping a scope.
+    """
+    manager.add_hook("alice", name="A one", event="prompt_submit", text="a",
+                     scope="thread", thread_id="thread-1", enabled=True)
+    manager.add_hook("alice", name="B nine", event="prompt_submit", text="b",
+                     scope="thread", thread_id="thread-9", enabled=True)
+    manager.add_hook("alice", name="C global", event="prompt_submit", text="c",
+                     scope="global")
+
+    other = _run("/hook list --thread thread-9")
+    assert "B nine" in other.markdown
+    assert "A one" not in other.markdown
+
+    composed = _run("/hook list --thread thread-9 global")
+    assert "C global" in composed.markdown
+    assert "B nine" not in composed.markdown
+    assert "A one" not in composed.markdown
+
+    # `global` here is the OPTION's value, not a trailing scope word, so it
+    # selects a (nonexistent) thread id rather than filtering to global hooks.
+    literal = _run("/hook list --thread global")
+    assert "C global" in literal.markdown
+    assert "A one" not in literal.markdown
+    assert "B nine" not in literal.markdown
+
+
+def test_list_global_flag_is_retired(manager: HookManager) -> None:
+    """`--global` is gone, not aliased (#131 wave B), and says so."""
+    manager.add_hook("alice", name="C global", event="prompt_submit", text="c",
+                     scope="global")
+
+    result = _run("/hook list --global")
+    assert result.success is False
+    assert "Unknown option `--global`" in result.markdown
+    assert "[global|thread]" in result.markdown
+
+
+def test_list_thread_scope_without_a_thread_refuses(manager: HookManager) -> None:
+    """Asking for "this thread's hooks" with no thread must not list ALL.
+
+    The old `--thread current` path resolved to an empty id and quietly fell
+    through to the unfiltered list, which answers a question nobody asked.
+    """
+    manager.add_hook("alice", name="C global", event="prompt_submit", text="c",
+                     scope="global")
+
+    for command in ("/hook list thread", "/hook list --thread current"):
+        result = _run(command, thread_id=None)
+        assert result.success is False, (command, result.markdown)
+        assert "requires an active thread" in result.markdown
+        assert "C global" not in result.markdown
 
 
 def test_list_empty(manager: HookManager) -> None:

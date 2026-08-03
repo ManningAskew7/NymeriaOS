@@ -304,7 +304,7 @@ def test_skills_disable_global_scope_writes_profile(
                 surface="cli",
                 is_admin=True,
             ),
-            "/skills disable --global skill-creator",
+            "/skills disable skill-creator global",
             api=_SkillCommandFakeApi(),
         )
     )
@@ -479,9 +479,15 @@ def test_skills_install_rejects_a_second_name(
     assert fetcher.fetch_calls == []
 
 
-def test_skills_enable_accepts_the_global_flag_after_the_name(
+def test_skills_enable_writes_the_profile_at_the_global_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The trailing scope token replaced `--global` (#131 wave B).
+
+    The write target is the difference that matters: `global` writes the
+    profile overlay and touches no thread config, and the retired flag is a
+    hard error rather than a silently ignored word.
+    """
     profile_manager = _FakeProfileManager()
     monkeypatch.setattr(
         agent_module,
@@ -494,12 +500,55 @@ def test_skills_enable_accepts_the_global_flag_after_the_name(
 
     result = run(
         CommandService().execute(
-            _cli_ctx(), "/skills enable skill-creator --global", api=api
+            _cli_ctx(), "/skills enable skill-creator global", api=api
         )
     )
 
     assert result.success is True, result.markdown
     assert profile_manager.profile.enabled_global_skills == ["skill-creator"]
+    assert api.updates == []
+
+    retired = run(
+        CommandService().execute(
+            _cli_ctx(), "/skills enable skill-creator --global", api=api
+        )
+    )
+    assert retired.success is False
+    assert "Unknown option `--global`" in retired.markdown
+    assert "Usage: `/skills enable <name> [global|thread]`" in retired.markdown
+
+
+def test_skills_enable_thread_scope_is_the_default_and_needs_a_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No scope word means this thread, and threadless means refuse.
+
+    A silent fallback to the global overlay would make a threadless surface
+    change every conversation's skill set from a command that reads local.
+    """
+    profile_manager = _FakeProfileManager()
+    monkeypatch.setattr(
+        agent_module,
+        "get_current_agent",
+        lambda: _make_agent(
+            skill_manager=_FakeSkillManager(), profile_manager=profile_manager
+        ),
+    )
+    api = _SkillCommandFakeApi()
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice", actor="user", surface="cli", is_admin=True
+            ),
+            "/skills enable skill-creator",
+            api=api,
+        )
+    )
+
+    assert result.success is False
+    assert "requires an active thread" in result.markdown
+    assert profile_manager.profile.enabled_global_skills == []
     assert api.updates == []
 
 

@@ -107,11 +107,10 @@ ROOTLESS_FAMILY_EXCEPTIONS: dict[str, str] = {
 _ROOTLESS_GRANDFATHERED: frozenset[str] = frozenset()
 
 # Scope grammar: the canon is a trailing global|thread token declared as
-# the `scope` param kind. These ids carry the pre-canon --global flag until
-# wave B migrates them.
-_SCOPE_FLAG_GRANDFATHERED: frozenset[str] = frozenset(
-    {"skills.enable", "skills.disable", "hook.list"}
-)
+# the `scope` param kind. EMPTY since wave B migrated skills.enable,
+# skills.disable and hook.list off the --global flag; an entry here again
+# means a new command shipped with the retired grammar.
+_SCOPE_FLAG_GRANDFATHERED: frozenset[str] = frozenset()
 # Recorded permanent exceptions: a rest-primary command cannot declare the
 # scope kind (parser rule), and skills.install's scope is a different axis.
 SCOPE_OPTION_EXCEPTIONS: dict[str, str] = {
@@ -132,6 +131,7 @@ def validate_command_naming(
     *,
     grandfathered: frozenset[str] = _GRANDFATHERED_LEAVES,
     rootless_grandfathered: frozenset[str] = _ROOTLESS_GRANDFATHERED,
+    scope_flag_grandfathered: frozenset[str] = _SCOPE_FLAG_GRANDFATHERED,
 ) -> None:
     """Raise ``ValueError`` on the first canon violation in ``commands``.
 
@@ -151,6 +151,7 @@ def validate_command_naming(
 
     roots_with_subs: set[str] = set()
     roots_with_command: set[str] = set()
+    still_flagged: set[str] = set()
     for command_id, cmd in commands.items():
         path: tuple[str, ...] = cmd.path
         if len(path) == 1:
@@ -174,11 +175,12 @@ def validate_command_naming(
             kind = getattr(param, "kind", "")
             name = getattr(param, "name", "")
             if kind == "flag" and name == "global":
-                if command_id not in _SCOPE_FLAG_GRANDFATHERED:
+                if command_id not in scope_flag_grandfathered:
                     raise ValueError(
                         f"Command {command_id}: --global flags are retired; "
                         "declare a trailing scope param (kind=\"scope\")."
                     )
+                still_flagged.add(command_id)
             if kind == "option" and name == "scope":
                 if command_id not in SCOPE_OPTION_EXCEPTIONS:
                     raise ValueError(
@@ -186,6 +188,15 @@ def validate_command_naming(
                         "outside the recorded exceptions; declare a trailing "
                         "scope param (kind=\"scope\")."
                     )
+
+    # Same shrink ratchet the leaf set has: a migrated command must retire its
+    # row, so the set can never outlive the flags it excuses.
+    stale_flags = scope_flag_grandfathered - still_flagged
+    if stale_flags:
+        raise ValueError(
+            "Grandfathered --global flags no longer declared (remove the "
+            f"rows): {sorted(stale_flags)}"
+        )
 
     rootless = roots_with_subs - roots_with_command
     unaccounted = (

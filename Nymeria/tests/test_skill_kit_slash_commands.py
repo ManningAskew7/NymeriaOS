@@ -477,7 +477,9 @@ def test_skills_disable_all_is_the_canonical_spelling_of_the_old_off_all(
     """The depth-3 `/skills off all` folded into a value of `skills disable`.
 
     Both spellings must reach the same body, and the thread-scoped `all` must
-    refuse the global flag rather than silently ignoring it.
+    refuse the global SCOPE rather than silently ignoring it. The refusal
+    survived the #131 wave B scope-token migration: only its spelling moved,
+    and the retired `--global` flag is now an error before the handler runs.
     """
     first = _skill(tmp_path, "first-skill")
     agent = _agent(tmp_path, [first])
@@ -502,11 +504,20 @@ def test_skills_disable_all_is_the_canonical_spelling_of_the_old_off_all(
 
     refused = run(
         CommandService().execute(
-            _ctx(), "/skills disable --global all", api=SimpleNamespace(agent=agent)
+            _ctx(), "/skills disable all global", api=SimpleNamespace(agent=agent)
         )
     )
     assert refused.success is False
-    assert "drop --global" in refused.markdown
+    assert "drop the `global` scope" in refused.markdown
+    assert calls == ["first-skill"]
+
+    retired_flag = run(
+        CommandService().execute(
+            _ctx(), "/skills disable --global all", api=SimpleNamespace(agent=agent)
+        )
+    )
+    assert retired_flag.success is False
+    assert "Unknown option `--global`" in retired_flag.markdown
     assert calls == ["first-skill"]
 
 

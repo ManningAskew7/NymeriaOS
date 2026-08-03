@@ -88,10 +88,11 @@ class HooksCog(commands.Cog):
         parts: list[str] = []
         if scope and scope.value == "thread":
             parts += ["--thread", "current"]
-        elif scope and scope.value == "global":
-            parts.append("--global")
         if enabled_only:
             parts.append("--enabled-only")
+        if scope and scope.value == "global":
+            # Wave B (#131): the trailing scope TOKEN replaced --global.
+            parts.append("global")
         await self.bot._send_backend_command(
             interaction, "hook list", args=" ".join(parts)
         )

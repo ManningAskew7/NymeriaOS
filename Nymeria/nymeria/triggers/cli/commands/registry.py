@@ -273,23 +273,31 @@ class CommandRegistry:
         *,
         include_hidden: bool = False,
     ) -> list[CommandPaletteEntry]:
-        """Return command-palette entries for visible commands."""
+        """Return command-palette entries for visible commands.
+
+        Walks the whole tree, not just roots and their children: a depth-3
+        command (``/account tokens issue``) is a real spelling the palette
+        must teach, and advertising only its parent is how the palette came to
+        promise ``/account tokens`` while dispatching something else.
+        """
 
         entries: list[CommandPaletteEntry] = []
-        for command in self._commands.values():
+
+        def walk(command: Command, path: tuple[str, ...]) -> None:
             if command.hidden and not include_hidden:
-                continue
-            entries.append(_palette_entry(command, (command.name,)))
-            for subcommand in command.subcommands.values():
-                if subcommand.hidden and not include_hidden:
-                    continue
-                entries.append(
-                    _palette_entry(
-                        subcommand,
-                        (command.name, subcommand.name),
-                        parent=command.name,
-                    )
+                return
+            entries.append(
+                _palette_entry(
+                    command,
+                    path,
+                    parent=" ".join(path[:-1]) or None,
                 )
+            )
+            for subcommand in command.subcommands.values():
+                walk(subcommand, (*path, subcommand.name))
+
+        for command in self._commands.values():
+            walk(command, (command.name,))
         return sorted(entries, key=lambda item: item.text)
 
     def _merge_aliases(self, command: Command, aliases: Iterable[str]) -> None:
@@ -588,44 +596,45 @@ def _find_subcommand(command: Command, token: str) -> Command | None:
 
 
 def _completion_items_for_command(command: Command) -> list[CommandCompletion]:
-    items = [
-        CommandCompletion(
-            text=f"/{command.name}",
-            description=command.description,
-            command_path=(command.name,),
-            hidden=command.hidden,
-        )
-    ]
-    for alias in command.aliases:
-        items.append(
-            CommandCompletion(
-                text=_display_alias(alias),
-                description=command.description,
-                command_path=(command.name,),
-                hidden=command.hidden,
-                alias=True,
-            )
-        )
+    """Completion candidates for a command and every descendant.
 
-    for subcommand in command.subcommands.values():
+    Recursive for the same reason the palette is: depth-3 leaves are typeable
+    spellings, and a completion list that stops at depth 2 teaches the parent
+    as if it were the whole family.
+    """
+    items: list[CommandCompletion] = []
+
+    def walk(node: Command, path: tuple[str, ...]) -> None:
+        prefix = " ".join(path)
         items.append(
             CommandCompletion(
-                text=f"/{command.name} {subcommand.name}",
-                description=subcommand.description,
-                command_path=(command.name, subcommand.name),
-                hidden=subcommand.hidden,
+                text=f"/{prefix}",
+                description=node.description,
+                command_path=path,
+                hidden=node.hidden,
             )
         )
-        for alias in subcommand.aliases:
+        for alias in node.aliases:
+            # A root alias is a whole command spelling; a subcommand alias
+            # replaces the leaf under the same parent.
+            text = (
+                _display_alias(alias)
+                if len(path) == 1
+                else _subcommand_alias_text(alias, path[:-1])
+            )
             items.append(
                 CommandCompletion(
-                    text=f"/{command.name} {_normalize_token(alias)}",
-                    description=subcommand.description,
-                    command_path=(command.name, subcommand.name),
-                    hidden=subcommand.hidden,
+                    text=text,
+                    description=node.description,
+                    command_path=path,
+                    hidden=node.hidden,
                     alias=True,
                 )
             )
+        for subcommand in node.subcommands.values():
+            walk(subcommand, (*path, subcommand.name))
+
+    walk(command, (command.name,))
     return items
 
 
@@ -646,6 +655,21 @@ def _palette_entry(
         category=command.category,
         command_path=path,
     )
+
+
+def _subcommand_alias_text(alias: str, parent_path: tuple[str, ...]) -> str:
+    """Completion text for a SUBCOMMAND alias, parent prefix counted once.
+
+    Backend subcommand aliases arrive as WHOLE paths ("provider passback"),
+    because that is how the backend registers them, so joining the parent onto
+    one verbatim produced "/provider provider passback": a suggestion that
+    resolves to nothing on either side.
+    """
+    normalized = _normalize_token(alias)
+    prefix = " ".join(parent_path)
+    if prefix and normalized.startswith(f"{prefix} "):
+        normalized = normalized[len(prefix) + 1 :]
+    return f"/{prefix} {normalized}".strip() if prefix else f"/{normalized}"
 
 
 def _display_alias(alias: str) -> str:
