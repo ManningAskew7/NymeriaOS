@@ -1910,13 +1910,15 @@ def test_provider_switch_agent_context_keeps_both_scopes() -> None:
 def test_provider_switch_rejects_bad_scope_and_extra_args() -> None:
     api = FakeCommandApi()
 
+    # A word in the scope slot is not a scope: it is an argument the command
+    # has no room for, and the dispatcher says so before the handler runs.
     bad_scope = _run_command(api, "/provider switch anthropic sideways")
     assert bad_scope.success is False
-    assert "scope must be 'global' or 'thread'" in bad_scope.markdown
+    assert "Unexpected argument `sideways`" in bad_scope.markdown
 
     extra = _run_command(api, "/provider switch anthropic thread now")
     assert extra.success is False
-    assert "Usage: /provider switch <provider> [global|thread]" in extra.markdown
+    assert "Usage: `/provider switch <provider> [global|thread]`" in extra.markdown
 
     assert not [
         call
@@ -2591,8 +2593,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 140
-    assert sum(cmd.executable for cmd in service._commands.values()) == 123
+    # (145 since the /fallback chain verbs became registered children in the
+    # backlog #129 adoption; they were parsed by the parent handler before.)
+    assert len(service._commands) == 145
+    assert sum(cmd.executable for cmd in service._commands.values()) == 128
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -2653,22 +2657,29 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     assert "telegram" not in hook_create.surfaces
     assert by_name["hook delete"].danger_level == "dangerous"
 
-    # Fallback consent family (Phase 3): the five children are registered
-    # paths, so longest-prefix parsing dispatches "/fallback <sub>" straight
-    # to the _cmd_fallback_<sub> handlers (the parent keeps only the chain
-    # grammar), and the human-only ones carry agent_allowed=False, enforced
-    # pre-dispatch (the agent must not resolve or revert its own consent).
+    # Fallback family: every verb is a registered path, so longest-prefix
+    # parsing dispatches "/fallback <sub>" straight to the _cmd_fallback_<sub>
+    # handlers (the parent only lists), and the human-only consent ones carry
+    # agent_allowed=False, enforced pre-dispatch (the agent must not resolve or
+    # revert its own consent). The chain verbs stay agent-allowed, as they were
+    # when the parent handler parsed them.
     assert by_name["fallback"].agent_allowed is True
     assert by_name["fallback status"].agent_allowed is True
     for sub in ("revert", "approvals", "approve", "deny"):
         entry = by_name[f"fallback {sub}"]
         assert entry.agent_allowed is False, sub
         assert entry.category == "LLM", sub
+    for sub in ("list", "add", "remove", "set", "clear"):
+        entry = by_name[f"fallback {sub}"]
+        assert entry.agent_allowed is True, sub
+        assert entry.category == "LLM", sub
     assert by_name["fallback approve"].mutates_state is True
     assert by_name["fallback deny"].mutates_state is True
     assert by_name["fallback revert"].mutates_state is True
+    assert by_name["fallback remove"].aliases == (("fallback", "rm"),)
     assert service._subcommands_for_path(("fallback",)) == [
-        "approvals", "approve", "deny", "revert", "status",
+        "add", "approvals", "approve", "clear", "deny", "list", "remove",
+        "revert", "set", "status",
     ]
 
     # The catalog registers onto whichever service instance is passed in.
@@ -2846,6 +2857,284 @@ def test_model_set_thread_scope_returns_state_hint() -> None:
     global_result = run(service.execute(_cli_ctx(), "/model gpt-next", api=api))
     assert global_result.success is True
     assert global_result.data is None
+
+
+# ── LLM family declared-argument adoption (backlog #129 wave 1b) ─────────────
+
+
+class _FallbackChainCommandApi(FakeCommandApi):
+    """A settings fake with a populated fallback chain."""
+
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        data = await super().get_settings(user_id=user_id)
+        data["llm_fallback_models"] = "a-model,b-model"
+        return data
+
+
+def test_model_denies_a_model_the_provider_does_not_list() -> None:
+    """The measured bug: a typo used to be written verbatim.
+
+    Nothing rejected it, so the mistake only surfaced as a provider error on
+    the next turn, in a thread whose configured model was now junk.
+    """
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/model gpt-tset", api=api))
+
+    assert result.success is False
+    assert "Unknown model: gpt-tset" in result.markdown
+    assert "Did you mean: gpt-test" in result.markdown
+    assert "Use --force to set it anyway." in result.markdown
+    assert not [
+        call for call in api.calls if call[0] in ("update_settings", "update_thread_config")
+    ]
+
+    # An off-list name with no near-match still names the escape hatch.
+    lonely = run(service.execute(_cli_ctx(), "/model zzzzzzzz", api=api))
+    assert lonely.success is False
+    assert "Did you mean" not in lonely.markdown
+    assert "Use --force to set it anyway." in lonely.markdown
+
+
+def test_model_force_writes_an_unlisted_model() -> None:
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    result = run(
+        service.execute(_cli_ctx(), "/model my-local-build --force global", api=api)
+    )
+
+    assert result.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_model": "my-local-build"},
+    ) in api.calls
+
+    # The flag reads the same before the scope word or in place of it.
+    threaded = run(
+        service.execute(_cli_ctx(), "/model my-local-build --force thread", api=api)
+    )
+    assert threaded.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "llm_config": {"model": "my-local-build"}},
+    ) in api.calls
+
+
+def test_model_writes_unlisted_names_when_the_catalog_is_unavailable() -> None:
+    """The guard degrades: an unlistable provider must not block a change.
+
+    Same invocation, two backends: the one that can list models denies it,
+    the one that cannot writes it.
+    """
+    service = CommandService()
+
+    listless = FakeCommandApi()  # no list_available_models at all
+    written = run(service.execute(_cli_ctx(), "/model my-local-build", api=listless))
+    assert written.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_model": "my-local-build"},
+    ) in listless.calls
+
+    listing = _ModelCatalogCommandApi()
+    denied = run(service.execute(_cli_ctx(), "/model my-local-build", api=listing))
+    assert denied.success is False
+    assert not [call for call in listing.calls if call[0] == "update_settings"]
+
+
+def test_model_scope_word_alone_shows_that_scope() -> None:
+    """``/model global`` used to set the model to the literal "global"."""
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/model global", api=api))
+
+    assert result.success is True
+    assert "global: gpt-test" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+    # With a thread active the picker defaults to thread scope; naming a
+    # scope retargets it instead of being swallowed as a model name.
+    assert (result.data or {})["form"]["submit"]["command"] == "model {model} global"
+
+
+def test_think_rejects_off_ladder_values_and_a_bare_scope() -> None:
+    api = FakeCommandApi()
+
+    off_ladder = _run_think(api, "/think sideways")
+    assert off_ladder.success is False
+    assert "`sideways` is not a valid mode" in off_ladder.markdown
+    assert "Valid: off, on, low, medium, high, xhigh, max" in off_ladder.markdown
+
+    bare_scope = _run_think(api, "/think global")
+    assert bare_scope.success is False
+    assert "Name a level to write that scope." in bare_scope.markdown
+
+    extra = _run_think(api, "/think high now")
+    assert extra.success is False
+    assert "Unexpected argument `now`" in extra.markdown
+
+    assert not [call for call in api.calls if call[0].startswith("update_")]
+
+
+def test_llm_zero_argument_commands_reject_extras() -> None:
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    for command in (
+        "/models",
+        "/provider list",
+        "/fallback",
+        "/fallback list",
+        "/fallback clear",
+        "/fallback status",
+    ):
+        ok = run(service.execute(_cli_ctx(), command, api=api))
+        assert ok.success is True, command
+
+        rejected = run(service.execute(_cli_ctx(), f"{command} bogus", api=api))
+        assert rejected.success is False, command
+        assert "Unexpected argument `bogus`" in rejected.markdown, command
+
+    # reasoning-passback needs live LLM state, so only its binding is checked.
+    passback = run(
+        service.execute(_cli_ctx(), "/provider reasoning-passback bogus", api=api)
+    )
+    assert passback.success is False
+    assert "Unexpected argument `bogus`" in passback.markdown
+
+
+def test_fallback_add_positions_the_model_and_validates_the_option() -> None:
+    service = CommandService()
+
+    equals_form = _FallbackChainCommandApi()
+    inserted = run(
+        service.execute(
+            _cli_ctx(), "/fallback add c-model --position=2", api=equals_form
+        )
+    )
+    assert inserted.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_fallback_models": "a-model,c-model,b-model"},
+    ) in equals_form.calls
+
+    spaced_form = _FallbackChainCommandApi()
+    appended = run(
+        service.execute(_cli_ctx(), "/fallback add c-model --position 3", api=spaced_form)
+    )
+    assert appended.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_fallback_models": "a-model,b-model,c-model"},
+    ) in spaced_form.calls
+
+    api = _FallbackChainCommandApi()
+    not_an_int = run(
+        service.execute(_cli_ctx(), "/fallback add c-model --position x", api=api)
+    )
+    assert not_an_int.success is False
+    assert "--position must be an integer, got `x`" in not_an_int.markdown
+
+    # Semantic validation the dispatcher cannot do stays in the handler.
+    too_low = run(
+        service.execute(_cli_ctx(), "/fallback add c-model --position 0", api=api)
+    )
+    assert too_low.success is False
+    assert "Position must be 1 or greater." in too_low.markdown
+
+    typo = run(
+        service.execute(_cli_ctx(), "/fallback add c-model --postion 2", api=api)
+    )
+    assert typo.success is False
+    assert "Unknown option `--postion`" in typo.markdown
+
+    missing = run(service.execute(_cli_ctx(), "/fallback add", api=api))
+    assert missing.success is False
+    assert "Missing required argument: model-id" in missing.markdown
+
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_fallback_remove_and_set_rewrite_the_chain() -> None:
+    service = CommandService()
+
+    aliased = _FallbackChainCommandApi()
+    removed = run(service.execute(_cli_ctx(), "/fallback rm a-model", api=aliased))
+    assert removed.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_fallback_models": "b-model"},
+    ) in aliased.calls
+
+    api = _FallbackChainCommandApi()
+    absent = run(service.execute(_cli_ctx(), "/fallback remove z-model", api=api))
+    assert absent.success is False
+    assert "Fallback model is not configured: z-model" in absent.markdown
+
+    # set takes the whole tail, deduping while keeping first-seen order.
+    replaced = _FallbackChainCommandApi()
+    chain = run(
+        service.execute(_cli_ctx(), "/fallback set x-model y-model x-model", api=replaced)
+    )
+    assert chain.success is True
+    assert "Fallback chain set: x-model -> y-model" in chain.markdown
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_fallback_models": "x-model,y-model"},
+    ) in replaced.calls
+
+    empty = run(service.execute(_cli_ctx(), "/fallback set", api=api))
+    assert empty.success is False
+    assert "Missing required argument: model-id" in empty.markdown
+
+
+def test_provider_set_takes_repeated_pairs_and_never_echoes_a_bare_secret() -> None:
+    api = FakeCommandApi()
+
+    applied = _run_command(
+        api, "/provider set anthropic api_key=sk-a direct_api_key=sk-b"
+    )
+    assert applied.success is True
+    assert (
+        "update_settings",
+        (),
+        {
+            "user_id": "alice",
+            "anthropic_api_key": "sk-a",
+            "anthropic_direct_api_key": "sk-b",
+        },
+    ) in api.calls
+
+    # A pasted bare secret is a usage error whose copy must not repeat it.
+    leaked = _run_command(api, "/provider set anthropic sk-super-secret")
+    assert leaked.success is False
+    assert "sk-super-secret" not in leaked.markdown
+    assert "not echoed in case it is a secret" in leaked.markdown
+
+    missing = _run_command(api, "/provider set anthropic")
+    assert missing.success is False
+    assert "Missing required argument: key=value" in missing.markdown
+    assert len([call for call in api.calls if call[0] == "update_settings"]) == 1
+
+
+def test_provider_test_rejects_a_second_provider_token() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider test openai groq")
+
+    assert result.success is False
+    assert "Unexpected argument `groq`" in result.markdown
+    assert "Usage: `/provider test [provider]`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "test_llm_provider_config"]
 
 
 # ── Context-domain commands (/usage, /artifacts) migrated from the CLI ────────

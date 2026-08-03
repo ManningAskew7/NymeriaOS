@@ -2861,10 +2861,36 @@ class CommandService:
                     problem = (
                         bind_error.problem if bind_error else "Invalid arguments."
                     )
+                    # A stray word on a family root is usually a mistyped
+                    # subcommand: layer the Tier 1 guidance (did-you-mean,
+                    # valid list) on top of the strict-extras error so the
+                    # binder's strictness never reads as less helpful than
+                    # the old hand parsers.
+                    hint = ""
+                    if (
+                        bind_error is not None
+                        and bind_error.unexpected
+                        and len(definition.path) == 1
+                    ):
+                        subs = self._prefix_subcommands(definition.path[0])
+                        if subs:
+                            suggestions = difflib.get_close_matches(
+                                _normalize_token(bind_error.unexpected),
+                                subs,
+                                n=2,
+                                cutoff=0.6,
+                            )
+                            hint = self._did_you_mean(
+                                suggestions, prefix=f"/{definition.path[0]} "
+                            )
+                            hint += (
+                                " Valid subcommands: " + ", ".join(subs) + "."
+                            )
                     return CommandResult(
                         False,
                         (
-                            f"**Error:** {problem} Usage: `{definition.usage}`. "
+                            f"**Error:** {problem}{hint} "
+                            f"Usage: `{definition.usage}`. "
                             f"See `/help {definition.name}`."
                         ),
                         command_label,
@@ -5044,8 +5070,13 @@ class _CommandExecutor(
 
     # ── Model / thinking ──────────────────────────────────────────────────
 
-    async def _cmd_model(self, args: list[str], rest: str) -> str | CommandOutput:
-        if not args:
+    async def _cmd_model(self, bound: BoundArgs) -> str | CommandOutput:
+        name = str(bound.get("name") or "").strip()
+        scope = str(bound.get("scope") or "")
+        if not name:
+            # Bare /model, and /model <scope>: both show. Before the trailing
+            # scope token was declared, "/model global" set the model to the
+            # literal string "global".
             settings = await self.api.get_settings()
             tc = await self.api.get_thread_config(self.thread_id) if self.thread_id else None
             llm_cfg = (tc or {}).get("llm_config") or {}
@@ -5059,13 +5090,26 @@ class _CommandExecutor(
                 lines.append("this thread: using global default")
             lines.append("set with: /model <name> [global|thread]")
             text = "[Info]: " + "\n".join(lines)
-            form = await self._model_picker_form(settings, thread_model)
+            form = await self._model_picker_form(settings, thread_model, scope=scope)
             if form is None:
                 return text
             return CommandOutput(text, data=command_data(form=form))
 
-        name = args[0]
-        scope = args[1].lower() if len(args) > 1 else "global"
+        if not bound.get("force"):
+            # Deny an off-list model with near-matches: a typo used to be
+            # written verbatim and only surfaced as a provider error on the
+            # next turn. The list is best effort, so an unlistable provider
+            # (custom base URL, bare-id proxy) still writes as before, and
+            # --force is the documented escape.
+            known = await self._available_model_ids()
+            if known and name not in known:
+                close = difflib.get_close_matches(name, known, n=3, cutoff=0.6)
+                suggestion = f" Did you mean: {', '.join(close)}?" if close else ""
+                return (
+                    f"[Error]: Unknown model: {name}.{suggestion}"
+                    " Use --force to set it anyway."
+                )
+
         if scope == "thread":
             thread_error = self._require_thread()
             if thread_error:
@@ -5077,23 +5121,43 @@ class _CommandExecutor(
                 f"[Success]: Model for this thread set to {name}.",
                 data=command_data(state={"model": name}),
             )
-        if scope == "global":
-            result = await self.api.update_settings(user_id=self.user_id, llm_model=name)
-            msg = f"[Success]: Global model set to {name}."
-            if result.get("restart_required"):
-                msg += " (restart required to take effect)"
-            return msg
-        return "[Error]: scope must be 'global' or 'thread'."
+        result = await self.api.update_settings(user_id=self.user_id, llm_model=name)
+        msg = f"[Success]: Global model set to {name}."
+        if result.get("restart_required"):
+            msg += " (restart required to take effect)"
+        return msg
+
+    async def _available_model_ids(self) -> list[str]:
+        """Model ids the active provider currently lists, or [] when unknown.
+
+        Best effort by design, like the picker: a provider with no listing
+        endpoint must not be able to block a legitimate model change.
+        """
+
+        try:
+            models = await self.api.list_available_models()
+            ids = [
+                str(entry.get("id") or entry.get("name") or "")
+                for entry in models or []
+            ]
+        except Exception:  # noqa: BLE001 - the guard degrades, never blocks.
+            logger.debug("model guard: list_available_models failed", exc_info=True)
+            return []
+        return [model_id for model_id in ids if model_id]
 
     async def _model_picker_form(
         self,
         settings: dict[str, Any],
         thread_model: str | None,
+        *,
+        scope: str = "",
     ) -> dict[str, Any] | None:
         """Build the declarative model-picker form, or None when unavailable.
 
         Best effort: if the provider exposes no model list the bare ``/model``
         keeps its plain info output and rich clients simply get no form.
+        ``scope`` is the explicitly typed scope when there is one, so
+        ``/model global`` submits into the scope the user named.
         """
 
         try:
@@ -5114,7 +5178,7 @@ class _CommandExecutor(
             )
         if not options:
             return None
-        scope = "thread" if self.thread_id else "global"
+        scope = scope or ("thread" if self.thread_id else "global")
         return form_payload(
             "Select model",
             [
@@ -5130,7 +5194,7 @@ class _CommandExecutor(
             footer_hint="Enter apply · Esc cancel",
         )
 
-    async def _cmd_models(self, args: list[str], rest: str) -> str:
+    async def _cmd_models(self, bound: BoundArgs) -> str:
         models = await self.api.list_available_models()
         settings = await self.api.get_settings()
         current = settings.get("llm_model", "")
