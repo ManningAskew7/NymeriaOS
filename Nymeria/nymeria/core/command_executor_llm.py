@@ -913,12 +913,12 @@ class LLMCommandsMixin:
         # (/provider <name>), which itself scopes its tabs to the caller,
         # so every caller gets the browse form; only the CLIProxy tab is
         # cosmetically dropped for callers its submit target refuses.
-        form = self._provider_picker_form(settings, status)
+        form = await self._provider_picker_form(settings, status)
         if form is None:
             return text
         return CommandOutput(text, data=command_data(form=form))
 
-    def _provider_picker_form(
+    async def _provider_picker_form(
         self,
         settings: Mapping[str, Any],
         status: Mapping[str, Mapping[str, str]],
@@ -937,43 +937,14 @@ class LLMCommandsMixin:
         nothing.
         """
         from ..cliproxy.catalog import list_cliproxy_providers
-        from ..config.llm_providers import get_llm_provider_spec
+        from .command_option_resolvers import resolve_providers
 
-        entries = self._provider_entries(settings, status)
-        ordered = sorted(
-            entries,
-            key=lambda entry: (
-                _TIER_ORDER.index(entry["tier"])
-                if entry["tier"] in _TIER_ORDER
-                else len(_TIER_ORDER)
-            ),
+        # Option building lives in the shared resolver (one builder serves
+        # this picker, generated forms, and autocomplete); the already
+        # fetched settings/status ride along so nothing is read twice.
+        provider_options = await resolve_providers(
+            self, settings=settings, status=status
         )
-
-        def _option(entry: Mapping[str, Any]) -> dict[str, Any]:
-            # Everything user-facing rides meta (the renderer shows meta OR
-            # description, and meta is never empty here, so a description
-            # would be dead payload); notes_for_user is folded in so the
-            # unverified-tier warnings stay visible in the picker.
-            meta_parts = [_TIER_BADGES.get(entry["tier"], str(entry["tier"]))]
-            if entry["provider"] in PROVIDER_SECRET_SETTINGS:
-                meta_parts.append(str(entry["status"]))
-            if entry["notes_for_user"]:
-                meta_parts.append(str(entry["notes_for_user"]))
-            return form_option(
-                entry["provider"],
-                label=entry["label"],
-                meta=" ".join(part for part in meta_parts if part),
-                current=bool(entry["active"]),
-            )
-
-        provider_options: list[dict[str, Any]] = []
-        for entry in ordered:
-            spec = get_llm_provider_spec(str(entry["provider"]))
-            if spec is None:
-                # The synthetic unregistered-active entry: it cannot be
-                # configured, so it stays markdown-only.
-                continue
-            provider_options.append(_option(entry))
         if not provider_options:
             return None
 

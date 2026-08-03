@@ -2469,6 +2469,40 @@ def test_commands_api_execute_returns_markdown_shape(monkeypatch: pytest.MonkeyP
     assert api.closed is False
 
 
+def test_commands_api_options_endpoint_resolves_a_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _ModelCatalogCommandApi()
+    client = _client(api=api, monkeypatch=monkeypatch)
+
+    response = client.get(
+        "/commands/options/models",
+        params={"thread_id": "thread-1"},
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [option["id"] for option in body] == ["gpt-test", "gpt-next"]
+    assert all(
+        set(option) == {"id", "label", "meta", "description", "current"}
+        for option in body
+    )
+
+
+def test_commands_api_options_endpoint_404_on_unknown_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(api=FakeCommandApi(), monkeypatch=monkeypatch)
+
+    response = client.get(
+        "/commands/options/nonesuch",
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_commands_api_supports_forms_flag_gates_form_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

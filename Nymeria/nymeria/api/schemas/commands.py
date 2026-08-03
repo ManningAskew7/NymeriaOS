@@ -52,6 +52,20 @@ class CommandExecuteResponse(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class CommandOptionResponse(BaseModel):
+    """One live option of a ``choices_ref`` value set (GET /commands/options).
+
+    The shape matches the form contract's option dict, so a client can feed
+    these straight into a picker or an autocomplete list.
+    """
+
+    id: str
+    label: str
+    meta: str = ""
+    description: str = ""
+    current: bool = False
+
+
 class CommandParamModel(BaseModel):
     """One declared argument of a schema'd command (backlog #129).
 
