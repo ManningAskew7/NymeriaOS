@@ -1569,6 +1569,22 @@ The desktop and mobile composers derive their chat-stream routing set from
 this discovery field too, so new `chat_stream` registrations need no client
 change.
 
+**User-defined aliases (2026-08-03, backlog #133).** The `/alias` family
+(`create`, `delete`, `list`, bare root = the listing) maintains a per-user
+alias table: a single-word spelling that expands to a whole command, values
+included (`/gpt5` -> `/model openai/gpt-5.5`). Expansion happens
+server-side inside `execute()` before parsing, so it works identically on
+every surface that reaches the dispatcher (CLI, Telegram, the GUIs, the
+agent) and every gate reads the RESOLVED command: an alias can never widen
+access. An alias always loses to a registered command spelling, both at
+creation (refused) and later (if the catalog claims the name, the alias
+goes dormant and `/alias list` says so). Rows are stamped by the authoring
+path and verified at dispatch; a row edited outside the `/alias` command
+is skipped as inert and flagged in the listing. Discord cannot type alias
+spellings (its slash registry only knows registered names), but managing
+them there works. Expansion values are single unquoted words; quoted
+phrases are refused at creation.
+
 **Guidance behavior (2026-08-02).** Unknown commands and unknown subcommands
 answer with a nearest-match suggestion ("Did you mean `/provider`?") derived
 from the registry. Bare `/help` returns a compact per-category index of root

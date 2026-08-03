@@ -214,6 +214,20 @@ Unmasked environment reads are not offered here: there is no `/env_get`
 handler, because an unmasked secret typed back into a chat persists in
 platform history.
 
+### Aliases
+
+| Command | Description |
+|---------|-------------|
+| `/aliases` | List your personal command aliases with author and health flags |
+| `/alias_create <name> <command...>` | Create an alias that expands to a full command, values included (e.g. `/alias_create gpt5 model openai/gpt-5.5`) |
+| `/alias_delete <name>` | Delete one of your aliases |
+
+Aliases are per-user and expand server-side at dispatch, so a spelling
+created anywhere works here through the passthrough: type `/gpt5` and the
+backend runs `/model openai/gpt-5.5`. An alias always loses to a real
+command spelling, and the agent may author aliases for you (the listing
+names the author of each).
+
 ### Tools
 
 | Command | Description |

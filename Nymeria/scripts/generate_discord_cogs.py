@@ -132,6 +132,9 @@ EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
     "account",
     "account.tokens",
     "activity",
+    # The /alias bare-root overview (backlog #133) is a duplicate of
+    # `alias list`, which Discord keeps, so nothing is lost here.
+    "alias",
     "artifacts",
     "background",
     "doctor",

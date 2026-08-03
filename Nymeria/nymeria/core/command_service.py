@@ -2608,6 +2608,56 @@ class CommandService:
             return produced + tokens[alias_len:], alias_len, len(produced)
         return tokens, 0, 0
 
+    def _builtin_claims_token(self, token: str) -> bool:
+        """True when the catalog owns this leading token.
+
+        A user alias must lose to every registered path and built-in alias,
+        including as the ROOT of longer spellings: `/restart` has no bare
+        root command, but a user alias named `restart` would still hijack
+        `/restart api` (the F6 proper-prefix hazard, user-table edition).
+        """
+        key = (token,)
+        if key in self._path_index or key in self._aliases:
+            return True
+        return any(path[0] == token for path in self._path_index) or any(
+            alias[0] == token for alias in self._aliases
+        )
+
+    def _expand_user_alias(self, ctx: CommandContext, raw: str) -> str:
+        """Rewrite a leading user-defined alias into its stored expansion.
+
+        One expansion, never chained: the stored expansion was validated at
+        create time to resolve against the CATALOG, so its first token is a
+        canonical path token, not another user alias. The catalog always
+        wins (`_builtin_claims_token`); a lookup or store fault degrades to
+        no expansion, never to a failed dispatch. The stamp check lives in
+        ``resolve_for_dispatch`` (the store's control consumption point).
+        """
+        user_id = getattr(ctx, "user_id", None)
+        if not user_id:
+            return raw
+        command_text = raw.strip()
+        if command_text.startswith("/"):
+            command_text = command_text[1:].lstrip()
+        if not command_text:
+            return raw
+        first = command_text.split(None, 1)[0]
+        token = _normalize_token(first)
+        if not token or self._builtin_claims_token(token):
+            return raw
+        try:
+            from .user_aliases import get_user_aliases_repo
+
+            alias = get_user_aliases_repo().resolve_for_dispatch(user_id, token)
+        except Exception as e:  # noqa: BLE001 - alias faults must not break dispatch
+            logger.warning("user-alias lookup failed for %s: %s", user_id, e)
+            return raw
+        if alias is None:
+            return raw
+        tail = _split_rest_after_tokens(command_text, 1)
+        expansion = " ".join(alias.tokens)
+        return f"/{expansion} {tail}".strip()
+
     def _parse_for_registry(self, raw: str) -> ParsedCommand:
         command_text = raw.strip()
         if command_text.startswith("/"):
@@ -2771,6 +2821,11 @@ class CommandService:
         *,
         api: Any | None = None,
     ) -> CommandResult:
+        # User-defined aliases (#133) expand HERE and not in the parser:
+        # execute() is the one dispatch seam that knows the user, and the
+        # rewrite happens before parsing so every gate below reads the
+        # resolved canonical definition, same as built-in aliases.
+        raw_command = self._expand_user_alias(ctx, raw_command)
         parsed = self._parse_for_registry(raw_command)
         if parsed.definition is None:
             return self._unknown_or_group_error(parsed, ctx)
@@ -5452,6 +5507,118 @@ class _CommandExecutor(
         # typo is answered by the dispatcher with did-you-mean plus the
         # valid-subcommand list. The root carries `env show`'s admin gate.
         return await self._cmd_env_show(BoundArgs())
+
+    # -- User-defined aliases (backlog #133) --------------------------------
+
+    _ALIAS_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+
+    async def _cmd_alias(self, bound: BoundArgs) -> str | CommandOutput:
+        # Bare family root = overview (structure rule 1): the listing.
+        return await self._cmd_alias_list(bound)
+
+    async def _cmd_alias_list(self, bound: BoundArgs) -> str | CommandOutput:
+        from .user_aliases import get_user_aliases_repo
+
+        service = self._service or get_command_service()
+        aliases = get_user_aliases_repo().list_aliases(self.user_id)
+        if not aliases:
+            return command_info(
+                "No aliases yet. Create one with "
+                "`/alias create <name> <command...>`, for example "
+                "`/alias create gpt5 model openai/gpt-5.5`."
+            )
+        lines = [f"### Your Command Aliases ({len(aliases)})", ""]
+        for alias in aliases:
+            expansion = " ".join(alias.tokens)
+            note = ""
+            if not alias.stamp_valid:
+                note = " [INERT: failed its authoring stamp; delete and re-create it]"
+            elif service._builtin_claims_token(alias.name):
+                note = " [dormant: a built-in command now claims this spelling]"
+            elif alias.command_id not in service._commands:
+                note = " [dormant: its target command no longer exists]"
+            author = " (agent-authored)" if alias.author_actor == "agent" else ""
+            lines.append(f"- `/{alias.name}` -> `/{expansion}`{author}{note}")
+        return "\n".join(lines)
+
+    async def _cmd_alias_create(self, bound: BoundArgs) -> str | CommandOutput:
+        from .user_aliases import (
+            AliasAlreadyExists,
+            AliasLimitReached,
+            get_user_aliases_repo,
+        )
+
+        service = self._service or get_command_service()
+        raw_name = str(bound.get("name") or "")
+        name = _normalize_token(raw_name)
+        if not name or not set(name) <= self._ALIAS_NAME_CHARS:
+            return command_error(
+                f"Alias names are one word of letters, digits, hyphens or "
+                f"underscores; got {raw_name!r}."
+            )
+        if service._builtin_claims_token(name):
+            return command_error(
+                f"`/{name}` is a registered command or built-in alias "
+                "spelling; an alias must not shadow the catalog."
+            )
+        # The binder recomposes the rest param from shlex-split args, so a
+        # quoted phrase reaches this handler already FLATTENED into separate
+        # words, and the alias would silently rebind them at dispatch
+        # (`memory save "two words"` becoming key=two value=words). Check
+        # the RAW invocation text for quoting instead; multi-word values are
+        # a recorded v1 non-goal of the mechanism.
+        if '"' in bound.rest or "'" in bound.rest:
+            return command_error(
+                "Expansion values must be single unquoted words; quoted "
+                "phrases are not supported in aliases."
+            )
+        expansion_text = str(bound.get("expansion") or "").strip().lstrip("/")
+        parsed = service._parse_for_registry("/" + expansion_text)
+        if parsed.definition is None:
+            return command_error(
+                f"`/{expansion_text}` does not resolve to a registered "
+                "command; an alias must expand to a real one."
+            )
+        if not parsed.definition.executable:
+            return command_error(
+                f"`/{parsed.definition.name}` runs as a chat turn, not a "
+                "dispatched command; aliasing it is not supported."
+            )
+        # Store the CANONICAL expansion (path + bound values): a built-in
+        # alias typed in the expansion is resolved once, here, so later
+        # catalog renames cannot silently re-point the user's spelling.
+        tokens = tuple(parsed.definition.path) + tuple(parsed.args)
+        author = "agent" if self.actor == "agent" else "user"
+        try:
+            created = get_user_aliases_repo().create_alias(
+                user_id=self.user_id,
+                name=name,
+                command_id=parsed.definition.id,
+                tokens=tokens,
+                author_actor=author,
+            )
+        except AliasAlreadyExists:
+            return command_error(
+                f"You already have an alias `/{name}`. "
+                f"Delete it first: `/alias delete {name}`."
+            )
+        except AliasLimitReached as e:
+            return command_error(str(e))
+        display = " ".join(created.tokens)
+        return command_success(f"Alias created: `/{name}` -> `/{display}`.")
+
+    async def _cmd_alias_delete(self, bound: BoundArgs) -> str | CommandOutput:
+        from .user_aliases import get_user_aliases_repo
+
+        name = _normalize_token(str(bound.get("name") or ""))
+        removed = get_user_aliases_repo().delete_alias(
+            user_id=self.user_id, name=name
+        )
+        if not removed:
+            return command_error(
+                f"No alias `/{name}`. `/alias list` shows yours."
+            )
+        return command_success(f"Alias `/{name}` deleted.")
 
     async def _cmd_env_show(self, bound: BoundArgs) -> str:
         data = await self.api.get_env_vars(user_id=self.user_id)

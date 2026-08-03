@@ -1015,6 +1015,59 @@ def register_default_commands(service: "CommandService") -> None:
             ),
         ),
     )
+
+    # -- User-defined command aliases (backlog #133) ------------------------
+    # Per-user spellings expanded at dispatch (`/gpt5` -> `model` plus the
+    # model id). The store and its authoring-stamp control:
+    # core/user_aliases.py. Agent authoring is dev-sanctioned (2026-08-03);
+    # expansion resolves to canonical paths, so gates always read the real
+    # command and an alias can never widen access.
+    service.register(
+        "alias",
+        description="List your personal command aliases (family overview)",
+        category="Settings",
+        aliases=("aliases",),
+        params=(),
+    )
+    service.register(
+        "alias create",
+        description="Create a personal alias that expands to a full command, values included",
+        category="Settings",
+        aliases=("alias_create",),
+        mutates_state=True,
+        danger_level="normal",
+        examples=("/alias create gpt5 model openai/gpt-5.5",),
+        params=(
+            CommandParam(
+                "name",
+                required=True,
+                description="The new spelling, one word (e.g. gpt5)",
+            ),
+            CommandParam(
+                "expansion",
+                kind="rest",
+                required=True,
+                description="The command it stands for, e.g. model openai/gpt-5.5",
+            ),
+        ),
+    )
+    service.register(
+        "alias delete",
+        description="Delete one of your command aliases",
+        category="Settings",
+        aliases=("alias_delete",),
+        mutates_state=True,
+        params=(
+            CommandParam("name", required=True, description="Alias name"),
+        ),
+    )
+    service.register(
+        "alias list",
+        description="List your command aliases with author and health flags",
+        category="Settings",
+        aliases=("alias_list",),
+        params=(),
+    )
     service.register(
         "tools",
         description="Show the tools enabled on this thread",

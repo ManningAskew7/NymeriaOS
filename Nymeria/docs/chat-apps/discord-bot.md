@@ -255,6 +255,19 @@ command, and these relay the filter VALUE (`tools list core`). Since backlog
 that carry the filter token the same way, so every surface renders the right
 view again. These Discord subcommands are equivalent and unaffected.
 
+### Aliases (`/alias`)
+
+| Command | Description |
+|---------|-------------|
+| `/alias list` | List your personal command aliases. |
+| `/alias create <name> <expansion>` | Create an alias that expands to a full command, values included. |
+| `/alias delete <name>` | Delete one of your aliases. |
+
+Managing aliases works here, but typed alias SPELLINGS do not: Discord's
+slash registry only knows registered command names, so `/gpt5` cannot be
+typed on Discord. Aliases created here work on every text surface (CLI,
+Telegram, the GUIs, the agent).
+
 ### Memory (`/memory`)
 
 | Command | Description |
