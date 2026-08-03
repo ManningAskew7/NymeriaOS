@@ -3035,6 +3035,115 @@ def test_form_strip_keeps_state_hints(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kept.data["state"] == {"model": "kept"}
 
 
+# ── missing-required rescue into a generated picker (backlog #110) ───────────
+
+
+def _register_pick_synthetic(
+    service: CommandService,
+    monkeypatch: pytest.MonkeyPatch,
+    params: tuple[Any, ...],
+) -> None:
+    service.register(
+        "zzpick", description="synthetic picker command", category="Test",
+        params=params,
+    )
+
+    async def _cmd_zzpick(self, bound):  # noqa: ANN001, ANN202
+        return f"[Success]: picked {bound.get('thing')}"
+
+    monkeypatch.setattr(_CommandExecutor, "_cmd_zzpick", _cmd_zzpick, raising=False)
+
+
+def _pick_params() -> tuple[Any, ...]:
+    from nymeria.core.command_params import CommandParam
+
+    return (CommandParam("thing", required=True, choices=("alpha", "beta")),)
+
+
+def test_missing_required_rescues_to_generated_picker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CommandService()
+    _register_pick_synthetic(service, monkeypatch, _pick_params())
+
+    result = run(service.execute(_cli_ctx(), "/zzpick", api=object()))
+
+    assert result.success is True
+    assert "Usage: `/zzpick" in result.markdown
+    form = (result.data or {})["form"]
+    assert form["submit"] == {"command": "zzpick {thing}"}
+    options = form["tabs"][0]["fields"][0]["options"]
+    assert [option["id"] for option in options] == ["alpha", "beta"]
+
+
+def test_missing_required_stays_an_error_without_the_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CommandService()
+    _register_pick_synthetic(service, monkeypatch, _pick_params())
+
+    result = run(service.execute(_no_forms_ctx(), "/zzpick", api=object()))
+
+    assert result.success is False
+    assert "Missing required argument" in result.markdown
+    assert result.data is None
+
+
+def test_missing_required_never_rescues_for_the_agent_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CommandService()
+    _register_pick_synthetic(service, monkeypatch, _pick_params())
+    agent_ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="agent",
+        surface="agent",
+        is_admin=None,
+        supports_forms=True,
+    )
+
+    result = run(service.execute(agent_ctx, "/zzpick", api=object()))
+
+    assert result.success is False
+    assert "Missing required argument" in result.markdown
+
+
+def test_invalid_and_extra_arguments_never_rescue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only ABSENT arguments rescue: a wrong value or a stray extra keeps
+    the strict error even for a form-capable caller."""
+    service = CommandService()
+    _register_pick_synthetic(service, monkeypatch, _pick_params())
+
+    invalid = run(service.execute(_cli_ctx(), "/zzpick bogus", api=object()))
+    assert invalid.success is False
+    assert invalid.data is None
+
+    extra = run(service.execute(_cli_ctx(), "/zzpick alpha stray", api=object()))
+    assert extra.success is False
+    assert "Unexpected argument" in extra.markdown
+
+
+def test_ungeneratable_declaration_falls_through_to_the_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nymeria.core.command_params import CommandParam
+
+    service = CommandService()
+    _register_pick_synthetic(
+        service,
+        monkeypatch,
+        (CommandParam("thing", kind="rest", required=True),),
+    )
+
+    result = run(service.execute(_cli_ctx(), "/zzpick", api=object()))
+
+    assert result.success is False
+    assert "Missing required argument" in result.markdown
+
+
 # ── LLM family declared-argument adoption (backlog #129 wave 1b) ─────────────
 
 
