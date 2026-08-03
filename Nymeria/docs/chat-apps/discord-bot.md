@@ -118,9 +118,14 @@ group name they must own for one of those reasons (`/tools`, `/todos`,
 `HAND_WRITTEN_FAMILIES` and `EXCLUDED_COMMANDS` name each one and why.
 
 Dynamic value sets (`choices_ref`) become autocomplete rather than static
-choices; the resolvers live in `discord_cogs/autocomplete.py` and are shared
-with the hand cogs. Adding a resolver there lights up every argument that
-declares that ref.
+choices. Since 2026-08-03 every ref is answered by the backend's shared
+option-resolver registry through `GET /commands/options/{ref}`, acting as
+the INVOKING user's linked account (an unlinked user gets no suggestions),
+so suggestions match what that user's own pickers and list commands show:
+models, providers, tools, skills, threads, triggers, hooks, and MCP server
+ids all autocomplete. `discord_cogs/autocomplete.py` holds the one generic
+resolver, shared with the hand cogs; adding a resolver to the BACKEND
+registry plus a cog regen lights up every argument that declares the ref.
 
 The tables below cover the commands Discord users had before the derivation.
 Generation also brought these families onto Discord, with the same arguments the
