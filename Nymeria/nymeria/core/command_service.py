@@ -568,9 +568,12 @@ def _render_result_markdown(
     heuristic: a multi-line body whose first line is plain text gets that
     line promoted to ``### `` (the CLI renders it as a block heading).
 
-    Transition (#132 sweep in flight): text still carrying a legacy
-    ``[Error]:``/``[Success]:``/``[Info]:`` sentinel wins over ``level``,
-    so unmigrated handlers keep exact behavior until the sweep lands.
+    Compat, PERMANENT: text still carrying a legacy ``[Error]:``/
+    ``[Success]:``/``[Info]:`` sentinel wins over ``level``. First-party
+    handlers are swept clean and ratcheted (test_command_service.py's
+    sentinel scanner), so this branch exists for out-of-tree handlers
+    (plugins, agent-registered commands) that still speak the old
+    protocol. Do not remove it as dead code.
     """
     stripped = text.strip()
     if stripped.startswith("[Error]:"):
@@ -2532,8 +2535,17 @@ class CommandService:
         differ (``/hook_disable`` is one raw token standing for two) and the
         caller still has to slice the RAW input to recover arguments.
         """
-        max_alias_len = max((len(alias) for alias in self._aliases), default=0)
-        for alias_len in range(min(len(tokens), max_alias_len), 0, -1):
+        # Scan down from the longest registered PATH as well as the longest
+        # alias: the break-on-path guard below must get its chance on a real
+        # path even when that path is LONGER than every alias, or an alias
+        # that is a proper prefix of it would hijack the path with its tail
+        # demoted to arguments (the /hooks disable class of bug again, from
+        # the other direction; #131 review F6).
+        max_scan = max(
+            max((len(alias) for alias in self._aliases), default=0),
+            max((len(path) for path in self._path_index), default=0),
+        )
+        for alias_len in range(min(len(tokens), max_scan), 0, -1):
             candidate = tokens[:alias_len]
             if candidate in self._path_index:
                 # A real path always wins over an alias, so stop here rather

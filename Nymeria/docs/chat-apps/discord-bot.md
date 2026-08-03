@@ -250,9 +250,12 @@ Tool overrides are per-thread (per-channel). Changes made with `/tools enable` a
 
 The four listing subcommands are a Discord-only shape. Backlog #131 folded the
 backend's `tools core|optional|enabled|category` into one `tools list [filter]`
-command, and these relay the filter VALUE (`tools list core`), which the
-backend alias cannot do on its own: an alias substitutes a path and cannot
-inject a value, so a bare `/tools core` would render the enabled view.
+command, and these relay the filter VALUE (`tools list core`), which a backend
+alias cannot do: an alias substitutes a path and cannot inject a value, so the
+backend keeps only the truthful aliases (`tools enabled`, the default view,
+and `tools category`) and a bare `tools core` or `tools optional` sent to the
+dispatcher answers with the family guidance instead of rendering the wrong
+view. These Discord subcommands are unaffected.
 
 ### Memory (`/memory`)
 
