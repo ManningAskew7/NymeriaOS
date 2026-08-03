@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, NoReturn, Optional
+from typing import Any, Callable, Literal, Mapping, NoReturn, Optional
 from urllib.parse import quote
 
 import httpx
@@ -2037,6 +2037,10 @@ class CommandService:
         self._commands: dict[str, CommandDefinition] = {}
         self._path_index: dict[tuple[str, ...], str] = {}
         self._aliases: dict[tuple[str, ...], str] = {}
+        # Injected aliases (#133): alias path -> the argument tokens the
+        # expansion contributes AFTER the target's canonical path. Every key
+        # here is also a key of _aliases; this map only adds the payload.
+        self._alias_injections: dict[tuple[str, ...], tuple[str, ...]] = {}
         self._register_defaults()
         self.validate_registry()
 
@@ -2065,6 +2069,7 @@ class CommandService:
         hidden: bool = False,
         examples: tuple[str, ...] = (),
         params: tuple[CommandParam, ...] | None = None,
+        injected_aliases: Mapping[str, str | tuple[str, ...]] | None = None,
     ) -> None:
         del handler
         path = _normalize_path(name)
@@ -2088,7 +2093,39 @@ class CommandService:
                 f"({existing} and {command_id})"
             )
 
-        alias_paths = tuple(_normalize_path(alias) for alias in aliases)
+        # Injected aliases (#133): an alias whose expansion contributes
+        # argument tokens after the target path. Tokens must be single
+        # shlex-safe words so the parse-time args/rest composition is
+        # trivially correct; anything richer (quoted prompts) is a recorded
+        # non-goal of the mechanism.
+        injection_paths: dict[tuple[str, ...], tuple[str, ...]] = {}
+        for spelling, injected in (injected_aliases or {}).items():
+            injected_path = _normalize_path(spelling)
+            if not injected_path:
+                raise ValueError(f"Empty injected alias for command {command_id}")
+            injected_tokens = (
+                (injected,) if isinstance(injected, str) else tuple(injected)
+            )
+            if not injected_tokens:
+                raise ValueError(
+                    f"Injected alias {spelling!r} for {command_id} injects nothing; "
+                    "declare it as a plain alias instead"
+                )
+            for token in injected_tokens:
+                if (
+                    not token
+                    or any(ch.isspace() for ch in token)
+                    or set(token) & {'"', "'"}
+                ):
+                    raise ValueError(
+                        f"Injected alias {spelling!r} for {command_id}: token "
+                        f"{token!r} must be a single unquoted word"
+                    )
+            injection_paths[injected_path] = injected_tokens
+
+        alias_paths = tuple(_normalize_path(alias) for alias in aliases) + tuple(
+            injection_paths
+        )
         for alias_path in alias_paths:
             if not alias_path:
                 raise ValueError(f"Empty alias for command {command_id}")
@@ -2132,6 +2169,7 @@ class CommandService:
         self._path_index[path] = command_id
         for alias_path in alias_paths:
             self._aliases[alias_path] = command_id
+        self._alias_injections.update(injection_paths)
 
     def _register_defaults(self) -> None:
         register_default_commands(self)
@@ -2534,6 +2572,14 @@ class CommandService:
         consumed and how many canonical tokens it produced, because those can
         differ (``/hook_disable`` is one raw token standing for two) and the
         caller still has to slice the RAW input to recover arguments.
+
+        Injected aliases (#133) also produce ARGUMENT tokens after the target
+        path (``/tools_core`` stands for ``tools list`` plus ``core``); they
+        are part of the produced count, and ``_parse_for_registry`` binds any
+        of them left past the matched path as leading arguments. An injection
+        may legally compose into a DEEPER registered path, in which case the
+        deeper command simply matches; every gate reads the resolved
+        definition either way, so an injected alias can never widen access.
         """
         # Scan down from the longest registered PATH as well as the longest
         # alias: the break-on-path guard below must get its chance on a real
@@ -2555,7 +2601,11 @@ class CommandService:
             if command_id is None:
                 continue
             path = self._commands[command_id].path
-            return path + tokens[alias_len:], alias_len, len(path)
+            # An injected alias (#133) contributes argument tokens after the
+            # target path; they count toward the produced length so the
+            # caller's raw/canonical back-translation stays coherent.
+            produced = path + self._alias_injections.get(candidate, ())
+            return produced + tokens[alias_len:], alias_len, len(produced)
         return tokens, 0, 0
 
     def _parse_for_registry(self, raw: str) -> ParsedCommand:
@@ -2586,12 +2636,23 @@ class CommandService:
             # substituted path came from the raw tail one for one.
             raw_consumed = alias_len + max(0, prefix_len - path_len) if alias_len else prefix_len
             rest = _split_rest_after_tokens(command_text, raw_consumed)
+            args = _split_args(rest)
+            # Injected-alias leftovers (#133): expansion tokens past the
+            # matched path are ARGUMENTS the alias carries (this is what a
+            # plain alias structurally cannot do). They bind ahead of
+            # whatever the user typed after the alias. Tokens are validated
+            # single unquoted words at registration, so the rest-string
+            # composition is a plain join.
+            if alias_len and path_len > prefix_len:
+                injected_left = list(canonical[prefix_len:path_len])
+                args = injected_left + args
+                rest = " ".join(injected_left + ([rest] if rest else []))
             return ParsedCommand(
                 # Deliberately the tokens the user typed, not the canonical
                 # ones, so "unknown subcommand for /hooks" names what they wrote.
                 tokens=tokens,
                 path=definition.path,
-                args=_split_args(rest),
+                args=args,
                 rest=rest,
                 definition=definition,
                 matched_input_len=raw_consumed,

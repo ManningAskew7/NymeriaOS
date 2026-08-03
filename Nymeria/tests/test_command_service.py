@@ -423,9 +423,9 @@ def test_registry_exposes_full_path_metadata_and_visibility_filters() -> None:
     assert tools_list.name == "tools list"
     assert tools_list.path == ["tools", "list"]
     assert "/tools_enabled" in tools_list.aliases
-    # The wrong-view spellings are deliberately NOT aliases (they would
-    # render the enabled view while claiming core; #131 review).
-    assert "/tools_core" not in tools_list.aliases
+    # `/tools_core` is an INJECTED alias (#133): it carries its filter
+    # token, so it is truthfully listed with the rest.
+    assert "/tools_core" in tools_list.aliases
     assert tools_list.scope == "global"
     assert tools_list.agent_allowed is True
     assert tools_list.requires_thread is False
@@ -2868,17 +2868,21 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
         ("mcp", "remove"),
         ("mcp", "rm"),
     )
-    # The four tools listing commands folded into one filter. Only the
-    # spellings that stay truthful are aliases: `enabled` (the default) and
-    # `category` (its tail becomes the filter). `core`/`optional` would
-    # render the enabled view while claiming another, so they fail honestly
-    # instead (#131 correctness review; #133 injection restores them).
+    # The four tools listing commands folded into one filter. `enabled` and
+    # `category` bridge as PLAIN aliases; `core`/`optional` are INJECTED
+    # aliases (#133) carrying their filter token, appended AFTER the plain
+    # ones so the first single-token alias (the chat-bot menu contract)
+    # stays `tools_list`.
     assert by_name["tools list"].aliases == (
         ("tools_list",),
         ("tools_enabled",),
         ("tools_category",),
         ("tools", "enabled"),
         ("tools", "category"),
+        ("tools_core",),
+        ("tools", "core"),
+        ("tools_optional",),
+        ("tools", "optional"),
     )
     for gone in ("tools core", "tools optional", "tools enabled", "tools category"):
         assert gone not in by_name, gone
@@ -3063,6 +3067,89 @@ def test_an_alias_prefix_cannot_hijack_a_deeper_registered_path() -> None:
     assert exact.definition is not None
     assert exact.definition.id == "zzalias.target"
     assert exact.args == ["abc"]
+
+
+def test_an_injected_alias_carries_its_tokens_ahead_of_the_typed_tail() -> None:
+    """The #133 mechanism: an injected alias contributes ARGUMENT tokens a
+    plain alias structurally cannot (args are re-sliced from the raw text,
+    so a substituted path alone loses anything it wanted to say). Injected
+    tokens bind first; whatever the user typed after the alias follows.
+    """
+    service = CommandService()
+    service.register(
+        "zzmodel set",
+        description="synthetic target",
+        category="Tests",
+        injected_aliases={"zzgpt5": ("zz-provider/zz-5.5",)},
+    )
+
+    parsed = service._parse_for_registry("/zzgpt5 thread")
+    assert parsed.definition is not None
+    assert parsed.definition.id == "zzmodel.set"
+    assert parsed.args == ["zz-provider/zz-5.5", "thread"]
+    assert parsed.rest == "zz-provider/zz-5.5 thread"
+
+    # Without a typed tail the injection alone is the argument vector.
+    bare = service._parse_for_registry("/zzgpt5")
+    assert bare.args == ["zz-provider/zz-5.5"]
+    assert bare.rest == "zz-provider/zz-5.5"
+
+
+def test_an_injection_composing_into_a_deeper_path_matches_that_command() -> None:
+    """Injected tokens are part of the canonical stream, so an injection may
+    legally spell out a DEEPER registered path; the deeper definition (and
+    therefore its own flags) is what matches and what the gates read.
+    """
+    service = CommandService()
+    service.register(
+        "zzdeep sub",
+        description="the alias owner",
+        category="Tests",
+        injected_aliases={"zzjump": ("leaf",)},
+    )
+    service.register(
+        "zzdeep sub leaf",
+        description="the deeper real command",
+        category="Tests",
+    )
+
+    parsed = service._parse_for_registry("/zzjump extra")
+    assert parsed.definition is not None
+    assert parsed.definition.id == "zzdeep.sub.leaf"
+    assert parsed.args == ["extra"]
+
+
+def test_injected_alias_tokens_must_be_single_unquoted_words() -> None:
+    """The v1 restriction that keeps the args/rest composition trivially
+    correct: an injected token is one shlex-safe word. Quoted prompts and
+    multi-word payloads are a recorded non-goal.
+    """
+    service = CommandService()
+    for bad in ("two words", 'quo"ted', "quo'ted", ""):
+        with pytest.raises(ValueError):
+            service.register(
+                "zzbadinject target",
+                description="rejected",
+                category="Tests",
+                injected_aliases={"zzbad": (bad,)},
+            )
+    # Injecting nothing is a plain alias wearing the wrong declaration.
+    with pytest.raises(ValueError, match="injects nothing"):
+        service.register(
+            "zzbadinject target",
+            description="rejected",
+            category="Tests",
+            injected_aliases={"zzbad": ()},
+        )
+    # Injected aliases join the ordinary collision rules: an existing
+    # command path cannot become one.
+    with pytest.raises(ValueError, match="conflicts with command path"):
+        service.register(
+            "zzbadinject target",
+            description="rejected",
+            category="Tests",
+            injected_aliases={"tools list": ("core",)},
+        )
 
 
 class _ModelCatalogCommandApi(FakeCommandApi):
@@ -5437,6 +5524,8 @@ def test_every_retired_spelling_resolves_to_the_command_that_replaced_it() -> No
         ("thread new", "thread.create"),
         ("tools category", "tools.list"),
         ("tools enabled", "tools.list"),
+        ("tools core", "tools.list"),
+        ("tools optional", "tools.list"),
     ):
         resolved = service.find_command(old)
         assert resolved is not None, old
@@ -5484,26 +5573,32 @@ def test_retired_root_spellings_still_execute_their_replacement() -> None:
     assert "browser" in filtered.markdown
 
 
-def test_wrong_view_tools_spellings_fail_honestly_not_confidently() -> None:
-    """`/tools core|optional` are deliberately NOT aliases: alias expansion
-    cannot inject the filter value, so they would render the enabled view
-    while claiming core/optional (#131 correctness review). They fail with
-    the family's guidance instead, until #133's value-injecting aliases
-    restore them.
+def test_injected_tools_aliases_restore_the_filtered_views() -> None:
+    """`/tools core|optional` are INJECTED aliases (#133): the expansion
+    carries the filter token a plain alias structurally cannot, so the old
+    spellings render their OWN views again. History: pre-#131 they were
+    separate commands; the #131 fold left them as wrong-view aliases (the
+    review caught them rendering enabled while claiming core); the interim
+    fix dropped them to an honest failure; injection restores them.
     """
     service = CommandService()
     api = FakeCommandApi()
 
-    for dropped in ("/tools core", "/tools optional"):
-        result = run(service.execute(_ctx(), dropped, api=api))
-        assert result.success is False, result.markdown
-        assert "list" in result.markdown  # the family guidance names the fix
+    core = run(service.execute(_ctx(), "/tools core", api=api))
+    assert core.success is True, core.markdown
+    assert "Core Tools" in core.markdown
 
-    # `enabled` is the default, so its alias bridges exactly rather than
-    # degrading, and the explicit filters still reach their own views.
+    optional = run(service.execute(_ctx(), "/tools optional", api=api))
+    assert optional.success is True, optional.markdown
+    assert "Optional Tools" in optional.markdown
+
+    # The flat chat-platform twins carry the same injection.
+    flat_core = run(service.execute(_ctx(), "/tools_core", api=api))
+    assert "Core Tools" in flat_core.markdown
+
+    # `enabled` stays a PLAIN alias (it is the default view), and the
+    # explicit filters still reach their own views.
     bridged = run(service.execute(_ctx(), "/tools enabled", api=api))
     assert "Enabled Tools on this thread" in bridged.markdown
-    core = run(service.execute(_ctx(), "/tools list core", api=api))
-    assert "Core Tools" in core.markdown
-    optional = run(service.execute(_ctx(), "/tools list optional", api=api))
-    assert "Optional Tools" in optional.markdown
+    core_explicit = run(service.execute(_ctx(), "/tools list core", api=api))
+    assert "Core Tools" in core_explicit.markdown
