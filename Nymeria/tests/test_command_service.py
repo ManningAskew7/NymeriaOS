@@ -16,6 +16,10 @@ from nymeria.core.accounts import AuthenticatedUser
 from nymeria.core.command_forms import (
     CommandOutput,
     command_data,
+    command_error,
+    command_info,
+    command_success,
+    command_warning,
     form_option,
     form_payload,
     form_tab,
@@ -491,7 +495,8 @@ def test_alias_resolution_and_command_path_execution() -> None:
 
     assert result.success is True
     assert result.command == "tools core"
-    assert result.level == "success"
+    # A readout is level "info" since #132 (the success collapse is gone).
+    assert result.level == "info"
     assert "### Core Tools" in result.markdown
     assert "bash_execute" in result.markdown
 
@@ -2463,7 +2468,7 @@ def test_commands_api_execute_returns_markdown_shape(monkeypatch: pytest.MonkeyP
         "success": True,
         "markdown": "### Core Tools: 1 tools\n\nbash_execute: Execute shell commands",
         "command": "tools core",
-        "level": "success",
+        "level": "info",
         "data": None,
     }
     assert api.closed is False
@@ -3055,6 +3060,99 @@ def test_form_strip_keeps_state_hints(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kept.success is True
     assert kept.data is not None and "form" in kept.data
     assert kept.data["state"] == {"model": "kept"}
+
+
+# ── typed result levels (#132) ───────────────────────────────────────────────
+
+
+def _register_level_synthetic(
+    service: CommandService, monkeypatch: pytest.MonkeyPatch, ret: Any
+) -> None:
+    service.register(
+        "zzlevel", description="synthetic level command", category="Test", params=()
+    )
+
+    async def _cmd_zzlevel(self, bound):  # noqa: ANN001, ANN202
+        return ret
+
+    monkeypatch.setattr(
+        _CommandExecutor, "_cmd_zzlevel", _cmd_zzlevel, raising=False
+    )
+
+
+def _run_level(monkeypatch: pytest.MonkeyPatch, ret: Any):
+    service = CommandService()
+    _register_level_synthetic(service, monkeypatch, ret)
+    return run(service.execute(_cli_ctx(), "/zzlevel", api=object()))
+
+
+def test_authored_error_fails_and_drops_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _run_level(
+        monkeypatch, command_error("nope", data=command_data(state={"x": 1}))
+    )
+    assert result.success is False
+    assert result.level == "error"
+    assert result.markdown == "**Error:** nope"
+    assert result.data is None  # failure drops data, the established rule
+
+
+def test_authored_success_renders_the_done_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _run_level(monkeypatch, command_success("Model set."))
+    assert result.success is True
+    assert result.level == "success"
+    assert result.markdown == "**Done.** Model set."
+
+
+def test_authored_warning_keeps_data_and_renders_the_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # warning is success-with-a-caveat: data (forms, state hints) survives.
+    result = _run_level(
+        monkeypatch,
+        command_warning("applied with caveats", data=command_data(state={"x": 1})),
+    )
+    assert result.success is True
+    assert result.level == "warning"
+    assert result.markdown == "**Warning:** applied with caveats"
+    assert result.data == {"state": {"x": 1}}
+
+
+def test_authored_info_gets_no_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _run_level(monkeypatch, command_info("Provider  anthropic"))
+    assert result.success is True
+    assert result.level == "info"
+    assert result.markdown == "Provider  anthropic"
+
+
+def test_plain_string_return_is_an_info_readout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The info level is no longer collapsed into success: a readout says
+    # "info" on the wire, and the heading heuristic still promotes the
+    # first plain line of a multi-line body.
+    result = _run_level(monkeypatch, "Status\n\nProvider  anthropic")
+    assert result.success is True
+    assert result.level == "info"
+    assert result.markdown.startswith("### Status")
+
+
+def test_legacy_sentinel_still_wins_over_authored_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Transition rule for the in-flight sweep: a text still carrying an
+    # old sentinel keeps exact legacy behavior regardless of level.
+    result = _run_level(
+        monkeypatch, CommandOutput("[Error]: legacy path", level="info")
+    )
+    assert result.success is False
+    assert result.level == "error"
+    assert result.markdown == "**Error:** legacy path"
 
 
 def test_execution_kind_refusal_data_survives_without_the_flag() -> None:

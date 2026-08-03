@@ -31,6 +31,7 @@ from .command_executor_provider_setup import ProviderSetupCommandsMixin
 from .command_executor_threads import ThreadCommandsMixin
 from .command_forms import (
     CommandOutput,
+    CommandResultLevel,
     command_data,
     form_payload,
     form_tab,
@@ -70,7 +71,8 @@ CommandSurface = Literal[
 CommandScope = Literal["global", "surface_local"]
 CommandDangerLevel = Literal["safe", "normal", "dangerous"]
 CommandExecutionKind = Literal["command", "chat_stream", "surface_local"]
-CommandResultLevel = Literal["info", "success", "warning", "error"]
+# CommandResultLevel is imported from command_forms (the leaf that owns the
+# CommandOutput contract); re-exported here for existing importers.
 
 DEFAULT_GLOBAL_SURFACES: tuple[CommandSurface, ...] = (
     "desktop",
@@ -515,23 +517,48 @@ def _string_set_result(value: Any) -> set[str]:
     return {item for item in value if isinstance(item, str)}
 
 
-def _format_legacy_output(text: str) -> tuple[bool, str]:
-    """Convert old dispatcher prefixes into markdown command output."""
+def _render_result_markdown(
+    text: str, level: CommandResultLevel
+) -> tuple[bool, CommandResultLevel, str]:
+    """Render a handler's authored level into the markdown artifacts every
+    surface reads (#132): ``**Error:**`` / ``**Done.**`` / ``**Warning:**``.
+
+    This is the ONE producer of those artifacts. Desktop, mobile, and the
+    five bots render the markdown with no branch on success or level, so
+    the artifact IS their outcome signal; the CLI pops it into a glyph.
+    ``info`` gets no artifact (readouts stay quiet) and instead the heading
+    heuristic: a multi-line body whose first line is plain text gets that
+    line promoted to ``### `` (the CLI renders it as a block heading).
+
+    Transition (#132 sweep in flight): text still carrying a legacy
+    ``[Error]:``/``[Success]:``/``[Info]:`` sentinel wins over ``level``,
+    so unmigrated handlers keep exact behavior until the sweep lands.
+    """
     stripped = text.strip()
     if stripped.startswith("[Error]:"):
-        return False, f"**Error:** {stripped.removeprefix('[Error]:').strip()}"
-    if stripped.startswith("[Success]:"):
-        return True, f"**Done.** {stripped.removeprefix('[Success]:').strip()}"
-    if stripped.startswith("[Info]:"):
+        level = "error"
+        stripped = stripped.removeprefix("[Error]:").strip()
+    elif stripped.startswith("[Success]:"):
+        level = "success"
+        stripped = stripped.removeprefix("[Success]:").strip()
+    elif stripped.startswith("[Info]:"):
+        level = "info"
         stripped = stripped.removeprefix("[Info]:").strip()
 
+    if level == "error":
+        return False, "error", f"**Error:** {stripped}"
+    if level == "success":
+        return True, "success", f"**Done.** {stripped}"
+    if level == "warning":
+        return True, "warning", f"**Warning:** {stripped}"
+
     if not stripped:
-        return True, ""
+        return True, "info", ""
 
     lines = stripped.splitlines()
     if len(lines) > 1 and lines[0] and not lines[0].startswith(("-", "*", "#", "`")):
-        return True, "### " + lines[0] + "\n\n" + "\n".join(lines[1:]).strip()
-    return True, stripped
+        return True, "info", "### " + lines[0] + "\n\n" + "\n".join(lines[1:]).strip()
+    return True, "info", stripped
 
 
 class CommandHttpClient:
@@ -2847,8 +2874,10 @@ class CommandService:
             else:
                 raw_output = await method(parsed.args, parsed.rest)
             data: dict[str, Any] | None = None
+            level: CommandResultLevel = "info"
             if isinstance(raw_output, CommandOutput):
                 data = raw_output.data
+                level = raw_output.level
                 raw_output = raw_output.text
             if data and "form" in data and not ctx.supports_forms:
                 # Form payloads ship only to clients that declared they can
@@ -2859,13 +2888,13 @@ class CommandService:
                 # construction). State hints stay: the CLI applies them even
                 # where forms are off, and they are small.
                 data = {k: v for k, v in data.items() if k != "form"} or None
-            success, markdown = _format_legacy_output(raw_output)
+            success, level, markdown = _render_result_markdown(raw_output, level)
             limit = SKILL_SHOW_MAX_CHARS if definition.id == "skills.show" else 4000
             return CommandResult(
                 success,
                 _truncate(markdown, limit=limit),
                 command_label,
-                level="success" if success else "error",
+                level=level,
                 data=data if success else None,
             )
         except httpx.HTTPStatusError as e:

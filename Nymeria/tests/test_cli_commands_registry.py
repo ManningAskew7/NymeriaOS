@@ -407,6 +407,16 @@ def test_sink_translates_error_and_done_prefixes_into_glyphs() -> None:
     )
 
 
+def test_sink_translates_warning_artifact_into_glyph() -> None:
+    # #132: the dispatcher renders **Warning:** from an authored warning
+    # level; the sink pops it like Error/Done, with the warning accent.
+    printed = _sink_output(
+        CommandMessage("**Warning:** applied with caveats", level="warning")
+    )
+    assert _plains(printed) == ["! applied with caveats"]
+    assert any(_WARNING_HEX in style for style in _span_styles(printed[0]))
+
+
 def test_sink_success_readout_has_no_wash_and_no_glyph() -> None:
     """The headline fix: a plain success readout (every backend listing)
     renders in the normal palette: no green anywhere, no check mark."""

@@ -82,24 +82,70 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 FORM_CONTRACT_VERSION = 1
 
 FORM_FIELD_KINDS = ("search", "text", "radio", "checkbox")
+
+# The authored outcome of a command (#132). Defined here (the leaf module)
+# so both the dispatcher and the handler mixins import one spelling;
+# ``api/schemas/commands.py`` carries the wire twin.
+CommandResultLevel = Literal["info", "success", "warning", "error"]
 
 
 @dataclass(frozen=True)
 class CommandOutput:
     """Rich return value for command executor handlers.
 
-    ``text`` is the legacy dispatcher string (``[Info]:``/``[Success]:``/
-    ``[Error]:`` prefixes supported as usual); ``data`` becomes
-    ``CommandResult.data`` verbatim.
+    ``text`` is the result BODY (plain text or markdown, no sentinels);
+    ``level`` is the authored outcome, which the dispatcher renders into
+    the markdown artifacts every surface reads (``**Error:**`` /
+    ``**Done.**`` / ``**Warning:**``); ``data`` becomes
+    ``CommandResult.data`` verbatim (dropped when the level is ``error``,
+    the established failure-drops-data rule). Prefer the
+    ``command_info``/``command_success``/``command_warning``/
+    ``command_error`` constructors over instantiating this directly.
+
+    Transition note (#132): text carrying a legacy ``[Info]:``/
+    ``[Success]:``/``[Error]:`` sentinel still wins over ``level`` at the
+    dispatch boundary until the handler sweep retires the last prefixed
+    return.
     """
 
     text: str
     data: dict[str, Any] | None = field(default=None)
+    level: CommandResultLevel = field(default="info")
+
+
+def command_info(
+    text: str, *, data: dict[str, Any] | None = None
+) -> CommandOutput:
+    """A neutral readout (lists, status views): no artifact, no glyph."""
+    return CommandOutput(text, data=data, level="info")
+
+
+def command_success(
+    text: str, *, data: dict[str, Any] | None = None
+) -> CommandOutput:
+    """A completed ACTION confirmation: renders the ``**Done.**`` artifact."""
+    return CommandOutput(text, data=data, level="success")
+
+
+def command_warning(
+    text: str, *, data: dict[str, Any] | None = None
+) -> CommandOutput:
+    """Completed with a caveat worth surfacing: ``**Warning:**`` artifact,
+    ``success`` stays True so ``data`` survives."""
+    return CommandOutput(text, data=data, level="warning")
+
+
+def command_error(
+    text: str, *, data: dict[str, Any] | None = None
+) -> CommandOutput:
+    """A failure: ``**Error:**`` artifact, ``success`` False, ``data``
+    dropped at the boundary."""
+    return CommandOutput(text, data=data, level="error")
 
 
 def form_option(
@@ -276,7 +322,7 @@ def chain_form_output(
     text = "\n".join(
         line for line in [*cleaned_notes, *guidance] if line
     ) or fallback_text
-    return CommandOutput("[Info]: " + text, data=command_data(form=form))
+    return command_info(text, data=command_data(form=form))
 
 
 def rest_value(rest: str) -> str:
