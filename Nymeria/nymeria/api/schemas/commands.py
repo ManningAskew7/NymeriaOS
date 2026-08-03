@@ -60,6 +60,7 @@ class CommandParamModel(BaseModel):
     aliases: list[str] = []
     description: str = ""
     no_echo: bool = False
+    label: str | None = None
 
 
 class CommandInfoResponse(BaseModel):
