@@ -553,6 +553,7 @@ class InProcessAgentClient:
                 # Carries the caller's user-defined aliases into the CLI
                 # mirror (#133); the schema itself is user-independent.
                 user_id=user_id,
+                include_user_aliases=True,
             )
         ]
 

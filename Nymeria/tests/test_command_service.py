@@ -3274,6 +3274,52 @@ def test_user_alias_create_refuses_bad_shapes(alias_repo) -> None:
     assert "chat turn" in chat_stream.markdown
 
 
+def test_alias_create_accepts_a_whole_expansion_quoted_as_one_blob(alias_repo) -> None:
+    """Discord's generated cog (and the CLI form rescue) shlex-quote the
+    rest value they compose, so a realistic expansion arrives as ONE quoted
+    blob (the #133 correctness review's H2, which made /alias create
+    structurally unusable on Discord). That wrapping is not a grouped
+    multi-word value: it re-splits into plain words. Grouping WITHIN the
+    expansion stays refused (the v1 non-goal)."""
+    service = CommandService()
+    api = FakeCommandApi()
+
+    blob = run(
+        service.execute(_ctx(), "/alias create td 'todos list all'", api=api)
+    )
+    assert blob.success is True, blob.markdown
+    listed = run(service.execute(_ctx(), "/td", api=api))
+    assert "TODOs (all): 2 items" in listed.markdown
+
+    grouped = run(
+        service.execute(_ctx(), '/alias create zz memory save "two words"', api=api)
+    )
+    assert grouped.success is False
+    assert "single unquoted words" in grouped.markdown
+
+
+def test_alias_create_refuses_an_expansion_that_can_never_dispatch(alias_repo) -> None:
+    """Extras and invalid values are permanent (no typed tail removes a
+    token), so they are refused at CREATE instead of failing forever at
+    dispatch (the review's M2). A missing required is deliberately fine: a
+    prefix alias is completed by the typed tail."""
+    service = CommandService()
+    api = FakeCommandApi()
+
+    extras = run(
+        service.execute(
+            _ctx(), "/alias create zz todos list all extraextra", api=api
+        )
+    )
+    assert extras.success is False
+    assert "would never dispatch" in extras.markdown
+
+    prefix = run(service.execute(_ctx(), "/alias create nk memory save", api=api))
+    assert prefix.success is True, prefix.markdown
+    saved = run(service.execute(_ctx(), "/nk color blue", api=api))
+    assert saved.success is True, saved.markdown
+
+
 def test_stale_stamped_alias_is_inert_at_dispatch(alias_repo) -> None:
     """The store control wired through dispatch: an out-of-band row edit
     yields an unknown command, not the planted expansion, and the listing
@@ -3300,26 +3346,31 @@ def test_stale_stamped_alias_is_inert_at_dispatch(alias_repo) -> None:
 
 
 def test_list_commands_annotates_the_callers_user_aliases(alias_repo) -> None:
-    """The catalog ride (#133): with a user_id, each command carries THAT
-    caller's aliases for it in `user_aliases` (display and client-mirror
-    metadata; dispatch reads the store). Stale and other-user rows never
-    ride, and a user-less listing is untouched.
+    """The catalog ride (#133): opted in WITH a user_id, each command
+    carries THAT caller's aliases for it in `user_aliases` (display and
+    client-mirror metadata; dispatch reads the store). Stale and other-user
+    rows never ride, and the annotation is opt-in: the /help renderers pass
+    user_id for skill visibility and must not pay an accounts.db read for
+    an annotation they never show.
     """
     service = CommandService()
     api = FakeCommandApi()
     run(service.execute(_ctx(), "/alias create td todos list all", api=api))
 
-    infos = service.list_commands(user_id="alice")
+    infos = service.list_commands(user_id="alice", include_user_aliases=True)
     by_id = {info.id: info for info in infos}
     assert by_id["todos.list"].user_aliases == ["/td"]
     assert by_id["todos"].user_aliases == []
 
-    # No user, no annotation; another user, no annotation.
+    # user_id alone does not annotate (opt-in); another user sees nothing.
     assert all(
-        info.user_aliases == [] for info in service.list_commands()
+        info.user_aliases == [] for info in service.list_commands(user_id="alice")
     )
     assert all(
-        info.user_aliases == [] for info in service.list_commands(user_id="bob")
+        info.user_aliases == []
+        for info in service.list_commands(
+            user_id="bob", include_user_aliases=True
+        )
     )
 
 

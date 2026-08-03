@@ -186,7 +186,9 @@ class CLIApp:
         # claims (truly frontend-local: theme, clipboard, etc.) or contribute
         # subcommands that get merged under a backend-owned root. See
         # CommandRegistry.register for the merge rules.
-        backend.register(self.registry, user_id=self.state.user_id)
+        backend_provider = backend.register(
+            self.registry, user_id=self.state.user_id
+        )
 
         system.register(self.registry)
         connection.register(self.registry)
@@ -208,6 +210,12 @@ class CLIApp:
         export.register(self.registry)
         clipboard.register(self.registry)
         conversation.register(self.registry)
+
+        # User-alias proxies come LAST: only now can the name-collision
+        # guard see every local command, so an alias spelled like one can
+        # never displace it (the backend-wins merge would otherwise discard
+        # the local root arriving second).
+        backend_provider.register_user_alias_proxies(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""

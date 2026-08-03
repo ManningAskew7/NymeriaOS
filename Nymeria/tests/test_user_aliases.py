@@ -119,6 +119,17 @@ def test_control_covers_the_authoring_actor(repo: UserAliasesRepo) -> None:
     assert repo.resolve_for_dispatch("alice", "gpt5") is None
 
 
+def test_control_covers_the_recorded_target(repo: UserAliasesRepo) -> None:
+    """command_id drives the LISTING's dormancy verdict, not dispatch, but a
+    field the listing trusts and the stamp ignores is a field an
+    out-of-band writer can lie through."""
+    _create(repo)
+    _tamper(repo, "command_id", "somewhere.else")
+
+    assert repo.resolve_for_dispatch("alice", "gpt5") is None
+    assert repo.list_aliases("alice")[0].stamp_valid is False
+
+
 def test_corrupt_tokens_json_is_inert_not_crashing(repo: UserAliasesRepo) -> None:
     _create(repo)
     _tamper(repo, "tokens_json", "not json")

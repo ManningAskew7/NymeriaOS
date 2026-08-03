@@ -270,11 +270,22 @@ class CommandRegistry:
         text = raw_input
         if json_requested:
             # The --json flag is CLI-local; it was stripped from the parsed
-            # invocation but the forward sends raw text.
+            # invocation (case-insensitively) but the forward sends raw text.
             text = " ".join(
-                token for token in raw_input.split() if token != "--json"
+                token
+                for token in raw_input.split()
+                if token.casefold() != "--json"
             )
-        return await forward_raw_command(context, text)
+        try:
+            return await forward_raw_command(context, text)
+        except Exception as exc:  # noqa: BLE001 - transport faults surface in UI.
+            # Mirror _execute's containment: a transport fault on an unknown
+            # token must degrade to an error result, not kill the REPL.
+            return CommandResult.failed(
+                f"Command failed: {exc}",
+                error_code="command_exception",
+                payload={"error_type": exc.__class__.__name__},
+            )
 
     def get_all_commands(self) -> list[Command]:
         """Return all non-hidden root commands."""

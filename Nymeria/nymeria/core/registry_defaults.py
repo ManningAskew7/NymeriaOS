@@ -1026,6 +1026,9 @@ def register_default_commands(service: "CommandService") -> None:
         "alias",
         description="List your personal command aliases (family overview)",
         category="Settings",
+        # The plural registers on the ROOT (whose handler IS the listing),
+        # not on `alias list`: same behavior, one fewer indirection. The
+        # #133 plan said the latter; recorded deviation.
         aliases=("aliases",),
         params=(),
     )

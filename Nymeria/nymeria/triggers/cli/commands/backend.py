@@ -35,6 +35,7 @@ class BackendCommandProvider:
                 surface="cli",
                 is_admin=True,
                 user_id=user_id,
+                include_user_aliases=True,
             )
         ]
         return cls(commands)
@@ -80,8 +81,22 @@ class BackendCommandProvider:
             self._register_path(registry, info, path)
         for info, path in registerable:
             self._register_root_aliases(registry, info, path)
-        for info, path in registerable:
-            self._register_user_alias_proxies(registry, info, path)
+
+    def register_user_alias_proxies(self, registry: CommandRegistry) -> None:
+        """The DEFERRED third pass: run this AFTER local command modules.
+
+        The backend provider registers before the locals so backend roots
+        win, which means a proxy registered here-and-now for a user alias
+        spelled like a CLI-LOCAL command (`retry`, `undo`, `theme`...)
+        would land first and the backend-wins merge would then DISCARD the
+        local root when it arrived. Deferring the pass makes the
+        `registry.get` guard see the locals, so the catalog and local
+        commands genuinely win the name.
+        """
+        for info in self.commands:
+            path = _path(info)
+            if path:
+                self._register_user_alias_proxies(registry, info, path)
 
     def _register_root_aliases(
         self,
@@ -96,7 +111,15 @@ class BackendCommandProvider:
         registry, so an alias naming a root the catalog no longer has
         (``/branch`` for ``thread branch``, ``/tasks`` for ``todos list``)
         would be an unknown command. Those register as HIDDEN root proxies:
-        still typeable, absent from the palette, which speaks canon.
+        still typeable and Tab-completable, absent from the palette, which
+        speaks canon. (Dispatch alone would survive without them via the
+        registry's unknown-token backend fallback; completion is their
+        remaining value.)
+
+        Proxies forward the ALIAS spelling raw, never the target's
+        canonical path: the backend's own expansion is the authority, and a
+        substituted path would silently drop the argument tokens an
+        INJECTED alias carries (the #131 wrong-view bug, one layer up).
 
         Flat ``<family>_<verb>`` aliases are skipped: they are the chat
         platforms' flattening of a path the CLI reaches by typing the path.
@@ -113,10 +136,11 @@ class BackendCommandProvider:
                 continue
             if registry.get(alias) is not None:
                 continue
-            proxy = _backend_command(info, path)
+            proxy = _backend_command(info, (alias,))
             proxy.name = alias
             proxy.aliases = []
             proxy.hidden = True
+            proxy.usage = f"/{alias}"
             registry.register(proxy)
 
     def _register_user_alias_proxies(
@@ -125,14 +149,15 @@ class BackendCommandProvider:
         info: Mapping[str, Any],
         path: tuple[str, ...],
     ) -> None:
-        """The caller's user-defined aliases (#133) as hidden RAW-FORWARD
-        proxies, so they tab-complete and dispatch here.
+        """The caller's user-defined aliases (#133) as RAW-FORWARD proxies.
 
-        Deliberately NOT the ``_register_root_aliases`` shape: a user alias
-        can inject argument values, and a canonical-path proxy would drop
-        them. The proxy forwards the TYPED spelling and lets the backend's
-        own expansion (the stamped, gate-preserving one) do the work, which
-        also means a mid-session change to the alias is honored. Local
+        Same forwarding shape as ``_register_root_aliases`` (the alias
+        spelling goes to the backend verbatim; its stamped, gate-preserving
+        expansion is the authority, so a mid-session alias change is
+        honored), but VISIBLE: hiding exists so the palette speaks canon
+        for retired spellings, and a user's own vocabulary is not a retired
+        spelling. With dispatch already covered by the unknown-token
+        fallback, discoverability is the mirror's entire value. Local
         commands and the catalog win the name.
         """
         for raw_alias in info.get("user_aliases", []) or []:
@@ -144,7 +169,6 @@ class BackendCommandProvider:
             proxy = _backend_command(info, (alias,))
             proxy.name = alias
             proxy.aliases = []
-            proxy.hidden = True
             proxy.usage = f"/{alias}"
             proxy.description = f"Your alias for /{_display_path(path)}"
             registry.register(proxy)
@@ -209,16 +233,22 @@ class BackendCommandProvider:
         )
 
 
-def register(registry: CommandRegistry, user_id: str | None = None) -> None:
+def register(
+    registry: CommandRegistry, user_id: str | None = None
+) -> BackendCommandProvider:
     """Register backend global command proxies on a CLI registry.
 
     ``user_id`` rides into the catalog read so the caller's user-defined
     aliases (#133) mirror as raw-forward proxies. The local store answers,
     which is exact in the slim shape; against a remote backend the mirror
     is best-effort and the registry's unknown-token fallback stays the
-    dispatch authority.
+    dispatch authority. Returns the provider so the caller can run
+    ``register_user_alias_proxies`` AFTER the local command modules (see
+    that method for why the pass must be deferred).
     """
-    BackendCommandProvider.from_service(user_id).register(registry)
+    provider = BackendCommandProvider.from_service(user_id)
+    provider.register(registry)
+    return provider
 
 
 def _ensure_child(

@@ -31,6 +31,26 @@ from nymeria.triggers import api as api_module  # noqa: E402
 _Settings.model_config["env_file"] = ()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_user_alias_store(tmp_path_factory: pytest.TempPathFactory):
+    """Suite hermeticity for the #133 user-alias store.
+
+    The dispatch seam reads the singleton repo on every unknown leading
+    token, so without this an unfixtured `CommandService().execute()` test
+    opens the checkout's REAL `data/accounts.db` and an operator's own alias
+    row (user ids like "alice" are common to both) could change unrelated
+    test outcomes. Session-scoped: one empty throwaway table; tests that
+    write aliases use their own function-scoped fixture on top.
+    """
+    from nymeria.core import user_aliases as _ua
+
+    _ua._repo = _ua.UserAliasesRepo(
+        tmp_path_factory.mktemp("user-aliases") / "accounts.db"
+    )
+    yield
+    _ua.reset_user_aliases_repo_for_tests()
+
+
 @dataclass
 class ApiTestSettings:
     data_dir: Path

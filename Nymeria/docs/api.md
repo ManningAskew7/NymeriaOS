@@ -1581,7 +1581,10 @@ access. An alias always loses to a registered command spelling, both at
 creation (refused) and later (if the catalog claims the name, the alias
 goes dormant and `/alias list` says so). Rows are stamped by the authoring
 path and verified at dispatch; a row edited outside the `/alias` command
-is skipped as inert and flagged in the listing. Discord cannot type alias
+is skipped as inert and flagged in the listing (an integrity check with
+the same stated limit as every store gate here: the hash is unkeyed and
+lives beside the fields it covers, so it is not a security boundary; see
+SECURITY.md). Discord cannot type alias
 spellings (its slash registry only knows registered names), but managing
 them there works. Expansion values are single unquoted words; quoted
 phrases are refused at creation. `GET /commands` with a `user_id` annotates
