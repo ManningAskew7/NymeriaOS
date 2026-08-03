@@ -41,6 +41,8 @@ _DEFAULT_FOOTER = "↑↓ move · Space toggle · Enter set · Esc close"
 _RADIO_FOOTER = "↑↓ move · Enter set · Esc close"
 _TEXT_FOOTER = "←→ move · Tab step · Enter submit · Esc close"
 _TEXT_FOOTER_SINGLE_TAB = "Enter submit · Esc close"
+_ACTION_FOOTER = "←→ step · Enter run · Esc close"
+_ACTION_FOOTER_SINGLE_TAB = "Enter run · Esc close"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,10 +87,10 @@ class FormTab:
     # commands use it as a step rail: the response re-sends all reached
     # steps as tabs with the next undecided one active.
     active: bool = False
-
-    # Invariant addition (text fields): a tab holds at most one TYPED input
-    # (search or text), because the composer line feeds exactly one value;
-    # ``input_field`` surfaces the first of either kind.
+    # A FIELDLESS tab is a described ACTION (#139): Enter dispatches its
+    # submit template as-is, and ``description`` is the one-line explanation
+    # rendered where a fielded tab would show its input or list.
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +400,12 @@ def _footer_hint(spec: FormSpec, state: FormState) -> str:
         return _BUSY_FOOTER
     if spec.footer_hint:
         return spec.footer_hint
+    tab = active_tab(spec, state)
+    if tab is not None and not tab.fields:
+        # A fieldless ACTION tab (#139): Enter runs it, nothing to type.
+        if len(spec.tabs) <= 1:
+            return _ACTION_FOOTER_SINGLE_TAB
+        return _ACTION_FOOTER
     if not has_navigable_list(spec, state):
         # Mirror chain_footer: a one-step form has nothing to step BETWEEN, so
         # advertising the step keys there would name a control that does nothing.
@@ -420,8 +428,11 @@ def form_panel_height(
     rows = 1  # header
     if len(spec.tabs) > 1:
         rows += 1
-    if input_field(active_tab(spec, state)) is not None:
+    tab = active_tab(spec, state)
+    if input_field(tab) is not None:
         rows += 1
+    elif tab is not None and not tab.fields:
+        rows += 1  # action-tab description row (#139)
     options = visible_options(spec, state)
     if has_navigable_list(spec, state):
         visible = min(len(options), max(1, max_rows)) if options else 1
@@ -462,9 +473,14 @@ def form_panel_fragments(
         lines.append(_tab_bar_fragments(spec, state, panel_width))
 
     # Typed-input line (search filter or text value)
-    field_input = input_field(active_tab(spec, state))
+    tab_obj = active_tab(spec, state)
+    field_input = input_field(tab_obj)
     if field_input is not None:
         lines.append(_input_fragments(field_input, state, panel_width))
+    elif tab_obj is not None and not tab_obj.fields:
+        # Fieldless ACTION tab (#139): one described row where a fielded
+        # tab would show its input or list.
+        lines.append(_action_fragments(tab_obj, state, panel_width))
 
     # Option list
     if has_navigable_list(spec, state):
@@ -575,6 +591,28 @@ def _input_fragments(
         ("class:form-panel.search", prefix),
         (body_style, body),
         (body_style, padding),
+    ]
+
+
+def _action_fragments(
+    tab: FormTab,
+    state: FormState,
+    panel_width: int,
+) -> list[tuple[str, str]]:
+    """The one-line body of a fieldless action tab (#139): its description,
+    or a plain run instruction, flipping to an in-flight note while busy."""
+
+    if state.busy:
+        body_text = "submitted, working…"
+    else:
+        body_text = tab.description or "Press Enter to run"
+    prefix = "▸ "
+    body = _fit_cell(body_text, max(1, panel_width - cell_len(prefix)))
+    padding = " " * max(0, panel_width - cell_len(prefix) - cell_len(body))
+    return [
+        ("class:form-panel.search", prefix),
+        ("class:form-panel.placeholder", body),
+        ("class:form-panel.placeholder", padding),
     ]
 
 

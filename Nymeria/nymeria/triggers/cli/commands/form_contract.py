@@ -165,9 +165,11 @@ async def _confirm(
     list_values = [
         value for key, value in values.items() if "{" + key + "}" in template
     ]
-    if not any(value.strip() for value in list_values):
-        # Nothing selected for any substituted field: dismiss quietly, the
-        # same no-op the local /model picker used for an empty selection.
+    if list_values and not any(value.strip() for value in list_values):
+        # Fields feed this template but nothing is selected or typed:
+        # dismiss quietly, the same no-op the local /model picker used for
+        # an empty selection. A template with NO substituted keys is a
+        # described ACTION (fieldless tab, #139) and dispatches as-is.
         return CommandResult.completed()
 
     command = substitute_template(template, values).strip()
@@ -249,9 +251,18 @@ def _tab_from_payload(raw_tab: Any) -> FormTab | None:
         if field is not None:
             fields.append(field)
     # Renderable = an option list OR a typed text input (a search field
-    # alone filters nothing and stays insufficient).
+    # alone filters nothing and stays insufficient) OR a fieldless ACTION
+    # tab carrying its own submit template (#139): Enter dispatches the
+    # template as-is and ``description`` explains what it will do.
     if not any(field.kind in _LIST_KINDS or field.kind == "text" for field in fields):
-        return None
+        if fields or not _tab_submit_template(raw_tab):
+            return None
+        return FormTab(
+            label=label,
+            fields=(),
+            active=bool(raw_tab.get("active")),
+            description=str(raw_tab.get("description") or "").strip(),
+        )
     return FormTab(
         label=label,
         fields=tuple(fields),

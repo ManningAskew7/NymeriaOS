@@ -142,13 +142,12 @@ def test_confirm_substitutes_selection_and_dispatches_backend_command() -> None:
     assert result.ok is True
 
 
-def test_confirm_single_option_tab_needs_a_live_token_to_dispatch() -> None:
-    """The /provider action step's Set up / Test tabs are single-option
-    radios whose option id IS the command argument (a live token): the
-    confirm treats a template with no substituted value as an empty
-    selection, so a placeholder-free "button" tab silently never
-    dispatches. Both halves pinned here so the backend shape and the
-    client rule cannot drift apart."""
+def test_confirm_placeholder_free_template_dispatches_as_is() -> None:
+    """#139: a submit template with NO substituted keys is a described
+    action and dispatches verbatim on Enter. The empty-selection no-op
+    guards only templates that HAVE placeholders (previous contract: a
+    placeholder-free tab was silently undispatchable, which forced the
+    live-token one-option-radio workaround this replaces)."""
 
     payload = _form_payload(
         title="Provider: Anthropic",
@@ -194,9 +193,6 @@ def test_confirm_single_option_tab_needs_a_live_token_to_dispatch() -> None:
     )
     assert client.calls == ["/provider setup anthropic"]
 
-    # The placeholder-free variant is dismissed as an empty selection:
-    # this is the client rule the backend's live-token option ids exist
-    # to satisfy.
     run(
         spec.on_confirm(
             FormResult(
@@ -206,7 +202,49 @@ def test_confirm_single_option_tab_needs_a_live_token_to_dispatch() -> None:
             )
         )
     )
-    assert client.calls == ["/provider setup anthropic"]
+    assert client.calls == [
+        "/provider setup anthropic",
+        "/provider setup anthropic",
+    ]
+
+
+def test_fieldless_action_tab_renders_and_dispatches() -> None:
+    """#139: a FIELDLESS tab carrying its own submit template survives
+    adaptation as a described action; one without a template stays
+    unrenderable and is dropped."""
+
+    payload = _form_payload(
+        title="Provider: Anthropic",
+        tabs=[
+            {
+                "label": "Test",
+                "submit": {"command": "provider test anthropic"},
+                "description": "Send a probe request",
+                "fields": [],
+            },
+            {
+                "label": "Broken",
+                "fields": [],
+            },
+        ],
+        submit={"command": "provider {provider}"},
+    )
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    spec = form_spec_from_payload(payload, context=context)
+
+    assert spec is not None
+    (tab,) = spec.tabs  # the template-less fieldless tab is dropped
+    assert tab.label == "Test"
+    assert tab.fields == ()
+    assert tab.description == "Send a probe request"
+
+    run(
+        spec.on_confirm(
+            FormResult(spec_title="Provider: Anthropic", tab_label="Test")
+        )
+    )
+    assert client.calls == ["/provider test anthropic"]
 
 
 def test_confirm_with_empty_selection_is_a_quiet_noop() -> None:

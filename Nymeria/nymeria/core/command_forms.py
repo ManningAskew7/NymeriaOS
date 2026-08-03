@@ -20,6 +20,7 @@ behind the version number later):
       "tabs": [{"label": str,
                 "submit": {"command": str} | absent,
                 "active": bool | absent,
+                "description": str | absent,
                 "fields": [
           {"kind": "search", "key": str, "placeholder": str | None},
           {"kind": "text", "key": str, "label": str | None,
@@ -48,9 +49,16 @@ changes and there is no capability negotiation on the wire.
 A ``text`` field is a free-typed value substituted like any other field
 (``secret: true`` asks the client to mask the display and keep the value
 out of its input history; secrets must NEVER be echoed back into form
-payloads, which ship to every frontend). A tab holds at most ONE typed
-input (search or text) because rich clients feed it from their single
-composer line, and needs a typed input or an option list to be renderable.
+payloads, which ship only to callers that declared ``supports_forms``). A
+tab holds at most ONE typed input (search or text) because rich clients
+feed it from their single composer line, and needs a typed input, an
+option list, or an action shape (below) to be renderable.
+
+A tab with NO fields is a described ACTION (#139): its own ``submit``
+template carries no placeholders and the client dispatches it as-is on
+Enter, rendering ``description`` where a fielded tab shows its input or
+list. The empty-selection no-op applies only to templates that HAVE
+substituted keys; a placeholder-free template always dispatches.
 
 ``notes`` (optional, chained commands) carries the step's DELTA lines; see
 :func:`chain_form_output`. Clients that predate it ignore an unknown key.
@@ -146,16 +154,24 @@ def form_tab(
     *,
     submit_command: str = "",
     active: bool = False,
+    description: str = "",
 ) -> dict[str, Any]:
     """Build a tab dict; ``submit_command`` (optional) overrides the
     form-level submit template while this tab is active, and ``active``
-    asks the client to open the form on this tab."""
+    asks the client to open the form on this tab.
+
+    A tab with NO fields is a described ACTION (#139): it must carry its
+    own ``submit_command`` (whose template needs no placeholders; the
+    client dispatches it as-is on Enter), and ``description`` is the one
+    line the client renders in place of an input or list."""
 
     tab: dict[str, Any] = {"label": label, "fields": list(fields)}
     if submit_command:
         tab["submit"] = {"command": submit_command}
     if active:
         tab["active"] = True
+    if description:
+        tab["description"] = description
     return tab
 
 
