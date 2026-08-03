@@ -363,68 +363,6 @@ def _split_args(rest: str) -> list[str]:
         return rest.split()
 
 
-def _consume_option(
-    args: list[str],
-    option: str,
-    *,
-    default: str,
-) -> tuple[str, list[str], str]:
-    """Pull ``--key value`` out of ``args``.
-
-    Returns ``(selected_value, remaining_args, error_message)``. ``error_message``
-    is empty on success. If the option appears multiple times, the last wins.
-    """
-    remaining: list[str] = []
-    selected = default
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == option:
-            if index + 1 >= len(args) or args[index + 1].startswith("--"):
-                return selected, list(args), f"{option} requires a value."
-            selected = args[index + 1]
-            index += 2
-            continue
-        remaining.append(arg)
-        index += 1
-    return selected, remaining, ""
-
-
-def _consume_flag(args: list[str], flag: str) -> tuple[bool, list[str]]:
-    """Pull a boolean ``--flag`` out of ``args``."""
-    remaining: list[str] = []
-    present = False
-    for arg in args:
-        if arg == flag:
-            present = True
-        else:
-            remaining.append(arg)
-    return present, remaining
-
-
-def _consume_all(args: list[str], option: str) -> tuple[list[str], list[str], str]:
-    """Pull EVERY ``--option value`` occurrence out of ``args`` (repeatable flag).
-
-    Returns ``(values, remaining_args, error_message)``; ``error_message`` is
-    empty on success. Unlike ``_consume_option`` (last-wins), this collects all
-    occurrences, so ``--cond a --cond b`` yields ``["a", "b"]``.
-    """
-    values: list[str] = []
-    remaining: list[str] = []
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == option:
-            if index + 1 >= len(args) or args[index + 1].startswith("--"):
-                return values, list(args), f"{option} requires a value."
-            values.append(args[index + 1])
-            index += 2
-            continue
-        remaining.append(arg)
-        index += 1
-    return values, remaining, ""
-
-
 def _parse_hook_conditions(raw_list: list[str], case_sensitive: bool):
     """Parse ``--cond "field op value"`` strings into ``HookCondition`` objects.
 
@@ -3341,16 +3279,16 @@ class _CommandExecutor(
 
     # ── Skills ────────────────────────────────────────────────────────────
 
-    async def _cmd_skills(self, args: list[str], rest: str) -> str:
-        if not args or args == ["list"]:
-            return await self._cmd_skills_list([], "")
-        if args[0] == "show":
-            return await self._cmd_skills_show(args[1:], rest)
-        if args == ["off", "all"]:
-            return await self._cmd_skills_off_all([], "")
+    async def _cmd_skills(self, bound: BoundArgs) -> str:
+        # Bare "/skills" lists. Every skills verb is a registered path, so
+        # longest-prefix dispatch routes them before this handler runs and the
+        # only token that reaches the binder here is a typo.
+        sub = str(bound.get("subcommand") or "")
+        if not sub or sub == "list":
+            return await self._cmd_skills_list(BoundArgs())
         return self._usage_error("skills")
 
-    async def _cmd_skills_list(self, args: list[str], rest: str) -> str:
+    async def _cmd_skills_list(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -3375,17 +3313,14 @@ class _CommandExecutor(
             lines.append(f"- `{skill.name}` - {kind}, {status}{ttl}; {skill.description}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_skills_show(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: `/skills show <name>`."
-
+    async def _cmd_skills_show(self, bound: BoundArgs) -> str:
         agent = self._agent()
         service = get_command_service()
         skill_manager = service._skill_manager(agent)
         if skill_manager is None:
             return "[Error]: Skill manager unavailable."
 
-        skill_name = args[0].strip().lower()
+        skill_name = str(bound.get("name") or "").strip().lower()
         try:
             skill = skill_manager.get(skill_name, user_id=self.user_id)
         except Exception as e:  # noqa: BLE001
@@ -3395,7 +3330,7 @@ class _CommandExecutor(
 
         return skill.body.strip() or f"# {skill.name}\n\n(No body.)"
 
-    async def _cmd_skills_off_all(self, args: list[str], rest: str) -> str:
+    async def _cmd_skills_off_all(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -3427,11 +3362,11 @@ class _CommandExecutor(
         prefix = "[Error]:" if had_error else "[Success]:"
         return prefix + " Deactivated skills:\n" + "\n".join(lines)
 
-    async def _cmd_skills_search(self, args: list[str], rest: str) -> str:
-        source, remaining, error = _consume_option(args, "--source", default="anthropic")
-        if error:
-            return f"[Error]: {error}"
-        query = " ".join(remaining).strip() or None
+    async def _cmd_skills_search(self, bound: BoundArgs) -> str:
+        source = str(bound.get("source") or "anthropic")
+        # The declared query is a repeatable positional: the bare words the
+        # options left behind, joined the way the hand parser joined them.
+        query = " ".join(bound.get("query") or []).strip() or None
 
         from ..skills.marketplace import MarketplaceError, get_fetcher
 
@@ -3459,21 +3394,10 @@ class _CommandExecutor(
             lines.append(f"... and {len(entries) - 50} more")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_skills_install(self, args: list[str], rest: str) -> str:
-        scope, args, error = _consume_option(args, "--scope", default="user")
-        if error:
-            return f"[Error]: {error}"
-        source, args, error = _consume_option(args, "--source", default="anthropic")
-        if error:
-            return f"[Error]: {error}"
-        if not args:
-            return (
-                "[Error]: Usage: /skills install <name> "
-                "[--source <source>] [--scope user|global]"
-            )
-        if scope not in ("user", "global"):
-            return "[Error]: --scope must be 'user' or 'global'."
-        name = args[0]
+    async def _cmd_skills_install(self, bound: BoundArgs) -> str:
+        scope = str(bound.get("scope") or "user")
+        source = str(bound.get("source") or "anthropic")
+        name = str(bound.get("name") or "")
 
         agent = self._agent()
         if agent is None:
@@ -3504,18 +3428,15 @@ class _CommandExecutor(
         skill_manager.reload()
         return f"[Success]: Installed skill '{skill.name}' (scope: {scope})."
 
-    async def _cmd_skills_enable(self, args: list[str], rest: str) -> str:
-        return await self._set_skill_state(args, enabled=True)
+    async def _cmd_skills_enable(self, bound: BoundArgs) -> str:
+        return await self._set_skill_state(bound, enabled=True)
 
-    async def _cmd_skills_disable(self, args: list[str], rest: str) -> str:
-        return await self._set_skill_state(args, enabled=False)
+    async def _cmd_skills_disable(self, bound: BoundArgs) -> str:
+        return await self._set_skill_state(bound, enabled=False)
 
-    async def _set_skill_state(self, args: list[str], *, enabled: bool) -> str:
-        global_scope, args = _consume_flag(args, "--global")
-        verb = "enable" if enabled else "disable"
-        if not args:
-            return f"[Error]: Usage: /skills {verb} [--global] <name>"
-        name = args[0]
+    async def _set_skill_state(self, bound: BoundArgs, *, enabled: bool) -> str:
+        global_scope = bool(bound.get("global"))
+        name = str(bound.get("name") or "")
 
         agent = self._agent()
         if agent is None:
@@ -3562,17 +3483,14 @@ class _CommandExecutor(
         action = "Enabled" if enabled else "Disabled"
         return f"[Success]: {action}: {name}"
 
-    async def _cmd_skills_inspect(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /skills inspect <name>"
-
+    async def _cmd_skills_inspect(self, bound: BoundArgs) -> str:
         agent = self._agent()
         service = get_command_service()
         skill_manager = service._skill_manager(agent)
         if skill_manager is None:
             return "[Error]: Skill manager unavailable."
 
-        skill_name = args[0].strip().lower()
+        skill_name = str(bound.get("name") or "").strip().lower()
         try:
             skill = skill_manager.get(skill_name, user_id=self.user_id)
         except Exception as exc:  # noqa: BLE001
@@ -3604,12 +3522,14 @@ class _CommandExecutor(
 
     # ── MCP servers ───────────────────────────────────────────────────────
 
-    async def _cmd_mcp(self, args: list[str], rest: str) -> str:
-        if not args or args == ["list"]:
-            return await self._cmd_mcp_list([], "")
+    async def _cmd_mcp(self, bound: BoundArgs) -> str:
+        # Bare "/mcp" lists; every verb is a registered path routed before this.
+        sub = str(bound.get("subcommand") or "")
+        if not sub or sub == "list":
+            return await self._cmd_mcp_list(BoundArgs())
         return self._usage_error("mcp")
 
-    async def _cmd_mcp_list(self, args: list[str], rest: str) -> str:
+    async def _cmd_mcp_list(self, bound: BoundArgs) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
@@ -3630,14 +3550,15 @@ class _CommandExecutor(
             lines.append(f"| `{server.id}` | {state} | {tool_count} | {name} |")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_mcp_status(self, args: list[str], rest: str) -> str:
+    async def _cmd_mcp_status(self, bound: BoundArgs) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
 
         registry = get_mcp_server_registry()
-        if args:
-            server = registry.get_server(args[0])
+        server_id = str(bound.get("server_id") or "")
+        if server_id:
+            server = registry.get_server(server_id)
             if server is None:
-                return f"[Error]: MCP server '{args[0]}' not found."
+                return f"[Error]: MCP server '{server_id}' not found."
             rows = [
                 ("ID", server.id),
                 ("Name", server.name or ""),
@@ -3677,17 +3598,11 @@ class _CommandExecutor(
             lines.append(f"- `{server.id}`: {state}{err}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_mcp_logs(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /mcp logs <server-id> [limit]"
-
+    async def _cmd_mcp_logs(self, bound: BoundArgs) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
 
-        server_id = args[0]
-        try:
-            limit = max(1, int(args[1])) if len(args) > 1 else 20
-        except (TypeError, ValueError):
-            limit = 20
+        server_id = str(bound.get("server_id") or "")
+        limit = max(1, int(bound.get("limit", 20)))
 
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
@@ -3702,13 +3617,10 @@ class _CommandExecutor(
         lines.extend(f"- {line}" for line in selected)
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_mcp_discover(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /mcp discover <server-id>"
-
+    async def _cmd_mcp_discover(self, bound: BoundArgs) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
 
-        server_id = args[0]
+        server_id = str(bound.get("server_id") or "")
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
         if server is None:
@@ -3740,13 +3652,10 @@ class _CommandExecutor(
             f"for `{server_id}`{suffix}"
         )
 
-    async def _cmd_mcp_test(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /mcp test <server-id>"
-
+    async def _cmd_mcp_test(self, bound: BoundArgs) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
 
-        server_id = args[0]
+        server_id = str(bound.get("server_id") or "")
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
         if server is None:
@@ -3766,13 +3675,10 @@ class _CommandExecutor(
             return f"[Success]: MCP test passed: `{server_id}`{suffix}"
         return f"[Error]: MCP test failed for `{server_id}`: {error or result}"
 
-    async def _cmd_mcp_remove(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /mcp remove <server-id>"
-
+    async def _cmd_mcp_remove(self, bound: BoundArgs) -> str:
         from ..core.mcp_servers import get_mcp_server_registry
 
-        server_id = args[0]
+        server_id = str(bound.get("server_id") or "")
         registry = get_mcp_server_registry()
         if not registry.delete_server(server_id):
             return f"[Error]: MCP server '{server_id}' not found."
@@ -3782,14 +3688,11 @@ class _CommandExecutor(
             agent.reload_mcp_server_tools()
         return f"[Success]: Removed MCP server `{server_id}`."
 
-    async def _cmd_mcp_retry(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /mcp retry <server-id>"
-
+    async def _cmd_mcp_retry(self, bound: BoundArgs) -> str:
         from ..core.mcp_runtime import MCPInstallPlan
         from ..core.mcp_servers import get_mcp_server_registry
 
-        server_id = args[0]
+        server_id = str(bound.get("server_id") or "")
         registry = get_mcp_server_registry()
         server = registry.get_server(server_id)
         if server is None:
@@ -3831,16 +3734,16 @@ class _CommandExecutor(
 
         return _get_trigger_manager()
 
-    async def _cmd_triggers(self, args: list[str], rest: str) -> str:
-        if not args or args == ["list"]:
-            return await self._cmd_triggers_list([], "")
+    async def _cmd_triggers(self, bound: BoundArgs) -> str:
+        # Bare "/triggers" lists; every verb is a registered path routed first.
+        sub = str(bound.get("subcommand") or "")
+        if not sub or sub == "list":
+            return await self._cmd_triggers_list(BoundArgs())
         return self._usage_error("triggers")
 
-    async def _cmd_triggers_list(self, args: list[str], rest: str) -> str:
-        enabled_only, args = _consume_flag(args, "--enabled-only")
-        thread_id, args, error = _consume_option(args, "--thread", default="")
-        if error:
-            return f"[Error]: {error}"
+    async def _cmd_triggers_list(self, bound: BoundArgs) -> str:
+        enabled_only = bool(bound.get("enabled_only"))
+        thread_id = str(bound.get("thread") or "")
         if thread_id == "current":
             thread_id = self.thread_id
 
@@ -3868,42 +3771,31 @@ class _CommandExecutor(
             )
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_triggers_enable(self, args: list[str], rest: str) -> str:
-        return await self._set_trigger_enabled(args, enabled=True)
+    async def _cmd_triggers_enable(self, bound: BoundArgs) -> str:
+        return await self._set_trigger_enabled(bound, enabled=True)
 
-    async def _cmd_triggers_disable(self, args: list[str], rest: str) -> str:
-        return await self._set_trigger_enabled(args, enabled=False)
+    async def _cmd_triggers_disable(self, bound: BoundArgs) -> str:
+        return await self._set_trigger_enabled(bound, enabled=False)
 
-    async def _set_trigger_enabled(self, args: list[str], *, enabled: bool) -> str:
-        verb = "enable" if enabled else "disable"
-        if not args:
-            return f"[Error]: Usage: /triggers {verb} <trigger-id>"
-        trigger_id = args[0]
+    async def _set_trigger_enabled(self, bound: BoundArgs, *, enabled: bool) -> str:
+        trigger_id = str(bound.get("trigger_id") or "")
         manager = self._trigger_manager()
         if not manager.update_trigger(self.user_id, trigger_id, enabled=enabled):
             return f"[Error]: Trigger '{trigger_id}' not found."
         action = "Enabled" if enabled else "Disabled"
         return f"[Success]: {action} trigger `{trigger_id}`."
 
-    async def _cmd_triggers_delete(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /triggers delete <trigger-id>"
-        trigger_id = args[0]
+    async def _cmd_triggers_delete(self, bound: BoundArgs) -> str:
+        trigger_id = str(bound.get("trigger_id") or "")
         manager = self._trigger_manager()
         if not manager.delete_trigger(self.user_id, trigger_id):
             return f"[Error]: Trigger '{trigger_id}' not found."
         manager.delete_executions_for_triggers(self.user_id, [trigger_id])
         return f"[Success]: Deleted trigger `{trigger_id}`."
 
-    async def _cmd_triggers_history(self, args: list[str], rest: str) -> str:
-        limit_str, remaining, error = _consume_option(args, "--limit", default="20")
-        if error:
-            return f"[Error]: {error}"
-        try:
-            limit = max(1, int(limit_str))
-        except (TypeError, ValueError):
-            limit = 20
-        trigger_id = remaining[0] if remaining else None
+    async def _cmd_triggers_history(self, bound: BoundArgs) -> str:
+        limit = max(1, int(bound.get("limit", 20)))
+        trigger_id = str(bound.get("trigger_id") or "") or None
 
         manager = self._trigger_manager()
         executions = manager.get_executions(
@@ -5595,7 +5487,7 @@ class _CommandExecutor(
 
     # ── Memory ────────────────────────────────────────────────────────────
 
-    async def _cmd_memory_list(self, args: list[str], rest: str) -> str:
+    async def _cmd_memory_list(self, bound: BoundArgs) -> str:
         memories = await self.api.list_memories(self.user_id)
         if not memories:
             return "[Info]: No memories saved yet."
@@ -5608,18 +5500,14 @@ class _CommandExecutor(
             lines.append(f"(showing 25 of {len(memories)})")
         return _truncate("[Info]: " + "\n".join(lines))
 
-    async def _cmd_memory_save(self, args: list[str], rest: str) -> str:
-        if len(args) < 2:
-            return "[Error]: Usage: /memory save <key> <value>"
-        key = args[0]
-        value = " ".join(args[1:])
+    async def _cmd_memory_save(self, bound: BoundArgs) -> str:
+        key = str(bound.get("key") or "")
+        value = str(bound.get("value") or "")
         await self.api.save_memory(self.user_id, key, value)
         return f"[Success]: Saved memory '{key}'."
 
-    async def _cmd_memory_forget(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /memory forget <key>"
-        key = args[0]
+    async def _cmd_memory_forget(self, bound: BoundArgs) -> str:
+        key = str(bound.get("key") or "")
         try:
             await self.api.forget_memory(self.user_id, key)
         except httpx.HTTPStatusError as e:
@@ -5628,10 +5516,8 @@ class _CommandExecutor(
             raise
         return f"[Success]: Forgot memory '{key}'."
 
-    async def _cmd_memory_search(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /memory search <query>"
-        query = " ".join(args)
+    async def _cmd_memory_search(self, bound: BoundArgs) -> str:
+        query = str(bound.get("query") or "")
         results = await self.api.search_memories(self.user_id, query)
         if not results:
             return f"[Info]: No memories matching '{query}'."
@@ -5642,7 +5528,7 @@ class _CommandExecutor(
             lines.append(f"  {mem.get('key', '?')}: {preview}")
         return _truncate("[Info]: " + "\n".join(lines))
 
-    async def _cmd_memory_limit(self, args: list[str], rest: str) -> str:
+    async def _cmd_memory_limit(self, bound: BoundArgs) -> str:
         from .memory_limits import (
             MAX_MEMORY_CHAR_LIMIT,
             get_effective_thread_memory_char_limit,
@@ -5670,7 +5556,10 @@ class _CommandExecutor(
             except Exception:  # noqa: BLE001
                 settings = get_settings()
 
-        if not args:
+        scope = bound.get("scope")
+        value = bound.get("value")
+
+        if not scope:
             memories = await self.api.list_memories(self.user_id)
             global_limit = get_global_memory_char_limit(settings)
             lines = [
@@ -5696,11 +5585,12 @@ class _CommandExecutor(
                 )
             return "[Info]: " + "\n".join(lines)
 
-        scope = args[0].lower()
         if scope == "global":
-            if len(args) != 2:
-                return "[Error]: Usage: /memory limit global <chars>"
-            limit = parse_limit(args[1])
+            if value is None:
+                return self._usage_error(
+                    "memory limit", hint="`global` takes a character count."
+                )
+            limit = parse_limit(value)
             if limit is None:
                 return f"[Error]: Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}."
             result = await self.api.update_settings(
@@ -5712,30 +5602,31 @@ class _CommandExecutor(
                 msg += " (restart required to take effect)"
             return msg
 
-        if scope == "thread":
-            thread_error = self._require_thread()
-            if thread_error:
-                return thread_error
-            if len(args) != 2:
-                return "[Error]: Usage: /memory limit thread <chars|inherit>"
-            if args[1].lower() in ("inherit", "default", "global"):
-                await self.api.update_thread_config(
-                    self.thread_id,
-                    clear_memory_char_limit=True,
-                    user_id=self.user_id,
-                )
-                return "[Success]: This thread now inherits the global memory character limit."
-            limit = parse_limit(args[1])
-            if limit is None:
-                return f"[Error]: Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}."
+        # The declared choices leave no third scope, so this is the thread arm.
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+        if value is None:
+            return self._usage_error(
+                "memory limit",
+                hint="`thread` takes a character count, or `inherit` to follow the global limit.",
+            )
+        if value.lower() in ("inherit", "default", "global"):
             await self.api.update_thread_config(
                 self.thread_id,
-                memory_char_limit=limit,
+                clear_memory_char_limit=True,
                 user_id=self.user_id,
             )
-            return f"[Success]: This thread's memory character limit set to {limit}."
-
-        return "[Error]: Usage: /memory limit [global <chars>|thread <chars>|thread inherit]"
+            return "[Success]: This thread now inherits the global memory character limit."
+        limit = parse_limit(value)
+        if limit is None:
+            return f"[Error]: Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}."
+        await self.api.update_thread_config(
+            self.thread_id,
+            memory_char_limit=limit,
+            user_id=self.user_id,
+        )
+        return f"[Success]: This thread's memory character limit set to {limit}."
 
     async def _cmd_sequential_tools(self, args: list[str], rest: str) -> str:
         """Show / set sequential (ordered, one-at-a-time) tool execution.
@@ -5904,7 +5795,7 @@ class _CommandExecutor(
 
     # ── Notepad ───────────────────────────────────────────────────────────
 
-    async def _cmd_notepad_read(self, args: list[str], rest: str) -> str:
+    async def _cmd_notepad_read(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5938,7 +5829,7 @@ class _CommandExecutor(
             return result.replace("[Saved]:", "[Success]:", 1)
         return result
 
-    async def _cmd_notepad_clear(self, args: list[str], rest: str) -> str:
+    async def _cmd_notepad_clear(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error

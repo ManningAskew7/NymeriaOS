@@ -238,3 +238,95 @@ def test_triggers_history_empty_state(patched_manager) -> None:
     result = run(CommandService().execute(_ctx(), "/triggers history"))
     assert result.success is True
     assert "No trigger executions" in result.markdown
+
+
+# ── #129 wave 2a: declared params ────────────────────────────────────────────
+
+
+def test_triggers_history_accepts_the_equals_form_limit(patched_manager) -> None:
+    # The old _consume_option rejected --limit=N outright; the binder accepts
+    # both spellings everywhere.
+    manager = patched_manager(_FakeTriggerManager())
+    manager.executions["alice"] = [
+        {"trigger_id": "t1", "triggered_at": f"2026-05-18T{hour:02d}:00:00", "summary": f"run {hour}"}
+        for hour in range(10)
+    ]
+
+    result = run(CommandService().execute(_ctx(), "/triggers history --limit=2"))
+
+    assert result.success is True, result.markdown
+    assert "Trigger executions: 2" in result.markdown
+    assert "run 9" in result.markdown
+    assert "run 7" not in result.markdown
+
+
+def test_triggers_history_rejects_a_non_integer_limit(patched_manager) -> None:
+    manager = patched_manager(_FakeTriggerManager())
+    manager.executions["alice"] = [
+        {"trigger_id": "t1", "triggered_at": "2026-05-18T10:00:00", "summary": "only"}
+    ]
+
+    result = run(CommandService().execute(_ctx(), "/triggers history --limit lots"))
+
+    assert result.success is False
+    assert "--limit must be an integer, got `lots`" in result.markdown
+    assert "only" not in result.markdown
+
+
+def test_triggers_list_rejects_an_unknown_option(patched_manager) -> None:
+    patched_manager(_FakeTriggerManager(triggers=[_make_trigger("t1", name="Webhook A")]))
+
+    result = run(CommandService().execute(_ctx(), "/triggers list --enabled"))
+
+    assert result.success is False
+    assert "Unknown option `--enabled`" in result.markdown
+    assert "Webhook A" not in result.markdown
+
+
+def test_triggers_list_accepts_the_equals_form_thread(patched_manager) -> None:
+    patched_manager(_FakeTriggerManager(triggers=[
+        _make_trigger("alpha", thread_id="thread-1"),
+        _make_trigger("bravo", thread_id="thread-2"),
+    ]))
+
+    result = run(CommandService().execute(_ctx(), "/triggers list --thread=thread-2"))
+
+    assert result.success is True, result.markdown
+    assert "bravo" in result.markdown
+    assert "alpha" not in result.markdown
+
+
+def test_triggers_enable_rejects_a_second_trigger_id(patched_manager) -> None:
+    manager = patched_manager(_FakeTriggerManager(triggers=[
+        _make_trigger("t1", enabled=False),
+        _make_trigger("t2", enabled=False),
+    ]))
+
+    result = run(CommandService().execute(_ctx(), "/triggers enable t1 t2"))
+
+    assert result.success is False
+    assert "Unexpected argument `t2`" in result.markdown
+    assert manager.store["alice"]["t1"].enabled is False
+
+
+def test_triggers_delete_requires_an_id(patched_manager) -> None:
+    manager = patched_manager(_FakeTriggerManager(triggers=[_make_trigger("t1")]))
+
+    result = run(CommandService().execute(_ctx(), "/triggers delete"))
+
+    assert result.success is False
+    assert "Missing required argument: trigger-id" in result.markdown
+    assert manager.deletion_log == []
+
+
+def test_triggers_root_lists_and_guides_a_typo(patched_manager) -> None:
+    patched_manager(_FakeTriggerManager(triggers=[_make_trigger("t1", name="Webhook A")]))
+
+    listed = run(CommandService().execute(_ctx(), "/triggers"))
+    assert listed.success is True, listed.markdown
+    assert "Webhook A" in listed.markdown
+
+    typo = run(CommandService().execute(_ctx(), "/triggers histry"))
+    assert typo.success is False
+    assert "Usage: `/triggers [list|enable|disable|delete|history]`" in typo.markdown
+    assert "See `/help triggers`." in typo.markdown

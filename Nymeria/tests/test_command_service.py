@@ -280,6 +280,20 @@ class FakeCommandApi:
         self.calls.append(("list_memories", (user_id,), {}))
         return list(self.memories)
 
+    async def save_memory(self, user_id: str, key: str, value: str) -> dict[str, Any]:
+        self.calls.append(("save_memory", (user_id, key, value), {}))
+        self.memories.append({"key": key, "value": value})
+        return {"key": key, "value": value}
+
+    async def forget_memory(self, user_id: str, key: str) -> dict[str, Any]:
+        self.calls.append(("forget_memory", (user_id, key), {}))
+        self.memories = [m for m in self.memories if m.get("key") != key]
+        return {"key": key}
+
+    async def search_memories(self, user_id: str, query: str) -> list[dict[str, Any]]:
+        self.calls.append(("search_memories", (user_id, query), {}))
+        return [m for m in self.memories if query in m.get("key", "") or query in m.get("value", "")]
+
     async def update_settings(self, *, user_id: str | None = None, **kwargs) -> dict[str, Any]:
         self.calls.append(("update_settings", (), {"user_id": user_id, **kwargs}))
         return {"updated": list(kwargs), "restart_required": False}
@@ -4140,7 +4154,7 @@ def test_root_usage_errors_render_from_registry() -> None:
 
     result = run(CommandService().execute(_ctx(), "/mcp bogus", api=FakeCommandApi()))
     assert result.success is False
-    assert "Usage: `/mcp list|status|logs|discover|test|remove|retry [...]`" in result.markdown
+    assert "Usage: `/mcp [list|status|logs|discover|test|remove|retry]`" in result.markdown
     assert "See `/help mcp`." in result.markdown
 
 
@@ -4183,3 +4197,101 @@ def test_rest_extraction_survives_newlines(monkeypatch: pytest.MonkeyPatch) -> N
     )
     assert result.success is True
     assert saved["content"] == "milk and bread"
+
+
+# ── #129 wave 2a: memory and notepad declared params ─────────────────────────
+
+
+def test_memory_save_joins_the_value_tail() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/memory save color deep blue", api=api))
+
+    assert result.success is True, result.markdown
+    assert ("save_memory", ("alice", "color", "deep blue"), {}) in api.calls
+
+
+def test_memory_save_keeps_an_apostrophe_in_the_value() -> None:
+    # A rest param re-joins the whitespace-split tokens, so an apostrophe in
+    # free text is ordinary English rather than an unbalanced quote.
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/memory save plan Bob's plan", api=api))
+
+    assert result.success is True, result.markdown
+    assert ("save_memory", ("alice", "plan", "Bob's plan"), {}) in api.calls
+
+
+def test_memory_search_joins_the_whole_query() -> None:
+    api = FakeCommandApi()
+    api.memories = [{"key": "a", "value": "deep blue paint"}]
+    result = run(CommandService().execute(_ctx(), "/memory search deep blue", api=api))
+
+    assert result.success is True, result.markdown
+    assert ("search_memories", ("alice", "deep blue"), {}) in api.calls
+    assert "deep blue paint" in result.markdown
+
+
+def test_memory_forget_rejects_extra_arguments() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/memory forget color extra", api=api))
+
+    assert result.success is False
+    assert "Unexpected argument `extra`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "forget_memory"]
+
+
+def test_memory_list_rejects_arguments() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/memory list everything", api=api))
+
+    assert result.success is False
+    assert "Unexpected argument `everything`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "list_memories"]
+
+
+def test_memory_limit_rejects_an_unknown_scope_word() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/memory limit 5000", api=api))
+
+    assert result.success is False
+    assert "`5000` is not a valid scope" in result.markdown
+    assert "Valid: global, thread" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_memory_limit_scope_without_a_value_shows_generated_usage() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/memory limit global", api=api))
+
+    assert result.success is False
+    assert "Usage: `/memory limit [global|thread] [chars|inherit]`" in result.markdown
+    assert "`global` takes a character count." in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_memory_limit_thread_global_still_means_inherit() -> None:
+    # `global` is one of the inherit synonyms in the VALUE position; the scope
+    # word is the first positional, so the two never collide.
+    api = FakeCommandApi()
+    api.thread_config["memory_char_limit"] = 6000
+    result = run(CommandService().execute(_ctx(), "/memory limit thread global", api=api))
+
+    assert result.success is True, result.markdown
+    assert "inherits the global memory character limit" in result.markdown
+    assert api.thread_config["memory_char_limit"] is None
+
+
+def test_notepad_read_rejects_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    reads: list[str] = []
+
+    def fake_read(thread_id: str) -> str:
+        reads.append(thread_id)
+        return "notes"
+
+    import nymeria.tools.thread_notes as thread_notes
+
+    monkeypatch.setattr(thread_notes, "read_notepad", fake_read)
+    result = run(CommandService().execute(_ctx(), "/notepad read all", api=FakeCommandApi()))
+
+    assert result.success is False
+    assert "Unexpected argument `all`" in result.markdown
+    assert reads == []
