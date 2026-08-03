@@ -25,26 +25,6 @@ if TYPE_CHECKING:
     from .command_service import CommandService
 
 
-# ``/branch`` is a pure delegate to ``/thread branch``, so the two share one
-# declaration: a divergence would generate two different usage strings for one
-# handler.
-_BRANCH_PARAMS = (
-    CommandParam(
-        "from",
-        kind="option",
-        type="int",
-        aliases=("-f",),
-        description="Branch from this message index (1-based)",
-    ),
-    # Repeatable positional, NOT rest: the retired hand parser accepted
-    # --from on either side of the title, and a rest tail would swallow a
-    # trailing "--from 3" into the title silently (review-confirmed bug).
-    CommandParam(
-        "title", repeatable=True, description="Title for the new branch"
-    ),
-)
-
-
 # Every hook verb that names one hook takes the same argument: an id or a
 # unique prefix of one (``_resolve_hook`` does the prefix match). One
 # declaration keeps those usage strings from drifting apart.
@@ -104,20 +84,32 @@ _HOOK_APPROVAL_PARAMS = (
 )
 
 # ``/skills enable`` and ``/skills disable`` are one handler with a boolean, so
-# they share one declaration. The flag comes first so the generated usage keeps
-# advertising ``[--global] <name>``.
-_SKILL_STATE_PARAMS = (
-    CommandParam(
-        "global",
-        kind="flag",
-        type="bool",
-        description="Apply to every thread instead of only this one",
-    ),
+# they share the scope flag. The flag comes first so the generated usage keeps
+# advertising ``[--global] <name>``. Only `disable` takes the ``all`` value
+# (the old depth-3 ``/skills off all``, folded in by backlog #131), so the two
+# name params differ in their description and cannot be one constant.
+_SKILL_SCOPE_FLAG = CommandParam(
+    "global",
+    kind="flag",
+    type="bool",
+    description="Apply to every thread instead of only this one",
+)
+_SKILL_ENABLE_PARAMS = (
+    _SKILL_SCOPE_FLAG,
     CommandParam(
         "name",
         required=True,
         choices_ref="skills",
         description="Installed skill name",
+    ),
+)
+_SKILL_DISABLE_PARAMS = (
+    _SKILL_SCOPE_FLAG,
+    CommandParam(
+        "name",
+        required=True,
+        choices_ref="skills",
+        description="Installed skill name, or `all` for every active skill",
     ),
 )
 
@@ -152,9 +144,9 @@ _TOOL_TARGET_PARAM = CommandParam(
     description="Tool name or tool category",
 )
 
-# ``/tasks`` and ``/todos list`` filter the same list the same way. No
-# ``choices``: the handler compares the token against whatever status the store
-# reports, so an unlisted status still filters rather than erroring.
+# ``/todos list`` (and its ``/tasks`` alias) filters on status. No ``choices``:
+# the handler compares the token against whatever status the store reports, so
+# an unlisted status still filters rather than erroring.
 _TODO_FILTER_PARAM = CommandParam(
     "filter",
     default="active",
@@ -182,9 +174,9 @@ _TIER_MODEL_PARAMS = (
     ),
 )
 
-# ``/config get`` and ``/settings get`` name one setting; ``/config set`` and
-# ``/settings set`` write one. The value is a rest param (the handlers joined
-# the remaining tokens), so a value with spaces survives.
+# ``/settings get`` names one setting and ``/settings set`` writes one (the
+# ``/config`` spellings are aliases). The value is a rest param (the handler
+# joined the remaining tokens), so a value with spaces survives.
 _SETTING_KEY_PARAM = CommandParam(
     "key", required=True, description="Setting key"
 )
@@ -264,10 +256,14 @@ def register_default_commands(service: "CommandService") -> None:
         ),
     )
     service.register(
-        "thread new",
+        "thread create",
         description="Create a new thread and switch to it",
         category="Thread",
-        aliases=("thread_new", "thread n"),
+        # ``thread_new`` stays FIRST: a chat bot names a command after its
+        # first single-token alias, so reordering here would silently rename
+        # the Telegram menu entry. The old ``thread new`` path follows as a
+        # whole-path compatibility alias (backlog #131).
+        aliases=("thread_new", "thread n", "thread_create", "thread new"),
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
@@ -301,10 +297,12 @@ def register_default_commands(service: "CommandService") -> None:
         ),
     )
     service.register(
-        "thread info",
+        "thread show",
         description="Show details for the active thread",
         category="Thread",
-        aliases=("thread_info",),
+        # ``thread_info`` leads to keep the chat-bot menu name (see
+        # ``thread create``); ``thread info`` is the old typed spelling.
+        aliases=("thread_info", "thread_show", "thread info"),
         requires_thread=True,
         params=(),
     )
@@ -362,12 +360,30 @@ def register_default_commands(service: "CommandService") -> None:
         "thread branch",
         description="Branch the active thread into a new thread",
         category="Thread",
-        aliases=("thread_branch", "thread fork"),
+        # ``/branch`` and ``/fork`` were a duplicate root registration; they
+        # are whole-path aliases of this command now (backlog #131). They come
+        # after ``thread_branch`` so the chat-bot menu name does not change.
+        aliases=("thread_branch", "thread fork", "branch", "fork"),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
-        params=_BRANCH_PARAMS,
+        params=(
+            CommandParam(
+                "from",
+                kind="option",
+                type="int",
+                aliases=("-f",),
+                description="Branch from this message index (1-based)",
+            ),
+            # Repeatable positional, NOT rest: the retired hand parser accepted
+            # --from on either side of the title, and a rest tail would swallow
+            # a trailing "--from 3" into the title silently (review-confirmed
+            # bug).
+            CommandParam(
+                "title", repeatable=True, description="Title for the new branch"
+            ),
+        ),
     )
     service.register(
         "thread compact",
@@ -387,19 +403,6 @@ def register_default_commands(service: "CommandService") -> None:
                 description="Accepted for muscle memory; no prompt is shown",
             ),
         ),
-    )
-    service.register(
-        "branch",
-        description="Branch the active thread into a new thread",
-        category="Thread",
-        aliases=("fork",),
-        requires_thread=True,
-        mutates_state=True,
-        danger_level="normal",
-        agent_allowed=False,
-        # Same declaration as "thread branch": /branch is a pure delegate, so
-        # both usages must generate identically.
-        params=_BRANCH_PARAMS,
     )
     # /team read commands (backlog #100 phase 2). Read-only sugar over the
     # shared team serializer; mutations go through the team_manage tool, the
@@ -470,12 +473,6 @@ def register_default_commands(service: "CommandService") -> None:
         params=(),
     )
     service.register(
-        "tasks",
-        description="Scheduled tasks overview",
-        category="TODOs",
-        params=(_TODO_FILTER_PARAM,),
-    )
-    service.register(
         "model",
         description="Show or change the model",
         category="LLM",
@@ -507,9 +504,13 @@ def register_default_commands(service: "CommandService") -> None:
         ),
     )
     service.register(
-        "models",
+        "model list",
         description="List available provider models",
         category="LLM",
+        # The number-pair resolution (backlog #131): /models was a separate
+        # root, so `models` leads the aliases to keep it as the chat-bot menu
+        # name for what is now a subcommand.
+        aliases=("models", "model_list"),
         params=(),
     )
     # Tier commands (backlog #129). The `set`, `set-url`, and `clear` verbs used
@@ -914,75 +915,64 @@ def register_default_commands(service: "CommandService") -> None:
         aliases=("provider_reasoning_passback", "provider passback"),
         params=(),
     )
-    service.register(
-        "config show",
-        description="Show server settings",
-        category="Settings",
-        aliases=("config_show",),
-        params=(),
-    )
-    service.register(
-        "config get",
-        description="Show one server setting",
-        category="Settings",
-        aliases=("config_get",),
-        params=(_SETTING_KEY_PARAM,),
-    )
-    service.register(
-        "config set",
-        description="Change a server setting",
-        category="Settings",
-        aliases=("config_set",),
-        requires_admin=True,
-        mutates_state=True,
-        danger_level="dangerous",
-        params=_SETTING_WRITE_PARAMS,
-    )
+    # /settings is the canonical settings family (backlog #131): the near-dup
+    # /config family folded into it, so every `config` spelling below is a
+    # whole-path alias. The bare root IS the show view (rule 2), which retires
+    # `settings show` as a command in favour of an alias of the root.
     service.register(
         "settings",
-        description="Show or change server settings (delegates to /config)",
-        category="Settings",
-        mutates_state=True,
-        danger_level="normal",
-        note=(
-            "The set branch requires an admin user, enforced at the update "
-            "surface (CommandBackendClient.update_settings and PATCH /settings)."
-        ),
-        # Bare "/settings" shows; the three verbs below are registered children
-        # routed before this handler ("view" is a whole-path alias of `settings
-        # show`). Strict zero-arg binding, so a root typo gets the dispatcher's
-        # did-you-mean plus the valid-subcommand list.
-        params=(),
-    )
-    # /settings verbs (backlog #129), registered so each carries its own schema.
-    # They delegate to the /config handlers, which is where the one
-    # implementation lives; the admin gate stays at the update surface, exactly
-    # as the root's note records, so these deliberately do NOT set
-    # requires_admin (that would newly refuse a non-admin at dispatch).
-    service.register(
-        "settings show",
         description="Show server settings",
         category="Settings",
-        aliases=("settings view",),
+        # get/set are registered children routed before this handler, so the
+        # root binds strictly with zero arguments and a typo gets the
+        # dispatcher's did-you-mean plus the valid-subcommand list.
+        aliases=(
+            "settings_show",
+            "settings show",
+            "settings view",
+            "config",
+            "config show",
+            "config_show",
+        ),
         params=(),
     )
     service.register(
         "settings get",
         description="Show one server setting",
         category="Settings",
+        # A chat bot names a command after its FIRST single-token alias, so
+        # `settings_get` leads: the folded-in `config_get` must not take over
+        # the menu entry.
+        aliases=("settings_get", "config_get", "config get"),
         params=(_SETTING_KEY_PARAM,),
     )
     service.register(
         "settings set",
         description="Change a server setting",
         category="Settings",
+        aliases=("settings_set", "config_set", "config set"),
+        # The fold takes the STRICTER of the two gates it merges (`config set`
+        # was admin-only at dispatch, `settings set` was not). An alias may
+        # never widen access, and a non-admin was refused at the update
+        # surface either way, so this changes when the refusal lands, not who
+        # can write a setting.
+        requires_admin=True,
         mutates_state=True,
-        danger_level="normal",
+        danger_level="dangerous",
         note=(
-            "Requires an admin user, enforced at the update surface "
-            "(CommandBackendClient.update_settings and PATCH /settings)."
+            "Requires an admin user, enforced here and again at the update "
+            "surface (CommandBackendClient.update_settings and PATCH /settings)."
         ),
         params=_SETTING_WRITE_PARAMS,
+    )
+    service.register(
+        "env",
+        description="Show environment variables",
+        category="Settings",
+        # Bare "/env" is the show view (rule 2 of the style guide). It mirrors
+        # `env show`'s admin gate: the root must not be a way around it.
+        requires_admin=True,
+        params=(),
     )
     service.register(
         "env show",
@@ -1025,39 +1015,55 @@ def register_default_commands(service: "CommandService") -> None:
         ),
     )
     service.register(
-        "tools core",
-        description="Show core tools",
+        "tools",
+        description="Show the tools enabled on this thread",
         category="Tools",
-        aliases=("tools_core", "tools list_core"),
+        # Bare "/tools" is the enabled readout, the same view as bare
+        # "/tools list" (rule 2 of the style guide). Every verb is a
+        # registered child routed before this handler, so the root binds
+        # strictly with zero arguments and a typo gets the dispatcher's
+        # did-you-mean plus the valid-subcommand list.
         params=(),
     )
     service.register(
-        "tools optional",
-        description="Show optional tools",
+        "tools list",
+        description="List tools: enabled (default), optional, core, or one category",
         category="Tools",
-        aliases=("tools_optional",),
-        requires_thread=True,
-        params=(),
-    )
-    service.register(
-        "tools enabled",
-        description="Show enabled tools for this thread",
-        category="Tools",
-        aliases=("tools_enabled",),
-        requires_thread=True,
-        params=(),
-    )
-    service.register(
-        "tools category",
-        description="Show tools in a category",
-        category="Tools",
-        aliases=("tools_category",),
-        requires_thread=True,
-        # No choices_ref: the live category list comes from the tools API and
-        # the handler already names every valid category when one misses.
+        # The four listing variants (`enabled`, `optional`, `core`,
+        # `category <name>`) folded into this one filter (backlog #131).
+        # `tools_list` leads so it, not a folded-in spelling, names the
+        # chat-bot menu entry. The old paths follow as whole-path aliases:
+        # `tools category` bridges exactly (its tail becomes the filter),
+        # while `tools enabled` bridges only because `enabled` is the
+        # default. ACCEPTED DEGRADATION: alias expansion substitutes a path
+        # and cannot INJECT an argument, so `/tools core` and
+        # `/tools optional` land on the unfiltered (enabled) list until the
+        # value-injecting alias machinery lands with backlog #133.
+        aliases=(
+            "tools_list",
+            "tools_enabled",
+            "tools_optional",
+            "tools_core",
+            "tools_category",
+            "tools list_core",
+            "tools enabled",
+            "tools optional",
+            "tools core",
+            "tools category",
+        ),
+        # requires_thread stays off: the `core` filter reads the global
+        # catalog and worked without a thread before the fold. The three
+        # thread-scoped filters raise the same missing-thread error from
+        # inside the handler.
+        # No choices: the category half of the value space is live data from
+        # the tools API, and the handler already names every valid category
+        # when one misses.
         params=(
             CommandParam(
-                "name", required=True, description="Tool category name"
+                "filter",
+                default="enabled",
+                label="enabled|optional|core|<category>",
+                description="Which tools to list (default: enabled)",
             ),
         ),
     )
@@ -1153,9 +1159,12 @@ def register_default_commands(service: "CommandService") -> None:
     )
     service.register(
         "skills show",
-        description="Show a skill's markdown body without activating it",
+        description="Show a skill's metadata and markdown body without activating it",
         category="Skills",
-        aliases=("skills_show",),
+        # `skills inspect` folded in here (backlog #131): one show-one verb,
+        # one handler, and the union of the two outputs. `skills_show` leads
+        # so the chat-bot menu entry keeps its name.
+        aliases=("skills_show", "skills_inspect", "skills inspect"),
         params=(
             CommandParam(
                 "name",
@@ -1164,16 +1173,6 @@ def register_default_commands(service: "CommandService") -> None:
                 description="Installed skill name",
             ),
         ),
-    )
-    service.register(
-        "skills off all",
-        description="Deactivate every visible skill active on this thread",
-        category="Skills",
-        aliases=("skills_off_all",),
-        requires_thread=True,
-        mutates_state=True,
-        danger_level="normal",
-        params=(),
     )
     service.register(
         "skills search",
@@ -1237,29 +1236,20 @@ def register_default_commands(service: "CommandService") -> None:
         category="Skills",
         aliases=("skills_enable",),
         mutates_state=True,
-        params=_SKILL_STATE_PARAMS,
+        params=_SKILL_ENABLE_PARAMS,
     )
     service.register(
         "skills disable",
-        description="Disable a skill on this thread (default) or globally",
+        description="Disable a skill, or `all` to deactivate every active one",
         category="Skills",
-        aliases=("skills_disable",),
+        # The depth-3 `skills off all` folded in here (backlog #131): `off`
+        # is a whole-path alias of this command, so "/skills off all" and
+        # "/skills off <name>" both parse, and `all` is a value the handler
+        # takes. `skills_disable` leads so the chat-bot menu keeps its name;
+        # the flat `skills_off_all` spelling is dropped with the depth-3 path.
+        aliases=("skills_disable", "skills off"),
         mutates_state=True,
-        params=_SKILL_STATE_PARAMS,
-    )
-    service.register(
-        "skills inspect",
-        description="Show full skill details (metadata, scope, tools, references)",
-        category="Skills",
-        aliases=("skills_inspect",),
-        params=(
-            CommandParam(
-                "name",
-                required=True,
-                choices_ref="skills",
-                description="Installed skill name",
-            ),
-        ),
+        params=_SKILL_DISABLE_PARAMS,
     )
     service.register(
         "mcp",
@@ -1328,10 +1318,12 @@ def register_default_commands(service: "CommandService") -> None:
         params=(_MCP_SERVER_ID_PARAM,),
     )
     service.register(
-        "mcp remove",
+        "mcp delete",
         description="Remove an MCP server and its tools",
         category="MCP",
-        aliases=("mcp_remove", "mcp_rm", "mcp_delete"),
+        # `mcp_remove` leads so the chat-bot menu entry keeps its name; the
+        # old `mcp remove` path is a whole-path alias (backlog #131).
+        aliases=("mcp_remove", "mcp_rm", "mcp_delete", "mcp remove", "mcp rm"),
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
@@ -1653,10 +1645,13 @@ def register_default_commands(service: "CommandService") -> None:
         params=(_HOOK_ID_PARAM,),
     )
     service.register(
-        "hook log",
+        "hook history",
         description="Show recent hook executions (status, outcome, timing)",
         category="Automation",
-        aliases=("hook_log",),
+        # Aligned with `triggers history` (backlog #131); `log` stays reserved
+        # for raw log output (`mcp logs`). `hook_log` leads so the chat-bot
+        # menu entry keeps its name.
+        aliases=("hook_log", "hook_history", "hook log"),
         surfaces=_hook_sub_surfaces,
         params=(
             CommandParam("id", description="Only this hook's executions"),
@@ -1758,10 +1753,19 @@ def register_default_commands(service: "CommandService") -> None:
         params=(),
     )
     service.register(
-        "account current",
+        "account show",
         description="Show details for the current user",
         category="Personal",
-        aliases=("account_current", "account_me"),
+        # `account_current` leads so the chat-bot menu entry keeps its name;
+        # the old `account current` path and the `me` synonym follow as
+        # whole-path aliases (backlog #131).
+        aliases=(
+            "account_current",
+            "account_me",
+            "account_show",
+            "account current",
+            "account me",
+        ),
         params=(),
     )
     service.register(
@@ -1862,10 +1866,12 @@ def register_default_commands(service: "CommandService") -> None:
         params=(),
     )
     service.register(
-        "artifacts recent",
+        "artifacts list",
         description="List recent workspace artifacts from thread history",
         category="Personal",
-        aliases=("artifacts_recent", "artifacts list"),
+        # `list` was the alias and `recent` the path; backlog #131 flips them.
+        # `artifacts_recent` leads so the chat-bot menu entry keeps its name.
+        aliases=("artifacts_recent", "artifacts_list", "artifacts recent"),
         requires_thread=True,
         params=(
             CommandParam(
@@ -1901,6 +1907,16 @@ def register_default_commands(service: "CommandService") -> None:
         params=(),
     )
     service.register(
+        "memory",
+        description="List saved memories",
+        category="Memory",
+        # Bare "/memory" lists (rule 2 of the style guide). Every verb is a
+        # registered child routed before this handler, so the root binds
+        # strictly with zero arguments and a typo gets the dispatcher's
+        # did-you-mean plus the valid-subcommand list.
+        params=(),
+    )
+    service.register(
         "memory list",
         description="List saved memories",
         category="Memory",
@@ -1926,10 +1942,12 @@ def register_default_commands(service: "CommandService") -> None:
         ),
     )
     service.register(
-        "memory forget",
+        "memory delete",
         description="Forget a memory",
         category="Memory",
-        aliases=("memory_forget",),
+        # `memory_forget` leads so the chat-bot menu entry keeps its name; the
+        # old `memory forget` path is a whole-path alias (backlog #131).
+        aliases=("memory_forget", "memory_delete", "memory forget"),
         mutates_state=True,
         danger_level="normal",
         params=(CommandParam("key", required=True, description="Memory key to remove"),),
@@ -1972,10 +1990,22 @@ def register_default_commands(service: "CommandService") -> None:
         ),
     )
     service.register(
+        "todos",
+        description="List TODOs",
+        category="TODOs",
+        # Bare "/todos" lists (rule 2 of the style guide). Every verb is a
+        # registered child routed before this handler, so the root binds
+        # strictly with zero arguments and a typo gets the dispatcher's
+        # did-you-mean plus the valid-subcommand list.
+        params=(),
+    )
+    service.register(
         "todos list",
         description="List TODOs",
         category="TODOs",
-        aliases=("todos_list",),
+        # `/tasks` was a near-duplicate root with its own implementation;
+        # backlog #131 folds it in as a whole-path alias of this command.
+        aliases=("todos_list", "tasks"),
         params=(_TODO_FILTER_PARAM,),
     )
     service.register(
@@ -2017,6 +2047,17 @@ def register_default_commands(service: "CommandService") -> None:
                 description="TODO id or unique id prefix",
             ),
         ),
+    )
+    service.register(
+        "notepad",
+        description="Read this thread's notepad",
+        category="Thread",
+        # Bare "/notepad" reads (rule 2 of the style guide). Every verb is a
+        # registered child routed before this handler, so the root binds
+        # strictly with zero arguments and a typo gets the dispatcher's
+        # did-you-mean plus the valid-subcommand list.
+        requires_thread=True,
+        params=(),
     )
     service.register(
         "notepad read",

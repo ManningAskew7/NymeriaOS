@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from nymeria.config.llm_providers import get_llm_provider_spec
 from nymeria.core.command_params import BoundArgs
+from nymeria.core.command_service import CommandOutput
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent import reasoning_passback as rp
 
@@ -403,5 +404,8 @@ def test_command_reports_unavailable_without_resolver_or_overview() -> None:
     api = SimpleNamespace(agent=SimpleNamespace())  # no resolver, no overview
     executor = _CommandExecutor(api=api, thread_id="t-void", user_id="u1")
     out = asyncio.run(executor._cmd_provider_reasoning_passback(BoundArgs()))
-    assert out.startswith("[Error]")
-    assert "unavailable" in out.lower()
+    # Typed level since #132: the handler authors a CommandOutput, and the
+    # dispatcher is the only thing that renders an "**Error:** " artifact.
+    assert isinstance(out, CommandOutput)
+    assert out.level == "error"
+    assert "unavailable" in out.text.lower()

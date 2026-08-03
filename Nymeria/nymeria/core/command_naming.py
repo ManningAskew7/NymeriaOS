@@ -94,32 +94,17 @@ SANCTIONED_LEAF_TOKENS: dict[str, str] = {
 
 # Catalog ids whose LEAF predates the canon; each is renamed by a #131
 # wave. The validator fails on a stale id, so the rename retires the row.
-_GRANDFATHERED_LEAVES: frozenset[str] = frozenset(
-    {
-        "account.current",  # wave A: account show
-        "artifacts.recent",  # wave A: artifacts list
-        "hook.log",  # wave A: hook history
-        "mcp.remove",  # wave A: mcp delete
-        "memory.forget",  # wave A: memory delete
-        "skills.inspect",  # wave A: fold into skills show
-        "skills.off.all",  # wave A: skills disable all (off aliases disable)
-        "thread.info",  # wave A: thread show
-        "thread.new",  # wave A: thread create
-        "tools.enabled",  # wave A: tools list enabled
-        "tools.optional",  # wave A: tools list optional
-        "tools.core",  # wave A: tools list core
-        "tools.category",  # wave A: tools list <category>
-    }
-)
+# EMPTY since wave A landed every leaf rename in the table; an entry here
+# again means a new command shipped with a pre-canon leaf.
+_GRANDFATHERED_LEAVES: frozenset[str] = frozenset()
 
 # Families allowed to have subcommands but no bare root.
 ROOTLESS_FAMILY_EXCEPTIONS: dict[str, str] = {
     "restart": "a bare /restart must never have a default action",
 }
-_ROOTLESS_GRANDFATHERED: frozenset[str] = frozenset(
-    # wave A adds overview roots (or folds the family, for config).
-    {"config", "env", "memory", "notepad", "todos", "tools"}
-)
+# EMPTY since wave A: env, memory, notepad, todos and tools gained overview
+# roots and the config family folded into /settings.
+_ROOTLESS_GRANDFATHERED: frozenset[str] = frozenset()
 
 # Scope grammar: the canon is a trailing global|thread token declared as
 # the `scope` param kind. These ids carry the pre-canon --global flag until

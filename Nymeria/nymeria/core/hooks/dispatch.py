@@ -421,7 +421,7 @@ def _meaningful_activity(status: str, detail: str) -> bool:
     Faults always are. A clean run is only meaningful when it did something
     (a deny/modify, an inject, a rewrite/note, a continue): a bare ``allow`` or
     ``no change`` would put a noisy line on every guarded tool call. ``no_op``
-    (ran, returned None) is never surfaced; it lives in ``/hook log``.
+    (ran, returned None) is never surfaced; it lives in ``/hook history``.
     """
     if status in _ACTIVITY_FAULT_STATUSES:
         return True

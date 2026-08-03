@@ -270,22 +270,40 @@ def test_the_whole_command_tree_fits_discord_limits() -> None:
             assert len(str(option.description)) <= 100
 
 
-def test_commands_users_see_today_are_still_registered() -> None:
-    """The pass may add Discord commands; it may not silently remove one."""
+def _registered_discord_names(*, invokable_only: bool = False) -> set[str]:
+    """Every Discord command name, optionally minus the groups.
+
+    A Group is a namespace, not a command: Discord will not let a user run it.
+    ``invokable_only`` is what asks "can someone still DO this here".
+    """
     registered = set()
     for cog in ALL_COGS:
         for entry in cog.__cog_app_commands__:
-            registered.add(entry.qualified_name)
+            walked = [entry]
             if isinstance(entry, app_commands.Group):
-                registered.update(sub.qualified_name for sub in entry.walk_commands())
+                walked += list(entry.walk_commands())
+            for item in walked:
+                if invokable_only and isinstance(item, app_commands.Group):
+                    continue
+                registered.add(item.qualified_name)
+    return registered
+
+
+def test_commands_users_see_today_are_still_registered() -> None:
+    """The pass may add Discord commands; it may only remove one on purpose.
+
+    Deliberate removals are recorded by the companion test below (Discord
+    aliases do not exist, so the backlog #131 renames are a dev-locked hard
+    cutover there).
+    """
+    registered = _registered_discord_names()
     for name in (
+        "account show",
+        "artifacts list",
         "ask",
         "channel-context",
         "clear",
         "compact",
-        "config get",
-        "config set",
-        "config show",
         "context",
         "env get",
         "env set",
@@ -294,18 +312,20 @@ def test_commands_users_see_today_are_still_registered() -> None:
         "fallback approve",
         "help",
         "hook create",
-        "memory forget",
+        "mcp delete",
+        "memory delete",
         "memory list",
         "memory save",
         "memory search",
-        "model",
-        "models",
+        "model list",
         "notepad write",
         "restart",
+        "settings get",
+        "settings set",
         "show-tools",
+        "skills show",
         "status",
         "stop",
-        "tasks",
         "think",
         "thread",
         "todos add",
@@ -314,6 +334,42 @@ def test_commands_users_see_today_are_still_registered() -> None:
         "tools search",
     ):
         assert name in registered, f"/{name} disappeared from the Discord tree"
+
+
+def test_the_renamed_discord_names_are_gone_deliberately() -> None:
+    """The backlog #131 hard cutover, named rather than merely observed.
+
+    A registry alias never reaches Discord (slash registration is
+    wipe-and-reupload), so every renamed or folded command loses its old
+    Discord name. Two of these are a capability loss, not a rename, because
+    the survivor is a GROUP and a group is not invokable: switching the model
+    and reading the settings both leave the Discord surface here, and the
+    hand-cog wave owns restoring them.
+
+    The tools family is absent from this list on purpose: its Discord group
+    is hand-written (`discord_cogs/tools.py`), so `/tools core` and friends
+    survive as relay literals until the hand-cog wave retargets them.
+    """
+    registered = _registered_discord_names(invokable_only=True)
+    for name in (
+        "account current",
+        "artifacts recent",
+        "branch",
+        "config get",
+        "config set",
+        "config show",
+        "mcp remove",
+        "memory forget",
+        "model",  # capability loss: the bare model SWITCH
+        "models",
+        "settings show",  # capability loss: the settings readout
+        "skills inspect",
+        "skills off all",
+        "tasks",
+    ):
+        assert name not in registered, (
+            f"/{name} is back on Discord; the #131 cutover retired it."
+        )
 
 
 def test_generator_refuses_a_tree_over_discords_global_command_cap(

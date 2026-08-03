@@ -55,11 +55,6 @@ class GeneratedCommandsCog(commands.Cog):
         description="Show or set the global background/utility model tier",
     )
 
-    config_group = app_commands.Group(
-        name="config",
-        description="View and update Nymeria settings",
-    )
-
     doctor_group = app_commands.Group(
         name="doctor",
         description="Run server-side diagnostics (auth + model)",
@@ -85,6 +80,11 @@ class GeneratedCommandsCog(commands.Cog):
         description="Manage Nymeria's memories about you",
     )
 
+    model_group = app_commands.Group(
+        name="model",
+        description="Show or change the model",
+    )
+
     provider_group = app_commands.Group(
         name="provider",
         description="Show the active LLM provider, or browse one provider's actions",
@@ -92,7 +92,7 @@ class GeneratedCommandsCog(commands.Cog):
 
     settings_group = app_commands.Group(
         name="settings",
-        description="Show or change server settings (delegates to /config)",
+        description="Show server settings",
     )
 
     skills_group = app_commands.Group(
@@ -126,24 +126,6 @@ class GeneratedCommandsCog(commands.Cog):
         parent=account_group,
     )
 
-    skills_off_group = app_commands.Group(
-        name="off",
-        description="Turn skills off",
-        parent=skills_group,
-    )
-
-    @account_group.command(
-        name="current",
-        description="Show details for the current user",
-    )
-    async def cmd_account_current(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "account current",
-            require_admin=False,
-        )
-
     @account_group.command(
         name="platforms",
         description="List chat platforms linked to the current user",
@@ -153,6 +135,18 @@ class GeneratedCommandsCog(commands.Cog):
         await self.bot._send_backend_command(
             interaction,
             "account platforms",
+            require_admin=False,
+        )
+
+    @account_group.command(
+        name="show",
+        description="Show details for the current user",
+    )
+    async def cmd_account_show(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self.bot._send_backend_command(
+            interaction,
+            "account show",
             require_admin=False,
         )
 
@@ -245,13 +239,13 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @artifacts_group.command(
-        name="recent",
+        name="list",
         description="List recent workspace artifacts from thread history",
     )
     @app_commands.describe(
         limit="How many artifacts to show",
     )
-    async def cmd_artifacts_recent(
+    async def cmd_artifacts_list(
         self,
         interaction: discord.Interaction,
         limit: Optional[int] = None,
@@ -262,7 +256,7 @@ class GeneratedCommandsCog(commands.Cog):
             parts.append(shlex.quote(str(limit)))
         await self.bot._send_backend_command(
             interaction,
-            "artifacts recent",
+            "artifacts list",
             args=" ".join(parts),
             require_admin=False,
         )
@@ -330,95 +324,6 @@ class GeneratedCommandsCog(commands.Cog):
             interaction,
             "background set-url",
             args=" ".join(parts),
-            require_admin=False,
-        )
-
-    @app_commands.command(
-        name="branch",
-        description="Branch the active thread into a new thread",
-    )
-    @app_commands.describe(
-        from_="Branch from this message index (1-based)",
-        title="Title for the new branch",
-    )
-    @app_commands.rename(
-        from_="from",
-    )
-    async def cmd_branch(
-        self,
-        interaction: discord.Interaction,
-        from_: Optional[int] = None,
-        title: Optional[str] = None,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        if from_ is not None:
-            parts.extend(("--from", shlex.quote(str(from_))))
-        if title is not None:
-            parts.append(title)
-        await self.bot._send_backend_command(
-            interaction,
-            "branch",
-            args=" ".join(parts),
-            require_admin=False,
-        )
-
-    @config_group.command(
-        name="get",
-        description="Show one server setting",
-    )
-    @app_commands.describe(
-        key="Setting key",
-    )
-    async def cmd_config_get(
-        self,
-        interaction: discord.Interaction,
-        key: str,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        parts.append(shlex.quote(key))
-        await self.bot._send_backend_command(
-            interaction,
-            "config get",
-            args=" ".join(parts),
-            require_admin=False,
-        )
-
-    @config_group.command(
-        name="set",
-        description="Change a server setting",
-    )
-    @app_commands.describe(
-        key="Setting key",
-        value="New value (coerced to bool, int, float, or string)",
-    )
-    async def cmd_config_set(
-        self,
-        interaction: discord.Interaction,
-        key: str,
-        value: str,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        parts.append(shlex.quote(key))
-        parts.append(shlex.quote(value))
-        await self.bot._send_backend_command(
-            interaction,
-            "config set",
-            args=" ".join(parts),
-            require_admin=True,
-        )
-
-    @config_group.command(
-        name="show",
-        description="Show server settings",
-    )
-    async def cmd_config_show(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "config show",
             require_admin=False,
         )
 
@@ -550,6 +455,38 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @mcp_group.command(
+        name="delete",
+        description="Remove an MCP server and its tools",
+    )
+    @app_commands.describe(
+        server_id="Configured MCP server id",
+    )
+    async def cmd_mcp_delete(
+        self,
+        interaction: discord.Interaction,
+        server_id: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(server_id))
+        await self.bot._send_backend_command(
+            interaction,
+            "mcp delete",
+            args=" ".join(parts),
+            require_admin=True,
+        )
+
+    @cmd_mcp_delete.autocomplete("server_id")
+    async def _ac_mcp_delete_server_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
+            self.bot, interaction, current
+        )
+
+    @mcp_group.command(
         name="discover",
         description="Force tool rediscovery for an MCP server",
     )
@@ -621,38 +558,6 @@ class GeneratedCommandsCog(commands.Cog):
 
     @cmd_mcp_logs.autocomplete("server_id")
     async def _ac_mcp_logs_server_id(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
-            self.bot, interaction, current
-        )
-
-    @mcp_group.command(
-        name="remove",
-        description="Remove an MCP server and its tools",
-    )
-    @app_commands.describe(
-        server_id="Configured MCP server id",
-    )
-    async def cmd_mcp_remove(
-        self,
-        interaction: discord.Interaction,
-        server_id: str,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        parts.append(shlex.quote(server_id))
-        await self.bot._send_backend_command(
-            interaction,
-            "mcp remove",
-            args=" ".join(parts),
-            require_admin=True,
-        )
-
-    @cmd_mcp_remove.autocomplete("server_id")
-    async def _ac_mcp_remove_server_id(
         self,
         interaction: discord.Interaction,
         current: str,
@@ -759,13 +664,13 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @memory_group.command(
-        name="forget",
+        name="delete",
         description="Forget a memory",
     )
     @app_commands.describe(
         key="Memory key to remove",
     )
-    async def cmd_memory_forget(
+    async def cmd_memory_delete(
         self,
         interaction: discord.Interaction,
         key: str,
@@ -775,7 +680,7 @@ class GeneratedCommandsCog(commands.Cog):
         parts.append(shlex.quote(key))
         await self.bot._send_backend_command(
             interaction,
-            "memory forget",
+            "memory delete",
             args=" ".join(parts),
             require_admin=False,
         )
@@ -878,62 +783,15 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
-    @app_commands.command(
-        name="model",
-        description="Show or change the model",
-    )
-    @app_commands.describe(
-        name="Model id to switch to",
-        force="Accept a model the provider does not list",
-        scope="Write the global default or this thread's override",
-    )
-    @app_commands.choices(
-        scope=[
-            app_commands.Choice(name="global", value="global"),
-            app_commands.Choice(name="thread", value="thread"),
-        ],
-    )
-    async def cmd_model(
-        self,
-        interaction: discord.Interaction,
-        name: Optional[str] = None,
-        force: Optional[bool] = None,
-        scope: Optional[str] = None,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        if force is True:
-            parts.append("--force")
-        if name is not None:
-            parts.append(shlex.quote(name))
-        if scope is not None:
-            parts.append(shlex.quote(scope))
-        await self.bot._send_backend_command(
-            interaction,
-            "model",
-            args=" ".join(parts),
-            require_admin=False,
-        )
-
-    @cmd_model.autocomplete("name")
-    async def _ac_model_name(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        return await AUTOCOMPLETE_RESOLVERS["models"](
-            self.bot, interaction, current
-        )
-
-    @app_commands.command(
-        name="models",
+    @model_group.command(
+        name="list",
         description="List available provider models",
     )
-    async def cmd_models(self, interaction: discord.Interaction) -> None:
+    async def cmd_model_list(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         await self.bot._send_backend_command(
             interaction,
-            "models",
+            "model list",
             require_admin=False,
         )
 
@@ -1151,27 +1009,15 @@ class GeneratedCommandsCog(commands.Cog):
             interaction,
             "settings set",
             args=" ".join(parts),
-            require_admin=False,
-        )
-
-    @settings_group.command(
-        name="show",
-        description="Show server settings",
-    )
-    async def cmd_settings_show(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "settings show",
-            require_admin=False,
+            require_admin=True,
         )
 
     @skills_group.command(
         name="disable",
-        description="Disable a skill on this thread (default) or globally",
+        description="Disable a skill, or `all` to deactivate every active one",
     )
     @app_commands.describe(
-        name="Installed skill name",
+        name="Installed skill name, or `all` for every active skill",
         global_="Apply to every thread instead of only this one",
     )
     @app_commands.rename(
@@ -1245,38 +1091,6 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @skills_group.command(
-        name="inspect",
-        description="Show full skill details (metadata, scope, tools, references)",
-    )
-    @app_commands.describe(
-        name="Installed skill name",
-    )
-    async def cmd_skills_inspect(
-        self,
-        interaction: discord.Interaction,
-        name: str,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        parts.append(shlex.quote(name))
-        await self.bot._send_backend_command(
-            interaction,
-            "skills inspect",
-            args=" ".join(parts),
-            require_admin=False,
-        )
-
-    @cmd_skills_inspect.autocomplete("name")
-    async def _ac_skills_inspect_name(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        return await AUTOCOMPLETE_RESOLVERS["skills"](
-            self.bot, interaction, current
-        )
-
-    @skills_group.command(
         name="install",
         description="Install a skill from a marketplace",
     )
@@ -1324,18 +1138,6 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
-    @skills_off_group.command(
-        name="all",
-        description="Deactivate every visible skill active on this thread",
-    )
-    async def cmd_skills_off_all(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "skills off all",
-            require_admin=False,
-        )
-
     @skills_group.command(
         name="search",
         description="Search a skills marketplace for installable skills",
@@ -1365,7 +1167,7 @@ class GeneratedCommandsCog(commands.Cog):
 
     @skills_group.command(
         name="show",
-        description="Show a skill's markdown body without activating it",
+        description="Show a skill's metadata and markdown body without activating it",
     )
     @app_commands.describe(
         name="Installed skill name",
@@ -1436,29 +1238,6 @@ class GeneratedCommandsCog(commands.Cog):
         await self.bot._send_backend_command(
             interaction,
             "status",
-            require_admin=False,
-        )
-
-    @app_commands.command(
-        name="tasks",
-        description="Scheduled tasks overview",
-    )
-    @app_commands.describe(
-        filter="Status filter (default: active)",
-    )
-    async def cmd_tasks(
-        self,
-        interaction: discord.Interaction,
-        filter: Optional[str] = None,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        parts: list[str] = []
-        if filter is not None:
-            parts.append(shlex.quote(filter))
-        await self.bot._send_backend_command(
-            interaction,
-            "tasks",
-            args=" ".join(parts),
             require_admin=False,
         )
 
@@ -1712,20 +1491,16 @@ class GeneratedCommandsCog(commands.Cog):
 
 
 GENERATED_COMMAND_NAMES: tuple[str, ...] = (
-    "account current",
     "account platforms",
+    "account show",
     "account tokens issue",
     "account tokens revoke",
     "activity list",
     "activity notifications",
-    "artifacts recent",
+    "artifacts list",
     "background clear",
     "background set",
     "background set-url",
-    "branch",
-    "config get",
-    "config set",
-    "config show",
     "context",
     "doctor auth",
     "doctor model",
@@ -1733,20 +1508,19 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "env set",
     "env show",
     "fast set",
+    "mcp delete",
     "mcp discover",
     "mcp list",
     "mcp logs",
-    "mcp remove",
     "mcp retry",
     "mcp status",
     "mcp test",
-    "memory forget",
+    "memory delete",
     "memory limit",
     "memory list",
     "memory save",
     "memory search",
-    "model",
-    "models",
+    "model list",
     "provider list",
     "provider reasoning-passback",
     "provider switch",
@@ -1755,18 +1529,14 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "sequential-tools",
     "settings get",
     "settings set",
-    "settings show",
     "skills disable",
     "skills enable",
-    "skills inspect",
     "skills install",
     "skills list",
-    "skills off all",
     "skills search",
     "skills show",
     "smart set",
     "status",
-    "tasks",
     "team list",
     "team show",
     "think",
@@ -1782,20 +1552,16 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
 # belongs to, so /help groups these commands by subject rather
 # than by the single cog class that happens to host them.
 COMMAND_CATEGORIES: dict[str, str] = {
-    "account current": "Personal",
     "account platforms": "Personal",
+    "account show": "Personal",
     "account tokens issue": "Personal",
     "account tokens revoke": "Personal",
     "activity list": "Personal",
     "activity notifications": "Personal",
-    "artifacts recent": "Personal",
+    "artifacts list": "Personal",
     "background clear": "LLM",
     "background set": "LLM",
     "background set-url": "LLM",
-    "branch": "Thread",
-    "config get": "Settings",
-    "config set": "Settings",
-    "config show": "Settings",
     "context": "Status",
     "doctor auth": "System",
     "doctor model": "System",
@@ -1803,20 +1569,19 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "env set": "Settings",
     "env show": "Settings",
     "fast set": "LLM",
+    "mcp delete": "MCP",
     "mcp discover": "MCP",
     "mcp list": "MCP",
     "mcp logs": "MCP",
-    "mcp remove": "MCP",
     "mcp retry": "MCP",
     "mcp status": "MCP",
     "mcp test": "MCP",
-    "memory forget": "Memory",
+    "memory delete": "Memory",
     "memory limit": "Memory",
     "memory list": "Memory",
     "memory save": "Memory",
     "memory search": "Memory",
-    "model": "LLM",
-    "models": "LLM",
+    "model list": "LLM",
     "provider list": "LLM",
     "provider reasoning-passback": "LLM",
     "provider switch": "LLM",
@@ -1825,18 +1590,14 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "sequential-tools": "Tools",
     "settings get": "Settings",
     "settings set": "Settings",
-    "settings show": "Settings",
     "skills disable": "Skills",
     "skills enable": "Skills",
-    "skills inspect": "Skills",
     "skills install": "Skills",
     "skills list": "Skills",
-    "skills off all": "Skills",
     "skills search": "Skills",
     "skills show": "Skills",
     "smart set": "LLM",
     "status": "Status",
-    "tasks": "TODOs",
     "team list": "Thread",
     "team show": "Thread",
     "think": "LLM",

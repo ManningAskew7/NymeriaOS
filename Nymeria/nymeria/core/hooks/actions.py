@@ -736,7 +736,7 @@ def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
             return _pre_outcome_from_json(out)
         # Other nonzero exit: a script bug, non-blocking (mirrors Claude Code).
         # Returned as an allow WITH a note (not None) so the failure is
-        # visible in /hook log and as a live activity line instead of an
+        # visible in /hook history and as a live activity line instead of an
         # indistinguishable bare no_op (backlog #74C).
         stderr_tail = (result.stderr or "").strip()[:200]
         logger.warning(

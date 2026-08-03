@@ -404,8 +404,31 @@ def test_skills_show_returns_body_without_activating(
     )
 
     assert result.success is True
+    # `skills inspect` folded in here (backlog #131), so one show renders the
+    # metadata table AND the body: neither old caller lost a field.
     assert "# Debug Skill" in result.markdown
     assert "Full body text." in result.markdown
+    assert "Required tools" in result.markdown
+    assert "Scope" in result.markdown
+
+
+def test_skills_show_renders_a_bodyless_skill_without_pretending_it_has_one(
+    tmp_path: Path,
+) -> None:
+    skill = _skill(tmp_path, "bare-skill", body="   ")
+    agent = _agent(tmp_path, [skill])
+
+    result = run(
+        CommandService().execute(
+            CommandContext(user_id="alice", actor="user", surface="desktop"),
+            "/skills show bare-skill",
+            api=SimpleNamespace(agent=agent),
+        )
+    )
+
+    assert result.success is True
+    assert "Name" in result.markdown
+    assert "(No body.)" in result.markdown
 
 
 def test_skills_off_all_deactivates_visible_active_skills(
@@ -445,6 +468,46 @@ def test_skills_off_all_deactivates_visible_active_skills(
 
     assert result.success is True
     assert calls == ["first-skill", "second-kit"]
+
+
+def test_skills_disable_all_is_the_canonical_spelling_of_the_old_off_all(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The depth-3 `/skills off all` folded into a value of `skills disable`.
+
+    Both spellings must reach the same body, and the thread-scoped `all` must
+    refuse the global flag rather than silently ignoring it.
+    """
+    first = _skill(tmp_path, "first-skill")
+    agent = _agent(tmp_path, [first])
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-1", enabled_skills=["first-skill"])
+    )
+    calls: list[str] = []
+
+    def fake_deactivate(**kwargs):
+        calls.append(kwargs["skill_name"])
+        return True, "deactivated"
+
+    monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
+
+    canonical = run(
+        CommandService().execute(
+            _ctx(), "/skills disable all", api=SimpleNamespace(agent=agent)
+        )
+    )
+    assert canonical.success is True, canonical.markdown
+    assert calls == ["first-skill"]
+
+    refused = run(
+        CommandService().execute(
+            _ctx(), "/skills disable --global all", api=SimpleNamespace(agent=agent)
+        )
+    )
+    assert refused.success is False
+    assert "drop --global" in refused.markdown
+    assert calls == ["first-skill"]
 
 
 def test_skills_off_all_body_carries_no_sentinel_from_the_helper(

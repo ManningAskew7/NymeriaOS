@@ -532,7 +532,7 @@ def test_every_executable_command_declares_params_unless_exempt() -> None:
         for cmd in service._commands.values()
         if cmd.executable and cmd.params is not None
     )
-    assert adopted >= 125  # anti-vacuity floor, mirrors the binding guard's
+    assert adopted >= 115  # anti-vacuity floor, mirrors the binding guard's
     # The exemption list may only shrink without a recorded design decision.
     assert len(_PARAMS_EXEMPT) <= 10
 

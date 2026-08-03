@@ -225,7 +225,7 @@ async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
         logger.debug("options: tool listing failed", exc_info=True)
         return []
 
-    # The thread's own overlay, exactly as "/tools enabled" computes it,
+    # The thread's own overlay, exactly as "/tools list" computes it,
     # INCLUDING live Skill Kit / TTL'd tools (the shared helper is the one
     # liveness computation; an inline re-derivation here once dropped them).
     from .command_service import live_temporary_tools
