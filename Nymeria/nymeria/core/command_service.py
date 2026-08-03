@@ -4394,12 +4394,16 @@ class _CommandExecutor(
             return None
         return getattr(agent, "accounts_repo", None)
 
-    async def _cmd_account(self, args: list[str], rest: str) -> str:
-        if not args or args == ["current"]:
-            return await self._cmd_account_current([], "")
+    async def _cmd_account(self, bound: BoundArgs) -> str:
+        # Bare "/account" shows the current user. Every account verb is a
+        # registered path, so longest-prefix dispatch routes it before this
+        # handler runs and the only token the binder sees here is a typo.
+        sub = str(bound.get("subcommand") or "")
+        if not sub or sub == "current":
+            return await self._cmd_account_current(BoundArgs())
         return self._usage_error("account")
 
-    async def _cmd_account_current(self, args: list[str], rest: str) -> str:
+    async def _cmd_account_current(self, bound: BoundArgs) -> str:
         repo = self._accounts_repo()
         if repo is None:
             return "[Error]: Account repository unavailable."
@@ -4419,7 +4423,7 @@ class _CommandExecutor(
             lines.append(f"  {label:<{width}}  {value}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_account_tokens(self, args: list[str], rest: str) -> str:
+    async def _cmd_account_tokens(self, bound: BoundArgs) -> str:
         repo = self._accounts_repo()
         if repo is None:
             return "[Error]: Account repository unavailable."
@@ -4441,11 +4445,11 @@ class _CommandExecutor(
             lines.append(f"| `{prefix}` | {label} | {created} | {last_used} | {revoked} |")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_account_tokens_issue(self, args: list[str], rest: str) -> str:
+    async def _cmd_account_tokens_issue(self, bound: BoundArgs) -> str:
         repo = self._accounts_repo()
         if repo is None:
             return "[Error]: Account repository unavailable."
-        label = " ".join(args).strip() or None
+        label = str(bound.get("label") or "").strip() or None
         try:
             raw_token = repo.issue_token(self.user_id, label=label)
         except Exception as exc:  # noqa: BLE001
@@ -4462,10 +4466,8 @@ class _CommandExecutor(
         ]
         return "\n".join(lines)
 
-    async def _cmd_account_tokens_revoke(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /account tokens revoke <hash-prefix>"
-        prefix = args[0]
+    async def _cmd_account_tokens_revoke(self, bound: BoundArgs) -> str:
+        prefix = str(bound.get("prefix") or "")
         repo = self._accounts_repo()
         if repo is None:
             return "[Error]: Account repository unavailable."
@@ -4474,7 +4476,7 @@ class _CommandExecutor(
             return f"[Error]: No matching token for prefix `{prefix}`."
         return f"[Success]: Revoked token `{prefix}`."
 
-    async def _cmd_account_platforms(self, args: list[str], rest: str) -> str:
+    async def _cmd_account_platforms(self, bound: BoundArgs) -> str:
         repo = self._accounts_repo()
         if repo is None:
             return "[Error]: Account repository unavailable."
@@ -4496,34 +4498,22 @@ class _CommandExecutor(
 
     # ── Activity / notifications ──────────────────────────────────────────
 
-    async def _cmd_activity(self, args: list[str], rest: str) -> str:
-        if not args or args in (["list"], ["recent"]):
-            return await self._cmd_activity_list([], "")
-        if args == ["notifications"]:
-            return await self._cmd_activity_notifications([], "")
+    async def _cmd_activity(self, bound: BoundArgs) -> str:
+        # Bare "/activity" lists, and `recent` stays a list synonym.
+        # "/activity notifications" is a registered path, routed before this.
+        sub = str(bound.get("subcommand") or "")
+        if not sub or sub in ("list", "recent"):
+            return await self._cmd_activity_list(BoundArgs())
         return self._usage_error("activity")
 
-    async def _cmd_activity_list(self, args: list[str], rest: str) -> str:
+    async def _cmd_activity_list(self, bound: BoundArgs) -> str:
         from ..core.activity_log import ActivityType, get_activity_log
 
-        limit = 20
-        activity_type_str: str | None = None
-        thread_id: str | None = None
-        index = 0
-        while index < len(args):
-            arg = args[index]
-            if arg.isdigit():
-                limit = max(1, int(arg))
-            elif arg == "--type" and index + 1 < len(args):
-                activity_type_str = args[index + 1]
-                index += 1
-            elif arg == "--thread" and index + 1 < len(args):
-                value = args[index + 1]
-                thread_id = self.thread_id if value.casefold() in {"current", "."} else value
-                index += 1
-            else:
-                return f"[Error]: Unknown activity option: {arg}"
-            index += 1
+        limit = max(1, int(bound.get("limit", 20)))
+        activity_type_str = str(bound.get("type") or "") or None
+        thread_id: str | None = str(bound.get("thread") or "") or None
+        if thread_id is not None and thread_id.casefold() in {"current", "."}:
+            thread_id = self.thread_id
 
         type_filter = None
         if activity_type_str:
@@ -4556,7 +4546,7 @@ class _CommandExecutor(
             lines.append(f"| {ts} | {etype} | `{tid}` | {msg} |")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_activity_notifications(self, args: list[str], rest: str) -> str:
+    async def _cmd_activity_notifications(self, bound: BoundArgs) -> str:
         from ..core.notifications import get_notification_store
 
         store = get_notification_store()
@@ -4580,18 +4570,16 @@ class _CommandExecutor(
 
     # ── Doctor (server-side diagnostics) ──────────────────────────────────
 
-    async def _cmd_doctor(self, args: list[str], rest: str) -> str:
-        if args == ["auth"]:
-            return await self._cmd_doctor_auth([], "")
-        if args == ["model"]:
-            return await self._cmd_doctor_model([], "")
-        if args:
+    async def _cmd_doctor(self, bound: BoundArgs) -> str:
+        # Both sections are registered paths, routed before this handler, so a
+        # token here is a typo; bare "/doctor" runs the pair.
+        if bound.get("subcommand"):
             return self._usage_error("doctor")
-        auth = await self._cmd_doctor_auth([], "")
-        model = await self._cmd_doctor_model([], "")
+        auth = await self._cmd_doctor_auth(BoundArgs())
+        model = await self._cmd_doctor_model(BoundArgs())
         return f"{auth}\n\n{model}"
 
-    async def _cmd_doctor_auth(self, args: list[str], rest: str) -> str:
+    async def _cmd_doctor_auth(self, bound: BoundArgs) -> str:
         repo = self._accounts_repo()
         if repo is None:
             return "[Info]: Auth\n  Selected user  " + self.user_id
@@ -4608,7 +4596,7 @@ class _CommandExecutor(
             lines.append(f"  {label:<{width}}  {value}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_doctor_model(self, args: list[str], rest: str) -> str:
+    async def _cmd_doctor_model(self, bound: BoundArgs) -> str:
         try:
             settings = await self.api.get_settings(user_id=self.user_id)
         except Exception as exc:  # noqa: BLE001
@@ -4630,7 +4618,7 @@ class _CommandExecutor(
 
     # ── Status / inspection ───────────────────────────────────────────────
 
-    async def _cmd_status(self, args: list[str], rest: str) -> str:
+    async def _cmd_status(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -4721,7 +4709,7 @@ class _CommandExecutor(
         ]
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_context(self, args: list[str], rest: str) -> str:
+    async def _cmd_context(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -4825,8 +4813,8 @@ class _CommandExecutor(
         lines.append(f"thread: {self.thread_id}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_tasks(self, args: list[str], rest: str) -> str:
-        filter_val = args[0].lower() if args else "active"
+    async def _cmd_tasks(self, bound: BoundArgs) -> str:
+        filter_val = str(bound.get("filter") or "active").lower()
         items = await self.api.list_todos(self.user_id)
         if filter_val == "active":
             items = [i for i in items if i.get("status") != "done"]
@@ -4999,40 +4987,48 @@ class _CommandExecutor(
             lines.append(f"(showing 25 of {len(models)})")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_fast(self, args: list[str], rest: str) -> str:
-        return await self._apply_tier_command("fast", args)
+    async def _cmd_fast(self, bound: BoundArgs) -> str:
+        return await self._apply_tier_command("fast", bound)
 
-    async def _cmd_smart(self, args: list[str], rest: str) -> str:
-        return await self._apply_tier_command("smart", args)
+    async def _cmd_smart(self, bound: BoundArgs) -> str:
+        return await self._apply_tier_command("smart", bound)
 
-    async def _apply_tier_command(self, tier: str, args: list[str]) -> str:
-        """Shared /fast and /smart handler: show / toggle / on / off / set."""
-        from ..config.model_tiers import is_tier_alias, plan_tier_switch, resolve_tier
+    async def _cmd_fast_set(self, bound: BoundArgs) -> str:
+        return await self._set_tier_model("fast", bound)
+
+    async def _cmd_smart_set(self, bound: BoundArgs) -> str:
+        return await self._set_tier_model("smart", bound)
+
+    async def _set_tier_model(self, tier: str, bound: BoundArgs) -> str:
+        """Shared /fast set and /smart set handler: store one tier value."""
+        from ..config.model_tiers import is_tier_alias
+
+        model_id = str(bound.get("model") or "").strip()
+        if is_tier_alias(model_id):
+            return (
+                f"[Error]: Cannot set the {tier} tier to another tier alias "
+                f"({model_id}). Use a model id or provider:model."
+            )
+        key = "llm_fast_model" if tier == "fast" else "llm_smart_model"
+        result = await self.api.update_settings(
+            user_id=self.user_id, **{key: model_id}
+        )
+        msg = f"[Success]: {tier.capitalize()} model set to {model_id}."
+        if result.get("restart_required"):
+            msg += " (restart required to take effect)"
+        return msg
+
+    async def _apply_tier_command(self, tier: str, bound: BoundArgs) -> str:
+        """Shared /fast and /smart handler: show / toggle / on / off."""
+        from ..config.model_tiers import plan_tier_switch, resolve_tier
 
         label = tier.capitalize()
-        sub = args[0].lower() if args else ""
-        settings = await self.api.get_settings()
-
-        if sub == "set":
-            model_id = " ".join(args[1:]).strip()
-            if not model_id:
-                return f"[Error]: Usage: /{tier} set <model-id> (or provider:model)"
-            if is_tier_alias(model_id):
-                return (
-                    f"[Error]: Cannot set the {tier} tier to another tier alias "
-                    f"({model_id}). Use a model id or provider:model."
-                )
-            key = "llm_fast_model" if tier == "fast" else "llm_smart_model"
-            result = await self.api.update_settings(
-                user_id=self.user_id, **{key: model_id}
-            )
-            msg = f"[Success]: {label} model set to {model_id}."
-            if result.get("restart_required"):
-                msg += " (restart required to take effect)"
-            return msg
-
+        # `set` is a registered child with its own schema, so the only tokens
+        # that reach the root are the toggle words and typos.
+        sub = str(bound.get("mode") or "").lower()
         if sub not in {"", "on", "off"}:
             return self._usage_error(tier)
+        settings = await self.api.get_settings()
 
         if not self.thread_id:
             resolved = resolve_tier(tier, settings)
@@ -5069,59 +5065,19 @@ class _CommandExecutor(
             f"({target_model}, {target_provider})."
         )
 
-    async def _cmd_background(self, args: list[str], rest: str) -> str:
-        """Manage the global background/utility model tier: show / set / set-url / clear.
+    async def _cmd_background(self, bound: BoundArgs) -> str:
+        """Show the global background/utility model tier.
 
         Unlike /fast and /smart this never switches the thread's agent model: the
         background tier is a utility model (extraction now, more later), so it is
-        global-only with no thread toggle.
+        global-only with no thread toggle. The set, set-url, and clear verbs are
+        registered children with their own schemas.
         """
-        from ..config.model_tiers import is_tier_alias, resolve_tier
+        from ..config.model_tiers import resolve_tier
 
-        sub = args[0].lower() if args else ""
-        settings = await self.api.get_settings()
-
-        if sub == "set":
-            model_id = " ".join(args[1:]).strip()
-            if not model_id:
-                return "[Error]: Usage: /background set <model-id> (or provider:model)"
-            if is_tier_alias(model_id):
-                return (
-                    "[Error]: Cannot set the background tier to another tier alias "
-                    f"({model_id}). Use a model id or provider:model."
-                )
-            result = await self.api.update_settings(
-                user_id=self.user_id, llm_background_model=model_id
-            )
-            msg = f"[Success]: Background model set to {model_id}."
-            if result.get("restart_required"):
-                msg += " (restart required to take effect)"
-            return msg
-
-        if sub == "set-url":
-            base_url = " ".join(args[1:]).strip()
-            if not base_url:
-                return "[Error]: Usage: /background set-url <base-url>"
-            result = await self.api.update_settings(
-                user_id=self.user_id, llm_background_base_url=base_url
-            )
-            msg = f"[Success]: Background base URL set to {base_url}."
-            if result.get("restart_required"):
-                msg += " (restart required to take effect)"
-            return msg
-
-        if sub == "clear":
-            # Empty strings clear both keys in the env file (mirrors how the
-            # frontend clears a tier field); None would be filtered out.
-            await self.api.update_settings(
-                user_id=self.user_id,
-                llm_background_model="",
-                llm_background_base_url="",
-            )
-            return "[Success]: Background model cleared (falls back to the main model)."
-
-        if sub not in {"", "show"}:
+        if str(bound.get("subcommand") or "").lower() not in {"", "show"}:
             return self._usage_error("background")
+        settings = await self.api.get_settings()
 
         configured = str(settings.get("llm_background_model") or "").strip()
         base_url = str(settings.get("llm_background_base_url") or "").strip()
@@ -5137,12 +5093,49 @@ class _CommandExecutor(
             lines.append(f"Base URL override: {base_url}")
         return "[Info]: " + "\n".join(lines)
 
+    async def _cmd_background_set(self, bound: BoundArgs) -> str:
+        from ..config.model_tiers import is_tier_alias
+
+        model_id = str(bound.get("model") or "").strip()
+        if is_tier_alias(model_id):
+            return (
+                "[Error]: Cannot set the background tier to another tier alias "
+                f"({model_id}). Use a model id or provider:model."
+            )
+        result = await self.api.update_settings(
+            user_id=self.user_id, llm_background_model=model_id
+        )
+        msg = f"[Success]: Background model set to {model_id}."
+        if result.get("restart_required"):
+            msg += " (restart required to take effect)"
+        return msg
+
+    async def _cmd_background_set_url(self, bound: BoundArgs) -> str:
+        base_url = str(bound.get("base_url") or "").strip()
+        result = await self.api.update_settings(
+            user_id=self.user_id, llm_background_base_url=base_url
+        )
+        msg = f"[Success]: Background base URL set to {base_url}."
+        if result.get("restart_required"):
+            msg += " (restart required to take effect)"
+        return msg
+
+    async def _cmd_background_clear(self, bound: BoundArgs) -> str:
+        # Empty strings clear both keys in the env file (mirrors how the
+        # frontend clears a tier field); None would be filtered out.
+        await self.api.update_settings(
+            user_id=self.user_id,
+            llm_background_model="",
+            llm_background_base_url="",
+        )
+        return "[Success]: Background model cleared (falls back to the main model)."
+
     # /fallback, /think and the /provider family live in
     # command_executor_llm.py (LLMCommandsMixin).
 
     # ── Config ────────────────────────────────────────────────────────────
 
-    async def _cmd_config_show(self, args: list[str], rest: str) -> str:
+    async def _cmd_config_show(self, bound: BoundArgs) -> str:
         settings = await self.api.get_settings()
         effort = settings.get("llm_reasoning_effort")
         base_url = settings.get("llm_base_url")
@@ -5182,49 +5175,50 @@ class _CommandExecutor(
             lines.append(f"  watchdog interval: {settings.get('watchdog_interval_minutes', '?')}m")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_config_get(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /config get <key>"
-        key = args[0]
+    async def _cmd_config_get(self, bound: BoundArgs) -> str:
+        key = str(bound.get("key") or "")
         settings = await self.api.get_settings()
         if key in settings:
             return f"[Info]: {key} = {settings[key]}"
         available = ", ".join(sorted(settings.keys())[:30])
         return f"[Error]: Unknown setting '{key}'. Available: {available}"
 
-    async def _cmd_config_set(self, args: list[str], rest: str) -> str:
-        if len(args) < 2:
-            return "[Error]: Usage: /config set <key> <value>"
-        key = args[0]
-        value_str = " ".join(args[1:])
-        parsed = coerce_value(value_str)
+    async def _cmd_config_set(self, bound: BoundArgs) -> str:
+        key = str(bound.get("key") or "")
+        parsed = coerce_value(str(bound.get("value") or ""))
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
         msg = f"[Success]: {key} set to {parsed}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
         return msg
 
-    async def _cmd_settings(self, args: list[str], rest: str) -> str:
+    async def _cmd_settings(self, bound: BoundArgs) -> str:
         """Delegating alias of the /config family (one implementation).
 
         Registered as its own catalog entry because a registry alias cannot
         point a bare root at a subcommand path (the CLI proxy only carries
-        single-token aliases on single-token paths). The set branch delegates
-        to /config set, whose settings applier enforces admin on both
-        transports.
+        single-token aliases on single-token paths). Its show/get/set verbs are
+        registered children, routed before this handler; they delegate to the
+        /config handlers, whose settings applier enforces admin on both
+        transports. Bare "/settings" and the "view" synonym land here.
         """
-        sub = args[0].lower() if args else "show"
-        if sub in ("show", "view"):
-            return await self._cmd_config_show(args[1:], "")
-        if sub == "get":
-            return await self._cmd_config_get(args[1:], "")
-        if sub == "set":
-            return await self._cmd_config_set(args[1:], "")
+        sub = str(bound.get("subcommand") or "").lower()
+        if not sub or sub in ("show", "view"):
+            return await self._cmd_config_show(BoundArgs())
         return self._usage_error("settings")
+
+    async def _cmd_settings_show(self, bound: BoundArgs) -> str:
+        return await self._cmd_config_show(bound)
+
+    async def _cmd_settings_get(self, bound: BoundArgs) -> str:
+        return await self._cmd_config_get(bound)
+
+    async def _cmd_settings_set(self, bound: BoundArgs) -> str:
+        return await self._cmd_config_set(bound)
 
     # ── Env ───────────────────────────────────────────────────────────────
 
-    async def _cmd_env_show(self, args: list[str], rest: str) -> str:
+    async def _cmd_env_show(self, bound: BoundArgs) -> str:
         data = await self.api.get_env_vars(user_id=self.user_id)
         entries = data.get("entries", [])
         by_cat: dict[str, list] = {}
@@ -5245,10 +5239,8 @@ class _CommandExecutor(
         lines.append("Use /env get <key> for unmasked values.")
         return _truncate("[Info]: " + "\n".join(lines))
 
-    async def _cmd_env_get(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /env get <key>"
-        key = args[0]
+    async def _cmd_env_get(self, bound: BoundArgs) -> str:
+        key = str(bound.get("key") or "")
         try:
             data = await self.api.get_env_var(key, user_id=self.user_id)
         except httpx.HTTPStatusError as e:
@@ -5261,12 +5253,9 @@ class _CommandExecutor(
             return f"[Info]: {name} = {val}"
         return f"[Info]: {name} is not set."
 
-    async def _cmd_env_set(self, args: list[str], rest: str) -> str:
-        if len(args) < 2:
-            return "[Error]: Usage: /env set <key> <value>"
-        key = args[0]
-        value_str = " ".join(args[1:])
-        parsed = coerce_value(value_str)
+    async def _cmd_env_set(self, bound: BoundArgs) -> str:
+        key = str(bound.get("key") or "")
+        parsed = coerce_value(str(bound.get("value") or ""))
         # Mirror telegram: env set uses update_settings; the /settings model
         # maps env-var keys through.
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
@@ -5291,7 +5280,7 @@ class _CommandExecutor(
         cat_list = ", ".join(sorted(categories))
         return ([], False, None, f"Unknown tool or category '{name}'. Categories: {cat_list}")
 
-    async def _cmd_tools_core(self, args: list[str], rest: str) -> str:
+    async def _cmd_tools_core(self, bound: BoundArgs) -> str:
         data = await self.api.get_default_tools(self.user_id)
         default_names = set(data.get("default_tools", []))
         available = data.get("available_tools", [])
@@ -5305,7 +5294,7 @@ class _CommandExecutor(
                     lines.append(f"  {t['name']}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_tools_optional(self, args: list[str], rest: str) -> str:
+    async def _cmd_tools_optional(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5333,7 +5322,7 @@ class _CommandExecutor(
             lines.append(f"  {names}")
         return _truncate("[Info]: " + "\n".join(lines))
 
-    async def _cmd_tools_enabled(self, args: list[str], rest: str) -> str:
+    async def _cmd_tools_enabled(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5397,13 +5386,11 @@ class _CommandExecutor(
             lines.append("Optional enabled: none")
         return _truncate("[Info]: " + "\n".join(lines))
 
-    async def _cmd_tools_category(self, args: list[str], rest: str) -> str:
+    async def _cmd_tools_category(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        if not args:
-            return "[Error]: Usage: /tools category <name>"
-        cat_name = args[0]
+        cat_name = str(bound.get("name") or "")
         data = await self.api.get_default_tools(self.user_id)
         default_names = set(data.get("default_tools", []))
         available = data.get("available_tools", [])
@@ -5435,13 +5422,11 @@ class _CommandExecutor(
                 lines.append(f"  {mark} {tool_name}{tag}")
         return _truncate("[Info]: " + "\n".join(lines))
 
-    async def _cmd_tools_enable(self, args: list[str], rest: str) -> str:
+    async def _cmd_tools_enable(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        if not args:
-            return "[Error]: Usage: /tools enable <tool_or_category>"
-        name = args[0]
+        name = str(bound.get("name") or "")
         tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
         if error:
             return f"[Error]: {error}"
@@ -5460,13 +5445,11 @@ class _CommandExecutor(
             return f"[Success]: Enabled category '{cat_name}' ({len(tool_names)} tools)."
         return f"[Success]: Enabled tool '{tool_names[0]}'."
 
-    async def _cmd_tools_disable(self, args: list[str], rest: str) -> str:
+    async def _cmd_tools_disable(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        if not args:
-            return "[Error]: Usage: /tools disable <tool_or_category>"
-        name = args[0]
+        name = str(bound.get("name") or "")
         tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
         if error:
             return f"[Error]: {error}"
@@ -5628,7 +5611,7 @@ class _CommandExecutor(
         )
         return f"[Success]: This thread's memory character limit set to {limit}."
 
-    async def _cmd_sequential_tools(self, args: list[str], rest: str) -> str:
+    async def _cmd_sequential_tools(self, bound: BoundArgs) -> str:
         """Show / set sequential (ordered, one-at-a-time) tool execution.
 
         No args shows status; `on`/`off`/`inherit` set this thread's override;
@@ -5654,7 +5637,10 @@ class _CommandExecutor(
         def fmt(value: bool) -> str:
             return "on" if value else "off"
 
-        if not args:
+        mode = str(bound.get("mode") or "").lower()
+        value = str(bound.get("value") or "")
+
+        if not mode:
             g = global_flag()
             lines = ["Sequential tool execution", f"  global: {fmt(g)}"]
             if self.thread_id:
@@ -5669,22 +5655,22 @@ class _CommandExecutor(
                     lines.append(f"  thread: {fmt(bool(override))} (override)")
             return "[Info]: " + "\n".join(lines)
 
-        sub = args[0].lower()
-
-        if sub == "global":
-            if len(args) != 2 or args[1].lower() not in ("on", "off"):
-                return "[Error]: Usage: /sequential-tools global <on|off>"
-            value = args[1].lower() == "on"
+        if mode == "global":
+            if value.lower() not in ("on", "off"):
+                return self._usage_error(
+                    "sequential-tools", hint="`global` takes `on` or `off`."
+                )
+            enabled = value.lower() == "on"
             result = await self.api.update_settings(
                 user_id=self.user_id,
-                sequential_tool_execution=value,
+                sequential_tool_execution=enabled,
             )
-            msg = f"[Success]: Global sequential tool execution turned {fmt(value)}."
+            msg = f"[Success]: Global sequential tool execution turned {fmt(enabled)}."
             if isinstance(result, dict) and result.get("restart_required"):
                 msg += " (restart required to take effect)"
             return msg
 
-        if sub in ("inherit", "default"):
+        if mode in ("inherit", "default"):
             thread_error = self._require_thread()
             if thread_error:
                 return thread_error
@@ -5695,25 +5681,30 @@ class _CommandExecutor(
             )
             return "[Success]: This thread now inherits the global sequential tool execution setting."
 
-        if sub in ("on", "off"):
+        if mode in ("on", "off"):
             thread_error = self._require_thread()
             if thread_error:
                 return thread_error
-            value = sub == "on"
+            enabled = mode == "on"
             await self.api.update_thread_config(
                 self.thread_id,
-                sequential_tool_execution=value,
+                sequential_tool_execution=enabled,
                 user_id=self.user_id,
             )
-            mode = "sequential" if value else "concurrent"
-            return f"[Success]: This thread's tool execution set to {mode} (override {fmt(value)})."
+            label = "sequential" if enabled else "concurrent"
+            return (
+                f"[Success]: This thread's tool execution set to {label} "
+                f"(override {fmt(enabled)})."
+            )
 
-        return "[Error]: Usage: /sequential-tools [on|off|inherit|global on|off]"
+        # No declared choices (the handler also takes `default`), so an unknown
+        # mode still lands here.
+        return self._usage_error("sequential-tools")
 
     # ── TODOs ─────────────────────────────────────────────────────────────
 
-    async def _cmd_todos_list(self, args: list[str], rest: str) -> str:
-        filter_val = args[0].lower() if args else "active"
+    async def _cmd_todos_list(self, bound: BoundArgs) -> str:
+        filter_val = str(bound.get("filter") or "active").lower()
         items = await self.api.list_todos(self.user_id)
         if filter_val == "active":
             items = [i for i in items if i.get("status") != "done"]
@@ -5766,10 +5757,8 @@ class _CommandExecutor(
             out.append(f"Repeats: {recurrence}")
         return "[Success]: " + "\n".join(out)
 
-    async def _cmd_todos_complete(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /todos complete <todo_id>"
-        todo_id = args[0]
+    async def _cmd_todos_complete(self, bound: BoundArgs) -> str:
+        todo_id = str(bound.get("todo_id") or "")
         items = await self.api.list_todos(self.user_id)
         match = next((i for i in items if i.get("id", "").startswith(todo_id)), None)
         if not match:
@@ -5782,10 +5771,8 @@ class _CommandExecutor(
             return f"[Success]: Completed '{task}'. Rescheduled ({recurrence}): next fire {next_fire}."
         return f"[Success]: Completed '{task}'."
 
-    async def _cmd_todos_delete(self, args: list[str], rest: str) -> str:
-        if not args:
-            return "[Error]: Usage: /todos delete <todo_id>"
-        todo_id = args[0]
+    async def _cmd_todos_delete(self, bound: BoundArgs) -> str:
+        todo_id = str(bound.get("todo_id") or "")
         items = await self.api.list_todos(self.user_id)
         match = next((i for i in items if i.get("id", "").startswith(todo_id)), None)
         if not match:
@@ -5867,17 +5854,11 @@ class _CommandExecutor(
         await self.api.clear_thread(self.thread_id)
         return "[Success]: Conversation history cleared. Notepad and tool config preserved."
 
-    async def _cmd_prune(self, args: list[str], rest: str) -> str:
+    async def _cmd_prune(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        mode = (args[0].lower() if args else "full")
-        if mode not in ("soft", "full"):
-            return (
-                f"[Error]: Unknown mode '{mode}'. Usage: /prune [soft|full] "
-                f"(soft truncates each tool result to 500 chars; full drops it "
-                f"to a placeholder. Default: full)."
-            )
+        mode = str(bound.get("mode") or "full")
         result = await self.api.prune_thread(self.thread_id, mode=mode)
         if not result.get("success"):
             reason = result.get("reason", "unknown error")

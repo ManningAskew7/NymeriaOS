@@ -21,6 +21,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .command_params import BoundArgs
+
 logger = logging.getLogger(__name__)
 
 
@@ -212,24 +214,6 @@ def _one_line(value: Any, *, limit: int = 200) -> str:
     return f"{text[: limit - 3].rstrip()}..."
 
 
-def _parse_limit(args: Sequence[str], *, default: int) -> int:
-    if not args:
-        return default
-    for arg in args:
-        if arg.startswith("--limit="):
-            return _positive_int(arg.split("=", 1)[1], default=default)
-        if arg.isdigit():
-            return _positive_int(arg, default=default)
-    return default
-
-
-def _positive_int(value: str, *, default: int) -> int:
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return default
-
-
 def _artifact_mappings(message: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     found: list[Mapping[str, Any]] = []
     direct = message.get("artifacts")
@@ -272,13 +256,10 @@ class ContextCommandsMixin:
 
     if TYPE_CHECKING:
         def _require_thread(self) -> str | None: ...
-        def _usage_error(self, name: str, *, hint: str | None = None) -> str: ...
 
     # ── Token usage / cost ────────────────────────────────────────────────
 
-    async def _cmd_usage(self, args: list[str], rest: str) -> str:
-        if args:
-            return self._usage_error("usage")
+    async def _cmd_usage(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -289,9 +270,7 @@ class ContextCommandsMixin:
         compact_trigger = trigger if isinstance(trigger, int) and not isinstance(trigger, bool) else None
         return "[Info]: " + _format_thread_usage(stats, compact_trigger=compact_trigger)
 
-    async def _cmd_usage_session(self, args: list[str], rest: str) -> str:
-        if args:
-            return "[Error]: Usage: /usage session"
+    async def _cmd_usage_session(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -302,16 +281,18 @@ class ContextCommandsMixin:
 
     # ── Workspace artifacts (server-state listing) ────────────────────────
 
-    async def _cmd_artifacts(self, args: list[str], rest: str) -> str:
-        if args:
-            return self._usage_error("artifacts")
-        return await self._cmd_artifacts_recent([], "")
+    async def _cmd_artifacts(self, bound: BoundArgs) -> str:
+        # Bare "/artifacts" is the recent listing; "recent" is a registered
+        # path, routed before this handler.
+        return await self._cmd_artifacts_recent(BoundArgs())
 
-    async def _cmd_artifacts_recent(self, args: list[str], rest: str) -> str:
+    async def _cmd_artifacts_recent(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        limit = _parse_limit(args, default=10)
+        # The default is repeated here because the root delegates with empty
+        # BoundArgs, which carries no declared default.
+        limit = max(1, int(bound.get("limit", 10)))
         artifacts = await self._artifacts_from_history(limit=limit)
         if not artifacts:
             return "[Info]: No recent workspace artifacts found."

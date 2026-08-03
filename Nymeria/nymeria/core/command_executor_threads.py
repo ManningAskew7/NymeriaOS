@@ -469,13 +469,14 @@ class ThreadCommandsMixin:
 
     # ── /team read commands (backlog #100 phase 2) ────────────────────────
 
-    async def _cmd_team(self, args: list[str], rest: str) -> str:
+    async def _cmd_team(self, bound: BoundArgs) -> str:
         # Registry dispatch routes "/team list" and "/team show ..." to the
         # dedicated handlers; anything else lands here. Bare "/team" lists,
         # "/team <ref>" is show shorthand.
-        if not args:
+        ref = str(bound.get("team") or "").strip()
+        if not ref:
             return await self._cmd_team_list(BoundArgs())
-        return await self._cmd_team_show(args, " ".join(args))
+        return await self._show_team(ref)
 
     async def _cmd_team_list(self, bound: BoundArgs) -> str:
         teams = await self._thread_teams()
@@ -495,10 +496,15 @@ class ThreadCommandsMixin:
             )
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_team_show(self, args: list[str], rest: str) -> str:
-        ref = (rest or " ".join(args)).strip()
-        if not ref:
-            return "[Error]: Usage: /team show <team-id-or-name>"
+    async def _cmd_team_show(self, bound: BoundArgs) -> str:
+        return await self._show_team(str(bound.get("team") or "").strip())
+
+    async def _show_team(self, ref: str) -> str:
+        """Render one team, resolved by id then by case-insensitive name.
+
+        Shared by "/team show <ref>" and the "/team <ref>" shorthand, so the
+        two cannot drift.
+        """
         teams = await self._thread_teams()
         match: Mapping[str, Any] | None = None
         for team in teams:

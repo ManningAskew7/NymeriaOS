@@ -290,3 +290,145 @@ def test_doctor_root_combines_auth_and_model(patched_agent) -> None:
     assert "Auth" in result.markdown
     assert "Model" in result.markdown
     assert "openai" in result.markdown
+
+
+# ── #129 wave 2b: declared params ─────────────────────────────────────────
+
+
+def test_account_root_rejects_an_unknown_verb_with_family_guidance(
+    patched_agent,
+) -> None:
+    patched_agent(SimpleNamespace(accounts_repo=_FakeAccountsRepo()))
+
+    # One stray token binds to the declared subcommand slot, so the handler's
+    # own rejection answers and names the family.
+    unknown = run(CommandService().execute(_ctx(), "/account bogus"))
+    assert unknown.success is False
+    assert "Usage: `/account [current|tokens|platforms]`" in unknown.markdown
+    assert "Subcommands: current, platforms, tokens." in unknown.markdown
+
+    # A second token is a binder rejection, which layers the same guidance.
+    extra = run(CommandService().execute(_ctx(), "/account bogus more"))
+    assert extra.success is False
+    assert "Unexpected argument `more`" in extra.markdown
+    assert "Valid subcommands: current, platforms, tokens." in extra.markdown
+
+
+def test_account_tokens_revoke_without_a_prefix_revokes_nothing(
+    patched_agent,
+) -> None:
+    repo = _FakeAccountsRepo()
+    repo.tokens["alice"] = [SimpleNamespace(token_hash_prefix="abcd1234")]
+    patched_agent(SimpleNamespace(accounts_repo=repo))
+
+    result = run(CommandService().execute(_ctx(), "/account tokens revoke"))
+
+    assert result.success is False
+    assert "Missing required argument: hash-prefix" in result.markdown
+    assert "Usage: `/account tokens revoke <hash-prefix>`" in result.markdown
+    assert repo.revoked_tokens == []
+
+
+def test_account_tokens_issue_joins_a_multi_word_label(patched_agent) -> None:
+    repo = _FakeAccountsRepo()
+    patched_agent(SimpleNamespace(accounts_repo=repo))
+
+    result = run(CommandService().execute(_ctx(), "/account tokens issue work laptop"))
+
+    assert result.success is True, result.markdown
+    assert repo.issued_tokens == [("alice", "work laptop")]
+
+
+def test_account_current_rejects_stray_arguments(patched_agent) -> None:
+    repo = _FakeAccountsRepo()
+    repo.users["alice"] = _FakeUser(
+        id="alice", email="", display_name="Alice", role="user"
+    )
+    patched_agent(SimpleNamespace(accounts_repo=repo))
+
+    result = run(CommandService().execute(_ctx(), "/account current verbose"))
+
+    assert result.success is False
+    assert "Unexpected argument `verbose`" in result.markdown
+    assert "Alice" not in result.markdown
+
+
+class _RecordingActivityLog:
+    def __init__(self) -> None:
+        self.queries: list[dict[str, Any]] = []
+
+    def get_entries(self, user_id, limit, activity_type, thread_id):
+        self.queries.append(
+            {
+                "user_id": user_id,
+                "limit": limit,
+                "activity_type": activity_type,
+                "thread_id": thread_id,
+            }
+        )
+        return []
+
+
+def test_activity_list_binds_limit_and_both_option_spellings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nymeria.core.activity_log import ActivityType
+
+    log = _RecordingActivityLog()
+    monkeypatch.setattr("nymeria.core.activity_log.get_activity_log", lambda: log)
+
+    result = run(
+        CommandService().execute(
+            _ctx(),
+            "/activity list 5 --type=user_message --thread current",
+        )
+    )
+
+    assert result.success is True, result.markdown
+    assert log.queries == [
+        {
+            "user_id": "alice",
+            "limit": 5,
+            "activity_type": ActivityType.USER_MESSAGE,
+            "thread_id": "thread-1",
+        }
+    ]
+
+
+def test_activity_list_rejects_a_non_integer_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _RecordingActivityLog()
+    monkeypatch.setattr("nymeria.core.activity_log.get_activity_log", lambda: log)
+
+    result = run(CommandService().execute(_ctx(), "/activity list lots"))
+
+    assert result.success is False
+    assert "limit must be an integer, got `lots`" in result.markdown
+    assert log.queries == []
+
+
+def test_activity_list_rejects_an_unknown_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _RecordingActivityLog()
+    monkeypatch.setattr("nymeria.core.activity_log.get_activity_log", lambda: log)
+
+    result = run(CommandService().execute(_ctx(), "/activity list --kind chat"))
+
+    assert result.success is False
+    assert "Unknown option `--kind`" in result.markdown
+    assert "Usage: `/activity list [limit] [--type TYPE] [--thread ID]`" in result.markdown
+    assert log.queries == []
+
+
+def test_doctor_rejects_an_unknown_section(patched_agent) -> None:
+    patched_agent(SimpleNamespace(accounts_repo=_FakeAccountsRepo()))
+
+    result = run(CommandService().execute(_ctx(), "/doctor network"))
+
+    assert result.success is False
+    assert "Usage: `/doctor [auth|model]`" in result.markdown
+    assert "Subcommands: auth, model." in result.markdown
+    # The combined report never ran.
+    assert "Auth" not in result.markdown
