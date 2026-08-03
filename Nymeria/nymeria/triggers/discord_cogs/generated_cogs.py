@@ -301,6 +301,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @cmd_background_set.autocomplete("model")
+    async def _ac_background_set_model(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["models"](
+            self.bot, interaction, current
+        )
+
     @background_group.command(
         name="set-url",
         description="Set a base URL override for the background tier",
@@ -527,6 +537,16 @@ class GeneratedCommandsCog(commands.Cog):
             "fast set",
             args=" ".join(parts),
             require_admin=False,
+        )
+
+    @cmd_fast_set.autocomplete("model")
+    async def _ac_fast_set_model(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["models"](
+            self.bot, interaction, current
         )
 
     @mcp_group.command(
@@ -1275,6 +1295,16 @@ class GeneratedCommandsCog(commands.Cog):
             "smart set",
             args=" ".join(parts),
             require_admin=False,
+        )
+
+    @cmd_smart_set.autocomplete("model")
+    async def _ac_smart_set_model(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["models"](
+            self.bot, interaction, current
         )
 
     @app_commands.command(

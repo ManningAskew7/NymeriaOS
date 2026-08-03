@@ -3799,14 +3799,28 @@ def test_thread_zero_argument_subcommands_reject_extras() -> None:
         assert "Unexpected argument `bogus`" in rejected.markdown, command
 
 
-def test_thread_switch_and_rename_report_the_missing_argument() -> None:
+def test_thread_switch_bare_rescues_form_clients_and_errors_everyone_else() -> None:
+    """Bare /thread switch: a form-capable caller gets the generated thread
+    picker (#110, via the threads choices_ref); a form-less caller keeps the
+    strict usage error; /thread rename (free-text title) stays an error for
+    everyone because typing the title IS the form."""
     service = CommandService()
     api = FakeCommandApi()
 
     switch = run(service.execute(_cli_ctx(), "/thread switch", api=api))
-    assert switch.success is False
-    assert "Missing required argument: id-or-title" in switch.markdown
-    assert "Usage: `/thread switch <id-or-title>`" in switch.markdown
+    assert switch.success is True
+    form = (switch.data or {})["form"]
+    assert form["submit"] == {"command": "thread switch {id_or_title}"}
+    options = form["tabs"][0]["fields"][0]["options"]
+    # /thread list ordering: most recently updated first (thread-2 is newer
+    # in the fake's seed), with the calling thread marked current.
+    assert [option["id"] for option in options] == ["thread-2", "thread-1"]
+    assert [option["id"] for option in options if option["current"]] == ["thread-1"]
+
+    plain = run(service.execute(_no_forms_ctx(), "/thread switch", api=api))
+    assert plain.success is False
+    assert "Missing required argument: id-or-title" in plain.markdown
+    assert "Usage: `/thread switch <id-or-title>`" in plain.markdown
 
     rename = run(service.execute(_cli_ctx(), "/thread rename", api=api))
     assert rename.success is False
