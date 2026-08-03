@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...core.accounts import AuthenticatedUser
 from ...core.command_service import (
@@ -16,6 +16,7 @@ from ..schemas.commands import (
     CommandExecuteRequest,
     CommandExecuteResponse,
     CommandInfoResponse,
+    CommandOptionResponse,
     CommandParamModel,
     CommandSource,
     CommandSurface,
@@ -63,6 +64,42 @@ def create_commands_router(
             level=result.level,
             data=result.data,
         )
+
+    @router.get(
+        "/commands/options/{ref}",
+        response_model=list[CommandOptionResponse],
+    )
+    async def list_command_options(
+        ref: str,
+        thread_id: str | None = Query(default=None),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ) -> list[CommandOptionResponse]:
+        """Resolve a ``choices_ref`` value set live, scoped to the caller.
+
+        Serves every consumer that wants the option list WITHOUT running a
+        command: Discord autocomplete, palette clients, generated forms on
+        the client side. 404 for a ref no resolver claims.
+        """
+        ctx = CommandContext(
+            user_id=user.id,
+            thread_id=thread_id,
+            is_admin=user.role == "admin",
+            via_act_as=user.via_act_as,
+        )
+        backend = CommandBackendClient.from_context(
+            ctx,
+            agent=get_agent_fn() if get_agent_fn is not None else None,
+            user=user,
+            settings_fn=get_settings_fn if get_settings_fn is not None else None,
+        )
+        options = await get_command_service().resolve_options(
+            ctx, ref, api=backend
+        )
+        if options is None:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown option set: {ref}"
+            )
+        return [CommandOptionResponse(**option) for option in options]
 
     @router.get("/commands", response_model=list[CommandInfoResponse])
     async def list_commands(

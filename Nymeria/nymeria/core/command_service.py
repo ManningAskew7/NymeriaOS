@@ -32,12 +32,12 @@ from .command_executor_threads import ThreadCommandsMixin
 from .command_forms import (
     CommandOutput,
     command_data,
-    form_option,
     form_payload,
     form_tab,
     radio_field,
     search_field,
 )
+from .command_option_resolvers import OPTION_RESOLVERS, resolve_models
 from .command_params import (
     BoundArgs,
     CommandParam,
@@ -2816,6 +2816,45 @@ class CommandService:
             if owns_api and hasattr(client, "close"):
                 await client.close()
 
+    async def resolve_options(
+        self,
+        ctx: CommandContext,
+        ref: str,
+        *,
+        api: Any | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Resolve a ``choices_ref`` option set for the calling identity.
+
+        Returns ``None`` for an unknown ref (no resolver registered; the
+        router renders that as 404), else the live option list, possibly
+        empty. Client construction mirrors ``execute()`` so a resolver sees
+        exactly the doors the corresponding handler would.
+        """
+        resolver = OPTION_RESOLVERS.get(ref)
+        if resolver is None:
+            return None
+        owns_api = api is None
+        client = api
+        if client is None:
+            try:
+                client = CommandBackendClient.from_context(ctx)
+            except RuntimeError:
+                client = CommandHttpClient.from_service_token()
+        executor = _CommandExecutor(
+            api=client,
+            thread_id=ctx.thread_id,
+            user_id=ctx.user_id,
+            actor=ctx.effective_actor,
+            is_admin=ctx.is_admin,
+            service=self,
+            surface=ctx.effective_surface,
+        )
+        try:
+            return await resolver(executor)
+        finally:
+            if owns_api and hasattr(client, "close"):
+                await client.close()
+
 
 _COMMAND_SERVICE: CommandService | None = None
 
@@ -4911,22 +4950,8 @@ class _CommandExecutor(
         ``/model global`` submits into the scope the user named.
         """
 
-        try:
-            models = await self.api.list_available_models()
-        except Exception:  # noqa: BLE001 - the form is an optional enhancement.
-            logger.debug("model picker: list_available_models failed", exc_info=True)
-            return None
         current = str(thread_model or settings.get("llm_model", "") or "")
-        options: list[dict[str, Any]] = []
-        for entry in models or []:
-            model_id = str(entry.get("id") or entry.get("name") or "")
-            if not model_id:
-                continue
-            ctx_len = entry.get("context_length") or entry.get("context_window")
-            meta = f"{fmt_tokens(ctx_len)} ctx" if ctx_len else ""
-            options.append(
-                form_option(model_id, meta=meta, current=model_id == current)
-            )
+        options = await resolve_models(self, current=current)
         if not options:
             return None
         scope = scope or ("thread" if self.thread_id else "global")
