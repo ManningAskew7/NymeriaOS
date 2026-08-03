@@ -160,6 +160,27 @@ def test_unbalanced_quote_is_an_honest_error() -> None:
     assert error is not None and "Unbalanced quote" in error.problem
 
 
+def test_rest_param_tolerates_apostrophes() -> None:
+    # Free text re-joins the tokens, so the whitespace fallback IS the
+    # intended value; "Bob's plan" is English, not a quoting mistake.
+    params = (
+        CommandParam("from_index", kind="option", type="int"),
+        CommandParam("title", kind="rest"),
+    )
+    bound, error = bind_args(params, ["Bob's", "plan"], "Bob's plan")
+    assert error is None and bound is not None
+    assert bound.get("title") == "Bob's plan"
+
+
+def test_error_copy_prefers_the_display_label() -> None:
+    params = (
+        CommandParam("id_or_title", kind="rest", required=True, label="id-or-title"),
+    )
+    _, error = bind_args(params, [], "")
+    assert error is not None
+    assert "Missing required argument: id-or-title" in error.problem
+
+
 def test_absence_shapes_and_defaults() -> None:
     params = (
         CommandParam("name"),
@@ -196,12 +217,28 @@ def test_generated_usage_matches_catalog_idiom() -> None:
     ) == "/thread delete <id> [--yes]"
 
     assert generated_usage(
+        ("think",),
+        (CommandParam("mode", choices=("off", "on", "low")),),
+    ) == "/think [off|on|low]"
+
+    # The label override advertises a canonical set the binder does NOT
+    # enforce (the real /thread pin also accepts yes/no/true/false).
+    assert generated_usage(
         ("thread", "pin"),
         (
             CommandParam("id"),
-            CommandParam("state", choices=("on", "off", "toggle")),
+            CommandParam("state", label="on|off|toggle"),
         ),
     ) == "/thread pin [id] [on|off|toggle]"
+
+    assert generated_usage(
+        ("thread", "switch"),
+        (
+            CommandParam(
+                "id_or_title", kind="rest", required=True, label="id-or-title"
+            ),
+        ),
+    ) == "/thread switch <id-or-title>"
 
     assert generated_usage(
         ("thread", "branch"),
@@ -322,6 +359,7 @@ def test_register_generates_usage_and_validates_at_declaration() -> None:
             "aliases": [],
             "description": "",
             "no_echo": False,
+            "label": None,
         }
     ]
 

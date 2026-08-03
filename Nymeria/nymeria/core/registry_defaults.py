@@ -18,8 +18,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .command_params import CommandParam
+
 if TYPE_CHECKING:
     from .command_service import CommandService
+
+
+# ``/branch`` is a pure delegate to ``/thread branch``, so the two share one
+# declaration: a divergence would generate two different usage strings for one
+# handler.
+_BRANCH_PARAMS = (
+    CommandParam(
+        "from",
+        kind="option",
+        type="int",
+        aliases=("-f",),
+        description="Branch from this message index (1-based)",
+    ),
+    CommandParam("title", kind="rest", description="Title for the new branch"),
+)
 
 
 def register_default_commands(service: "CommandService") -> None:
@@ -53,6 +70,7 @@ def register_default_commands(service: "CommandService") -> None:
         category="Status",
         aliases=("threads", "t"),
         requires_thread=True,
+        params=(),
     )
     # /thread management subtree. The read verbs are agent-allowed; the
     # navigation, mutation, and destructive verbs are not (the agent has its
@@ -64,106 +82,162 @@ def register_default_commands(service: "CommandService") -> None:
         "thread list",
         description="List threads",
         category="Thread",
-        usage="/thread list",
         aliases=("thread_list",),
+        params=(),
     )
     service.register(
         "thread switch",
         description="Switch the active thread",
         category="Thread",
-        usage="/thread switch <id-or-title>",
         aliases=("thread_switch", "thread s"),
         agent_allowed=False,
+        params=(
+            CommandParam(
+                "id_or_title",
+                kind="rest",
+                required=True,
+                label="id-or-title",
+                description="Thread id, id prefix, or title",
+            ),
+        ),
     )
     service.register(
         "thread new",
         description="Create a new thread and switch to it",
         category="Thread",
-        usage="/thread new [title]",
         aliases=("thread_new", "thread n"),
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        params=(
+            CommandParam(
+                "title", kind="rest", description="Title for the new thread"
+            ),
+        ),
     )
     service.register(
         "thread delete",
         description="Delete a thread permanently",
         category="Thread",
-        usage="/thread delete <id> [--yes]",
         aliases=("thread_delete", "thread del", "thread rm"),
         mutates_state=True,
         danger_level="dangerous",
         agent_allowed=False,
+        params=(
+            CommandParam(
+                "id",
+                required=True,
+                description="Thread id, id prefix, or title",
+            ),
+            CommandParam(
+                "yes",
+                kind="flag",
+                type="bool",
+                aliases=("-y",),
+                description="Accepted for muscle memory; no prompt is shown",
+            ),
+        ),
     )
     service.register(
         "thread info",
         description="Show details for the active thread",
         category="Thread",
-        usage="/thread info",
         aliases=("thread_info",),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "thread rename",
         description="Rename the active thread",
         category="Thread",
-        usage="/thread rename <title>",
         aliases=("thread_rename",),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        params=(
+            CommandParam(
+                "title",
+                kind="rest",
+                required=True,
+                description="New title for the active thread",
+            ),
+        ),
     )
     service.register(
         "thread pin",
         description="Pin or unpin a thread",
         category="Thread",
-        usage="/thread pin [id] [on|off|toggle]",
         aliases=("thread_pin",),
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        # `state` carries no choices: the handler also accepts the
+        # yes/no/true/false synonyms, so a declared choice set would be
+        # narrower than what actually works. The label keeps the usage
+        # string advertising the canonical trio.
+        params=(
+            CommandParam(
+                "id",
+                description="Thread to pin (defaults to the active thread)",
+            ),
+            CommandParam(
+                "state",
+                label="on|off|toggle",
+                description="on, off, or toggle (default toggle)",
+            ),
+        ),
     )
     service.register(
         "thread config",
         description="Show the active thread's configuration",
         category="Thread",
-        usage="/thread config",
         aliases=("thread_config",),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "thread branch",
         description="Branch the active thread into a new thread",
         category="Thread",
-        usage="/thread branch [--from N] [title]",
         aliases=("thread_branch", "thread fork"),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        params=_BRANCH_PARAMS,
     )
     service.register(
         "thread compact",
         description="Compact the active thread's context",
         category="Thread",
-        usage="/thread compact [--yes]",
         aliases=("thread_compact",),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        params=(
+            CommandParam(
+                "yes",
+                kind="flag",
+                type="bool",
+                aliases=("-y",),
+                description="Accepted for muscle memory; no prompt is shown",
+            ),
+        ),
     )
     service.register(
         "branch",
         description="Branch the active thread into a new thread",
         category="Thread",
-        usage="/branch [--from N] [title]",
         aliases=("fork",),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        # Same declaration as "thread branch": /branch is a pure delegate, so
+        # both usages must generate identically.
+        params=_BRANCH_PARAMS,
     )
     # /team read commands (backlog #100 phase 2). Read-only sugar over the
     # shared team serializer; mutations go through the team_manage tool, the
@@ -179,8 +253,8 @@ def register_default_commands(service: "CommandService") -> None:
         "team list",
         description="List your callable-thread teams",
         category="Thread",
-        usage="/team list",
         aliases=("team_list",),
+        params=(),
     )
     service.register(
         "team show",

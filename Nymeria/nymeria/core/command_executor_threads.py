@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .command_forms import CommandOutput, command_data
+from .command_params import BoundArgs
 
 logger = logging.getLogger(__name__)
 
@@ -237,66 +238,42 @@ def _team_ids(team: Mapping[str, Any]) -> list[str]:
     return [str(thread_id) for thread_id in raw if str(thread_id)]
 
 
-# ── Argument parsers ──────────────────────────────────────────────────────────
+# ── Value maps for bound arguments ────────────────────────────────────────────
 
 
-def _parse_pin_args(
-    args: Sequence[str],
+# Richer than the advertised ``on|off|toggle``, which is why ``/thread pin``
+# declares its state param without ``choices``: the dispatcher would reject the
+# synonyms this map has always accepted.
+_PIN_STATES: dict[str, bool | None] = {
+    "on": True,
+    "true": True,
+    "yes": True,
+    "off": False,
+    "false": False,
+    "no": False,
+    "toggle": None,
+}
+
+
+def _resolve_pin_args(
+    id_value: str | None,
+    state_value: str | None,
     current_thread_id: str | None,
 ) -> tuple[str | None, bool | None]:
-    if not args:
+    """Map ``/thread pin``'s two positionals onto (thread ref, desired state).
+
+    The first positional is ambiguous by design: ``/thread pin off`` names a
+    state for the active thread, while ``/thread pin nightly`` names a thread
+    to toggle. A ``None`` state means toggle.
+    """
+    if id_value is None:
         return current_thread_id, None
-    first = args[0].casefold()
-    state_values = {
-        "on": True,
-        "true": True,
-        "yes": True,
-        "off": False,
-        "false": False,
-        "no": False,
-        "toggle": None,
-    }
-    if first in state_values:
-        return current_thread_id, state_values[first]
-    if len(args) == 1:
-        return args[0], None
-    second = args[1].casefold()
-    if second not in state_values:
-        return args[0], None
-    return args[0], state_values[second]
-
-
-def _parse_branch_args(args: Sequence[str]) -> tuple[int | None, str | None, str]:
-    from_message_index: int | None = None
-    title_parts: list[str] = []
-    i = 0
-    while i < len(args):
-        arg = str(args[i])
-        if arg in {"--from", "-f"}:
-            if i + 1 >= len(args):
-                return None, None, "Usage: /branch [--from N] [title]"
-            raw_index = str(args[i + 1])
-            try:
-                from_message_index = int(raw_index)
-            except ValueError:
-                return None, None, "--from must be an integer message index"
-            i += 2
-            continue
-        if arg.startswith("--from="):
-            raw_index = arg.split("=", 1)[1]
-            try:
-                from_message_index = int(raw_index)
-            except ValueError:
-                return None, None, "--from must be an integer message index"
-            i += 1
-            continue
-        title_parts.append(arg)
-        i += 1
-
-    if from_message_index is not None and from_message_index < 1:
-        return None, None, "--from must be 1 or greater"
-    title = " ".join(title_parts).strip() or None
-    return from_message_index, title, ""
+    folded = id_value.casefold()
+    if folded in _PIN_STATES:
+        return current_thread_id, _PIN_STATES[folded]
+    if state_value is None:
+        return id_value, None
+    return id_value, _PIN_STATES.get(state_value.casefold())
 
 
 # ── Info / config / compact rendering ────────────────────────────────────────
@@ -456,7 +433,7 @@ class ThreadCommandsMixin:
 
     # ── Read commands ─────────────────────────────────────────────────────
 
-    async def _cmd_thread_list(self, args: list[str], rest: str) -> str:
+    async def _cmd_thread_list(self, bound: BoundArgs) -> str:
         threads = await self._list_threads()
         teams = await self._thread_teams()
         if not threads:
@@ -464,7 +441,7 @@ class ThreadCommandsMixin:
         lines = _format_thread_list(threads, self.thread_id or None, teams=teams)
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_thread_info(self, args: list[str], rest: str) -> str:
+    async def _cmd_thread_info(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -481,7 +458,7 @@ class ThreadCommandsMixin:
         config = config if isinstance(config, Mapping) else None
         return "[Info]: " + _format_thread_info(self.thread_id, thread, stats, config)
 
-    async def _cmd_thread_config(self, args: list[str], rest: str) -> str:
+    async def _cmd_thread_config(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -497,10 +474,10 @@ class ThreadCommandsMixin:
         # dedicated handlers; anything else lands here. Bare "/team" lists,
         # "/team <ref>" is show shorthand.
         if not args:
-            return await self._cmd_team_list([], "")
+            return await self._cmd_team_list(BoundArgs())
         return await self._cmd_team_show(args, " ".join(args))
 
-    async def _cmd_team_list(self, args: list[str], rest: str) -> str:
+    async def _cmd_team_list(self, bound: BoundArgs) -> str:
         teams = await self._thread_teams()
         if not teams:
             return (
@@ -556,10 +533,10 @@ class ThreadCommandsMixin:
 
     # ── Navigation / creation (ride switch_thread state hints) ────────────
 
-    async def _cmd_thread_switch(self, args: list[str], rest: str) -> str | CommandOutput:
-        if not args:
-            return "[Error]: Usage: /thread switch <id-or-title>"
-        match, error = await self._resolve_thread(" ".join(args).strip())
+    async def _cmd_thread_switch(self, bound: BoundArgs) -> str | CommandOutput:
+        match, error = await self._resolve_thread(
+            str(bound.get("id_or_title") or "").strip()
+        )
         if error:
             return error
         assert match is not None
@@ -572,8 +549,8 @@ class ThreadCommandsMixin:
             ),
         )
 
-    async def _cmd_thread_new(self, args: list[str], rest: str) -> str | CommandOutput:
-        title = " ".join(args).strip() or None
+    async def _cmd_thread_new(self, bound: BoundArgs) -> str | CommandOutput:
+        title = str(bound.get("title") or "").strip() or None
         created = await self.api.create_thread(self.user_id, title=title)
         if not isinstance(created, Mapping):
             return "[Error]: Thread create response was not a mapping."
@@ -593,13 +570,14 @@ class ThreadCommandsMixin:
             ),
         )
 
-    async def _cmd_thread_branch(self, args: list[str], rest: str) -> str | CommandOutput:
+    async def _cmd_thread_branch(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        from_message_index, title, error = _parse_branch_args(args)
-        if error:
-            return f"[Error]: {error}"
+        from_message_index = bound.get("from")
+        if from_message_index is not None and from_message_index < 1:
+            return "[Error]: --from must be 1 or greater"
+        title = str(bound.get("title") or "").strip() or None
 
         result = await self.api.branch_thread(
             self.thread_id,
@@ -628,29 +606,29 @@ class ThreadCommandsMixin:
             ),
         )
 
-    async def _cmd_branch(self, args: list[str], rest: str) -> str | CommandOutput:
+    async def _cmd_branch(self, bound: BoundArgs) -> str | CommandOutput:
         """Top-level ``/branch`` (alias ``/fork``); same as ``/thread branch``."""
-        return await self._cmd_thread_branch(args, rest)
+        return await self._cmd_thread_branch(bound)
 
     # ── Metadata edits (ride label / metadata refresh hints) ──────────────
 
-    async def _cmd_thread_rename(self, args: list[str], rest: str) -> str | CommandOutput:
+    async def _cmd_thread_rename(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        if not args:
-            return "[Error]: Usage: /thread rename <title>"
-        title = " ".join(args).strip()
+        title = str(bound.get("title") or "").strip()
         await self.api.update_thread_metadata(self.thread_id, self.user_id, title=title)
         return CommandOutput(
             f"[Success]: Renamed to: {title}",
             data=command_data(state={"thread_label": title}),
         )
 
-    async def _cmd_thread_pin(self, args: list[str], rest: str) -> str | CommandOutput:
-        thread_ref, desired = _parse_pin_args(args, self.thread_id or None)
+    async def _cmd_thread_pin(self, bound: BoundArgs) -> str | CommandOutput:
+        thread_ref, desired = _resolve_pin_args(
+            bound.get("id"), bound.get("state"), self.thread_id or None
+        )
         if not thread_ref:
-            return "[Error]: Usage: /thread pin [id] [on|off|toggle]"
+            return "[Error]: No active thread; name the thread to pin by id or title."
 
         match, error = await self._resolve_thread(thread_ref)
         if error:
@@ -671,14 +649,12 @@ class ThreadCommandsMixin:
 
     # ── Destructive / mutating ────────────────────────────────────────────
 
-    async def _cmd_thread_delete(self, args: list[str], rest: str) -> str:
-        # ``--yes`` is accepted for CLI muscle memory but no longer prompts:
-        # backend handlers cannot prompt, so the danger_level metadata drives
-        # any frontend confirmation instead (mirrors ``/hook delete``).
-        args = [arg for arg in args if arg.casefold() not in {"--yes", "-y"}]
-        if not args:
-            return "[Error]: Usage: /thread delete <id> [--yes]"
-        match, error = await self._resolve_thread(args[0])
+    async def _cmd_thread_delete(self, bound: BoundArgs) -> str:
+        # The declared ``--yes`` flag is accepted for CLI muscle memory but no
+        # longer prompts, so nothing here reads it: backend handlers cannot
+        # prompt, so the danger_level metadata drives any frontend confirmation
+        # instead (mirrors ``/hook delete``).
+        match, error = await self._resolve_thread(str(bound.get("id") or ""))
         if error:
             return error
         assert match is not None
@@ -688,13 +664,12 @@ class ThreadCommandsMixin:
         await self.api.delete_thread(thread_id, self.user_id)
         return f"[Success]: Deleted thread {_compact_id(thread_id)}."
 
-    async def _cmd_thread_compact(self, args: list[str], rest: str) -> str | CommandOutput:
+    async def _cmd_thread_compact(self, bound: BoundArgs) -> str | CommandOutput:
+        # ``--yes`` is declared and ignored for the same reason as
+        # ``/thread delete``: no backend handler can prompt.
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        args = [arg for arg in args if arg.casefold() not in {"--yes", "-y"}]
-        if args:
-            return "[Error]: Usage: /thread compact [--yes]"
         result = await self.api.compact_thread(self.thread_id, self.user_id)
         return CommandOutput(
             _compact_result_text(result),

@@ -3180,6 +3180,171 @@ def test_thread_info_and_config_render_from_client() -> None:
     assert "Thread Config" in config.markdown
 
 
+# ── /thread family declared-argument adoption (backlog #129 wave 1) ──────────
+
+
+def test_thread_root_renders_overview_but_rejects_stray_arguments() -> None:
+    """The headline fix: bare ``/thread`` used to swallow anything after it.
+
+    ``/thread bogus`` rendered the overview panel as if the word were not
+    there, which is how a mistyped subcommand became a silent no-op.
+    """
+    service = CommandService()
+    api = FakeCommandApi()
+
+    overview = run(service.execute(_cli_ctx(), "/thread", api=api))
+    assert overview.success is True
+    assert "Thread Info" in overview.markdown
+
+    stray = run(service.execute(_cli_ctx(), "/thread bogus", api=api))
+    assert stray.success is False
+    assert "Unexpected argument `bogus`" in stray.markdown
+    assert "Usage: `/thread`" in stray.markdown
+    assert not any(name == "get_context_stats" for name, *_ in api.calls[1:])
+
+    # `/thread help` is intercepted before binding, so the card still renders.
+    card = run(service.execute(_cli_ctx(), "/thread help", api=api))
+    assert card.success is True
+    assert "## /thread" in card.markdown
+
+
+def test_thread_zero_argument_subcommands_reject_extras() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    for command in ("/thread list", "/thread info", "/thread config", "/team list"):
+        ok = run(service.execute(_cli_ctx(), command, api=api))
+        assert ok.success is True, command
+
+        rejected = run(service.execute(_cli_ctx(), f"{command} bogus", api=api))
+        assert rejected.success is False, command
+        assert "Unexpected argument `bogus`" in rejected.markdown, command
+
+
+def test_thread_switch_and_rename_report_the_missing_argument() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    switch = run(service.execute(_cli_ctx(), "/thread switch", api=api))
+    assert switch.success is False
+    assert "Missing required argument: id-or-title" in switch.markdown
+    assert "Usage: `/thread switch <id-or-title>`" in switch.markdown
+
+    rename = run(service.execute(_cli_ctx(), "/thread rename", api=api))
+    assert rename.success is False
+    assert "Missing required argument: title" in rename.markdown
+    assert not any(name == "update_thread_metadata" for name, *_ in api.calls)
+
+
+def test_thread_branch_accepts_equals_form_and_the_short_from_alias() -> None:
+    """``--from=N`` and the once undocumented ``-f`` are both declared now."""
+    service = CommandService()
+
+    equals_form = FakeCommandApi()
+    result = run(
+        service.execute(_cli_ctx(), "/thread branch --from=3 Side quest", api=equals_form)
+    )
+    assert result.success is True
+    assert (
+        "branch_thread",
+        ("thread-1",),
+        {"user_id": "alice", "title": "Side quest", "from_message_index": 3},
+    ) in equals_form.calls
+
+    short_alias = FakeCommandApi()
+    aliased = run(service.execute(_cli_ctx(), "/branch -f 2 Topic", api=short_alias))
+    assert aliased.success is True
+    assert (
+        "branch_thread",
+        ("thread-1",),
+        {"user_id": "alice", "title": "Topic", "from_message_index": 2},
+    ) in short_alias.calls
+
+
+def test_thread_branch_rejects_bad_from_values_and_unknown_options() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    not_an_int = run(service.execute(_cli_ctx(), "/thread branch --from x Side", api=api))
+    assert not_an_int.success is False
+    assert "--from must be an integer, got `x`" in not_an_int.markdown
+
+    # Semantic validation the dispatcher cannot do stays in the handler.
+    too_low = run(service.execute(_cli_ctx(), "/thread branch --from 0 Side", api=api))
+    assert too_low.success is False
+    assert "--from must be 1 or greater" in too_low.markdown
+
+    # Before adoption an unknown option fell through into the title, so
+    # `/branch --form 3 x` silently created a branch titled "--form 3 x".
+    typo = run(service.execute(_cli_ctx(), "/branch --form 3 Side quest", api=api))
+    assert typo.success is False
+    assert "Unknown option `--form`" in typo.markdown
+    assert not any(name == "branch_thread" for name, *_ in api.calls)
+
+    # An option-looking word AFTER the title still belongs to the title.
+    titled = run(service.execute(_cli_ctx(), "/branch --from 2 a --form b", api=api))
+    assert titled.success is True
+    assert (
+        "branch_thread",
+        ("thread-1",),
+        {"user_id": "alice", "title": "a --form b", "from_message_index": 2},
+    ) in api.calls
+
+
+def test_thread_delete_and_compact_accept_the_short_yes_alias() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    deleted = run(service.execute(_cli_ctx(), "/thread delete thread-2 -y", api=api))
+    assert deleted.success is True
+    assert ("delete_thread", ("thread-2",), {"user_id": "alice"}) in api.calls
+
+    compacted = run(service.execute(_cli_ctx(), "/thread compact -y", api=api))
+    assert compacted.success is True
+    assert ("compact_thread", ("thread-1",), {"user_id": "alice"}) in api.calls
+
+    # The confirm flag takes no value, and stray words no longer pass silently.
+    valued = run(service.execute(_cli_ctx(), "/thread compact --yes=1", api=api))
+    assert valued.success is False
+    assert "--yes does not take a value" in valued.markdown
+
+    extra = run(service.execute(_cli_ctx(), "/thread delete thread-2 now", api=api))
+    assert extra.success is False
+    assert "Unexpected argument `now`" in extra.markdown
+
+
+def test_thread_pin_keeps_its_state_synonyms_and_rejects_extras() -> None:
+    """``on|off|toggle`` is advertised; yes/no/true/false have always worked."""
+    service = CommandService()
+    api = FakeCommandApi()
+
+    synonym = run(service.execute(_cli_ctx(), "/thread pin thread-2 no", api=api))
+    assert synonym.success is True
+    assert (
+        "update_thread_metadata",
+        ("thread-2",),
+        {"user_id": "alice", "title": None, "pinned": False},
+    ) in api.calls
+
+    # A bare state word still means "the active thread".
+    bare_state = run(service.execute(_cli_ctx(), "/thread pin on", api=api))
+    assert bare_state.success is True
+    assert (
+        "update_thread_metadata",
+        ("thread-1",),
+        {"user_id": "alice", "title": None, "pinned": True},
+    ) in api.calls
+
+    extra = run(service.execute(_cli_ctx(), "/thread pin thread-2 off now", api=api))
+    assert extra.success is False
+    assert "Unexpected argument `now`" in extra.markdown
+
+    # Without an id and without an active thread there is nothing to pin.
+    orphan = run(service.execute(_cli_ctx(thread_id=None), "/thread pin", api=api))
+    assert orphan.success is False
+    assert "No active thread" in orphan.markdown
+
+
 def test_thread_resolver_matches_ids_titles_substrings_and_ambiguity() -> None:
     from nymeria.core.command_executor_threads import resolve_thread_reference
 

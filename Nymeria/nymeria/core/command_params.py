@@ -69,6 +69,13 @@ class CommandParam:
     aliases: tuple[str, ...] = ()
     description: str = ""
     no_echo: bool = False
+    # Display override for usage strings and error copy. Names are constrained
+    # snake_case identifiers; ``label`` frees the ADVERTISED form ("id-or-title",
+    # "on|off|toggle") without widening what the binder enforces. This is the
+    # companion of the no-choices rule: when a handler accepts more synonyms
+    # than the advertised set, declare no ``choices`` and put the advertised
+    # set in ``label``.
+    label: str | None = None
 
     @property
     def option_spelling(self) -> str:
@@ -80,7 +87,7 @@ class CommandParam:
         """How errors and help refer to this param."""
         if self.kind in ("option", "flag"):
             return self.option_spelling
-        return self.name
+        return self.label or self.name
 
 
 @dataclass(frozen=True)
@@ -257,13 +264,15 @@ def generated_usage(path: tuple[str, ...], params: tuple[CommandParam, ...]) -> 
             value_label = "N" if param.type == "int" else param.name.upper().replace("-", "_")
             if param.choices:
                 value_label = "|".join(param.choices)
+            if param.label:
+                value_label = param.label
             body = f"{param.option_spelling} {value_label}"
             if param.repeatable:
                 body += " ..."
             parts.append(body if param.required else f"[{body}]")
             continue
         # positional / rest
-        token = "|".join(param.choices) if param.choices else param.name
+        token = param.label or ("|".join(param.choices) if param.choices else param.name)
         if param.repeatable:
             token += " ..."
         parts.append(f"<{token}>" if param.required else f"[{token}]")
@@ -293,6 +302,7 @@ def params_to_payload(
             "aliases": list(p.aliases),
             "description": p.description,
             "no_echo": p.no_echo,
+            "label": p.label,
         }
         for p in params
     ]
@@ -340,9 +350,13 @@ def bind_args(
     on the already-split tokens.
     """
     # The upstream splitter silently falls back to whitespace splitting when
-    # shlex rejects the input (unbalanced quote). For schema'd commands that
-    # would validate a tokenization the user never meant, so fail honestly.
-    if rest:
+    # shlex rejects the input (unbalanced quote). For a STRUCTURED argument
+    # list that would validate a tokenization the user never meant, so fail
+    # honestly. A declaration with a rest param is exempt: free text joins
+    # the tokens back together, so the whitespace fallback IS the intended
+    # value, and an apostrophe in a title ("Bob's plan") is ordinary English,
+    # not a quoting mistake.
+    if rest and not any(p.kind == "rest" for p in params):
         try:
             shlex.split(rest, posix=True)
         except ValueError:

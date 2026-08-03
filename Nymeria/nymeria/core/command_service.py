@@ -39,6 +39,7 @@ from .command_forms import (
     search_field,
 )
 from .command_params import (
+    BoundArgs,
     CommandParam,
     bind_args,
     generated_usage,
@@ -4892,7 +4893,7 @@ class _CommandExecutor(
         ]
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_thread(self, args: list[str], rest: str) -> str:
+    async def _cmd_thread(self, bound: BoundArgs) -> str:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
