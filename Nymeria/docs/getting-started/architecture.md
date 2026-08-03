@@ -296,7 +296,7 @@ one.
 
 Before the dream turn runs, `_seed_shadow_from_parent` forks the parent's full
 conversation into the (empty) shadow checkpoint via the same row-level copy
-`/branch` uses (`thread_branch.clone_thread_checkpoints`), then soft-prunes it
+`/thread branch` uses (`thread_branch.clone_thread_checkpoints`), then soft-prunes it
 (`agent_prune.build_pruned_replacements(mode="soft")`, shared with the
 `/prune soft` command) so bulky web/file tool results are truncated to their
 gist. It deliberately does not compact (the dream reflects on the real
@@ -606,8 +606,8 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - Slash-command registry merges local interactive commands with backend global
   command proxies. Local commands include `/history`, `/clear`, `/exit`,
   `/theme`, clipboard helpers, thread navigation, and chat-control flows such
-  as `/compact`; global paths such as `/memory save`, `/tools core`, `/context`,
-  `/status`, `/model`, `/config`, `/env`, `/todos`, and `/notepad` execute
+  as `/compact`; global paths such as `/memory save`, `/tools list`, `/context`,
+  `/status`, `/model`, `/settings`, `/env`, `/todos`, and `/notepad` execute
   through the backend command service.
 
 **API** (`api.py`):

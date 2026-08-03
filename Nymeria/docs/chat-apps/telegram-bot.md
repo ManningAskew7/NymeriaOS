@@ -9,7 +9,7 @@ Docker: nymeria-telegram-bot (profile: telegram)
 	  └─ NymeriaTelegramBot
 	       ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
 	       ├─ python-telegram-bot v22+ (async polling)
-	       ├─ 43 bot commands + plain message handler
+	       ├─ 47 native bot commands + catch-all + plain message handler
 	       └─ SSE listener (autonomous task stream → chat posts)
 ```
 
@@ -94,7 +94,7 @@ Or use the `/thread` command  -  it shows the full thread ID including the chat 
 | `/compact` | Compress conversation context to reclaim token space |
 | `/thread` | Show thread ID, context usage, token count, compaction count |
 | `/context` | Detailed context breakdown: model, tokens, tools, thread overrides |
-| `/tasks [status]` | Quick view of scheduled tasks. Filter: active (default), pending, in_progress, done, all |
+| `/tasks [status]` | Retired spelling of `/todo_list`, still registered and still working |
 | `/export [format]` | Export conversation history as a file. Format: markdown (default), json, txt |
 | `/restart [bot\|api]` | Restart the Telegram bot (default) or API server. Bot restarts stop polling and close Nymeria-side resources before the container exits. |
 | `/showtools` | Toggle whether tool calls are shown as separate messages |
@@ -108,11 +108,48 @@ You can also send plain text in DMs without any command prefix.
 
 Most global command families are thin adapters over the backend command
 registry. Telegram's flat commands (`/tools_core`, `/memory_save`,
-`/todo_add`, `/notepad_write`, `/config_show`, etc.) are translated to
-canonical backend paths such as `/tools core`, `/memory save`, `/todos add`,
-`/notepad write`, and executed through `POST /commands/execute`. Telegram-only
+`/todo_add`, `/notepad_write`, `/settings`, etc.) are translated to
+canonical backend paths such as `/tools list core`, `/memory save`,
+`/todos add`, `/notepad write`, `/settings`, and executed through
+`POST /commands/execute`. Telegram-only
 commands such as `/bind`, `/switch`, `/new`, `/showtools`, and chat-control
 commands remain local to the bot.
+
+### Renamed on 2026-08-03 (backlog #131), and still typeable
+
+The command vocabulary migration renamed a number of backend commands. Unlike
+Discord, **nothing you already type stops working on Telegram**: every retired
+spelling stays registered as a whole-path alias, so `/config_show`,
+`/memory_forget`, `/thread_info`, `/artifacts_recent`, `/hook_log`,
+`/mcp_remove`, `/skills_inspect`, `/tasks`, `/branch` and friends all still
+resolve. What changed here is which name the bot itself SPEAKS and which name
+the "/" menu advertises:
+
+| Retired backend path | Canonical now | Telegram menu name |
+|----------------------|---------------|--------------------|
+| `config show` | `settings` | `/settings` |
+| `config get` / `config set` | `settings get` / `settings set` | `/settings_get`, `/settings_set` |
+| `models` | `model list` | `/models` (unchanged) |
+| `tasks` | `todos list` | `/todo_list` |
+| `tools core\|optional\|enabled\|category` | `tools list [filter]` | `/tools_list` |
+| `memory forget` | `memory delete` | `/memory_forget` (unchanged) |
+| `account current` | `account show` | `/account_current` (unchanged) |
+| `artifacts recent` | `artifacts list` | `/artifacts_recent` (unchanged) |
+| `hook log` | `hook history` | `/hook_log` (unchanged) |
+| `mcp remove` | `mcp delete` | `/mcp_remove` (unchanged) |
+| `thread info` / `thread new` | `thread show` / `thread create` | `/thread_info`, `/thread_new` (unchanged) |
+| `skills inspect` | `skills show` | `/skills_show` |
+| `skills off all` | `skills disable all` | `/skills_disable all` |
+
+The "unchanged" rows are deliberate: the menu name is a command's first
+single-token alias, and the migration kept the old alias first everywhere so no
+menu entry was silently renamed. The three `/config_*` entries are the
+exception, because their whole family folded into `settings`.
+
+Disabling every active skill at once used to be its own command
+(`/skills_off_all`). That flat name is gone; the replacement is
+`/skills_disable all` (or `/skills off all`), which deactivates every skill
+active on this chat's thread.
 
 Every command WITHOUT a native handler is caught by a generic passthrough
 (registered last, 2026-08-02) and forwarded verbatim to the backend command
@@ -143,8 +180,8 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 | Command | Description |
 |---------|-------------|
 | `/model [name] [scope]` | Show or change the LLM model. Scope: global (default) or thread |
-| `/models` | List all available models from the current provider |
-| `/think [mode]` | Set thinking mode: off, on, low, medium, high. No argument shows current |
+| `/models` | List all available models from the current provider (relays `/model list`) |
+| `/think [mode]` | Set thinking mode: off, on, low, medium, high. Admin only on Telegram |
 | `/status` | System dashboard: model, context, tools, tasks, uptime |
 
 ### TODOs
@@ -156,24 +193,45 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 | `/todo_complete <id>` | Mark a TODO as done (first 8 chars of ID) |
 | `/todo_delete <id>` | Delete a TODO permanently |
 
-### Config
+### Settings and environment
+
+All five are admin-only on Telegram. The bot is deliberately stricter than the
+backend for global controls (the backend lets any linked user READ a setting):
+the pre-gate in `TELEGRAM_COMMAND_ACCESS` runs before the handler and covers
+exactly the names below, plus `/think` and `/restart`. Typing an old alias such
+as `/config_show` instead reaches the backend through the catch-all, where the
+backend's own gate applies.
 
 | Command | Description |
 |---------|-------------|
-| `/config_show` | Show all server settings |
-| `/config_get <key>` | Get a specific setting value |
-| `/config_set <key> <value>` | Update a setting. Auto-parses booleans, numbers, none |
+| `/settings` | Show all server settings (was `/config_show`) |
+| `/settings_get <key>` | Get a specific setting value (was `/config_get`) |
+| `/settings_set <key> <value>` | Update a setting. Auto-parses booleans, numbers, none (was `/config_set`) |
+| `/env_show` | List environment variables by category, secrets masked |
+| `/env_set <key> <value>` | Write one environment variable |
+
+Unmasked environment reads are not offered here: there is no `/env_get`
+handler, because an unmasked secret typed back into a chat persists in
+platform history.
 
 ### Tools
 
 | Command | Description |
 |---------|-------------|
+| `/tools_list [filter]` | List tools: `enabled` (default), `optional`, `core`, or one category name |
 | `/tools_core` | List core tools (enabled by default) |
 | `/tools_optional` | List optional tool categories with per-chat active counts |
 | `/tools_enabled` | Show all tools active in this chat |
 | `/tools_category <name>` | List tools in a category with enabled/disabled status |
+| `/tools_search <query>` | Ranked tool search with enable hints (bot-local rendering) |
 | `/tools_enable <name>` | Enable a tool or entire category for this chat |
 | `/tools_disable <name>` | Disable a tool or entire category for this chat |
+
+The four filter spellings folded into `tools list [filter]` in the backend, but
+they stay registered here and each relays its filter VALUE (`/tools list core`).
+That is more than the backend alias can do on its own: an alias substitutes a
+path and cannot inject a value, so a bare `/tools core` renders the enabled
+view.
 
 ### Memory
 
@@ -181,8 +239,19 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 |---------|-------------|
 | `/memory_list` | List all saved memories |
 | `/memory_save <key> <value>` | Save a persistent memory |
-| `/memory_forget <key>` | Remove a saved memory |
+| `/memory_forget <key>` | Remove a saved memory (relays the canonical `/memory delete`) |
 | `/memory_search <query>` | Search memories by keyword |
+
+### Automation
+
+Both are single-token passthroughs: the subcommand and its flags ride as
+arguments and the backend's longest-prefix path match routes them, so the whole
+flag grammar is authorable from a Telegram DM.
+
+| Command | Description |
+|---------|-------------|
+| `/hook [list\|create\|show\|edit\|enable\|disable\|delete\|test\|history ...]` | Author and manage lifecycle hooks. `/hook history` was `/hook log` |
+| `/fallback [status\|revert\|approvals\|approve\|deny ...]` | LLM fallback chain, consent prompts, and active swaps |
 
 ### Notepad
 

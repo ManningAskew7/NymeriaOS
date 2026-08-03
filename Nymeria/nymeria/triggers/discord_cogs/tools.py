@@ -6,6 +6,13 @@ command the generator could derive. A Discord group name has exactly one owner,
 so its siblings stay with it. The name autocomplete is NOT duplicated here: it
 is the shared `AUTOCOMPLETE_RESOLVERS["tools"]` entry the generated cog also
 wires by `choices_ref` (answered by the backend option-resolver registry).
+
+The four listing subcommands survived backlog #131's fold of `tools
+core|optional|enabled|category` into `tools list [filter]` because Discord
+keeps the shape users already know. Each relays the FILTER VALUE explicitly
+(`tools list core`), which the backend alias cannot do on its own: an alias
+substitutes a path and cannot inject a value, so a bare `tools core` would
+render the enabled view instead.
 """
 
 from __future__ import annotations
@@ -57,7 +64,7 @@ class ToolsCog(commands.Cog):
     )
     async def cmd_tools_core(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(interaction, "tools core")
+        await self.bot._send_backend_command(interaction, "tools list core")
 
     @tools_group.command(
         name="optional",
@@ -65,7 +72,7 @@ class ToolsCog(commands.Cog):
     )
     async def cmd_tools_optional(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(interaction, "tools optional")
+        await self.bot._send_backend_command(interaction, "tools list optional")
 
     @tools_group.command(
         name="enabled",
@@ -73,7 +80,7 @@ class ToolsCog(commands.Cog):
     )
     async def cmd_tools_enabled(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(interaction, "tools enabled")
+        await self.bot._send_backend_command(interaction, "tools list enabled")
 
     @tools_group.command(
         name="category",
@@ -88,7 +95,7 @@ class ToolsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         await self.bot._send_backend_command(
             interaction,
-            "tools category",
+            "tools list",
             args=name,
         )
 

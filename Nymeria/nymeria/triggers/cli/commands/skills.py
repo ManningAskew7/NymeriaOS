@@ -1,4 +1,11 @@
-"""Skill commands: /skills list, search, install, enable, disable, inspect."""
+"""Skill commands: the client-side halves of the /skills family.
+
+The backend owns every verb here; these locals are defensive fallbacks for a
+failed catalog registration. Backlog #131 folded ``/skills inspect`` into
+``/skills show`` and retired the local ``inspect`` declaration with it: the
+fold freed the ``inspect`` key, which would otherwise have left the CLI
+rendering a thinner detail view than every other surface.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +32,7 @@ async def _handle_skills_root(
 ) -> CommandResult:
     if args:
         return CommandResult.failed(
-            "Usage: /skills list|search|install|enable|disable|inspect",
+            "Usage: /skills list|search|install|enable|disable|show",
             error_code="usage_error",
         )
     return await _handle_skills_list(context, [])
@@ -251,29 +258,6 @@ async def _set_skill_state(
     )
 
 
-async def _handle_skills_inspect(
-    context: CommandContext,
-    args: list[str],
-) -> CommandResult:
-    if not args:
-        return CommandResult.failed(
-            "Usage: /skills inspect <name>",
-            error_code="usage_error",
-        )
-    name = args[0]
-    try:
-        skill = await call_client_user_scoped(context, "get_skill", name)
-    except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/skills inspect", method_name=exc.method_name)
-
-    if not isinstance(skill, Mapping):
-        return CommandResult.failed("Skill response was not a mapping.")
-    return CommandResult.completed(
-        CommandMessage(_format_skill_detail(skill), title="Skill"),
-        payload={"skill": _skill_name(skill)},
-    )
-
-
 async def _global_skills_or_empty(context: CommandContext) -> list[str]:
     try:
         data = await call_client_user_scoped(context, "get_global_skills")
@@ -295,30 +279,6 @@ async def _thread_config_or_empty(context: CommandContext) -> Mapping[str, Any]:
     except CommandClientMethodUnavailable:
         return {}
     return config if isinstance(config, Mapping) else {}
-
-
-def _format_skill_detail(skill: Mapping[str, Any]) -> str:
-    rows = [
-        ("Name", _skill_name(skill)),
-        ("Scope", skill.get("scope", "")),
-        ("Kit", _yes_no(skill.get("is_skill_kit"))),
-        ("Required tools", _csv(skill.get("required_tools"))),
-        ("Allowed tools", _csv(skill.get("allowed_tools"))),
-        ("Scripts", _csv(skill.get("scripts"))),
-        ("References", _csv(skill.get("references"))),
-        ("Path", skill.get("path", "")),
-    ]
-    width = max((len(label) for label, _value in rows), default=0)
-    lines = ["Skill"]
-    for label, value in rows:
-        lines.append(f"  {label:<{width}}  {value}")
-    description = one_line(skill.get("description", ""), limit=120)
-    if description:
-        lines.append(f"\nDescription: {description}")
-    body = one_line(skill.get("body", ""), limit=240)
-    if body:
-        lines.append(f"\nBody: {body}")
-    return "\n".join(lines)
 
 
 def _skill_status(
@@ -379,15 +339,6 @@ def _consume_flag(args: Sequence[str], flag: str) -> tuple[bool, list[str]]:
     return enabled, remaining
 
 
-def _yes_no(value: Any) -> str:
-    return "yes" if bool(value) else "no"
-
-
-def _csv(value: Any) -> str:
-    items = _string_list(value)
-    return ", ".join(items) if items else "None"
-
-
 def register(registry: CommandRegistry) -> None:
     """Register skill commands."""
     registry.register(Command(
@@ -430,14 +381,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Disable a skill for this thread or globally",
                 usage="disable [--global] <name>",
                 handler=_handle_skills_disable,
-                category="Skills",
-            ),
-            "inspect": Command(
-                name="inspect",
-                aliases=["show"],
-                description="Show skill details",
-                usage="inspect <name>",
-                handler=_handle_skills_inspect,
                 category="Skills",
             ),
         },

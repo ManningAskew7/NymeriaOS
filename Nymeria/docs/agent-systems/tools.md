@@ -982,7 +982,8 @@ a `Setup:` line rather than the credential `Auth:` line, with `auth_provider`
 server as an `MCP - <server>` badge parsed from that name.
 
 The same backend ranking is used by one-shot command searches:
-- CLI/plain slash: `/tools <query>` and `/tools search <query>`
+- CLI/plain slash: `/tools search <query>` (the bare `/tools <query>` shorthand
+  went away when backlog #131 gave the family a strict zero-argument root)
 - Discord: `/tools search query:<text>`
 - Telegram: `/tools_search <query>`
 
@@ -2008,7 +2009,7 @@ slash_command(command: str)
 **Example commands:**
 - `/help`  -  list every supported command
 - `/status`  -  model, context, tools, tasks summary
-- `/config set llm_model claude-opus-4-7`  -  change global model
+- `/settings set llm_model claude-opus-4-7`  -  change global model
 - `/env get PERPLEXITY_API_KEY`  -  fetch unmasked secret
 - `/memory save color "deep blue"`  -  save a user memory
 - `/tools enable browser`  -  turn on a category on this thread

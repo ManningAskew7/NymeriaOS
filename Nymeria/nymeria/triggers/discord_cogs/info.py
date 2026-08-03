@@ -29,6 +29,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Curated usage rows for the hand-written commands. Each replaces exactly the
+# tree row it names, so it is also where a hand command picks the category it
+# files under: `/set-model` and `/show-settings` sit with the generated `/model
+# list` and `/settings get|set` they restore the missing half of, rather than
+# under a lone heading named after their cog.
 DISCORD_LOCAL_COMMANDS = (
     ("Chat", "/ask <message>", "Send a message without @mentioning."),
     ("Chat", "/stop", "Abort the current running operation."),
@@ -38,6 +43,8 @@ DISCORD_LOCAL_COMMANDS = (
     ("Discord", "/show-tools", "Toggle whether tool calls are shown in chat."),
     ("Discord", "/channel-context", "Toggle recent channel-message context."),
     ("Discord", "/restart [bot|api]", "Restart the Discord bot or API server."),
+    ("LLM", "/set-model <name> [scope]", "Switch the LLM model for this channel or globally."),
+    ("Settings", "/show-settings", "Show the server settings (LLM, context, system)."),
     ("Tools", "/tools search <query>", "Search tools by name, category, or description."),
 )
 

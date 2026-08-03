@@ -25,22 +25,30 @@ async def _handle_account_root(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
+    """Show the active account; a defensive fallback for the backend root.
+
+    The backend ``/account`` root shadows this one whenever the catalog
+    registers, and the identity readout it renders is ``/account show``
+    (backlog #131 renamed it from ``/account current``, which survives as a
+    whole-path alias). This local half only runs if catalog registration
+    itself fails.
+    """
     if args:
         return CommandResult.failed(
-            "Usage: /account current|tokens|switch|platforms",
+            "Usage: /account show|tokens|switch|platforms",
             error_code="usage_error",
         )
-    return await _handle_account_current(context, [])
+    return await _handle_account_show(context, [])
 
 
-async def _handle_account_current(
+async def _handle_account_show(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
     try:
         me = await _get_me(context, context.user_id)
     except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/account current", method_name=exc.method_name)
+        return unsupported_transport_result("/account show", method_name=exc.method_name)
 
     return CommandResult.completed(
         CommandMessage(_format_identity(me, selected_user_id=context.user_id), title="Account"),
@@ -242,18 +250,10 @@ def register(registry: CommandRegistry) -> None:
         name="account",
         aliases=["acct"],
         description="Inspect account, tokens, and linked platforms",
-        usage="/account current",
+        usage="/account show",
         handler=_handle_account_root,
         category="Personal",
         subcommands={
-            "current": Command(
-                name="current",
-                aliases=["me"],
-                description="Show current account",
-                usage="current",
-                handler=_handle_account_current,
-                category="Personal",
-            ),
             "switch": Command(
                 name="switch",
                 aliases=["su"],

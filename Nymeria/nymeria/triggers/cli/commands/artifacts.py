@@ -1,6 +1,6 @@
 """Workspace artifact commands (client-side half).
 
-The server-state listing (``/artifacts recent``: recent artifacts from thread
+The server-state listing (``/artifacts list``: recent artifacts from thread
 history) is a backend command (``core.registry_defaults`` +
 ``core.command_executor_context.ContextCommandsMixin``), so it works on every
 frontend. The two genuinely client-side operations stay here: ``open`` shows an
@@ -234,7 +234,7 @@ def register(registry: CommandRegistry) -> None:
         name="artifacts",
         aliases=[],
         description="Inspect recent workspace artifacts",
-        usage="/artifacts recent",
+        usage="/artifacts list",
         handler=_handle_artifacts_root,
         category="Personal",
         subcommands={

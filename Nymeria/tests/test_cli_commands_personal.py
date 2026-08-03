@@ -475,7 +475,9 @@ def test_todo_and_memory_commands_use_api_client_methods() -> None:
     assert run(registry.dispatch_async(confirmed, "/memory list")).ok is True
     assert run(registry.dispatch_async(confirmed, "/memory search Tulsa")).ok is True
     assert run(registry.dispatch_async(confirmed, "/memory save timezone UTC")).ok is True
-    assert run(registry.dispatch_async(confirmed, "/memory forget timezone")).ok is True
+    # No `/memory forget`: backlog #131 renamed it to `/memory delete` and
+    # retired the local declaration, so deletion is a backend command now.
+    assert not any(name == "forget_memory" for name, _payload in client.calls)
 
     assert (
         "add_todo",
@@ -533,7 +535,10 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
     actions: list[Any] = []
     ctx = make_context(client, output=sink, actions=actions, confirm=False)
 
-    assert run(registry.dispatch_async(ctx, "/account current")).ok is True
+    # Bare `/account` is the local identity readout: backlog #131 renamed the
+    # backend command to `/account show` and retired the local `current`
+    # declaration, leaving the root as the client-side fallback.
+    assert run(registry.dispatch_async(ctx, "/account")).ok is True
     assert run(registry.dispatch_async(ctx, "/account tokens")).ok is True
     assert run(registry.dispatch_async(ctx, "/account tokens issue test-token")).ok is True
     revoke_result = run(registry.dispatch_async(ctx, "/account tokens revoke abcd1234"))
@@ -557,7 +562,9 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
     assert run(registry.dispatch_async(confirmed, "/triggers history trig-1 5")).ok is True
     assert run(registry.dispatch_async(confirmed, "/triggers test trig-1")).ok is True
     assert run(registry.dispatch_async(confirmed, "/triggers delete trig-1")).ok is True
-    assert run(registry.dispatch_async(confirmed, "/activity recent 5 --thread current")).ok is True
+    # `/activity recent` retired with backlog #131 (the backend aliases it to
+    # `/activity list`); the local root keeps the filters for the fallback.
+    assert run(registry.dispatch_async(confirmed, "/activity 5 --thread current")).ok is True
     assert run(registry.dispatch_async(confirmed, "/activity notifications")).ok is True
     # `/artifacts recent` is now a backend command (server-state listing); the
     # client-side `open`/`download` halves stay local and resolve against the
@@ -590,6 +597,10 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
         },
     ) in client.calls
     assert ("delete_trigger", {"trigger_id": "trig-1", "user_id": "bob"}) in client.calls
+    assert (
+        "get_activity",
+        {"user_id": "bob", "limit": 5, "activity_type": None, "thread_id": "thread-1"},
+    ) in client.calls
     assert (
         "download_workspace_artifact",
         {"path": "/workspace/report.txt", "user_id": "bob"},

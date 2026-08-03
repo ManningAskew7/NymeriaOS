@@ -274,7 +274,10 @@ def register(registry: CommandRegistry) -> None:
             ),
             "available": Command(
                 name="available",
-                aliases=["list"],
+                # No "list" alias: backlog #131 gave the backend a canonical
+                # `model list`, which claims that key in the merged tree, so
+                # the alias would only ever be dead weight here.
+                aliases=[],
                 description="List available models",
                 usage="available [provider]",
                 handler=_handle_model_available_context,

@@ -20,15 +20,18 @@ async def _handle_activity_root(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if args:
-        return CommandResult.failed(
-            "Usage: /activity recent [limit] [--type <type>] [--thread current|<id>]",
-            error_code="usage_error",
-        )
-    return await _handle_activity_recent(context, [])
+    """List recent activity; a defensive fallback for the backend root.
+
+    The backend ``/activity`` root shadows this one whenever the catalog
+    registers. The local ``recent`` subcommand was retired with backlog
+    #131: it survived under a spelling the backend had aliased to
+    ``/activity list``, so the CLI was the one surface where the two
+    disagreed. Arguments forward here so the fallback keeps the filters.
+    """
+    return await _handle_activity_list(context, args)
 
 
-async def _handle_activity_recent(
+async def _handle_activity_list(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
@@ -46,7 +49,7 @@ async def _handle_activity_recent(
             thread_id=parsed["thread_id"],
         )
     except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/activity recent", method_name=exc.method_name)
+        return unsupported_transport_result("/activity list", method_name=exc.method_name)
 
     entries = _activity_entries(data)
     if not entries:
@@ -159,18 +162,10 @@ def register(registry: CommandRegistry) -> None:
         name="activity",
         aliases=[],
         description="Inspect recent activity",
-        usage="/activity recent",
+        usage="/activity list",
         handler=_handle_activity_root,
         category="Personal",
         subcommands={
-            "recent": Command(
-                name="recent",
-                aliases=["list"],
-                description="Show recent activity",
-                usage="recent [limit]",
-                handler=_handle_activity_recent,
-                category="Personal",
-            ),
             "notifications": Command(
                 name="notifications",
                 aliases=["notice"],
