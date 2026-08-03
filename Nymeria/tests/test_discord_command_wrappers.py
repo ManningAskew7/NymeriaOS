@@ -417,23 +417,30 @@ def test_flatten_puts_flags_first_then_positionals_then_the_scope_word():
     cog = GeneratedCommandsCog(bot)
 
     async def run() -> None:
-        # A flag ahead of its positional.
-        await GeneratedCommandsCog.cmd_skills_disable.callback(
-            cog, interaction, "summarize", True
+        # A flag and an option ahead of nothing else.
+        await GeneratedCommandsCog.cmd_triggers_list.callback(
+            cog, interaction, True, "thread-1"
         )
         # A positional ahead of the trailing scope word.
         await GeneratedCommandsCog.cmd_provider_switch.callback(
             cog, interaction, "anthropic", "global"
+        )
+        # A positional ahead of the scope word on a command whose scope used
+        # to be a `--global` flag (#131 wave B).
+        await GeneratedCommandsCog.cmd_skills_disable.callback(
+            cog, interaction, "summarize", "global"
         )
 
     asyncio.run(run())
 
     # Options and flags lead, positionals follow, the scope word is last:
     # exactly the order bind_args pops them back off in.
-    assert api.command_calls[0]["command"] == "/skills disable --global summarize"
-    disabled = _bind_backend_command(api.command_calls[0]["command"], "skills.disable")
-    assert disabled.get("name") == "summarize"
-    assert disabled.get("global") is True
+    assert api.command_calls[0]["command"] == (
+        "/triggers list --enabled-only --thread thread-1"
+    )
+    listed = _bind_backend_command(api.command_calls[0]["command"], "triggers.list")
+    assert listed.get("enabled_only") is True
+    assert listed.get("thread") == "thread-1"
 
     assert api.command_calls[1]["command"] == "/provider switch anthropic global"
     switched = _bind_backend_command(
@@ -441,6 +448,11 @@ def test_flatten_puts_flags_first_then_positionals_then_the_scope_word():
     )
     assert switched.get("provider") == "anthropic"
     assert switched.get("scope") == "global"
+
+    assert api.command_calls[2]["command"] == "/skills disable summarize global"
+    disabled = _bind_backend_command(api.command_calls[2]["command"], "skills.disable")
+    assert disabled.get("name") == "summarize"
+    assert disabled.get("scope") == "global"
 
 
 def test_unset_optional_arguments_are_omitted_from_the_flattened_line():
@@ -455,13 +467,6 @@ def test_unset_optional_arguments_are_omitted_from_the_flattened_line():
     asyncio.run(run())
 
     assert api.command_calls[0]["command"] == "/think"
-
-
-def test_keyword_named_option_is_renamed_back_to_the_registry_spelling():
-    # `global` cannot be a Python parameter name, so the generator renames the
-    # Discord option back onto the registry spelling.
-    param = GeneratedCommandsCog.cmd_skills_disable._params["global_"]
-    assert param.display_name == "global"
 
 
 def test_integer_option_is_coerced_on_the_flattened_line():
@@ -508,9 +513,15 @@ def test_repeatable_positional_is_relayed_as_separate_tokens():
     assert bound.get("source") == "anthropic"
 
 
-def test_optional_positional_gap_is_refused_instead_of_mis_bound():
-    # Discord fields are independent but backend positionals are ordered:
-    # filling only the second one would bind that value to the first param.
+def test_a_scope_field_alone_is_relayed_without_a_positional_gap():
+    """Discord fields are independent; a scope is not a positional.
+
+    `/memory limit` used to declare scope as the FIRST positional, so filling
+    only `value` needed a generated gap guard or the value bound to the scope.
+    Since #131 wave B the scope is a trailing token, so each field stands
+    alone: value-only and scope-only both relay a line the backend re-binds to
+    exactly what the user filled in.
+    """
     api = _FakeAPI()
     bot = _bot(api)
     interaction = _FakeInteraction()
@@ -518,15 +529,23 @@ def test_optional_positional_gap_is_refused_instead_of_mis_bound():
 
     async def run() -> None:
         await GeneratedCommandsCog.cmd_memory_limit.callback(
-            cog, interaction, None, "4000"
+            cog, interaction, "4000", None
+        )
+        await GeneratedCommandsCog.cmd_memory_limit.callback(
+            cog, interaction, None, "global"
         )
 
     asyncio.run(run())
 
-    assert api.command_calls == []
-    assert interaction.messages[0]["content"] == (
-        "Error: `value` also needs `scope`. Give both, or neither."
-    )
+    assert api.command_calls[0]["command"] == "/memory limit 4000"
+    value_only = _bind_backend_command(api.command_calls[0]["command"], "memory.limit")
+    assert value_only.get("value") == "4000"
+    assert value_only.get("scope") is None
+
+    assert api.command_calls[1]["command"] == "/memory limit global"
+    scope_only = _bind_backend_command(api.command_calls[1]["command"], "memory.limit")
+    assert scope_only.get("scope") == "global"
+    assert scope_only.get("value") is None
 
 
 def test_optional_positionals_given_together_are_relayed_in_order():
@@ -537,12 +556,12 @@ def test_optional_positionals_given_together_are_relayed_in_order():
 
     async def run() -> None:
         await GeneratedCommandsCog.cmd_memory_limit.callback(
-            cog, interaction, "thread", "4000"
+            cog, interaction, "4000", "thread"
         )
 
     asyncio.run(run())
 
-    assert api.command_calls[0]["command"] == "/memory limit thread 4000"
+    assert api.command_calls[0]["command"] == "/memory limit 4000 thread"
     bound = _bind_backend_command(api.command_calls[0]["command"], "memory.limit")
     assert bound.get("scope") == "thread"
     assert bound.get("value") == "4000"
@@ -806,7 +825,7 @@ def test_hook_create_flag_line_round_trips_through_the_backend_parser():
     assert bound.get("reason") == "No destructive deletes"
 
 
-def test_hook_list_maps_scope_and_enabled_only_to_flags():
+def test_hook_list_maps_scope_to_the_trailing_token():
     api = _FakeAPI()
     bot = _bot(api)
     interaction = _FakeInteraction()
@@ -819,7 +838,23 @@ def test_hook_list_maps_scope_and_enabled_only_to_flags():
 
     asyncio.run(run())
 
-    assert api.command_calls[0]["command"] == "/hook list --global --enabled-only"
+    assert api.command_calls[0]["command"] == "/hook list --enabled-only global"
+    # Grammar-drift tooth: the composed string must BIND against the live
+    # registry declaration. The wave B --global retirement broke this cog
+    # with every test green, because this test pinned the cog's output
+    # without ever parsing it.
+    from nymeria.core.command_params import bind_args
+    from nymeria.core.command_service import CommandService
+
+    service = CommandService()
+    parsed = service._parse_for_registry(api.command_calls[0]["command"])
+    assert parsed.definition is not None
+    assert parsed.definition.params is not None
+    bound, error = bind_args(parsed.definition.params, parsed.args, parsed.rest)
+    assert error is None, error
+    assert bound is not None
+    assert bound.get("scope") == "global"
+    assert bound.get("enabled_only") is True
 
 
 def test_hook_edit_assembles_key_values_and_repeatable_flags():

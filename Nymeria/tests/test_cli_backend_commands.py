@@ -470,6 +470,158 @@ def test_retired_root_spellings_still_reach_their_replacement():
     assert client.calls[0]["command"] == "/todos list all"
 
 
+def test_depth_three_commands_nest_instead_of_clobbering_their_parent():
+    """`/account tokens` and its two children are three separate commands.
+
+    Registration keyed every depth off ``path[1]`` before #131 wave B, so all
+    three landed on the ``tokens`` key: the last leaf registered won, the
+    depth-2 command was unreachable, and ``/account tokens issue`` dispatched
+    ``account tokens revoke`` with ``issue`` as its argument. Each spelling
+    must reach its OWN backend command.
+    """
+    registry = merged_registry()
+
+    for typed, canonical in (
+        ("/account tokens", ("account", "tokens")),
+        ("/account tokens issue", ("account", "tokens", "issue")),
+        ("/account tokens revoke", ("account", "tokens", "revoke")),
+    ):
+        match = registry.resolve(typed)
+        assert match is not None, f"{typed} did not resolve"
+        assert match.command.metadata.get("backend_path") == canonical, typed
+        assert match.args == (), typed
+
+    client = _FakeCommandClient()
+    result = run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/account tokens issue laptop",
+        )
+    )
+
+    assert result.ok is True
+    assert client.calls[0]["command"] == "/account tokens issue laptop"
+
+
+def test_palette_advertises_the_real_depth_three_spellings():
+    """The palette taught a phantom before the nesting fix.
+
+    The depth-3 leaf sat under the ``tokens`` key carrying its own leaf NAME,
+    so the palette rendered `/account revoke`, a spelling no surface accepts,
+    and never mentioned the two commands that do exist.
+    """
+    entries = {entry.text for entry in merged_registry().get_palette_entries()}
+
+    assert "/account tokens" in entries
+    assert "/account tokens issue" in entries
+    assert "/account tokens revoke" in entries
+    assert "/account revoke" not in entries
+    assert "/account issue" not in entries
+
+
+def test_backend_proxies_are_keyed_by_the_hyphenated_display_spelling():
+    """One displayed spelling, both spellings typeable (#131 rule 4).
+
+    The CLI resolves tokens against its own registry and does NOT fold
+    hyphens, so keying the proxies on the stored underscore form left
+    `/sequential-tools` an unknown command here while every other surface
+    accepted it, and left the palette teaching a spelling the generated usage
+    line contradicted.
+    """
+    registry = merged_registry()
+
+    for hyphenated, underscored, canonical in (
+        ("/sequential-tools", "/sequential_tools", ("sequential_tools",)),
+        ("/background set-url", "/background set_url", ("background", "set_url")),
+        (
+            "/provider reasoning-passback",
+            "/provider reasoning_passback",
+            ("provider", "reasoning_passback"),
+        ),
+    ):
+        for typed in (hyphenated, underscored):
+            match = registry.resolve(typed)
+            assert match is not None, f"{typed} did not resolve"
+            assert match.command.metadata.get("backend_path") == canonical, typed
+            assert match.args == (), typed
+
+    entries = {entry.text for entry in registry.get_palette_entries()}
+    assert "/sequential-tools" in entries
+    assert "/sequential_tools" not in entries
+    assert "/background set-url" in entries
+    assert "/background set_url" not in entries
+
+    # The retired spelling stays TYPEABLE, so it stays in the completion list
+    # (flagged as an alias, which is what keeps it out of the slash panel).
+    completions = {
+        item.text: item for item in registry.get_completion_items()
+    }
+    assert completions["/sequential_tools"].alias is True
+    assert completions["/background set_url"].alias is True
+
+
+def test_dispatching_the_hyphenated_spelling_sends_the_stored_path():
+    """The wire form is the backend's path, whichever spelling was typed."""
+    registry = merged_registry()
+
+    for typed in ("/background set-url http://x.test", "/background set_url http://x.test"):
+        client = _FakeCommandClient()
+        result = run(
+            registry.dispatch_async(
+                make_context(client, ListCommandOutputSink()),
+                typed,
+            )
+        )
+        assert result.ok is True, typed
+        assert client.calls[0]["command"] == "/background set_url http://x.test"
+
+
+def test_a_display_only_payload_still_yields_the_stored_backend_path():
+    """`name` is a DISPLAY field now, so the path fallback must unfold it.
+
+    The provider prefers the payload's `path`, but falls back to splitting
+    `name` when a transport omits it. Since #131 wave B that name is
+    hyphenated, so an unfolded fallback would send `/sequential-tools` on the
+    wire and record a `backend_path` the dispatcher never stores.
+    """
+    registry = CommandRegistry(include_builtins=False)
+    info = command_info("sequential-tools", category="Tools")
+    del info["path"]
+    BackendCommandProvider([info]).register(registry)
+
+    match = registry.resolve("/sequential-tools")
+    assert match is not None
+    assert match.command.metadata["backend_path"] == ("sequential_tools",)
+
+    client = _FakeCommandClient()
+    result = run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/sequential-tools on global",
+        )
+    )
+    assert result.ok is True
+    assert client.calls[0]["command"] == "/sequential_tools on global"
+
+
+def test_subcommand_alias_completions_do_not_repeat_the_family_root():
+    """Backend subcommand aliases are WHOLE paths; joining them twice lies.
+
+    `("account", "current")` is stored as the alias "account current", so
+    prefixing it with its parent produced `/account account current`, a
+    completion that resolves to nothing on either side.
+    """
+    completions = {item.text for item in merged_registry().get_completion_items()}
+
+    assert "/account current" in completions
+    assert "/account account current" not in completions
+    assert not [
+        text
+        for text in completions
+        if len(text.split()) > 1 and text.split()[0].lstrip("/") == text.split()[1]
+    ]
+
+
 def test_flat_family_aliases_do_not_become_cli_roots():
     """`/thread_new` and friends stay off the CLI root namespace.
 

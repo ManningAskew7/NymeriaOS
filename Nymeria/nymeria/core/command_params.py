@@ -279,8 +279,10 @@ def generated_usage(path: tuple[str, ...], params: tuple[CommandParam, ...]) -> 
     tokens render with hyphens: registry paths normalize ``-`` to ``_``
     (``/provider reasoning-passback`` is stored as ``reasoning_passback``),
     but users type and docs advertise the hyphenated form, which is also what
-    the CLI hint's prefix match sees. The underscored display NAME shown by
-    palettes is a pre-existing #131 wart, unchanged here.
+    the CLI hint's prefix match sees. Since #131 wave B every displayed name
+    agrees with this (``CommandDefinition.name`` and
+    ``command_service._display_path`` fold the same way), so the hint's prefix
+    match can no longer miss.
     """
     parts = ["/" + " ".join(token.replace("_", "-") for token in path)]
     for param in params:

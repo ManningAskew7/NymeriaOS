@@ -92,6 +92,54 @@ def test_global_flag_outside_the_grandfather_raises() -> None:
         )
 
 
+def test_stale_scope_flag_grandfather_entry_raises() -> None:
+    """The scope-flag set shrinks on the same ratchet as the leaf set.
+
+    Wave B emptied it, and nothing forced that before: the set only ever
+    EXCUSED a flag, so a migrated command could leave its row behind and the
+    next `--global` to appear under that id would pass unnoticed.
+    """
+    commands = {
+        "zz": _cmd(("zz",)),
+        "zz.list": _cmd(("zz", "list")),
+    }
+    with pytest.raises(ValueError, match="no longer declared"):
+        validate_command_naming(
+            commands,
+            _NONE,
+            grandfathered=_NONE,
+            rootless_grandfathered=_NONE,
+            scope_flag_grandfathered=frozenset({"zz.list"}),
+        )
+
+    # Still declaring the flag keeps the row honest.
+    still_flagged = {
+        "zz": _cmd(("zz",)),
+        "zz.list": _cmd(("zz", "list"), params=(_param("flag", "global"),)),
+    }
+    validate_command_naming(
+        still_flagged,
+        _NONE,
+        grandfathered=_NONE,
+        rootless_grandfathered=_NONE,
+        scope_flag_grandfathered=frozenset({"zz.list"}),
+    )
+
+
+def test_the_shipped_catalog_declares_no_global_flag() -> None:
+    """Wave B's outcome, asserted directly rather than via an empty set."""
+    from nymeria.core.command_naming import _SCOPE_FLAG_GRANDFATHERED
+
+    assert _SCOPE_FLAG_GRANDFATHERED == frozenset()
+    flagged = [
+        command_id
+        for command_id, cmd in CommandService()._commands.items()
+        for param in cmd.params or ()
+        if param.kind == "flag" and param.name == "global"
+    ]
+    assert flagged == []
+
+
 def test_scope_option_outside_the_exceptions_raises() -> None:
     assert "hook.create" in SCOPE_OPTION_EXCEPTIONS
     commands = {

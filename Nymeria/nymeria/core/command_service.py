@@ -214,7 +214,15 @@ class CommandDefinition:
 
     @property
     def name(self) -> str:
-        return " ".join(self.path)
+        """The DISPLAYED spelling: hyphens, never underscores (#131 rule 4).
+
+        Paths are stored underscore-normalized (``set_url``) because parsing
+        folds ``-`` to ``_``, so both spellings resolve; every surface that
+        SHOWS a name shows the hyphenated one, which is what
+        ``generated_usage`` already rendered. Anything that needs the stored
+        form must read ``path``, never split this.
+        """
+        return _display_path(self.path)
 
     @property
     def executable(self) -> bool:
@@ -390,7 +398,13 @@ def _normalize_path(value: str | tuple[str, ...] | list[str]) -> tuple[str, ...]
 
 
 def _display_path(path: tuple[str, ...] | list[str]) -> str:
-    return " ".join(path)
+    """A command path as it is DISPLAYED: hyphens, never underscores.
+
+    Registry paths normalize ``-`` to ``_``, and parsing folds the same way,
+    so ``/background set-url`` and ``/background set_url`` both resolve; rule
+    4 of the style guide says only one of them is ever shown.
+    """
+    return " ".join(token.replace("_", "-") for token in path)
 
 
 def _usage_for_path(path: tuple[str, ...]) -> str:
@@ -402,7 +416,15 @@ def _id_for_path(path: tuple[str, ...]) -> str:
 
 
 def _alias_display(path: tuple[str, ...]) -> str:
-    return "/" + _display_path(path)
+    """An alias path VERBATIM, unlike ``_display_path``.
+
+    Deliberate asymmetry: the flat ``family_verb`` aliases ARE the chat
+    platforms' command names (Telegram rejects a hyphen in a command, and
+    ``_telegram_command_name`` reads the first single-token alias straight out
+    of this payload to name a menu entry), so hyphenating them here would
+    advertise, and register, a spelling those platforms cannot accept.
+    """
+    return "/" + " ".join(path)
 
 
 def _split_rest_after_tokens(command_text: str, token_count: int) -> str:
@@ -2070,13 +2092,13 @@ class CommandService:
             existing_path_id = self._path_index.get(alias_path)
             if existing_path_id and existing_path_id != command_id:
                 raise ValueError(
-                    f"Alias /{_display_path(alias_path)} for {command_id} "
+                    f"Alias {_alias_display(alias_path)} for {command_id} "
                     f"conflicts with command path {existing_path_id}"
                 )
             existing_alias_id = self._aliases.get(alias_path)
             if existing_alias_id and existing_alias_id != command_id:
                 raise ValueError(
-                    f"Alias /{_display_path(alias_path)} for {command_id} "
+                    f"Alias {_alias_display(alias_path)} for {command_id} "
                     f"already points to {existing_alias_id}"
                 )
 
@@ -2146,13 +2168,13 @@ class CommandService:
                 path_conflict = seen_paths.get(alias_path)
                 if path_conflict and path_conflict != command_id:
                     raise ValueError(
-                        f"Alias /{_display_path(alias_path)} for {command_id} "
+                        f"Alias {_alias_display(alias_path)} for {command_id} "
                         f"conflicts with command path {path_conflict}"
                     )
                 alias_conflict = seen_aliases.get(alias_path)
                 if alias_conflict and alias_conflict != command_id:
                     raise ValueError(
-                        f"Alias /{_display_path(alias_path)} for {command_id} "
+                        f"Alias {_alias_display(alias_path)} for {command_id} "
                         f"conflicts with alias for {alias_conflict}"
                     )
                 seen_aliases[alias_path] = command_id
@@ -2269,12 +2291,14 @@ class CommandService:
         )
 
     def _subcommands_for_path(self, path: tuple[str, ...]) -> list[str]:
+        # Displayed spellings (rule 4): this list is rendered in help cards,
+        # usage errors, and GET /commands, never matched against input.
         if len(path) != 1:
             return []
         prefix = path[0]
         return sorted(
             {
-                cmd.path[1]
+                cmd.path[1].replace("_", "-")
                 for cmd in self._commands.values()
                 if len(cmd.path) > 1 and cmd.path[0] == prefix
             }
@@ -2338,7 +2362,10 @@ class CommandService:
         )
         by_category: dict[str, set[str]] = {}
         for cmd in commands:
-            by_category.setdefault(cmd.category, set()).add(cmd.path[0])
+            # Displayed spelling (rule 4); `path` is the stored form.
+            by_category.setdefault(cmd.category, set()).add(
+                _display_path(cmd.path[:1])
+            )
         lines = ["## Nymeria Slash Commands", ""]
         for category in sorted(by_category, key=str.casefold):
             roots = ", ".join(
@@ -2471,7 +2498,7 @@ class CommandService:
                 lines.append("| --- | --- | --- |")
                 for cmd in children:
                     usage = cmd.usage.replace("|", "\\|")
-                    label = " ".join(cmd.path[1:])
+                    label = _display_path(cmd.path[1:])
                     lines.append(f"| {label} | `{usage}` | {cmd.description} |")
 
         if definition is not None and definition.examples:
@@ -2569,9 +2596,11 @@ class CommandService:
         )
 
     def _prefix_subcommands(self, prefix: str) -> list[str]:
+        # Displayed spellings (rule 4). Only ever rendered or fed to difflib,
+        # which is fuzzy enough that a hyphen costs a mistyped token nothing.
         return sorted(
             {
-                path[1]
+                path[1].replace("_", "-")
                 for path in self._path_index
                 if len(path) > 1 and path[0] == prefix
             }
@@ -3603,10 +3632,14 @@ class _CommandExecutor(
 
     async def _cmd_skills_disable(self, bound: BoundArgs) -> str | CommandOutput:
         if str(bound.get("name") or "").strip().lower() == "all":
-            if bool(bound.get("global")):
+            # `all` is a thread-only sweep: the global overlay is a named list
+            # a user curates, so emptying it from here would be a surprise. The
+            # refusal survives the scope-token migration (backlog #131 wave B),
+            # only its spelling moved.
+            if bound.get("scope") == "global":
                 return command_error(
                     "`/skills disable all` deactivates the skills active on "
-                    "this thread; drop --global."
+                    "this thread; drop the `global` scope."
                 )
             return await self._deactivate_every_active_skill()
         return await self._set_skill_state(bound, enabled=False)
@@ -3650,7 +3683,12 @@ class _CommandExecutor(
         return command_error(text) if had_error else command_success(text)
 
     async def _set_skill_state(self, bound: BoundArgs, *, enabled: bool) -> str | CommandOutput:
-        global_scope = bool(bound.get("global"))
+        # Thread is the default scope; the trailing `global` token writes the
+        # profile overlay instead. Without an active thread the thread arm
+        # raises rather than silently writing globally: this list governs what
+        # a conversation can reach, so a wrong-scope write is not recoverable
+        # by re-running the command.
+        global_scope = bound.get("scope") == "global"
         name = str(bound.get("name") or "")
 
         agent = self._agent()
@@ -4022,7 +4060,7 @@ class _CommandExecutor(
             )
         return matches[0], None
 
-    async def _cmd_hook(self, bound: BoundArgs) -> str:
+    async def _cmd_hook(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/hook" lists. Direct ``/hook <sub>``, the ``/hooks <sub>``
         # plural alias, and the ``detail`` synonym of show all resolve to a
         # registered subcommand path and are gated on ITS flags, so nothing
@@ -4033,11 +4071,26 @@ class _CommandExecutor(
         # restricted subcommand; history: commit b0194056).
         return await self._cmd_hook_list(BoundArgs())
 
-    async def _cmd_hook_list(self, bound: BoundArgs) -> str:
+    async def _cmd_hook_list(self, bound: BoundArgs) -> str | CommandOutput:
+        """List hooks, optionally narrowed by scope and/or by thread.
+
+        The two narrowings compose and answer different questions: the
+        trailing scope token says WHICH KIND of hook (``global`` for the
+        global-scoped ones, ``thread`` for the ones this conversation sees),
+        ``--thread`` says WHICH thread. Absent scope means unfiltered, because
+        a list command's default is everything (backlog #131 wave B moved this
+        off a ``--global`` flag; the flag is gone, not aliased).
+        """
         enabled_only = bool(bound.get("enabled_only"))
-        global_only = bool(bound.get("global"))
+        scope = bound.get("scope")
+        global_only = scope == "global"
         thread_id = str(bound.get("thread") or "")
+        if scope == "thread" and not thread_id:
+            thread_id = "current"
         if thread_id == "current":
+            thread_error = self._require_thread()
+            if thread_error:
+                return thread_error
             thread_id = self.thread_id
         hooks = self._hook_manager().get_hooks(self.user_id) or []
         if enabled_only:
@@ -5667,10 +5720,14 @@ class _CommandExecutor(
             except Exception:  # noqa: BLE001
                 settings = get_settings()
 
+        # Value first, scope trailing (backlog #131 wave B). The binder pops a
+        # trailing `global`/`thread` word BEFORE assigning positionals, so the
+        # scope can never steal the value; with neither present this is the
+        # both-scopes readout.
         scope = bound.get("scope")
         value = bound.get("value")
 
-        if not scope:
+        if scope is None and value is None:
             memories = await self.api.list_memories(self.user_id)
             global_limit = get_global_memory_char_limit(settings)
             lines = [
@@ -5713,7 +5770,8 @@ class _CommandExecutor(
                 msg += " (restart required to take effect)"
             return command_success(msg)
 
-        # The declared choices leave no third scope, so this is the thread arm.
+        # Thread is the default scope and the only other one, so this arm
+        # serves both the explicit `thread` token and a bare value.
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5722,7 +5780,9 @@ class _CommandExecutor(
                 "memory limit",
                 hint="`thread` takes a character count, or `inherit` to follow the global limit.",
             )
-        if value.lower() in ("inherit", "default", "global"):
+        # `global` was a third synonym for `inherit` here until wave B; it
+        # names the SCOPE now, so it can no longer name a value.
+        if value.lower() in ("inherit", "default"):
             await self.api.update_thread_config(
                 self.thread_id,
                 clear_memory_char_limit=True,
@@ -5743,9 +5803,14 @@ class _CommandExecutor(
         """Show / set sequential (ordered, one-at-a-time) tool execution.
 
         No args shows status; `on`/`off`/`inherit` set this thread's override;
-        `global on|off` sets the global default. Deterministic counterpart to the
-        run_tools_in_order control tool (precedence: control_tool OR thread OR
-        global).
+        a trailing `global` writes the global default instead. Deterministic
+        counterpart to the run_tools_in_order control tool (precedence:
+        control_tool OR thread OR global).
+
+        Thread is the default scope with no fallback to global (backlog #131
+        wave B): this is an operator setting, and inferring "global" from the
+        absence of a thread would let `/sequential-tools on` change every
+        conversation's behavior from a threadless surface.
         """
         agent = self._agent()
         settings = getattr(agent, "settings", None) if agent is not None else None
@@ -5766,19 +5831,17 @@ class _CommandExecutor(
             return "on" if value else "off"
 
         mode = str(bound.get("mode") or "").lower()
-        value = str(bound.get("value") or "")
-
-        # Only the `global` arm consumes a second token. Without this check the
-        # binder happily fills `value` for a thread-scope mode and the arm drops
-        # it, so `/sequential-tools on off` reported success while doing the
-        # opposite of what the second word asked for.
-        if value and mode != "global":
-            return self._usage_error(
-                "sequential-tools",
-                hint=f"`{mode}` does not take a value; only `global` does.",
-            )
+        scope = str(bound.get("scope") or "")
 
         if not mode:
+            if scope:
+                # A scope with nothing to write; the status readout below is
+                # scope-wide already, so name the missing value (the /think
+                # precedent).
+                return self._usage_error(
+                    "sequential-tools",
+                    hint="Name `on` or `off` to write that scope.",
+                )
             g = global_flag()
             lines = ["Sequential tool execution", f"  global: {fmt(g)}"]
             if self.thread_id:
@@ -5793,12 +5856,15 @@ class _CommandExecutor(
                     lines.append(f"  thread: {fmt(bool(override))} (override)")
             return "\n".join(lines)
 
-        if mode == "global":
-            if value.lower() not in ("on", "off"):
+        if scope == "global":
+            # There is no global "inherit": the global value IS what a thread
+            # inherits, so `inherit global` names nothing to write.
+            if mode not in ("on", "off"):
                 return self._usage_error(
-                    "sequential-tools", hint="`global` takes `on` or `off`."
+                    "sequential-tools",
+                    hint="The `global` scope takes `on` or `off`.",
                 )
-            enabled = value.lower() == "on"
+            enabled = mode == "on"
             result = await self.api.update_settings(
                 user_id=self.user_id,
                 sequential_tool_execution=enabled,

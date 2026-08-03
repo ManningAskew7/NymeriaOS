@@ -84,33 +84,34 @@ _HOOK_APPROVAL_PARAMS = (
 )
 
 # ``/skills enable`` and ``/skills disable`` are one handler with a boolean, so
-# they share the scope flag. The flag comes first so the generated usage keeps
-# advertising ``[--global] <name>``. Only `disable` takes the ``all`` value
+# they share the write scope. The scope param trails the name, which is the one
+# scope grammar (style guide rule 3; the ``--global`` flag these carried until
+# backlog #131 wave B is gone, not aliased: a flag alias would have to stay
+# grandfathered in ``command_naming``). Only `disable` takes the ``all`` value
 # (the old depth-3 ``/skills off all``, folded in by backlog #131), so the two
 # name params differ in their description and cannot be one constant.
-_SKILL_SCOPE_FLAG = CommandParam(
-    "global",
-    kind="flag",
-    type="bool",
-    description="Apply to every thread instead of only this one",
+_SKILL_SCOPE_PARAM = CommandParam(
+    "scope",
+    kind="scope",
+    description="Write this thread's skill set (default) or the global one",
 )
 _SKILL_ENABLE_PARAMS = (
-    _SKILL_SCOPE_FLAG,
     CommandParam(
         "name",
         required=True,
         choices_ref="skills",
         description="Installed skill name",
     ),
+    _SKILL_SCOPE_PARAM,
 )
 _SKILL_DISABLE_PARAMS = (
-    _SKILL_SCOPE_FLAG,
     CommandParam(
         "name",
         required=True,
         choices_ref="skills",
         description="Installed skill name, or `all` for every active skill",
     ),
+    _SKILL_SCOPE_PARAM,
 )
 
 # Every ``/mcp`` verb that names one server takes the same argument and resolves
@@ -1094,23 +1095,25 @@ def register_default_commands(service: "CommandService") -> None:
         category="Tools",
         mutates_state=True,
         danger_level="normal",
-        # A mode word then its value, the /memory limit shape. The accepted mode
-        # set is closed, so it is declared: `default` is an undocumented synonym
-        # of `inherit`, kept in choices (the binder enforces what the handler
+        # A mode word then the trailing scope token. `global` used to be a MODE
+        # VALUE consuming a second positional (`/sequential-tools global on`),
+        # which is the scope-as-a-mode-value shape the canon retired in backlog
+        # #131 wave B; the old two-positional form is gone because reinstating
+        # it would reinstate exactly that shape. The accepted mode set is
+        # closed, so it is declared: `default` is an undocumented synonym of
+        # `inherit`, kept in choices (the binder enforces what the handler
         # really takes) but out of the label, which stays the advertised form.
-        # Only the `global` arm consumes `value`; the handler rejects a second
-        # token on the others rather than discarding it.
         params=(
             CommandParam(
                 "mode",
-                choices=("on", "off", "inherit", "default", "global"),
-                label="on|off|inherit|global",
-                description="Thread override, `inherit`, or the global scope",
+                choices=("on", "off", "inherit", "default"),
+                label="on|off|inherit",
+                description="Turn it on/off, or `inherit` to drop the override",
             ),
             CommandParam(
-                "value",
-                label="on|off",
-                description="Value for the global scope",
+                "scope",
+                kind="scope",
+                description="Write the global default or this thread's override",
             ),
         ),
         # Deterministic operator setting, not something the model should flip; the
@@ -1142,7 +1145,7 @@ def register_default_commands(service: "CommandService") -> None:
         description="List skills visible on this thread",
         category="Skills",
         requires_thread=True,
-        examples=("/skills show summarize", "/skills enable --global summarize"),
+        examples=("/skills show summarize", "/skills enable summarize global"),
         # Bare "/skills" lists. Every verb is a registered child routed before
         # this handler by longest-prefix dispatch, so the root binds strictly
         # with zero arguments and a typo gets the dispatcher's did-you-mean
@@ -1439,6 +1442,12 @@ def register_default_commands(service: "CommandService") -> None:
         category="Automation",
         aliases=("hook_list",),
         surfaces=_hook_sub_surfaces,
+        # The trailing scope token is the FILTER axis here, not a write scope,
+        # so omitting it lists every hook rather than defaulting to the thread
+        # (backlog #131 wave B; a list command's default is unfiltered). It
+        # composes with ``--thread``, which selects WHICH thread: the two are
+        # different questions and the binder's option guard keeps
+        # ``--thread global`` binding the option rather than popping a scope.
         params=(
             CommandParam(
                 "thread",
@@ -1447,16 +1456,15 @@ def register_default_commands(service: "CommandService") -> None:
                 description="Show hooks bound to this thread (`current` for the active one)",
             ),
             CommandParam(
-                "global",
-                kind="flag",
-                type="bool",
-                description="Show only global hooks",
-            ),
-            CommandParam(
                 "enabled_only",
                 kind="flag",
                 type="bool",
                 description="Hide disabled hooks",
+            ),
+            CommandParam(
+                "scope",
+                kind="scope",
+                description="Show only global hooks, or only this thread's",
             ),
         ),
     )
@@ -1973,19 +1981,22 @@ def register_default_commands(service: "CommandService") -> None:
         aliases=("memory_limit",),
         mutates_state=True,
         danger_level="normal",
-        # A scope word then its value. The value stays a plain string because
-        # the thread scope also accepts `inherit`, so the range check (and the
+        # The value then the trailing scope token (backlog #131 wave B; the
+        # scope used to be a leading positional with its own choice set). The
+        # scope pops from the END before positionals are assigned, so it can
+        # never steal the value. The value stays a plain string because the
+        # thread scope also accepts `inherit`, so the range check (and the
         # inherit synonyms) stay in the handler.
         params=(
-            CommandParam(
-                "scope",
-                choices=("global", "thread"),
-                description="Which limit to change (omit to show both)",
-            ),
             CommandParam(
                 "value",
                 label="chars|inherit",
                 description="Character limit, or `inherit` to drop a thread override",
+            ),
+            CommandParam(
+                "scope",
+                kind="scope",
+                description="Which limit to change (omit both to show them)",
             ),
         ),
     )

@@ -18,7 +18,7 @@ import pytest
 from discord import AppCommandOptionType, app_commands
 
 from cli_fixtures import run
-from nymeria.core.command_service import CommandService
+from nymeria.core.command_service import CommandDefinition, CommandService
 from nymeria.triggers.discord_cogs import ALL_COGS
 from nymeria.triggers.discord_cogs.autocomplete import AUTOCOMPLETE_RESOLVERS
 from nymeria.triggers.discord_cogs.generated_cogs import (
@@ -175,6 +175,97 @@ def test_signature_hoists_required_arguments_above_optional_ones(
     assert [
         param.name for param in generator.signature_params(definition)
     ] == ["target", "note"]
+
+
+def _restyled(
+    generator: ModuleType,
+    service: CommandService,
+    params: tuple,
+) -> CommandDefinition:
+    """The `/status` definition wearing a synthetic param declaration."""
+    import dataclasses
+
+    base: CommandDefinition = next(
+        definition
+        for definition in generator.select_commands(service)
+        if definition.path == ("status",)
+    )
+    return dataclasses.replace(base, params=params)
+
+
+def test_a_keyword_param_name_is_renamed_back_for_discord(
+    generator: ModuleType, service: CommandService
+) -> None:
+    """A Python keyword cannot be a parameter name; the option keeps the word.
+
+    No shipped command needs this since #131 wave B retired the last
+    ``--global`` flag (`test_no_shipped_option_needs_the_keyword_rename`
+    asserts that), so the branch is exercised here on a synthetic declaration
+    rather than left unproven until the next command needs it.
+    """
+    from nymeria.core.command_params import CommandParam
+
+    param = CommandParam("global", kind="flag", type="bool", description="kw")
+    definition = _restyled(generator, service, (param,))
+
+    assert generator.python_name(param) == "global_"
+    decorators = "\n".join(generator._render_decorators(definition))
+    assert '@app_commands.rename(\n        global_="global",\n    )' in decorators
+    assert "\n".join(generator._render_flatten(definition)).count("global_") == 1
+
+
+def test_no_shipped_option_needs_the_keyword_rename() -> None:
+    """The live tree renames nothing: every param name is already legal."""
+    renamed = [
+        (name, option.display_name)
+        for command in _leaf_commands(GeneratedCommandsCog).values()
+        for name, option in command._params.items()
+        if option.display_name != name
+    ]
+    assert renamed == []
+
+
+def test_optional_positional_gap_is_refused_instead_of_mis_bound(
+    generator: ModuleType, service: CommandService
+) -> None:
+    """Discord fields are independent; backend positionals are ordered.
+
+    Filling only the SECOND optional positional would bind that value to the
+    first param, so the generator emits a guard. No shipped command declares
+    two optional positionals any more (`/memory limit` was the last, and wave
+    B turned its leading scope choice into a trailing scope token), so the
+    guard is proven here on a synthetic declaration.
+    """
+    from nymeria.core.command_params import CommandParam
+
+    definition = _restyled(
+        generator,
+        service,
+        (
+            CommandParam("first", description="leads"),
+            CommandParam("second", description="follows"),
+        ),
+    )
+
+    guards = "\n".join(generator._render_gap_guards(definition))
+    assert "if second is not None and first is None:" in guards
+    assert "Error: `second` also needs `first`. Give both, or neither." in guards
+
+    # A trailing scope token is not a positional, so it needs no guard.
+    scoped = _restyled(
+        generator,
+        service,
+        (
+            CommandParam("first", description="leads"),
+            CommandParam("scope", kind="scope", description="trails"),
+        ),
+    )
+    assert generator._render_gap_guards(scoped) == []
+
+
+def test_no_shipped_command_emits_a_positional_gap_guard() -> None:
+    """The live generated module carries no guard, matching the catalog."""
+    assert "also needs" not in GENERATED_PATH.read_text(encoding="utf-8")
 
 
 def test_generated_signatures_carry_the_declared_schema(

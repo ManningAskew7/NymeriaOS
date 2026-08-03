@@ -447,6 +447,80 @@ def test_registry_exposes_full_path_metadata_and_visibility_filters() -> None:
     assert "tools list" in agent
 
 
+def test_displayed_names_are_hyphenated_and_paths_stay_stored_form() -> None:
+    """Rule 4 (#131 wave B): one displayed spelling, and it is the usage line's.
+
+    `GET /commands` serializes `CommandInfo` verbatim, so `name` is what every
+    palette prints and what the desktop composer inserts. It must agree with
+    the generated `usage`, which has rendered hyphens since #129, while `path`
+    keeps the stored underscore form the dispatcher matches on.
+    """
+    service = CommandService()
+    by_id = {cmd.id: cmd for cmd in service.list_commands(actor="user", is_admin=True)}
+
+    for command_id, name, path in (
+        ("sequential_tools", "sequential-tools", ["sequential_tools"]),
+        ("background.set_url", "background set-url", ["background", "set_url"]),
+        (
+            "provider.reasoning_passback",
+            "provider reasoning-passback",
+            ["provider", "reasoning_passback"],
+        ),
+    ):
+        info = by_id[command_id]
+        assert info.name == name
+        assert info.path == path
+        assert info.usage.startswith(f"/{name}"), info.usage
+
+    # No payload name may carry an underscore at all.
+    underscored = [cmd.name for cmd in by_id.values() if "_" in cmd.name]
+    assert underscored == []
+
+    # The derived subcommand list is display copy too: it is what the wire
+    # payload carries and what a usage error prints after "Subcommands:".
+    assert "set-url" in by_id["background"].subcommands
+    assert "set_url" not in by_id["background"].subcommands
+
+    # Aliases keep their stored spelling: the flat `family_verb` forms ARE the
+    # chat platforms' command names, and Telegram rejects a hyphen in one.
+    assert "/background_set_url" not in by_id["background.set_url"].aliases
+    assert "/provider_reasoning_passback" in by_id["provider.reasoning_passback"].aliases
+    assert "/tools_core" in by_id["tools.list"].aliases
+
+
+def test_help_renders_the_hyphenated_spelling_everywhere() -> None:
+    """The card title, the subcommand table, and the family list must agree."""
+    service = CommandService()
+    ctx = CommandContext(user_id="alice", actor="user", surface="cli", is_admin=True)
+
+    card = run(service.execute(ctx, "/help background", api=FakeCommandApi()))
+    assert card.success is True, card.markdown
+    assert "## /background" in card.markdown
+    # The subcommand row label and its generated usage speak one spelling.
+    assert "| set-url | `/background set-url <base-url>` |" in card.markdown
+    assert "set_url" not in card.markdown
+
+    leaf = run(service.execute(ctx, "/help background set-url", api=FakeCommandApi()))
+    assert leaf.success is True, leaf.markdown
+    assert "## /background set-url" in leaf.markdown
+    assert "set_url" not in leaf.markdown
+
+    # The underscore spelling still RESOLVES; it just is not what is shown.
+    typed_underscore = run(
+        service.execute(ctx, "/help background set_url", api=FakeCommandApi())
+    )
+    assert typed_underscore.markdown == leaf.markdown
+
+    index = run(service.execute(ctx, "/help", api=FakeCommandApi()))
+    assert "`/sequential-tools`" in index.markdown
+    assert "`/sequential_tools`" not in index.markdown
+
+    listing = run(service.execute(ctx, "/help all", api=FakeCommandApi()))
+    assert "`/sequential-tools`" in listing.markdown
+    assert "`/background set-url`" in listing.markdown
+    assert "_url" not in listing.markdown
+
+
 def test_registry_rejects_duplicate_ids_paths_and_alias_conflicts() -> None:
     service = CommandService()
 
@@ -554,9 +628,9 @@ def test_memory_limit_command_shows_usage_and_updates_limits() -> None:
     )
 
     shown = run(service.execute(ctx, "/memory limit", api=api))
-    global_set = run(service.execute(ctx, "/memory limit global 12000", api=api))
-    thread_set = run(service.execute(ctx, "/memory limit thread 6000", api=api))
-    thread_clear = run(service.execute(ctx, "/memory limit thread inherit", api=api))
+    global_set = run(service.execute(ctx, "/memory limit 12000 global", api=api))
+    thread_set = run(service.execute(ctx, "/memory limit 6000 thread", api=api))
+    thread_clear = run(service.execute(ctx, "/memory limit inherit thread", api=api))
 
     assert shown.success is True
     assert "global: 8 / 8000 chars" in shown.markdown
@@ -587,7 +661,7 @@ def test_sequential_tools_command_shows_status_and_updates() -> None:
     thread_on = run(service.execute(ctx, "/sequential-tools on", api=api))
     thread_off = run(service.execute(ctx, "/sequential-tools off", api=api))
     thread_inherit = run(service.execute(ctx, "/sequential-tools inherit", api=api))
-    global_on = run(service.execute(ctx, "/sequential-tools global on", api=api))
+    global_on = run(service.execute(ctx, "/sequential-tools on global", api=api))
 
     # Status: global default off, thread inherits (no override set).
     assert shown.success is True
@@ -626,7 +700,8 @@ def test_sequential_tools_command_shows_status_and_updates() -> None:
 
 
 def test_sequential_tools_command_global_works_without_thread() -> None:
-    # The global subcommand must not require a thread; thread-scoped subcommands do.
+    # The global scope must not require a thread; the default (thread) scope
+    # does, and never silently falls back to writing the global default.
     service = CommandService()
     api = FakeCommandApi()
     ctx = CommandContext(
@@ -637,7 +712,7 @@ def test_sequential_tools_command_global_works_without_thread() -> None:
         is_admin=True,
     )
 
-    global_off = run(service.execute(ctx, "/sequential-tools global off", api=api))
+    global_off = run(service.execute(ctx, "/sequential-tools off global", api=api))
     assert global_off.success is True
     assert (
         "update_settings",
@@ -647,6 +722,12 @@ def test_sequential_tools_command_global_works_without_thread() -> None:
 
     needs_thread = run(service.execute(ctx, "/sequential-tools on", api=api))
     assert needs_thread.success is False
+    assert "requires an active thread" in needs_thread.markdown
+    # Exactly one global write happened: the default scope did not become
+    # "global" just because there was no thread to write.
+    assert [call for call in api.calls if call[0] == "update_settings"] == [
+        ("update_settings", (), {"user_id": "alice", "sequential_tool_execution": False})
+    ]
 
 
 def test_sequential_tools_command_status_shows_override_and_default_alias() -> None:
@@ -4799,14 +4880,49 @@ def test_memory_list_rejects_arguments() -> None:
     assert not [call for call in api.calls if call[0] == "list_memories"]
 
 
-def test_memory_limit_rejects_an_unknown_scope_word() -> None:
+def test_memory_limit_trailing_scope_never_steals_the_value() -> None:
+    """The value leads and the scope trails (#131 wave B).
+
+    The binder pops a trailing ``global``/``thread`` word BEFORE it assigns
+    positionals, which is exactly the ordering that could have eaten the
+    number instead. Same digits, two scopes, two different writes; and a bare
+    value writes the thread, the default scope.
+    """
     api = FakeCommandApi()
-    result = run(CommandService().execute(_ctx(), "/memory limit 5000", api=api))
+    service = CommandService()
+
+    to_global = run(service.execute(_ctx(), "/memory limit 5000 global", api=api))
+    to_thread = run(service.execute(_ctx(), "/memory limit 5000 thread", api=api))
+    bare = run(service.execute(_ctx(), "/memory limit 4000", api=api))
+
+    assert to_global.success is True, to_global.markdown
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "memory_char_limit": 5000},
+    ) in api.calls
+    assert to_thread.success is True, to_thread.markdown
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "memory_char_limit": 5000},
+    ) in api.calls
+    assert bare.success is True, bare.markdown
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "memory_char_limit": 4000},
+    ) in api.calls
+
+
+def test_memory_limit_rejects_a_word_that_is_neither_value_nor_scope() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/memory limit 5000 everywhere", api=api))
 
     assert result.success is False
-    assert "`5000` is not a valid scope" in result.markdown
-    assert "Valid: global, thread" in result.markdown
+    assert "Unexpected argument `everywhere`" in result.markdown
     assert not [call for call in api.calls if call[0] == "update_settings"]
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
 
 
 def test_memory_limit_scope_without_a_value_shows_generated_usage() -> None:
@@ -4814,21 +4930,38 @@ def test_memory_limit_scope_without_a_value_shows_generated_usage() -> None:
     result = run(CommandService().execute(_ctx(), "/memory limit global", api=api))
 
     assert result.success is False
-    assert "Usage: `/memory limit [global|thread] [chars|inherit]`" in result.markdown
+    assert "Usage: `/memory limit [chars|inherit] [global|thread]`" in result.markdown
     assert "`global` takes a character count." in result.markdown
     assert not [call for call in api.calls if call[0] == "update_settings"]
 
 
-def test_memory_limit_thread_global_still_means_inherit() -> None:
-    # `global` is one of the inherit synonyms in the VALUE position; the scope
-    # word is the first positional, so the two never collide.
+def test_memory_limit_inherit_clears_the_thread_override_at_either_spelling() -> None:
+    """`inherit` is the value; `global` names the SCOPE and no longer a value.
+
+    Before wave B the thread arm accepted `global` as a third synonym of
+    `inherit` (`/memory limit thread global`). The trailing scope token owns
+    that word now, so the synonym is retired and the surviving spellings are
+    the bare value and the explicit thread scope.
+    """
+    service = CommandService()
+    for command in ("/memory limit inherit", "/memory limit inherit thread"):
+        api = FakeCommandApi()
+        api.thread_config["memory_char_limit"] = 6000
+        result = run(service.execute(_ctx(), command, api=api))
+
+        assert result.success is True, (command, result.markdown)
+        assert "inherits the global memory character limit" in result.markdown
+        assert api.thread_config["memory_char_limit"] is None
+
+    # The retired synonym: `global` reaches the value position only in this
+    # contorted spelling, and there it is a bad character count, not a
+    # second way to say `inherit`.
     api = FakeCommandApi()
     api.thread_config["memory_char_limit"] = 6000
-    result = run(CommandService().execute(_ctx(), "/memory limit thread global", api=api))
-
-    assert result.success is True, result.markdown
-    assert "inherits the global memory character limit" in result.markdown
-    assert api.thread_config["memory_char_limit"] is None
+    retired = run(service.execute(_ctx(), "/memory limit global thread", api=api))
+    assert retired.success is False
+    assert "Limit must be an integer" in retired.markdown
+    assert api.thread_config["memory_char_limit"] == 6000
 
 
 def test_notepad_read_rejects_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4992,10 +5125,9 @@ def test_background_verbs_bind_and_reject_extras() -> None:
     assert unknown.success is False
     assert "Unexpected argument `bogus`" in unknown.markdown
     assert "Usage: `/background`." in unknown.markdown
-    # The derived subcommand list prints registry path tokens, so the
-    # hyphenated verb shows underscored (the pre-existing #131 naming wart;
-    # both spellings dispatch).
-    assert "Valid subcommands: clear, set, set_url." in unknown.markdown
+    # The derived subcommand list speaks the DISPLAYED spelling (#131 wave B
+    # flipped it), which is the one the generated usage above advertises.
+    assert "Valid subcommands: clear, set, set-url." in unknown.markdown
 
     assert not [call for call in api.calls if call[0] == "update_settings"]
 
@@ -5066,20 +5198,39 @@ def test_background_show_alias_survives_the_root_flip() -> None:
     assert not [call for call in api.calls if call[0] == "update_settings"]
 
 
-def test_sequential_tools_global_without_a_value_shows_generated_usage() -> None:
+def test_sequential_tools_scope_without_a_mode_shows_generated_usage() -> None:
     service = CommandService()
     api = FakeCommandApi()
 
     bare_global = run(service.execute(_ctx(), "/sequential-tools global", api=api))
     assert bare_global.success is False
-    assert "Usage: `/sequential-tools [on|off|inherit|global] [on|off]`" in bare_global.markdown
-    assert "`global` takes `on` or `off`." in bare_global.markdown
+    assert "Usage: `/sequential-tools [on|off|inherit] [global|thread]`" in bare_global.markdown
+    assert "Name `on` or `off` to write that scope." in bare_global.markdown
 
-    bad_value = run(service.execute(_ctx(), "/sequential-tools global maybe", api=api))
-    assert bad_value.success is False
-    assert "`global` takes `on` or `off`." in bad_value.markdown
+    # `inherit` has no meaning globally: the global value IS what a thread
+    # inherits, so the global scope takes only on/off.
+    inherit_global = run(service.execute(_ctx(), "/sequential-tools inherit global", api=api))
+    assert inherit_global.success is False
+    assert "The `global` scope takes `on` or `off`." in inherit_global.markdown
 
     assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_sequential_tools_retired_the_scope_as_a_mode_value() -> None:
+    """`/sequential-tools global on` is gone; the scope trails now.
+
+    Recorded break (#131 wave B): keeping it would have meant keeping the
+    scope-as-a-mode-value shape plus its second positional, which is the
+    grammar the canon retired. The rejection must still teach the
+    replacement, so the generated usage rides along.
+    """
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/sequential-tools global on", api=api))
+
+    assert result.success is False
+    assert "Usage: `/sequential-tools [on|off|inherit] [global|thread]`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
 
 
 def test_sequential_tools_still_accepts_the_default_synonym() -> None:
@@ -5092,13 +5243,14 @@ def test_sequential_tools_still_accepts_the_default_synonym() -> None:
     assert "inherits the global sequential tool execution setting" in result.markdown
 
 
-def test_sequential_tools_rejects_a_value_the_mode_would_discard() -> None:
-    """Only the ``global`` arm consumes the second token.
+def test_sequential_tools_rejects_a_second_value_word() -> None:
+    """One mode word, one optional scope word, nothing else.
 
-    Two bare positionals smuggled a verb grammar: ``/sequential-tools on off``
-    bound both words, the thread arm used only the first, and the second was
-    silently dropped while the command reported success. It must be refused
-    instead, and nothing may be written.
+    Two bare positionals used to smuggle a verb grammar: ``/sequential-tools
+    on off`` bound both words, the thread arm used only the first, and the
+    second was silently dropped while the command reported success. Only one
+    value positional is declared now, so a second word is a binder rejection
+    and nothing is written.
     """
     service = CommandService()
     api = FakeCommandApi()
@@ -5111,19 +5263,19 @@ def test_sequential_tools_rejects_a_value_the_mode_would_discard() -> None:
     ):
         result = run(service.execute(_ctx(), command, api=api))
         assert result.success is False, (command, result.markdown)
-        assert "does not take a value; only `global` does." in result.markdown, command
+        assert "Unexpected argument" in result.markdown, command
         assert (
-            "Usage: `/sequential-tools [on|off|inherit|global] [on|off]`"
+            "Usage: `/sequential-tools [on|off|inherit] [global|thread]`"
             in result.markdown
         ), command
 
     assert not [call for call in api.calls if call[0] == "update_thread_config"]
     assert not [call for call in api.calls if call[0] == "update_settings"]
 
-    # The single-token forms and the global arm are untouched.
+    # The single-token forms and the scoped form are untouched.
     ok_thread = run(service.execute(_ctx(), "/sequential-tools on", api=api))
     assert ok_thread.success is True, ok_thread.markdown
-    ok_global = run(service.execute(_ctx(), "/sequential-tools global on", api=api))
+    ok_global = run(service.execute(_ctx(), "/sequential-tools on global", api=api))
     assert ok_global.success is True, ok_global.markdown
 
 
@@ -5133,8 +5285,8 @@ def test_sequential_tools_mode_is_a_closed_declared_set() -> None:
     result = run(CommandService().execute(_ctx(), "/sequential-tools sideways", api=api))
 
     assert result.success is False
-    assert "`sideways` is not a valid on|off|inherit|global" in result.markdown
-    assert "Valid: on, off, inherit, default, global." in result.markdown
+    assert "`sideways` is not a valid on|off|inherit" in result.markdown
+    assert "Valid: on, off, inherit, default." in result.markdown
     assert not [call for call in api.calls if call[0] == "update_thread_config"]
 
 
