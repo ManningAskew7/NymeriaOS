@@ -470,6 +470,90 @@ def test_retired_root_spellings_still_reach_their_replacement():
     assert client.calls[0]["command"] == "/todos list all"
 
 
+def test_unknown_first_token_forwards_raw_to_the_backend():
+    """The #133 fallback: the local registry no longer owns the last word.
+
+    An unresolved first token forwards the TYPED text verbatim to the
+    backend dispatcher, which expands user aliases (and built-in ones) or
+    answers with its own did-you-mean copy. Offline, the local unknown
+    error survives.
+    """
+    registry = CommandRegistry(include_builtins=False)
+    BackendCommandProvider([command_info("memory save")]).register(registry)
+
+    client = _FakeCommandClient()
+    result = run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/gpt5 some args",
+        )
+    )
+    assert result.ok is True
+    assert client.calls[0]["command"] == "/gpt5 some args"
+
+    # Known spellings still resolve locally: no forward happens.
+    client.calls.clear()
+    run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/memory save color blue",
+        )
+    )
+    assert client.calls[0]["command"] == "/memory save color blue"
+
+    # Offline (no transport): the local unknown-command error is kept.
+    offline = run(
+        registry.dispatch_async(
+            make_context(None, ListCommandOutputSink()),
+            "/gpt5",
+        )
+    )
+    assert offline.ok is False
+    assert offline.error_code == "unknown_command"
+
+
+def test_user_alias_proxies_forward_the_typed_spelling():
+    """A user alias in the catalog payload becomes a hidden proxy that
+    forwards its OWN spelling, never the target's path: the alias can
+    inject values, and a canonical-path proxy would silently drop them
+    (the backend's stamped expansion is the authority).
+    """
+    info = command_info("model")
+    info["user_aliases"] = ["/gpt5"]
+    registry = CommandRegistry(include_builtins=False)
+    BackendCommandProvider([info]).register(registry)
+
+    proxy = registry.get("gpt5")
+    assert proxy is not None
+    assert proxy.hidden is True
+
+    client = _FakeCommandClient()
+    result = run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/gpt5 thread",
+        )
+    )
+    assert result.ok is True
+    assert client.calls[0]["command"] == "/gpt5 thread"
+
+
+def test_user_alias_proxy_never_shadows_a_local_or_backend_command():
+    """The catalog and local commands win the name; a stale mirror row must
+    not take over a real spelling."""
+    info = command_info("model")
+    info["user_aliases"] = ["/memory"]
+    registry = CommandRegistry(include_builtins=False)
+    memory.register(registry)
+    BackendCommandProvider([info]).register(registry)
+
+    resolved = registry.get("memory")
+    assert resolved is not None
+    # The local family root survived; no hidden alias proxy took the key.
+    assert resolved.hidden is False
+    assert resolved.subcommands
+
+
 def test_depth_three_commands_nest_instead_of_clobbering_their_parent():
     """`/account tokens` and its two children are three separate commands.
 

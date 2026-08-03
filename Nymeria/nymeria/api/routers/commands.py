@@ -127,6 +127,7 @@ def create_commands_router(
                 id=cmd.id,
                 path=cmd.path,
                 aliases=cmd.aliases,
+                user_aliases=cmd.user_aliases,
                 scope=cmd.scope,
                 surfaces=cmd.surfaces,
                 blocked_surfaces=cmd.blocked_surfaces,
