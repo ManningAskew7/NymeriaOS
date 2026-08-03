@@ -458,7 +458,7 @@ class ThreadCommandsMixin:
         lines = _format_thread_list(threads, self.thread_id or None, teams=teams)
         return "\n".join(lines)
 
-    async def _cmd_thread_info(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_thread_show(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -572,7 +572,7 @@ class ThreadCommandsMixin:
             ),
         )
 
-    async def _cmd_thread_new(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_thread_create(self, bound: BoundArgs) -> str | CommandOutput:
         title = str(bound.get("title") or "").strip() or None
         created = await self.api.create_thread(self.user_id, title=title)
         if not isinstance(created, Mapping):
@@ -634,10 +634,6 @@ class ThreadCommandsMixin:
                 }
             ),
         )
-
-    async def _cmd_branch(self, bound: BoundArgs) -> str | CommandOutput:
-        """Top-level ``/branch`` (alias ``/fork``); same as ``/thread branch``."""
-        return await self._cmd_thread_branch(bound)
 
     # ── Metadata edits (ride label / metadata refresh hints) ──────────────
 

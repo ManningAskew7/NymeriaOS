@@ -258,24 +258,24 @@ def test_mcp_test_reports_error_when_status_is_failure(patched_registry) -> None
     assert "auth denied" in result.markdown
 
 
-def test_mcp_remove_deletes_and_reloads_agent(
+def test_mcp_delete_removes_and_reloads_agent(
     patched_registry, patched_agent
 ) -> None:
     registry = patched_registry(_FakeMCPRegistry([_make_server("alpha")]))
     agent = patched_agent(_FakeAgentWithMCPReload())
 
-    result = run(CommandService().execute(_ctx(), "/mcp remove alpha"))
+    result = run(CommandService().execute(_ctx(), "/mcp delete alpha"))
 
     assert result.success is True, result.markdown
     assert registry.deleted == ["alpha"]
     assert agent.reloads == 1
 
 
-def test_mcp_remove_reports_unknown_id(patched_registry, patched_agent) -> None:
+def test_mcp_delete_reports_unknown_id(patched_registry, patched_agent) -> None:
     patched_registry(_FakeMCPRegistry([]))
     patched_agent(_FakeAgentWithMCPReload())
 
-    result = run(CommandService().execute(_ctx(), "/mcp remove missing"))
+    result = run(CommandService().execute(_ctx(), "/mcp delete missing"))
     assert result.success is False
     assert "not found" in result.markdown
 
@@ -358,12 +358,12 @@ def test_mcp_list_rejects_arguments(patched_registry) -> None:
     assert registry.saved == []
 
 
-def test_mcp_remove_rejects_a_second_server_id(patched_registry) -> None:
+def test_mcp_delete_rejects_a_second_server_id(patched_registry) -> None:
     registry = patched_registry(
         _FakeMCPRegistry([_make_server("alpha"), _make_server("beta")])
     )
 
-    result = run(CommandService().execute(_ctx(), "/mcp remove alpha beta"))
+    result = run(CommandService().execute(_ctx(), "/mcp delete alpha beta"))
 
     assert result.success is False
     assert "Unexpected argument `beta`" in result.markdown
@@ -393,6 +393,6 @@ def test_mcp_root_lists_and_guides_a_typo(patched_registry) -> None:
     assert typo.success is False
     assert "Unexpected argument `lgos`" in typo.markdown
     assert "Did you mean `/mcp logs`?" in typo.markdown
-    assert "Valid subcommands: discover, list, logs, remove, retry, status, test." in typo.markdown
+    assert "Valid subcommands: delete, discover, list, logs, retry, status, test." in typo.markdown
     assert "Usage: `/mcp`." in typo.markdown
     assert "See `/help mcp`." in typo.markdown

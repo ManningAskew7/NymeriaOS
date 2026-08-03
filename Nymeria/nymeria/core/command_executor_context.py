@@ -283,11 +283,12 @@ class ContextCommandsMixin:
     # ── Workspace artifacts (server-state listing) ────────────────────────
 
     async def _cmd_artifacts(self, bound: BoundArgs) -> str | CommandOutput:
-        # Bare "/artifacts" is the recent listing; "recent" is a registered
-        # path, routed before this handler.
-        return await self._cmd_artifacts_recent(BoundArgs())
+        # Bare "/artifacts" is the recent listing; `list` is a registered
+        # path (and `recent` a whole-path alias of it), routed before this
+        # handler.
+        return await self._cmd_artifacts_list(BoundArgs())
 
-    async def _cmd_artifacts_recent(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_artifacts_list(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error

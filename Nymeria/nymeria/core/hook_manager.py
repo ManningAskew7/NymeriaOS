@@ -1085,7 +1085,7 @@ class HookManager:
 
         ``purge_log=False`` keeps the log entries: the single_use self-cleanup
         path uses it so a spent one-shot hook's fire stays visible in
-        ``/hook log`` (orphaned entries age out via the log cap).
+        ``/hook history`` (orphaned entries age out via the log cap).
 
         System hooks are never truly deleted: removing the stored record
         RESETS the hook to its built-in defaults (the virtual definition

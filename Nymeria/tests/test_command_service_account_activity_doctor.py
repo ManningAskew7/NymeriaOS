@@ -309,14 +309,14 @@ def test_account_root_rejects_an_unknown_verb_with_family_guidance(
     unknown = run(CommandService().execute(_ctx(), "/account bogus"))
     assert unknown.success is False
     assert "Unexpected argument `bogus`" in unknown.markdown
-    assert "Valid subcommands: current, platforms, tokens." in unknown.markdown
+    assert "Valid subcommands: platforms, show, tokens." in unknown.markdown
     assert "Usage: `/account`." in unknown.markdown
 
     # A second token stops at the same rejection, on the first extra word.
     extra = run(CommandService().execute(_ctx(), "/account bogus more"))
     assert extra.success is False
     assert "Unexpected argument `bogus`" in extra.markdown
-    assert "Valid subcommands: current, platforms, tokens." in extra.markdown
+    assert "Valid subcommands: platforms, show, tokens." in extra.markdown
 
 
 def test_account_tokens_revoke_without_a_prefix_revokes_nothing(

@@ -301,7 +301,7 @@ def live_temporary_tools(thread_config: Optional[dict[str, Any]]) -> set[str]:
     graph folds the live (non-expired) ones into the bound tool list exactly
     like ``enabled_tools``, so every effective-tool-set view must count them
     too or an active Skill Kit's tools look absent on the thread. This is
-    THE one liveness computation: ``/tools enabled`` and the ``tools``
+    THE one liveness computation: ``/tools list`` and the ``tools``
     option resolver both call it; do not re-derive it inline.
     """
     live: set[str] = set()
@@ -3485,6 +3485,14 @@ class _CommandExecutor(
         return "\n".join(lines)
 
     async def _cmd_skills_show(self, bound: BoundArgs) -> str | CommandOutput:
+        """One show-one verb for a skill: its metadata, then its body.
+
+        The old ``/skills inspect`` (metadata only) folded in here as an alias
+        (backlog #131), so this renders the union: neither caller lost a
+        field. The dispatcher gives ``skills.show`` a 12,000-char truncation
+        budget (``SKILL_SHOW_MAX_CHARS``), which is what makes the body
+        affordable alongside the table.
+        """
         agent = self._agent()
         service = get_command_service()
         skill_manager = service._skill_manager(agent)
@@ -3499,39 +3507,30 @@ class _CommandExecutor(
         if skill is None:
             return command_error(f"Skill '{skill_name}' not found.")
 
-        return skill.body.strip() or f"# {skill.name}\n\n(No body.)"
-
-    async def _cmd_skills_off_all(self, bound: BoundArgs) -> str | CommandOutput:
-        thread_error = self._require_thread()
-        if thread_error:
-            return thread_error
-
-        agent = self._agent()
-        if agent is None:
-            return command_error("No current NymeriaAgent is available for skill commands.")
-
-        service = get_command_service()
-        skills = service._visible_slash_skills(self.user_id, agent=agent)
-        tc = agent.thread_config_manager.get_config(self.thread_id)
-        active = set(tc.enabled_skills or []) if tc is not None else set()
-        active_skills = [skill for skill in skills if skill.name in active]
-        if not active_skills:
-            return "No visible skills are active on this thread."
-
-        lines: list[str] = []
-        had_error = False
-        for skill in active_skills:
-            ok, msg = deactivate_skill_kit(
-                agent=agent,
-                thread_id=self.thread_id,
-                user_id=self.user_id,
-                skill_name=skill.name,
-            )
-            had_error = had_error or not ok
-            lines.append(f"- `{skill.name}`: {msg}")
-
-        text = "Deactivated skills:\n" + "\n".join(lines)
-        return command_error(text) if had_error else command_success(text)
+        scripts = skill.list_scripts() if hasattr(skill, "list_scripts") else []
+        references = skill.list_references() if hasattr(skill, "list_references") else []
+        rows = [
+            ("Name", skill.name),
+            ("Scope", skill.scope),
+            ("Kit", "yes" if getattr(skill, "is_skill_kit", False) else "no"),
+            ("Required tools", ", ".join(skill.required_tools) or "-"),
+            ("Allowed tools", ", ".join(skill.allowed_tools) or "-"),
+            ("Scripts", ", ".join(scripts) or "-"),
+            ("References", ", ".join(references) or "-"),
+            ("Path", str(skill.path)),
+        ]
+        width = max(len(label) for label, _ in rows)
+        lines = ["Skill", ""]
+        for label, value in rows:
+            lines.append(f"  {label:<{width}}  {value}")
+        description = (skill.description or "").strip()
+        if description:
+            lines.append("")
+            lines.append(f"Description: {description}")
+        body = (getattr(skill, "body", "") or "").strip()
+        lines.append("")
+        lines.append(body or "(No body.)")
+        return "\n".join(lines)
 
     async def _cmd_skills_search(self, bound: BoundArgs) -> str | CommandOutput:
         source = str(bound.get("source") or "anthropic")
@@ -3603,7 +3602,52 @@ class _CommandExecutor(
         return await self._set_skill_state(bound, enabled=True)
 
     async def _cmd_skills_disable(self, bound: BoundArgs) -> str | CommandOutput:
+        if str(bound.get("name") or "").strip().lower() == "all":
+            if bool(bound.get("global")):
+                return command_error(
+                    "`/skills disable all` deactivates the skills active on "
+                    "this thread; drop --global."
+                )
+            return await self._deactivate_every_active_skill()
         return await self._set_skill_state(bound, enabled=False)
+
+    async def _deactivate_every_active_skill(self) -> str | CommandOutput:
+        """The ``all`` value of ``/skills disable`` (was ``/skills off all``).
+
+        Folded off the retired depth-3 path in backlog #131; ``/skills off``
+        is a whole-path alias of ``skills disable``, so the old spelling still
+        arrives here with ``name="all"``.
+        """
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+
+        agent = self._agent()
+        if agent is None:
+            return command_error("No current NymeriaAgent is available for skill commands.")
+
+        service = get_command_service()
+        skills = service._visible_slash_skills(self.user_id, agent=agent)
+        tc = agent.thread_config_manager.get_config(self.thread_id)
+        active = set(tc.enabled_skills or []) if tc is not None else set()
+        active_skills = [skill for skill in skills if skill.name in active]
+        if not active_skills:
+            return "No visible skills are active on this thread."
+
+        lines: list[str] = []
+        had_error = False
+        for skill in active_skills:
+            ok, msg = deactivate_skill_kit(
+                agent=agent,
+                thread_id=self.thread_id,
+                user_id=self.user_id,
+                skill_name=skill.name,
+            )
+            had_error = had_error or not ok
+            lines.append(f"- `{skill.name}`: {msg}")
+
+        text = "Deactivated skills:\n" + "\n".join(lines)
+        return command_error(text) if had_error else command_success(text)
 
     async def _set_skill_state(self, bound: BoundArgs, *, enabled: bool) -> str | CommandOutput:
         global_scope = bool(bound.get("global"))
@@ -3653,43 +3697,6 @@ class _CommandExecutor(
         )
         action = "Enabled" if enabled else "Disabled"
         return command_success(f"{action}: {name}")
-
-    async def _cmd_skills_inspect(self, bound: BoundArgs) -> str | CommandOutput:
-        agent = self._agent()
-        service = get_command_service()
-        skill_manager = service._skill_manager(agent)
-        if skill_manager is None:
-            return command_error("Skill manager unavailable.")
-
-        skill_name = str(bound.get("name") or "").strip().lower()
-        try:
-            skill = skill_manager.get(skill_name, user_id=self.user_id)
-        except Exception as exc:  # noqa: BLE001
-            return command_error(f"Skill manager lookup failed: {exc}")
-        if skill is None:
-            return command_error(f"Skill '{skill_name}' not found.")
-
-        scripts = skill.list_scripts() if hasattr(skill, "list_scripts") else []
-        references = skill.list_references() if hasattr(skill, "list_references") else []
-        rows = [
-            ("Name", skill.name),
-            ("Scope", skill.scope),
-            ("Kit", "yes" if getattr(skill, "is_skill_kit", False) else "no"),
-            ("Required tools", ", ".join(skill.required_tools) or "—"),
-            ("Allowed tools", ", ".join(skill.allowed_tools) or "—"),
-            ("Scripts", ", ".join(scripts) or "—"),
-            ("References", ", ".join(references) or "—"),
-            ("Path", str(skill.path)),
-        ]
-        width = max(len(label) for label, _ in rows)
-        lines = ["Skill", ""]
-        for label, value in rows:
-            lines.append(f"  {label:<{width}}  {value}")
-        description = (skill.description or "").strip()
-        if description:
-            lines.append("")
-            lines.append(f"Description: {description}")
-        return "\n".join(lines)
 
     # ── MCP servers ───────────────────────────────────────────────────────
 
@@ -3845,7 +3852,7 @@ class _CommandExecutor(
             return command_success(f"MCP test passed: `{server_id}`{suffix}")
         return command_error(f"MCP test failed for `{server_id}`: {error or result}")
 
-    async def _cmd_mcp_remove(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_mcp_delete(self, bound: BoundArgs) -> str | CommandOutput:
         from ..core.mcp_servers import get_mcp_server_registry
 
         server_id = str(bound.get("server_id") or "")
@@ -4263,7 +4270,7 @@ class _CommandExecutor(
 
         return render_hook_test(hook)
 
-    async def _cmd_hook_log(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_hook_history(self, bound: BoundArgs) -> str | CommandOutput:
         limit = max(1, int(bound.get("limit", 20)))
         hook_id = None
         ref = str(bound.get("id") or "")
@@ -4550,9 +4557,9 @@ class _CommandExecutor(
         # registered child, so longest-prefix dispatch routes it before this
         # handler runs; the root takes zero arguments and a typo is answered by
         # the dispatcher with did-you-mean plus the valid-subcommand list.
-        return await self._cmd_account_current(BoundArgs())
+        return await self._cmd_account_show(BoundArgs())
 
-    async def _cmd_account_current(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_account_show(self, bound: BoundArgs) -> str | CommandOutput:
         repo = self._accounts_repo()
         if repo is None:
             return command_error("Account repository unavailable.")
@@ -4971,35 +4978,6 @@ class _CommandExecutor(
         lines.append(f"thread: {self.thread_id}")
         return "\n".join(lines)
 
-    async def _cmd_tasks(self, bound: BoundArgs) -> str:
-        filter_val = str(bound.get("filter") or "active").lower()
-        items = await self.api.list_todos(self.user_id)
-        if filter_val == "active":
-            items = [i for i in items if i.get("status") != "done"]
-        elif filter_val != "all":
-            items = [i for i in items if i.get("status") == filter_val]
-
-        if not items:
-            return f"No {filter_val} tasks."
-
-        lines = [f"Scheduled Tasks ({filter_val}): {len(items)} items"]
-        for item in items[:25]:
-            st = item.get("status", "pending")
-            task = item.get("task", "")[:80]
-            todo_id = item.get("id", "")[:8]
-            detail_parts = [f"id={todo_id}", f"status={st}"]
-            scheduled = item.get("scheduled_for")
-            if scheduled:
-                detail_parts.append(f"fires={scheduled[:16]}")
-            recurrence = item.get("recurrence")
-            if recurrence:
-                detail_parts.append(f"repeat={recurrence}")
-            lines.append(f"- {task}")
-            lines.append("  " + " | ".join(detail_parts))
-        if len(items) > 25:
-            lines.append(f"(showing 25 of {len(items)})")
-        return "\n".join(lines)
-
     # ── Model / thinking ──────────────────────────────────────────────────
 
     async def _cmd_model(self, bound: BoundArgs) -> str | CommandOutput:
@@ -5112,7 +5090,7 @@ class _CommandExecutor(
             footer_hint="Enter apply · Esc cancel",
         )
 
-    async def _cmd_models(self, bound: BoundArgs) -> str:
+    async def _cmd_model_list(self, bound: BoundArgs) -> str:
         models = await self.api.list_available_models()
         settings = await self.api.get_settings()
         current = settings.get("llm_model", "")
@@ -5276,9 +5254,14 @@ class _CommandExecutor(
     # /fallback, /think and the /provider family live in
     # command_executor_llm.py (LLMCommandsMixin).
 
-    # ── Config ────────────────────────────────────────────────────────────
+    # ── Settings ──────────────────────────────────────────────────────────
+    #
+    # The near-duplicate /config family folded into /settings in backlog
+    # #131: every `config` spelling is now a whole-path alias of the command
+    # below, and the bare root IS the show view (so `settings show` is an
+    # alias of the root rather than a command of its own).
 
-    async def _cmd_config_show(self, bound: BoundArgs) -> str:
+    async def _cmd_settings(self, bound: BoundArgs) -> str:
         settings = await self.api.get_settings()
         effort = settings.get("llm_reasoning_effort")
         base_url = settings.get("llm_base_url")
@@ -5318,7 +5301,7 @@ class _CommandExecutor(
             lines.append(f"  watchdog interval: {settings.get('watchdog_interval_minutes', '?')}m")
         return "\n".join(lines)
 
-    async def _cmd_config_get(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_settings_get(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         settings = await self.api.get_settings()
         if key in settings:
@@ -5326,7 +5309,7 @@ class _CommandExecutor(
         available = ", ".join(sorted(settings.keys())[:30])
         return command_error(f"Unknown setting '{key}'. Available: {available}")
 
-    async def _cmd_config_set(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_settings_set(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         parsed = coerce_value(str(bound.get("value") or ""))
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
@@ -5335,29 +5318,14 @@ class _CommandExecutor(
             msg += " (restart required to take effect)"
         return command_success(msg)
 
-    async def _cmd_settings(self, bound: BoundArgs) -> str:
-        """Delegating alias of the /config family (one implementation).
-
-        Registered as its own catalog entry because a registry alias cannot
-        point a bare root at a subcommand path (the CLI proxy only carries
-        single-token aliases on single-token paths). Its show/get/set verbs are
-        registered children, routed before this handler; they delegate to the
-        /config handlers, whose settings applier enforces admin on both
-        transports. Only bare "/settings" lands here: "view" is a whole-path
-        alias of `settings show`, so this takes zero arguments.
-        """
-        return await self._cmd_config_show(BoundArgs())
-
-    async def _cmd_settings_show(self, bound: BoundArgs) -> str:
-        return await self._cmd_config_show(bound)
-
-    async def _cmd_settings_get(self, bound: BoundArgs) -> str | CommandOutput:
-        return await self._cmd_config_get(bound)
-
-    async def _cmd_settings_set(self, bound: BoundArgs) -> str | CommandOutput:
-        return await self._cmd_config_set(bound)
-
     # ── Env ───────────────────────────────────────────────────────────────
+
+    async def _cmd_env(self, bound: BoundArgs) -> str:
+        # Bare "/env" shows the variables; get and set are registered children
+        # routed before this handler, so the root takes zero arguments and a
+        # typo is answered by the dispatcher with did-you-mean plus the
+        # valid-subcommand list. The root carries `env show`'s admin gate.
+        return await self._cmd_env_show(BoundArgs())
 
     async def _cmd_env_show(self, bound: BoundArgs) -> str:
         data = await self.api.get_env_vars(user_id=self.user_id)
@@ -5421,7 +5389,34 @@ class _CommandExecutor(
         cat_list = ", ".join(sorted(categories))
         return ([], False, None, f"Unknown tool or category '{name}'. Categories: {cat_list}")
 
-    async def _cmd_tools_core(self, bound: BoundArgs) -> str:
+    async def _cmd_tools(self, bound: BoundArgs) -> str | CommandOutput:
+        # Bare "/tools" is the enabled readout, the same view bare
+        # "/tools list" gives. Every verb is a registered child routed before
+        # this handler, so the root takes zero arguments and a typo is
+        # answered by the dispatcher with did-you-mean plus the
+        # valid-subcommand list.
+        return await self._tools_enabled_markdown()
+
+    async def _cmd_tools_list(self, bound: BoundArgs) -> str | CommandOutput:
+        """One listing verb over the four views the family used to register.
+
+        ``enabled``, ``optional`` and ``core`` are the named views; anything
+        else is read as a tool category (a live set from the tools API, which
+        is why the filter declares no choices). Backlog #131 folded the four
+        commands into this one; the old paths survive as whole-path aliases,
+        and `core`/`optional` degrade to this default until an alias can
+        inject a value.
+        """
+        filter_val = str(bound.get("filter") or "enabled").strip().lower()
+        if filter_val == "core":
+            return await self._tools_core_markdown()
+        if filter_val == "optional":
+            return await self._tools_optional_markdown()
+        if filter_val in ("enabled", ""):
+            return await self._tools_enabled_markdown()
+        return await self._tools_category_markdown(str(bound.get("filter") or ""))
+
+    async def _tools_core_markdown(self) -> str:
         data = await self.api.get_default_tools(self.user_id)
         default_names = set(data.get("default_tools", []))
         available = data.get("available_tools", [])
@@ -5435,7 +5430,7 @@ class _CommandExecutor(
                     lines.append(f"  {t['name']}")
         return "\n".join(lines)
 
-    async def _cmd_tools_optional(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _tools_optional_markdown(self) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5463,7 +5458,7 @@ class _CommandExecutor(
             lines.append(f"  {names}")
         return _truncate("\n".join(lines))
 
-    async def _cmd_tools_enabled(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _tools_enabled_markdown(self) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5510,11 +5505,10 @@ class _CommandExecutor(
             lines.append("Optional enabled: none")
         return _truncate("\n".join(lines))
 
-    async def _cmd_tools_category(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _tools_category_markdown(self, cat_name: str) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        cat_name = str(bound.get("name") or "")
         data = await self.api.get_default_tools(self.user_id)
         default_names = set(data.get("default_tools", []))
         available = data.get("available_tools", [])
@@ -5597,6 +5591,13 @@ class _CommandExecutor(
 
     # ── Memory ────────────────────────────────────────────────────────────
 
+    async def _cmd_memory(self, bound: BoundArgs) -> str:
+        # Bare "/memory" lists; every verb is a registered child routed before
+        # this handler, so the root takes zero arguments and a typo is
+        # answered by the dispatcher with did-you-mean plus the
+        # valid-subcommand list.
+        return await self._cmd_memory_list(BoundArgs())
+
     async def _cmd_memory_list(self, bound: BoundArgs) -> str:
         memories = await self.api.list_memories(self.user_id)
         if not memories:
@@ -5616,7 +5617,7 @@ class _CommandExecutor(
         await self.api.save_memory(self.user_id, key, value)
         return command_success(f"Saved memory '{key}'.")
 
-    async def _cmd_memory_forget(self, bound: BoundArgs) -> str | CommandOutput:
+    async def _cmd_memory_delete(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
         try:
             await self.api.forget_memory(self.user_id, key)
@@ -5843,6 +5844,14 @@ class _CommandExecutor(
 
     # ── TODOs ─────────────────────────────────────────────────────────────
 
+    async def _cmd_todos(self, bound: BoundArgs) -> str:
+        # Bare "/todos" lists; every verb is a registered child routed before
+        # this handler, so the root takes zero arguments and a typo is
+        # answered by the dispatcher with did-you-mean plus the
+        # valid-subcommand list. "/tasks" is a whole-path alias of
+        # `todos list`, so it arrives with the filter it was given.
+        return await self._cmd_todos_list(BoundArgs())
+
     async def _cmd_todos_list(self, bound: BoundArgs) -> str:
         filter_val = str(bound.get("filter") or "active").lower()
         items = await self.api.list_todos(self.user_id)
@@ -5924,6 +5933,13 @@ class _CommandExecutor(
         return command_success(f"Deleted '{match.get('task', '')}'.")
 
     # ── Notepad ───────────────────────────────────────────────────────────
+
+    async def _cmd_notepad(self, bound: BoundArgs) -> str | CommandOutput:
+        # Bare "/notepad" reads; every verb is a registered child routed
+        # before this handler, so the root takes zero arguments and a typo is
+        # answered by the dispatcher with did-you-mean plus the
+        # valid-subcommand list.
+        return await self._cmd_notepad_read(BoundArgs())
 
     async def _cmd_notepad_read(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()

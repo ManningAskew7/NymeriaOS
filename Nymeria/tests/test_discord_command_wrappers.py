@@ -410,26 +410,37 @@ def test_non_admin_generated_command_is_relayed_without_an_admin_check():
     assert api.command_calls[0]["command"] == "/memory list"
 
 
-def test_model_command_flattens_flag_positional_and_trailing_scope():
+def test_flatten_puts_flags_first_then_positionals_then_the_scope_word():
     api = _FakeAPI()
     bot = _bot(api)
     interaction = _FakeInteraction()
     cog = GeneratedCommandsCog(bot)
 
     async def run() -> None:
-        await GeneratedCommandsCog.cmd_model.callback(
-            cog, interaction, "gpt-test", True, "global"
+        # A flag ahead of its positional.
+        await GeneratedCommandsCog.cmd_skills_disable.callback(
+            cog, interaction, "summarize", True
+        )
+        # A positional ahead of the trailing scope word.
+        await GeneratedCommandsCog.cmd_provider_switch.callback(
+            cog, interaction, "anthropic", "global"
         )
 
     asyncio.run(run())
 
     # Options and flags lead, positionals follow, the scope word is last:
     # exactly the order bind_args pops them back off in.
-    assert api.command_calls[0]["command"] == "/model --force gpt-test global"
-    bound = _bind_backend_command(api.command_calls[0]["command"], "model")
-    assert bound.get("name") == "gpt-test"
-    assert bound.get("force") is True
-    assert bound.get("scope") == "global"
+    assert api.command_calls[0]["command"] == "/skills disable --global summarize"
+    disabled = _bind_backend_command(api.command_calls[0]["command"], "skills.disable")
+    assert disabled.get("name") == "summarize"
+    assert disabled.get("global") is True
+
+    assert api.command_calls[1]["command"] == "/provider switch anthropic global"
+    switched = _bind_backend_command(
+        api.command_calls[1]["command"], "provider.switch"
+    )
+    assert switched.get("provider") == "anthropic"
+    assert switched.get("scope") == "global"
 
 
 def test_unset_optional_arguments_are_omitted_from_the_flattened_line():
@@ -439,37 +450,39 @@ def test_unset_optional_arguments_are_omitted_from_the_flattened_line():
     cog = GeneratedCommandsCog(bot)
 
     async def run() -> None:
-        await GeneratedCommandsCog.cmd_model.callback(cog, interaction)
+        await GeneratedCommandsCog.cmd_think.callback(cog, interaction)
 
     asyncio.run(run())
 
-    assert api.command_calls[0]["command"] == "/model"
+    assert api.command_calls[0]["command"] == "/think"
 
 
-def test_keyword_named_option_renames_and_coerces_its_integer():
-    # `--from` cannot be a Python parameter name, so the generator renames the
+def test_keyword_named_option_is_renamed_back_to_the_registry_spelling():
+    # `global` cannot be a Python parameter name, so the generator renames the
     # Discord option back onto the registry spelling.
+    param = GeneratedCommandsCog.cmd_skills_disable._params["global_"]
+    assert param.display_name == "global"
+
+
+def test_integer_option_is_coerced_on_the_flattened_line():
     api = _FakeAPI()
     bot = _bot(api)
     interaction = _FakeInteraction()
     cog = GeneratedCommandsCog(bot)
 
     async def run() -> None:
-        await GeneratedCommandsCog.cmd_branch.callback(
-            cog, interaction, 3, "spin off the retry work"
+        await GeneratedCommandsCog.cmd_triggers_history.callback(
+            cog, interaction, "trg-1", 5
         )
 
     asyncio.run(run())
 
-    # The title is a repeatable positional (not a rest tail) since the
-    # /branch trailing---from fix, so the flatten emits bare words and the
-    # binder collects them; the handler joins the list back to one title.
-    assert api.command_calls[0]["command"] == (
-        "/branch --from 3 spin off the retry work"
+    assert api.command_calls[0]["command"] == "/triggers history --limit 5 trg-1"
+    bound = _bind_backend_command(
+        api.command_calls[0]["command"], "triggers.history"
     )
-    bound = _bind_backend_command(api.command_calls[0]["command"], "branch")
-    assert bound.get("from") == 3
-    assert bound.get("title") == ["spin", "off", "the", "retry", "work"]
+    assert bound.get("limit") == 5
+    assert bound.get("trigger_id") == "trg-1"
 
 
 def test_repeatable_positional_is_relayed_as_separate_tokens():

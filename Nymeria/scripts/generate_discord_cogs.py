@@ -114,13 +114,14 @@ EXCLUDED_COMMANDS: dict[str, str] = {
     "provider.set": "credential key=value pairs must not ride Discord (#130)",
 }
 
-# Descriptions for group roots the registry does not describe. The first three
-# are the copy Discord users already see on these groups today.
+# Group-root descriptions that override the registry's. A family root
+# describes its OWN action ("List saved memories"), which reads wrong on a
+# Discord group that also holds save, search and delete; these two keep the
+# copy Discord users already see. A group the registry does not register at
+# all must have an entry here or the generator refuses to emit.
 GROUP_DESCRIPTIONS: dict[tuple[str, ...], str] = {
-    ("config",): "View and update Nymeria settings",
     ("env",): "View and set environment variables",
     ("memory",): "Manage Nymeria's memories about you",
-    ("skills", "off"): "Turn skills off",
 }
 
 # Family roots the group rule drops from Discord (a group is not invokable,
@@ -134,8 +135,18 @@ EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
     "artifacts",
     "background",
     "doctor",
+    # env and memory gained overview roots in backlog #131 (style-guide rule
+    # 2). Their bare readouts join the other dropped roots on Discord; the
+    # `show`/`list` subcommands still carry them.
+    "env",
     "fast",
     "mcp",
+    "memory",
+    # `models` became `model list` in backlog #131, which turns `model` into a
+    # group. That costs Discord the bare `/model <name>` SWITCH, not just a
+    # readout: on Discord the model is changed with `/settings set llm_model`
+    # (or from the desktop/CLI) until a Discord-shaped replacement lands.
+    "model",
     "provider",
     "settings",
     "skills",
@@ -205,11 +216,22 @@ class GeneratorError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def select_commands(service: CommandService | None = None) -> list[CommandDefinition]:
-    """The registry commands this generator owns, sorted by command id."""
-    # The drop-list pin below guards the REAL catalog only; tests inject
-    # stub registries to exercise the selection rules in isolation.
-    is_default_registry = service is None
+def select_commands(
+    service: CommandService | None = None,
+    *,
+    is_default_registry: bool | None = None,
+) -> list[CommandDefinition]:
+    """The registry commands this generator owns, sorted by command id.
+
+    ``is_default_registry`` says whether ``service`` is the real catalog, and
+    so whether the drop-list pin below applies; tests inject stub registries
+    to exercise the selection rules in isolation. It is a parameter because
+    ``build_source`` builds the real catalog itself and then passes it in,
+    which made "did the caller pass a service" the wrong question (the pin
+    silently never fired for the generator's own run).
+    """
+    if is_default_registry is None:
+        is_default_registry = service is None
     service = service or CommandService()
     candidates: dict[tuple[str, ...], CommandDefinition] = {}
     for definition in service._commands.values():
@@ -616,8 +638,9 @@ def _render_autocompletes(definition: CommandDefinition) -> list[str]:
 
 def build_source(service: CommandService | None = None) -> str:
     """Render the generated cog module as source text."""
+    is_default_registry = service is None
     service = service or CommandService()
-    selected = select_commands(service)
+    selected = select_commands(service, is_default_registry=is_default_registry)
     groups = group_paths(selected)
     enforce_limits(service, selected, groups)
 

@@ -417,16 +417,16 @@ def test_registry_exposes_full_path_metadata_and_visibility_filters() -> None:
     service = CommandService()
 
     admin_desktop = service.list_commands(actor="user", surface="desktop", is_admin=True)
-    tools_core = next(cmd for cmd in admin_desktop if cmd.id == "tools.core")
+    tools_list = next(cmd for cmd in admin_desktop if cmd.id == "tools.list")
     compact = next(cmd for cmd in admin_desktop if cmd.id == "compact")
 
-    assert tools_core.name == "tools core"
-    assert tools_core.path == ["tools", "core"]
-    assert "/tools_core" in tools_core.aliases
-    assert tools_core.scope == "global"
-    assert tools_core.agent_allowed is True
-    assert tools_core.requires_thread is False
-    assert tools_core.execution_kind == "command"
+    assert tools_list.name == "tools list"
+    assert tools_list.path == ["tools", "list"]
+    assert "/tools_core" in tools_list.aliases
+    assert tools_list.scope == "global"
+    assert tools_list.agent_allowed is True
+    assert tools_list.requires_thread is False
+    assert tools_list.execution_kind == "command"
 
     assert compact.execution_kind == "chat_stream"
     assert compact.agent_allowed is False
@@ -439,12 +439,12 @@ def test_registry_exposes_full_path_metadata_and_visibility_filters() -> None:
         is_admin=False,
     )
     assert "env get" not in non_admin
-    assert "config set" not in non_admin
-    assert "config show" in non_admin
+    assert "settings set" not in non_admin
+    assert "settings" in non_admin
 
     agent = _command_names(service, actor="agent", surface="agent", is_admin=True)
     assert "compact" not in agent
-    assert "tools core" in agent
+    assert "tools list" in agent
 
 
 def test_registry_rejects_duplicate_ids_paths_and_alias_conflicts() -> None:
@@ -471,7 +471,7 @@ def test_registry_rejects_duplicate_ids_paths_and_alias_conflicts() -> None:
             "test alias",
             description="Alias conflict",
             category="Tests",
-            aliases=("tools core",),
+            aliases=("tools enable",),
         )
 
 
@@ -488,13 +488,13 @@ def test_alias_resolution_and_command_path_execution() -> None:
                 surface="telegram",
                 is_admin=True,
             ),
-            "/tools_core",
+            "/tools_list core",
             api=api,
         )
     )
 
     assert result.success is True
-    assert result.command == "tools core"
+    assert result.command == "tools list"
     # A readout is level "info" since #132 (the success collapse is gone).
     assert result.level == "info"
     assert "### Core Tools" in result.markdown
@@ -1317,7 +1317,7 @@ def test_settings_get_and_set_delegate_to_config_handlers() -> None:
     unknown = _run_command(api, "/settings frobnicate")
     assert unknown.success is False
     assert "Unexpected argument `frobnicate`" in unknown.markdown
-    assert "Valid subcommands: get, set, show." in unknown.markdown
+    assert "Valid subcommands: get, set." in unknown.markdown
     assert "Usage: `/settings`" in unknown.markdown
 
 
@@ -2076,21 +2076,24 @@ def test_thread_required_admin_required_and_group_errors_are_metadata_driven() -
     assert non_admin.success is False
     assert "requires an admin user" in non_admin.markdown
 
+    # /restart is the one family the canon keeps root-less on purpose (a bare
+    # /restart must never have a default action), so it is what a group root
+    # with no bare command still looks like.
     group = run(
         service.execute(
             CommandContext(user_id="alice", actor="user", surface="desktop"),
-            "/tools",
+            "/restart",
             api=api,
         )
     )
     assert group.success is False
-    assert "`/tools` requires a subcommand" in group.markdown
-    assert "core" in group.markdown
+    assert "`/restart` requires a subcommand" in group.markdown
+    assert "api" in group.markdown
 
     unknown_subcommand = run(
         service.execute(
             CommandContext(user_id="alice", actor="user", surface="desktop"),
-            "/tools nope",
+            "/restart nope",
             api=api,
         )
     )
@@ -2118,10 +2121,12 @@ def test_help_is_generated_from_canonical_metadata_without_group_duplicates() ->
     )
 
     assert result.success is True
-    assert result.markdown.count("| `/tools core` |") == 1
-    assert "| `/tools` |" not in result.markdown
+    assert result.markdown.count("| `/tools list` |") == 1
+    # A family root is a real command now (style-guide rule 2), so it earns a
+    # row; the admin-only verbs still do not, for a non-admin.
+    assert result.markdown.count("| `/tools` |") == 1
     assert "| `/env get` |" not in result.markdown
-    assert "| `/config show` |" in result.markdown
+    assert "| `/settings` |" in result.markdown
 
 
 def test_compact_is_listed_but_not_executed_by_command_service() -> None:
@@ -2432,10 +2437,10 @@ def test_commands_api_lists_actor_surface_metadata(monkeypatch: pytest.MonkeyPat
 
     assert response.status_code == 200
     data = response.json()
-    tools_core = next(item for item in data if item["id"] == "tools.core")
-    assert tools_core["path"] == ["tools", "core"]
-    assert tools_core["execution_kind"] == "command"
-    assert tools_core["requires_thread"] is False
+    tools_list = next(item for item in data if item["id"] == "tools.list")
+    assert tools_list["path"] == ["tools", "list"]
+    assert tools_list["execution_kind"] == "command"
+    assert tools_list["requires_thread"] is False
     assert all(item["id"] != "env.get" for item in data)
 
 
@@ -2455,7 +2460,7 @@ def test_commands_api_execute_returns_markdown_shape(monkeypatch: pytest.MonkeyP
     response = client.post(
         "/commands/execute",
         json={
-            "command": "/tools_core",
+            "command": "/tools_list core",
             "thread_id": "thread-1",
             "actor": "user",
             "surface": "telegram",
@@ -2467,7 +2472,7 @@ def test_commands_api_execute_returns_markdown_shape(monkeypatch: pytest.MonkeyP
     assert response.json() == {
         "success": True,
         "markdown": "### Core Tools: 1 tools\n\nbash_execute: Execute shell commands",
-        "command": "tools core",
+        "command": "tools list",
         "level": "info",
         "data": None,
     }
@@ -2715,19 +2720,19 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    # (153 since the /fallback, tier, and /settings verbs became registered
-    # children in the backlog #129 adoption; they were parsed by their parent
-    # handlers before.)
-    assert len(service._commands) == 153
-    assert sum(cmd.executable for cmd in service._commands.values()) == 136
+    # (147 after the backlog #131 rename wave: thirteen commands folded away
+    # into aliases of others, and seven arrived, five of them the overview
+    # roots style-guide rule 2 requires.)
+    assert len(service._commands) == 147
+    assert sum(cmd.executable for cmd in service._commands.values()) == 130
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
     assert help_cmd.aliases == (("h",),)
 
-    config_set = by_name["config set"]
-    assert (config_set.requires_admin, config_set.mutates_state) == (True, True)
-    assert config_set.danger_level == "dangerous"
+    settings_set = by_name["settings set"]
+    assert (settings_set.requires_admin, settings_set.mutates_state) == (True, True)
+    assert settings_set.danger_level == "dangerous"
 
     skill = by_name["skill"]
     assert skill.execution_kind == "chat_stream"
@@ -2761,14 +2766,40 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
         ("thread", "rm"),
     )
     assert by_name["thread branch"].requires_thread is True
-    assert by_name["branch"].aliases == (("fork",),)
+    # /branch and /fork were a duplicate root registration; backlog #131
+    # folded them into whole-path aliases, kept AFTER the existing
+    # single-token alias so no chat-bot menu entry is renamed.
+    assert by_name["thread branch"].aliases == (
+        ("thread_branch",),
+        ("thread", "fork"),
+        ("branch",),
+        ("fork",),
+    )
+    assert "branch" not in by_name
 
-    assert by_name["mcp remove"].aliases == (
+    assert by_name["mcp delete"].aliases == (
         ("mcp_remove",),
         ("mcp_rm",),
         ("mcp_delete",),
+        ("mcp", "remove"),
+        ("mcp", "rm"),
     )
-    assert by_name["tools core"].aliases == (("tools_core",), ("tools", "list_core"))
+    # The four tools listing commands folded into one filter, so every old
+    # spelling is an alias of `tools list`.
+    assert by_name["tools list"].aliases == (
+        ("tools_list",),
+        ("tools_enabled",),
+        ("tools_optional",),
+        ("tools_core",),
+        ("tools_category",),
+        ("tools", "list_core"),
+        ("tools", "enabled"),
+        ("tools", "optional"),
+        ("tools", "core"),
+        ("tools", "category"),
+    )
+    for gone in ("tools core", "tools optional", "tools enabled", "tools category"):
+        assert gone not in by_name, gone
 
     # Lifecycle-hook commands: mutating subcommands are agent-gated (the agent
     # authors via the hook_config tool) and hidden from chat surfaces, while the
@@ -4498,17 +4529,28 @@ def test_unknown_command_suggests_nearest_root() -> None:
 
 
 def test_unknown_subcommand_suggests_nearest() -> None:
+    # /restart is the one deliberately root-less family, so it is what reaches
+    # the no-definition branch; a family WITH a root answers a bad verb from
+    # its own strict binding (below).
+    result = run(CommandService().execute(_ctx(), "/restart ap", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Unknown subcommand `ap` for `/restart`" in result.markdown
+    assert "Did you mean `/restart api`?" in result.markdown
+
+
+def test_family_root_with_a_bare_action_suggests_nearest_too() -> None:
     result = run(CommandService().execute(_ctx(), "/memory serch cats", api=FakeCommandApi()))
     assert result.success is False
-    assert "Unknown subcommand `serch` for `/memory`" in result.markdown
+    assert "Unexpected argument `serch`" in result.markdown
     assert "Did you mean `/memory search`?" in result.markdown
+    assert "Valid subcommands: delete, limit, list, save, search." in result.markdown
 
 
 def test_group_root_error_points_at_help() -> None:
-    result = run(CommandService().execute(_ctx(), "/tools", api=FakeCommandApi()))
+    result = run(CommandService().execute(_ctx(), "/restart", api=FakeCommandApi()))
     assert result.success is False
-    assert "`/tools` requires a subcommand" in result.markdown
-    assert "See `/help tools`." in result.markdown
+    assert "`/restart` requires a subcommand" in result.markdown
+    assert "See `/help restart`." in result.markdown
 
 
 def test_help_bare_is_compact_index() -> None:
@@ -4809,9 +4851,9 @@ def test_notepad_read_rejects_arguments(monkeypatch: pytest.MonkeyPatch) -> None
 # ── #129 wave 2b: settings, tools, tier, todo, and status declared params ────
 
 
-def test_config_set_joins_a_multi_word_value() -> None:
+def test_settings_set_joins_a_multi_word_value() -> None:
     api = FakeCommandApi()
-    result = run(CommandService().execute(_ctx(), "/config set log_level DEBUG mode", api=api))
+    result = run(CommandService().execute(_ctx(), "/settings set log_level DEBUG mode", api=api))
 
     assert result.success is True, result.markdown
     assert (
@@ -4821,19 +4863,19 @@ def test_config_set_joins_a_multi_word_value() -> None:
     ) in api.calls
 
 
-def test_config_get_without_a_key_names_the_missing_argument() -> None:
+def test_settings_get_without_a_key_names_the_missing_argument() -> None:
     api = FakeCommandApi()
-    result = run(CommandService().execute(_ctx(), "/config get", api=api))
+    result = run(CommandService().execute(_ctx(), "/settings get", api=api))
 
     assert result.success is False
     assert "Missing required argument: key" in result.markdown
-    assert "Usage: `/config get <key>`" in result.markdown
+    assert "Usage: `/settings get <key>`" in result.markdown
     assert not [call for call in api.calls if call[0] == "get_settings"]
 
 
-def test_config_show_rejects_extra_arguments() -> None:
+def test_settings_root_rejects_extra_arguments() -> None:
     api = FakeCommandApi()
-    result = run(CommandService().execute(_ctx(), "/config show everything", api=api))
+    result = run(CommandService().execute(_ctx(), "/settings show everything", api=api))
 
     assert result.success is False
     assert "Unexpected argument `everything`" in result.markdown
@@ -4886,9 +4928,9 @@ def test_tools_enable_requires_a_target_and_rejects_extras() -> None:
     assert not [call for call in api.calls if call[0] == "update_thread_config"]
 
 
-def test_tools_enabled_rejects_arguments() -> None:
+def test_tools_list_rejects_a_second_argument() -> None:
     api = FakeCommandApi()
-    result = run(CommandService().execute(_ctx(), "/tools enabled all", api=api))
+    result = run(CommandService().execute(_ctx(), "/tools list enabled all", api=api))
 
     assert result.success is False
     assert "Unexpected argument `all`" in result.markdown
@@ -4970,6 +5012,8 @@ def test_flipped_family_roots_declare_no_arguments() -> None:
     flipped = (
         "account", "activity", "doctor", "hook", "mcp",
         "settings", "skills", "triggers", "background",
+        # The overview roots backlog #131 minted take the same strict shape.
+        "env", "memory", "notepad", "todos", "tools",
     )
     for name in flipped:
         info = service.find_command(name)
@@ -4984,22 +5028,28 @@ def test_flipped_family_roots_declare_no_arguments() -> None:
     assert "Unexpected argument `discovr`" in typo.markdown
     assert "Did you mean `/mcp discover`?" in typo.markdown
     assert (
-        "Valid subcommands: discover, list, logs, remove, retry, status, test."
+        "Valid subcommands: delete, discover, list, logs, retry, status, test."
         in typo.markdown
     )
 
 
 def test_settings_view_alias_survives_the_root_flip() -> None:
-    """``/settings view`` is a whole-path alias of ``settings show`` now."""
-    service = CommandService()
-    resolved = service.find_command("settings view")
-    assert resolved is not None
-    assert resolved.name == "settings show"
+    """``/settings view`` and ``/settings show`` are aliases of the root now.
 
-    result = _run_command(FakeCommandApi(), "/settings view")
-    assert result.success is True, result.markdown
-    assert "provider: openai" in result.markdown
-    assert "model: gpt-test" in result.markdown
+    Backlog #131 folded the show verb into the bare root (style-guide rule 2),
+    so both spellings resolve to `settings` itself and still render.
+    """
+    service = CommandService()
+    for spelling in ("settings view", "settings show", "settings_show"):
+        resolved = service.find_command(spelling)
+        assert resolved is not None, spelling
+        assert resolved.name == "settings", spelling
+
+    for typed in ("/settings view", "/settings show"):
+        result = _run_command(FakeCommandApi(), typed)
+        assert result.success is True, result.markdown
+        assert "provider: openai" in result.markdown
+        assert "model: gpt-test" in result.markdown
 
 
 def test_background_show_alias_survives_the_root_flip() -> None:
@@ -5158,3 +5208,113 @@ def test_team_show_binds_a_quoted_multi_word_name() -> None:
 
     assert result.success is True, result.markdown
     assert "Team: Ops Crew" in result.markdown
+
+
+# ── #131 rename wave A: the old spellings still work as aliases ──────────────
+
+
+def test_every_retired_spelling_resolves_to_the_command_that_replaced_it() -> None:
+    """The compatibility contract of the rename wave, in one table.
+
+    A rename is only safe because the old whole path stays registered as an
+    alias, and alias expansion substitutes the TARGET's canonical path, which
+    is what lets a root become a subcommand (`/tasks`) or a subcommand become
+    a root (`/settings show`). If a row here stops resolving, a user's muscle
+    memory broke.
+    """
+    service = CommandService()
+    for old, new_id in (
+        ("account current", "account.show"),
+        ("account_current", "account.show"),
+        ("artifacts recent", "artifacts.list"),
+        ("branch", "thread.branch"),
+        ("fork", "thread.branch"),
+        ("config", "settings"),
+        ("config show", "settings"),
+        ("config get", "settings.get"),
+        ("config set", "settings.set"),
+        ("hook log", "hook.history"),
+        ("mcp remove", "mcp.delete"),
+        ("memory forget", "memory.delete"),
+        ("models", "model.list"),
+        ("settings show", "settings"),
+        ("skills inspect", "skills.show"),
+        ("skills off", "skills.disable"),
+        ("tasks", "todos.list"),
+        ("thread info", "thread.show"),
+        ("thread new", "thread.create"),
+        ("tools category", "tools.list"),
+        ("tools core", "tools.list"),
+        ("tools enabled", "tools.list"),
+        ("tools optional", "tools.list"),
+    ):
+        resolved = service.find_command(old)
+        assert resolved is not None, old
+        assert resolved.id == new_id, old
+
+
+def test_retired_root_spellings_still_execute_their_replacement() -> None:
+    """One end-to-end run per fold SHAPE, not per row.
+
+    Resolution alone would not catch an alias that resolves but strands its
+    arguments, which is the failure mode when a path grows or shrinks a token.
+    """
+    service = CommandService()
+    api = FakeCommandApi()
+
+    # Root becomes a subcommand, and its argument still lands on the filter.
+    tasks = run(service.execute(_ctx(), "/tasks all", api=api))
+    assert tasks.success is True, tasks.markdown
+    assert "TODOs (all): 2 items" in tasks.markdown
+
+    # Cross-family: /config carries its key and value to the settings handler.
+    got = run(service.execute(_ctx(), "/config get llm_model", api=api))
+    assert got.success is True, got.markdown
+    assert "llm_model = gpt-test" in got.markdown
+
+    # Subcommand becomes a root: the show verb folded into bare /settings.
+    shown = run(service.execute(_ctx(), "/config show", api=api))
+    assert shown.success is True, shown.markdown
+    assert "provider: openai" in shown.markdown
+
+    # Verb rename with a trailing value.
+    created = run(service.execute(_ctx(), "/thread new Bridge Test", api=api))
+    assert created.success is True, created.markdown
+    assert (
+        "create_thread",
+        ("alice",),
+        {"thread_id": None, "title": "Bridge Test"},
+    ) in api.calls
+
+    # The one alias that bridges a FOLDED value: the raw tail becomes the
+    # filter argument, so a category still filters.
+    filtered = run(service.execute(_ctx(), "/tools category web", api=api))
+    assert filtered.success is True, filtered.markdown
+    assert "Tools in category 'web'" in filtered.markdown
+    assert "browser" in filtered.markdown
+
+
+def test_the_three_degraded_tools_aliases_land_on_the_default_view() -> None:
+    """The accepted degradation, pinned so it cannot be mistaken for a bug.
+
+    Alias expansion substitutes a path; it cannot INJECT an argument. So
+    `/tools core` and `/tools optional` reach `tools list` with no filter and
+    render the default (enabled) view. Backlog #133 builds the value-injecting
+    machinery that upgrades them.
+    """
+    service = CommandService()
+    api = FakeCommandApi()
+
+    for degraded in ("/tools core", "/tools optional"):
+        result = run(service.execute(_ctx(), degraded, api=api))
+        assert result.success is True, result.markdown
+        assert "Enabled Tools on this thread" in result.markdown
+
+    # `enabled` is the default, so its alias bridges exactly rather than
+    # degrading, and the explicit filters still reach their own views.
+    bridged = run(service.execute(_ctx(), "/tools enabled", api=api))
+    assert "Enabled Tools on this thread" in bridged.markdown
+    core = run(service.execute(_ctx(), "/tools list core", api=api))
+    assert "Core Tools" in core.markdown
+    optional = run(service.execute(_ctx(), "/tools list optional", api=api))
+    assert "Optional Tools" in optional.markdown

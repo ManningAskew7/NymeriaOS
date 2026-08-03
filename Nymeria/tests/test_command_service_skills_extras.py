@@ -554,8 +554,8 @@ def test_skills_root_guides_a_typo(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Unexpected argument `serch`" in result.markdown
     assert "Did you mean `/skills search`?" in result.markdown
     assert (
-        "Valid subcommands: disable, enable, inspect, install, list, off, "
-        "search, show." in result.markdown
+        "Valid subcommands: disable, enable, install, list, search, show."
+        in result.markdown
     )
     assert "Usage: `/skills`." in result.markdown
     assert "See `/help skills`." in result.markdown
