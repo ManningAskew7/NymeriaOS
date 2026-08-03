@@ -1479,29 +1479,29 @@ def test_provider_action_step_offers_use_setup_cliproxy_and_test() -> None:
     submits = {tab["label"]: tab["submit"]["command"] for tab in form["tabs"]}
     assert submits == {
         "Use": "provider switch anthropic {scope}",
-        "Set up": "provider setup {method}",
+        "Set up": "provider setup anthropic",
         "CLIProxy": "provider cliproxy {target}",
-        "Test": "provider test {probe}",
+        "Test": "provider test anthropic",
     }
     by_label = {tab["label"]: tab for tab in form["tabs"]}
     scope_ids = [
         option["id"] for option in by_label["Use"]["fields"][0]["options"]
     ]
     assert scope_ids == ["thread", "global"]
-    # Single-option tabs carry a LIVE token of their command (the client's
-    # confirm dismisses quietly when no substituted value is selected, so a
-    # placeholder-free button tab would never submit).
-    assert [o["id"] for o in by_label["Set up"]["fields"][0]["options"]] == [
-        "anthropic"
-    ]
-    assert [o["id"] for o in by_label["Test"]["fields"][0]["options"]] == [
-        "anthropic"
-    ]
+    # Set up and Test are fieldless ACTION tabs (#139): their placeholder-
+    # free templates dispatch as-is on Enter, and the description explains
+    # the action (this retired the live-token one-option-radio workaround).
+    assert by_label["Set up"]["fields"] == []
+    assert "Chained setup" in by_label["Set up"]["description"]
+    assert by_label["Test"]["fields"] == []
+    assert "connectivity test" in by_label["Test"]["description"]
     assert "claude" in [
         o["id"] for o in by_label["CLIProxy"]["fields"][0]["options"]
     ]
-    # Distinct field keys per tab (the /think cursor-parking trap).
-    keys = [tab["fields"][0]["key"] for tab in form["tabs"]]
+    # Distinct field keys across the fielded tabs (the /think cursor trap).
+    keys = [
+        tab["fields"][0]["key"] for tab in form["tabs"] if tab["fields"]
+    ]
     assert len(keys) == len(set(keys))
     assert "sk-" not in str(form)
 

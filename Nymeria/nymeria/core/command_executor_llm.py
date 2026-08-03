@@ -1156,23 +1156,17 @@ class LLMCommandsMixin:
                 )
             )
 
+        # Set up and Test are single ACTIONS, not choices: fieldless tabs
+        # whose placeholder-free templates dispatch as-is on Enter (#139).
+        # They replaced one-option radios whose option id doubled as the
+        # command argument (the retired live-token workaround).
         if self._command_offerable("provider setup"):
             tabs.append(
                 form_tab(
                     "Set up",
-                    [
-                        radio_field(
-                            "method",
-                            [
-                                form_option(
-                                    provider,
-                                    label="API key (chained setup)",
-                                    meta="key · mode · base URL · model · test",
-                                )
-                            ],
-                        )
-                    ],
-                    submit_command="provider setup {method}",
+                    [],
+                    submit_command=f"provider setup {provider}",
+                    description="Chained setup: key · mode · base URL · model · test",
                 )
             )
         if targets and self._command_offerable("provider cliproxy"):
@@ -1187,19 +1181,9 @@ class LLMCommandsMixin:
             tabs.append(
                 form_tab(
                     "Test",
-                    [
-                        radio_field(
-                            "probe",
-                            [
-                                form_option(
-                                    provider,
-                                    label="Run a connectivity test",
-                                    meta="writes nothing",
-                                )
-                            ],
-                        )
-                    ],
-                    submit_command="provider test {probe}",
+                    [],
+                    submit_command=f"provider test {provider}",
+                    description="Run a connectivity test (writes nothing)",
                 )
             )
 
