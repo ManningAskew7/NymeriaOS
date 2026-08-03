@@ -33,6 +33,15 @@ logger = logging.getLogger(__name__)
 
 OptionResolver = Callable[[Any], Awaitable[list[dict[str, Any]]]]
 
+# The list commands preview a description as its first line, bounded; an
+# option's description line is bounded the same way.
+_DESCRIPTION_LIMIT = 60
+
+
+def _first_line(value: Any, *, limit: int = _DESCRIPTION_LIMIT) -> str:
+    """The first line of a description, bounded like the list commands'."""
+    return str(value or "").split("\n")[0][:limit].strip()
+
 
 async def resolve_models(
     executor: Any, *, current: str | None = None
@@ -135,6 +144,282 @@ async def resolve_providers(
     return options
 
 
+async def resolve_tools(executor: Any) -> list[dict[str, Any]]:
+    """Tool names AND category names, categories first.
+
+    Both spellings are offered because that is what the ``/tools`` target
+    argument accepts (``tool_or_category``): ``_resolve_tool_names`` checks
+    the category map first and the available-tool list second, so a tool
+    shadowed by a category name is dropped here rather than offered as an
+    option that would resolve to the category.
+
+    Per-thread enable state rides ``meta`` instead of ``current``: many
+    tools are on at once, so marking them all would fill a picker with
+    selected markers and park its cursor on an already-enabled tool.
+    """
+    try:
+        categories_payload = await executor.api.get_tool_categories()
+        categories = (categories_payload or {}).get("categories") or {}
+        if not isinstance(categories, Mapping):
+            categories = {}
+        data = await executor.api.get_default_tools(executor.user_id)
+        data = data or {}
+        available = data.get("available_tools") or []
+        default_names = {str(name) for name in (data.get("default_tools") or [])}
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: tool listing failed", exc_info=True)
+        return []
+
+    # The thread's own overlay, exactly as "/tools category" computes it.
+    thread_extras: set[str] = set()
+    thread_disabled: set[str] = set()
+    if executor.thread_id:
+        try:
+            tc = await executor.api.get_thread_config(executor.thread_id) or {}
+            thread_extras = {str(name) for name in (tc.get("enabled_tools") or [])}
+            thread_disabled = {str(name) for name in (tc.get("disabled_tools") or [])}
+        except Exception:  # noqa: BLE001 - state marking is cosmetic.
+            logger.debug("options: thread tool state lookup failed", exc_info=True)
+    active = (default_names | thread_extras) - thread_disabled
+
+    options: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for category, names in sorted(categories.items()):
+        category_name = str(category)
+        if not category_name or category_name in seen:
+            continue
+        seen.add(category_name)
+        count = len(names or [])
+        options.append(
+            form_option(
+                category_name,
+                meta=f"category, {count} tool{'' if count == 1 else 's'}",
+            )
+        )
+    for entry in sorted(
+        (tool for tool in available if isinstance(tool, Mapping)),
+        key=lambda tool: str(tool.get("name") or ""),
+    ):
+        name = str(entry.get("name") or "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        meta_parts = ["on" if name in active else "off"]
+        if name in default_names:
+            meta_parts.append("core")
+        options.append(
+            form_option(
+                name,
+                meta=", ".join(meta_parts),
+                description=_first_line(entry.get("description")),
+            )
+        )
+    return options
+
+
+async def resolve_skills(executor: Any) -> list[dict[str, Any]]:
+    """User-activatable skills and kits, the set ``/skills list`` shows.
+
+    Reads the same door (``_visible_slash_skills``, which drops internal
+    skills), so an option here is a name ``/skill`` accepts. The agent
+    handle is in-process only: an HTTP-client executor has none and the
+    option set is empty rather than wrong.
+
+    Thread activation rides ``meta`` for the same reason tools do, and
+    because one declaration serves both ``/skills enable`` and
+    ``/skills disable``, where a preselection would mean opposite things.
+    """
+    from .command_service import get_command_service
+
+    try:
+        agent = executor._agent()
+        if agent is None:
+            return []
+        service = executor._service or get_command_service()
+        skills = service._visible_slash_skills(executor.user_id, agent=agent)
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: skill listing failed", exc_info=True)
+        return []
+
+    active: set[str] = set()
+    if executor.thread_id:
+        try:
+            tc = agent.thread_config_manager.get_config(executor.thread_id)
+            if tc is not None:
+                active = {str(name) for name in (tc.enabled_skills or [])}
+        except Exception:  # noqa: BLE001 - state marking is cosmetic.
+            logger.debug("options: thread skill state lookup failed", exc_info=True)
+
+    options: list[dict[str, Any]] = []
+    for skill in skills or []:
+        name = str(getattr(skill, "name", "") or "")
+        if not name:
+            continue
+        kind = "kit" if getattr(skill, "is_skill_kit", False) else "skill"
+        status = "active" if name in active else "inactive"
+        options.append(
+            form_option(
+                name,
+                meta=f"{kind}, {status}",
+                description=_first_line(getattr(skill, "description", "")),
+            )
+        )
+    return options
+
+
+async def resolve_threads(executor: Any) -> list[dict[str, Any]]:
+    """The caller's own threads, ordered the way ``/thread list`` groups
+    them (pinned first, then most recently updated).
+
+    The id is the option value because ``/thread switch`` resolves an exact
+    id before any title match; the title is the label, and the meta carries
+    the short id and platform the list column shows.
+    """
+    from .command_executor_threads import (
+        _compact_id,
+        _normalize_thread_id,
+        _ordered_threads,
+        _thread_title,
+    )
+
+    try:
+        threads = await executor.api.list_threads(executor.user_id)
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: list_threads failed", exc_info=True)
+        return []
+    entries = [thread for thread in (threads or []) if isinstance(thread, Mapping)]
+    pinned = _ordered_threads([t for t in entries if t.get("pinned")])
+    recent = _ordered_threads([t for t in entries if not t.get("pinned")])
+
+    options: list[dict[str, Any]] = []
+    for thread in [*pinned, *recent]:
+        thread_id = _normalize_thread_id(thread)
+        if not thread_id:
+            continue
+        meta_parts = [_compact_id(thread_id)]
+        platform = str(thread.get("platform") or "").strip()
+        if platform:
+            meta_parts.append(platform)
+        if thread.get("pinned"):
+            meta_parts.append("pinned")
+        options.append(
+            form_option(
+                thread_id,
+                label=_thread_title(thread),
+                meta=", ".join(meta_parts),
+                current=thread_id == executor.thread_id,
+            )
+        )
+    return options
+
+
+async def resolve_triggers(executor: Any) -> list[dict[str, Any]]:
+    """The caller's event triggers, id-ordered like ``/triggers list``.
+
+    Same manager and same user scoping as the list command, so an option is
+    a trigger id ``/triggers enable|disable|delete`` will find.
+    """
+    try:
+        manager = executor._trigger_manager()
+        triggers = manager.get_triggers(executor.user_id) or []
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: trigger listing failed", exc_info=True)
+        return []
+
+    options: list[dict[str, Any]] = []
+    for trigger in sorted(triggers, key=lambda item: str(getattr(item, "id", ""))):
+        trigger_id = str(getattr(trigger, "id", "") or "")
+        if not trigger_id:
+            continue
+        action = getattr(trigger, "action", None)
+        meta_parts = [
+            "enabled" if getattr(trigger, "enabled", False) else "disabled",
+            str(getattr(trigger, "source_type", "") or ""),
+            str(getattr(action, "type", "") or ""),
+        ]
+        options.append(
+            form_option(
+                trigger_id,
+                label=str(getattr(trigger, "name", "") or "") or trigger_id,
+                meta=", ".join(part for part in meta_parts if part),
+            )
+        )
+    return options
+
+
+async def resolve_hooks(executor: Any) -> list[dict[str, Any]]:
+    """The caller's lifecycle hooks, id-ordered like ``/hook list``.
+
+    Reads the shared HookManager singleton the commands use, so the virtual
+    system turn-metadata hook is offered here exactly as the list shows it.
+    Full ids: ``/hook enable`` also takes a unique prefix, but the full id
+    is the spelling that can never be ambiguous.
+    """
+    try:
+        manager = executor._hook_manager()
+        hooks = manager.get_hooks(executor.user_id) or []
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: hook listing failed", exc_info=True)
+        return []
+
+    options: list[dict[str, Any]] = []
+    for hook in sorted(hooks, key=lambda item: str(getattr(item, "id", ""))):
+        hook_id = str(getattr(hook, "id", "") or "")
+        if not hook_id:
+            continue
+        meta_parts = [
+            "enabled" if getattr(hook, "enabled", False) else "disabled",
+            str(getattr(hook, "event", "") or ""),
+        ]
+        options.append(
+            form_option(
+                hook_id,
+                label=str(getattr(hook, "name", "") or "") or hook_id,
+                meta=", ".join(part for part in meta_parts if part),
+            )
+        )
+    return options
+
+
+async def resolve_mcp_servers(executor: Any) -> list[dict[str, Any]]:
+    """Configured MCP servers, id-ordered like ``/mcp list``.
+
+    The registry is process-wide rather than per-user, and every ``/mcp``
+    command is admin-only, so the option set is gated on the same registry
+    flags the dispatcher enforces for ``/mcp list``. Without that, the
+    options endpoint would hand a non-admin the server inventory that the
+    command itself refuses.
+    """
+    if not executor._command_offerable("mcp list"):
+        return []
+    from .mcp_servers import get_mcp_server_registry
+
+    try:
+        registry = get_mcp_server_registry()
+        servers = registry.get_all_servers() or []
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: mcp server listing failed", exc_info=True)
+        return []
+
+    options: list[dict[str, Any]] = []
+    for server in sorted(servers, key=lambda item: str(getattr(item, "id", ""))):
+        server_id = str(getattr(server, "id", "") or "")
+        if not server_id:
+            continue
+        state = str(getattr(server, "install_status", "") or "") or (
+            "enabled" if getattr(server, "enabled", False) else "disabled"
+        )
+        tool_count = len(getattr(server, "discovered_tools", None) or [])
+        options.append(
+            form_option(
+                server_id,
+                label=str(getattr(server, "name", "") or "") or server_id,
+                meta=f"{state}, {tool_count} tool{'' if tool_count == 1 else 's'}",
+            )
+        )
+    return options
+
+
 # Refs without an entry here have no live option set yet: consumers fall
 # back to free text (forms) or no autocomplete (Discord). Keep the keys in
 # sync with the ``choices_ref`` values declared in ``registry_defaults``;
@@ -142,4 +427,10 @@ async def resolve_providers(
 OPTION_RESOLVERS: dict[str, OptionResolver] = {
     "models": resolve_models,
     "providers": resolve_providers,
+    "tools": resolve_tools,
+    "skills": resolve_skills,
+    "threads": resolve_threads,
+    "triggers": resolve_triggers,
+    "hooks": resolve_hooks,
+    "mcp_servers": resolve_mcp_servers,
 }

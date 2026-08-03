@@ -49,7 +49,10 @@ _BRANCH_PARAMS = (
 # unique prefix of one (``_resolve_hook`` does the prefix match). One
 # declaration keeps those usage strings from drifting apart.
 _HOOK_ID_PARAM = CommandParam(
-    "id", required=True, description="Hook id or unique id prefix"
+    "id",
+    required=True,
+    choices_ref="hooks",
+    description="Hook id or unique id prefix",
 )
 
 # ``/hook create`` and ``/hook edit`` collect conditions, rewrites, and the
@@ -125,6 +128,7 @@ _MCP_SERVER_ID_PARAM = CommandParam(
     "server_id",
     required=True,
     label="server-id",
+    choices_ref="mcp_servers",
     description="Configured MCP server id",
 )
 
@@ -133,6 +137,7 @@ _TRIGGER_ID_PARAM = CommandParam(
     "trigger_id",
     required=True,
     label="trigger-id",
+    choices_ref="triggers",
     description="Event trigger id",
 )
 
@@ -172,6 +177,7 @@ _TIER_MODEL_PARAMS = (
         kind="rest",
         required=True,
         label="model-id",
+        choices_ref="models",
         description="Model id, or provider:model to route the tier elsewhere",
     ),
 )
@@ -252,6 +258,7 @@ def register_default_commands(service: "CommandService") -> None:
                 kind="rest",
                 required=True,
                 label="id-or-title",
+                choices_ref="threads",
                 description="Thread id, id prefix, or title",
             ),
         ),
@@ -1197,11 +1204,13 @@ def register_default_commands(service: "CommandService") -> None:
         # The marketplace source set lives in skills/marketplace.py and its
         # errors are the live-data validation, so --source stays an open string;
         # --scope is a closed pair the handler already checked by equality.
+        # The name is free text for the same reason: it names a skill in a
+        # remote catalog, so the "skills" ref (INSTALLED skills, what every
+        # other /skills verb takes) would offer exactly the wrong set here.
         params=(
             CommandParam(
                 "name",
                 required=True,
-                choices_ref="skills",
                 description="Marketplace skill name to install",
             ),
             CommandParam(
@@ -1277,6 +1286,7 @@ def register_default_commands(service: "CommandService") -> None:
             CommandParam(
                 "server_id",
                 label="server-id",
+                choices_ref="mcp_servers",
                 description="Configured MCP server id (omit for every server)",
             ),
         ),
@@ -1398,6 +1408,7 @@ def register_default_commands(service: "CommandService") -> None:
             CommandParam(
                 "trigger_id",
                 label="trigger-id",
+                choices_ref="triggers",
                 description="Only this trigger's executions",
             ),
             CommandParam(
