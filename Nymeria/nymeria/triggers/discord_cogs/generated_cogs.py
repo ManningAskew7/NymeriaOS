@@ -45,6 +45,11 @@ class GeneratedCommandsCog(commands.Cog):
         description="Show recent activity and notifications",
     )
 
+    alias_group = app_commands.Group(
+        name="alias",
+        description="List your personal command aliases (family overview)",
+    )
+
     artifacts_group = app_commands.Group(
         name="artifacts",
         description="Inspect recent workspace artifacts",
@@ -235,6 +240,65 @@ class GeneratedCommandsCog(commands.Cog):
         await self.bot._send_backend_command(
             interaction,
             "activity notifications",
+            require_admin=False,
+        )
+
+    @alias_group.command(
+        name="create",
+        description="Create a personal alias that expands to a full command, values included",
+    )
+    @app_commands.describe(
+        name="The new spelling, one word (e.g. gpt5)",
+        expansion="The command it stands for, e.g. model openai/gpt-5.5",
+    )
+    async def cmd_alias_create(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        expansion: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(name))
+        parts.append(shlex.quote(expansion))
+        await self.bot._send_backend_command(
+            interaction,
+            "alias create",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @alias_group.command(
+        name="delete",
+        description="Delete one of your command aliases",
+    )
+    @app_commands.describe(
+        name="Alias name",
+    )
+    async def cmd_alias_delete(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(name))
+        await self.bot._send_backend_command(
+            interaction,
+            "alias delete",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @alias_group.command(
+        name="list",
+        description="List your command aliases with author and health flags",
+    )
+    async def cmd_alias_list(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self.bot._send_backend_command(
+            interaction,
+            "alias list",
             require_admin=False,
         )
 
@@ -1494,6 +1558,9 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "account tokens revoke",
     "activity list",
     "activity notifications",
+    "alias create",
+    "alias delete",
+    "alias list",
     "artifacts list",
     "background clear",
     "background set",
@@ -1555,6 +1622,9 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "account tokens revoke": "Personal",
     "activity list": "Personal",
     "activity notifications": "Personal",
+    "alias create": "Settings",
+    "alias delete": "Settings",
+    "alias list": "Settings",
     "artifacts list": "Personal",
     "background clear": "LLM",
     "background set": "LLM",

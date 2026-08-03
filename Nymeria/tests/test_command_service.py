@@ -2806,9 +2806,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # Count tripwire: update when adding or removing a built-in command.
     # (147 after the backlog #131 rename wave: thirteen commands folded away
     # into aliases of others, and seven arrived, five of them the overview
-    # roots style-guide rule 2 requires.)
-    assert len(service._commands) == 147
-    assert sum(cmd.executable for cmd in service._commands.values()) == 130
+    # roots style-guide rule 2 requires. 151 after #133 added the /alias
+    # family: root overview + create + delete + list.)
+    assert len(service._commands) == 151
+    assert sum(cmd.executable for cmd in service._commands.values()) == 134
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -3150,6 +3151,176 @@ def test_injected_alias_tokens_must_be_single_unquoted_words() -> None:
             category="Tests",
             injected_aliases={"tools list": ("core",)},
         )
+
+
+# ---------------------------------------------------------------------------
+# User-defined aliases (backlog #133)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def alias_repo(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Point the user-alias singleton at a per-test database."""
+    from nymeria.core import user_aliases as ua
+
+    repo = ua.UserAliasesRepo(tmp_path / "accounts.db")
+    monkeypatch.setattr(ua, "_repo", repo)
+    return repo
+
+
+def _agent_ctx() -> CommandContext:
+    return CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="agent",
+        surface="agent",
+        is_admin=True,
+    )
+
+
+def test_user_alias_expands_with_values_and_typed_tail(alias_repo) -> None:
+    """The #133 headline: a personal spelling carries VALUES and still
+    accepts a typed tail, and it expands only for its owner."""
+    service = CommandService()
+    api = FakeCommandApi()
+
+    created = run(service.execute(_ctx(), "/alias create td todos list", api=api))
+    assert created.success is True, created.markdown
+
+    aliased = run(service.execute(_ctx(), "/td all", api=api))
+    assert aliased.success is True, aliased.markdown
+    assert "TODOs (all): 2 items" in aliased.markdown
+
+    # Another user's dispatch does not see alice's table.
+    bob = CommandContext(
+        user_id="bob", thread_id="thread-1", actor="user",
+        surface="cli", is_admin=True,
+    )
+    other = run(service.execute(bob, "/td all", api=api))
+    assert other.success is False
+    assert "Unknown command" in other.markdown
+
+
+def test_user_alias_loses_to_every_catalog_spelling(alias_repo) -> None:
+    """Lose-to-everything at CREATE: registered roots, built-in aliases,
+    and rootless family roots (`restart` has no bare command, but a user
+    alias there would hijack `/restart api`: the F6 hazard, user edition).
+    """
+    service = CommandService()
+    api = FakeCommandApi()
+
+    for taken in ("tools", "settings_get", "restart", "aliases"):
+        result = run(
+            service.execute(_ctx(), f"/alias create {taken} todos list", api=api)
+        )
+        assert result.success is False, taken
+        assert "must not shadow the catalog" in result.markdown, taken
+
+
+def test_user_alias_cannot_widen_agent_access(alias_repo) -> None:
+    """The gate invariant: expansion happens before the gates, so an alias
+    to an agent-blocked command is refused for the agent exactly like the
+    canonical spelling (the /hooks disable class of check, user edition)."""
+    service = CommandService()
+    api = FakeCommandApi()
+
+    created = run(
+        service.execute(_ctx(), "/alias create hd hook disable someid", api=api)
+    )
+    assert created.success is True, created.markdown
+
+    via_agent = run(service.execute(_agent_ctx(), "/hd", api=api))
+    assert via_agent.success is False
+    assert "not available to the agent" in via_agent.markdown
+
+
+def test_agent_authored_alias_is_recorded_as_such(alias_repo) -> None:
+    """Dev-sanctioned agent authoring, with provenance: the listing names
+    the author, and the stamp covers that field (store tests prove the
+    tamper case)."""
+    service = CommandService()
+    api = FakeCommandApi()
+
+    created = run(
+        service.execute(_agent_ctx(), "/alias create td todos list", api=api)
+    )
+    assert created.success is True, created.markdown
+    assert alias_repo.list_aliases("alice")[0].author_actor == "agent"
+
+    listing = run(service.execute(_ctx(), "/alias list", api=api))
+    assert "(agent-authored)" in listing.markdown
+
+
+def test_user_alias_create_refuses_bad_shapes(alias_repo) -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    bad_name = run(service.execute(_ctx(), "/alias create a/b todos list", api=api))
+    assert bad_name.success is False
+    assert "one word" in bad_name.markdown
+
+    unknown = run(service.execute(_ctx(), "/alias create zz frobnicate", api=api))
+    assert unknown.success is False
+    assert "does not resolve" in unknown.markdown
+
+    quoted = run(
+        service.execute(_ctx(), '/alias create zz memory save k "two words"', api=api)
+    )
+    assert quoted.success is False
+    assert "single unquoted words" in quoted.markdown
+
+    chat_stream = run(service.execute(_ctx(), "/alias create zz quick hello", api=api))
+    assert chat_stream.success is False
+    assert "chat turn" in chat_stream.markdown
+
+
+def test_stale_stamped_alias_is_inert_at_dispatch(alias_repo) -> None:
+    """The store control wired through dispatch: an out-of-band row edit
+    yields an unknown command, not the planted expansion, and the listing
+    flags the row."""
+    import sqlite3
+
+    service = CommandService()
+    api = FakeCommandApi()
+    run(service.execute(_ctx(), "/alias create td todos list", api=api))
+
+    with sqlite3.connect(str(alias_repo.db_path)) as conn:
+        conn.execute(
+            "UPDATE user_command_aliases SET tokens_json = ? WHERE name = 'td'",
+            ('["env", "set", "llm_model", "evil"]',),
+        )
+        conn.commit()
+
+    result = run(service.execute(_ctx(), "/td", api=api))
+    assert result.success is False
+    assert "Unknown command" in result.markdown
+
+    listing = run(service.execute(_ctx(), "/alias list", api=api))
+    assert "INERT" in listing.markdown
+
+
+def test_alias_claimed_by_a_later_builtin_goes_dormant(alias_repo) -> None:
+    """Lose-to-everything at DISPATCH: the catalog can grow after an alias
+    was created, and the catalog wins from that moment; the listing says
+    why the spelling changed meaning."""
+    service = CommandService()
+    api = FakeCommandApi()
+    run(service.execute(_ctx(), "/alias create zzlater todos list", api=api))
+
+    async def _cmd_zzlater(self, bound):  # noqa: ANN001, ANN202
+        return CommandOutput("builtin won")
+
+    service.register("zzlater", description="late claim", category="Tests", params=())
+    _CommandExecutor._cmd_zzlater = _cmd_zzlater  # type: ignore[attr-defined]
+    try:
+        result = run(service.execute(_ctx(), "/zzlater", api=api))
+        assert result.success is True
+        assert "builtin won" in result.markdown
+
+        listing = run(service.execute(_ctx(), "/alias list", api=api))
+        assert "dormant" in listing.markdown
+    finally:
+        del _CommandExecutor._cmd_zzlater  # type: ignore[attr-defined]
 
 
 class _ModelCatalogCommandApi(FakeCommandApi):
