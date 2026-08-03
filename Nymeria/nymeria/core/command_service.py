@@ -38,6 +38,13 @@ from .command_forms import (
     radio_field,
     search_field,
 )
+from .command_params import (
+    CommandParam,
+    bind_args,
+    generated_usage,
+    params_to_payload,
+    validate_params,
+)
 from .registry_defaults import register_default_commands
 from .time_utils import ensure_aware_utc, parse_tool_ttl, utc_now
 
@@ -148,6 +155,8 @@ class CommandInfo:
     level: CommandResultLevel = "info"
     note: str | None = None
     examples: list[str] = field(default_factory=list)
+    # None = no declared schema; [] = schema'd with zero arguments.
+    params: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +186,11 @@ class CommandDefinition:
     note: str | None = None
     hidden: bool = False
     examples: tuple[str, ...] = ()
+    # None = unadopted legacy command (handler hand-parses ``(args, rest)``);
+    # a tuple, even empty, means the dispatcher binds and validates BEFORE
+    # the handler runs and the handler receives ``BoundArgs``. ``()`` is the
+    # strict zero-argument declaration: extras become usage errors.
+    params: tuple[CommandParam, ...] | None = None
 
     @property
     def name(self) -> str:
@@ -2058,11 +2072,20 @@ class CommandService:
         note: str | None = None,
         hidden: bool = False,
         examples: tuple[str, ...] = (),
+        params: tuple[CommandParam, ...] | None = None,
     ) -> None:
         del handler
         path = _normalize_path(name)
         if not path:
             raise ValueError("Command path cannot be empty")
+        if params is not None:
+            if usage is not None:
+                raise ValueError(
+                    f"Command {name!r} declares params; usage is generated "
+                    "and cannot be hand-written"
+                )
+            validate_params((id or _id_for_path(path)).lower(), params)
+            usage = generated_usage(path, params)
         command_id = (id or _id_for_path(path)).lower()
         if command_id in self._commands:
             raise ValueError(f"Duplicate command id: {command_id}")
@@ -2111,6 +2134,7 @@ class CommandService:
             note=note,
             hidden=hidden,
             examples=examples,
+            params=params,
         )
         self._commands[command_id] = definition
         self._path_index[path] = command_id
@@ -2149,6 +2173,8 @@ class CommandService:
                 raise ValueError(
                     f"Command {command_id} has a blocked_reason but no blocked_surfaces"
                 )
+            if cmd.params is not None:
+                validate_params(command_id, cmd.params)
             for alias_path in cmd.aliases:
                 path_conflict = seen_paths.get(alias_path)
                 if path_conflict and path_conflict != command_id:
@@ -2268,6 +2294,7 @@ class CommandService:
             execution_kind=cmd.execution_kind,
             note=cmd.note,
             examples=list(cmd.examples),
+            params=params_to_payload(cmd.params),
         )
 
     def _subcommands_for_path(self, path: tuple[str, ...]) -> list[str]:
@@ -2400,6 +2427,25 @@ class CommandService:
             lines.append(definition.description)
             lines.append("")
             lines.append(f"Usage: `{definition.usage}`")
+            if definition.params:
+                lines.append("")
+                lines.append("| Argument | Required | Description |")
+                lines.append("| --- | --- | --- |")
+                for param in definition.params:
+                    label = param.display
+                    if param.aliases:
+                        label += " (" + ", ".join(param.aliases) + ")"
+                    detail = param.description
+                    if param.choices:
+                        valid = "Valid: " + ", ".join(param.choices) + "."
+                        detail = f"{detail} {valid}".strip()
+                    lines.append(
+                        "| {} | {} | {} |".format(
+                            label.replace("|", "\\|"),
+                            "required" if param.required else "optional",
+                            detail.replace("|", "\\|"),
+                        )
+                    )
             if definition.note:
                 lines.append("")
                 lines.append(definition.note)
@@ -2806,7 +2852,26 @@ class CommandService:
             )
 
         try:
-            raw_output = await method(parsed.args, parsed.rest)
+            if definition.params is not None:
+                bound, bind_error = bind_args(
+                    definition.params, parsed.args, parsed.rest
+                )
+                if bind_error is not None or bound is None:
+                    problem = (
+                        bind_error.problem if bind_error else "Invalid arguments."
+                    )
+                    return CommandResult(
+                        False,
+                        (
+                            f"**Error:** {problem} Usage: `{definition.usage}`. "
+                            f"See `/help {definition.name}`."
+                        ),
+                        command_label,
+                        level="error",
+                    )
+                raw_output = await method(bound)
+            else:
+                raw_output = await method(parsed.args, parsed.rest)
             data: dict[str, Any] | None = None
             if isinstance(raw_output, CommandOutput):
                 data = raw_output.data

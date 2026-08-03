@@ -42,6 +42,26 @@ class CommandExecuteResponse(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class CommandParamModel(BaseModel):
+    """One declared argument of a schema'd command (backlog #129).
+
+    ``choices`` is the statically enforced set; ``choices_ref`` names a
+    dynamic value set consumers may resolve live (autocomplete, forms).
+    """
+
+    name: str
+    kind: Literal["positional", "option", "flag", "rest", "scope"]
+    type: Literal["str", "int", "bool"] = "str"
+    required: bool = False
+    choices: list[str] = []
+    choices_ref: str | None = None
+    default: str | int | bool | None = None
+    repeatable: bool = False
+    aliases: list[str] = []
+    description: str = ""
+    no_echo: bool = False
+
+
 class CommandInfoResponse(BaseModel):
     name: str
     description: str
@@ -63,3 +83,5 @@ class CommandInfoResponse(BaseModel):
     execution_kind: CommandExecutionKind
     note: str | None = None
     examples: list[str] = []
+    # None = the command has no declared schema; [] = schema'd, zero args.
+    params: list[CommandParamModel] | None = None

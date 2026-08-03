@@ -16,6 +16,7 @@ from ..schemas.commands import (
     CommandExecuteRequest,
     CommandExecuteResponse,
     CommandInfoResponse,
+    CommandParamModel,
     CommandSource,
     CommandSurface,
 )
@@ -91,6 +92,11 @@ def create_commands_router(
                 execution_kind=cmd.execution_kind,
                 note=cmd.note,
                 examples=cmd.examples,
+                params=(
+                    [CommandParamModel(**param) for param in cmd.params]
+                    if cmd.params is not None
+                    else None
+                ),
             )
             for cmd in get_command_service().list_commands(
                 source,
