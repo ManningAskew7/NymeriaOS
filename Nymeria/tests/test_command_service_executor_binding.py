@@ -14,6 +14,8 @@ binding holds for every executable command at test time instead.
 """
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from nymeria.core.command_service import _CommandExecutor, get_command_service
@@ -53,3 +55,32 @@ def test_executable_command_has_executor_method(command) -> None:
         f"the command path."
     )
     assert callable(method), f"{method_name} is not callable."
+
+
+@pytest.mark.parametrize(
+    "command",
+    _EXECUTABLE,
+    ids=[cmd.id for cmd in _EXECUTABLE],
+)
+def test_executable_command_handler_signature_matches_adoption(command) -> None:
+    """The parse-and-bind twin of the existence guard (#129).
+
+    ``execute()`` calls ``method(bound)`` when the definition declares params
+    and ``method(args, rest)`` when it does not, still resolved purely by name
+    string, so a declaration/signature mismatch would otherwise surface as a
+    TypeError swallowed into a generic command error at dispatch time. Pin the
+    signature to the adoption state instead.
+    """
+    method = getattr(_CommandExecutor, "_cmd_" + "_".join(command.path))
+    parameter_names = list(inspect.signature(method).parameters)
+    assert parameter_names and parameter_names[0] == "self"
+    if command.params is not None:
+        assert parameter_names[1:] == ["bound"], (
+            f"/{command.name} declares params, so its handler must take "
+            f"(self, bound); it takes {parameter_names}."
+        )
+    else:
+        assert parameter_names[1:] == ["args", "rest"], (
+            f"/{command.name} is unadopted, so its handler must keep "
+            f"(self, args, rest); it takes {parameter_names}."
+        )

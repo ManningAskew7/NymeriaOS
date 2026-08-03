@@ -952,11 +952,13 @@ def test_hook_commands_reject_arguments_they_used_to_ignore(
     assert extra.success is False
     assert "Unexpected argument `bogus`" in extra.markdown
 
-    # A typo'd subcommand on the family root keeps the guidance layer.
+    # A typo'd subcommand on the strict zero-arg family root keeps the
+    # guidance layer, now rendered by the dispatcher.
     unknown = _run("/hook frobnicate")
     assert unknown.success is False
-    assert "Usage:" in unknown.markdown
-    assert "Subcommands:" in unknown.markdown
+    assert "Unexpected argument `frobnicate`" in unknown.markdown
+    assert "Valid subcommands:" in unknown.markdown
+    assert "Usage: `/hook`." in unknown.markdown
 
 
 def test_hook_options_accept_the_equals_spelling(manager: HookManager) -> None:
@@ -1044,10 +1046,21 @@ def test_edit_takes_key_values_and_options_in_any_order(manager: HookManager) ->
     assert updated.logic.conditions[0].value == "rm"
 
 
-def test_hook_root_still_serves_the_unregistered_detail_synonym(
+def test_hook_detail_alias_survives_the_root_flip(
     manager: HookManager,
 ) -> None:
-    """``detail`` has no registered path, so the parent handler renders it."""
+    """``detail`` was a handler-side synonym; it is a whole-path alias now.
+
+    The root takes no arguments any more, so the alias is what keeps
+    ``/hook detail <id>`` working, and the id binds to ``hook show``'s own
+    required positional (including through the ``/hooks`` plural alias).
+    """
+    from nymeria.core.command_service import CommandService as _Service
+
+    resolved = _Service().find_command("hook detail")
+    assert resolved is not None
+    assert resolved.name == "hook show"
+
     hook = manager.add_hook("alice", name="Solo", event="prompt_submit",
                             text="x", scope="global")
     assert hook is not None
@@ -1059,25 +1072,40 @@ def test_hook_root_still_serves_the_unregistered_detail_synonym(
 
     bare = _run("/hook detail")
     assert bare.success is False
-    assert "Usage:" in bare.markdown
+    assert "Missing required argument: id" in bare.markdown
+    assert "Usage: `/hook show <id>`" in bare.markdown
 
 
-def test_parent_handler_still_backstops_a_restricted_sub_for_the_agent(
+def test_a_stray_root_token_can_never_execute_a_restricted_sub(
     manager: HookManager,
 ) -> None:
-    """The second gate of the ``/hooks <sub>`` bypass fix.
+    """Strict zero-arg binding IS the fail-closed behavior on the family root.
 
-    Alias expansion means a restricted subcommand resolves to its own
-    definition today, so nothing should reach the parent. This asserts the
-    fail-closed backstop that catches it if something ever does again.
+    The root used to carry a catch-all ``subcommand`` positional plus a
+    registry-derived actor backstop (commit b0194056). Both are gone: the root
+    declares no arguments, so any token after ``/hook`` is a dispatcher usage
+    error and no handler runs at all. Asserted against a restricted verb the
+    agent must never reach, on both parse paths.
     """
-    from nymeria.core.command_params import BoundArgs
-    from nymeria.core.command_service import _CommandExecutor
+    hook = manager.add_hook("alice", name="Live", event="prompt_submit",
+                            text="x", scope="global", enabled=True)
+    assert hook is not None
+    agent_ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="agent",
+        surface="api",
+        is_admin=True,
+    )
 
-    executor = _CommandExecutor(
-        api=None, thread_id="thread-1", user_id="alice", actor="agent"
-    )
-    denied = run(
-        executor._cmd_hook(BoundArgs(values={"subcommand": "disable", "id": "abc"}))
-    )
-    assert "not available to the agent" in denied
+    for cmd in (f"/hook disable {hook.id}", f"/hooks disable {hook.id}"):
+        result = run(CommandService().execute(agent_ctx, cmd))
+        assert result.success is False, (cmd, result.markdown)
+        assert "not available to the agent" in result.markdown, cmd
+
+    # A token the registry does not know reaches no handler either: the binder
+    # rejects it before dispatch, so nothing mutates.
+    stray = run(CommandService().execute(agent_ctx, f"/hook disabel {hook.id}"))
+    assert stray.success is False
+    assert "Unexpected argument `disabel`" in stray.markdown
+    assert manager.get_hook("alice", hook.id).enabled is True

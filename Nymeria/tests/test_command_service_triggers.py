@@ -328,5 +328,8 @@ def test_triggers_root_lists_and_guides_a_typo(patched_manager) -> None:
 
     typo = run(CommandService().execute(_ctx(), "/triggers histry"))
     assert typo.success is False
-    assert "Usage: `/triggers [list|enable|disable|delete|history]`" in typo.markdown
+    assert "Unexpected argument `histry`" in typo.markdown
+    assert "Did you mean `/triggers history`" in typo.markdown
+    assert "Valid subcommands: delete, disable, enable, history, list." in typo.markdown
+    assert "Usage: `/triggers`." in typo.markdown
     assert "See `/help triggers`." in typo.markdown

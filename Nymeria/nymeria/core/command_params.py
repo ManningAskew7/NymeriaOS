@@ -34,6 +34,7 @@ Grammar notes, deliberate and load-bearing:
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -211,6 +212,15 @@ def validate_params(command_id: str, params: tuple[CommandParam, ...]) -> None:
                     f"{param.default!r} is not among its choices"
                 )
 
+        if param.default is not None and (param.repeatable or param.required):
+            # The binder never applies a default to either shape (repeatable
+            # absent = [], required absent = error), so a declared default
+            # there is a lie waiting to be believed.
+            raise ValueError(
+                f"Command {command_id} param {param.name}: a default on a "
+                "repeatable or required param is never applied"
+            )
+
         if param.kind == "scope":
             if param.choices and param.choices != SCOPE_CHOICES:
                 raise ValueError(
@@ -304,23 +314,17 @@ def params_to_payload(
     """
     if params is None:
         return None
-    return [
-        {
-            "name": p.name,
-            "kind": p.kind,
-            "type": p.type,
-            "required": p.required,
-            "choices": list(p.choices),
-            "choices_ref": p.choices_ref,
-            "default": p.default,
-            "repeatable": p.repeatable,
-            "aliases": list(p.aliases),
-            "description": p.description,
-            "no_echo": p.no_echo,
-            "label": p.label,
-        }
-        for p in params
-    ]
+    payloads: list[dict[str, Any]] = []
+    for p in params:
+        # dataclasses.asdict, not a hand-written field list: a new field on
+        # CommandParam reaches the wire automatically, and the parity test in
+        # tests/test_command_params.py holds the pydantic model to the same
+        # field set so nothing silently drops at the schema layer.
+        payload = dataclasses.asdict(p)
+        payload["choices"] = list(p.choices)
+        payload["aliases"] = list(p.aliases)
+        payloads.append(payload)
+    return payloads
 
 
 def _echo(param: CommandParam | None, token: str) -> str:
@@ -367,15 +371,24 @@ def bind_args(
     # The upstream splitter silently falls back to whitespace splitting when
     # shlex rejects the input (unbalanced quote). For a STRUCTURED argument
     # list that would validate a tokenization the user never meant, so fail
-    # honestly. A declaration with a rest param is exempt: free text joins
-    # the tokens back together, so the whitespace fallback IS the intended
-    # value, and an apostrophe in a title ("Bob's plan") is ordinary English,
-    # not a quoting mistake.
-    if rest and not any(p.kind == "rest" for p in params):
+    # honestly. Declarations with a free tail (a rest param, or a repeatable
+    # positional) are exempt for APOSTROPHES only: "Bob's plan" and a search
+    # for "don't" are ordinary English the tail re-collects intact, while an
+    # unbalanced DOUBLE quote is almost always attempted phrase-quoting for
+    # an option value (--cond "field op value), where the fallback would
+    # mis-assign tokens across options and the tail. Measured on /hook
+    # create: the fallback bound cond='"command' and quietly renamed the
+    # hook before a confusing downstream error.
+    has_free_tail = any(
+        p.kind == "rest" or (p.kind == "positional" and p.repeatable)
+        for p in params
+    )
+    if rest:
         try:
             shlex.split(rest, posix=True)
         except ValueError:
-            return None, BindError("Unbalanced quote in arguments.")
+            if not has_free_tail or '"' in rest:
+                return None, BindError("Unbalanced quote in arguments.")
 
     by_spelling: dict[str, CommandParam] = {}
     for param in params:

@@ -461,12 +461,15 @@ def test_keyword_named_option_renames_and_coerces_its_integer():
 
     asyncio.run(run())
 
+    # The title is a repeatable positional (not a rest tail) since the
+    # /branch trailing---from fix, so the flatten emits bare words and the
+    # binder collects them; the handler joins the list back to one title.
     assert api.command_calls[0]["command"] == (
-        "/branch --from 3 'spin off the retry work'"
+        "/branch --from 3 spin off the retry work"
     )
     bound = _bind_backend_command(api.command_calls[0]["command"], "branch")
     assert bound.get("from") == 3
-    assert bound.get("title") == "spin off the retry work"
+    assert bound.get("title") == ["spin", "off", "the", "retry", "work"]
 
 
 def test_repeatable_positional_is_relayed_as_separate_tokens():

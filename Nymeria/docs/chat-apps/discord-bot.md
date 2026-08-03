@@ -127,8 +127,14 @@ Generation also brought these families onto Discord, with the same arguments the
 CLI and desktop app get: `/account`, `/activity`, `/artifacts`, `/background`,
 `/branch`, `/doctor`, `/fast`, `/mcp`, `/memory limit`, `/prune`, `/provider`,
 `/sequential-tools`, `/settings`, `/skills`, `/smart`, `/team`, `/triggers`, and
-`/usage`. The live command tree is the source of truth for the full list; run
-`/help` in Discord or read `generated_cogs.py`.
+`/usage`. One structural caveat: Discord makes a multi-command family a GROUP,
+and a group is not itself invokable, so a family's bare root action does not
+exist on Discord (`/fast` offers `set` but not the bare toggle; same for the
+other dropped roots pinned in the generator's `EXPECTED_DROPPED_ROOTS`). The
+live command tree is the source of truth for the full list; run `/help` in
+Discord or read `generated_cogs.py`. `/provider set` is deliberately never
+generated: its `key=value` pairs carry credentials, which must not be typed
+into a chat platform's transport (backlog #130 owns the backend-side sweep).
 
 `/help` lists the
 registered app commands only, derived from the live command tree plus the
