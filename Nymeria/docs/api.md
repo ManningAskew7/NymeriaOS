@@ -1441,10 +1441,36 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "note": null,
     "blocked_surfaces": [],
     "blocked_reason": null,
-    "examples": []
+    "examples": [],
+    "params": []
   }
 ]
 ```
+
+`params` is the declared argument schema (backlog #129). `null` means the
+command has no schema (its handler parses free-form; 10 commands are exempt
+by design: act-now commands, raw-text grammars, the two provider setup
+chains, and `/help`). An array, even empty, means the dispatcher validates
+arguments BEFORE the handler runs and renders uniform usage errors; `[]` is
+the strict zero-argument declaration. Each entry:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | snake_case identifier; the bound value's key |
+| `kind` | `positional`, `option` (`--name value` and `--name=value`), `flag` (boolean), `rest` (free text tail), or `scope` (trailing `global\|thread` token) |
+| `type` | `str`, `int`, or `bool` |
+| `required` | missing value is a usage error |
+| `choices` | statically enforced value set (matched case-insensitively) |
+| `choices_ref` | names a DYNAMIC value set (`models`, `tools`, ...); advisory metadata for autocomplete and form generation, never enforced by the dispatcher |
+| `default` | applied when the param is absent |
+| `repeatable` | collects a list (`--cond a --cond b`, or all bare tokens for a repeatable positional) |
+| `aliases` | alternate spellings, e.g. `-y` for `--yes` |
+| `description` | short human copy, feeds help cards and consumers |
+| `no_echo` | validation errors never echo the rejected value (secret-adjacent params) |
+| `label` | display override for usage strings and error copy (advertised form when it differs from the enforced one) |
+
+For schema'd commands the `usage` string is GENERATED from `params` and
+cannot drift from what the dispatcher enforces.
 
 `surfaces` filters DISCOVERY only (menus, the `/help` index and `/help all`
 table, this endpoint): `execute()` deliberately ignores it so bots can

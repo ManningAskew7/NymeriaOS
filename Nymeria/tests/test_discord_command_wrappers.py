@@ -7,12 +7,12 @@ from typing import Any, Optional
 
 import pytest
 
+from nymeria.core.command_params import BoundArgs
 from nymeria.triggers.discord_bot import NymeriaDiscordBot
 from nymeria.triggers.discord_cogs.chat import ChatCog
-from nymeria.triggers.discord_cogs.config import ConfigCog
+from nymeria.triggers.discord_cogs.generated_cogs import GeneratedCommandsCog
 from nymeria.triggers.discord_cogs.hooks import HooksCog
 from nymeria.triggers.discord_cogs.info import InfoCog
-from nymeria.triggers.discord_cogs.memory import MemoryCog
 from nymeria.triggers.discord_cogs.todos import TodosCog
 
 
@@ -28,6 +28,10 @@ class _FakeAPI:
         self.chat_calls: list[dict[str, Any]] = []
         self.command_calls: list[dict[str, Any]] = []
         self.list_command_calls: list[dict[str, Any]] = []
+        self.tool_search_calls: list[dict[str, Any]] = []
+        self.models: list[dict[str, Any]] = []
+        self.tool_categories: dict[str, list[str]] = {}
+        self.tools: list[dict[str, Any]] = []
 
     async def get_me(self, *, act_as: Optional[str] = None) -> dict[str, Any]:
         return {"id": act_as, "role": self.role}
@@ -93,6 +97,20 @@ class _FakeAPI:
             "command": command.lstrip("/"),
             "level": "success",
         }
+
+    async def list_available_models(
+        self,
+        provider: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self.models
+
+    async def get_tool_categories(self) -> dict[str, Any]:
+        return {"categories": self.tool_categories}
+
+    async def search_tools(self, query: str, **kwargs: Any) -> dict[str, Any]:
+        self.tool_search_calls.append({"query": query, **kwargs})
+        return {"results": self.tools}
 
     async def list_commands(
         self,
@@ -230,14 +248,38 @@ def _bot(api: _FakeAPI) -> NymeriaDiscordBot:
     return bot
 
 
+def _bind_backend_command(command_text: str, command_id: str) -> BoundArgs:
+    """Re-parse a cog-emitted line exactly as the backend dispatcher would.
+
+    Asserting the literal string proves the flattening is stable; binding it
+    back proves the string still MEANS what the Discord fields said, which is
+    the property the generated flatten-back exists to guarantee.
+    """
+    from nymeria.core.command_params import bind_args
+    from nymeria.core.command_service import (
+        CommandService,
+        _split_args,
+        _split_rest_after_tokens,
+    )
+
+    definition = CommandService()._commands[command_id]
+    rest = _split_rest_after_tokens(command_text, len(definition.path))
+    params = definition.params
+    assert params is not None
+    bound, error = bind_args(params, _split_args(rest), rest)
+    assert error is None, error
+    assert bound is not None
+    return bound
+
+
 def test_memory_save_uses_backend_command_endpoint():
     api = _FakeAPI()
     bot = _bot(api)
     interaction = _FakeInteraction()
-    cog = MemoryCog(bot)
+    cog = GeneratedCommandsCog(bot)
 
     async def run() -> None:
-        await MemoryCog.cmd_memory_save.callback(
+        await GeneratedCommandsCog.cmd_memory_save.callback(
             cog,
             interaction,
             "favorite_color",
@@ -248,7 +290,7 @@ def test_memory_save_uses_backend_command_endpoint():
 
     assert api.command_calls == [
         {
-            "command": "/memory save favorite_color deep blue",
+            "command": "/memory save favorite_color 'deep blue'",
             "thread_id": "discord_123_456",
             "source": "user",
             "actor": "user",
@@ -256,8 +298,13 @@ def test_memory_save_uses_backend_command_endpoint():
             "user_id": "user-1",
         }
     ]
+    # The quoting must survive the dispatcher's shlex split: the multi-word
+    # value is one token, so the rest param is the whole phrase.
+    bound = _bind_backend_command(api.command_calls[0]["command"], "memory.save")
+    assert bound.get("key") == "favorite_color"
+    assert bound.get("value") == "deep blue"
     assert interaction.messages[0]["content"] == (
-        "backend result for /memory save favorite_color deep blue"
+        "backend result for /memory save favorite_color 'deep blue'"
     )
 
 
@@ -327,27 +374,254 @@ def test_todos_add_preserves_discord_fields_as_backend_pipe_syntax():
     assert api.command_calls[0]["thread_id"] == "discord_123_456"
 
 
-def test_global_model_change_requires_admin_before_backend_command():
+def test_admin_only_generated_command_rejects_non_admin_before_backend_call():
+    # `require_admin` is generated from the registry definition, so an
+    # admin-only command must still be refused at the Discord layer rather
+    # than relayed and rejected downstream.
     api = _FakeAPI(role="user")
     bot = _bot(api)
     interaction = _FakeInteraction()
-    cog = ConfigCog(bot)
-
-    class _Scope:
-        value = "global"
+    cog = GeneratedCommandsCog(bot)
 
     async def run() -> None:
-        await ConfigCog.cmd_model.callback(
-            cog,
-            interaction,
-            "gpt-test",
-            _Scope(),
+        await GeneratedCommandsCog.cmd_env_set.callback(
+            cog, interaction, "perplexity_api_key", "secret-value"
         )
 
     asyncio.run(run())
 
     assert api.command_calls == []
     assert interaction.messages[0]["content"] == "Admin only."
+
+
+def test_non_admin_generated_command_is_relayed_without_an_admin_check():
+    # The other half of the same generated flag: a command the registry does
+    # not mark admin-only must not acquire a Discord-side admin gate.
+    api = _FakeAPI(role="user")
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_memory_list.callback(cog, interaction)
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == "/memory list"
+
+
+def test_model_command_flattens_flag_positional_and_trailing_scope():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_model.callback(
+            cog, interaction, "gpt-test", True, "global"
+        )
+
+    asyncio.run(run())
+
+    # Options and flags lead, positionals follow, the scope word is last:
+    # exactly the order bind_args pops them back off in.
+    assert api.command_calls[0]["command"] == "/model --force gpt-test global"
+    bound = _bind_backend_command(api.command_calls[0]["command"], "model")
+    assert bound.get("name") == "gpt-test"
+    assert bound.get("force") is True
+    assert bound.get("scope") == "global"
+
+
+def test_unset_optional_arguments_are_omitted_from_the_flattened_line():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_model.callback(cog, interaction)
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == "/model"
+
+
+def test_keyword_named_option_renames_and_coerces_its_integer():
+    # `--from` cannot be a Python parameter name, so the generator renames the
+    # Discord option back onto the registry spelling.
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_branch.callback(
+            cog, interaction, 3, "spin off the retry work"
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == (
+        "/branch --from 3 'spin off the retry work'"
+    )
+    bound = _bind_backend_command(api.command_calls[0]["command"], "branch")
+    assert bound.get("from") == 3
+    assert bound.get("title") == "spin off the retry work"
+
+
+def test_repeatable_positional_is_relayed_as_separate_tokens():
+    # A repeatable positional is meant to arrive as several tokens, so its
+    # text passes through unquoted while the option beside it is quoted.
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_skills_search.callback(
+            cog, interaction, "pdf forms", "anthropic"
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == (
+        "/skills search --source anthropic pdf forms"
+    )
+    bound = _bind_backend_command(api.command_calls[0]["command"], "skills.search")
+    assert bound.get("query") == ["pdf", "forms"]
+    assert bound.get("source") == "anthropic"
+
+
+def test_optional_positional_gap_is_refused_instead_of_mis_bound():
+    # Discord fields are independent but backend positionals are ordered:
+    # filling only the second one would bind that value to the first param.
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_memory_limit.callback(
+            cog, interaction, None, "4000"
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls == []
+    assert interaction.messages[0]["content"] == (
+        "Error: `value` also needs `scope`. Give both, or neither."
+    )
+
+
+def test_optional_positionals_given_together_are_relayed_in_order():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_memory_limit.callback(
+            cog, interaction, "thread", "4000"
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == "/memory limit thread 4000"
+    bound = _bind_backend_command(api.command_calls[0]["command"], "memory.limit")
+    assert bound.get("scope") == "thread"
+    assert bound.get("value") == "4000"
+
+
+def test_hyphenated_command_path_is_relayed_in_the_spelling_users_type():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_background_set_url.callback(
+            cog, interaction, "http://proxy.test/v1"
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == (
+        "/background set-url http://proxy.test/v1"
+    )
+
+
+def test_models_autocomplete_resolver_filters_and_caps_suggestions():
+    from nymeria.triggers.discord_cogs.autocomplete import MAX_CHOICES, resolve_models
+
+    api = _FakeAPI()
+    api.models = (
+        [{"id": "gpt-5.5"}, {"id": "claude-fable-5"}, {"name": "gpt-mini"}]
+        + [{"id": f"gpt-filler-{index}"} for index in range(40)]
+    )
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+
+    choices = asyncio.run(resolve_models(bot, interaction, "gpt"))
+
+    assert len(choices) == MAX_CHOICES
+    values = [choice.value for choice in choices]
+    assert values[:3] == ["gpt-5.5", "gpt-mini", "gpt-filler-0"]
+    assert "claude-fable-5" not in values
+
+
+def test_models_autocomplete_resolver_degrades_to_no_suggestions():
+    from nymeria.triggers.discord_cogs.autocomplete import resolve_models
+
+    class _BrokenAPI(_FakeAPI):
+        async def list_available_models(self, provider=None, user_id=None):
+            raise RuntimeError("provider unreachable")
+
+    bot = _bot(_BrokenAPI())
+
+    assert asyncio.run(resolve_models(bot, _FakeInteraction(), "gpt")) == []
+
+
+def test_tools_autocomplete_resolver_offers_categories_before_tool_names():
+    from nymeria.triggers.discord_cogs.autocomplete import resolve_tools
+
+    api = _FakeAPI()
+    api.tool_categories = {"email": ["a", "b"], "browser": ["c"]}
+    api.tools = [
+        {"name": "email_send", "description": "Send an email\nmore"},
+        {"name": "browser_open", "description": ""},
+    ]
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+
+    choices = asyncio.run(resolve_tools(bot, interaction, "email"))
+
+    assert [choice.value for choice in choices] == [
+        "email",
+        "email_send",
+        "browser_open",
+    ]
+    assert choices[0].name == "email (category: 2 tools)"
+    assert choices[1].name == "email_send: Send an email"
+    assert api.tool_search_calls[0]["thread_id"] == "discord_123_456"
+
+
+def test_tools_cog_autocomplete_delegates_to_the_shared_resolver():
+    # The hand cog must not keep a second copy of the resolver: /tools enable
+    # and the generated commands have to suggest the same values.
+    from nymeria.triggers.discord_cogs.tools import ToolsCog
+
+    api = _FakeAPI()
+    api.tool_categories = {"email": ["a"]}
+    api.tools = [{"name": "email_send", "description": "Send an email"}]
+    bot = _bot(api)
+    cog = ToolsCog(bot)
+    interaction = _FakeInteraction()
+
+    choices = asyncio.run(
+        ToolsCog._enable_autocomplete(cog, interaction, "email")
+    )
+
+    assert [choice.value for choice in choices] == ["email", "email_send"]
 
 
 def test_resolver_failure_renders_infra_copy_in_interaction_funnel():
@@ -421,6 +695,11 @@ def test_help_lists_only_invokable_commands_within_discord_embed_limits(
             # first-token curated match used to swallow the whole family).
             _FakeTreeCommand("tools core", "Show core tools.", binding=ToolsCog()),
             _FakeTreeCommand("ask", "Send a message.", binding=ChatCog()),
+            # Generated commands all share one cog class, so their heading
+            # must come from the registry category, not the binding.
+            _FakeTreeCommand(
+                "memory list", "List saved memories.", binding=GeneratedCommandsCog
+            ),
             app_commands.Group(name="tools", description="Tool management"),
         ]
     )
@@ -452,6 +731,11 @@ def test_help_lists_only_invokable_commands_within_discord_embed_limits(
     field_names = [field.name for field in embed.fields]
     assert "Tools" in field_names
     assert "Chat" in field_names
+    # ... and generated ones by their registry category, never by the single
+    # cog class that hosts all 60-plus of them.
+    assert "Memory" in field_names
+    assert "GeneratedCommands" not in field_names
+    assert "`/memory list` - List saved memories." in help_text
     # Unreachable backend-only commands must not be advertised.
     assert "`/provider" not in help_text
 

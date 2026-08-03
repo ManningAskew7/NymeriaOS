@@ -1,4 +1,11 @@
-"""Memory and notepad commands: /memory group, /notepad group."""
+"""Notepad commands: the /notepad group.
+
+The `/memory` group moved to `generated_cogs.py` (pure defer-and-relay
+wrappers). `/notepad` stays hand-written because `/notepad write` maps a Discord
+mode choice onto the backend's `replace:` value prefix, and the registry
+deliberately leaves that command unadopted; a Discord group name has exactly one
+owner, so its siblings stay with it.
+"""
 
 from __future__ import annotations
 
@@ -15,62 +22,6 @@ if TYPE_CHECKING:
 class MemoryCog(commands.Cog):
     def __init__(self, bot: NymeriaDiscordBot):
         self.bot = bot
-
-    # --- /memory group ---
-
-    memory_group = app_commands.Group(
-        name="memory", description="Manage Nymeria's memories about you"
-    )
-
-    @memory_group.command(name="list", description="List all saved memories")
-    async def cmd_memory_list(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(interaction, "memory list")
-
-    @memory_group.command(
-        name="save", description="Save a memory about you"
-    )
-    @app_commands.describe(
-        key="Memory name (e.g., 'favorite_language')",
-        value="Memory content (up to 1000 chars)",
-    )
-    async def cmd_memory_save(
-        self, interaction: discord.Interaction, key: str, value: str
-    ):
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "memory save",
-            args=f"{key} {value}",
-        )
-
-    @memory_group.command(
-        name="forget", description="Remove a saved memory"
-    )
-    @app_commands.describe(key="The memory key to remove")
-    async def cmd_memory_forget(
-        self, interaction: discord.Interaction, key: str
-    ):
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "memory forget",
-            args=key,
-        )
-
-    @memory_group.command(
-        name="search", description="Search memories by keyword"
-    )
-    @app_commands.describe(query="Search term (matches key and value)")
-    async def cmd_memory_search(
-        self, interaction: discord.Interaction, query: str
-    ):
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "memory search",
-            args=query,
-        )
 
     # --- /notepad group ---
 

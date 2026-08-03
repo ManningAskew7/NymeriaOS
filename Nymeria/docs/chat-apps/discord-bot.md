@@ -8,7 +8,7 @@ Nymeria's Discord integration runs as a stateless gateway that translates Discor
 Docker: nymeria-discord-bot (profile: discord)
 	 └─ NymeriaDiscordBot(discord.Client)
 	      ├─ NymeriaAPIClient (async httpx → Nymeria REST API)
-	      ├─ CommandTree (30 slash commands across 6 groups)
+	      ├─ CommandTree (~100 slash commands, most of them generated)
 	      └─ SSE listener (autonomous task stream → channel posts)
 ```
 
@@ -87,9 +87,50 @@ docker logs nymeria-discord-bot --tail 15
 
 ## Commands Reference
 
-Discord keeps the slash-command declarations local because Discord needs a
-static command tree, but duplicated global command bodies are thin wrappers over
-the backend command registry (`POST /commands/execute`). `/help` lists the
+### Most of these commands are GENERATED
+
+Discord needs a static command tree, so the declarations must live in the bot.
+They are no longer hand-written: `nymeria/triggers/discord_cogs/generated_cogs.py`
+is generated from the backend command registry's declared argument schemas
+(backlog #129) and checked in. Regenerate it from `Nymeria/` with:
+
+```bash
+python3 scripts/generate_discord_cogs.py
+```
+
+One `CommandParam` declaration in `core/registry_defaults.py` supplies the
+Discord signature, the `describe` copy, the static choices, the admin flag, and
+the flatten-back into the canonical `/command args` string, so none of them can
+drift from the backend. `tests/test_discord_generated_cogs.py` fails if the
+checked-in file is stale, if a selected command is missing from the tree, or if
+the tree would break one of Discord's caps (25 choices per argument, 25
+subcommands per group, 100 global commands).
+
+Adding a param to a registry command therefore adds the Discord field too: edit
+the registry, regenerate, restart the bot. Nothing here needs editing by hand.
+
+Hand-written cogs keep only what a defer-and-relay wrapper cannot express: chat
+streaming (`/ask`, `/compact`), the act-now commands (`/clear`, `/stop`), the bot
+self-restart (`/restart`), Discord-local rendering (`/export`, `/help`,
+`/tools search`, `/channel-context`, `/show-tools`), and the families whose
+group name they must own for one of those reasons (`/tools`, `/todos`,
+`/notepad`, `/thread`, `/hook`, `/fallback`). The generator's
+`HAND_WRITTEN_FAMILIES` and `EXCLUDED_COMMANDS` name each one and why.
+
+Dynamic value sets (`choices_ref`) become autocomplete rather than static
+choices; the resolvers live in `discord_cogs/autocomplete.py` and are shared
+with the hand cogs. Adding a resolver there lights up every argument that
+declares that ref.
+
+The tables below cover the commands Discord users had before the derivation.
+Generation also brought these families onto Discord, with the same arguments the
+CLI and desktop app get: `/account`, `/activity`, `/artifacts`, `/background`,
+`/branch`, `/doctor`, `/fast`, `/mcp`, `/memory limit`, `/prune`, `/provider`,
+`/sequential-tools`, `/settings`, `/skills`, `/smart`, `/team`, `/triggers`, and
+`/usage`. The live command tree is the source of truth for the full list; run
+`/help` in Discord or read `generated_cogs.py`.
+
+`/help` lists the
 registered app commands only, derived from the live command tree plus the
 curated Discord-local rows (2026-08-02). It used to merge in the full backend
 catalog, which advertised ~110 commands unreachable on Discord and overflowed
@@ -364,7 +405,9 @@ buffered text, stops sending chunks, and skips the sync-fallback and
 | What | Where |
 |------|-------|
 | Bot implementation | `nymeria/triggers/discord_bot.py` |
-| Slash command Cogs | `nymeria/triggers/discord_cogs/` (chat, todos, config, tools, memory, info) |
+| Slash command Cogs | `nymeria/triggers/discord_cogs/` (`generated_cogs.py` plus the hand cogs: chat, todos, config, tools, memory, info, hooks, fallback) |
+| Cog generator | `scripts/generate_discord_cogs.py` (writes `generated_cogs.py`; freshness-gated by `tests/test_discord_generated_cogs.py`) |
+| Autocomplete resolvers | `nymeria/triggers/discord_cogs/autocomplete.py` (`choices_ref` -> live values) |
 | API client | `nymeria/triggers/api_client.py` |
 | Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_discord_bot()` |

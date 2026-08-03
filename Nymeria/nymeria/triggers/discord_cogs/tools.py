@@ -1,30 +1,31 @@
-"""Tool management commands: /tools group."""
+"""Tool management commands: the /tools group.
+
+The group stays hand-written because `/tools search` is Discord-local: it calls
+the tool-search API directly and renders a ranked embed, so it is not a registry
+command the generator could derive. A Discord group name has exactly one owner,
+so its siblings stay with it. The name autocomplete is NOT duplicated here: it
+is the shared `resolve_tools` resolver the generated cog also wires by
+`choices_ref`.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, List, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, List, Mapping
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from ..discord_bot import make_thread_id
+from .autocomplete import mapping_sequence as _mapping_sequence
+from .autocomplete import resolve_tools
+from .autocomplete import tool_name as _tool_name
 
 if TYPE_CHECKING:
     from ..discord_bot import NymeriaDiscordBot
 
 logger = logging.getLogger(__name__)
-
-
-def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [item for item in value if isinstance(item, Mapping)]
-
-
-def _tool_name(tool: Mapping[str, Any]) -> str:
-    return str(tool.get("name") or tool.get("id") or tool.get("tool_id") or "")
 
 
 def format_tool_search_lines(data: Mapping[str, Any], *, limit: int = 8) -> list[str]:
@@ -141,51 +142,6 @@ class ToolsCog(commands.Cog):
             logger.error(f"Error searching tools: {e}", exc_info=True)
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
-    async def _tool_name_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> List[app_commands.Choice[str]]:
-        """Autocomplete for tool/category names."""
-        if interaction.channel_id is None:
-            return []
-        try:
-            cat_data = await self.bot.api.get_tool_categories()
-            categories = cat_data.get("categories", {})
-            thread_id = make_thread_id(
-                interaction.guild_id, interaction.channel_id
-            )
-            data = await self.bot.api.search_tools(
-                current,
-                thread_id=thread_id,
-                top_k=20,
-            )
-            available = _mapping_sequence(data.get("results", []))
-
-            choices: List[app_commands.Choice[str]] = []
-            current_lower = current.lower()
-
-            for cat_name, tools in sorted(categories.items()):
-                if current_lower in cat_name:
-                    label = f"{cat_name} (category: {len(tools)} tools)"
-                    choices.append(
-                        app_commands.Choice(name=label[:100], value=cat_name)
-                    )
-
-            seen_values = {choice.value for choice in choices}
-            for t in available:
-                tool_name = _tool_name(t)
-                if tool_name in seen_values:
-                    continue
-                desc = (t.get("description") or "").split("\n")[0][:60]
-                label = f"{tool_name}: {desc}" if desc else tool_name
-                choices.append(
-                    app_commands.Choice(name=label[:100], value=tool_name)
-                )
-                seen_values.add(tool_name)
-
-            return choices[:25]
-        except Exception:
-            return []
-
     @tools_group.command(
         name="enable",
         description="Enable a tool or category for this channel",
@@ -207,7 +163,7 @@ class ToolsCog(commands.Cog):
     async def _enable_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        return await self._tool_name_autocomplete(interaction, current)
+        return await resolve_tools(self.bot, interaction, current)
 
     @tools_group.command(
         name="disable",
@@ -230,4 +186,4 @@ class ToolsCog(commands.Cog):
     async def _disable_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        return await self._tool_name_autocomplete(interaction, current)
+        return await resolve_tools(self.bot, interaction, current)

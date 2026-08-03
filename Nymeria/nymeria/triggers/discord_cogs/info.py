@@ -1,5 +1,12 @@
-"""Information and status commands: /thread, /status, /context, /export,
-/channel-context, /show-tools, /help."""
+"""Information commands: /thread, /export, /channel-context, /show-tools, /help.
+
+`/status` and `/context` moved to `generated_cogs.py` (pure defer-and-relay
+wrappers). The five here cannot be generated: `/thread` relays the registry's
+`thread` ROOT, which Discord could not offer alongside a `/thread <sub>` group;
+`/export` builds a file attachment; `/channel-context` and `/show-tools` flip
+per-channel bot state and never reach the backend; `/help` renders the live
+command tree as an embed.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +21,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..discord_bot import make_thread_id
+from .generated_cogs import COMMAND_CATEGORIES
 
 if TYPE_CHECKING:
     from ..discord_bot import NymeriaDiscordBot
@@ -60,25 +68,6 @@ class InfoCog(commands.Cog):
     async def cmd_thread(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await self.bot._send_backend_command(interaction, "thread")
-
-    # --- /status ---
-
-    @app_commands.command(
-        name="status", description="Show Nymeria system status"
-    )
-    async def cmd_status(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(interaction, "status")
-
-    # --- /context ---
-
-    @app_commands.command(
-        name="context",
-        description="Detailed context breakdown for this channel",
-    )
-    async def cmd_context(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(interaction, "context")
 
     # --- /export ---
 
@@ -326,8 +315,17 @@ class InfoCog(commands.Cog):
                     continue  # groups render through their subcommands
                 if command.qualified_name in curated_names or command.qualified_name == "help":
                     continue
-                binding = getattr(command, "binding", None)
-                category = type(binding).__name__.removesuffix("Cog") if binding else "Other"
+                # Generated commands all share one cog class, so the binding
+                # would file 60-plus rows under a single meaningless heading:
+                # use the registry category they were generated from instead.
+                category = COMMAND_CATEGORIES.get(command.qualified_name)
+                if category is None:
+                    binding = getattr(command, "binding", None)
+                    category = (
+                        type(binding).__name__.removesuffix("Cog")
+                        if binding
+                        else "Other"
+                    )
                 by_category.setdefault(category, []).append(
                     f"`/{command.qualified_name}` - {command.description}"
                 )
