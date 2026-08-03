@@ -42,6 +42,7 @@ from .command_forms import (
     search_field,
 )
 from .command_form_generation import generate_param_form
+from .command_naming import validate_command_naming
 from .command_option_resolvers import OPTION_RESOLVERS, resolve_models
 from .command_params import (
     BoundArgs,
@@ -103,6 +104,11 @@ CHAT_PLATFORM_SURFACES: tuple[CommandSurface, ...] = (
     "twitch",
 )
 
+# Roots the agent actor may never dispatch. "ask" and "start" match no
+# registered command today: they are bot-local chat entries (Telegram /start,
+# the ask commands) pre-blocked so a future registration cannot quietly hand
+# them to the agent; command_naming.AGENT_BLOCKED_UNREGISTERED records them
+# and validate_registry fails on any OTHER unregistered entry.
 AGENT_BLOCKED = {"ask", "stop", "clear", "restart", "compact", "start"}
 SKILL_SHOW_MAX_CHARS = 12_000
 
@@ -2150,6 +2156,10 @@ class CommandService:
                         f"conflicts with alias for {alias_conflict}"
                     )
                 seen_aliases[alias_path] = command_id
+        # Naming canon (#131): built-in catalog only; runtime registrations
+        # (tests, plugins) are exempt by design. Rules and constants:
+        # core/command_naming.py + docs/private/command-style-guide.md.
+        validate_command_naming(self._commands, AGENT_BLOCKED)
 
     def _resolve_agent(self, agent: Any | None = None) -> Any | None:
         if agent is not None:
