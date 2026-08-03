@@ -40,6 +40,62 @@ _BRANCH_PARAMS = (
 )
 
 
+# Every hook verb that names one hook takes the same argument: an id or a
+# unique prefix of one (``_resolve_hook`` does the prefix match). One
+# declaration keeps those usage strings from drifting apart.
+_HOOK_ID_PARAM = CommandParam(
+    "id", required=True, description="Hook id or unique id prefix"
+)
+
+# ``/hook create`` and ``/hook edit`` collect conditions, rewrites, and the
+# fire gate identically, and hand the collected strings to the same semantic
+# parsers, so the two declarations share one tuple.
+_HOOK_CONDITION_PARAMS = (
+    CommandParam(
+        "cond",
+        kind="option",
+        repeatable=True,
+        label='"f op v"',
+        description="Match condition, quoted: field operator value",
+    ),
+    CommandParam(
+        "set",
+        kind="option",
+        repeatable=True,
+        label="arg=value",
+        description="Argument rewrite for rewrite_arg",
+    ),
+    CommandParam(
+        "fire_cond",
+        kind="option",
+        repeatable=True,
+        label='"f op v"',
+        description="Definition-level fire gate, quoted like --cond",
+    ),
+    CommandParam(
+        "case_sensitive",
+        kind="flag",
+        type="bool",
+        description="Compare condition values case-sensitively",
+    ),
+)
+
+# ``/hook approve`` and ``/hook deny`` are one handler with a boolean, so they
+# share one declaration. The note is a rest param, which also means an
+# apostrophe in it is ordinary English rather than an unbalanced quote.
+_HOOK_APPROVAL_PARAMS = (
+    CommandParam(
+        "id",
+        required=True,
+        label="approval-id",
+        description="Pending approval id or unique prefix",
+    ),
+    CommandParam(
+        "note", kind="rest", description="Note recorded with the decision"
+    ),
+)
+
+
 def register_default_commands(service: "CommandService") -> None:
     """Register every built-in slash command on ``service`` in catalog order.
 
@@ -1001,40 +1057,65 @@ def register_default_commands(service: "CommandService") -> None:
         "hook",
         description="Lifecycle-hook authoring and approval commands",
         category="Automation",
-        usage=(
-            "/hook list|create|show|edit|enable|disable|delete|test|log"
-            "|templates|install|approvals|approve|deny [...]"
-        ),
         aliases=("hooks",),
+        # Bare "/hook" lists. Registered subcommands never reach the root
+        # (longest-prefix dispatch routes them first), so the only tokens the
+        # binder sees here are the unregistered "detail" synonym of show and
+        # typos; the label keeps advertising the family, since the usage line
+        # is where the verbs are discovered.
+        params=(
+            CommandParam(
+                "subcommand",
+                label=(
+                    "list|create|show|edit|enable|disable|delete|test|log"
+                    "|templates|install|approvals|approve|deny"
+                ),
+                description="Hook subcommand (bare /hook lists)",
+            ),
+            CommandParam(
+                "id", description="Hook id, for the `detail` synonym of show"
+            ),
+        ),
     )
     service.register(
         "hook list",
         description="List lifecycle hooks",
         category="Automation",
-        usage="/hook list [--thread <id>|current] [--global] [--enabled-only]",
         aliases=("hook_list",),
         surfaces=_hook_sub_surfaces,
+        params=(
+            CommandParam(
+                "thread",
+                kind="option",
+                label="id|current",
+                description="Show hooks bound to this thread (`current` for the active one)",
+            ),
+            CommandParam(
+                "global",
+                kind="flag",
+                type="bool",
+                description="Show only global hooks",
+            ),
+            CommandParam(
+                "enabled_only",
+                kind="flag",
+                type="bool",
+                description="Hide disabled hooks",
+            ),
+        ),
     )
     service.register(
         "hook show",
         description="Show one hook's full configuration",
         category="Automation",
-        usage="/hook show <id>",
         aliases=("hook_show", "hook_detail"),
         surfaces=_hook_sub_surfaces,
+        params=(_HOOK_ID_PARAM,),
     )
     service.register(
         "hook create",
         description="Create a lifecycle hook",
         category="Automation",
-        usage=(
-            "/hook create <name> --event E --action A "
-            '[--text ..|--url ..|--cond "f op v"..|--reason ..|--set arg=val..'
-            "|--command ..|--timeout N"
-            "|--workflow <id> --workflow-params '{..}' --on-fault allow|deny] "
-            '[--fire-cond "f op v"]... [--once] [--single-use] '
-            "[--matcher A|B] [--scope thread|global] [--disabled]"
-        ),
         aliases=("hook_create",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
@@ -1043,88 +1124,227 @@ def register_default_commands(service: "CommandService") -> None:
         examples=(
             '/hook create greet --event user_prompt_submit --action inject_text --text "Be brief."',
         ),
+        # The name is the bare-word remainder, exactly as the hand parser
+        # read it: options are pulled out from any position and what is left
+        # joins, so "/hook create Block rm -rf --event ..." still names the
+        # hook "Block rm -rf".
+        params=(
+            CommandParam(
+                "name",
+                required=True,
+                repeatable=True,
+                description="Hook name (bare words join)",
+            ),
+            CommandParam(
+                "event",
+                kind="option",
+                required=True,
+                description="Lifecycle event to hook",
+            ),
+            CommandParam(
+                "action",
+                kind="option",
+                default="inject_context",
+                description="What the hook does when it fires",
+            ),
+            CommandParam(
+                "text",
+                kind="option",
+                description="Injected, notify, todo, or approval-prompt text",
+            ),
+            CommandParam("url", kind="option", description="Webhook URL"),
+            CommandParam(
+                "reason",
+                kind="option",
+                description="Denial message for block_if_matches",
+            ),
+            CommandParam(
+                "matcher",
+                kind="option",
+                label="A|B",
+                description="Tool filter for tool events",
+            ),
+            CommandParam(
+                "command", kind="option", description="Shell command for run_command"
+            ),
+            CommandParam(
+                "timeout",
+                kind="option",
+                label="N",
+                description="Timeout in seconds",
+            ),
+            CommandParam(
+                "workflow", kind="option", description="Workflow id for run_workflow"
+            ),
+            CommandParam(
+                "workflow_params",
+                kind="option",
+                label="JSON",
+                description="Workflow params as a quoted JSON object",
+            ),
+            CommandParam(
+                "on_fault",
+                kind="option",
+                choices=("allow", "deny"),
+                description="What a faulting run_workflow decides",
+            ),
+            CommandParam(
+                "scope",
+                kind="option",
+                choices=("thread", "global"),
+                default="thread",
+                description="Bind to this thread (default) or all threads",
+            ),
+        )
+        + _HOOK_CONDITION_PARAMS
+        + (
+            CommandParam(
+                "once",
+                kind="flag",
+                type="bool",
+                description="Fire at most once per thread",
+            ),
+            CommandParam(
+                "single_use",
+                kind="flag",
+                type="bool",
+                description="Delete the hook after it fires",
+            ),
+            CommandParam(
+                "disabled",
+                kind="flag",
+                type="bool",
+                description="Create it disabled",
+            ),
+        ),
     )
     service.register(
         "hook edit",
         description="Edit a hook (key=value scalars and/or --cond/--set)",
         category="Automation",
-        usage=(
-            '/hook edit <id> [key=value]... [--cond "f op v"]... '
-            '[--fire-cond "f op v"]... [--set arg=val]... [once=true|false] '
-            "[single_use=true|false] [workflow=<id>] "
-            "[workflow_params='{..}'] [on_fault=allow|deny]"
-        ),
         aliases=("hook_edit",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        params=(
+            _HOOK_ID_PARAM,
+            CommandParam(
+                "fields",
+                repeatable=True,
+                label="key=value",
+                description="Scalar edits, e.g. name=... enabled=false once=true",
+            ),
+        )
+        + _HOOK_CONDITION_PARAMS,
     )
     service.register(
         "hook enable",
         description="Enable a hook",
         category="Automation",
-        usage="/hook enable <id>",
         aliases=("hook_enable",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
         agent_allowed=False,
+        params=(_HOOK_ID_PARAM,),
     )
     service.register(
         "hook disable",
         description="Disable a hook",
         category="Automation",
-        usage="/hook disable <id>",
         aliases=("hook_disable",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
         agent_allowed=False,
+        params=(_HOOK_ID_PARAM,),
     )
     service.register(
         "hook delete",
         description="Delete a hook permanently",
         category="Automation",
-        usage="/hook delete <id> [--yes]",
         aliases=("hook_delete",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
         danger_level="dangerous",
         agent_allowed=False,
+        params=(
+            _HOOK_ID_PARAM,
+            # Accepted for CLI muscle memory and by the Discord cog; it no
+            # longer prompts (danger_level drives frontend confirmation).
+            CommandParam(
+                "yes",
+                kind="flag",
+                type="bool",
+                aliases=("-y",),
+                description="Skip confirmation",
+            ),
+        ),
     )
     service.register(
         "hook test",
         description="Dry-run render a hook against sample data (no fire)",
         category="Automation",
-        usage="/hook test <id>",
         aliases=("hook_test",),
         surfaces=_hook_sub_surfaces,
+        params=(_HOOK_ID_PARAM,),
     )
     service.register(
         "hook log",
         description="Show recent hook executions (status, outcome, timing)",
         category="Automation",
-        usage="/hook log [id] [--limit N]",
         aliases=("hook_log",),
         surfaces=_hook_sub_surfaces,
+        params=(
+            CommandParam("id", description="Only this hook's executions"),
+            CommandParam(
+                "limit",
+                kind="option",
+                type="int",
+                default=20,
+                description="Rows to show (default 20)",
+            ),
+        ),
     )
     service.register(
         "hook templates",
         description="List the bundled hook-template catalog",
         category="Automation",
-        usage="/hook templates",
         aliases=("hook_templates",),
         surfaces=_hook_sub_surfaces,
+        params=(),
     )
     service.register(
         "hook install",
         description="Install a bundled hook template as a real hook",
         category="Automation",
-        usage="/hook install <template-id> [--scope thread|global] [--text ...] [--disabled]",
         aliases=("hook_install",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
         danger_level="normal",
         agent_allowed=False,
+        params=(
+            CommandParam(
+                "template_id",
+                required=True,
+                label="template-id",
+                description="Template id from /hook templates",
+            ),
+            CommandParam(
+                "scope",
+                kind="option",
+                choices=("thread", "global"),
+                description="Override the template's default scope",
+            ),
+            CommandParam(
+                "text", kind="option", description="Override the template's text"
+            ),
+            CommandParam(
+                "disabled",
+                kind="flag",
+                type="bool",
+                description="Install it disabled",
+            ),
+        ),
     )
     # Hook approvals: the human resolve surface for require_approval holds.
     # agent_allowed=False is load-bearing on approve/deny (the agent must not
@@ -1137,30 +1357,30 @@ def register_default_commands(service: "CommandService") -> None:
         "hook approvals",
         description="List tool calls held awaiting your approval",
         category="Automation",
-        usage="/hook approvals",
         aliases=("hook_approvals",),
         surfaces=_hook_sub_surfaces,
         agent_allowed=False,
+        params=(),
     )
     service.register(
         "hook approve",
         description="Approve a held tool call (require_approval hook)",
         category="Automation",
-        usage="/hook approve <approval-id> [note]",
         aliases=("hook_approve",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
         agent_allowed=False,
+        params=_HOOK_APPROVAL_PARAMS,
     )
     service.register(
         "hook deny",
         description="Deny a held tool call (require_approval hook)",
         category="Automation",
-        usage="/hook deny <approval-id> [note]",
         aliases=("hook_deny",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,
         agent_allowed=False,
+        params=_HOOK_APPROVAL_PARAMS,
     )
     service.register(
         "account",
