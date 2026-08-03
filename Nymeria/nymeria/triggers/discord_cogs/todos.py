@@ -1,4 +1,10 @@
-"""TODO and task commands: /todos group, /tasks."""
+"""TODO commands: the /todos group.
+
+`/tasks` moved to `generated_cogs.py` (a pure defer-and-relay wrapper).
+`/todos` stays hand-written because `/todos add` maps four Discord fields onto
+the backend's pipe-separated syntax, which the registry leaves unadopted; a
+Discord group name has exactly one owner, so its siblings stay with it.
+"""
 
 from __future__ import annotations
 
@@ -110,30 +116,3 @@ class TodosCog(commands.Cog):
             args=todo_id,
         )
 
-    @app_commands.command(
-        name="tasks",
-        description="Quick view of scheduled and autonomous tasks",
-    )
-    @app_commands.describe(status="Filter by status (default: active)")
-    @app_commands.choices(
-        status=[
-            app_commands.Choice(
-                name="active (pending + in progress)", value="active"
-            ),
-            app_commands.Choice(name="pending", value="pending"),
-            app_commands.Choice(name="in progress", value="in_progress"),
-            app_commands.Choice(name="done", value="done"),
-            app_commands.Choice(name="all", value="all"),
-        ]
-    )
-    async def cmd_tasks(
-        self,
-        interaction: discord.Interaction,
-        status: Optional[app_commands.Choice[str]] = None,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        await self.bot._send_backend_command(
-            interaction,
-            "tasks",
-            args=status.value if status else "",
-        )
