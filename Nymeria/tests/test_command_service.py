@@ -2607,10 +2607,11 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    # (145 since the /fallback chain verbs became registered children in the
-    # backlog #129 adoption; they were parsed by the parent handler before.)
-    assert len(service._commands) == 145
-    assert sum(cmd.executable for cmd in service._commands.values()) == 128
+    # (153 since the /fallback, tier, and /settings verbs became registered
+    # children in the backlog #129 adoption; they were parsed by their parent
+    # handlers before.)
+    assert len(service._commands) == 153
+    assert sum(cmd.executable for cmd in service._commands.values()) == 136
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -3198,7 +3199,11 @@ def test_usage_rejects_stray_argument() -> None:
     result = run(service.execute(_cli_ctx(), "/usage bogus", api=_UsageStatsCommandApi()))
 
     assert result.success is False
-    assert "Usage: `/usage [session]`" in result.markdown
+    # Declared zero-arg: the binder rejects the stray word and the family-root
+    # guidance layer still names the one subcommand.
+    assert "Unexpected argument `bogus`" in result.markdown
+    assert "Valid subcommands: session." in result.markdown
+    assert "Usage: `/usage`" in result.markdown
 
 
 def test_format_thread_usage_compact_cap_honors_trigger_tokens() -> None:
@@ -3232,7 +3237,7 @@ def test_usage_session_shows_cumulative_and_rejects_extra_args() -> None:
 
     extra = run(service.execute(_cli_ctx(), "/usage session extra", api=_UsageStatsCommandApi()))
     assert extra.success is False
-    assert "Usage: /usage session" in extra.markdown
+    assert "Usage: `/usage session`" in extra.markdown
 
 
 def test_artifacts_recent_lists_from_thread_history() -> None:
@@ -4295,3 +4300,256 @@ def test_notepad_read_rejects_arguments(monkeypatch: pytest.MonkeyPatch) -> None
     assert result.success is False
     assert "Unexpected argument `all`" in result.markdown
     assert reads == []
+
+
+# ── #129 wave 2b: settings, tools, tier, todo, and status declared params ────
+
+
+def test_config_set_joins_a_multi_word_value() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/config set log_level DEBUG mode", api=api))
+
+    assert result.success is True, result.markdown
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "log_level": "DEBUG mode"},
+    ) in api.calls
+
+
+def test_config_get_without_a_key_names_the_missing_argument() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/config get", api=api))
+
+    assert result.success is False
+    assert "Missing required argument: key" in result.markdown
+    assert "Usage: `/config get <key>`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "get_settings"]
+
+
+def test_config_show_rejects_extra_arguments() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/config show everything", api=api))
+
+    assert result.success is False
+    assert "Unexpected argument `everything`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "get_settings"]
+
+
+def test_env_set_without_a_value_writes_nothing() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/env set PERPLEXITY_API_KEY", api=api))
+
+    assert result.success is False
+    assert "Missing required argument: value" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_settings_verbs_are_registered_children_with_their_own_schemas() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    missing_key = run(service.execute(_ctx(), "/settings get", api=api))
+    assert missing_key.success is False
+    assert "Missing required argument: key" in missing_key.markdown
+    assert "Usage: `/settings get <key>`" in missing_key.markdown
+
+    written = run(service.execute(_ctx(), "/settings set log_level DEBUG level", api=api))
+    assert written.success is True, written.markdown
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "log_level": "DEBUG level"},
+    ) in api.calls
+
+    extra = run(service.execute(_ctx(), "/settings show everything", api=api))
+    assert extra.success is False
+    assert "Unexpected argument `everything`" in extra.markdown
+
+
+def test_tools_enable_requires_a_target_and_rejects_extras() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    missing = run(service.execute(_ctx(), "/tools enable", api=api))
+    assert missing.success is False
+    assert "Missing required argument: tool_or_category" in missing.markdown
+    assert "Usage: `/tools enable <tool_or_category>`" in missing.markdown
+
+    extra = run(service.execute(_ctx(), "/tools enable browser web", api=api))
+    assert extra.success is False
+    assert "Unexpected argument `web`" in extra.markdown
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+def test_tools_enabled_rejects_arguments() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/tools enabled all", api=api))
+
+    assert result.success is False
+    assert "Unexpected argument `all`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "get_default_tools"]
+
+
+def test_fast_set_is_a_registered_child_and_requires_a_model_id() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    missing = run(service.execute(_ctx(), "/fast set", api=api))
+    assert missing.success is False
+    assert "Missing required argument: model-id" in missing.markdown
+    assert "Usage: `/fast set <model-id>`" in missing.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+    written = run(service.execute(_ctx(), "/smart set anthropic:claude-opus-4-8", api=api))
+    assert written.success is True, written.markdown
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_smart_model": "anthropic:claude-opus-4-8"},
+    ) in api.calls
+
+
+def test_fast_rejects_an_unknown_mode_and_points_at_the_set_verb() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    # One stray word is the handler's own rejection, which names the verb.
+    unknown = run(service.execute(_ctx(), "/fast summarize", api=api))
+    assert unknown.success is False
+    assert "Usage: `/fast [on|off|set <model-id>]`" in unknown.markdown
+    assert "Subcommands: set." in unknown.markdown
+
+    # A second word is a binder rejection, which layers the same guidance.
+    extra = run(service.execute(_ctx(), "/fast on now", api=api))
+    assert extra.success is False
+    assert "Unexpected argument `now`" in extra.markdown
+    assert "Valid subcommands: set." in extra.markdown
+
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+def test_background_verbs_bind_and_reject_extras() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    missing_url = run(service.execute(_ctx(), "/background set-url", api=api))
+    assert missing_url.success is False
+    assert "Missing required argument: base-url" in missing_url.markdown
+    assert "Usage: `/background set-url <base-url>`" in missing_url.markdown
+
+    extra = run(service.execute(_ctx(), "/background clear all", api=api))
+    assert extra.success is False
+    assert "Unexpected argument `all`" in extra.markdown
+
+    unknown = run(service.execute(_ctx(), "/background bogus", api=api))
+    assert unknown.success is False
+    assert (
+        "Usage: `/background [show|set <model-id>|set-url <base-url>|clear]`"
+        in unknown.markdown
+    )
+    # The derived subcommand list prints registry path tokens, so the
+    # hyphenated verb shows underscored (the pre-existing #131 naming wart;
+    # both spellings dispatch). The generated usage line above is the
+    # hyphenated form users type.
+    assert "Subcommands: clear, set, set_url." in unknown.markdown
+
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_sequential_tools_global_without_a_value_shows_generated_usage() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    bare_global = run(service.execute(_ctx(), "/sequential-tools global", api=api))
+    assert bare_global.success is False
+    assert "Usage: `/sequential-tools [on|off|inherit|global] [on|off]`" in bare_global.markdown
+    assert "`global` takes `on` or `off`." in bare_global.markdown
+
+    bad_value = run(service.execute(_ctx(), "/sequential-tools global maybe", api=api))
+    assert bad_value.success is False
+    assert "`global` takes `on` or `off`." in bad_value.markdown
+
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_sequential_tools_still_accepts_the_default_synonym() -> None:
+    # No declared choices: `default` is an undocumented `inherit` synonym the
+    # handler keeps, so the binder must not narrow the accepted set.
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/sequential-tools default", api=api))
+
+    assert result.success is True, result.markdown
+    assert "inherits the global sequential tool execution setting" in result.markdown
+
+
+def test_prune_rejects_an_unknown_mode_before_touching_the_thread() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/prune sideways", api=api))
+
+    assert result.success is False
+    assert "`sideways` is not a valid mode" in result.markdown
+    assert "Valid: soft, full" in result.markdown
+    assert not [call for call in api.calls if call[0] == "prune_thread"]
+
+
+def test_todos_complete_requires_an_id() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/todos complete", api=api))
+
+    assert result.success is False
+    assert "Missing required argument: todo_id" in result.markdown
+    assert "Usage: `/todos complete <todo_id>`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "list_todos"]
+
+
+def test_todos_list_rejects_a_second_filter_word() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/todos list done pending", api=api))
+
+    assert result.success is False
+    assert "Unexpected argument `pending`" in result.markdown
+    assert not [call for call in api.calls if call[0] == "list_todos"]
+
+
+def test_status_and_context_reject_stray_words() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    status = run(service.execute(_ctx(), "/status now", api=api))
+    assert status.success is False
+    assert "Unexpected argument `now`" in status.markdown
+
+    context = run(service.execute(_ctx(), "/context full", api=api))
+    assert context.success is False
+    assert "Unexpected argument `full`" in context.markdown
+
+    assert api.calls == []
+
+
+def test_artifacts_root_rejects_arguments_and_recent_coerces_its_limit() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    stray = run(service.execute(_ctx(), "/artifacts everything", api=api))
+    assert stray.success is False
+    assert "Unexpected argument `everything`" in stray.markdown
+
+    bad_limit = run(service.execute(_ctx(), "/artifacts recent lots", api=api))
+    assert bad_limit.success is False
+    assert "limit must be an integer, got `lots`" in bad_limit.markdown
+
+    assert not [call for call in api.calls if call[0] == "get_history"]
+
+
+def test_team_show_binds_a_quoted_multi_word_name() -> None:
+    # The hand parser read the raw tail, so the quotes came through and never
+    # matched; the rest param re-joins the split tokens instead.
+    api = FakeCommandApi()
+    api.thread_teams = [
+        {"id": "team-ops-1", "name": "Ops Crew", "description": "", "thread_ids": []}
+    ]
+    result = run(CommandService().execute(_ctx(), '/team show "Ops Crew"', api=api))
+
+    assert result.success is True, result.markdown
+    assert "Team: Ops Crew" in result.markdown

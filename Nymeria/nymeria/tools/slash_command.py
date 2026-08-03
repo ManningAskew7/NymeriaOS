@@ -72,7 +72,10 @@ def _slash_command_sync(
 
     ALWAYS call `/help all` first to see the full list of commands and
     their exact syntax (bare `/help` is only a compact name index). Pass
-    natural command strings with or without the leading slash.
+    natural command strings with or without the leading slash. Most
+    commands declare an argument schema and are validated before they run,
+    so a missing, unknown, or mistyped argument comes back as a usage error
+    naming the problem instead of doing something unintended.
 
     Examples:
         /help all

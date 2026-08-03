@@ -131,6 +131,62 @@ _TRIGGER_ID_PARAM = CommandParam(
     description="Event trigger id",
 )
 
+# ``/tools enable`` and ``/tools disable`` take the same target and resolve it
+# through the same category-then-tool lookup, so one declaration keeps their
+# usage strings from drifting apart.
+_TOOL_TARGET_PARAM = CommandParam(
+    "name",
+    required=True,
+    choices_ref="tools",
+    label="tool_or_category",
+    description="Tool name or tool category",
+)
+
+# ``/tasks`` and ``/todos list`` filter the same list the same way. No
+# ``choices``: the handler compares the token against whatever status the store
+# reports, so an unlisted status still filters rather than erroring.
+_TODO_FILTER_PARAM = CommandParam(
+    "filter",
+    default="active",
+    label="active|pending|in_progress|done|all",
+    description="Status filter (default: active)",
+)
+
+# ``/fast`` and ``/smart`` take the same bare toggle grammar.
+_TIER_MODE_PARAM = CommandParam(
+    "mode",
+    label="on|off|set <model-id>",
+    description="Turn the tier on or off (omit to toggle)",
+)
+
+# ``/fast set`` and ``/smart set`` store one tier value each. The model id is a
+# rest param because the hand parser joined the remaining tokens.
+_TIER_MODEL_PARAMS = (
+    CommandParam(
+        "model",
+        kind="rest",
+        required=True,
+        label="model-id",
+        description="Model id, or provider:model to route the tier elsewhere",
+    ),
+)
+
+# ``/config get`` and ``/settings get`` name one setting; ``/config set`` and
+# ``/settings set`` write one. The value is a rest param (the handlers joined
+# the remaining tokens), so a value with spaces survives.
+_SETTING_KEY_PARAM = CommandParam(
+    "key", required=True, description="Setting key"
+)
+_SETTING_WRITE_PARAMS = (
+    _SETTING_KEY_PARAM,
+    CommandParam(
+        "value",
+        kind="rest",
+        required=True,
+        description="New value (coerced to bool, int, float, or string)",
+    ),
+)
+
 
 def register_default_commands(service: "CommandService") -> None:
     """Register every built-in slash command on ``service`` in catalog order.
@@ -150,12 +206,13 @@ def register_default_commands(service: "CommandService") -> None:
         usage="/help [command|all]",
         aliases=("h",),
         examples=("/help provider", "/help all"),
-    )
+    )  # params-exempt: the dispatcher special-cases /help before binding
     service.register(
         "status",
         description="Model, context, tools, and task summary",
         category="Status",
         requires_thread=True,
+        params=(),
     )
     service.register(
         "thread",
@@ -339,8 +396,18 @@ def register_default_commands(service: "CommandService") -> None:
         "team",
         description="List your callable-thread teams",
         category="Thread",
-        usage="/team [list|show <team>]",
         aliases=("teams",),
+        # Bare "/team" lists and "/team <ref>" is show shorthand, so the root
+        # takes free text. The label keeps advertising the verbs (they are
+        # registered paths, routed before this handler ever runs).
+        params=(
+            CommandParam(
+                "team",
+                kind="rest",
+                label="list|show <team>",
+                description="Team id or name (bare /team lists)",
+            ),
+        ),
     )
     service.register(
         "team list",
@@ -353,36 +420,48 @@ def register_default_commands(service: "CommandService") -> None:
         "team show",
         description="Show one team's members and description",
         category="Thread",
-        usage="/team show <team-id-or-name>",
         aliases=("team_show",),
+        # A rest param, so a team name with spaces binds whether or not the
+        # caller quoted it (the hand parser read the raw tail, which kept the
+        # quotes and then failed to match).
+        params=(
+            CommandParam(
+                "team",
+                kind="rest",
+                required=True,
+                label="team-id-or-name",
+                description="Team id or team name",
+            ),
+        ),
     )
     service.register(
         "context",
         description="Detailed context and tool breakdown",
         category="Status",
         requires_thread=True,
+        params=(),
     )
     service.register(
         "usage",
         description="Show token usage and cost statistics",
         category="Status",
-        usage="/usage [session]",
         aliases=("tokens", "cost"),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "usage session",
         description="Show session-wide (cumulative) token usage for this thread",
         category="Status",
-        usage="/usage session",
         aliases=("usage_session",),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "tasks",
         description="Scheduled tasks overview",
         category="TODOs",
-        usage="/tasks [active|pending|in_progress|done|all]",
+        params=(_TODO_FILTER_PARAM,),
     )
     service.register(
         "model",
@@ -421,29 +500,95 @@ def register_default_commands(service: "CommandService") -> None:
         category="LLM",
         params=(),
     )
+    # Tier commands (backlog #129). The `set`, `set-url`, and `clear` verbs used
+    # to be tokens the parent handler dispatched on; registering them (the
+    # /fallback idiom) gives each verb its own declared schema and lets
+    # longest-prefix dispatch route it, leaving each root with the on/off
+    # grammar it advertises.
     service.register(
         "fast",
         description="Switch this thread to the fast model tier",
         category="LLM",
-        usage="/fast [on|off|set <model-id>]",
         mutates_state=True,
         danger_level="normal",
+        # Bare "/fast" toggles and on/off set the thread override; `set` is a
+        # registered path routed before this handler. No choices: the root's
+        # own usage error is the one that names the verbs, and the label keeps
+        # the usage line advertising them.
+        params=(_TIER_MODE_PARAM,),
+    )
+    service.register(
+        "fast set",
+        description="Set the model id stored for the fast tier",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=_TIER_MODEL_PARAMS,
     )
     service.register(
         "smart",
         description="Switch this thread to the smart model tier",
         category="LLM",
-        usage="/smart [on|off|set <model-id>]",
         mutates_state=True,
         danger_level="normal",
+        params=(_TIER_MODE_PARAM,),
+    )
+    service.register(
+        "smart set",
+        description="Set the model id stored for the smart tier",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=_TIER_MODEL_PARAMS,
     )
     service.register(
         "background",
         description="Show or set the global background/utility model tier",
         category="LLM",
-        usage="/background [set <model-id> | set-url <base-url> | clear]",
         mutates_state=True,
         danger_level="normal",
+        # `show` is the only token the root itself accepts; set, set-url, and
+        # clear are registered paths routed before this handler. The label
+        # keeps the usage line advertising them.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="show|set <model-id>|set-url <base-url>|clear",
+                description="Background tier subcommand (bare /background shows)",
+            ),
+        ),
+    )
+    service.register(
+        "background set",
+        description="Set the model id stored for the background tier",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=_TIER_MODEL_PARAMS,
+    )
+    service.register(
+        "background set-url",
+        description="Set a base URL override for the background tier",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=(
+            CommandParam(
+                "base_url",
+                kind="rest",
+                required=True,
+                label="base-url",
+                description="Base URL the background tier should call",
+            ),
+        ),
+    )
+    service.register(
+        "background clear",
+        description="Clear the background tier (falls back to the main model)",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=(),
     )
     service.register(
         "fallback",
@@ -567,7 +712,7 @@ def register_default_commands(service: "CommandService") -> None:
         surfaces=_fallback_sub_surfaces,
         mutates_state=True,
         agent_allowed=False,
-    )
+    )  # params-exempt: int-or-note tail is not expressible as declared params
     service.register(
         "fallback deny",
         description="Decline a parked model swap (the turn proceeds on the original model's outcome)",
@@ -576,7 +721,7 @@ def register_default_commands(service: "CommandService") -> None:
         surfaces=_fallback_sub_surfaces,
         mutates_state=True,
         agent_allowed=False,
-    )
+    )  # params-exempt: int-or-note tail is not expressible as declared params
     service.register(
         "think",
         description="Show or change thinking mode (thread-scoped when a thread is active)",
@@ -645,7 +790,7 @@ def register_default_commands(service: "CommandService") -> None:
         mutates_state=True,
         danger_level="dangerous",
         agent_allowed=False,
-    )
+    )  # params-exempt: step-rail grammar over server-side pending state
     # Same surface restriction as "provider setup": OAuth authorization
     # codes ride the typed "/provider cliproxy paste <url>" path, which on
     # a chat platform would persist them in the platform's message history.
@@ -668,7 +813,7 @@ def register_default_commands(service: "CommandService") -> None:
         mutates_state=True,
         danger_level="dangerous",
         agent_allowed=False,
-    )
+    )  # params-exempt: step-rail grammar over server-side pending state
     service.register(
         "provider list",
         description="List LLM providers grouped by support tier",
@@ -763,35 +908,74 @@ def register_default_commands(service: "CommandService") -> None:
         description="Show server settings",
         category="Settings",
         aliases=("config_show",),
+        params=(),
     )
     service.register(
         "config get",
         description="Show one server setting",
         category="Settings",
-        usage="/config get <key>",
         aliases=("config_get",),
+        params=(_SETTING_KEY_PARAM,),
     )
     service.register(
         "config set",
         description="Change a server setting",
         category="Settings",
-        usage="/config set <key> <value>",
         aliases=("config_set",),
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
+        params=_SETTING_WRITE_PARAMS,
     )
     service.register(
         "settings",
         description="Show or change server settings (delegates to /config)",
         category="Settings",
-        usage="/settings [show|get <key>|set <key> <value>]",
         mutates_state=True,
         danger_level="normal",
         note=(
             "The set branch requires an admin user, enforced at the update "
             "surface (CommandBackendClient.update_settings and PATCH /settings)."
         ),
+        # Bare "/settings" shows, and "view" is a show synonym; the three verbs
+        # below are registered paths, routed before this handler. The label
+        # keeps the usage line advertising them.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="show|get <key>|set <key> <value>",
+                description="Settings subcommand (bare /settings shows)",
+            ),
+        ),
+    )
+    # /settings verbs (backlog #129), registered so each carries its own schema.
+    # They delegate to the /config handlers, which is where the one
+    # implementation lives; the admin gate stays at the update surface, exactly
+    # as the root's note records, so these deliberately do NOT set
+    # requires_admin (that would newly refuse a non-admin at dispatch).
+    service.register(
+        "settings show",
+        description="Show server settings",
+        category="Settings",
+        params=(),
+    )
+    service.register(
+        "settings get",
+        description="Show one server setting",
+        category="Settings",
+        params=(_SETTING_KEY_PARAM,),
+    )
+    service.register(
+        "settings set",
+        description="Change a server setting",
+        category="Settings",
+        mutates_state=True,
+        danger_level="normal",
+        note=(
+            "Requires an admin user, enforced at the update surface "
+            "(CommandBackendClient.update_settings and PATCH /settings)."
+        ),
+        params=_SETTING_WRITE_PARAMS,
     )
     service.register(
         "env show",
@@ -799,30 +983,46 @@ def register_default_commands(service: "CommandService") -> None:
         category="Settings",
         aliases=("env_show",),
         requires_admin=True,
+        params=(),
     )
     service.register(
         "env get",
         description="Show one unmasked environment variable",
         category="Settings",
-        usage="/env get <key>",
         aliases=("env_get",),
         requires_admin=True,
+        params=(
+            CommandParam(
+                "key", required=True, description="Environment variable name"
+            ),
+        ),
     )
     service.register(
         "env set",
         description="Change an environment variable",
         category="Settings",
-        usage="/env set <key> <value>",
         aliases=("env_set",),
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
+        params=(
+            CommandParam(
+                "key", required=True, description="Environment variable name"
+            ),
+            CommandParam(
+                "value",
+                kind="rest",
+                required=True,
+                description="New value (coerced to bool, int, float, or string)",
+            ),
+        ),
     )
     service.register(
         "tools core",
         description="Show core tools",
         category="Tools",
         aliases=("tools_core", "tools list_core"),
+        params=(),
     )
     service.register(
         "tools optional",
@@ -830,6 +1030,7 @@ def register_default_commands(service: "CommandService") -> None:
         category="Tools",
         aliases=("tools_optional",),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "tools enabled",
@@ -837,43 +1038,64 @@ def register_default_commands(service: "CommandService") -> None:
         category="Tools",
         aliases=("tools_enabled",),
         requires_thread=True,
+        params=(),
     )
     service.register(
         "tools category",
         description="Show tools in a category",
         category="Tools",
-        usage="/tools category <name>",
         aliases=("tools_category",),
         requires_thread=True,
+        # No choices_ref: the live category list comes from the tools API and
+        # the handler already names every valid category when one misses.
+        params=(
+            CommandParam(
+                "name", required=True, description="Tool category name"
+            ),
+        ),
     )
     service.register(
         "tools enable",
         description="Enable a tool or category on this thread",
         category="Tools",
-        usage="/tools enable <tool_or_category>",
         aliases=("tools_enable",),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
         examples=("/tools enable web_search", "/tools enable productivity"),
+        params=(_TOOL_TARGET_PARAM,),
     )
     service.register(
         "tools disable",
         description="Disable a tool or category on this thread",
         category="Tools",
-        usage="/tools disable <tool_or_category>",
         aliases=("tools_disable",),
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
+        params=(_TOOL_TARGET_PARAM,),
     )
     service.register(
         "sequential-tools",
         description="Show or set sequential (ordered, one-at-a-time) tool execution",
         category="Tools",
-        usage="/sequential-tools [on|off|inherit|global on|off]",
         mutates_state=True,
         danger_level="normal",
+        # A mode word then its value, the /memory limit shape. No choices: the
+        # handler also accepts `default` as an `inherit` synonym, so the
+        # advertised set lives in the label and the map stays in the handler.
+        params=(
+            CommandParam(
+                "mode",
+                label="on|off|inherit|global",
+                description="Thread override, `inherit`, or the global scope",
+            ),
+            CommandParam(
+                "value",
+                label="on|off",
+                description="Value for the global scope",
+            ),
+        ),
         # Deterministic operator setting, not something the model should flip; the
         # agent already has run_tools_in_order for per-batch ordering.
         agent_allowed=False,
@@ -1538,102 +1760,166 @@ def register_default_commands(service: "CommandService") -> None:
         "account",
         description="Inspect account, tokens, and linked platforms",
         category="Personal",
-        usage="/account current|tokens|platforms",
         aliases=("acct",),
+        # Bare "/account" shows the current user; the verbs are registered
+        # paths, routed before this handler ever runs.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="current|tokens|platforms",
+                description="Account subcommand (bare /account shows the user)",
+            ),
+        ),
     )
     service.register(
         "account current",
         description="Show details for the current user",
         category="Personal",
-        usage="/account current",
         aliases=("account_current", "account_me"),
+        params=(),
     )
     service.register(
         "account tokens",
         description="List API tokens for the current user",
         category="Personal",
-        usage="/account tokens",
         aliases=("account_tokens",),
+        params=(),
     )
     service.register(
         "account tokens issue",
         description="Issue a new API token for the current user",
         category="Personal",
-        usage="/account tokens issue [label]",
         aliases=("account_tokens_issue",),
         mutates_state=True,
         danger_level="normal",
+        params=(
+            CommandParam(
+                "label",
+                kind="rest",
+                description="Label recorded against the new token",
+            ),
+        ),
     )
     service.register(
         "account tokens revoke",
         description="Revoke an API token by hash prefix",
         category="Personal",
-        usage="/account tokens revoke <hash-prefix>",
         aliases=("account_tokens_revoke",),
         mutates_state=True,
         danger_level="dangerous",
+        params=(
+            CommandParam(
+                "prefix",
+                required=True,
+                label="hash-prefix",
+                description="Token hash prefix shown by /account tokens",
+            ),
+        ),
     )
     service.register(
         "account platforms",
         description="List chat platforms linked to the current user",
         category="Personal",
-        usage="/account platforms",
         aliases=("account_platforms",),
+        params=(),
     )
     service.register(
         "activity",
         description="Show recent activity and notifications",
         category="Personal",
-        usage="/activity list|notifications",
+        # Bare "/activity" lists, and `recent` is a list synonym the handler
+        # keeps; "/activity notifications" is a registered path routed first.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="list|notifications",
+                description="Activity subcommand (bare /activity lists)",
+            ),
+        ),
     )
     service.register(
         "activity list",
         description="Show the most recent activity entries",
         category="Personal",
-        usage="/activity list [limit] [--type TYPE] [--thread ID]",
         aliases=("activity_list", "activity_recent"),
+        # --type is validated against the ActivityType enum in the handler
+        # (live value set), and --thread accepts `current`/`.` for this thread.
+        params=(
+            CommandParam(
+                "limit",
+                type="int",
+                default=20,
+                description="How many entries to show",
+            ),
+            CommandParam(
+                "type",
+                kind="option",
+                description="Activity type to filter on",
+            ),
+            CommandParam(
+                "thread",
+                kind="option",
+                label="ID",
+                description="Thread id, or `current` for this thread",
+            ),
+        ),
     )
     service.register(
         "activity notifications",
         description="Show notifications and unread count",
         category="Personal",
-        usage="/activity notifications",
         aliases=("activity_notifications",),
+        params=(),
     )
     service.register(
         "artifacts",
         description="Inspect recent workspace artifacts",
         category="Personal",
-        usage="/artifacts recent",
         requires_thread=True,
+        params=(),
     )
     service.register(
         "artifacts recent",
         description="List recent workspace artifacts from thread history",
         category="Personal",
-        usage="/artifacts recent [limit]",
         aliases=("artifacts_recent", "artifacts list"),
         requires_thread=True,
+        params=(
+            CommandParam(
+                "limit",
+                type="int",
+                default=10,
+                description="How many artifacts to show",
+            ),
+        ),
     )
     service.register(
         "doctor",
         description="Run server-side diagnostics (auth + model)",
         category="System",
-        usage="/doctor [auth|model]",
+        # Bare "/doctor" runs both sections; each section is a registered path
+        # routed before this handler.
+        params=(
+            CommandParam(
+                "subcommand",
+                label="auth|model",
+                description="Diagnostic section (bare /doctor runs both)",
+            ),
+        ),
     )
     service.register(
         "doctor auth",
         description="Show the resolved identity for the current request",
         category="System",
-        usage="/doctor auth",
         aliases=("doctor_auth",),
+        params=(),
     )
     service.register(
         "doctor model",
         description="Show LLM provider/model diagnostics",
         category="System",
-        usage="/doctor model",
         aliases=("doctor_model",),
+        params=(),
     )
     service.register(
         "memory list",
@@ -1710,8 +1996,8 @@ def register_default_commands(service: "CommandService") -> None:
         "todos list",
         description="List TODOs",
         category="TODOs",
-        usage="/todos list [active|pending|in_progress|done|all]",
         aliases=("todos_list",),
+        params=(_TODO_FILTER_PARAM,),
     )
     service.register(
         "todos add",
@@ -1722,24 +2008,36 @@ def register_default_commands(service: "CommandService") -> None:
         mutates_state=True,
         danger_level="normal",
         examples=("/todos add Check logs | 2h | daily",),
-    )
+    )  # params-exempt: raw-rest pipe grammar (task | schedule | repeat | notes)
     service.register(
         "todos complete",
         description="Complete a TODO",
         category="TODOs",
-        usage="/todos complete <todo_id>",
         aliases=("todos_complete",),
         mutates_state=True,
         danger_level="normal",
+        params=(
+            CommandParam(
+                "todo_id",
+                required=True,
+                description="TODO id or unique id prefix",
+            ),
+        ),
     )
     service.register(
         "todos delete",
         description="Delete a TODO",
         category="TODOs",
-        usage="/todos delete <todo_id>",
         aliases=("todos_delete",),
         mutates_state=True,
         danger_level="dangerous",
+        params=(
+            CommandParam(
+                "todo_id",
+                required=True,
+                description="TODO id or unique id prefix",
+            ),
+        ),
     )
     service.register(
         "notepad read",
@@ -1783,11 +2081,21 @@ def register_default_commands(service: "CommandService") -> None:
         "prune",
         description="Compress tool returns in the active thread (no LLM)",
         category="Thread",
-        usage="/prune [soft|full]",
         agent_allowed=False,
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
+        params=(
+            CommandParam(
+                "mode",
+                choices=("soft", "full"),
+                default="full",
+                description=(
+                    "soft truncates each tool result to 500 chars; full drops "
+                    "it to a placeholder"
+                ),
+            ),
+        ),
     )
     service.register(
         "stop",
@@ -1798,7 +2106,7 @@ def register_default_commands(service: "CommandService") -> None:
         requires_thread=True,
         mutates_state=True,
         danger_level="normal",
-    )
+    )  # params-exempt: act-now, trailing words must never block the stop
     service.register(
         "clear",
         description="Clear conversation history (preserves notepad + tool config)",
@@ -1808,7 +2116,7 @@ def register_default_commands(service: "CommandService") -> None:
         requires_thread=True,
         mutates_state=True,
         danger_level="dangerous",
-    )
+    )  # params-exempt: act-now, trailing words must never block the clear
     service.register(
         "restart api",
         description="Restart the API server process (admin-only)",
@@ -1818,7 +2126,7 @@ def register_default_commands(service: "CommandService") -> None:
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
-    )
+    )  # params-exempt: act-now, trailing words must never block the restart
     service.register(
         "orchestrate",
         description=(

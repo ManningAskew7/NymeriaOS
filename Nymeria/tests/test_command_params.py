@@ -413,6 +413,58 @@ def test_params_payload_distinguishes_unadopted_from_zero_args() -> None:
     assert model.name == "x" and model.kind == "positional"
 
 
+# ── Adoption ratchet ─────────────────────────────────────────────────────────
+
+# The full-catalog adoption invariant (#129): every executable command
+# declares params unless it is on this list, and every entry here must stay
+# genuinely exempt. Growing this list is a design decision, not a shortcut;
+# each entry names its reason.
+_PARAMS_EXEMPT: frozenset[str] = frozenset(
+    {
+        # Act-now commands: trailing words must never block the action.
+        "stop",
+        "clear",
+        "restart.api",
+        # The dispatcher special-cases /help before binding runs.
+        "help",
+        # Raw-rest grammars: prefix parsing or quote fidelity on the raw tail.
+        "notepad.write",
+        "todos.add",
+        # Free-text tail with int-ambiguity (minutes-or-note).
+        "fallback.approve",
+        "fallback.deny",
+        # Server-state step rails (backlog 08-cli.md exemption).
+        "provider.setup",
+        "provider.cliproxy",
+    }
+)
+
+
+def test_every_executable_command_declares_params_unless_exempt() -> None:
+    service = CommandService()
+    missing = sorted(
+        cmd.id
+        for cmd in service._commands.values()
+        if cmd.executable and cmd.params is None and cmd.id not in _PARAMS_EXEMPT
+    )
+    assert missing == [], f"Executable commands without declared params: {missing}"
+
+    stale = sorted(
+        command_id
+        for command_id in _PARAMS_EXEMPT
+        if command_id not in service._commands
+        or service._commands[command_id].params is not None
+    )
+    assert stale == [], f"Exemption entries no longer exempt: {stale}"
+
+    adopted = sum(
+        1
+        for cmd in service._commands.values()
+        if cmd.executable and cmd.params is not None
+    )
+    assert adopted >= 120  # anti-vacuity floor, mirrors the binding guard's
+
+
 # ── Dispatcher wiring (parse-and-bind) ───────────────────────────────────────
 
 
