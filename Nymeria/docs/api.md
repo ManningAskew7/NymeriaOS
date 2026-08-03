@@ -1461,7 +1461,7 @@ the strict zero-argument declaration. Each entry:
 | `type` | `str`, `int`, or `bool` |
 | `required` | missing value is a usage error |
 | `choices` | statically enforced value set (matched case-insensitively) |
-| `choices_ref` | names a DYNAMIC value set (`models`, `tools`, ...); advisory metadata for autocomplete and form generation, never enforced by the dispatcher |
+| `choices_ref` | names a DYNAMIC value set (`models`, `providers`, `fallback_models`, `tools`, `skills`, `threads`, `triggers`, `hooks`, `mcp_servers`); advisory metadata, never enforced by the dispatcher. Every ref resolves live via `GET /commands/options/{ref}` (one server-side resolver registry, `core/command_option_resolvers.py`, serves that endpoint, generated picker forms, and Discord autocomplete) |
 | `default` | applied when the param is absent |
 | `repeatable` | collects a list (`--cond a --cond b`, or all bare tokens for a repeatable positional) |
 | `aliases` | alternate spellings, e.g. `-y` for `--yes` |
@@ -1496,9 +1496,20 @@ POST /commands/execute
   "thread_id": "abc123",
   "source": "user",
   "actor": "user",
-  "surface": "desktop"
+  "surface": "desktop",
+  "supports_forms": false
 }
 ```
+
+`supports_forms` (default false) is the form-capability flag: set it ONLY
+when this caller renders `data.form` payloads (today: the Rich CLI). It
+gates two behaviors. Without it, form payloads are STRIPPED from the
+response at the dispatcher (the markdown fallback carries everything a form
+does by construction; `data.state` hints and the `execution_kind` refusal
+payload survive). With it, a schema'd command invoked WITHOUT its required
+argument is rescued into a generated picker (below) instead of the usage
+error; agents never rescue regardless of the flag, and extras, typos, and
+invalid values stay errors for every caller.
 
 **Response:**
 
@@ -1533,7 +1544,9 @@ access notes, and `examples`. Family roots given a bad or missing subcommand
 render their usage error from the registered `usage` string plus the derived
 subcommand list, ending with a pointer to `/help <command>`.
 
-`data` is usually `null`. On success it may carry the structured payloads of
+`data` is usually `null`, and a FAILING result never carries `data` (one
+exception: the `execution_kind` refusal above). On success it may carry the
+structured payloads of
 the declarative form contract (schema owned by `core/command_forms.py`):
 `data.form` is a versioned form definition (v1: title, tabs of
 search/text/radio/checkbox fields, and a submit command template with
@@ -1563,28 +1576,79 @@ suppresses the rest of the markdown on those clients, the server attaches
 them only to re-renders of a rail the surface has already printed, never to
 a step whose guidance is load-bearing (a review table, a fresh auth URL, a
 degraded-list caveat). Notes never carry information absent from the
-markdown fallback, so form-less surfaces lose nothing. `data.state` is a
+markdown fallback, so form-less surfaces lose nothing.
+
+A tab with NO fields is a described ACTION (#139, 2026-08-03): it carries
+its own placeholder-free `submit` template, which the client dispatches
+AS-IS on Enter, and an optional tab `description` rendered where a fielded
+tab shows its input or list. The empty-selection no-op applies only to
+templates that HAVE substituted `{key}` placeholders; a placeholder-free
+template always dispatches. `/provider <name>`'s Set up and Test tabs are
+the first producers.
+
+`data.state` is a
 dict of
 client-state sync hints (for example `{"model": ...}` after a model change,
 `{"reasoning": {"enabled": ..., "effort": ...}}` after `/think` or its
 `/reasoning`/`/thinking` aliases change thinking mode, carrying the level the
 model will actually run at, or `{"switch_thread": {"thread_id": ...}}` after
 `/thread switch`). The
-markdown fallback is always present, so frontends may ignore `data`
-entirely; the Rich CLI is the consumer. Backend-declared forms so far: bare
+markdown fallback is always present, and form payloads ship only to callers
+that sent `supports_forms` (the Rich CLI); `data.state` ships to everyone
+and non-form frontends simply ignore it.
+
+**Generated pickers (2026-08-03).** Beyond the hand-authored forms, ANY
+schema'd command whose sole required positional has an option set (static
+`choices`, or a `choices_ref` with a resolver) answers a bare invocation
+from a form-capable caller with a picker generated from its declaration:
+one tab (or one per WRITABLE scope for commands with a `scope` param:
+distinct field keys per tab, the global tab only for admins), a filter
+line past 10 options, and a submit template built from the declared path.
+Resolver `current` markers are stripped for every ref except `threads` (a
+shared resolver cannot know which command it feeds, and a wrong default
+under the cursor is worse than none; re-switching to the current thread
+is a no-op). Free-text arguments (thread titles, prompts) keep
+the plain usage error by design, as do secret-adjacent grammars
+(`no_echo`), multi-required shapes, and `fallback set` (an ordered chain a
+single-select picker would misrepresent). Examples live today on
+`/thread switch`, `/tools enable|disable`, `/skills enable|disable`,
+`/triggers enable|disable|delete`, `/hook enable|disable|delete`,
+`/mcp test|retry|remove`, `/fast set`, `/smart set`, `/provider switch`,
+and `/fallback remove` (whose option set is the configured chain itself,
+not the model catalog).
+
+Hand-authored forms: bare
 `/model` (model picker), bare `/provider` (Providers tab submitting into
 the per-provider action step `/provider <name>`, plus a CLIProxy tab over
 the subscription catalog behind `/provider cliproxy`; every caller gets the
 picker, with the CLIProxy tab dropped for callers its submit target
 refuses), `/provider <name>` itself (the action step: Use tab submitting
 `/provider switch <name> global|thread`, plus admin-visible Set up /
-CLIProxy / Test tabs, each submitting its real registered command), the
+CLIProxy / Test action tabs), the
 `/provider setup` chain (masked key entry or Keep/Replace/Clear, API mode,
 base URL, live model list fetched with the pending credentials, review,
-then a test-first atomic apply in one settings patch), and bare `/think`
-(thinking level per writable scope, a "This thread" tab only when a thread
-is active). Clients that render forms should treat unknown
+then a test-first atomic apply in one settings patch), the `/provider
+cliproxy` OAuth chain (target, login rail, model pick, apply), and bare
+`/think` (thinking level per writable scope, a "This thread" tab only when
+a thread is active). Clients that render forms should treat unknown
 versions or field kinds as "render the markdown instead".
+
+```http
+GET /commands/options/{ref}?thread_id=abc123&q=gpt&limit=25
+```
+
+Resolves a `choices_ref` value set live, scoped to the calling identity
+(threads, hooks, and triggers are the caller's own; `mcp_servers` answers
+empty for non-admins, mirroring the `/mcp` gates). Returns a list of
+`{id, label, meta, description, current}` options, the same shape form
+option lists use, so a client can feed them straight into a picker or an
+autocomplete. Optional `q` narrows server-side (casefolded substring over
+id, label, and meta) and `limit` caps the list (0 = uncapped, max 100),
+so latency-bound consumers such as autocomplete never ship a full
+catalog. 404 for a ref no resolver claims; a resolver fault degrades to
+an empty list, never an error. Discord autocomplete is this endpoint's
+first remote consumer (acting as the invoking user's linked account); the
+CLI palette and GUI argument stages (#135) are the intended next ones.
 
 ### Chat Slash Commands
 
