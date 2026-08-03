@@ -24,7 +24,7 @@ class BackendCommandProvider:
         self.commands = list(commands)
 
     @classmethod
-    def from_service(cls) -> "BackendCommandProvider":
+    def from_service(cls, user_id: str | None = None) -> "BackendCommandProvider":
         """Build a provider from the in-process backend command registry."""
         from ....core.command_service import get_command_service
 
@@ -34,6 +34,7 @@ class BackendCommandProvider:
                 actor="user",
                 surface="cli",
                 is_admin=True,
+                user_id=user_id,
             )
         ]
         return cls(commands)
@@ -55,7 +56,7 @@ class BackendCommandProvider:
                 user_id=user_id,
             )
             return cls([_mapping(command) for command in commands])
-        return cls.from_service()
+        return cls.from_service(user_id)
 
     def register(self, registry: CommandRegistry) -> None:
         """Register every backend command as a CLI proxy.
@@ -79,6 +80,8 @@ class BackendCommandProvider:
             self._register_path(registry, info, path)
         for info, path in registerable:
             self._register_root_aliases(registry, info, path)
+        for info, path in registerable:
+            self._register_user_alias_proxies(registry, info, path)
 
     def _register_root_aliases(
         self,
@@ -114,6 +117,36 @@ class BackendCommandProvider:
             proxy.name = alias
             proxy.aliases = []
             proxy.hidden = True
+            registry.register(proxy)
+
+    def _register_user_alias_proxies(
+        self,
+        registry: CommandRegistry,
+        info: Mapping[str, Any],
+        path: tuple[str, ...],
+    ) -> None:
+        """The caller's user-defined aliases (#133) as hidden RAW-FORWARD
+        proxies, so they tab-complete and dispatch here.
+
+        Deliberately NOT the ``_register_root_aliases`` shape: a user alias
+        can inject argument values, and a canonical-path proxy would drop
+        them. The proxy forwards the TYPED spelling and lets the backend's
+        own expansion (the stamped, gate-preserving one) do the work, which
+        also means a mid-session change to the alias is honored. Local
+        commands and the catalog win the name.
+        """
+        for raw_alias in info.get("user_aliases", []) or []:
+            alias = str(raw_alias).strip().lstrip("/").casefold()
+            if not alias or " " in alias:
+                continue
+            if registry.get(alias) is not None:
+                continue
+            proxy = _backend_command(info, (alias,))
+            proxy.name = alias
+            proxy.aliases = []
+            proxy.hidden = True
+            proxy.usage = f"/{alias}"
+            proxy.description = f"Your alias for /{_display_path(path)}"
             registry.register(proxy)
 
     def _register_path(
@@ -176,9 +209,16 @@ class BackendCommandProvider:
         )
 
 
-def register(registry: CommandRegistry) -> None:
-    """Register backend global command proxies on a CLI registry."""
-    BackendCommandProvider.from_service().register(registry)
+def register(registry: CommandRegistry, user_id: str | None = None) -> None:
+    """Register backend global command proxies on a CLI registry.
+
+    ``user_id`` rides into the catalog read so the caller's user-defined
+    aliases (#133) mirror as raw-forward proxies. The local store answers,
+    which is exact in the slim shape; against a remote backend the mirror
+    is best-effort and the registry's unknown-token fallback stays the
+    dispatch authority.
+    """
+    BackendCommandProvider.from_service(user_id).register(registry)
 
 
 def _ensure_child(
@@ -302,6 +342,25 @@ async def _execute_backend_command(
     path: tuple[str, ...],
     args: list[str],
 ) -> CommandResult:
+    raw_command = "/" + " ".join((*path, *[str(arg) for arg in args])).strip()
+    return await forward_raw_command(context, raw_command, command_path=path)
+
+
+async def forward_raw_command(
+    context: CommandContext,
+    raw_command: str,
+    *,
+    command_path: tuple[str, ...] = (),
+) -> CommandResult:
+    """Send one command string to the backend dispatcher verbatim.
+
+    The shared tail of every backend proxy, and (#133) the registry's
+    unknown-token fallback: forwarding the TYPED text rather than a
+    recomposed path is what lets the backend's own alias expansion (built-in
+    and user-defined, both gate-preserving) answer for spellings this
+    process has never heard of.
+    """
+    path = command_path or tuple(raw_command.lstrip("/").split()[:1])
     client = context.client
     execute_command_attr = getattr(client, "execute_command", None)
     if not callable(execute_command_attr):
@@ -312,7 +371,6 @@ async def _execute_backend_command(
         )
     execute_command: Any = execute_command_attr
 
-    raw_command = "/" + " ".join((*path, *[str(arg) for arg in args])).strip()
     result = await execute_command(
         raw_command,
         thread_id=context.thread_id,

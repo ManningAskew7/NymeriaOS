@@ -543,7 +543,6 @@ class InProcessAgentClient:
 
         from ....core.command_service import get_command_service
 
-        del user_id
         return [
             asdict(info)
             for info in get_command_service().list_commands(
@@ -551,6 +550,9 @@ class InProcessAgentClient:
                 actor=actor,
                 surface=surface,
                 is_admin=True,
+                # Carries the caller's user-defined aliases into the CLI
+                # mirror (#133); the schema itself is user-independent.
+                user_id=user_id,
             )
         ]
 

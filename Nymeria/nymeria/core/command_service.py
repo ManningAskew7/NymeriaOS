@@ -15,6 +15,7 @@ import logging
 import os
 import shlex
 import uuid
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -162,6 +163,10 @@ class CommandInfo:
     id: str = ""
     path: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
+    # The CALLER'S own user-defined aliases for this command (#133), present
+    # only when list_commands ran with a user_id. Display and client-mirror
+    # metadata: dispatch reads the store directly, never this field.
+    user_aliases: list[str] = field(default_factory=list)
     scope: CommandScope = "global"
     surfaces: list[str] = field(default_factory=list)
     blocked_surfaces: list[str] = field(default_factory=list)
@@ -2275,7 +2280,7 @@ class CommandService:
         effective_actor = (actor or _actor_from_source(source)).lower()
         effective_surface = surface or _surface_from_source(source)
         definitions = list(self._commands.values())
-        return [
+        infos = [
             self._to_info(cmd)
             for cmd in sorted(definitions, key=lambda c: (c.category, c.name))
             if self._is_visible(
@@ -2285,6 +2290,48 @@ class CommandService:
                 is_admin=is_admin,
                 include_hidden=include_hidden,
             )
+        ]
+        if user_id:
+            infos = self._with_user_aliases(infos, user_id)
+        return infos
+
+    def _with_user_aliases(
+        self, infos: list[CommandInfo], user_id: str
+    ) -> list[CommandInfo]:
+        """Annotate each command with the caller's own aliases for it (#133).
+
+        Only LIVE rows ride: stamp-valid, target still registered, name still
+        unclaimed by the catalog. A store fault degrades to no annotation;
+        the catalog listing must never 500 over the alias table.
+        """
+        try:
+            from .user_aliases import get_user_aliases_repo
+
+            rows = get_user_aliases_repo().list_aliases(user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "user-alias catalog annotation failed for %s: %s", user_id, e
+            )
+            return infos
+        if not rows:
+            return infos
+        by_target: dict[str, list[str]] = {}
+        for row in rows:
+            if not row.stamp_valid or row.command_id not in self._commands:
+                continue
+            if self._builtin_claims_token(row.name):
+                continue
+            by_target.setdefault(row.command_id, []).append(row.name)
+        if not by_target:
+            return infos
+        return [
+            dataclasses.replace(
+                info,
+                user_aliases=[f"/{name}" for name in sorted(by_target[info.id])],
+            )
+            if info.id in by_target
+            else info
+            for info in infos
         ]
 
     def _is_visible(

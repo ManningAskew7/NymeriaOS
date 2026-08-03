@@ -96,6 +96,8 @@ class CommandInfoResponse(BaseModel):
     id: str
     path: list[str]
     aliases: list[str]
+    # The caller's own user-defined aliases for this command (#133).
+    user_aliases: list[str] = []
     scope: CommandScope
     surfaces: list[str]
     blocked_surfaces: list[str] = []

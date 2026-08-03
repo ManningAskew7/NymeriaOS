@@ -230,6 +230,11 @@ class CommandRegistry:
 
         match = self.resolve(invocation)
         if match is None:
+            fallback = await self._forward_unknown_to_backend(
+                context, raw_input, json_requested=json_requested
+            )
+            if fallback is not None:
+                return self._emit_result(context, fallback)
             return self._emit_result(
                 context,
                 _unknown_command_result(invocation.command_name),
@@ -239,6 +244,37 @@ class CommandRegistry:
         if not result.command_path and result.handled:
             result = replace(result, command_path=match.path)
         return self._emit_result(context, result)
+
+    async def _forward_unknown_to_backend(
+        self,
+        context: CommandContext,
+        raw_input: str,
+        *,
+        json_requested: bool = False,
+    ) -> CommandResult | None:
+        """Forward an unresolved first token to the backend verbatim (#133).
+
+        The local registry resolves the first token and used to die here,
+        which made every backend-side spelling this process had not mirrored
+        (user-defined aliases above all, but also any command newer than the
+        startup catalog fetch) an unknown command. The backend dispatcher is
+        the authority: it expands aliases gate-preservingly and answers
+        typos with its own did-you-mean copy. Returns None when no transport
+        is connected, so the offline CLI keeps its local error.
+        """
+        client = getattr(context, "client", None)
+        if client is None or not callable(getattr(client, "execute_command", None)):
+            return None
+        from .backend import forward_raw_command
+
+        text = raw_input
+        if json_requested:
+            # The --json flag is CLI-local; it was stripped from the parsed
+            # invocation but the forward sends raw text.
+            text = " ".join(
+                token for token in raw_input.split() if token != "--json"
+            )
+        return await forward_raw_command(context, text)
 
     def get_all_commands(self) -> list[Command]:
         """Return all non-hidden root commands."""

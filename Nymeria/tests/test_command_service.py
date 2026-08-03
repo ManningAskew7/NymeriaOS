@@ -3299,6 +3299,30 @@ def test_stale_stamped_alias_is_inert_at_dispatch(alias_repo) -> None:
     assert "INERT" in listing.markdown
 
 
+def test_list_commands_annotates_the_callers_user_aliases(alias_repo) -> None:
+    """The catalog ride (#133): with a user_id, each command carries THAT
+    caller's aliases for it in `user_aliases` (display and client-mirror
+    metadata; dispatch reads the store). Stale and other-user rows never
+    ride, and a user-less listing is untouched.
+    """
+    service = CommandService()
+    api = FakeCommandApi()
+    run(service.execute(_ctx(), "/alias create td todos list all", api=api))
+
+    infos = service.list_commands(user_id="alice")
+    by_id = {info.id: info for info in infos}
+    assert by_id["todos.list"].user_aliases == ["/td"]
+    assert by_id["todos"].user_aliases == []
+
+    # No user, no annotation; another user, no annotation.
+    assert all(
+        info.user_aliases == [] for info in service.list_commands()
+    )
+    assert all(
+        info.user_aliases == [] for info in service.list_commands(user_id="bob")
+    )
+
+
 def test_alias_claimed_by_a_later_builtin_goes_dormant(alias_repo) -> None:
     """Lose-to-everything at DISPATCH: the catalog can grow after an alias
     was created, and the catalog wins from that moment; the listing says

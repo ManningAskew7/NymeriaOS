@@ -186,7 +186,7 @@ class CLIApp:
         # claims (truly frontend-local: theme, clipboard, etc.) or contribute
         # subcommands that get merged under a backend-owned root. See
         # CommandRegistry.register for the merge rules.
-        backend.register(self.registry)
+        backend.register(self.registry, user_id=self.state.user_id)
 
         system.register(self.registry)
         connection.register(self.registry)

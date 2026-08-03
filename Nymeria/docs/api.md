@@ -1430,6 +1430,7 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "category": "Tools",
     "subcommands": [],
     "aliases": ["/tools_list", "/tools_enabled", "/tools_category", "/tools enabled", "/tools category", "/tools_core", "/tools core", "/tools_optional", "/tools optional"],
+    "user_aliases": [],
     "scope": "global",
     "surfaces": ["desktop", "mobile", "cli", "discord", "telegram", "slack", "whatsapp", "teams", "api", "agent"],
     "agent_allowed": true,
@@ -1583,7 +1584,11 @@ path and verified at dispatch; a row edited outside the `/alias` command
 is skipped as inert and flagged in the listing. Discord cannot type alias
 spellings (its slash registry only knows registered names), but managing
 them there works. Expansion values are single unquoted words; quoted
-phrases are refused at creation.
+phrases are refused at creation. `GET /commands` with a `user_id` annotates
+each command with that caller's own aliases for it (`user_aliases`, display
+metadata; dispatch always reads the store), and the CLI additionally
+forwards any UNKNOWN first token to the dispatcher verbatim, so aliases
+created seconds ago work there without a restart.
 
 **Guidance behavior (2026-08-02).** Unknown commands and unknown subcommands
 answer with a nearest-match suggestion ("Did you mean `/provider`?") derived
