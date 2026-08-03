@@ -465,6 +465,22 @@ def test_every_executable_command_declares_params_unless_exempt() -> None:
     assert adopted >= 120  # anti-vacuity floor, mirrors the binding guard's
 
 
+def test_slash_command_tool_description_derives_the_blocked_list() -> None:
+    """The agent tool's description is generated from AGENT_BLOCKED.
+
+    The old hand-written literal drifted (it omitted /start). The description
+    is the only syntax reference the model sees before calling /help, so
+    every blocked root must appear in it.
+    """
+    from nymeria.core.command_service import AGENT_BLOCKED
+    from nymeria.tools.slash_command import slash_command
+
+    description = slash_command.description or ""
+    for name in AGENT_BLOCKED:
+        assert f"/{name}" in description
+    assert "argument schema" in description
+
+
 # ── Dispatcher wiring (parse-and-bind) ───────────────────────────────────────
 
 
