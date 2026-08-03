@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 from .command_forms import (
     CommandOutput,
     command_data,
+    command_error,
+    command_info,
+    command_success,
     form_option,
     form_payload,
     form_tab,
@@ -138,8 +141,10 @@ class LLMCommandsMixin:
     _service: Any
 
     if TYPE_CHECKING:
-        def _require_thread(self) -> str | None: ...
-        def _usage_error(self, name: str, *, hint: str | None = None) -> str: ...
+        def _require_thread(self) -> CommandOutput | None: ...
+        def _usage_error(
+            self, name: str, *, hint: str | None = None
+        ) -> CommandOutput: ...
         def _command_offerable(self, name: str) -> bool: ...
         def _agent(self) -> Any: ...
         async def _list_threads(self) -> list[Any]: ...
@@ -187,13 +192,13 @@ class LLMCommandsMixin:
             lines += [f"  {i}. {model}" for i, model in enumerate(chain, start=1)]
         else:
             lines.append("  (no fallback models configured)")
-        return "[Info]: Model Fallbacks\n" + "\n".join(lines)
+        return "Model Fallbacks\n" + "\n".join(lines)
 
-    async def _cmd_fallback_add(self, bound: BoundArgs) -> str:
+    async def _cmd_fallback_add(self, bound: BoundArgs) -> str | CommandOutput:
         model = str(bound.get("model") or "").strip()
         position = bound.get("position")
         if position is not None and position < 1:
-            return "[Error]: Position must be 1 or greater."
+            return command_error("Position must be 1 or greater.")
         settings = await self.api.get_settings()
         chain = self._fallback_chain(settings)
         next_chain = [m for m in chain if m != model]
@@ -205,18 +210,18 @@ class LLMCommandsMixin:
             next_chain, f"Added fallback model: {model}"
         )
 
-    async def _cmd_fallback_remove(self, bound: BoundArgs) -> str:
+    async def _cmd_fallback_remove(self, bound: BoundArgs) -> str | CommandOutput:
         model = str(bound.get("model") or "").strip()
         settings = await self.api.get_settings()
         chain = self._fallback_chain(settings)
         next_chain = [m for m in chain if m != model]
         if len(next_chain) == len(chain):
-            return f"[Error]: Fallback model is not configured: {model}"
+            return command_error(f"Fallback model is not configured: {model}")
         return await self._save_fallback_chain(
             next_chain, f"Removed fallback model: {model}"
         )
 
-    async def _cmd_fallback_set(self, bound: BoundArgs) -> str:
+    async def _cmd_fallback_set(self, bound: BoundArgs) -> str | CommandOutput:
         next_chain = self._dedupe_models(bound.get("models") or [])
         if not next_chain:
             # The binder guarantees at least one token, but a blank one
@@ -227,7 +232,7 @@ class LLMCommandsMixin:
             next_chain, f"Fallback chain set: {label}"
         )
 
-    async def _cmd_fallback_clear(self, bound: BoundArgs) -> str:
+    async def _cmd_fallback_clear(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._save_fallback_chain([], "Cleared fallback chain.")
 
     async def _fallback_status_markdown(self) -> str:
@@ -265,9 +270,9 @@ class LLMCommandsMixin:
                     f"(from {active.source_model or '?'}; "
                     f"reason: {active.reason or '?'}) {until}."
                 )
-        return "[Info]: Fallback status\n" + "\n".join(lines)
+        return "Fallback status\n" + "\n".join(lines)
 
-    async def _fallback_revert_markdown(self) -> str:
+    async def _fallback_revert_markdown(self) -> str | CommandOutput:
         """Clear the active thread's fallback hold (permanent or timed)."""
         missing = self._require_thread()
         if missing:
@@ -275,24 +280,24 @@ class LLMCommandsMixin:
         if not await self._fallback_thread_allowed():
             # Same non-leaking shape as the REST 404: existence is not
             # disclosed to a non-owner.
-            return "[Error]: No thread matching this id."
+            return command_error("No thread matching this id.")
         agent = self._agent()
         tc = self._thread_config_manager_or_none()
         if agent is None or tc is None:
-            return "[Error]: Thread configuration is unavailable."
+            return command_error("Thread configuration is unavailable.")
         config = tc.get_config(self.thread_id)
         active = getattr(config, "active_llm_fallback", None) if config else None
         if config is None or active is None:
-            return "[Info]: This thread has no active fallback hold."
+            return "This thread has no active fallback hold."
         from .agent_llm_config import clear_active_llm_fallback
 
         # Shared clear path: also latches the model-facing end note so the
         # next turn tells the model it is back on the primary.
         cleared = clear_active_llm_fallback(agent, self.thread_id, reason="reverted")
         if cleared is None:
-            return "[Error]: Failed to clear the fallback hold."
-        return (
-            f"[Success]: Fallback hold cleared; this thread returns to its "
+            return command_error("Failed to clear the fallback hold.")
+        return command_success(
+            "Fallback hold cleared; this thread returns to its "
             f"configured model (was on {cleared.provider}/{cleared.model})."
         )
 
@@ -306,7 +311,7 @@ class LLMCommandsMixin:
     async def _cmd_fallback_status(self, bound: BoundArgs) -> str:
         return await self._fallback_status_markdown()
 
-    async def _cmd_fallback_revert(self, bound: BoundArgs) -> str:
+    async def _cmd_fallback_revert(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._fallback_revert_markdown()
 
     async def _cmd_fallback_approvals(self, bound: BoundArgs) -> str:
@@ -316,10 +321,14 @@ class LLMCommandsMixin:
     # permanent] [note]", where a note that happens to start with a number
     # is deliberately read as minutes and any other word falls through into
     # free text. That ambiguity is not expressible as declared params.
-    async def _cmd_fallback_approve(self, args: list[str], rest: str) -> str:
+    async def _cmd_fallback_approve(
+        self, args: list[str], rest: str
+    ) -> str | CommandOutput:
         return self._resolve_fallback_approval(args, approved=True)
 
-    async def _cmd_fallback_deny(self, args: list[str], rest: str) -> str:
+    async def _cmd_fallback_deny(
+        self, args: list[str], rest: str
+    ) -> str | CommandOutput:
         return self._resolve_fallback_approval(args, approved=False)
 
     def _thread_config_manager_or_none(self) -> Any | None:
@@ -337,7 +346,7 @@ class LLMCommandsMixin:
     def _fallback_approvals_markdown(self) -> str:
         records = self._visible_fallback_approvals()
         if not records:
-            return "[Info]: No pending fallback prompts."
+            return "No pending fallback prompts."
         lines = [
             f"Pending fallback prompts: {len(records)}",
             "",
@@ -355,9 +364,11 @@ class LLMCommandsMixin:
             "Resolve with /fallback approve <id> [minutes|permanent] [note] "
             "or /fallback deny <id> [note]. Unanswered prompts auto-swap."
         )
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    def _resolve_fallback_approval(self, args: list[str], *, approved: bool) -> str:
+    def _resolve_fallback_approval(
+        self, args: list[str], *, approved: bool
+    ) -> CommandOutput:
         """Shared approve/deny path: prefix-resolve, authorize, wake the park.
 
         Mirrors the REST endpoint's semantics (owner-or-admin; a resolve with
@@ -365,8 +376,8 @@ class LLMCommandsMixin:
         second token picks the hold: integer minutes or ``permanent``.
         """
         verb = "approve" if approved else "deny"
-        usage = (
-            f"[Error]: Usage: /fallback {verb} <prompt-id>"
+        usage = command_error(
+            f"Usage: /fallback {verb} <prompt-id>"
             + (" [minutes|permanent] [note]" if approved else " [note]")
         )
         if not args:
@@ -400,11 +411,13 @@ class LLMCommandsMixin:
             r for r in visible if str(r.get("record_id") or "").startswith(prefix)
         ]
         if not matches:
-            return f"[Error]: No pending fallback prompt matching '{prefix}'."
+            return command_error(
+                f"No pending fallback prompt matching '{prefix}'."
+            )
         if len(matches) > 1:
             ids = ", ".join(sorted(str(r.get("record_id")) for r in matches))
-            return (
-                f"[Error]: '{prefix}' matches multiple prompts: {ids}. "
+            return command_error(
+                f"'{prefix}' matches multiple prompts: {ids}. "
                 "Use a longer id."
             )
         record = matches[0]
@@ -420,8 +433,8 @@ class LLMCommandsMixin:
         if not woke:
             delete_record(record_id)
             publish_resolved_event(record, outcome="stale", resolved_by=self.user_id)
-            return (
-                f"[Error]: Prompt `{record_id}` is no longer pending (it timed "
+            return command_error(
+                f"Prompt `{record_id}` is no longer pending (it timed "
                 "out and auto-swapped, was resolved elsewhere, or its turn ended)."
             )
         if approved:
@@ -430,19 +443,21 @@ class LLMCommandsMixin:
                 if hold_permanent
                 else (f" for {hold_seconds // 60} minutes" if hold_seconds else "")
             )
-            return (
-                f"[Success]: Swapping to {record.get('to_model') or 'the fallback'}"
+            return command_success(
+                f"Swapping to {record.get('to_model') or 'the fallback'}"
                 f"{hold_label} ({record_id})."
             )
-        return f"[Success]: Declined the model swap ({record_id})."
+        return command_success(f"Declined the model swap ({record_id}).")
 
-    async def _save_fallback_chain(self, chain: list[str], message: str) -> str:
+    async def _save_fallback_chain(
+        self, chain: list[str], message: str
+    ) -> CommandOutput:
         result = await self.api.update_settings(
             user_id=self.user_id, llm_fallback_models=",".join(chain)
         )
         if result.get("restart_required"):
             message += " (restart required to take effect)"
-        return f"[Success]: {message}"
+        return command_success(message)
 
     @staticmethod
     def _fallback_chain(settings: dict) -> list[str]:
@@ -559,7 +574,7 @@ class LLMCommandsMixin:
         if ladder:
             rows.append(f"  Supported  {', '.join(ladder)} ({model})")
         rows.append("Set with: /think <off|on|low|medium|high|xhigh|max> [global|thread]")
-        text = "[Info]: " + "\n".join(rows)
+        text = "\n".join(rows)
         form = self._think_picker_form(
             provider=provider,
             model=model,
@@ -568,7 +583,7 @@ class LLMCommandsMixin:
                 effective_thinking, effective_effort
             ),
         )
-        return CommandOutput(text, data=command_data(form=form))
+        return command_info(text, data=command_data(form=form))
 
     @staticmethod
     def _think_current_value(enabled: bool, effort: str | None) -> str:
@@ -675,7 +690,7 @@ class LLMCommandsMixin:
             )
             _, note = self._think_clamp_note(provider, model, "off")
             return self._think_output(
-                f"[Success]: Thinking disabled (global).{note}",
+                f"Thinking disabled (global).{note}",
                 enabled=False,
                 effort="off",
                 provider=provider,
@@ -692,7 +707,7 @@ class LLMCommandsMixin:
                     llm_reasoning_effort=None,
                 )
                 return self._think_output(
-                    "[Success]: Thinking enabled (global, effort reset to default).",
+                    "Thinking enabled (global, effort reset to default).",
                     enabled=True,
                     effort="",
                     provider=provider,
@@ -702,7 +717,7 @@ class LLMCommandsMixin:
                 user_id=self.user_id, llm_extended_thinking=True
             )
             return self._think_output(
-                "[Success]: Thinking enabled (global).",
+                "Thinking enabled (global).",
                 enabled=True,
                 effort=str(settings.get("llm_reasoning_effort") or ""),
                 provider=provider,
@@ -715,7 +730,7 @@ class LLMCommandsMixin:
         )
         _, note = self._think_clamp_note(provider, model, value)
         return self._think_output(
-            f"[Success]: Thinking enabled (global), effort: {value}.{note}",
+            f"Thinking enabled (global), effort: {value}.{note}",
             enabled=True,
             effort=value,
             provider=provider,
@@ -738,7 +753,7 @@ class LLMCommandsMixin:
             # effort level.
             llm_config = {"extended_thinking": False, "reasoning_effort": "off"}
             _, note = self._think_clamp_note(provider, model, "off")
-            message = f"[Success]: Thinking disabled (this thread).{note}"
+            message = f"Thinking disabled (this thread).{note}"
             enabled, effort = False, "off"
         elif value == "on":
             llm_config = {"extended_thinking": True}
@@ -751,8 +766,8 @@ class LLMCommandsMixin:
             # that can neutralize it, so guide instead of writing a no-op.
             post_thread_effort = "" if thread_effort == "off" else thread_effort
             if (post_thread_effort or global_effort) == "off":
-                return (
-                    "[Error]: The global reasoning effort is persisted as"
+                return command_error(
+                    "The global reasoning effort is persisted as"
                     " 'off', which wins over a thread-level on. Use /think on"
                     " global to re-enable globally, or set an explicit level"
                     " for this thread, e.g. /think medium."
@@ -760,18 +775,18 @@ class LLMCommandsMixin:
             if thread_effort == "off":
                 llm_config["reasoning_effort"] = ""
                 message = (
-                    "[Success]: Thinking enabled (this thread,"
+                    "Thinking enabled (this thread,"
                     " effort restored to the global setting)."
                 )
                 effort = global_effort
             else:
-                message = "[Success]: Thinking enabled (this thread)."
+                message = "Thinking enabled (this thread)."
                 effort = post_thread_effort or global_effort
             enabled = True
         else:
             llm_config = {"extended_thinking": True, "reasoning_effort": value}
             _, note = self._think_clamp_note(provider, model, value)
-            message = f"[Success]: Thinking enabled (this thread), effort: {value}.{note}"
+            message = f"Thinking enabled (this thread), effort: {value}.{note}"
             enabled, effort = True, value
 
         await self.api.update_thread_config(
@@ -790,13 +805,14 @@ class LLMCommandsMixin:
         provider: str,
         model: str,
     ) -> CommandOutput:
-        """Attach the ``reasoning`` state hint so clients (the CLI status
+        """Confirm a thinking change (``message`` is the body, no sentinel)
+        and attach the ``reasoning`` state hint so clients (the CLI status
         bar's thinking label) can sync without a follow-up fetch. The hint
         carries the level the model will actually run at."""
         effective = (
             self._clamp_for_model(provider, model, effort) if effort else effort
         )
-        return CommandOutput(
+        return command_success(
             message,
             data=command_data(
                 state={
@@ -909,7 +925,7 @@ class LLMCommandsMixin:
         lines.append(
             "Manage with: /provider [setup|list|set|switch|test|reasoning-passback]"
         )
-        text = "[Info]: " + "\n".join(lines)
+        text = "\n".join(lines)
         # The picker submits into the ungated per-provider action step
         # (/provider <name>), which itself scopes its tabs to the caller,
         # so every caller gets the browse form; only the CLIProxy tab is
@@ -917,7 +933,7 @@ class LLMCommandsMixin:
         form = await self._provider_picker_form(settings, status)
         if form is None:
             return text
-        return CommandOutput(text, data=command_data(form=form))
+        return command_info(text, data=command_data(form=form))
 
     async def _provider_picker_form(
         self,
@@ -1097,7 +1113,7 @@ class LLMCommandsMixin:
             acts.append(f"/provider test {provider}")
         if acts:
             lines.append("Act: " + " · ".join(acts))
-        text = "[Info]: " + "\n".join(lines)
+        text = "\n".join(lines)
 
         form = self._provider_action_form(
             spec,
@@ -1107,7 +1123,7 @@ class LLMCommandsMixin:
         )
         if form is None:
             return text
-        return CommandOutput(text, data=command_data(form=form))
+        return command_info(text, data=command_data(form=form))
 
     def _provider_action_form(
         self,
@@ -1263,14 +1279,14 @@ class LLMCommandsMixin:
                 )
                 if entry["tier"] == "unverified" and entry["notes_for_user"]:
                     lines.append(f"    Note: {entry['notes_for_user']}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_provider_set(self, bound: BoundArgs) -> str:
+    async def _cmd_provider_set(self, bound: BoundArgs) -> str | CommandOutput:
         raw_provider = str(bound.get("provider") or "")
         provider = self._normalize_provider(raw_provider)
         if provider not in PROVIDER_SECRET_SETTINGS:
-            return (
-                f"[Error]: Unknown provider for /provider set: {raw_provider}. "
+            return command_error(
+                f"Unknown provider for /provider set: {raw_provider}. "
                 f"Credential fields exist for: {', '.join(PROVIDERS)}. "
                 "For any other registered provider: /provider switch "
                 "<provider>, then /env set llm_api_key <key> (the virtual "
@@ -1278,7 +1294,7 @@ class LLMCommandsMixin:
             )
         values, error = self._parse_provider_values(provider, bound.get("values") or [])
         if error:
-            return f"[Error]: {error}"
+            return command_error(error)
 
         patch = {
             PROVIDER_SECRET_SETTINGS[provider][key]: value
@@ -1293,9 +1309,9 @@ class LLMCommandsMixin:
         )
         if result.get("restart_required"):
             message += " Restart required."
-        return f"[Success]: {message}"
+        return command_success(message)
 
-    async def _cmd_provider_switch(self, bound: BoundArgs) -> str:
+    async def _cmd_provider_switch(self, bound: BoundArgs) -> str | CommandOutput:
         """Switch the active provider globally or for this thread.
 
         Scope is a single trailing token (the /model grammar), default
@@ -1341,8 +1357,8 @@ class LLMCommandsMixin:
                     " unchanged; update it if it belongs to the previous"
                     " provider (/model <name> thread)."
                 )
-            return (
-                "[Success]: Provider for this thread set to "
+            return command_success(
+                "Provider for this thread set to "
                 f"{self._provider_label(provider)}.{suffix}"
             )
 
@@ -1351,8 +1367,8 @@ class LLMCommandsMixin:
         # gate, so the agent context (is_admin=None) keeps the access it
         # has always had here.
         if self.is_admin is False:
-            return (
-                "[Error]: /provider switch <provider> global requires an"
+            return command_error(
+                "/provider switch <provider> global requires an"
                 " admin user. You can still switch this thread:"
                 f" /provider switch {provider} thread."
             )
@@ -1384,8 +1400,8 @@ class LLMCommandsMixin:
             )
         if result.get("restart_required"):
             suffix += " Restart required."
-        return (
-            f"[Success]: Switched provider to {self._provider_label(provider)}."
+        return command_success(
+            f"Switched provider to {self._provider_label(provider)}."
             f"{suffix}"
         )
 
@@ -1415,7 +1431,7 @@ class LLMCommandsMixin:
             )
         return ""
 
-    async def _cmd_provider_test(self, bound: BoundArgs) -> str:
+    async def _cmd_provider_test(self, bound: BoundArgs) -> str | CommandOutput:
         from ..config.llm_providers import get_llm_provider_spec
 
         settings = await self.api.get_settings()
@@ -1428,15 +1444,15 @@ class LLMCommandsMixin:
         # the vault, settings, and environment in that order.
         request, error = self._provider_test_request(spec, settings)
         if error:
-            return f"[Error]: {error}"
+            return command_error(error)
         result = await self.api.test_llm_provider_config(
             request, user_id=self.user_id
         )
         label = self._provider_label(spec.id)
         if bool(result.get("ok", False)):
-            return f"[Success]: {label} provider test succeeded."
+            return command_success(f"{label} provider test succeeded.")
         message = str(result.get("message", "") or "").strip() or "unknown error"
-        return f"[Error]: {label} provider test failed: {message}"
+        return command_error(f"{label} provider test failed: {message}")
 
     _RP_STATUS_TEXT = {
         "active": "active (confirmed on the last turn)",
@@ -1445,7 +1461,9 @@ class LLMCommandsMixin:
         "not_applicable": "not applicable (reasoning off, or the model can't reason)",
     }
 
-    async def _cmd_provider_reasoning_passback(self, bound: BoundArgs) -> str:
+    async def _cmd_provider_reasoning_passback(
+        self, bound: BoundArgs
+    ) -> str | CommandOutput:
         """Show whether prior-turn reasoning is replayed to the active model."""
         from ..vendor.react_agent.reasoning_passback import (
             classify_reasoning_passback,
@@ -1486,8 +1504,8 @@ class LLMCommandsMixin:
                 model = str(llm.get("model", "") or "")
                 api_mode = str(llm.get("api_mode", "") or "")
             if not rp:
-                return (
-                    "[Error]: Reasoning-passback status is unavailable here. "
+                return command_error(
+                    "Reasoning-passback status is unavailable here. "
                     "Send a message to activate a thread, then retry."
                 )
 
@@ -1532,7 +1550,7 @@ class LLMCommandsMixin:
             lines.append("Caveats:")
             for caveat in caveats:
                 lines.append(f"  - {caveat}")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     async def _provider_status_map(self) -> dict[str, dict[str, str]]:
         """Server-side credential presence per managed provider.
@@ -1716,8 +1734,10 @@ class LLMCommandsMixin:
         return f"{status} ({source})" if source else status
 
     @staticmethod
-    def _unknown_provider_error(provider: str) -> str:
-        return (
-            f"[Error]: Unknown provider: {provider}. "
+    def _unknown_provider_error(provider: str) -> CommandOutput:
+        """The shared "no such provider" failure, returned as-is by every
+        handler that resolves a provider name (also the setup mixin's)."""
+        return command_error(
+            f"Unknown provider: {provider}. "
             "Run /provider list to see the registered providers."
         )

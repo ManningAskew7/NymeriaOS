@@ -166,7 +166,10 @@ def test_setup_start_with_server_key_offers_keep_replace_clear() -> None:
 def test_setup_unknown_provider_is_refused() -> None:
     result = _run(FakeSetupApi(), "/provider setup bogus-llm")
     assert result.success is False
-    assert "Unknown provider" in result.markdown
+    # The authored level, not a string prefix, drives the rendered artifact
+    # every surface reads (#132).
+    assert result.level == "error"
+    assert result.markdown.startswith("**Error:** Unknown provider")
 
 
 def test_setup_requires_admin() -> None:
@@ -238,6 +241,8 @@ def test_setup_full_chain_applies_one_atomic_patch() -> None:
 
     final = _run(api, "/provider setup apply notest")
     assert final.success is True
+    assert final.level == "success"
+    assert final.markdown.startswith("**Done.** Switched to OpenAI")
     assert _updates(api) == [
         {
             "llm_provider": "openai",
@@ -348,6 +353,9 @@ def test_setup_apply_test_failure_writes_nothing_and_offers_retry() -> None:
     result = _run(api, "/provider setup apply")
 
     assert result.success is True  # info-level so the retry form survives
+    assert result.level == "info"
+    # A readout carries no outcome artifact, so the retry form is the story.
+    assert not result.markdown.startswith(("**Error:**", "**Done.**"))
     assert "FAILED" in result.markdown
     assert "401 unauthorized" in result.markdown
     assert "Nothing was saved" in result.markdown
@@ -398,7 +406,8 @@ def test_setup_clear_without_clearable_field_refuses_honestly() -> None:
     result = _run(api, "/provider setup notest")
 
     assert result.success is False
-    assert "No clearable stored key" in result.markdown
+    assert result.level == "error"
+    assert result.markdown.startswith("**Error:** No clearable stored key")
     assert _updates(api) == []
 
 

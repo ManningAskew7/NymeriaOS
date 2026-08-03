@@ -312,6 +312,9 @@ def _spawn_goal_supervisor(
         )
         return None, f"spawn_thread raised: {e}"
 
+    # The TOOL channel's failure protocol, not the slash-command one: tools in
+    # nymeria/tools/ still answer with a "[Error]: ..." string, so this parse
+    # stays as-is (the #132 sweep retired the prefix only on command output).
     if isinstance(result, str) and result.startswith("[Error]"):
         return None, result
 
@@ -445,6 +448,18 @@ def _create_quick_thread(
     return quick_thread_id
 
 
+def _relayed_outcome(ok: bool, message: str) -> str:
+    """Render a command_service helper's ``(ok, message)`` pair for a surface
+    that bypasses the command dispatcher.
+
+    The bool IS the outcome and ``message`` is a plain body (#132), so this
+    router authors the artifact itself: a failure carries the same
+    ``**Error:**`` marker the dispatcher renders, and a readout stays
+    unadorned (info level has no artifact there either).
+    """
+    return message if ok else f"**Error:** {message}"
+
+
 def _quick_continue_footer(quick_thread_id: str) -> str:
     """Display-only footer appended to a /quick thread's first response."""
     return (
@@ -455,7 +470,7 @@ def _quick_continue_footer(quick_thread_id: str) -> str:
 
 
 _DONE_USAGE = (
-    "[Error]: Usage: `/done <prompt>` arms a one-shot follow-up that runs "
+    "**Error:** Usage: `/done <prompt>` arms a one-shot follow-up that runs "
     "when the current turn finishes. With no turn running, the prompt is "
     "sent immediately."
 )
@@ -494,7 +509,7 @@ def _try_arm_done_hook(
     )
     if not hooks_on:
         return (
-            "[Error]: Lifecycle hooks are disabled for this thread, so `/done` "
+            "**Error:** Lifecycle hooks are disabled for this thread, so `/done` "
             "cannot arm a follow-up. Enable hooks (`hooks_enabled`) or resend "
             "the prompt once the current turn finishes."
         )
@@ -513,9 +528,9 @@ def _try_arm_done_hook(
             created_by="user",
         )
     except Exception as exc:  # noqa: BLE001 - surface as a command error
-        return f"[Error]: Could not arm the follow-up: {exc}"
+        return f"**Error:** Could not arm the follow-up: {exc}"
     if hook is None:
-        return "[Error]: Hook limit reached; the follow-up was not armed."
+        return "**Error:** Hook limit reached; the follow-up was not armed."
     if not locks.is_thread_busy(thread_id):
         # The turn ended while we were arming. Claim the hook back by
         # deleting it: success = it never fired (run the prompt now);
@@ -524,7 +539,7 @@ def _try_arm_done_hook(
         if agent.hook_manager.delete_hook(user_id, hook.id):
             return None
     return (
-        f"[Info]: Follow-up armed: your prompt will run when the current turn "
+        "Follow-up armed: your prompt will run when the current turn "
         f"finishes (one-shot hook `{hook.id}`, removed after firing)."
     )
 
@@ -788,7 +803,12 @@ def create_chat_router(
         def _slash_sse_response(content: str, target_thread_id: str):
             """Return a StreamingResponse that emits a single response chunk
             and a done event. Used by /orchestrate and /goal subcommand
-            handlers that report state without triggering an agent turn."""
+            handlers that report state without triggering an agent turn.
+
+            ``content`` goes to the user VERBATIM: these chat_stream commands
+            never reach the command dispatcher, so the outcome artifacts
+            (``**Error:**`` / ``**Done.**``) are authored at each call site
+            in the same markdown vocabulary the dispatcher renders (#132)."""
 
             async def _gen():
                 yield (
@@ -831,7 +851,7 @@ def create_chat_router(
             quick_prompt = raw_parts[1].strip() if len(raw_parts) > 1 else ""
             if not quick_prompt:
                 return _slash_sse_response(
-                    "[Error]: Usage: `/quick <prompt>` — runs a one-off query "
+                    "**Error:** Usage: `/quick <prompt>`: runs a one-off query "
                     "in a fresh, clean-context thread and shows the answer "
                     "here without leaving the current thread.",
                     thread_id,
@@ -847,7 +867,7 @@ def create_chat_router(
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Failed to create /quick thread")
                 return _slash_sse_response(
-                    f"[Error]: Could not start a quick thread: {exc}",
+                    f"**Error:** Could not start a quick thread: {exc}",
                     thread_id,
                 )
 
@@ -891,7 +911,7 @@ def create_chat_router(
         if not request.is_self_invoke and msg_stripped == "/resume":
             if agent._thread_locks.is_thread_busy(thread_id):
                 return _slash_sse_response(
-                    "[Error]: A turn is already running on this thread; "
+                    "**Error:** A turn is already running on this thread; "
                     "there is nothing to resume.",
                     thread_id,
                 )
@@ -920,7 +940,10 @@ def create_chat_router(
                 has_attachments=bool(request.attachments or request.images),
             )
             if not prepared.success or not prepared.should_stream:
-                return _slash_sse_response(prepared.message, thread_id)
+                return _slash_sse_response(
+                    _relayed_outcome(prepared.success, prepared.message),
+                    thread_id,
+                )
             message = prepared.message
             msg_stripped = message.strip().lower()
 
@@ -943,20 +966,22 @@ def create_chat_router(
 
             if not rest:
                 return _slash_sse_response(
-                    "[Error]: Usage: `/orchestrate <objective>` to start, "
+                    "**Error:** Usage: `/orchestrate <objective>` to start, "
                     "`/orchestrate status` to inspect, "
                     "`/orchestrate clear` to exit.",
                     thread_id,
                 )
 
             if rest_lower == "clear":
-                _, msg_text = deactivate_skill_kit(
+                ok_clear, msg_text = deactivate_skill_kit(
                     agent=agent,
                     thread_id=thread_id,
                     user_id=user_id,
                     skill_name="orchestrate",
                 )
-                return _slash_sse_response(msg_text, thread_id)
+                return _slash_sse_response(
+                    _relayed_outcome(ok_clear, msg_text), thread_id
+                )
 
             if rest_lower == "status":
                 tc = agent.thread_config_manager.get_config(thread_id)
@@ -964,10 +989,10 @@ def create_chat_router(
                     tc and "orchestrate" in (tc.enabled_skills or [])
                 )
                 msg_text = (
-                    "[Info]: Orchestrate mode is ACTIVE on this thread. "
+                    "Orchestrate mode is ACTIVE on this thread. "
                     "Use `/orchestrate clear` to exit."
                     if is_active
-                    else "[Info]: Orchestrate mode is not active. "
+                    else "Orchestrate mode is not active. "
                     "Use `/orchestrate <objective>` to start."
                 )
                 return _slash_sse_response(msg_text, thread_id)
@@ -985,7 +1010,9 @@ def create_chat_router(
                 reason="/orchestrate kickoff",
             )
             if not ok:
-                return _slash_sse_response(activation_msg, thread_id)
+                return _slash_sse_response(
+                    _relayed_outcome(ok, activation_msg), thread_id
+                )
 
             message = (
                 f"[Orchestrator mode activated.] Goal to orchestrate: {rest}\n\n"
@@ -1018,7 +1045,7 @@ def create_chat_router(
 
             if not rest:
                 return _slash_sse_response(
-                    "[Error]: Usage: `/goal <objective>` to start, "
+                    "**Error:** Usage: `/goal <objective>` to start, "
                     "`/goal approve` to start work, `/goal status` to inspect, "
                     "`/goal pause`/`/goal resume`/`/goal clear` to control, "
                     "`/goal cancel` aborts before approval.",
@@ -1028,7 +1055,7 @@ def create_chat_router(
             gm = get_goal_manager()
             if gm is None:
                 return _slash_sse_response(
-                    "[Error]: Goal manager not available on this server.",
+                    "**Error:** Goal manager not available on this server.",
                     thread_id,
                 )
 
@@ -1040,12 +1067,12 @@ def create_chat_router(
                 goal = gm.get_active_goal_for_thread(user_id, thread_id)
                 if goal is None:
                     return _slash_sse_response(
-                        "[Info]: No active goal on this thread. "
+                        "No active goal on this thread. "
                         "Use `/goal <objective>` to start one.",
                         thread_id,
                     )
                 lines = [
-                    f"Goal {goal.goal_id} — status: **{goal.status}**",
+                    f"Goal {goal.goal_id}, status: **{goal.status}**",
                     f"Objective: {goal.objective}",
                     "",
                     f"Turns used: {goal.turns_used}/{goal.max_turns}",
@@ -1058,7 +1085,7 @@ def create_chat_router(
                 lines.append("")
                 lines.append("Tasks:")
                 if not goal.tasks:
-                    lines.append("  (none yet — worker proposes tasks before approval)")
+                    lines.append("  (none yet: worker proposes tasks before approval)")
                 else:
                     for i, t in enumerate(goal.tasks, 1):
                         marker = {
@@ -1068,7 +1095,7 @@ def create_chat_router(
                             "done": "[x]",
                         }.get(t.status, "[ ]")
                         crit_str = (
-                            f" — criterion: {t.criterion}"
+                            f", criterion: {t.criterion}"
                             if t.criterion
                             else ""
                         )
@@ -1076,7 +1103,7 @@ def create_chat_router(
                             f"  {marker} {i}. {t.description}{crit_str}"
                         )
                 return _slash_sse_response(
-                    "[Info]: " + "\n".join(lines), thread_id
+                    "\n".join(lines), thread_id
                 )
 
             # ── /goal approve ───────────────────────────────────────────
@@ -1084,17 +1111,17 @@ def create_chat_router(
                 goal = gm.get_active_goal_for_thread(user_id, thread_id)
                 if goal is None:
                     return _slash_sse_response(
-                        "[Error]: No active goal to approve.", thread_id
+                        "**Error:** No active goal to approve.", thread_id
                     )
                 if goal.status != "pending_approval":
                     return _slash_sse_response(
-                        f"[Error]: Goal {goal.goal_id} is "
+                        f"**Error:** Goal {goal.goal_id} is "
                         f"`{goal.status}`, not awaiting approval.",
                         thread_id,
                     )
                 if not goal.tasks:
                     return _slash_sse_response(
-                        "[Error]: Goal has no tasks yet. Wait for the worker "
+                        "**Error:** Goal has no tasks yet. Wait for the worker "
                         "to propose tasks via `propose_task` before approving.",
                         thread_id,
                     )
@@ -1104,7 +1131,7 @@ def create_chat_router(
                 )
                 if supervisor_id is None:
                     return _slash_sse_response(
-                        f"[Error]: Could not spawn supervisor: {err}",
+                        f"**Error:** Could not spawn supervisor: {err}",
                         thread_id,
                     )
 
@@ -1117,7 +1144,7 @@ def create_chat_router(
                 )
                 if not ok_kit:
                     return _slash_sse_response(
-                        f"[Error]: Supervisor spawned ({supervisor_id}) but "
+                        f"**Error:** Supervisor spawned ({supervisor_id}) but "
                         f"kit activation failed: {kit_msg}",
                         thread_id,
                     )
@@ -1126,7 +1153,7 @@ def create_chat_router(
                     gm.approve_goal(user_id, goal.goal_id, supervisor_id)
                 except (GoalStateError, GoalNotFoundError) as e:
                     return _slash_sse_response(
-                        f"[Error]: {e}", thread_id
+                        f"**Error:** {e}", thread_id
                     )
 
                 message = (
@@ -1145,11 +1172,11 @@ def create_chat_router(
                 goal = gm.get_active_goal_for_thread(user_id, thread_id)
                 if goal is None:
                     return _slash_sse_response(
-                        "[Info]: No active goal to cancel.", thread_id
+                        "No active goal to cancel.", thread_id
                     )
                 if goal.status != "pending_approval":
                     return _slash_sse_response(
-                        f"[Error]: Goal {goal.goal_id} is already "
+                        f"**Error:** Goal {goal.goal_id} is already "
                         f"`{goal.status}`. Use `/goal clear` to abort an "
                         "approved goal instead.",
                         thread_id,
@@ -1162,7 +1189,7 @@ def create_chat_router(
                     skill_name="goal-worker",
                 )
                 return _slash_sse_response(
-                    f"[Success]: Pending goal {goal.goal_id} cancelled. "
+                    f"**Done.** Pending goal {goal.goal_id} cancelled. "
                     "Worker kit deactivated.",
                     thread_id,
                 )
@@ -1172,7 +1199,7 @@ def create_chat_router(
                 goal = gm.get_active_goal_for_thread(user_id, thread_id)
                 if goal is None:
                     return _slash_sse_response(
-                        "[Info]: No active goal on this thread.", thread_id
+                        "No active goal on this thread.", thread_id
                     )
                 gm.clear_goal(user_id, goal.goal_id)
                 deactivate_skill_kit(
@@ -1198,7 +1225,7 @@ def create_chat_router(
                             supervisor_id,
                         )
                 return _slash_sse_response(
-                    f"[Success]: Goal {goal.goal_id} cleared. "
+                    f"**Done.** Goal {goal.goal_id} cleared. "
                     + (
                         f"Supervisor {supervisor_id} deleted."
                         if supervisor_id
@@ -1212,7 +1239,7 @@ def create_chat_router(
                 goal = gm.get_active_goal_for_thread(user_id, thread_id)
                 if goal is None:
                     return _slash_sse_response(
-                        "[Error]: No active goal to pause.", thread_id
+                        "**Error:** No active goal to pause.", thread_id
                     )
                 try:
                     gm.pause_goal(
@@ -1220,10 +1247,10 @@ def create_chat_router(
                     )
                 except GoalStateError as e:
                     return _slash_sse_response(
-                        f"[Error]: {e}", thread_id
+                        f"**Error:** {e}", thread_id
                     )
                 return _slash_sse_response(
-                    f"[Success]: Goal {goal.goal_id} paused. "
+                    f"**Done.** Goal {goal.goal_id} paused. "
                     "Use `/goal resume` to continue.",
                     thread_id,
                 )
@@ -1233,13 +1260,13 @@ def create_chat_router(
                 goal = gm.get_active_goal_for_thread(user_id, thread_id)
                 if goal is None:
                     return _slash_sse_response(
-                        "[Error]: No goal on this thread.", thread_id
+                        "**Error:** No goal on this thread.", thread_id
                     )
                 try:
                     gm.resume_goal(user_id, goal.goal_id)
                 except GoalStateError as e:
                     return _slash_sse_response(
-                        f"[Error]: {e}", thread_id
+                        f"**Error:** {e}", thread_id
                     )
                 message = (
                     f"[Goal {goal.goal_id} resumed.] Continue from where you "
@@ -1252,7 +1279,7 @@ def create_chat_router(
             # ── /goal edit ──────────────────────────────────────────────
             elif sub_lower == "edit":
                 return _slash_sse_response(
-                    "[Info]: `/goal edit` is not yet implemented. To change "
+                    "`/goal edit` is not yet implemented. To change "
                     "the plan before approval, ask the agent to call "
                     "`propose_task` for new items or run `/goal cancel` and "
                     "restart with a refined objective.",
@@ -1264,7 +1291,7 @@ def create_chat_router(
                 existing = gm.get_active_goal_for_thread(user_id, thread_id)
                 if existing is not None:
                     return _slash_sse_response(
-                        f"[Error]: This thread already has an active goal "
+                        f"**Error:** This thread already has an active goal "
                         f"`{existing.goal_id}` (status: {existing.status}). "
                         f"Use `/goal status` to inspect or `/goal clear` to "
                         f"abort before starting a new one.",
@@ -1274,7 +1301,7 @@ def create_chat_router(
                     goal = gm.create_goal(user_id, thread_id, rest)
                 except GoalStateError as e:
                     return _slash_sse_response(
-                        f"[Error]: {e}", thread_id
+                        f"**Error:** {e}", thread_id
                     )
                 ok, activation_msg = activate_skill_kit(
                     agent=agent,
@@ -1285,7 +1312,9 @@ def create_chat_router(
                 )
                 if not ok:
                     gm.clear_goal(user_id, goal.goal_id)
-                    return _slash_sse_response(activation_msg, thread_id)
+                    return _slash_sse_response(
+                        _relayed_outcome(ok, activation_msg), thread_id
+                    )
 
                 message = (
                     f"[Goal {goal.goal_id} initiated.] Objective: {rest}\n\n"
@@ -1294,7 +1323,7 @@ def create_chat_router(
                     "Decompose the objective into tasks via `propose_task` "
                     "(each with a clear `description` and verifiable "
                     "`criterion`). Present the task list to the user and "
-                    "wait for `/goal approve` before executing — only then "
+                    "wait for `/goal approve` before executing; only then "
                     "does the supervisor thread exist and `request_review` "
                     "become callable."
                 )
@@ -1902,7 +1931,7 @@ def create_chat_router(
             if not quick_prompt:
                 return ChatResponse(
                     response=(
-                        "[Error]: Usage: `/quick <prompt>` — runs a one-off "
+                        "**Error:** Usage: `/quick <prompt>`: runs a one-off "
                         "query in a fresh, clean-context thread."
                     ),
                     thread_id=thread_id,
@@ -1915,7 +1944,7 @@ def create_chat_router(
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Failed to create /quick thread")
                 return ChatResponse(
-                    response=f"[Error]: Could not start a quick thread: {exc}",
+                    response=f"**Error:** Could not start a quick thread: {exc}",
                     thread_id=thread_id,
                     tool_call_count=0,
                 )
@@ -1945,7 +1974,7 @@ def create_chat_router(
             if agent._thread_locks.is_thread_busy(thread_id):
                 return ChatResponse(
                     response=(
-                        "[Error]: A turn is already running on this thread; "
+                        "**Error:** A turn is already running on this thread; "
                         "there is nothing to resume."
                     ),
                     thread_id=thread_id,
@@ -1971,7 +2000,7 @@ def create_chat_router(
             )
             if not prepared.success or not prepared.should_stream:
                 return ChatResponse(
-                    response=prepared.message,
+                    response=_relayed_outcome(prepared.success, prepared.message),
                     thread_id=thread_id,
                     tool_call_count=0,
                 )

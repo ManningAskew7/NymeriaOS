@@ -860,6 +860,118 @@ def test_done_sync_parity(tmp_path: Path, api_client_builder):
     assert agent.chat_calls[0]["message"] == "wrap up"
 
 
+# --- chat_stream outcome vocabulary (backlog #132) ---------------------------
+
+
+def _response_contents(body: str) -> list[str]:
+    return [event["content"] for event in _sse_events(body) if event["type"] == "response"]
+
+
+def test_chat_stream_command_failures_use_markdown_outcome_not_sentinel(
+    tmp_path: Path, api_client_builder
+):
+    """These commands bypass the command dispatcher, so whatever they return
+    reaches the user verbatim: a failure must carry the same ``**Error:**``
+    artifact every surface already renders, never a raw sentinel (#132)."""
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    usage_markers = {
+        "/quick": "Usage: `/quick",
+        "/done": "Usage: `/done",
+        "/orchestrate": "Usage: `/orchestrate",
+        "/goal": "Usage: `/goal",
+    }
+    for command, marker in usage_markers.items():
+        with client.stream(
+            "POST",
+            "/chat",
+            headers=api_client_builder.auth(token),
+            json={"message": command, "thread_id": "caller-1"},
+        ) as response:
+            body = "".join(response.iter_text())
+        contents = _response_contents(body)
+        assert contents, command
+        assert contents[0].startswith("**Error:** "), (command, contents[0])
+        assert marker in contents[0], (command, contents[0])
+        assert "[Error]" not in contents[0], (command, contents[0])
+
+    # Relayed helper outcomes too: prepare_skill_slash_command returns a
+    # plain body plus a bool, so the router must render the artifact itself
+    # or a /skill failure would arrive with no outcome marker at all.
+    for command, marker in (
+        ("/skill", "Usage: `/skill <name> [prompt]`."),
+        ("/kit", "Usage: `/kit <name> [ttl] [prompt]`."),
+        ("/skill demo", "Skill manager unavailable."),
+    ):
+        with client.stream(
+            "POST",
+            "/chat",
+            headers=api_client_builder.auth(token),
+            json={"message": command, "thread_id": "caller-1"},
+        ) as response:
+            body = "".join(response.iter_text())
+        (content,) = _response_contents(body)
+        assert content == f"**Error:** {marker}", (command, content)
+    assert agent.astream_calls == []
+
+    # The busy-thread /resume refusal is the same vocabulary.
+    agent._thread_locks.busy_responses = [True]
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/resume", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+    (resume_content,) = _response_contents(body)
+    assert resume_content.startswith("**Error:** A turn is already running")
+    assert "[Error]" not in resume_content
+
+
+def test_chat_stream_command_readout_carries_no_outcome_artifact(
+    tmp_path: Path, api_client_builder
+):
+    """A readout is not an outcome: the /done ack keeps its plain body, with
+    neither a legacy ``[Info]:`` sentinel nor a success artifact (#132)."""
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent._thread_locks.busy_responses = [True, True]
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done check the tests", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    (content,) = _response_contents(body)
+    assert content.startswith("Follow-up armed:")
+    assert "[Info]" not in content
+    assert "**Done.**" not in content
+
+
+def test_done_hooks_disabled_failure_uses_markdown_outcome(
+    tmp_path: Path, api_client_builder
+):
+    """The other /done failure path (hooks off) is authored in the same
+    vocabulary as the usage error (#132)."""
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent._thread_locks.busy_responses = [True, True]
+    agent.settings.hooks_enabled = False
+
+    resp = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done check the tests", "thread_id": "caller-1"},
+    )
+
+    assert resp.status_code == 200
+    content = resp.json()["response"]
+    assert content.startswith("**Error:** Lifecycle hooks are disabled")
+    assert "[Error]" not in content
+    assert _user_hooks(agent) == []
+
+
 def test_resume_stream_busy_acks_error_without_queueing(
     tmp_path: Path, api_client_builder
 ):

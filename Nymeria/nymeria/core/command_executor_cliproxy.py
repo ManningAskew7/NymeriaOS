@@ -34,6 +34,8 @@ from .command_executor_llm import custom_model_tab, model_pick_tab
 from .command_forms import (
     CommandOutput,
     chain_form_output,
+    command_error,
+    command_success,
     form_option,
     form_tab,
     radio_field,
@@ -92,8 +94,10 @@ class CliproxyCommandsMixin:
             "cancel",
         }
     )
-    _CLIPROXY_GONE = (
-        "[Error]: No CLIProxy login is in progress (or it expired). "
+    # Returned as-is by every step whose pending record vanished; a frozen
+    # CommandOutput is safe to share.
+    _CLIPROXY_GONE = command_error(
+        "No CLIProxy login is in progress (or it expired). "
         "Start one with /provider cliproxy <target>."
     )
     # Paste-time confirm window: ~10s total. Long enough for post-callback
@@ -140,7 +144,9 @@ class CliproxyCommandsMixin:
         spec = get_cliproxy_provider(token)
         if spec is None:
             ids = ", ".join(s.id for s in list_cliproxy_providers())
-            return f"[Error]: Unknown CLIProxy target: {args[0]}. Known: {ids}."
+            return command_error(
+                f"Unknown CLIProxy target: {args[0]}. Known: {ids}."
+            )
         return await self._cliproxy_target(spec)
 
     async def _cliproxy_overview(self) -> str:
@@ -184,7 +190,7 @@ class CliproxyCommandsMixin:
             lines.append("Log in or route: /provider cliproxy <target>")
         else:
             lines.append(self._cliproxy_unconfigured_next(url_set, key_set))
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     @staticmethod
     def _cliproxy_unconfigured_next(url_set: bool, key_set: bool) -> str:
@@ -282,7 +288,7 @@ class CliproxyCommandsMixin:
             url_set, key_set = await self._cliproxy_management_status()
             lines.append("Management API: not configured")
             lines.append(self._cliproxy_unconfigured_next(url_set, key_set))
-            return "[Info]: " + "\n".join(lines)
+            return "\n".join(lines)
 
         pending = setup_store.start_cliproxy_login(self.user_id, spec.id)
         updated = setup_store.update_cliproxy_login(
@@ -345,9 +351,9 @@ class CliproxyCommandsMixin:
         if token == "cancel":
             cleared = setup_store.clear_cliproxy_login(self.user_id)
             return (
-                "[Info]: CLIProxy login cancelled. Nothing was applied."
+                "CLIProxy login cancelled. Nothing was applied."
                 if cleared
-                else "[Info]: No CLIProxy login was in progress."
+                else "No CLIProxy login was in progress."
             )
         pending = setup_store.get_cliproxy_login(self.user_id)
         if pending is None:
@@ -377,8 +383,8 @@ class CliproxyCommandsMixin:
                     files = []
                 entry = active_login_entry(files, spec)
                 if entry is None:
-                    return (
-                        f"[Error]: Not logged in to {spec.label}."
+                    return command_error(
+                        f"Not logged in to {spec.label}."
                         " Use /provider cliproxy login first."
                     )
                 setup_store.update_cliproxy_login(
@@ -394,7 +400,9 @@ class CliproxyCommandsMixin:
         if token == "model":
             value = rest_value(rest)
             if not value:
-                return "[Error]: Usage: /provider cliproxy model <model-id|custom>"
+                return command_error(
+                    "Usage: /provider cliproxy model <model-id|custom>"
+                )
             if value.lower() == "custom":
                 updated = setup_store.update_cliproxy_login(
                     self.user_id, model_custom=True
@@ -419,8 +427,8 @@ class CliproxyCommandsMixin:
         try:
             started = await self.api.cliproxy_oauth_start(spec.id, user_id=self.user_id)
         except httpx.HTTPError as error:
-            return (
-                f"[Error]: Could not start the {spec.label} login: "
+            return command_error(
+                f"Could not start the {spec.label} login: "
                 + self._cliproxy_error_detail(error)
             )
         updated = setup_store.update_cliproxy_login(
@@ -543,7 +551,9 @@ class CliproxyCommandsMixin:
                 ],
             )
         if not pending.oauth_state:
-            return "[Error]: Start the login first: /provider cliproxy login"
+            return command_error(
+                "Start the login first: /provider cliproxy login"
+            )
         value, hygiene = setup_store.clean_pasted_secret(rest_value(rest))
         if not value:
             return self._cliproxy_login_rail(
@@ -680,7 +690,9 @@ class CliproxyCommandsMixin:
     ) -> str | CommandOutput:
         """One server-confirmed status poll."""
         if not pending.oauth_state:
-            return "[Error]: Start the login first: /provider cliproxy login"
+            return command_error(
+                "Start the login first: /provider cliproxy login"
+            )
         status, detail = await self._cliproxy_poll_once(pending, spec)
         if status == "ok":
             # The stale-session guard (an old, paste-less ok is the proxy's
@@ -975,7 +987,7 @@ class CliproxyCommandsMixin:
         if result.get("restart_required"):
             message += " Restart required for some changes."
         message += " Verify with /provider test."
-        return f"[Success]: {message}"
+        return command_success(message)
 
     @staticmethod
     def _cliproxy_delivery_may_have_landed(error: Exception) -> bool:

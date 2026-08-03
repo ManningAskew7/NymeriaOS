@@ -29,7 +29,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .command_forms import CommandOutput, command_data
+from .command_forms import (
+    CommandOutput,
+    command_data,
+    command_error,
+    command_info,
+    command_success,
+)
 from .command_params import BoundArgs
 
 logger = logging.getLogger(__name__)
@@ -321,10 +327,16 @@ def _format_thread_config(config: Mapping[str, Any]) -> str:
     return "\n".join(_aligned_rows(rows, "Thread Config"))
 
 
-def _compact_result_text(result: Any) -> str:
+def _compact_result_output(
+    result: Any, *, data: dict[str, Any] | None
+) -> CommandOutput:
+    """Render a compaction result at its own level: a refusal is a readout,
+    a completed pass is a success confirmation. ``data`` (the client-state
+    hint) rides along either way."""
+
     if isinstance(result, Mapping) and result.get("success") is False:
         reason = result.get("reason", "Unknown reason")
-        return f"[Info]: Skipped: {reason}"
+        return command_info(f"Skipped: {reason}", data=data)
     removed = _mapping_get(result, "messages_removed", None)
     before = _mapping_get(result, "messages_before", None)
     after = _mapping_get(result, "messages_after", None)
@@ -335,7 +347,7 @@ def _compact_result_text(result: Any) -> str:
         detail += "."
     else:
         detail = "."
-    return f"[Success]: Compaction requested{detail}"
+    return command_success(f"Compaction requested{detail}", data=data)
 
 
 def _effective_model(
@@ -392,7 +404,7 @@ class ThreadCommandsMixin:
     user_id: str
 
     if TYPE_CHECKING:
-        def _require_thread(self) -> str | None: ...
+        def _require_thread(self) -> CommandOutput | None: ...
 
     # ── Shared internals ──────────────────────────────────────────────────
 
@@ -417,8 +429,13 @@ class ThreadCommandsMixin:
     async def _resolve_thread(
         self,
         ref: str,
-    ) -> tuple[Mapping[str, Any] | None, str | None]:
-        """Resolve a ref to a thread mapping, or a legacy error/info string."""
+    ) -> tuple[Mapping[str, Any] | None, CommandOutput | None]:
+        """Resolve a ref to a thread mapping, or the failure output to return.
+
+        The second element is the handler's own return value (an error for a
+        miss, a readout for an ambiguity), so every call site returns it
+        directly rather than re-wording the outcome.
+        """
 
         threads = await self._list_threads()
         resolution = resolve_thread_reference(threads, ref)
@@ -426,9 +443,9 @@ class ThreadCommandsMixin:
             assert resolution.thread is not None
             return resolution.thread, None
         if resolution.status == "missing":
-            return None, f"[Error]: No thread matching '{ref}'."
-        return None, "[Info]: " + _format_thread_resolution_ambiguity(
-            ref, resolution.matches
+            return None, command_error(f"No thread matching '{ref}'.")
+        return None, command_info(
+            _format_thread_resolution_ambiguity(ref, resolution.matches)
         )
 
     # ── Read commands ─────────────────────────────────────────────────────
@@ -437,11 +454,11 @@ class ThreadCommandsMixin:
         threads = await self._list_threads()
         teams = await self._thread_teams()
         if not threads:
-            return "[Info]: No threads found."
+            return "No threads found."
         lines = _format_thread_list(threads, self.thread_id or None, teams=teams)
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_thread_info(self, bound: BoundArgs) -> str:
+    async def _cmd_thread_info(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -456,20 +473,20 @@ class ThreadCommandsMixin:
         stats = stats if isinstance(stats, Mapping) else {}
         config = await self.api.get_thread_config(self.thread_id)
         config = config if isinstance(config, Mapping) else None
-        return "[Info]: " + _format_thread_info(self.thread_id, thread, stats, config)
+        return _format_thread_info(self.thread_id, thread, stats, config)
 
-    async def _cmd_thread_config(self, bound: BoundArgs) -> str:
+    async def _cmd_thread_config(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
         config = await self.api.get_thread_config(self.thread_id)
         if not isinstance(config, Mapping):
-            return "[Info]: No thread config found."
-        return "[Info]: " + _format_thread_config(config)
+            return "No thread config found."
+        return _format_thread_config(config)
 
     # ── /team read commands (backlog #100 phase 2) ────────────────────────
 
-    async def _cmd_team(self, bound: BoundArgs) -> str:
+    async def _cmd_team(self, bound: BoundArgs) -> str | CommandOutput:
         # Registry dispatch routes "/team list" and "/team show ..." to the
         # dedicated handlers; anything else lands here. Bare "/team" lists,
         # "/team <ref>" is show shorthand.
@@ -482,7 +499,7 @@ class ThreadCommandsMixin:
         teams = await self._thread_teams()
         if not teams:
             return (
-                "[Info]: No callable-thread teams yet. Create one from the "
+                "No callable-thread teams yet. Create one from the "
                 "desktop sidebar or ask the agent to use team_manage."
             )
         lines = [f"Teams ({len(teams)}):"]
@@ -494,12 +511,12 @@ class ThreadCommandsMixin:
                 f"- {team.get('name')} ({team.get('id')}): "
                 f"{member_count} member(s).{suffix}"
             )
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
-    async def _cmd_team_show(self, bound: BoundArgs) -> str:
+    async def _cmd_team_show(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._show_team(str(bound.get("team") or "").strip())
 
-    async def _show_team(self, ref: str) -> str:
+    async def _show_team(self, ref: str) -> str | CommandOutput:
         """Render one team, resolved by id then by case-insensitive name.
 
         Shared by "/team show <ref>" and the "/team <ref>" shorthand, so the
@@ -519,7 +536,7 @@ class ThreadCommandsMixin:
                     break
         if match is None:
             names = ", ".join(str(t.get("name")) for t in teams) or "(none)"
-            return f"[Error]: No team matching '{ref}'. Teams: {names}"
+            return command_error(f"No team matching '{ref}'. Teams: {names}")
         titles = {
             _normalize_thread_id(thread): _thread_title(thread)
             for thread in await self._list_threads()
@@ -535,7 +552,7 @@ class ThreadCommandsMixin:
             lines.append(f"- {member_id} {title}".rstrip())
         if not member_ids:
             lines.append("- (none)")
-        return "[Info]: " + "\n".join(lines)
+        return "\n".join(lines)
 
     # ── Navigation / creation (ride switch_thread state hints) ────────────
 
@@ -548,8 +565,8 @@ class ThreadCommandsMixin:
         assert match is not None
         thread_id = _normalize_thread_id(match)
         title = _thread_title(match)
-        return CommandOutput(
-            f"[Success]: Switched to {_compact_id(thread_id)} {title}",
+        return command_success(
+            f"Switched to {_compact_id(thread_id)} {title}",
             data=command_data(
                 state={"switch_thread": {"thread_id": thread_id, "thread_label": title}}
             ),
@@ -559,13 +576,15 @@ class ThreadCommandsMixin:
         title = str(bound.get("title") or "").strip() or None
         created = await self.api.create_thread(self.user_id, title=title)
         if not isinstance(created, Mapping):
-            return "[Error]: Thread create response was not a mapping."
+            return command_error("Thread create response was not a mapping.")
         thread_id = _normalize_thread_id(created)
         if not thread_id:
-            return "[Error]: Thread create response did not include a thread ID."
+            return command_error(
+                "Thread create response did not include a thread ID."
+            )
         selected_title = _thread_title(created)
-        return CommandOutput(
-            f"[Success]: New thread: {thread_id} {selected_title}",
+        return command_success(
+            f"New thread: {thread_id} {selected_title}",
             data=command_data(
                 state={
                     "switch_thread": {
@@ -582,7 +601,7 @@ class ThreadCommandsMixin:
             return thread_error
         from_message_index = bound.get("from")
         if from_message_index is not None and from_message_index < 1:
-            return "[Error]: --from must be 1 or greater"
+            return command_error("--from must be 1 or greater")
         # Repeatable positional: join the collected words (--from parses on
         # either side of the title, matching the retired hand parser).
         title = " ".join(bound.get("title") or []).strip() or None
@@ -594,15 +613,17 @@ class ThreadCommandsMixin:
             from_message_index=from_message_index,
         )
         if not isinstance(result, Mapping):
-            return "[Error]: Thread branch response was not a mapping."
+            return command_error("Thread branch response was not a mapping.")
         thread_id = _normalize_thread_id(result)
         if not thread_id:
-            return "[Error]: Thread branch response did not include a thread ID."
+            return command_error(
+                "Thread branch response did not include a thread ID."
+            )
         selected_title = _thread_title(result)
         copied_from = result.get("from_message_index")
         suffix = f" from message #{copied_from}" if copied_from else ""
-        return CommandOutput(
-            f"[Success]: Created branch '{selected_title}' "
+        return command_success(
+            f"Created branch '{selected_title}' "
             f"({_compact_id(thread_id)}){suffix}.",
             data=command_data(
                 state={
@@ -626,8 +647,8 @@ class ThreadCommandsMixin:
             return thread_error
         title = str(bound.get("title") or "").strip()
         await self.api.update_thread_metadata(self.thread_id, self.user_id, title=title)
-        return CommandOutput(
-            f"[Success]: Renamed to: {title}",
+        return command_success(
+            f"Renamed to: {title}",
             data=command_data(state={"thread_label": title}),
         )
 
@@ -636,7 +657,9 @@ class ThreadCommandsMixin:
             bound.get("id"), bound.get("state"), self.thread_id or None
         )
         if not thread_ref:
-            return "[Error]: No active thread; name the thread to pin by id or title."
+            return command_error(
+                "No active thread; name the thread to pin by id or title."
+            )
 
         match, error = await self._resolve_thread(thread_ref)
         if error:
@@ -650,14 +673,14 @@ class ThreadCommandsMixin:
         state = (
             {"thread_metadata_updated": True} if thread_id == self.thread_id else None
         )
-        return CommandOutput(
-            f"[Success]: {'Pinned' if pinned else 'Unpinned'} {_compact_id(thread_id)}.",
+        return command_success(
+            f"{'Pinned' if pinned else 'Unpinned'} {_compact_id(thread_id)}.",
             data=command_data(state=state),
         )
 
     # ── Destructive / mutating ────────────────────────────────────────────
 
-    async def _cmd_thread_delete(self, bound: BoundArgs) -> str:
+    async def _cmd_thread_delete(self, bound: BoundArgs) -> str | CommandOutput:
         # The declared ``--yes`` flag is accepted for CLI muscle memory but no
         # longer prompts, so nothing here reads it: backend handlers cannot
         # prompt, so the danger_level metadata drives any frontend confirmation
@@ -668,9 +691,9 @@ class ThreadCommandsMixin:
         assert match is not None
         thread_id = _normalize_thread_id(match)
         if thread_id == self.thread_id:
-            return "[Error]: Cannot delete the active thread. Switch first."
+            return command_error("Cannot delete the active thread. Switch first.")
         await self.api.delete_thread(thread_id, self.user_id)
-        return f"[Success]: Deleted thread {_compact_id(thread_id)}."
+        return command_success(f"Deleted thread {_compact_id(thread_id)}.")
 
     async def _cmd_thread_compact(self, bound: BoundArgs) -> str | CommandOutput:
         # ``--yes`` is declared and ignored for the same reason as
@@ -679,7 +702,7 @@ class ThreadCommandsMixin:
         if thread_error:
             return thread_error
         result = await self.api.compact_thread(self.thread_id, self.user_id)
-        return CommandOutput(
-            _compact_result_text(result),
+        return _compact_result_output(
+            result,
             data=command_data(state={"thread_context_updated": True}),
         )

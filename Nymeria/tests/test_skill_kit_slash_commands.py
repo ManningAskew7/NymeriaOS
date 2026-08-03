@@ -132,7 +132,7 @@ def test_skill_slash_activates_plain_skill_and_builds_prompt(
 
     def fake_activate(**kwargs):
         calls.append(kwargs)
-        return True, "[Success]: activated"
+        return True, "activated"
 
     monkeypatch.setattr(command_service_mod, "activate_skill_kit", fake_activate)
 
@@ -165,6 +165,9 @@ def test_skill_slash_rejects_skill_kit(tmp_path: Path) -> None:
     assert result.success is False
     assert result.should_stream is False
     assert "Use `/kit work-kit`" in result.message
+    # SkillSlashResult carries the outcome in ``success``: the message is a
+    # body, never a legacy "[Error]:" prefix (#132).
+    assert not result.message.startswith("[")
 
 
 def test_kit_slash_passes_ttl_override_and_prompt(
@@ -177,7 +180,7 @@ def test_kit_slash_passes_ttl_override_and_prompt(
 
     def fake_activate(**kwargs):
         calls.append(kwargs)
-        return True, "[Success]: activated"
+        return True, "activated"
 
     monkeypatch.setattr(command_service_mod, "activate_skill_kit", fake_activate)
 
@@ -205,7 +208,7 @@ def test_kit_slash_treats_non_ttl_tail_as_prompt(
 
     def fake_activate(**kwargs):
         calls.append(kwargs)
-        return True, "[Success]: activated"
+        return True, "activated"
 
     monkeypatch.setattr(command_service_mod, "activate_skill_kit", fake_activate)
 
@@ -246,7 +249,7 @@ def test_skill_or_kit_off_deactivates(
 
     def fake_deactivate(**kwargs):
         calls.append(kwargs)
-        return True, "[Success]: deactivated"
+        return True, "deactivated"
 
     monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
 
@@ -280,7 +283,7 @@ def test_skill_slash_off_deactivates_plain_skill(
 
     def fake_deactivate(**kwargs):
         calls.append(kwargs)
-        return True, "[Success]: deactivated"
+        return True, "deactivated"
 
     monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
 
@@ -326,7 +329,7 @@ def test_skill_prompt_notes_attachments(
     monkeypatch.setattr(
         command_service_mod,
         "activate_skill_kit",
-        lambda **kwargs: (True, "[Success]: activated"),
+        lambda **kwargs: (True, "activated"),
     )
 
     result = prepare_skill_slash_command(
@@ -428,7 +431,7 @@ def test_skills_off_all_deactivates_visible_active_skills(
 
     def fake_deactivate(**kwargs):
         calls.append(kwargs["skill_name"])
-        return True, "[Success]: deactivated"
+        return True, "deactivated"
 
     monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
 
@@ -442,6 +445,39 @@ def test_skills_off_all_deactivates_visible_active_skills(
 
     assert result.success is True
     assert calls == ["first-skill", "second-kit"]
+
+
+def test_skills_off_all_body_carries_no_sentinel_from_the_helper(
+    tmp_path: Path,
+) -> None:
+    # The real deactivate helper (no monkeypatch): its message is quoted
+    # verbatim into each per-skill line, so a prefixed helper string used to
+    # print a literal "[Success]:" mid-body under the rendered artifact.
+    first = _skill(tmp_path, "first-skill")
+    second = _skill(tmp_path, "second-kit", required_tools=["tool_b"])
+    agent = _agent(tmp_path, [first, second])
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id="thread-1",
+            enabled_skills=["first-skill", "second-kit"],
+        )
+    )
+
+    result = run(
+        CommandService().execute(
+            _ctx(),
+            "/skills off all",
+            api=SimpleNamespace(agent=agent),
+        )
+    )
+
+    assert result.success is True
+    assert result.level == "success"
+    assert result.markdown == (
+        "**Done.** Deactivated skills:\n"
+        "- `first-skill`: Skill 'first-skill' deactivated.\n"
+        "- `second-kit`: Skill kit 'second-kit' deactivated."
+    )
 
 
 def test_deactivate_skill_kit_threads_user_id_through_lookup(tmp_path: Path) -> None:
@@ -468,6 +504,9 @@ def test_deactivate_skill_kit_threads_user_id_through_lookup(tmp_path: Path) -> 
     )
 
     assert ok, msg
+    # The (ok, message) contract carries the outcome in the bool, so the
+    # message is a plain body with no legacy sentinel (#132).
+    assert msg == "Skill kit 'user-kit' deactivated. Evicted tools: tool_a."
     assert agent.skill_manager.get_calls == [("user-kit", "alice")]
     tc = agent.thread_config_manager.get_config("thread-1")
     assert tc is not None

@@ -3064,6 +3064,84 @@ def test_form_strip_keeps_state_hints(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ── typed result levels (#132) ───────────────────────────────────────────────
 
+_SENTINELS = ("[Error]:", "[Success]:", "[Info]:", "[Saved]:")
+_COMMAND_LAYER_MODULES = (
+    "command_service.py",
+    "command_forms.py",
+    "command_executor_context.py",
+    "command_executor_threads.py",
+    "command_executor_llm.py",
+    "command_executor_provider_setup.py",
+    "command_executor_cliproxy.py",
+)
+# The only functions allowed to spell a sentinel: the boundary's transition
+# parser (soft landing for plugin/out-of-tree handlers) and the one handler
+# that legitimately PARSES the tool-channel protocol.
+_SENTINEL_ALLOWED = {
+    ("command_service.py", "_render_result_markdown"),
+    ("command_service.py", "_cmd_notepad_write"),
+}
+
+
+def _sentinel_literals(module_path) -> list[tuple[str, str, int]]:
+    """(function, literal, line) for every non-docstring sentinel string."""
+    import ast
+
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    hits: list[tuple[str, str, int]] = []
+
+    def _docstring_node(node: Any) -> Any:
+        if not isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            return None
+        body = node.body
+        if body and isinstance(body[0], ast.Expr):
+            value = body[0].value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return value
+        return None
+
+    def _walk(node: Any, func: str, skip: set[int]) -> None:
+        doc = _docstring_node(node)
+        if doc is not None:
+            skip = skip | {id(doc)}
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func = node.name
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in skip
+            and any(node.value.startswith(s) for s in _SENTINELS)
+        ):
+            hits.append((func, node.value[:40], node.lineno))
+        for child in ast.iter_child_nodes(node):
+            _walk(child, func, skip)
+
+    _walk(tree, "<module>", set())
+    return hits
+
+
+def test_command_layer_carries_no_sentinel_literals() -> None:
+    """The #132 ratchet: the prefix protocol is retired in the command
+    layer. New sentinel literals mean a handler is bypassing the typed
+    constructors; use command_error/command_success/command_info instead.
+    (The tool layer's identical spelling is a DIFFERENT protocol and is
+    deliberately out of scope here.)"""
+    from pathlib import Path
+
+    core = Path(__file__).resolve().parents[1] / "nymeria" / "core"
+    violations: list[str] = []
+    for name in _COMMAND_LAYER_MODULES:
+        for func, literal, line in _sentinel_literals(core / name):
+            if (name, func) in _SENTINEL_ALLOWED:
+                continue
+            violations.append(f"{name}:{line} in {func}: {literal!r}")
+    assert not violations, (
+        "Sentinel literals outside the allowlist (author a typed level "
+        "instead):\n" + "\n".join(violations)
+    )
+
 
 def _register_level_synthetic(
     service: CommandService, monkeypatch: pytest.MonkeyPatch, ret: Any

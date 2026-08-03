@@ -230,6 +230,9 @@ def test_overview_shows_logged_in_badges() -> None:
     result = _run(api, "/provider cliproxy")
 
     assert result.success is True
+    # A catalog readout: info level, so no outcome artifact leads the body.
+    assert result.level == "info"
+    assert not result.markdown.startswith(("**Error:**", "**Done.**"))
     assert "Management API: configured" in result.markdown
     assert "[logged in: alice@example.com]" in result.markdown
     # Only the claude line carries the badge.
@@ -361,7 +364,10 @@ def test_target_management_unconfigured_degrades_to_guidance() -> None:
 def test_unknown_target_is_refused() -> None:
     result = _run(FakeCliproxyApi(), "/provider cliproxy bogus")
     assert result.success is False
-    assert "Unknown CLIProxy target" in result.markdown
+    # The authored level, not a string prefix, drives the rendered artifact
+    # every surface reads (#132).
+    assert result.level == "error"
+    assert result.markdown.startswith("**Error:** Unknown CLIProxy target")
 
 
 def test_requires_admin() -> None:
@@ -454,7 +460,8 @@ def test_login_start_failure_is_honest() -> None:
 def test_step_without_pending_record_is_refused() -> None:
     result = _run(FakeCliproxyApi(), "/provider cliproxy login")
     assert result.success is False
-    assert "No CLIProxy login is in progress" in result.markdown
+    assert result.level == "error"
+    assert result.markdown.startswith("**Error:** No CLIProxy login is in progress")
 
 
 # ── paste variants + confirmation ───────────────────────────────────────────
@@ -993,6 +1000,8 @@ def test_model_pick_then_apply_routes_globally_and_clears() -> None:
 
     applied = _run(api, "/provider cliproxy apply")
     assert applied.success is True
+    assert applied.level == "success"
+    assert applied.markdown.startswith("**Done.** CLIProxy route applied")
     assert _calls(api, "apply_route") == [
         {"provider": "claude", "model": "claude-opus-4-7", "scope": "global"}
     ]
