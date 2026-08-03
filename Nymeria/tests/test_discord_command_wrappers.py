@@ -501,8 +501,9 @@ def test_hook_create_assembles_and_quotes_the_flag_line():
 
 def test_hook_create_flag_line_round_trips_through_the_backend_parser():
     """The quoted line the cog emits must re-tokenize to the intended fields."""
+    from nymeria.core.command_params import bind_args
     from nymeria.core.command_service import (
-        _parse_hook_flags,
+        CommandService,
         _split_args,
         _split_rest_after_tokens,
     )
@@ -527,16 +528,20 @@ def test_hook_create_flag_line_round_trips_through_the_backend_parser():
     asyncio.run(run())
 
     command_text = api.command_calls[0]["command"]
-    # Strip the two path tokens ("hook create") the dispatcher would consume.
+    # Strip the two path tokens ("hook create") the dispatcher would consume,
+    # then bind against the registered declaration the dispatcher would use.
     rest = _split_rest_after_tokens(command_text, 2)
-    parsed, error = _parse_hook_flags(_split_args(rest))
-    assert error == ""
-    assert parsed["name"] == "Guard rm"
-    assert parsed["event"] == "pre_tool_use"
-    assert parsed["action"] == "block_if_matches"
-    assert parsed["matcher"] == "bash"
-    assert parsed["conds"] == ["command contains rm -rf"]
-    assert parsed["reason"] == "No destructive deletes"
+    params = CommandService()._commands["hook.create"].params
+    assert params is not None
+    bound, error = bind_args(params, _split_args(rest), rest)
+    assert error is None, error
+    assert bound is not None
+    assert " ".join(bound.get("name")) == "Guard rm"
+    assert bound.get("event") == "pre_tool_use"
+    assert bound.get("action") == "block_if_matches"
+    assert bound.get("matcher") == "bash"
+    assert bound.get("cond") == ["command contains rm -rf"]
+    assert bound.get("reason") == "No destructive deletes"
 
 
 def test_hook_list_maps_scope_and_enabled_only_to_flags():
@@ -591,9 +596,9 @@ def test_hook_edit_flag_line_round_trips_values_with_equals_and_quote_characters
     what the user typed, with no leaked quote characters and no `=`
     mis-splitting (e.g. a value of "a=b" must not be truncated to "a").
     """
+    from nymeria.core.command_params import bind_args
     from nymeria.core.command_service import (
-        _consume_all,
-        _consume_flag,
+        CommandService,
         _split_args,
         _split_rest_after_tokens,
     )
@@ -614,18 +619,17 @@ def test_hook_edit_flag_line_round_trips_values_with_equals_and_quote_characters
     asyncio.run(run())
 
     command_text = api.command_calls[0]["command"]
-    # Strip "hook edit" (2 path tokens) and the hook-id positional (1 more).
+    # Strip "hook edit" (2 path tokens), then bind against the registered
+    # declaration, which is what the dispatcher hands the handler.
     rest = _split_rest_after_tokens(command_text, 2)
-    args = _split_args(rest)
-    assert args[0] == "abc12345"
-    rest_args = args[1:]
-    # Mirror _cmd_hook_edit's own parsing exactly (command_service.py).
-    _conds_raw, rest_args, e1 = _consume_all(rest_args, "--cond")
-    _sets_raw, rest_args, e2 = _consume_all(rest_args, "--set")
-    _case_sensitive, rest_args = _consume_flag(rest_args, "--case-sensitive")
-    assert not (e1 or e2)
+    params = CommandService()._commands["hook.edit"].params
+    assert params is not None
+    bound, error = bind_args(params, _split_args(rest), rest)
+    assert error is None, error
+    assert bound is not None
+    assert bound.get("id") == "abc12345"
     kv: dict[str, str] = {}
-    for token in rest_args:
+    for token in bound.get("fields"):
         assert "=" in token
         key, _, value = token.partition("=")
         kv[key.strip().lower()] = value

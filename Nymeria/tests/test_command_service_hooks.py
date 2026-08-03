@@ -188,7 +188,16 @@ def test_create_reports_hook_limit(manager: HookManager, monkeypatch: pytest.Mon
 def test_create_requires_name(manager: HookManager) -> None:
     result = _run('/hook create --event prompt_submit --action inject_context --text hi')
     assert result.success is False
-    assert "requires a name" in result.markdown
+    assert "Missing required argument: name" in result.markdown
+    assert _user_hooks(manager) == []
+
+    # A quoted empty string binds as a name token but is still not a name.
+    blank = _run(
+        '/hook create "" --event prompt_submit --action inject_context --text hi'
+    )
+    assert blank.success is False
+    assert "requires a name" in blank.markdown
+    assert _user_hooks(manager) == []
 
 
 def test_create_rejects_unknown_flag(manager: HookManager) -> None:
@@ -197,7 +206,7 @@ def test_create_rejects_unknown_flag(manager: HookManager) -> None:
         '/hook create MyHook --event done --action notify --text hi --bogus junk'
     )
     assert result.success is False
-    assert "unknown option" in result.markdown
+    assert "Unknown option `--bogus`" in result.markdown
     assert _user_hooks(manager) == []
 
 
@@ -901,3 +910,174 @@ def test_run_workflow_create_surfaces_binding_error(
     assert result.success is False
     assert "no published workflow tool named 'wf_x'" in result.markdown
     assert _user_hooks(manager) == []
+
+
+# --- declared-argument adoption (backlog #129 wave 1c) ------------------------
+
+
+def test_create_name_collects_the_bare_words_around_the_options(
+    manager: HookManager,
+) -> None:
+    """The name is whatever the options leave behind, in any position.
+
+    The hand parser pulled ``--option value`` pairs out of the token list from
+    anywhere and joined the remainder, so a multi-word name works unquoted and
+    a bare word AFTER an option still belongs to the name. Both spellings are
+    in live use (the Discord cog sends name-then-options).
+    """
+    result = _run(
+        "/hook create Rate limit --event done --action notify guard "
+        '--text "hi {thread_id}" --scope global'
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.name == "Rate limit guard"
+    assert hook.logic.action == "notify"
+
+
+def test_hook_commands_reject_arguments_they_used_to_ignore(
+    manager: HookManager,
+) -> None:
+    """Extras were silently dropped by every hand parser in this family."""
+    for command in ("/hook templates", "/hook list"):
+        ok = _run(command)
+        assert ok.success is True, command
+
+        rejected = _run(f"{command} bogus")
+        assert rejected.success is False, command
+        assert "Unexpected argument `bogus`" in rejected.markdown, command
+
+    # /hook log takes one optional hook id and used to ignore anything after it.
+    extra = _run("/hook log deadbeef bogus")
+    assert extra.success is False
+    assert "Unexpected argument `bogus`" in extra.markdown
+
+    # A typo'd subcommand on the family root keeps the guidance layer.
+    unknown = _run("/hook frobnicate")
+    assert unknown.success is False
+    assert "Usage:" in unknown.markdown
+    assert "Subcommands:" in unknown.markdown
+
+
+def test_hook_options_accept_the_equals_spelling(manager: HookManager) -> None:
+    result = _run(
+        '/hook create Equals --event done --action=notify --text="hi there" '
+        "--scope=global"
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.logic.action == "notify"
+    assert hook.logic.text == "hi there"
+    assert hook.scope == "global"
+
+
+def test_hook_log_limit_is_an_integer(manager: HookManager) -> None:
+    from nymeria.core.hook_manager import HookExecution
+
+    for index in range(3):
+        manager.log_execution("alice", HookExecution(
+            hook_id=f"h{index}", hook_name="n", event="done", plane="observe",
+            status="ok", detail=f"entry {index}",
+        ))
+
+    capped = _run("/hook log --limit=2")
+    assert capped.success is True, capped.markdown
+    assert "Hook executions: 2" in capped.markdown
+
+    # The old parser silently fell back to 20 rows for a non-numeric limit.
+    bad = _run("/hook log --limit abc")
+    assert bad.success is False
+    assert "--limit must be an integer, got `abc`" in bad.markdown
+
+
+def test_delete_accepts_the_short_confirm_flag(manager: HookManager) -> None:
+    hook = manager.add_hook("alice", name="Gone", event="prompt_submit",
+                            text="x", scope="global")
+    assert hook is not None
+    result = _run(f"/hook delete {hook.id} -y")
+    assert result.success is True, result.markdown
+    assert _user_hooks(manager) == []
+
+
+def test_cond_must_be_quoted_and_an_unbalanced_quote_is_honest(
+    manager: HookManager,
+) -> None:
+    """``--cond`` values are one quoted token, so quoting is now enforced.
+
+    The family has no free-text tail, so the splitter's silent whitespace
+    fallback would validate a tokenization the user never meant.
+    """
+    ok = _run(
+        "/hook create Guard --event pre_tool_use --action block_if_matches "
+        '--matcher Bash --cond "command contains rm -rf" --reason no --scope global'
+    )
+    assert ok.success is True, ok.markdown
+    condition = _only(manager).logic.conditions[0]
+    assert (condition.field, condition.operator, condition.value) == (
+        "command", "contains", "rm -rf"
+    )
+
+    broken = _run(
+        "/hook create Guard2 --event pre_tool_use --action block_if_matches "
+        '--matcher Bash --cond "command contains rm --reason no --scope global'
+    )
+    assert broken.success is False
+    assert "Unbalanced quote" in broken.markdown
+    assert len(_user_hooks(manager)) == 1  # nothing new stored
+
+
+def test_edit_takes_key_values_and_options_in_any_order(manager: HookManager) -> None:
+    """The Discord cog sends key=value tokens BEFORE ``--cond``/``--set``."""
+    hook = manager.add_hook("alice", name="Guard", event="pre_tool_use",
+                            action="block_if_matches",
+                            params={"conditions": [], "reason": "keep"},
+                            matcher="Bash", scope="global")
+    assert hook is not None
+    result = _run(
+        f'/hook edit {hook.id} name="New name" --cond "command contains rm" '
+        "enabled=false"
+    )
+    assert result.success is True, result.markdown
+    updated = manager.get_hook("alice", hook.id)
+    assert updated.name == "New name"
+    assert updated.enabled is False
+    assert updated.logic.conditions[0].value == "rm"
+
+
+def test_hook_root_still_serves_the_unregistered_detail_synonym(
+    manager: HookManager,
+) -> None:
+    """``detail`` has no registered path, so the parent handler renders it."""
+    hook = manager.add_hook("alice", name="Solo", event="prompt_submit",
+                            text="x", scope="global")
+    assert hook is not None
+
+    for command in (f"/hook detail {hook.id}", f"/hooks detail {hook.id}"):
+        result = _run(command)
+        assert result.success is True, (command, result.markdown)
+        assert f"Hook {hook.id}" in result.markdown, command
+
+    bare = _run("/hook detail")
+    assert bare.success is False
+    assert "Usage:" in bare.markdown
+
+
+def test_parent_handler_still_backstops_a_restricted_sub_for_the_agent(
+    manager: HookManager,
+) -> None:
+    """The second gate of the ``/hooks <sub>`` bypass fix.
+
+    Alias expansion means a restricted subcommand resolves to its own
+    definition today, so nothing should reach the parent. This asserts the
+    fail-closed backstop that catches it if something ever does again.
+    """
+    from nymeria.core.command_params import BoundArgs
+    from nymeria.core.command_service import _CommandExecutor
+
+    executor = _CommandExecutor(
+        api=None, thread_id="thread-1", user_id="alice", actor="agent"
+    )
+    denied = run(
+        executor._cmd_hook(BoundArgs(values={"subcommand": "disable", "id": "abc"}))
+    )
+    assert "not available to the agent" in denied

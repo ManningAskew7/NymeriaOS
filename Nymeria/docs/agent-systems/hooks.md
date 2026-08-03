@@ -250,7 +250,11 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   object); `--cond`/`--set`/`--fire-cond` repeat; `edit`
   takes `key=value` scalars (incl. `once=true|false`, `single_use=true|false`,
   `workflow=<id>`, `workflow_params='{...}'`, `on_fault=allow|deny`)
-  plus `--cond`/`--set`/`--fire-cond`. It reuses the same flat-field mapping
+  plus `--cond`/`--set`/`--fire-cond`. The grammar is declared per command
+  (backlog #129), so usage strings are generated, `--option=value` works
+  everywhere, an unknown option or an extra word is a usage error instead of
+  being folded into the name or dropped, and a `--cond`/`--set` value must be
+  a single quoted token. It reuses the same flat-field mapping
   (`params_from_fields` / `build_update_kwargs` in `core/hook_manager.py`) as the REST
   surface, so the three authoring paths cannot drift. The mutating subcommands are
   `agent_allowed=False` (the agent authors via the tool) and hidden from chat command menus

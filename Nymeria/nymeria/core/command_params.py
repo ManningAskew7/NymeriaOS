@@ -20,9 +20,13 @@ Grammar notes, deliberate and load-bearing:
 - A ``rest`` param is the JOIN of the remaining tokens, matching the
   ``" ".join(args)`` idiom the title/prompt handlers already used. Handlers
   that need the true raw tail (quote-preserving) must not adopt params.
-- Once the first rest/repeatable-positional token is consumed, later
-  ``--tokens`` belong to that value verbatim, so option-looking words inside
-  a title never error. Options therefore must precede free text.
+- Once the first ``rest`` token is consumed, later ``--tokens`` belong to
+  that value verbatim, so option-looking words inside a title never error.
+  Options therefore must precede free text. A repeatable POSITIONAL is not
+  a raw tail: it collects the bare tokens wherever they fall and options
+  keep parsing around them, which is the ``/hook create <name ...> --event
+  E`` grammar (its hand parser pulled options out of the list from any
+  position and joined what was left).
 - Binding is STRICT: unknown options and unexpected extra positionals are
   errors. Commands where trailing words must never block execution
   (``/stop``, ``/clear``, ``/restart``) simply stay unadopted.
@@ -481,8 +485,13 @@ def bind_args(
             index += 1
             continue
         if tail_param is not None:
-            in_tail = True
             tail_tokens.append(token)
+            # A rest param takes the raw tail VERBATIM, so an option-looking
+            # word inside a title never errors. A repeatable POSITIONAL does
+            # not latch: its grammar interleaves bare values with options
+            # (``/hook create <name ...> --event E``, ``/hook edit <id>
+            # key=value ... --cond "f op v"``), so scanning continues.
+            in_tail = tail_param.kind == "rest"
             index += 1
             continue
         return None, BindError(

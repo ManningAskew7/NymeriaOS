@@ -154,6 +154,29 @@ def test_repeatable_positional_collects_all() -> None:
     assert bound.get("pairs") == ["a=1", "b=2"]
 
 
+def test_repeatable_positional_keeps_parsing_options_around_it() -> None:
+    """A repeatable positional is not a raw tail, unlike ``rest``.
+
+    ``/hook create <name ...> --event E`` interleaves the two: its hand parser
+    pulled option pairs out of the list from any position and joined what was
+    left, so bare words on both sides of an option belong to the positional
+    and a typo'd option is still an error.
+    """
+    params = (
+        CommandParam("name", repeatable=True),
+        CommandParam("event", kind="option"),
+        CommandParam("once", kind="flag", type="bool"),
+    )
+    bound, error = _bind(params, "Rate limit --event done guard --once")
+    assert error is None and bound is not None
+    assert bound.get("name") == ["Rate", "limit", "guard"]
+    assert bound.get("event") == "done"
+    assert bound.get("once") is True
+
+    _, error = _bind(params, "Rate limit --evnt done")
+    assert error is not None and "Unknown option `--evnt`" in error.problem
+
+
 def test_unbalanced_quote_is_an_honest_error() -> None:
     params = (CommandParam("key"),)
     _, error = bind_args(params, ["k", '"unclosed'], 'k "unclosed')
