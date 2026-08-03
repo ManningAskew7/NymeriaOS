@@ -503,6 +503,38 @@ def test_depth_three_commands_nest_instead_of_clobbering_their_parent():
     assert client.calls[0]["command"] == "/account tokens issue laptop"
 
 
+def test_family_root_arriving_after_its_children_keeps_them():
+    """Catalog order must not decide whether a family has subcommands.
+
+    The depth-1 arm of ``_register_path`` registered the root as-is, and
+    the registry's same-tier rule REPLACES: a backend family root arriving
+    AFTER its children swapped out the placeholder group holding them, so
+    every subcommand went unknown (#131 review F2). The provider now
+    carries the group's children onto the real root.
+    """
+    registry = CommandRegistry(include_builtins=False)
+    BackendCommandProvider(
+        [
+            command_info("zzfam list"),
+            command_info("zzfam delete"),
+            command_info("zzfam"),  # root LAST: the order that used to wipe
+        ]
+    ).register(registry)
+
+    root = registry.get("zzfam")
+    assert root is not None
+    # The real root command won the key (not the placeholder group)...
+    assert root.metadata.get("backend_path") == ("zzfam",)
+    # ...and the children registered before it are still reachable.
+    for typed, canonical in (
+        ("/zzfam list", ("zzfam", "list")),
+        ("/zzfam delete", ("zzfam", "delete")),
+    ):
+        match = registry.resolve(typed)
+        assert match is not None, f"{typed} did not resolve"
+        assert match.command.metadata.get("backend_path") == canonical, typed
+
+
 def test_palette_advertises_the_real_depth_three_spellings():
     """The palette taught a phantom before the nesting fix.
 

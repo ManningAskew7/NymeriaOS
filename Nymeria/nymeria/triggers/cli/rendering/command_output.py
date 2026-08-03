@@ -67,8 +67,9 @@ class RichConsoleCommandOutputSink:
     the backend marks EVERY successful command success, including plain
     readouts where a check mark would be noise, while ``**Done.**`` is
     authored only on action confirmations. ``✗``/``!`` attach by level.
-    Backlog #132 (typed command results) retires the markdown artifacts
-    at the source; this stays a display concern until then.
+    Since #132 the artifacts are rendered at the dispatch boundary FROM
+    the handler's authored level (the permanent contract, not a shim),
+    and this sink stays the display-side half: it pops them into glyphs.
 
     ``theme`` should be the app's LIVE theme (`CLIApp.theme`, kept
     current by the ``theme_updated`` action) so `/theme` overrides apply

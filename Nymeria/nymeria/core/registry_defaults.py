@@ -1033,23 +1033,20 @@ def register_default_commands(service: "CommandService") -> None:
         # The four listing variants (`enabled`, `optional`, `core`,
         # `category <name>`) folded into this one filter (backlog #131).
         # `tools_list` leads so it, not a folded-in spelling, names the
-        # chat-bot menu entry. The old paths follow as whole-path aliases:
-        # `tools category` bridges exactly (its tail becomes the filter),
-        # while `tools enabled` bridges only because `enabled` is the
-        # default. ACCEPTED DEGRADATION: alias expansion substitutes a path
-        # and cannot INJECT an argument, so `/tools core` and
-        # `/tools optional` land on the unfiltered (enabled) list until the
-        # value-injecting alias machinery lands with backlog #133.
+        # chat-bot menu entry. Only the spellings that stay TRUTHFUL are
+        # aliased: `tools category` bridges exactly (its tail becomes the
+        # filter) and `tools enabled` bridges because `enabled` is the
+        # default. `tools core|optional` (and their flat twins) are NOT
+        # aliased: alias expansion cannot inject the filter value, so they
+        # would render the enabled view while claiming core/optional (the
+        # #131 correctness review caught exactly that); an honest
+        # unknown-subcommand error with the family's did-you-mean beats
+        # wrong data. #133's value-injecting aliases restore them.
         aliases=(
             "tools_list",
             "tools_enabled",
-            "tools_optional",
-            "tools_core",
             "tools_category",
-            "tools list_core",
             "tools enabled",
-            "tools optional",
-            "tools core",
             "tools category",
         ),
         # requires_thread stays off: the `core` filter reads the global
@@ -1464,7 +1461,7 @@ def register_default_commands(service: "CommandService") -> None:
             CommandParam(
                 "scope",
                 kind="scope",
-                description="Show only global hooks, or only this thread's",
+                description="Show only global hooks, or this thread's view (its hooks plus the global ones that also fire here)",
             ),
         ),
     )

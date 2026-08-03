@@ -140,7 +140,20 @@ class BackendCommandProvider:
         aliases it had.
         """
         if len(path) == 1:
-            registry.register(_backend_command(info, path))
+            command = _backend_command(info, path)
+            existing = registry.get(path[0])
+            if (
+                existing is not None
+                and existing.name == _cli_token(path[0])
+                and existing.metadata.get("backend_command")
+            ):
+                # The family's children may arrive BEFORE this root in
+                # catalog order, leaving a backend group holding them. The
+                # registry's same-tier rule REPLACES, so carry those
+                # children onto the real root or they silently vanish.
+                for sub_name, sub in existing.subcommands.items():
+                    command.subcommands.setdefault(sub_name, sub)
+            registry.register(command)
             return
         root = registry.get(path[0])
         if root is None:

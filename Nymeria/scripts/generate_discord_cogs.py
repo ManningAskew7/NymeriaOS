@@ -143,9 +143,9 @@ EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
     "mcp",
     "memory",
     # `models` became `model list` in backlog #131, which turns `model` into a
-    # group. That costs Discord the bare `/model <name>` SWITCH, not just a
-    # readout: on Discord the model is changed with `/settings set llm_model`
-    # (or from the desktop/CLI) until a Discord-shaped replacement lands.
+    # group. That cost Discord the bare `/model <name>` SWITCH, restored the
+    # same day as the hand cog `/set-model` in discord_cogs/config.py (with
+    # `/show-settings` covering the folded settings readout).
     "model",
     "provider",
     "settings",

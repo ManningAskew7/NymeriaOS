@@ -422,7 +422,10 @@ def test_registry_exposes_full_path_metadata_and_visibility_filters() -> None:
 
     assert tools_list.name == "tools list"
     assert tools_list.path == ["tools", "list"]
-    assert "/tools_core" in tools_list.aliases
+    assert "/tools_enabled" in tools_list.aliases
+    # The wrong-view spellings are deliberately NOT aliases (they would
+    # render the enabled view while claiming core; #131 review).
+    assert "/tools_core" not in tools_list.aliases
     assert tools_list.scope == "global"
     assert tools_list.agent_allowed is True
     assert tools_list.requires_thread is False
@@ -485,7 +488,7 @@ def test_displayed_names_are_hyphenated_and_paths_stay_stored_form() -> None:
     # chat platforms' command names, and Telegram rejects a hyphen in one.
     assert "/background_set_url" not in by_id["background.set_url"].aliases
     assert "/provider_reasoning_passback" in by_id["provider.reasoning_passback"].aliases
-    assert "/tools_core" in by_id["tools.list"].aliases
+    assert "/tools_enabled" in by_id["tools.list"].aliases
 
 
 def test_help_renders_the_hyphenated_spelling_everywhere() -> None:
@@ -2865,18 +2868,16 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
         ("mcp", "remove"),
         ("mcp", "rm"),
     )
-    # The four tools listing commands folded into one filter, so every old
-    # spelling is an alias of `tools list`.
+    # The four tools listing commands folded into one filter. Only the
+    # spellings that stay truthful are aliases: `enabled` (the default) and
+    # `category` (its tail becomes the filter). `core`/`optional` would
+    # render the enabled view while claiming another, so they fail honestly
+    # instead (#131 correctness review; #133 injection restores them).
     assert by_name["tools list"].aliases == (
         ("tools_list",),
         ("tools_enabled",),
-        ("tools_optional",),
-        ("tools_core",),
         ("tools_category",),
-        ("tools", "list_core"),
         ("tools", "enabled"),
-        ("tools", "optional"),
-        ("tools", "core"),
         ("tools", "category"),
     )
     for gone in ("tools core", "tools optional", "tools enabled", "tools category"):
@@ -3023,6 +3024,45 @@ def test_an_unregistered_subcommand_still_reaches_the_parent_handler() -> None:
         assert aliased.definition is not None, raw
         assert aliased.definition.id == "hook.show", raw
         assert aliased.args == ["abc"], raw
+
+
+def test_an_alias_prefix_cannot_hijack_a_deeper_registered_path() -> None:
+    """The /hooks disable class of bug, from the other direction (#131 F6).
+
+    ``_expand_alias_prefix`` breaks on an exact path match, but it used to
+    scan only as deep as the longest ALIAS in the registry. A two-token
+    alias that is a proper prefix of a three-token path therefore expanded
+    before the real path could win, dispatching the alias TARGET with the
+    path's tail demoted to an argument, and the deeper command's own flags
+    were never consulted. The scan ceiling now includes the longest PATH,
+    so the break-on-path guard always gets its chance.
+
+    Uses runtime registrations because the built-in catalog (correctly) has
+    no alias shaped like this; the hazard is one plugin away.
+    """
+    service = CommandService()
+    service.register(
+        "zzalias target",
+        description="the alias target",
+        category="Tests",
+        aliases=("zzfam sub",),
+    )
+    service.register(
+        "zzfam sub leaf",
+        description="the deeper real command",
+        category="Tests",
+    )
+
+    deep = service._parse_for_registry("/zzfam sub leaf abc")
+    assert deep.definition is not None
+    assert deep.definition.id == "zzfam.sub.leaf"
+    assert deep.args == ["abc"]
+
+    # The alias keeps working for its own exact spelling.
+    exact = service._parse_for_registry("/zzfam sub abc")
+    assert exact.definition is not None
+    assert exact.definition.id == "zzalias.target"
+    assert exact.args == ["abc"]
 
 
 class _ModelCatalogCommandApi(FakeCommandApi):
@@ -5396,9 +5436,7 @@ def test_every_retired_spelling_resolves_to_the_command_that_replaced_it() -> No
         ("thread info", "thread.show"),
         ("thread new", "thread.create"),
         ("tools category", "tools.list"),
-        ("tools core", "tools.list"),
         ("tools enabled", "tools.list"),
-        ("tools optional", "tools.list"),
     ):
         resolved = service.find_command(old)
         assert resolved is not None, old
@@ -5446,21 +5484,20 @@ def test_retired_root_spellings_still_execute_their_replacement() -> None:
     assert "browser" in filtered.markdown
 
 
-def test_the_three_degraded_tools_aliases_land_on_the_default_view() -> None:
-    """The accepted degradation, pinned so it cannot be mistaken for a bug.
-
-    Alias expansion substitutes a path; it cannot INJECT an argument. So
-    `/tools core` and `/tools optional` reach `tools list` with no filter and
-    render the default (enabled) view. Backlog #133 builds the value-injecting
-    machinery that upgrades them.
+def test_wrong_view_tools_spellings_fail_honestly_not_confidently() -> None:
+    """`/tools core|optional` are deliberately NOT aliases: alias expansion
+    cannot inject the filter value, so they would render the enabled view
+    while claiming core/optional (#131 correctness review). They fail with
+    the family's guidance instead, until #133's value-injecting aliases
+    restore them.
     """
     service = CommandService()
     api = FakeCommandApi()
 
-    for degraded in ("/tools core", "/tools optional"):
-        result = run(service.execute(_ctx(), degraded, api=api))
-        assert result.success is True, result.markdown
-        assert "Enabled Tools on this thread" in result.markdown
+    for dropped in ("/tools core", "/tools optional"):
+        result = run(service.execute(_ctx(), dropped, api=api))
+        assert result.success is False, result.markdown
+        assert "list" in result.markdown  # the family guidance names the fix
 
     # `enabled` is the default, so its alias bridges exactly rather than
     # degrading, and the explicit filters still reach their own views.

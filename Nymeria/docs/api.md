@@ -1429,7 +1429,7 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "usage": "/tools list [enabled|optional|core|<category>]",
     "category": "Tools",
     "subcommands": [],
-    "aliases": ["/tools_list", "/tools_enabled", "/tools_optional", "/tools_core", "/tools_category", "/tools list_core", "/tools enabled", "/tools optional", "/tools core", "/tools category"],
+    "aliases": ["/tools_list", "/tools_enabled", "/tools_category", "/tools enabled", "/tools category"],
     "scope": "global",
     "surfaces": ["desktop", "mobile", "cli", "discord", "telegram", "slack", "whatsapp", "teams", "api", "agent"],
     "agent_allowed": true,
@@ -1533,10 +1533,30 @@ invalid values stay errors for every caller.
   "success": true,
   "markdown": "### Core Tools\n\n...",
   "command": "tools list",
-  "level": "success",
+  "level": "info",
   "data": null
 }
 ```
+
+**Result levels (2026-08-03).** Handlers author a typed outcome:
+`level` is one of `info` (a readout: lists, status views), `success` (a
+completed action), `warning` (completed with a caveat), or `error`.
+`success` is `level != "error"`. The dispatcher is the single producer
+of the markdown outcome artifacts, rendered FROM the level: `error`
+bodies open with `**Error:** `, `success` with `**Done.** `, `warning`
+with `**Warning:** `; `info` gets no artifact (plus the heading rule: a
+multi-line info body whose first line is plain text has it promoted to
+`### `). Clients may branch on `level` or on the artifacts; they share
+provenance and cannot disagree. Two invariants: `data` is dropped when
+`level` is `error` (a failure never ships a form or state hint) and
+survives `warning`; and `info` is reported honestly (older backends
+collapsed it into `success`, so a bare success level from them does not
+imply a confirmation). The retired `[Error]:`/`[Success]:`/`[Info]:`
+string prefixes never appear in first-party output anymore, including
+the chat-stream command surfaces (`/goal`, `/orchestrate`, `/quick`,
+`/done`, skill relays), which now speak the same artifact vocabulary
+over SSE; the dispatch boundary still ACCEPTS the old prefixes from
+out-of-tree handlers (plugins) as a permanent compatibility path.
 
 Commands that require an active thread return a markdown error if `thread_id`
 is omitted. `/compact` appears in discovery with `execution_kind:

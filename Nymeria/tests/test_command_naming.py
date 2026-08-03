@@ -38,6 +38,24 @@ def test_the_built_in_catalog_passes_the_canon() -> None:
     CommandService()
 
 
+def test_service_construction_actually_runs_the_naming_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wiring itself, not the rules: if validate_registry ever stops
+    calling validate_command_naming, every rule test above keeps passing
+    against a validator nothing runs (#131 review F4)."""
+    from nymeria.core import command_service as command_service_module
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("naming check wired")
+
+    monkeypatch.setattr(
+        command_service_module, "validate_command_naming", _boom
+    )
+    with pytest.raises(ValueError, match="naming check wired"):
+        CommandService()
+
+
 def test_off_canon_leaf_raises() -> None:
     commands = {
         "zz": _cmd(("zz",)),
@@ -173,4 +191,158 @@ def test_recorded_unregistered_agent_blocked_entries_pass() -> None:
         AGENT_BLOCKED_UNREGISTERED,
         grandfathered=_NONE,
         rootless_grandfathered=_NONE,
+    )
+
+
+def _leading_single_token_aliases() -> dict[str, str]:
+    """command id -> its FIRST single-token alias, in declaration order.
+
+    This mirrors ``_telegram_command_name``'s preference rule: the leading
+    single-token alias IS the Telegram menu name for that command, so alias
+    tuple ORDER in the registry is a live external contract.
+    """
+    result: dict[str, str] = {}
+    for command_id, cmd in CommandService()._commands.items():
+        for alias in cmd.aliases:
+            if len(alias) == 1:
+                result[command_id] = alias[0]
+                break
+    return result
+
+
+def test_leading_single_token_aliases_snapshot() -> None:
+    """The Telegram menu-name contract, pinned (#131 architect review).
+
+    Wave A preserved every menu name by keeping alias order stable and
+    guarded it with registry comments; this snapshot gives the contract
+    teeth. A diff here means a Telegram menu entry is about to rename:
+    either restore the order or update BOTH this snapshot and the
+    telegram-bot.md tables deliberately.
+    """
+    assert _leading_single_token_aliases() == {
+        "account": "acct",
+        "account.platforms": "account_platforms",
+        "account.show": "account_current",
+        "account.tokens": "account_tokens",
+        "account.tokens.issue": "account_tokens_issue",
+        "account.tokens.revoke": "account_tokens_revoke",
+        "activity.list": "activity_list",
+        "activity.notifications": "activity_notifications",
+        "artifacts.list": "artifacts_recent",
+        "doctor.auth": "doctor_auth",
+        "doctor.model": "doctor_model",
+        "env.get": "env_get",
+        "env.set": "env_set",
+        "env.show": "env_show",
+        "goal.approve": "goal_approve",
+        "goal.cancel": "goal_cancel",
+        "goal.clear": "goal_clear",
+        "goal.edit": "goal_edit",
+        "goal.pause": "goal_pause",
+        "goal.resume": "goal_resume",
+        "goal.status": "goal_status",
+        "help": "h",
+        "hook": "hooks",
+        "hook.approvals": "hook_approvals",
+        "hook.approve": "hook_approve",
+        "hook.create": "hook_create",
+        "hook.delete": "hook_delete",
+        "hook.deny": "hook_deny",
+        "hook.disable": "hook_disable",
+        "hook.edit": "hook_edit",
+        "hook.enable": "hook_enable",
+        "hook.history": "hook_log",
+        "hook.install": "hook_install",
+        "hook.list": "hook_list",
+        "hook.show": "hook_show",
+        "hook.templates": "hook_templates",
+        "hook.test": "hook_test",
+        "mcp.delete": "mcp_remove",
+        "mcp.discover": "mcp_discover",
+        "mcp.list": "mcp_list",
+        "mcp.logs": "mcp_logs",
+        "mcp.retry": "mcp_retry",
+        "mcp.status": "mcp_status",
+        "mcp.test": "mcp_test",
+        "memory.delete": "memory_forget",
+        "memory.limit": "memory_limit",
+        "memory.list": "memory_list",
+        "memory.save": "memory_save",
+        "memory.search": "memory_search",
+        "model.list": "models",
+        "notepad.clear": "notepad_clear",
+        "notepad.read": "notepad_read",
+        "notepad.write": "notepad_write",
+        "orchestrate.clear": "orchestrate_clear",
+        "orchestrate.status": "orchestrate_status",
+        "provider.cliproxy": "provider_cliproxy",
+        "provider.list": "provider_list",
+        "provider.reasoning_passback": "provider_reasoning_passback",
+        "provider.set": "provider_set",
+        "provider.setup": "provider_setup",
+        "provider.switch": "provider_switch",
+        "provider.test": "provider_test",
+        "settings": "settings_show",
+        "settings.get": "settings_get",
+        "settings.set": "settings_set",
+        "skills.disable": "skills_disable",
+        "skills.enable": "skills_enable",
+        "skills.install": "skills_install",
+        "skills.list": "skills_list",
+        "skills.search": "skills_search",
+        "skills.show": "skills_show",
+        "team": "teams",
+        "team.list": "team_list",
+        "team.show": "team_show",
+        "think": "reasoning",
+        "thread": "threads",
+        "thread.branch": "thread_branch",
+        "thread.compact": "thread_compact",
+        "thread.config": "thread_config",
+        "thread.create": "thread_new",
+        "thread.delete": "thread_delete",
+        "thread.list": "thread_list",
+        "thread.pin": "thread_pin",
+        "thread.rename": "thread_rename",
+        "thread.show": "thread_info",
+        "thread.switch": "thread_switch",
+        "todos.add": "todos_add",
+        "todos.complete": "todos_complete",
+        "todos.delete": "todos_delete",
+        "todos.list": "todos_list",
+        "tools.disable": "tools_disable",
+        "tools.enable": "tools_enable",
+        "tools.list": "tools_list",
+        "triggers.delete": "triggers_delete",
+        "triggers.disable": "triggers_disable",
+        "triggers.enable": "triggers_enable",
+        "triggers.history": "triggers_history",
+        "triggers.list": "triggers_list",
+        "usage": "tokens",
+        "usage.session": "usage_session",
+    }
+
+
+def test_sanctioned_tokens_appear_in_the_style_guide() -> None:
+    """SANCTIONED_LEAF_TOKENS and the style guide's human copy are
+    hand-synced by rule; this closes the gap (#131 architect review).
+    A hyphen-rendered spelling in the guide vouches for its underscore
+    token."""
+    from pathlib import Path
+
+    guide = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "private"
+        / "command-style-guide.md"
+    ).read_text(encoding="utf-8")
+    missing = [
+        token
+        for token in SANCTIONED_LEAF_TOKENS
+        if f"`{token}`" not in guide
+        and f"`{token.replace('_', '-')}`" not in guide
+    ]
+    assert not missing, (
+        "Sanctioned tokens absent from docs/private/command-style-guide.md "
+        f"(add them to the Recorded exceptions section): {missing}"
     )
