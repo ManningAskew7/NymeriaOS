@@ -12,11 +12,12 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from discord import AppCommandOptionType, app_commands
 
+from cli_fixtures import run
 from nymeria.core.command_service import CommandService
 from nymeria.triggers.discord_cogs import ALL_COGS
 from nymeria.triggers.discord_cogs.autocomplete import AUTOCOMPLETE_RESOLVERS
@@ -345,3 +346,93 @@ def test_generator_refuses_an_over_long_description(
     broken = dataclasses.replace(selected[0], description="x" * 101)
     with pytest.raises(generator.GeneratorError, match="description is 101"):
         generator.enforce_limits(service, [broken], generator.group_paths([broken]))
+
+
+# ── the shared endpoint resolver behind every ref (#110 slice 6) ─────────────
+
+
+class _OptionsApi:
+    def __init__(self, options: list[dict] | None = None) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.options = options if options is not None else [
+            {"id": "hook-a", "label": "Morning brief", "meta": "enabled, post_turn"},
+            {"id": "hook-b", "label": "Lint gate", "meta": "disabled, pre_tool_use"},
+        ]
+
+    async def list_command_options(self, ref: str, **kwargs) -> list[dict]:
+        self.calls.append((ref, kwargs))
+        return self.options
+
+
+class _ResolverBot:
+    def __init__(self, api: _OptionsApi, user_id: str | None = "alice") -> None:
+        self.api = api
+        self._user_id = user_id
+
+    async def resolve_user_id(self, discord_user_id: int) -> str | None:
+        return self._user_id
+
+
+def _interaction(channel_id: int | None = 42) -> SimpleNamespace:
+    return SimpleNamespace(
+        user=SimpleNamespace(id=123),
+        guild_id=7,
+        channel_id=channel_id,
+    )
+
+
+def test_endpoint_resolver_maps_options_to_scoped_choices() -> None:
+    from nymeria.triggers.discord_cogs.autocomplete import endpoint_resolver
+    from nymeria.triggers.discord_bot import make_thread_id
+
+    api = _OptionsApi()
+    bot = _ResolverBot(api)
+
+    choices = run(endpoint_resolver("hooks")(bot, _interaction(), ""))
+
+    assert [choice.value for choice in choices] == ["hook-a", "hook-b"]
+    assert choices[0].name == "Morning brief · enabled, post_turn"
+    # The call acted as the linked user, in the channel's thread.
+    (ref, kwargs), = api.calls
+    assert ref == "hooks"
+    assert kwargs["user_id"] == "alice"
+    assert kwargs["thread_id"] == make_thread_id(7, 42)
+
+
+def test_endpoint_resolver_filters_on_value_label_and_meta() -> None:
+    from nymeria.triggers.discord_cogs.autocomplete import endpoint_resolver
+
+    bot = _ResolverBot(_OptionsApi())
+
+    by_meta = run(endpoint_resolver("hooks")(bot, _interaction(), "disabled"))
+    assert [choice.value for choice in by_meta] == ["hook-b"]
+
+    by_label = run(endpoint_resolver("hooks")(bot, _interaction(), "morning"))
+    assert [choice.value for choice in by_label] == ["hook-a"]
+
+
+def test_endpoint_resolver_unlinked_user_gets_no_suggestions() -> None:
+    from nymeria.triggers.discord_cogs.autocomplete import endpoint_resolver
+
+    api = _OptionsApi()
+    bot = _ResolverBot(api, user_id=None)
+
+    assert run(endpoint_resolver("hooks")(bot, _interaction(), "")) == []
+    assert api.calls == []  # never reached the backend as the service account
+
+
+def test_endpoint_resolver_degrades_on_backend_fault_and_caps_at_25() -> None:
+    from nymeria.triggers.discord_cogs.autocomplete import (
+        MAX_CHOICES,
+        endpoint_resolver,
+    )
+
+    class _Broken(_OptionsApi):
+        async def list_command_options(self, ref: str, **kwargs) -> list[dict]:
+            raise RuntimeError("backend down")
+
+    assert run(endpoint_resolver("hooks")(_ResolverBot(_Broken()), _interaction(), "")) == []
+
+    many = _OptionsApi(options=[{"id": f"t-{index:03d}"} for index in range(40)])
+    capped = run(endpoint_resolver("threads")(_ResolverBot(many), _interaction(), ""))
+    assert len(capped) == MAX_CHOICES

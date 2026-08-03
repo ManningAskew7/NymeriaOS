@@ -4,8 +4,8 @@ The group stays hand-written because `/tools search` is Discord-local: it calls
 the tool-search API directly and renders a ranked embed, so it is not a registry
 command the generator could derive. A Discord group name has exactly one owner,
 so its siblings stay with it. The name autocomplete is NOT duplicated here: it
-is the shared `resolve_tools` resolver the generated cog also wires by
-`choices_ref`.
+is the shared `AUTOCOMPLETE_RESOLVERS["tools"]` entry the generated cog also
+wires by `choices_ref` (answered by the backend option-resolver registry).
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..discord_bot import make_thread_id
+from .autocomplete import AUTOCOMPLETE_RESOLVERS
 from .autocomplete import mapping_sequence as _mapping_sequence
-from .autocomplete import resolve_tools
 from .autocomplete import tool_name as _tool_name
 
 if TYPE_CHECKING:
@@ -163,7 +163,7 @@ class ToolsCog(commands.Cog):
     async def _enable_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        return await resolve_tools(self.bot, interaction, current)
+        return await AUTOCOMPLETE_RESOLVERS["tools"](self.bot, interaction, current)
 
     @tools_group.command(
         name="disable",
@@ -186,4 +186,4 @@ class ToolsCog(commands.Cog):
     async def _disable_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        return await resolve_tools(self.bot, interaction, current)
+        return await AUTOCOMPLETE_RESOLVERS["tools"](self.bot, interaction, current)

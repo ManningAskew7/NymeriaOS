@@ -997,6 +997,24 @@ class NymeriaAPIClient:
             act_as=user_id,
         )
 
+    async def list_command_options(
+        self,
+        ref: str,
+        *,
+        thread_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[dict]:
+        """Resolve a ``choices_ref`` option set live (``GET
+        /commands/options/{ref}``), scoped to the acting user. Raises on
+        HTTP errors like every other method here; autocomplete callers
+        degrade to no suggestions themselves."""
+        data = await self._get(
+            f"/commands/options/{ref}",
+            params={"thread_id": thread_id} if thread_id else None,
+            act_as=user_id,
+        )
+        return data if isinstance(data, list) else []
+
     async def list_commands(
         self,
         *,
