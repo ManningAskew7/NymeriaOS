@@ -458,3 +458,70 @@ def test_fragments_overflow_counts_both_directions() -> None:
     bottom = _rendered(form_panel_fragments(spec, state, width=40))
     assert "↑ 5 more above" in bottom
     assert "below" not in bottom
+
+
+# ── fieldless action tabs (#139) ─────────────────────────────────────────────
+
+
+def _action_spec(*, description: str = "Send a probe request", tabs: int = 1) -> FormSpec:
+    action = FormTab(label="Test", fields=(), description=description)
+    extra = tuple(
+        FormTab(
+            label=f"Other{index}",
+            fields=(
+                FormField(
+                    kind="radio",
+                    key=f"value{index}",
+                    options=(FormOption(id="a", label="a"),),
+                ),
+            ),
+        )
+        for index in range(tabs - 1)
+    )
+    return FormSpec(title="Provider: Anthropic", tabs=(action, *extra), on_confirm=_noop)
+
+
+def test_action_tab_renders_description_row_and_run_footer() -> None:
+    spec = _action_spec()
+    state = init_state(spec)
+
+    rendered = _rendered(form_panel_fragments(spec, state, width=60))
+    assert "▸ Send a probe request" in rendered
+    assert "Enter run · Esc close" in rendered
+
+    multi = _action_spec(tabs=2)
+    multi_state = init_state(multi)
+    multi_rendered = _rendered(form_panel_fragments(multi, multi_state, width=60))
+    assert "←→ step · Enter run · Esc close" in multi_rendered
+
+
+def test_action_tab_without_description_shows_run_instruction() -> None:
+    spec = _action_spec(description="")
+    state = init_state(spec)
+    rendered = _rendered(form_panel_fragments(spec, state, width=60))
+    assert "▸ Press Enter to run" in rendered
+
+
+def test_action_tab_height_counts_its_description_row() -> None:
+    spec = _action_spec()
+    state = init_state(spec)
+    # header + description row + footer
+    assert form_panel_height(spec, state) == 3
+
+
+def test_action_tab_busy_row_reports_in_flight() -> None:
+    spec = _action_spec()
+    state = init_state(spec)
+    state.busy = True
+    rendered = _rendered(form_panel_fragments(spec, state, width=60))
+    assert "submitted, working…" in rendered
+    assert "Working… · Esc dismiss" in rendered
+
+
+def test_action_tab_build_result_is_valueless() -> None:
+    spec = _action_spec()
+    state = init_state(spec)
+    result = build_result(spec, state)
+    assert result.tab_label == "Test"
+    assert result.radio_value is None
+    assert result.checkbox_values == ()
