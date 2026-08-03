@@ -37,6 +37,7 @@ from .command_forms import (
     radio_field,
     search_field,
 )
+from .command_form_generation import generate_param_form
 from .command_option_resolvers import OPTION_RESOLVERS, resolve_models
 from .command_params import (
     BoundArgs,
@@ -2744,6 +2745,33 @@ class CommandService:
                     definition.params, parsed.args, parsed.rest
                 )
                 if bind_error is not None or bound is None:
+                    if (
+                        bind_error is not None
+                        and bind_error.missing
+                        and ctx.supports_forms
+                        and actor != "agent"
+                    ):
+                        # Missing-required from a form-capable client: rescue
+                        # into a generated picker (the /model bare-command UX)
+                        # instead of the usage error. Only ABSENT arguments
+                        # rescue; extras, typos, and invalid values stay
+                        # errors for everyone, and a declaration the
+                        # generator cannot express falls through to the
+                        # normal error below.
+                        rescue_form = await generate_param_form(
+                            definition, executor
+                        )
+                        if rescue_form is not None:
+                            return CommandResult(
+                                True,
+                                (
+                                    f"Select a value for `/{definition.name}`. "
+                                    f"Usage: `{definition.usage}`."
+                                ),
+                                command_label,
+                                level="info",
+                                data=command_data(form=rescue_form),
+                            )
                     problem = (
                         bind_error.problem if bind_error else "Invalid arguments."
                     )

@@ -121,11 +121,16 @@ class BindError:
     ``unexpected`` carries the first extra positional token verbatim when the
     failure is a strict-extras rejection, so the dispatcher can layer
     subcommand guidance (did-you-mean, valid list) on top for family roots.
+    ``missing`` marks a missing-required failure structurally, so the
+    dispatcher's generated-picker rescue (backlog #110) never has to match
+    on error copy. Extras and invalid values keep it False: only an absent
+    argument is rescuable, a wrong one stays an error.
     """
 
     problem: str
     param: str | None = None
     unexpected: str | None = None
+    missing: bool = False
 
 
 def validate_params(command_id: str, params: tuple[CommandParam, ...]) -> None:
@@ -529,7 +534,9 @@ def bind_args(
             continue
         if param.required:
             return None, BindError(
-                f"Missing required argument: {param.display}.", param=param.name
+                f"Missing required argument: {param.display}.",
+                param=param.name,
+                missing=True,
             )
         if param.kind == "flag":
             values[param.name] = False
