@@ -15,6 +15,7 @@ import pytest
 from cli_fixtures import run
 from nymeria.core.command_form_generation import (
     EXCLUDED_COMMANDS,
+    KEEP_CURRENT_REFS,
     SEARCH_THRESHOLD,
     generate_param_form,
 )
@@ -33,13 +34,15 @@ def _definition(params: tuple[CommandParam, ...], name: str = "zzpick"):
     return service._commands[command_id]
 
 
-def _executor(thread_id: str | None = "thread-1") -> _CommandExecutor:
+def _executor(
+    thread_id: str | None = "thread-1", is_admin: bool | None = True
+) -> _CommandExecutor:
     return _CommandExecutor(
         api=object(),
         thread_id=thread_id,
         user_id="alice",
         actor="user",
-        is_admin=True,
+        is_admin=is_admin,
         service=CommandService(),
         surface="cli",
     )
@@ -90,6 +93,31 @@ def test_choices_ref_options_come_from_the_resolver_registry(
     assert form is not None
     options = form["tabs"][0]["fields"][0]["options"]
     assert [option["id"] for option in options] == ["x", "y"]
+    # The resolver's current marker is STRIPPED for refs outside
+    # KEEP_CURRENT_REFS: the marker parks the cursor and a reflexive Enter
+    # applies it, but a shared resolver cannot know which command it feeds
+    # (the models ref marks the CHAT model, wrong for /fast set).
+    assert options[0]["current"] is False
+
+
+def test_kept_ref_current_marker_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # threads is in KEEP_CURRENT_REFS by construction: current = the
+    # calling thread, and re-switching to it is a harmless no-op.
+    assert "threads" in KEEP_CURRENT_REFS
+
+    async def _resolver(executor: Any) -> list[dict[str, Any]]:
+        return [form_option("thread-1", current=True), form_option("thread-2")]
+
+    monkeypatch.setitem(OPTION_RESOLVERS, "threads", _resolver)
+    definition = _definition(
+        (CommandParam("thread", required=True, choices_ref="threads"),)
+    )
+    form = run(generate_param_form(definition, _executor()))
+
+    assert form is not None
+    options = form["tabs"][0]["fields"][0]["options"]
     assert options[0]["current"] is True
 
 
@@ -116,6 +144,17 @@ def test_unresolved_ref_generates_nothing() -> None:
 def test_free_text_primary_generates_nothing() -> None:
     # Pickers only where picking helps: typing the argument IS the form.
     definition = _definition((CommandParam("title", kind="rest", required=True),))
+    assert run(generate_param_form(definition, _executor())) is None
+
+
+def test_label_alternation_without_choices_stays_free_text() -> None:
+    # The #129 trap, pinned by name: a display label advertising an
+    # alternation ("on|off|toggle") without enforced choices is a
+    # handler-validated free field. Options must never be derived from the
+    # label string.
+    definition = _definition(
+        (CommandParam("state", required=True, label="on|off|toggle"),)
+    )
     assert run(generate_param_form(definition, _executor())) is None
 
 
@@ -200,6 +239,36 @@ def test_scope_without_thread_offers_global_only() -> None:
     assert form is not None
     assert [tab["label"] for tab in form["tabs"]] == ["Global"]
     assert form["submit"] == {"command": "zzpick {value_global} global"}
+
+
+def test_scope_hides_global_from_a_non_admin() -> None:
+    # Writable scopes only (the /think picker's rule): the global write
+    # gate is per-scope inside the handlers, so a non-admin global tab
+    # would submit a command the gate then refuses.
+    definition = _definition(
+        (
+            CommandParam("value", required=True, choices=("on", "off")),
+            CommandParam("scope", kind="scope"),
+        )
+    )
+    form = run(generate_param_form(definition, _executor(is_admin=False)))
+
+    assert form is not None
+    assert [tab["label"] for tab in form["tabs"]] == ["This thread"]
+    assert form["submit"] == {"command": "zzpick {value_thread} thread"}
+
+
+def test_scope_generates_nothing_for_a_threadless_non_admin() -> None:
+    definition = _definition(
+        (
+            CommandParam("value", required=True, choices=("on", "off")),
+            CommandParam("scope", kind="scope"),
+        )
+    )
+    assert (
+        run(generate_param_form(definition, _executor(thread_id=None, is_admin=False)))
+        is None
+    )
 
 
 # ── path rendering ───────────────────────────────────────────────────────────

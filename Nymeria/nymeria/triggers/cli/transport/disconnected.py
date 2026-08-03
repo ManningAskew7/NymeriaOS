@@ -196,8 +196,9 @@ class DisconnectedAgentClient:
         actor: str | None = None,
         surface: str | None = None,
         user_id: str | None = None,
+        supports_forms: bool = False,
     ) -> Mapping[str, Any]:
-        del command, thread_id, source, actor, surface, user_id
+        del command, thread_id, source, actor, surface, user_id, supports_forms
         return {"success": False, "markdown": DISCONNECTED_MESSAGE}
 
     async def list_commands(

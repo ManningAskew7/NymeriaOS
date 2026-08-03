@@ -563,6 +563,7 @@ class APIAgentClient:
         actor: str | None = None,
         surface: str | None = None,
         user_id: str | None = None,
+        supports_forms: bool = False,
     ) -> Mapping[str, Any]:
         selected_user_id = self._selected_user_id(user_id)
         return await self.api.execute_command(
@@ -572,6 +573,7 @@ class APIAgentClient:
             actor=actor,
             surface=surface,
             user_id=selected_user_id,
+            supports_forms=supports_forms,
         )
 
     async def list_commands(

@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from ..cliproxy.catalog import CLIProxyProviderSpec
     from ..config.llm_providers import LLMProviderSpec
+    from .command_service import _CommandExecutor
 
 from .command_forms import (
     CommandOutput,
@@ -941,9 +942,11 @@ class LLMCommandsMixin:
 
         # Option building lives in the shared resolver (one builder serves
         # this picker, generated forms, and autocomplete); the already
-        # fetched settings/status ride along so nothing is read twice.
+        # fetched settings/status ride along so nothing is read twice. The
+        # cast is type-level only: resolvers are typed against the composed
+        # _CommandExecutor, and this mixin only ever runs as part of one.
         provider_options = await resolve_providers(
-            self, settings=settings, status=status
+            cast("_CommandExecutor", self), settings=settings, status=status
         )
         if not provider_options:
             return None
@@ -987,11 +990,11 @@ class LLMCommandsMixin:
         Every tab submits a REAL registered command, so authorization
         stays entirely at the dispatch gate (admin, agent_allowed,
         blocked_surfaces); tab and option visibility here is cosmetic,
-        the executor's established is_admin stance. Each tab's radio
-        carries a live token of its command (scope, provider id, target
-        id): the client's confirm treats a template with no substituted
-        value as an empty selection and dismisses quietly, so a
-        placeholder-free "button" tab would never submit.
+        the executor's established is_admin stance. Choice tabs (Use,
+        CLIProxy) substitute a selected value into their template; Set up
+        and Test are fieldless ACTION tabs (#139) whose placeholder-free
+        templates dispatch as-is on Enter, with ``description`` telling
+        the user what Enter will do.
         """
         from ..cliproxy.catalog import list_cliproxy_providers
         from ..config.llm_providers import get_llm_provider_spec
@@ -1189,11 +1192,13 @@ class LLMCommandsMixin:
 
         if not tabs:
             return None
+        # No form-level footer_hint: the client renders a per-tab footer
+        # (choice tabs get the apply hint, fieldless action tabs get the
+        # run hint), and a payload-level hint would override all of them.
         return form_payload(
             f"Provider: {self._provider_label(provider)}",
             tabs,
             submit_command=f"provider switch {provider} {{scope}}",
-            footer_hint="←→ tab · Enter apply · Esc cancel",
         )
 
     @staticmethod

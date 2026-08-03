@@ -72,14 +72,22 @@ def create_commands_router(
     async def list_command_options(
         ref: str,
         thread_id: str | None = Query(default=None),
+        q: str | None = Query(
+            default=None,
+            description="Substring filter over id, label, and meta",
+        ),
+        limit: int = Query(default=0, ge=0, le=100),
         user: AuthenticatedUser = Depends(verify_api_key),
     ) -> list[CommandOptionResponse]:
         """Resolve a ``choices_ref`` value set live, scoped to the caller.
 
         Serves every consumer that wants the option list WITHOUT running a
         command: Discord autocomplete, palette clients, generated forms on
-        the client side. 404 for a ref no resolver claims.
+        the client side. ``q``/``limit`` narrow server-side so per-keystroke
+        callers never pull whole catalogs. 404 for a ref no resolver claims.
         """
+        from ...core.command_option_resolvers import filter_command_options
+
         ctx = CommandContext(
             user_id=user.id,
             thread_id=thread_id,
@@ -99,6 +107,7 @@ def create_commands_router(
             raise HTTPException(
                 status_code=404, detail=f"Unknown option set: {ref}"
             )
+        options = filter_command_options(options, q=q or "", limit=limit)
         return [CommandOptionResponse(**option) for option in options]
 
     @router.get("/commands", response_model=list[CommandInfoResponse])

@@ -17,6 +17,7 @@ import pytest
 from cli_fixtures import run
 from nymeria.core.command_option_resolvers import (
     OPTION_RESOLVERS,
+    resolve_fallback_models,
     resolve_hooks,
     resolve_mcp_servers,
     resolve_models,
@@ -176,6 +177,47 @@ def test_resolve_providers_degrades_to_empty_on_fault() -> None:
     assert run(resolve_providers(_executor(_Broken()))) == []
 
 
+# ── resolve_fallback_models ──────────────────────────────────────────────────
+
+
+class _FallbackApi:
+    def __init__(self, chain: str) -> None:
+        self._chain = chain
+
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        return {"llm_fallback_models": self._chain}
+
+
+def test_resolve_fallback_models_lists_the_configured_chain_in_order() -> None:
+    # The value set of /fallback remove is the CONFIGURED CHAIN, not the
+    # model catalog (which would offer mostly values the handler rejects).
+    options = run(
+        resolve_fallback_models(_executor(_FallbackApi(" model-a , model-b,model-c ")))
+    )
+
+    assert [o["id"] for o in options] == ["model-a", "model-b", "model-c"]
+    assert [o["meta"] for o in options] == [
+        "chain position 1",
+        "chain position 2",
+        "chain position 3",
+    ]
+    assert not any(o["current"] for o in options)
+
+
+def test_resolve_fallback_models_empty_chain_yields_no_options() -> None:
+    # No options means no generated picker: the bare command keeps its
+    # usage error instead of offering an empty radio.
+    assert run(resolve_fallback_models(_executor(_FallbackApi("")))) == []
+
+
+def test_resolve_fallback_models_degrades_to_empty_on_fault() -> None:
+    class _Broken:
+        async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+            raise RuntimeError("settings store down")
+
+    assert run(resolve_fallback_models(_executor(_Broken()))) == []
+
+
 # ── resolve_tools ────────────────────────────────────────────────────────────
 
 
@@ -244,6 +286,25 @@ def test_resolve_tools_offers_categories_then_tools_with_thread_state() -> None:
     assert by_id["web_search"]["description"] == "Search the web"
     # The tool list is per-user, like the handlers' own read.
     assert api.default_tools_calls == ["alice"]
+
+
+def test_resolve_tools_counts_live_skill_kit_tools() -> None:
+    """TTL'd Skill Kit tools ride temporary_tools, not enabled_tools; the
+    resolver folds the still-live ones into the on badge exactly like
+    /tools enabled does (the shared live_temporary_tools helper; an inline
+    re-derivation here once dropped them)."""
+    api = _ToolsApi(
+        thread_config={
+            "temporary_tools": {
+                "read_email": {"expires_at": "2999-01-01T00:00:00+00:00"},
+                "send_email": {"expires_at": "2000-01-01T00:00:00+00:00"},
+            }
+        }
+    )
+    options = run(resolve_tools(_executor(api)))
+    by_id = {o["id"]: o for o in options}
+    assert by_id["read_email"]["meta"] == "on"  # live kit tool counts
+    assert by_id["send_email"]["meta"] == "off"  # expired kit tool does not
 
 
 def test_resolve_tools_marks_nothing_current() -> None:
@@ -702,3 +763,16 @@ def test_resolve_options_resolves_a_known_ref_for_the_caller() -> None:
     assert options is not None
     assert [o["id"] for o in options][:2] == ["gpt-test", "gpt-next"]
     assert [o["id"] for o in options if o["current"]] == ["gpt-next"]
+
+
+def test_resolve_options_swallows_a_resolver_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Resolvers degrade to [] internally by contract, but the endpoint must
+    # never 500 a client mid-autocomplete if one slips a raise.
+    async def _raiser(executor: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("resolver bug")
+
+    monkeypatch.setitem(OPTION_RESOLVERS, "zzraise", _raiser)
+    service = CommandService()
+    assert run(service.resolve_options(_ctx(), "zzraise", api=_ModelsApi())) == []

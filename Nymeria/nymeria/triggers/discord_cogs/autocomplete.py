@@ -84,7 +84,15 @@ def endpoint_resolver(ref: str) -> AutocompleteResolver:
                     interaction.guild_id, interaction.channel_id
                 )
             options = await bot.api.list_command_options(
-                ref, thread_id=thread_id, user_id=user_id
+                ref,
+                thread_id=thread_id,
+                user_id=user_id,
+                # Narrow server-side: a keystroke must never pull a whole
+                # catalog through the 3s Discord deadline. The client-side
+                # filter below stays as the belt (and covers older backends
+                # that ignore unknown query params).
+                q=current.strip() or None,
+                limit=MAX_CHOICES,
             )
         except Exception:  # noqa: BLE001 - autocomplete degrades, never errors.
             return []

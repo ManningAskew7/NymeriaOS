@@ -62,6 +62,16 @@ EXCLUDED_COMMANDS: dict[str, str] = {
 # at or below it a bare radio is faster to arrow through.
 SEARCH_THRESHOLD = 10
 
+# Refs whose resolver-computed `current` marker is correct for EVERY command
+# declaring the ref. The marker drives the picker's default action (the
+# cursor parks on it, a reflexive Enter applies it), and a resolver cannot
+# know which command it is feeding: the models ref marks the CHAT model,
+# which is the wrong default for /fast set, /background set, and friends
+# (measured: a reflexive Enter overwrote the tier with the chat model).
+# threads is safe by construction: current = the calling thread, and
+# re-switching to it is a no-op. Everything else is stripped.
+KEEP_CURRENT_REFS: frozenset[str] = frozenset({"threads"})
+
 _SCOPE_TAB_LABELS = {"thread": "This thread", "global": "Global"}
 
 
@@ -93,7 +103,7 @@ async def _primary_options(
         if resolver is None:
             return []
         try:
-            return await resolver(executor)
+            options = await resolver(executor)
         except Exception:  # noqa: BLE001 - a form is an optional enhancement.
             logger.debug(
                 "form generation: resolver %s failed",
@@ -101,6 +111,9 @@ async def _primary_options(
                 exc_info=True,
             )
             return []
+        if primary.choices_ref not in KEEP_CURRENT_REFS:
+            options = [{**option, "current": False} for option in options]
+        return options
     return []
 
 
@@ -112,6 +125,12 @@ def _offerable_scopes(scope_param: CommandParam, executor: Any) -> list[str]:
     ]
     if not getattr(executor, "thread_id", None):
         scopes = [scope for scope in scopes if scope != "thread"]
+    if getattr(executor, "is_admin", None) is False:
+        # WRITABLE scopes only (the /think picker's rule, and the provider
+        # action step's one non-registry condition): the global scope's
+        # write gate is per-scope inside the handlers, so a non-admin tab
+        # would submit a command the gate then refuses.
+        scopes = [scope for scope in scopes if scope != "global"]
     # Thread first when present: the /think tab order, and the scope a
     # bare invocation would target.
     return sorted(scopes, key=lambda scope: 0 if scope == "thread" else 1)

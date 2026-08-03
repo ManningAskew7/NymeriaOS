@@ -42,9 +42,10 @@ values are substituted, so tabs whose selections mean different actions
 template, which wins over the form-level one; the form-level template stays
 required as the default for tabs without their own (and the action an older
 client that predates tab submits will apply). Cancel is a no-op. The
-markdown fallback is ALWAYS present on the result, so frontends that do not
-render forms (bots, plain terminals, current desktop/mobile) need zero
-changes and there is no capability negotiation on the wire.
+markdown fallback is ALWAYS present on the result, and form payloads ship
+only to callers that declared ``supports_forms`` on the request (the
+dispatcher strips them for everyone else), so form-less frontends need
+zero changes.
 
 A ``text`` field is a free-typed value substituted like any other field
 (``secret: true`` asks the client to mask the display and keep the value

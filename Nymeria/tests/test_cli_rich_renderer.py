@@ -2002,6 +2002,7 @@ class _ThreadSwitchBackendClient(FakeAgentClient):
         actor: str | None = None,
         surface: str | None = None,
         user_id: str | None = None,
+        supports_forms: bool = False,
     ) -> dict[str, Any]:
         from nymeria.core.command_executor_threads import resolve_thread_reference
 
