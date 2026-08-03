@@ -1429,7 +1429,7 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "usage": "/tools list [enabled|optional|core|<category>]",
     "category": "Tools",
     "subcommands": [],
-    "aliases": ["/tools_list", "/tools_enabled", "/tools_category", "/tools enabled", "/tools category"],
+    "aliases": ["/tools_list", "/tools_enabled", "/tools_category", "/tools enabled", "/tools category", "/tools_core", "/tools core", "/tools_optional", "/tools optional"],
     "scope": "global",
     "surfaces": ["desktop", "mobile", "cli", "discord", "telegram", "slack", "whatsapp", "teams", "api", "agent"],
     "agent_allowed": true,

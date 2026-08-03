@@ -1033,15 +1033,14 @@ def register_default_commands(service: "CommandService") -> None:
         # The four listing variants (`enabled`, `optional`, `core`,
         # `category <name>`) folded into this one filter (backlog #131).
         # `tools_list` leads so it, not a folded-in spelling, names the
-        # chat-bot menu entry. Only the spellings that stay TRUTHFUL are
-        # aliased: `tools category` bridges exactly (its tail becomes the
-        # filter) and `tools enabled` bridges because `enabled` is the
-        # default. `tools core|optional` (and their flat twins) are NOT
-        # aliased: alias expansion cannot inject the filter value, so they
-        # would render the enabled view while claiming core/optional (the
-        # #131 correctness review caught exactly that); an honest
-        # unknown-subcommand error with the family's did-you-mean beats
-        # wrong data. #133's value-injecting aliases restore them.
+        # chat-bot menu entry. `tools category` bridges exactly (its tail
+        # becomes the filter) and `tools enabled` bridges because `enabled`
+        # is the default, so both are plain aliases. `tools core|optional`
+        # (and their flat twins) CANNOT be plain aliases (they would render
+        # the enabled view while claiming core/optional; the #131 review
+        # caught exactly that) and were dropped until #133 built value
+        # injection: they now expand to the path PLUS their filter token,
+        # restoring the old views truthfully.
         aliases=(
             "tools_list",
             "tools_enabled",
@@ -1049,6 +1048,12 @@ def register_default_commands(service: "CommandService") -> None:
             "tools enabled",
             "tools category",
         ),
+        injected_aliases={
+            "tools_core": "core",
+            "tools core": "core",
+            "tools_optional": "optional",
+            "tools optional": "optional",
+        },
         # requires_thread stays off: the `core` filter reads the global
         # catalog and worked without a thread before the fold. The three
         # thread-scoped filters raise the same missing-thread error from

@@ -229,12 +229,11 @@ platform history.
 
 The four filter spellings folded into `tools list [filter]` in the backend, but
 they stay registered here and each relays its filter VALUE (`/tools list core`).
-That is more than a backend alias can do: an alias substitutes a path and
-cannot inject a value, so the backend keeps only the truthful aliases
-(`tools enabled`, the default view, and `tools category`) and a spaced
-`/tools core` or `/tools optional` that reaches the backend directly answers
-with the family guidance instead of rendering the wrong view. These flat
-relays are unaffected.
+Since backlog #133 the backend can do the same on its own: `tools core` and
+`tools optional` are INJECTED aliases whose expansion carries the filter
+token, so a spaced `/tools core` reaching the backend directly renders the
+core view again on every surface. These flat relays are equivalent and
+unaffected.
 
 ### Memory
 
