@@ -1,8 +1,9 @@
 """Rich rendering for slash-command output: the transcript's command voice.
 
 Command handlers produce shared markdown (the
-``core/command_service._format_legacy_output`` vocabulary: an optional
-``### `` first line, ``**Error:**``/``**Done.**`` prefixes, and
+``core/command_service._render_result_markdown`` vocabulary: an optional
+``### `` first line, ``**Error:**``/``**Done.**``/``**Warning:**``
+prefixes rendered from the authored level (#132), and
 LINE-ORIENTED bodies full of space-aligned ``label   value`` rows). Every
 frontend consumes that same markdown; this module is the Rich CLI's
 renderer for it, giving command output the agent-text treatment (themed
@@ -176,19 +177,25 @@ def _renders_verbatim(block: MarkdownBlock) -> bool:
 
 
 def _pop_level_signal(content: str, level: str) -> tuple[str, str, str]:
-    """Translate level + legacy artifacts into (glyph, level_slot, rest).
+    """Translate level + boundary artifacts into (glyph, level_slot, rest).
 
-    ``**Done.**``/``**Error:**`` are ``_format_legacy_output``
-    vocabulary; the glyph replaces the word (its color carries the
-    meaning). The artifact outranks ``level`` deliberately: the backend
-    derives both from the same success flag, so they cannot disagree
-    today, and the artifact is the more specific author intent.
+    ``**Error:**``/``**Done.**``/``**Warning:**`` are the dispatcher's
+    boundary vocabulary (rendered from the handler's authored level since
+    #132); the glyph replaces the word (its color carries the meaning).
+    Artifact-first ordering is deliberate and load-bearing BOTH ways: on
+    current backends artifact and ``level`` derive from the same authored
+    value and cannot disagree, while on pre-#132 backends ``level``
+    collapsed info into success, so trusting a bare ``success`` level
+    would pin a false ✓ on every readout. The bare-level arms below are
+    the older-backend fallback only.
     """
 
     if content.startswith("**Error:**"):
         return "✗", "error", content[len("**Error:**"):].lstrip()
     if content.startswith("**Done.**"):
         return "✓", "success", content[len("**Done.**"):].lstrip()
+    if content.startswith("**Warning:**"):
+        return "!", "warning", content[len("**Warning:**"):].lstrip()
     if level == "error":
         return "✗", "error", content
     if level == "warning":
