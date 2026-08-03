@@ -1422,14 +1422,14 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
 ```json
 [
   {
-    "id": "tools.core",
-    "path": ["tools", "core"],
-    "name": "tools core",
-    "description": "Inspect or change thread tools",
-    "usage": "/tools core",
+    "id": "tools.list",
+    "path": ["tools", "list"],
+    "name": "tools list",
+    "description": "List tools: enabled (default), optional, core, or one category",
+    "usage": "/tools list [enabled|optional|core|<category>]",
     "category": "Tools",
     "subcommands": [],
-    "aliases": ["/tools_core"],
+    "aliases": ["/tools_list", "/tools_enabled", "/tools_optional", "/tools_core", "/tools_category", "/tools list_core", "/tools enabled", "/tools optional", "/tools core", "/tools category"],
     "scope": "global",
     "surfaces": ["desktop", "mobile", "cli", "discord", "telegram", "slack", "whatsapp", "teams", "api", "agent"],
     "agent_allowed": true,
@@ -1442,7 +1442,22 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "blocked_surfaces": [],
     "blocked_reason": null,
     "examples": [],
-    "params": []
+    "params": [
+      {
+        "name": "filter",
+        "kind": "positional",
+        "type": "str",
+        "required": false,
+        "choices": [],
+        "choices_ref": null,
+        "default": "enabled",
+        "repeatable": false,
+        "aliases": [],
+        "description": "Which tools to list (default: enabled)",
+        "no_echo": false,
+        "label": "enabled|optional|core|<category>"
+      }
+    ]
   }
 ]
 ```
@@ -1492,7 +1507,7 @@ POST /commands/execute
 
 ```json
 {
-  "command": "/tools core",
+  "command": "/tools list core",
   "thread_id": "abc123",
   "source": "user",
   "actor": "user",
@@ -1517,7 +1532,7 @@ invalid values stay errors for every caller.
 {
   "success": true,
   "markdown": "### Core Tools\n\n...",
-  "command": "tools core",
+  "command": "tools list",
   "level": "success",
   "data": null
 }
@@ -2444,7 +2459,7 @@ POST /threads/{thread_id}/claim
 Authorization: Bearer <token>
 ```
 
-Eagerly registers the calling user as the owner of `thread_id` in the `thread_owners` table. The desktop frontend calls this from `threadsStore.createThread()` immediately after generating a UUID, and the CLI calls it for CLI-generated startup threads and `/thread new`. This gives the backend an ownership row before any chat-app routing (Telegram/Discord via `X-Nymeria-Act-As`) can hit `/chat` and TOFU-claim the thread for someone else.
+Eagerly registers the calling user as the owner of `thread_id` in the `thread_owners` table. The desktop frontend calls this from `threadsStore.createThread()` immediately after generating a UUID, and the CLI calls it for CLI-generated startup threads and `/thread create`. This gives the backend an ownership row before any chat-app routing (Telegram/Discord via `X-Nymeria-Act-As`) can hit `/chat` and TOFU-claim the thread for someone else.
 
 Idempotent  -  safe to call multiple times. The request body is optional. First-party clients may seed metadata:
 
@@ -4505,7 +4520,7 @@ worker), or `illegal` (returned the wrong outcome type; dropped). On
 `pre_tool_use` an `error`/`timeout`/`saturated` run also denied the tool call
 (the fail-closed policy). Observe-plane runs record `ok` on success, never
 `no_op` (their return values are ignored). A hook with no entries never fired.
-Also surfaced as `/hook log [id] [--limit N]` and `hook_info(action="log")`.
+Also surfaced as `/hook history [id] [--limit N]` and `hook_info(action="log")`.
 
 ### Pending Approvals
 

@@ -1,4 +1,11 @@
-"""Memory commands: /memory list, /memory search, /memory save, /memory forget."""
+"""Memory commands: the client-side halves of the /memory family.
+
+The backend owns every verb here; these locals are defensive fallbacks for a
+failed catalog registration. Backlog #131 renamed ``/memory forget`` to
+``/memory delete`` and retired the local ``forget`` declaration with it: the
+rename freed the ``forget`` key, which would otherwise have handed the CLI a
+spelling no other surface resolved locally.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +29,7 @@ async def _handle_memory_root_context(
 ) -> CommandResult:
     if args:
         return CommandResult.failed(
-            "Usage: /memory list|search|save|forget",
+            "Usage: /memory list|search|save|delete",
             error_code="usage_error",
         )
     return await _handle_memory_list_context(context, [])
@@ -99,25 +106,6 @@ async def _handle_memory_save_context(
     )
 
 
-async def _handle_memory_forget_context(
-    context: CommandContext,
-    args: list[str],
-) -> CommandResult:
-    if not args:
-        return CommandResult.failed("Usage: /memory forget <key>", error_code="usage_error")
-
-    key = args[0]
-    try:
-        await call_client_method(context, "forget_memory", context.user_id, key)
-    except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/memory forget", method_name=exc.method_name)
-
-    return CommandResult.completed(
-        CommandMessage(f"Forgot: {key}", level="success"),
-        payload={"key": key},
-    )
-
-
 def _memory_entries(value: Any) -> list[Mapping[str, Any]]:
     raw = mapping_get(value, "memories", value)
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
@@ -176,14 +164,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Save memory",
                 usage="save <key> <value>",
                 handler=_handle_memory_save_context,
-                category="Personal",
-            ),
-            "forget": Command(
-                name="forget",
-                aliases=["delete", "remove"],
-                description="Forget memory",
-                usage="forget <key>",
-                handler=_handle_memory_forget_context,
                 category="Personal",
             ),
         },

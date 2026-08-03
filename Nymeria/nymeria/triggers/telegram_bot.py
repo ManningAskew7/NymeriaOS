@@ -157,6 +157,17 @@ COMMAND_ACCESS_PUBLIC = "public"
 COMMAND_ACCESS_LINKED = "linked"
 COMMAND_ACCESS_ADMIN = "admin"
 
+# Keys are the NATIVE Telegram command names registered in
+# `_register_handlers`, not backend command ids: this is a pre-gate that runs
+# before the handler, and it can only see a name a `CommandHandler` claimed.
+# Any other spelling (a backend alias, a menu entry with no native handler)
+# reaches the backend through `_on_unregistered_command`, where the command
+# service's own `requires_admin` is the gate. The settings rows below were
+# `config_show`/`config_get`/`config_set` until backlog #131 folded the config
+# family into `settings`; the flat names the "/" menu advertises moved with it,
+# so the keys move too and the ADMIN value is unchanged (Telegram is
+# deliberately stricter than the backend for global controls, as `think`
+# already shows).
 TELEGRAM_COMMAND_ACCESS: Mapping[str, str] = {
     # Public onboarding/help commands.
     "start": COMMAND_ACCESS_PUBLIC,
@@ -165,9 +176,9 @@ TELEGRAM_COMMAND_ACCESS: Mapping[str, str] = {
     # Admin-only global controls.
     "think": COMMAND_ACCESS_ADMIN,
     "restart": COMMAND_ACCESS_ADMIN,
-    "config_show": COMMAND_ACCESS_ADMIN,
-    "config_get": COMMAND_ACCESS_ADMIN,
-    "config_set": COMMAND_ACCESS_ADMIN,
+    "settings": COMMAND_ACCESS_ADMIN,
+    "settings_get": COMMAND_ACCESS_ADMIN,
+    "settings_set": COMMAND_ACCESS_ADMIN,
     "env_show": COMMAND_ACCESS_ADMIN,
     "env_set": COMMAND_ACCESS_ADMIN,
     # Everything else requires a linked Telegram identity.
@@ -1007,7 +1018,24 @@ class NymeriaTelegramBot:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
     def _register_handlers(self, app) -> None:
-        """Register all command and message handlers."""
+        """Register all command and message handlers.
+
+        Two names are in play per row and they are NOT the same thing. The
+        registered name is what a Telegram user types, so it tracks the "/"
+        menu, which `_telegram_command_name` derives from each command's first
+        single-token alias; backlog #131 deliberately kept those aliases first
+        so no menu entry was renamed by the rename wave. The relay string
+        inside each handler is the BACKEND path, and that one always speaks the
+        canon spelling: `tools list core`, not the `tools core` alias.
+
+        Consequences worth knowing before editing a row: a name registered
+        here wins over the catch-all, answers a BARE invocation in a group
+        (the catch-all needs an @mention or a reply), and is the only kind of
+        name `TELEGRAM_COMMAND_ACCESS` can pre-gate. So a legacy spelling stays
+        registered even after its menu entry folded away (`tasks`, the four
+        `tools_*` filters): dropping it would quietly change group behavior
+        for a command that still works.
+        """
         def command(name: str, handler) -> None:
             app.add_handler(CommandHandler(name, self._guarded_command(name, handler)))
 
@@ -1045,16 +1073,22 @@ class NymeriaTelegramBot:
         # unregistered slash commands).
         command("fallback", self._cmd_fallback)
 
-        # Config commands
-        command("config_show", self._cmd_config_show)
-        command("config_get", self._cmd_config_get)
-        command("config_set", self._cmd_config_set)
+        # Settings commands (the /config family folded into /settings in
+        # backlog #131; these three names are what the "/" menu now shows, and
+        # every old /config_* spelling still resolves through the catch-all).
+        command("settings", self._cmd_settings)
+        command("settings_get", self._cmd_settings_get)
+        command("settings_set", self._cmd_settings_set)
 
         # Env commands
         command("env_show", self._cmd_env_show)
         command("env_set", self._cmd_env_set)
 
-        # Tools commands
+        # Tools commands. The four filter spellings folded into `tools list`
+        # in backlog #131 and each now relays its filter VALUE, which is more
+        # than the backend alias can do (an alias substitutes a path, it cannot
+        # inject a value, so /tools core alone renders the enabled view).
+        command("tools_list", self._cmd_tools_list)
         command("tools_core", self._cmd_tools_core)
         command("tools_optional", self._cmd_tools_optional)
         command("tools_enabled", self._cmd_tools_enabled)
@@ -2317,8 +2351,8 @@ class NymeriaTelegramBot:
         await self._send_backend_command(update, context, "model")
 
     async def _cmd_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /models."""
-        await self._send_backend_command(update, context, "models")
+        """Handle /models (the menu name for the backend's `model list`)."""
+        await self._send_backend_command(update, context, "model list")
 
     async def _cmd_think(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /think [off|on|low|medium|high]."""
@@ -2334,8 +2368,8 @@ class NymeriaTelegramBot:
         await self._send_backend_command(update, context, "context")
 
     async def _cmd_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /tasks [status]."""
-        await self._send_backend_command(update, context, "tasks")
+        """Handle /tasks [status], the retired spelling of /todo_list."""
+        await self._send_backend_command(update, context, "todos list")
 
     async def _cmd_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export [markdown|json|txt]."""
@@ -2557,43 +2591,43 @@ class NymeriaTelegramBot:
         await self._send_backend_command(update, context, "fallback")
 
     # =========================================================================
-    # Config Commands
+    # Settings Commands
     # =========================================================================
 
-    async def _cmd_config_show(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /config_show."""
+    async def _cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /settings (was /config_show before backlog #131)."""
         await self._send_backend_command(
             update,
             context,
-            "config show",
+            "settings",
             require_admin=True,
         )
 
-    async def _cmd_config_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /config_get <key>."""
+    async def _cmd_settings_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /settings_get <key> (was /config_get)."""
         if update.message is None:
             return
         if not self._parse_args(context):
-            await update.message.reply_text("Usage: /config_get <key>")
+            await update.message.reply_text("Usage: /settings_get <key>")
             return
         await self._send_backend_command(
             update,
             context,
-            "config get",
+            "settings get",
             require_admin=True,
         )
 
-    async def _cmd_config_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /config_set <key> <value>."""
+    async def _cmd_settings_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /settings_set <key> <value> (was /config_set)."""
         if update.message is None:
             return
         if len(context.args or []) < 2:
-            await update.message.reply_text("Usage: /config_set <key> <value>")
+            await update.message.reply_text("Usage: /settings_set <key> <value>")
             return
         await self._send_backend_command(
             update,
             context,
-            "config set",
+            "settings set",
             require_admin=True,
         )
 
@@ -2634,17 +2668,21 @@ class NymeriaTelegramBot:
     # Tools Commands
     # =========================================================================
 
+    async def _cmd_tools_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /tools_list [enabled|optional|core|<category>]."""
+        await self._send_backend_command(update, context, "tools list")
+
     async def _cmd_tools_core(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_core."""
-        await self._send_backend_command(update, context, "tools core")
+        await self._send_backend_command(update, context, "tools list core")
 
     async def _cmd_tools_optional(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_optional."""
-        await self._send_backend_command(update, context, "tools optional")
+        await self._send_backend_command(update, context, "tools list optional")
 
     async def _cmd_tools_enabled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_enabled."""
-        await self._send_backend_command(update, context, "tools enabled")
+        await self._send_backend_command(update, context, "tools list enabled")
 
     async def _cmd_tools_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_search <query>."""
@@ -2679,7 +2717,7 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /tools_category <name>")
             return
 
-        await self._send_backend_command(update, context, "tools category")
+        await self._send_backend_command(update, context, "tools list")
 
     async def _cmd_tools_enable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_enable <name>."""
@@ -2722,14 +2760,14 @@ class NymeriaTelegramBot:
         await self._send_backend_command(update, context, "memory save")
 
     async def _cmd_memory_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /memory_forget <key>."""
+        """Handle /memory_forget <key> (the menu name for `memory delete`)."""
         if update.message is None:
             return
         key = self._parse_args(context)
         if not key:
             await update.message.reply_text("Usage: /memory_forget <key>")
             return
-        await self._send_backend_command(update, context, "memory forget")
+        await self._send_backend_command(update, context, "memory delete")
 
     async def _cmd_memory_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_search <query>."""

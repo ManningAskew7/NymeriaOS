@@ -337,10 +337,10 @@ total).
 ## 11. Platform Integrations
 
 ### Discord Bot (30 slash commands)
-- /ask, /stop, /clear, /compact, /thread, /context, /tasks, /export, /restart, /help
-- /model, /models, /think, /status
-- /todos (list/add/complete/delete), /config (show/get/set), /tools (core/optional/enabled/category/enable/disable)
-- /memory (list/save/forget/search), /notepad (read/write/clear)
+- /ask, /stop, /clear, /compact, /thread, /context, /export, /restart, /help
+- /model list, /think, /status
+- /todos (list/add/complete/delete), /settings (get/set), /tools (core/optional/enabled/category/enable/disable)
+- /memory (list/save/delete/search), /notepad (read/write/clear)
 - /show-tools, /channel-context
 - SSE streaming (~1.5s edit intervals), channel context toggle, workspace artifact upload
 - Intelligent message splitting (2000 chars, code block-aware)
@@ -459,7 +459,7 @@ CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`).
 - **Shell completions**  -  `python3 run.py completion bash|zsh|fish` generates tab-completion scripts (covers all subcommands, flags, and known choices)
 - **Clipboard copy**  -  `/copy` copies the last assistant response to clipboard; `/copy N` copies the Nth most recent; `/copy code` extracts only fenced code blocks
 - **Undo / retry / edit previous prompt**  -  `/undo` removes the last user+assistant exchange from thread state; `/retry` re-sends the last user message for a new response (or `/retry <new prompt>` to replace it). The desktop and mobile chat UIs expose the same capability on any user bubble: "Edit and resend" (rewind to that prompt, prefill the composer, resend with image attachments preserved) and "Rewind to here" (confirm-gated destructive truncation). Backed by `POST /threads/{id}/rewind` with exact `to_message_id` targeting; refuses mid-turn with 409.
-- **Session branching**  -  `/branch [title]` or `/fork` creates a new thread from the current thread's checkpoint history and per-thread config, then switches to it. `/branch --from N [title]` branches from the checkpoint at or before message index `N`.
+- **Session branching**  -  `/thread branch [title]` (aliases `/branch`, `/fork`) creates a new thread from the current thread's checkpoint history and per-thread config, then switches to it. `/thread branch --from N [title]` branches from the checkpoint at or before message index `N`.
 - **Reasoning toggle**  -  `/think on|off|low|medium|high|xhigh|max [global|thread]` (aliases `/reasoning`, `/thinking`) toggles extended thinking in one command, per-thread when a thread is active and global otherwise, on every surface via the central command registry. Status bar shows `thinking: <effort>` when active, synced by the `reasoning` state hint.
 - **Provider management**  -  `/provider` (browse picker into the per-provider action step `/provider <name>`), `/provider list`, `/provider set <provider> api_key=<key>`, `/provider test [provider]`, and `/provider switch <provider> [global|thread]` manage LLM provider auth and selection on every surface via the central command registry. Secrets are written straight to the backend settings API (set/test are admin-gated; switch is admin-gated for the global scope, while the thread scope is any user's own per-thread override); credential status comes from the server environment listing.
 - **Model fallback chain**  -  `/fallback`, `/fallback add <model-id> [--position N]`, `/fallback remove <model-id>`, `/fallback set <model-id ...>`, and `/fallback clear` manage `LLM_FALLBACK_MODELS`. The backend tries the ordered chain for retryable provider/transport failures before any output chunk, so every frontend surface benefits from the same resilience behavior.

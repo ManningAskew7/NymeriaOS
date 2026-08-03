@@ -189,12 +189,15 @@ class _CaptureAPI:
                 "execution_kind": "chat_stream",
             },
             {
-                "name": "tools core",
-                "path": ["tools", "core"],
-                "usage": "/tools core",
-                "description": "Show core tools",
+                "name": "tools list",
+                "path": ["tools", "list"],
+                "usage": "/tools list [enabled|optional|core|<category>]",
+                "description": "List tools",
                 "category": "Tools",
-                "aliases": ["/tools_core"],
+                # The menu name is the FIRST single-token alias, so this row
+                # also pins that the retired `/tools_core` spelling no longer
+                # names the folded listing (backlog #131).
+                "aliases": ["/tools_list", "/tools_core", "/tools_enabled"],
                 "execution_kind": "command",
             },
             {
@@ -502,7 +505,8 @@ def test_telegram_help_merges_backend_catalog_with_local_commands():
         {"actor": "user", "surface": "telegram", "user_id": "user-1"}
     ]
     text = fake_bot.messages[0].text
-    assert "/tools_core: Show core tools" in text
+    assert "/tools_list: List tools" in text
+    assert "/tools_core:" not in text
     assert "/todo_add: Add a TODO" in text
     assert "/tools_search: Search tools" in text
     assert "/env_get:" not in text
@@ -511,6 +515,66 @@ def test_telegram_help_merges_backend_catalog_with_local_commands():
 
 def test_telegram_env_get_is_not_registered_as_admin_command():
     assert "env_get" not in TELEGRAM_COMMAND_ACCESS
+
+
+def _registered_telegram_command_names() -> set[str]:
+    from telegram.ext import CommandHandler
+
+    class _Recorder:
+        def __init__(self):
+            self.handlers = []
+
+        def add_handler(self, handler):
+            self.handlers.append(handler)
+
+        def add_error_handler(self, handler):
+            pass
+
+    bot = NymeriaTelegramBot(api=_CaptureAPI(), bot_token="test-token")
+    app = _Recorder()
+    bot._register_handlers(app)
+    return {
+        name
+        for handler in app.handlers
+        if isinstance(handler, CommandHandler)
+        for name in handler.commands
+    }
+
+
+def test_every_access_policy_row_names_a_registered_command():
+    """A policy keyed on a name no handler claims is a DEAD gate.
+
+    `_check_command_access` runs only from `_guarded_command`, so a key that
+    matches no `CommandHandler` gates nothing: that spelling falls through to
+    the catch-all and the backend's own `requires_admin`. Backlog #131 renamed
+    `/config_show` to `/settings`; leaving the old keys here would have
+    silently dropped the Telegram pre-gate on the settings family.
+    """
+    registered = _registered_telegram_command_names()
+    orphaned = sorted(set(TELEGRAM_COMMAND_ACCESS) - registered)
+    assert not orphaned, f"access policy names unregistered commands: {orphaned}"
+
+
+def test_the_renamed_settings_commands_keep_the_admin_gate():
+    """The #131 rename moved the keys; it must not have widened the gate."""
+    api = _CaptureAPI(user_map={"42": "user-1"}, role="user")
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+
+    for name in ("settings", "settings_get", "settings_set"):
+        called = False
+
+        async def handler(update, context):
+            nonlocal called
+            called = True
+
+        update = _fake_update(telegram_user_id=42)
+        context = SimpleNamespace(bot=_FakeBot(), args=[])
+
+        asyncio.run(bot._guarded_command(name, handler)(update, context))
+
+        assert called is False, f"/{name} ran for a non-admin"
+        assert update.message.replies == ["Admin only."]
+    assert api.command_calls == []
 
 
 def test_telegram_thread_command_uses_backend_command_service():
@@ -568,9 +632,12 @@ def test_telegram_global_tool_command_uses_backend_command_service():
 
     asyncio.run(bot._cmd_tools_core(update, context))
 
+    # The relay carries the FILTER VALUE, not the retired `tools core` alias:
+    # an alias substitutes a path and cannot inject a value, so relaying the
+    # old spelling would render the enabled view instead of the core one.
     assert api.command_calls == [
         {
-            "command": "/tools core",
+            "command": "/tools list core",
             "thread_id": "telegram_123",
             "source": "user",
             "actor": "user",
@@ -579,7 +646,7 @@ def test_telegram_global_tool_command_uses_backend_command_service():
         }
     ]
     assert [msg.text for msg in fake_bot.messages] == [
-        "backend result for /tools core"
+        "backend result for /tools list core"
     ]
 
 

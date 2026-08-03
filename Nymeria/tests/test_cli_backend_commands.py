@@ -299,3 +299,185 @@ def test_backend_registration_is_idempotent_for_brand_new_commands():
         match = registry.resolve(path)
         assert match is not None, f"{path} did not resolve"
         assert match.command.metadata.get("backend_command") is True
+
+
+def merged_registry() -> CommandRegistry:
+    """Build the tree a running CLI actually resolves against.
+
+    Backend proxies first, then every local command module, exactly as
+    ``CLIApp._register_all_commands`` does. The unit tests above use
+    hand-built catalogs; these use the REAL one, because the questions they
+    answer (which spelling wins a key, what the palette advertises) are only
+    meaningful against the shipped catalog.
+    """
+    from nymeria.triggers.cli.commands import (
+        account,
+        activity,
+        artifacts,
+        backend as backend_module,
+        clipboard,
+        connection,
+        context,
+        conversation,
+        doctor,
+        export,
+        mcp as mcp_module,
+        memory as memory_module,
+        model as model_module,
+        skills,
+        statusbar,
+        system,
+        theme,
+        todos,
+        toolicon,
+        tools,
+        triggers,
+    )
+
+    registry = CommandRegistry()
+    backend_module.register(registry)
+    for module in (
+        system,
+        connection,
+        context,
+        model_module,
+        tools,
+        skills,
+        mcp_module,
+        todos,
+        memory_module,
+        account,
+        triggers,
+        activity,
+        artifacts,
+        doctor,
+        theme,
+        toolicon,
+        statusbar,
+        export,
+        clipboard,
+        conversation,
+    ):
+        module.register(registry)
+    return registry
+
+
+def test_palette_speaks_the_canonical_spelling_for_renamed_commands():
+    """The command palette advertises canon, not the retired spellings.
+
+    Backlog #131 renamed these; the old spellings survive as whole-path
+    aliases, and an alias must never be what the CLI teaches.
+    """
+    entries = {entry.text for entry in merged_registry().get_palette_entries()}
+
+    for canonical in (
+        "/thread create",
+        "/thread show",
+        "/tools list",
+        "/model list",
+        "/todos list",
+        "/account show",
+        "/memory delete",
+        "/skills show",
+        "/mcp delete",
+        "/artifacts list",
+        "/hook history",
+        "/activity list",
+        "/settings",
+    ):
+        assert canonical in entries, f"{canonical} missing from the palette"
+
+    for retired in (
+        "/thread new",
+        "/thread info",
+        "/tools core",
+        "/tools optional",
+        "/tools enabled",
+        "/tools category",
+        "/account current",
+        "/memory forget",
+        "/skills inspect",
+        "/mcp remove",
+        "/artifacts recent",
+        "/hook log",
+        "/activity recent",
+        "/branch",
+        "/models",
+        "/tasks",
+        "/config",
+    ):
+        assert retired not in entries, f"{retired} is still advertised"
+
+
+def test_freed_backend_spellings_do_not_fall_through_to_a_local_handler():
+    """A rename frees a key; no local command may quietly inherit it.
+
+    Every entry here was a BACKEND command before backlog #131 and is a
+    backend alias after it. If a local declaration survives under the freed
+    key, the CLI becomes the one surface where the old spelling means
+    something else.
+    """
+    registry = merged_registry()
+
+    for retired in (
+        "/account current",
+        "/memory forget",
+        "/skills inspect",
+        "/mcp remove fetch",
+        "/tools core",
+        "/tools optional",
+        "/activity recent",
+    ):
+        match = registry.resolve(retired)
+        assert match is not None, f"{retired} did not resolve"
+        assert match.command.metadata.get("backend_command") is True, (
+            f"{retired} resolved to a local handler"
+        )
+
+
+def test_retired_root_spellings_still_reach_their_replacement():
+    """`/branch`, `/fork`, `/models`, `/tasks` were roots before the rename.
+
+    They are whole-path aliases of deeper commands now. Every other surface
+    resolves those server-side; the CLI resolves the first token itself, so
+    without the hidden root proxies these would be unknown commands here.
+    """
+    registry = merged_registry()
+    expected = {
+        "/branch": "/thread branch",
+        "/fork": "/thread branch",
+        "/models": "/model list",
+        "/tasks": "/todos list",
+    }
+
+    for raw, canonical in expected.items():
+        match = registry.resolve(raw)
+        assert match is not None, f"{raw} did not resolve"
+        assert match.command.hidden is True, f"{raw} should not be advertised"
+        assert match.command.metadata.get("backend_path") == tuple(
+            canonical.lstrip("/").split()
+        )
+
+    client = _FakeCommandClient()
+    result = run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/tasks all",
+        )
+    )
+
+    assert result.ok is True
+    assert client.calls[0]["command"] == "/todos list all"
+
+
+def test_flat_family_aliases_do_not_become_cli_roots():
+    """`/thread_new` and friends stay off the CLI root namespace.
+
+    They are the chat platforms' flattening of a path the CLI reaches by
+    typing the path, so promoting all 100-plus of them would bury the real
+    roots in autocomplete for no reachability gain.
+    """
+    registry = merged_registry()
+
+    for flat in ("/thread_new", "/thread_create", "/hook_log", "/mcp_rm", "/tools_core"):
+        assert registry.resolve(flat) is None, f"{flat} should not be a CLI root"

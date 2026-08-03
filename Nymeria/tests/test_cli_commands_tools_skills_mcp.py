@@ -404,12 +404,9 @@ def test_tools_commands_use_api_client_methods() -> None:
     assert run(registry.dispatch_async(ctx, "/tools list")).ok is True
     assert run(registry.dispatch_async(ctx, "/tools enable web_search")).ok is True
     assert run(registry.dispatch_async(ctx, "/tools disable filesystem")).ok is True
-    assert run(registry.dispatch_async(ctx, "/tools optional")).ok is True
-    sink.messages.clear()
-    assert run(registry.dispatch_async(ctx, "/tools core")).ok is True
-    core_output = sink.messages[-1].content
-    assert "filesystem" in core_output
-    assert "web_search" not in core_output
+    # No `/tools core` or `/tools optional`: backlog #131 folded both into
+    # `/tools list <filter>` and retired the local declarations, so the
+    # default-toolset readout is reached through `/tools defaults` here.
     sink.messages.clear()
     assert run(registry.dispatch_async(ctx, "/tools defaults")).ok is True
     defaults_output = sink.messages[-1].content
@@ -501,13 +498,13 @@ def test_tools_enable_unknown_name_shows_ranked_suggestions() -> None:
     assert "/tools enable web_search" in result.messages[0].content
 
 
-def test_tools_default_alias_lists_only_configured_core_toolset() -> None:
+def test_tools_defaults_lists_only_configured_core_toolset() -> None:
     client = CapabilityFakeClient()
     registry = make_registry()
     sink = ListCommandOutputSink()
     ctx = make_context(client, output=sink)
 
-    result = run(registry.dispatch_async(ctx, "/tools default"))
+    result = run(registry.dispatch_async(ctx, "/tools defaults"))
 
     assert result.ok is True
     assert result.payload["default_tools"] == ("filesystem",)
@@ -559,7 +556,9 @@ def test_skills_commands_use_api_client_methods() -> None:
     assert run(
         registry.dispatch_async(ctx, "/skills enable --global skill-creator")
     ).ok is True
-    assert run(registry.dispatch_async(ctx, "/skills inspect skill-creator")).ok is True
+    # No `/skills inspect`: backlog #131 folded it into `/skills show` and
+    # retired the local declaration, so skill detail is a backend command now.
+    assert not any(name == "get_skill" for name, _payload in client.calls)
 
     assert (
         "search_skills_marketplace",
@@ -595,7 +594,6 @@ def test_skills_commands_use_api_client_methods() -> None:
         {"type": "thread_config_updated", "thread_id": "thread-1"},
         {"type": "skills_updated"},
     ]
-    assert any("Skill body content" in message.content for message in sink.messages)
 
 
 def test_skills_and_mcp_reject_missing_option_values() -> None:
@@ -637,11 +635,11 @@ def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -
     assert discover_result.ok is True
     assert "fetch, read_url" in discover_result.messages[0].content
     retry_result = run(registry.dispatch_async(unconfirmed, "/mcp retry draft"))
-    remove_result = run(registry.dispatch_async(unconfirmed, "/mcp remove fetch"))
 
     assert retry_result.ok is True
-    assert remove_result.ok is True
     assert not any(name == "retry_mcp_server_install" for name, _payload in client.calls)
+    # No `/mcp remove`: backlog #131 renamed it to `/mcp delete` and retired
+    # the local declaration, so deletion is a backend command now.
     assert not any(name == "delete_mcp_server" for name, _payload in client.calls)
     assert sink.messages[-1].level == "warning"
 
@@ -657,7 +655,6 @@ def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -
     )
     assert add_result.ok is True
     assert "Fetch / fetch" in add_result.messages[0].content
-    assert run(registry.dispatch_async(confirmed, "/mcp remove fetch")).ok is True
 
     assert (
         "retry_mcp_server_install",
@@ -679,4 +676,4 @@ def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -
             }
         },
     ) in client.calls
-    assert ("delete_mcp_server", {"server_id": "fetch"}) in client.calls
+    assert not any(name == "delete_mcp_server" for name, _payload in client.calls)

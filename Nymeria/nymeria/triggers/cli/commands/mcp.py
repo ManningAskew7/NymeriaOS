@@ -1,4 +1,12 @@
-"""MCP server commands: /mcp list, add, remove, discover, test, retry, status."""
+"""MCP server commands: the client-side halves of the /mcp family.
+
+``add`` is genuinely local (it drives the interactive install flow). The rest
+are defensive fallbacks for a failed catalog registration. Backlog #131
+renamed ``/mcp remove`` to ``/mcp delete`` and retired the local ``remove``
+declaration with it: the rename freed the ``remove`` key, which would
+otherwise have made the CLI the one surface where the old spelling asked for
+a confirmation the canonical spelling does not.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +35,7 @@ async def _handle_mcp_root(
 ) -> CommandResult:
     if args:
         return CommandResult.failed(
-            "Usage: /mcp list|add|remove|discover|test|retry|status|logs",
+            "Usage: /mcp list|add|delete|discover|test|retry|status|logs",
             error_code="usage_error",
         )
     return await _handle_mcp_list(context, [])
@@ -90,38 +98,6 @@ async def _handle_mcp_add(
 
     await context.dispatch({"type": "mcp_updated"})
     return _format_mcp_install_result(result, command="/mcp add")
-
-
-async def _handle_mcp_remove(
-    context: CommandContext,
-    args: list[str],
-) -> CommandResult:
-    args, explicit_confirmation = strip_confirmation_flags(args)
-    if not args:
-        return CommandResult.failed(
-            "Usage: /mcp remove <server-id> [--yes]",
-            error_code="usage_error",
-        )
-    server_id = args[0]
-    confirmed = await confirmation_granted(
-        context,
-        f"Remove MCP server {server_id}?",
-        explicitly_confirmed=explicit_confirmation,
-    )
-    if not confirmed:
-        return confirmation_required_result("/mcp remove")
-
-    try:
-        result = await call_client_method(context, "delete_mcp_server", server_id)
-    except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/mcp remove", method_name=exc.method_name)
-
-    deleted = mapping_get(result, "deleted", server_id)
-    await context.dispatch({"type": "mcp_updated"})
-    return CommandResult.completed(
-        CommandMessage(f"Removed MCP server: {deleted}", level="success"),
-        payload={"server_id": str(deleted)},
-    )
 
 
 async def _handle_mcp_discover(
@@ -486,14 +462,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Install an MCP server",
                 usage="add <source> [--name name] [--thread id] [--yes]",
                 handler=_handle_mcp_add,
-                category="MCP",
-            ),
-            "remove": Command(
-                name="remove",
-                aliases=["rm", "delete"],
-                description="Remove an MCP server",
-                usage="remove <server-id> [--yes]",
-                handler=_handle_mcp_remove,
                 category="MCP",
             ),
             "discover": Command(

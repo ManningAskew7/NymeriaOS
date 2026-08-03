@@ -1,4 +1,13 @@
-"""Tool commands: /tools list, enable, disable, defaults, test."""
+"""Tool commands: the client-side halves of the /tools family.
+
+``defaults``, ``search`` and ``test`` are genuinely local (the backend
+registers no such verbs); the root and ``list`` handlers are defensive
+fallbacks for a failed catalog registration. Backlog #131 folded
+``/tools core|optional|enabled|category`` into ``/tools list [filter]`` and
+retired the local ``core`` and ``optional`` declarations with it: the fold
+freed both keys, which would otherwise have made the CLI the one surface
+where those spellings still rendered their own view.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +35,14 @@ async def _handle_tools_root_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
+    """List or search tools; a defensive fallback for the backend root.
+
+    The backend ``/tools`` root shadows this one whenever the catalog
+    registers (it takes no arguments and renders the enabled readout), so
+    the ``/tools <query>`` search shorthand here only runs if catalog
+    registration itself fails. ``/tools search <query>`` is the spelling
+    that works in both cases.
+    """
     if args:
         return await _handle_tools_search_context(context, args)
     return await _handle_tools_list_context(context, [])
@@ -50,29 +67,6 @@ async def _handle_tools_list_context(
         CommandMessage(_format_tools_table(tools, config), title="Tools"),
         json_payload=_tools_json_entries(tools, config),
     )
-
-
-async def _handle_tools_optional_context(
-    context: CommandContext,
-    _args: list[str],
-) -> CommandResult:
-    try:
-        tools = await call_client_user_scoped(context, "get_optional_tools")
-    except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/tools optional", method_name=exc.method_name)
-
-    entries = _mapping_sequence(tools)
-    if not entries:
-        return CommandResult.completed(
-            CommandMessage("No optional tools are available.", level="warning")
-        )
-    lines = ["Optional Tools", "  Name                           Description"]
-    for tool in sorted(entries, key=lambda item: _tool_name(item)):
-        lines.append(
-            f"  {compact_id(_tool_name(tool), width=30):<30} "
-            f"{one_line(tool.get('description', ''), limit=80)}"
-        )
-    return CommandResult.completed(CommandMessage("\n".join(lines), title="Tools"))
 
 
 async def _handle_tools_search_context(
@@ -109,15 +103,6 @@ async def _handle_tools_search_context(
         CommandMessage(_format_tool_search_response(data), title="Tools"),
         json_payload=data,
     )
-
-
-async def _handle_tools_core_context(
-    context: CommandContext,
-    args: list[str],
-) -> CommandResult:
-    if args:
-        return CommandResult.failed("Usage: /tools core", error_code="usage_error")
-    return await _show_default_tools(context, command="/tools core")
 
 
 async def _handle_tools_enable_context(
@@ -738,21 +723,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Disable a tool for this thread",
                 usage="disable <tool-id>",
                 handler=_handle_tools_disable_context,
-                category="Tools",
-            ),
-            "optional": Command(
-                name="optional",
-                description="List optional tools",
-                usage="optional",
-                handler=_handle_tools_optional_context,
-                category="Tools",
-            ),
-            "core": Command(
-                name="core",
-                aliases=["default"],
-                description="List tools enabled by default for new threads",
-                usage="core",
-                handler=_handle_tools_core_context,
                 category="Tools",
             ),
             "defaults": Command(

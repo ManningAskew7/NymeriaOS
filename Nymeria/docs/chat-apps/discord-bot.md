@@ -112,7 +112,9 @@ the registry, regenerate, restart the bot. Nothing here needs editing by hand.
 Hand-written cogs keep only what a defer-and-relay wrapper cannot express: chat
 streaming (`/ask`, `/compact`), the act-now commands (`/clear`, `/stop`), the bot
 self-restart (`/restart`), Discord-local rendering (`/export`, `/help`,
-`/tools search`, `/channel-context`, `/show-tools`), and the families whose
+`/tools search`, `/channel-context`, `/show-tools`), the two commands that give
+back a capability the group rule took (`/set-model`, `/show-settings`, below),
+and the families whose
 group name they must own for one of those reasons (`/tools`, `/todos`,
 `/notepad`, `/thread`, `/hook`, `/fallback`). The generator's
 `HAND_WRITTEN_FAMILIES` and `EXCLUDED_COMMANDS` name each one and why.
@@ -127,19 +129,41 @@ ids all autocomplete. `discord_cogs/autocomplete.py` holds the one generic
 resolver, shared with the hand cogs; adding a resolver to the BACKEND
 registry plus a cog regen lights up every argument that declares the ref.
 
-The tables below cover the commands Discord users had before the derivation.
-Generation also brought these families onto Discord, with the same arguments the
-CLI and desktop app get: `/account`, `/activity`, `/artifacts`, `/background`,
-`/branch`, `/doctor`, `/fast`, `/mcp`, `/memory limit`, `/prune`, `/provider`,
-`/sequential-tools`, `/settings`, `/skills`, `/smart`, `/team`, `/triggers`, and
-`/usage`. One structural caveat: Discord makes a multi-command family a GROUP,
-and a group is not itself invokable, so a family's bare root action does not
-exist on Discord (`/fast` offers `set` but not the bare toggle; same for the
-other dropped roots pinned in the generator's `EXPECTED_DROPPED_ROOTS`). The
-live command tree is the source of truth for the full list; run `/help` in
-Discord or read `generated_cogs.py`. `/provider set` is deliberately never
-generated: its `key=value` pairs carry credentials, which must not be typed
-into a chat platform's transport (backlog #130 owns the backend-side sweep).
+The tables below list every slash command the bot registers, hand-written and
+generated together. They are gated: `tests/test_command_doc_coverage.py` fails
+if the tree grows a command this file does not name, so a regen that adds a
+command also adds a doc row.
+
+One structural caveat runs through the whole tree: Discord makes a
+multi-command family a GROUP, and a group is not itself invokable, so a
+family's bare root action does not exist on Discord (`/fast` offers `set` but
+not the bare toggle; same for the other dropped roots pinned in the generator's
+`EXPECTED_DROPPED_ROOTS`). Where that cost a real capability rather than a
+shortcut, a hand command gives it back: `/set-model` and `/show-settings`.
+`/provider set` is deliberately never generated: its `key=value` pairs carry
+credentials, which must not be typed into a chat platform's transport (backlog
+#130 owns the backend-side sweep).
+
+### Renamed on 2026-08-03 (backlog #131)
+
+Slash registration is wipe-and-reupload and a backend alias never reaches
+Discord, so the vocabulary migration is a HARD CUTOVER here: the old names are
+gone with nothing to fall back on. What to type instead:
+
+| Retired name | Type this now |
+|--------------|---------------|
+| `/account current` | `/account show` |
+| `/artifacts recent` | `/artifacts list` |
+| `/branch` | No Discord equivalent; branch a thread from the desktop app or CLI. |
+| `/config show` | `/show-settings` |
+| `/config get`, `/config set` | `/settings get`, `/settings set` |
+| `/mcp remove` | `/mcp delete` |
+| `/memory forget` | `/memory delete` |
+| `/model <name>` | `/set-model <name>` |
+| `/models` | `/model list` |
+| `/skills inspect` | `/skills show` |
+| `/skills off all` | `/skills disable all` |
+| `/tasks` | `/todos list` |
 
 `/help` lists the
 registered app commands only, derived from the live command tree plus the
@@ -159,7 +183,7 @@ surfaces.
 | `/compact` | Compress conversation context to reclaim token space. |
 | `/thread` | Show thread ID, context usage (%), token count, compaction count, and context mode. |
 | `/context` | Detailed context breakdown: effective model, token usage with progress bar, tools by category, per-thread overrides (instructions, enabled/disabled tools, callable status). |
-| `/tasks [status]` | Quick view of scheduled and autonomous tasks. Filter: `active` (default), `pending`, `in_progress`, `done`, `all`. Shows schedule time, recurrence, and bound thread. |
+| `/prune` | Deterministically compress old tool results in this channel's history. |
 | `/export [format]` | Export conversation history as a file attachment. Format: `markdown` (default), `json`, `txt`. |
 | `/restart [target]` | Restart the Discord bot (default) or API server (`/restart target:api`). Bot restarts close the Discord gateway and API client, then use Docker's restart policy; API restart uses the existing `POST /restart` endpoint. |
 | `/help` | List all available commands. |
@@ -168,14 +192,26 @@ surfaces.
 
 During streamed replies, Discord now surfaces compaction events instead of hiding them: `compacting` posts a short status line, `compacted` posts a "Context compacted" embed with a summary preview, and any resumed assistant output continues streaming normally after that embed.
 
-### Model & Thinking
+### Model, Provider & Thinking
 
 | Command | Description |
 |---------|-------------|
-| `/model [name] [scope]` | Show or change the LLM model. `scope` is `"global"` (server default) or `"thread"` (channel override). |
-| `/models` | List all available models from the current provider with context window sizes. |
+| `/set-model <name> [scope] [force]` | Switch the LLM model. `scope` is `thread` (channel override, default) or `global` (server default); `force` accepts a model the provider does not list. Hand-written: `/model` is a group on Discord, so the bare switch needs its own name. |
+| `/model list` | List all available models from the current provider with context window sizes. |
 | `/think [mode]` | Set extended thinking mode: `off`, `on`, `low`, `medium`, `high`. Without argument, shows current state. |
 | `/status` | Comprehensive dashboard: model, provider, context bar, tools count, uptime, watchdog, task counts, Discord respond mode and channel context state. |
+| `/usage session` | Token and cost usage for the current session. |
+| `/fast set <model>` | Set the model id stored for the fast tier. |
+| `/smart set <model>` | Set the model id stored for the smart tier. |
+| `/background set <model>` | Set the background-turn model. |
+| `/background set-url <url>` | Point background turns at a different base URL. |
+| `/background clear` | Clear the background model (falls back to the main model). |
+| `/provider list` | List LLM providers grouped by support tier. |
+| `/provider switch <provider> [scope]` | Switch the active provider globally or for this channel. |
+| `/provider test [provider]` | Probe a provider's credentials and reachability. |
+| `/provider reasoning-passback [mode] [value]` | Control whether reasoning blocks are passed back to the model. |
+| `/doctor auth` | Diagnose account and token problems. |
+| `/doctor model` | Diagnose model and provider resolution. |
 
 ### TODOs (`/todos`)
 
@@ -186,13 +222,16 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/todos complete <todo_id>` | Mark a TODO as done (first 8 chars of ID). Recurring TODOs auto-reschedule. |
 | `/todos delete <todo_id>` | Permanently delete a TODO (first 8 chars of ID). |
 
-### Config (`/config`)
+### Settings & Environment
 
 | Command | Description |
 |---------|-------------|
-| `/config show` | Show all server settings: LLM config, context management, system flags. |
-| `/config get <key>` | Get a specific setting value (e.g., `llm_model`, `context_management`). |
-| `/config set <key> <value>` | Update a server setting. Auto-parses booleans, numbers, and `none`. |
+| `/show-settings` | Show all server settings: LLM config, context management, system flags. Hand-written: `/settings` is a group on Discord, so the readout needs its own name. |
+| `/settings get <key>` | Get a specific setting value (e.g., `llm_model`, `context_management`). |
+| `/settings set <key> <value>` | Update a server setting. Auto-parses booleans, numbers, and `none`. Admin only. |
+| `/env show` | List environment variables by category, with secrets masked. Admin only. |
+| `/env get <key>` | Show one environment variable. Admin only. |
+| `/env set <key> <value>` | Write one environment variable. Admin only. |
 
 ### Tools (`/tools`)
 
@@ -205,8 +244,15 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/tools search <query>` | Discord-local tool search with ranked suggestions and enable hints. |
 | `/tools enable <name>` | Enable a tool or entire category for this channel. Accepts a tool name (e.g., `bash_execute`) or category name (e.g., `email`). Autocomplete suggests both. |
 | `/tools disable <name>` | Disable a tool or entire category for this channel. Works for core tools (disabling a default) and optional tools. |
+| `/sequential-tools [mode] [scope]` | Run tool calls one at a time instead of in parallel. |
 
 Tool overrides are per-thread (per-channel). Changes made with `/tools enable` and `/tools disable` are visible in `/tools enabled` and the frontend.
+
+The four listing subcommands are a Discord-only shape. Backlog #131 folded the
+backend's `tools core|optional|enabled|category` into one `tools list [filter]`
+command, and these relay the filter VALUE (`tools list core`), which the
+backend alias cannot do on its own: an alias substitutes a path and cannot
+inject a value, so a bare `/tools core` would render the enabled view.
 
 ### Memory (`/memory`)
 
@@ -214,8 +260,69 @@ Tool overrides are per-thread (per-channel). Changes made with `/tools enable` a
 |---------|-------------|
 | `/memory list` | List all saved memories for this user. |
 | `/memory save <key> <value>` | Save a persistent memory (survives across conversations). |
-| `/memory forget <key>` | Remove a saved memory. |
+| `/memory delete <key>` | Remove a saved memory (was `/memory forget`). |
 | `/memory search <query>` | Search memories by keyword (matches key and value). |
+| `/memory limit [value] [scope]` | Show or set the memory character and entry limits. |
+
+### Skills (`/skills`)
+
+| Command | Description |
+|---------|-------------|
+| `/skills list` | List skills visible on this channel. |
+| `/skills show <name>` | Show one skill's metadata and body (was also `/skills inspect`). |
+| `/skills search <query>` | Search the skill marketplace. |
+| `/skills install <name> [source] [scope]` | Install a skill for this user or globally. |
+| `/skills enable <name>` | Activate a skill on this channel. |
+| `/skills disable <name>` | Deactivate a skill, or `all` to deactivate every active one (was `/skills off all`). |
+
+### Automation (`/hook`, `/triggers`, `/fallback`)
+
+| Command | Description |
+|---------|-------------|
+| `/hook list [scope] [enabled_only]` | List lifecycle hooks. |
+| `/hook create <name> <event> <action> ...` | Create a lifecycle hook (event, action, matcher, condition, scope). |
+| `/hook show <hook_id>` | Show one hook's configuration. |
+| `/hook edit <hook_id> ...` | Edit a hook's fields, condition, or rewrite. |
+| `/hook test <hook_id>` | Dry-run a hook and preview its output. |
+| `/hook enable <hook_id>` | Enable a hook. |
+| `/hook disable <hook_id>` | Disable a hook. |
+| `/hook delete <hook_id>` | Delete a hook permanently. |
+| `/triggers list` | List trigger sources and their state. |
+| `/triggers enable <trigger_id>` | Enable a trigger. |
+| `/triggers disable <trigger_id>` | Disable a trigger. |
+| `/triggers delete <trigger_id>` | Delete a trigger. |
+| `/triggers history [trigger_id]` | Show recent trigger firings. |
+| `/fallback status` | Show consent state: switch mode, holds, and this channel's active swap. |
+| `/fallback revert` | End an active fallback swap on this channel. |
+| `/fallback approvals` | List pending model-swap consent prompts. |
+| `/fallback approve <record_id> [hold]` | Approve a pending model swap. |
+| `/fallback deny <record_id>` | Decline a pending model swap. |
+
+### MCP (`/mcp`)
+
+| Command | Description |
+|---------|-------------|
+| `/mcp list` | List configured MCP servers. |
+| `/mcp status [server_id]` | Live connection state for an MCP server. |
+| `/mcp discover <server_id>` | Re-discover a server's tools. |
+| `/mcp test <server_id>` | Probe a server's reachability. |
+| `/mcp logs <server_id>` | Raw log output for a server. |
+| `/mcp retry <server_id>` | Retry a failed connection. |
+| `/mcp delete <server_id>` | Remove an MCP server and its tools (was `/mcp remove`). |
+
+### Account & Activity
+
+| Command | Description |
+|---------|-------------|
+| `/account show` | Show the linked Nymeria account (was `/account current`). |
+| `/account platforms` | List the chat platforms linked to this account. |
+| `/account tokens issue [label]` | Issue an account API token. |
+| `/account tokens revoke <token_id>` | Revoke an account API token. |
+| `/activity list` | Recent activity for this account. |
+| `/activity notifications` | Notification routing state. |
+| `/artifacts list` | List recent workspace artifacts (was `/artifacts recent`). |
+| `/team list` | List callable teams. |
+| `/team show <name>` | Show one team's members and scope. |
 
 ### Notepad (`/notepad`)
 

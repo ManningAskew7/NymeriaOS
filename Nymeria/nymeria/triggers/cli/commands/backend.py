@@ -64,15 +64,57 @@ class BackendCommandProvider:
         backend-wins-over-local rule (see ``CommandRegistry.register``).
         Protected builtins (``/help``, ``/cls``, ``/exit``) are preserved by
         the registry's builtin protection. No whitelists are needed here.
+
+        Root-shaped aliases register in a second pass so a real command
+        always wins its own name.
         """
-        for info in self.commands:
-            execution_kind = str(info.get("execution_kind") or "command")
-            if execution_kind not in {"command", "chat_stream"}:
-                continue
-            path = _path(info)
-            if not path:
-                continue
+        registerable = [
+            (info, path)
+            for info in self.commands
+            if str(info.get("execution_kind") or "command") in {"command", "chat_stream"}
+            for path in (_path(info),)
+            if path
+        ]
+        for info, path in registerable:
             self._register_path(registry, info, path)
+        for info, path in registerable:
+            self._register_root_aliases(registry, info, path)
+
+    def _register_root_aliases(
+        self,
+        registry: CommandRegistry,
+        info: Mapping[str, Any],
+        path: tuple[str, ...],
+    ) -> None:
+        """Keep root-shaped aliases of deeper commands typeable here.
+
+        Backend aliases are whole paths and every other surface resolves them
+        server-side, but the CLI resolves the first token against its own
+        registry, so an alias naming a root the catalog no longer has
+        (``/branch`` for ``thread branch``, ``/tasks`` for ``todos list``)
+        would be an unknown command. Those register as HIDDEN root proxies:
+        still typeable, absent from the palette, which speaks canon.
+
+        Flat ``<family>_<verb>`` aliases are skipped: they are the chat
+        platforms' flattening of a path the CLI reaches by typing the path.
+        """
+        if len(path) < 2:
+            return
+        for raw_alias in info.get("aliases", []):
+            if not isinstance(raw_alias, str):
+                continue
+            alias = raw_alias.strip().lstrip("/").casefold()
+            if not alias or " " in alias:
+                continue
+            if alias == path[0] or alias.startswith(f"{path[0]}_"):
+                continue
+            if registry.get(alias) is not None:
+                continue
+            proxy = _backend_command(info, path)
+            proxy.name = alias
+            proxy.aliases = []
+            proxy.hidden = True
+            registry.register(proxy)
 
     def _register_path(
         self,
