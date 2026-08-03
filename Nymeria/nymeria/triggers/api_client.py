@@ -971,13 +971,26 @@ class NymeriaAPIClient:
         actor: Optional[str] = None,
         surface: Optional[str] = None,
         user_id: Optional[str] = None,
+        supports_forms: bool = False,
     ) -> dict:
-        """Execute a backend slash command and return markdown output."""
-        payload = {"command": command, "thread_id": thread_id, "source": source}
+        """Execute a backend slash command and return markdown output.
+
+        ``supports_forms`` declares that THIS caller renders declarative form
+        payloads (``data.form``); only form-rendering clients (the Rich CLI)
+        pass True. Without it the backend strips form payloads and never
+        answers a bare command with a generated picker.
+        """
+        payload: dict[str, Any] = {
+            "command": command,
+            "thread_id": thread_id,
+            "source": source,
+        }
         if actor is not None:
             payload["actor"] = actor
         if surface is not None:
             payload["surface"] = surface
+        if supports_forms:
+            payload["supports_forms"] = True
         return await self._post(
             "/commands/execute",
             json=payload,

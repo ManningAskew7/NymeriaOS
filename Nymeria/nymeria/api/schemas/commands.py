@@ -32,6 +32,16 @@ class CommandExecuteRequest(BaseModel):
     source: CommandSource = Field(default="user", description="Compatibility caller source")
     actor: CommandActor | None = Field(default=None, description="Command actor")
     surface: CommandSurface | None = Field(default=None, description="Calling surface")
+    supports_forms: bool = Field(
+        default=False,
+        description=(
+            "Capability flag: this caller renders declarative form payloads "
+            "(data.form). When false, form payloads are stripped from the "
+            "response (the markdown fallback carries the same content) and "
+            "bare commands with missing required arguments return the usage "
+            "error instead of a generated picker."
+        ),
+    )
 
 
 class CommandExecuteResponse(BaseModel):
