@@ -248,14 +248,22 @@ def test_generated_usage_matches_catalog_idiom() -> None:
         ),
     ) == "/thread branch [--from-index N] [title]"
 
+    # Flags declare BEFORE the scope: the trailing-scope pop inspects the
+    # last token only, so the advertised order must keep the scope word last.
     assert generated_usage(
         ("model",),
         (
             CommandParam("name"),
-            CommandParam("scope", kind="scope"),
             CommandParam("force", kind="flag", type="bool"),
+            CommandParam("scope", kind="scope"),
         ),
-    ) == "/model [name] [global|thread] [--force]"
+    ) == "/model [name] [--force] [global|thread]"
+
+    # Registry paths store hyphenated tokens as underscores; usage renders
+    # them back the way users type them.
+    assert generated_usage(
+        ("provider", "reasoning_passback"), ()
+    ) == "/provider reasoning-passback"
 
     assert generated_usage(
         ("hook", "log"),
@@ -447,6 +455,23 @@ def test_dispatcher_legacy_path_is_untouched(monkeypatch: pytest.MonkeyPatch) ->
     result = run(service.execute(_ctx(), "/zzsynth a b", api=object()))
     assert result.success is True
     assert "legacy args=['a', 'b'] rest=a b" in result.markdown
+
+
+def test_bind_error_on_a_family_root_suggests_subcommands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service_with_synthetic(monkeypatch, ())
+    service.register(
+        "zzsynth list",
+        description="synthetic subcommand",
+        category="Test",
+        params=(),
+    )
+    result = run(service.execute(_ctx(), "/zzsynth lst", api=object()))
+    assert result.success is False
+    assert "Unexpected argument `lst`" in result.markdown
+    assert "Did you mean `/zzsynth list`?" in result.markdown
+    assert "Valid subcommands: list." in result.markdown
 
 
 def test_help_card_renders_params_table(monkeypatch: pytest.MonkeyPatch) -> None:

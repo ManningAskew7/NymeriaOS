@@ -111,10 +111,16 @@ class BoundArgs:
 
 @dataclass(frozen=True)
 class BindError:
-    """A validation failure, rendered by the dispatcher in the usage idiom."""
+    """A validation failure, rendered by the dispatcher in the usage idiom.
+
+    ``unexpected`` carries the first extra positional token verbatim when the
+    failure is a strict-extras rejection, so the dispatcher can layer
+    subcommand guidance (did-you-mean, valid list) on top for family roots.
+    """
 
     problem: str
     param: str | None = None
+    unexpected: str | None = None
 
 
 def validate_params(command_id: str, params: tuple[CommandParam, ...]) -> None:
@@ -250,9 +256,14 @@ def generated_usage(path: tuple[str, ...], params: tuple[CommandParam, ...]) -> 
 
     Always starts with ``/`` + the joined path: the CLI inline hint
     prefix-matches typed text against this string and silently disappears on
-    drift, so the leading form is an invariant, not a style choice.
+    drift, so the leading form is an invariant, not a style choice. Path
+    tokens render with hyphens: registry paths normalize ``-`` to ``_``
+    (``/provider reasoning-passback`` is stored as ``reasoning_passback``),
+    but users type and docs advertise the hyphenated form, which is also what
+    the CLI hint's prefix match sees. The underscored display NAME shown by
+    palettes is a pre-existing #131 wart, unchanged here.
     """
-    parts = ["/" + " ".join(path)]
+    parts = ["/" + " ".join(token.replace("_", "-") for token in path)]
     for param in params:
         if param.kind == "flag":
             parts.append(f"[{param.option_spelling}]")
@@ -474,7 +485,9 @@ def bind_args(
             tail_tokens.append(token)
             index += 1
             continue
-        return None, BindError(f"Unexpected argument {_echo(None, token)}.")
+        return None, BindError(
+            f"Unexpected argument {_echo(None, token)}.", unexpected=token
+        )
 
     if tail_param is not None and tail_tokens:
         if tail_param.kind == "rest":

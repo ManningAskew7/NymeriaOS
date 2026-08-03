@@ -3,7 +3,8 @@
 House style: new backend handler families live in their own domain mixin
 module rather than being appended to the ~5,000-line ``command_service.py``.
 ``_CommandExecutor`` inherits :class:`LLMCommandsMixin`, which owns the
-``/fallback`` chain command, ``/think`` (catalog aliases ``/reasoning`` and
+``/fallback`` family (chain verbs plus the consent children, each a
+registered child path), ``/think`` (catalog aliases ``/reasoning`` and
 ``/thinking``; scope-aware since the 2026-07 config-group migration: with an
 active thread it writes that thread's llm_config, an explicit trailing
 ``global``/``thread`` token overrides), and the ``/provider`` family ported
@@ -40,6 +41,7 @@ from .command_forms import (
     search_field,
     text_field,
 )
+from .command_params import BoundArgs
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +73,10 @@ _TIER_BADGES = {
 _TIER_ORDER = ("native", "gateway", "unverified")
 
 _THINK_LEVELS = ("low", "medium", "high", "xhigh", "max")
-_THINK_USAGE = (
-    "[Error]: Usage: /think [off|on|low|medium|high|xhigh|max] [global|thread]"
-)
+# The whole /think value space: the registry declares this as the command's
+# choices, so the dispatcher rejects exactly what the handler cannot act on
+# and the picker's option list cannot drift from the accepted set.
+THINK_VALUES = ("off", "on", *_THINK_LEVELS)
 
 
 def custom_model_tab(placeholder: str, submit_command: str) -> dict[str, Any]:
@@ -163,60 +166,68 @@ class LLMCommandsMixin:
             for t in threads
         )
 
-    async def _cmd_fallback(self, args: list[str], rest: str) -> str:
-        """Manage the fallback chain (list/add/remove/clear/set).
+    async def _cmd_fallback(self, bound: BoundArgs) -> str:
+        """Bare ``/fallback``: the chain listing, as it has always been.
 
-        The consent subcommands (status/revert/approvals/approve/deny) are
-        registered child paths, so the registry's longest-prefix match routes
-        them to ``_cmd_fallback_<sub>`` before this parent ever parses; only
-        the chain grammar and unknown tokens reach here.
+        Every verb (list/add/remove/set/clear and the consent family) is a
+        registered child path, so the registry's longest-prefix match routes
+        it to ``_cmd_fallback_<sub>`` and nothing but the bare form reaches
+        here.
         """
-        sub = args[0].lower() if args else "list"
+        return await self._cmd_fallback_list(bound)
 
+    async def _cmd_fallback_list(self, bound: BoundArgs) -> str:
         settings = await self.api.get_settings()
         chain = self._fallback_chain(settings)
+        primary = str(settings.get("llm_model", "") or "").strip() or "Unknown"
+        provider = str(settings.get("llm_provider", "") or "").strip()
+        lines = [f"Primary: {primary}" + (f" ({provider})" if provider else "")]
+        if chain:
+            lines += [f"  {i}. {model}" for i, model in enumerate(chain, start=1)]
+        else:
+            lines.append("  (no fallback models configured)")
+        return "[Info]: Model Fallbacks\n" + "\n".join(lines)
 
-        if sub == "list":
-            primary = str(settings.get("llm_model", "") or "").strip() or "Unknown"
-            provider = str(settings.get("llm_provider", "") or "").strip()
-            lines = [f"Primary: {primary}" + (f" ({provider})" if provider else "")]
-            if chain:
-                lines += [f"  {i}. {model}" for i, model in enumerate(chain, start=1)]
-            else:
-                lines.append("  (no fallback models configured)")
-            return "[Info]: Model Fallbacks\n" + "\n".join(lines)
+    async def _cmd_fallback_add(self, bound: BoundArgs) -> str:
+        model = str(bound.get("model") or "").strip()
+        position = bound.get("position")
+        if position is not None and position < 1:
+            return "[Error]: Position must be 1 or greater."
+        settings = await self.api.get_settings()
+        chain = self._fallback_chain(settings)
+        next_chain = [m for m in chain if m != model]
+        if position is None:
+            next_chain.append(model)
+        else:
+            next_chain.insert(min(position - 1, len(next_chain)), model)
+        return await self._save_fallback_chain(
+            next_chain, f"Added fallback model: {model}"
+        )
 
-        if sub == "add":
-            model, position, error = self._parse_fallback_add(args[1:])
-            if error:
-                return f"[Error]: {error}"
-            next_chain = [m for m in chain if m != model]
-            if position is None:
-                next_chain.append(model)
-            else:
-                next_chain.insert(min(position - 1, len(next_chain)), model)
-            return await self._save_fallback_chain(next_chain, f"Added fallback model: {model}")
+    async def _cmd_fallback_remove(self, bound: BoundArgs) -> str:
+        model = str(bound.get("model") or "").strip()
+        settings = await self.api.get_settings()
+        chain = self._fallback_chain(settings)
+        next_chain = [m for m in chain if m != model]
+        if len(next_chain) == len(chain):
+            return f"[Error]: Fallback model is not configured: {model}"
+        return await self._save_fallback_chain(
+            next_chain, f"Removed fallback model: {model}"
+        )
 
-        if sub in {"remove", "rm"}:
-            model = " ".join(args[1:]).strip()
-            if not model:
-                return "[Error]: Usage: /fallback remove <model-id>"
-            next_chain = [m for m in chain if m != model]
-            if len(next_chain) == len(chain):
-                return f"[Error]: Fallback model is not configured: {model}"
-            return await self._save_fallback_chain(next_chain, f"Removed fallback model: {model}")
+    async def _cmd_fallback_set(self, bound: BoundArgs) -> str:
+        next_chain = self._dedupe_models(bound.get("models") or [])
+        if not next_chain:
+            # The binder guarantees at least one token, but a blank one
+            # ("/fallback set ''") still dedupes away to nothing.
+            return self._usage_error("fallback set")
+        label = " -> ".join(next_chain)
+        return await self._save_fallback_chain(
+            next_chain, f"Fallback chain set: {label}"
+        )
 
-        if sub == "clear":
-            return await self._save_fallback_chain([], "Cleared fallback chain.")
-
-        if sub == "set":
-            next_chain = self._dedupe_models(args[1:])
-            if not next_chain:
-                return "[Error]: Usage: /fallback set <model1> <model2> ..."
-            label = " -> ".join(next_chain)
-            return await self._save_fallback_chain(next_chain, f"Fallback chain set: {label}")
-
-        return self._usage_error("fallback")
+    async def _cmd_fallback_clear(self, bound: BoundArgs) -> str:
+        return await self._save_fallback_chain([], "Cleared fallback chain.")
 
     async def _fallback_status_markdown(self) -> str:
         """The consent modes plus the active thread's fallback hold, if any."""
@@ -291,15 +302,19 @@ class LLMCommandsMixin:
     # CommandService.execute rejects agent callers pre-dispatch for the
     # agent_allowed=False registrations, so no actor re-check is needed here.
 
-    async def _cmd_fallback_status(self, args: list[str], rest: str) -> str:
+    async def _cmd_fallback_status(self, bound: BoundArgs) -> str:
         return await self._fallback_status_markdown()
 
-    async def _cmd_fallback_revert(self, args: list[str], rest: str) -> str:
+    async def _cmd_fallback_revert(self, bound: BoundArgs) -> str:
         return await self._fallback_revert_markdown()
 
-    async def _cmd_fallback_approvals(self, args: list[str], rest: str) -> str:
+    async def _cmd_fallback_approvals(self, bound: BoundArgs) -> str:
         return self._fallback_approvals_markdown()
 
+    # approve/deny keep the legacy signature: their tail is "[minutes|
+    # permanent] [note]", where a note that happens to start with a number
+    # is deliberately read as minutes and any other word falls through into
+    # free text. That ambiguity is not expressible as declared params.
     async def _cmd_fallback_approve(self, args: list[str], rest: str) -> str:
         return self._resolve_fallback_approval(args, approved=True)
 
@@ -448,68 +463,24 @@ class LLMCommandsMixin:
                 seen.add(model)
         return output
 
-    @staticmethod
-    def _parse_position(value: str) -> tuple[int | None, str]:
-        try:
-            position = int(value)
-        except ValueError:
-            return None, f"Invalid position: {value}"
-        if position < 1:
-            return None, "Position must be 1 or greater."
-        return position, ""
-
-    @staticmethod
-    def _parse_fallback_add(args: list[str]) -> tuple[str, int | None, str]:
-        model = ""
-        position: int | None = None
-        index = 0
-        while index < len(args):
-            token = args[index]
-            if token == "--position":
-                if index + 1 >= len(args):
-                    return "", None, "--position requires a value."
-                position, error = LLMCommandsMixin._parse_position(args[index + 1])
-                if error:
-                    return "", None, error
-                index += 1
-            elif token.startswith("--position="):
-                position, error = LLMCommandsMixin._parse_position(
-                    token.split("=", 1)[1]
-                )
-                if error:
-                    return "", None, error
-            elif token.startswith("--"):
-                return "", None, f"Unknown option: {token}"
-            elif model:
-                return "", None, "Usage: /fallback add <model-id> [--position N]"
-            else:
-                model = token.strip()
-            index += 1
-        if not model:
-            return "", None, "Usage: /fallback add <model-id> [--position N]"
-        return model, position, ""
-
     # ── Think / reasoning ─────────────────────────────────────────────────
 
-    async def _cmd_think(self, args: list[str], rest: str) -> str | CommandOutput:
+    async def _cmd_think(self, bound: BoundArgs) -> str | CommandOutput:
         """Show or change thinking mode, scoped like /model.
 
         Default scope is the active thread when there is one, else global; a
         trailing ``global`` or ``thread`` token overrides. ``/reasoning`` and
         ``/thinking`` are catalog aliases of this handler.
         """
-        tokens = [a.lower() for a in args]
-        scope = ""
-        if tokens and tokens[-1] in ("global", "thread"):
-            scope = tokens.pop()
-        if len(tokens) > 1:
-            return _THINK_USAGE
-        value = tokens[0] if tokens else ""
-        if value and value != "on" and value != "off" and value not in _THINK_LEVELS:
-            return _THINK_USAGE
+        value = str(bound.get("mode") or "")
+        scope = str(bound.get("scope") or "")
         if not value:
             if scope:
-                return _THINK_USAGE
+                # A scope with nothing to write: the show output is
+                # scope-wide already, so name the missing level.
+                return self._usage_error(
+                    "think", hint="Name a level to write that scope."
+                )
             return await self._think_show()
 
         if not scope:
@@ -890,14 +861,13 @@ class LLMCommandsMixin:
 
     # ── Provider ──────────────────────────────────────────────────────────
 
-    async def _cmd_provider(self, args: list[str], rest: str) -> str | CommandOutput:
-        if len(args) == 1:
+    async def _cmd_provider(self, bound: BoundArgs) -> str | CommandOutput:
+        raw_provider = str(bound.get("provider") or "")
+        if raw_provider:
             # /provider <name>: the per-provider action step (the picker's
             # Providers tab submits exactly this). Registered subcommands
             # never reach here: longest-prefix dispatch routes them first.
-            return await self._provider_action(args[0])
-        if args:
-            return self._usage_error("provider")
+            return await self._provider_action(raw_provider)
         from ..config.llm_providers import get_llm_provider_spec
 
         settings = await self.api.get_settings()
@@ -1307,7 +1277,7 @@ class LLMCommandsMixin:
         spec = get_llm_provider_spec(raw) if raw else None
         return spec.id if spec else raw
 
-    async def _cmd_provider_list(self, args: list[str], rest: str) -> str:
+    async def _cmd_provider_list(self, bound: BoundArgs) -> str:
         settings = await self.api.get_settings()
         status = await self._provider_status_map()
         entries = self._provider_entries(settings, status)
@@ -1335,19 +1305,18 @@ class LLMCommandsMixin:
                     lines.append(f"    Note: {entry['notes_for_user']}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_provider_set(self, args: list[str], rest: str) -> str:
-        if len(args) < 2:
-            return "[Error]: Usage: /provider set <provider> <key=value> [key=value...]"
-        provider = self._normalize_provider(args[0])
+    async def _cmd_provider_set(self, bound: BoundArgs) -> str:
+        raw_provider = str(bound.get("provider") or "")
+        provider = self._normalize_provider(raw_provider)
         if provider not in PROVIDER_SECRET_SETTINGS:
             return (
-                f"[Error]: Unknown provider for /provider set: {args[0]}. "
+                f"[Error]: Unknown provider for /provider set: {raw_provider}. "
                 f"Credential fields exist for: {', '.join(PROVIDERS)}. "
                 "For any other registered provider: /provider switch "
                 "<provider>, then /env set llm_api_key <key> (the virtual "
                 "slot routes to the active provider's declared key env var)."
             )
-        values, error = self._parse_provider_values(provider, args[1:])
+        values, error = self._parse_provider_values(provider, bound.get("values") or [])
         if error:
             return f"[Error]: {error}"
 
@@ -1366,7 +1335,7 @@ class LLMCommandsMixin:
             message += " Restart required."
         return f"[Success]: {message}"
 
-    async def _cmd_provider_switch(self, args: list[str], rest: str) -> str:
+    async def _cmd_provider_switch(self, bound: BoundArgs) -> str:
         """Switch the active provider globally or for this thread.
 
         Scope is a single trailing token (the /model grammar), default
@@ -1379,17 +1348,16 @@ class LLMCommandsMixin:
         (their keys live in settings fields the status map can see);
         other providers get a generic env-var hint.
         """
-        if not args or len(args) > 2:
-            return "[Error]: Usage: /provider switch <provider> [global|thread]"
         from ..config.llm_providers import get_llm_provider_spec
 
-        spec = get_llm_provider_spec(args[0])
+        raw_provider = str(bound.get("provider") or "")
+        # Registry lookup, not a declared choice set: it resolves aliases
+        # (claude -> anthropic) over 130+ live provider specs.
+        spec = get_llm_provider_spec(raw_provider)
         if spec is None:
-            return self._unknown_provider_error(args[0])
+            return self._unknown_provider_error(raw_provider)
         provider = spec.id
-        scope = args[1].lower() if len(args) > 1 else "global"
-        if scope not in ("global", "thread"):
-            return "[Error]: scope must be 'global' or 'thread'."
+        scope = str(bound.get("scope") or "global")
 
         if scope == "thread":
             thread_error = self._require_thread()
@@ -1487,13 +1455,11 @@ class LLMCommandsMixin:
             )
         return ""
 
-    async def _cmd_provider_test(self, args: list[str], rest: str) -> str:
-        if len(args) > 1:
-            return "[Error]: Usage: /provider test [provider]"
+    async def _cmd_provider_test(self, bound: BoundArgs) -> str:
         from ..config.llm_providers import get_llm_provider_spec
 
         settings = await self.api.get_settings()
-        raw = str(args[0] if args else settings.get("llm_provider", "") or "")
+        raw = str(bound.get("provider") or settings.get("llm_provider", "") or "")
         spec = get_llm_provider_spec(raw)
         if spec is None:
             return self._unknown_provider_error(raw or "<active>")
@@ -1519,12 +1485,8 @@ class LLMCommandsMixin:
         "not_applicable": "not applicable (reasoning off, or the model can't reason)",
     }
 
-    async def _cmd_provider_reasoning_passback(
-        self, args: list[str], rest: str
-    ) -> str:
+    async def _cmd_provider_reasoning_passback(self, bound: BoundArgs) -> str:
         """Show whether prior-turn reasoning is replayed to the active model."""
-        if args:
-            return "[Error]: Usage: /provider reasoning-passback"
         from ..vendor.react_agent.reasoning_passback import (
             classify_reasoning_passback,
             resolve_status_with_observation,

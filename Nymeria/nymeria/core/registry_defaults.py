@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .command_executor_llm import THINK_VALUES
 from .command_params import CommandParam
 
 if TYPE_CHECKING:
@@ -295,12 +296,39 @@ def register_default_commands(service: "CommandService") -> None:
         "model",
         description="Show or change the model",
         category="LLM",
-        usage="/model [name] [global|thread]",
         mutates_state=True,
         danger_level="normal",
         examples=("/model claude-fable-5", "/model gpt-5.5 thread"),
+        # ``--force`` is advertised BEFORE the scope because the trailing
+        # scope token is popped from the end of the argument list: a flag
+        # typed after "global" would strand the scope word as an extra
+        # positional. The name is checked against the live model list in the
+        # handler (dynamic set, hence choices_ref rather than choices).
+        params=(
+            CommandParam(
+                "name",
+                choices_ref="models",
+                description="Model id to switch to",
+            ),
+            CommandParam(
+                "force",
+                kind="flag",
+                type="bool",
+                description="Accept a model the provider does not list",
+            ),
+            CommandParam(
+                "scope",
+                kind="scope",
+                description="Write the global default or this thread's override",
+            ),
+        ),
     )
-    service.register("models", description="List available provider models", category="LLM")
+    service.register(
+        "models",
+        description="List available provider models",
+        category="LLM",
+        params=(),
+    )
     service.register(
         "fast",
         description="Switch this thread to the fast model tier",
@@ -329,9 +357,84 @@ def register_default_commands(service: "CommandService") -> None:
         "fallback",
         description="Manage the model fallback chain, active holds, and consent prompts",
         category="LLM",
-        usage="/fallback [list|add|remove|clear|set|status|revert|approvals|approve|deny]",
         mutates_state=True,
         danger_level="normal",
+        params=(),
+    )
+    # Chain verbs (backlog #129). They used to be tokens parsed by the parent
+    # handler; registering them gives each verb a declared argument schema and
+    # lets longest-prefix dispatch route it. Bare "/fallback" keeps its old
+    # default of listing the chain, and the verbs stay agent-allowed (only the
+    # CONSENT children below are human-only).
+    service.register(
+        "fallback list",
+        description="List the primary model and the configured fallback chain",
+        category="LLM",
+        params=(),
+    )
+    service.register(
+        "fallback add",
+        description="Add a model to the fallback chain",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=(
+            CommandParam(
+                "model",
+                required=True,
+                label="model-id",
+                choices_ref="models",
+                description="Model id to add",
+            ),
+            CommandParam(
+                "position",
+                kind="option",
+                type="int",
+                description="1-based position in the chain (default: append)",
+            ),
+        ),
+    )
+    service.register(
+        "fallback remove",
+        description="Remove a model from the fallback chain",
+        category="LLM",
+        aliases=("fallback rm",),
+        mutates_state=True,
+        danger_level="normal",
+        params=(
+            CommandParam(
+                "model",
+                required=True,
+                label="model-id",
+                choices_ref="models",
+                description="Model id to remove",
+            ),
+        ),
+    )
+    service.register(
+        "fallback set",
+        description="Replace the fallback chain with the given models, in order",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=(
+            CommandParam(
+                "models",
+                required=True,
+                repeatable=True,
+                label="model-id",
+                choices_ref="models",
+                description="Model ids, in fallback order",
+            ),
+        ),
+    )
+    service.register(
+        "fallback clear",
+        description="Clear the fallback chain",
+        category="LLM",
+        mutates_state=True,
+        danger_level="normal",
+        params=(),
     )
     # Consent-family children (hook-family idiom). Registration makes the
     # registry's longest-prefix match dispatch "/fallback <sub>" straight to
@@ -344,25 +447,25 @@ def register_default_commands(service: "CommandService") -> None:
         "fallback status",
         description="Show the consent modes and this thread's active fallback hold",
         category="LLM",
-        usage="/fallback status",
         surfaces=_fallback_sub_surfaces,
+        params=(),
     )
     service.register(
         "fallback revert",
         description="End the active thread's fallback hold and return to the primary model",
         category="LLM",
-        usage="/fallback revert",
         surfaces=_fallback_sub_surfaces,
         mutates_state=True,
         agent_allowed=False,
+        params=(),
     )
     service.register(
         "fallback approvals",
         description="List turns parked on a model-swap consent prompt",
         category="LLM",
-        usage="/fallback approvals",
         surfaces=_fallback_sub_surfaces,
         agent_allowed=False,
+        params=(),
     )
     service.register(
         "fallback approve",
@@ -386,18 +489,46 @@ def register_default_commands(service: "CommandService") -> None:
         "think",
         description="Show or change thinking mode (thread-scoped when a thread is active)",
         category="LLM",
-        usage="/think [off|on|low|medium|high|xhigh|max] [global|thread]",
         aliases=("reasoning", "thinking"),
         mutates_state=True,
         danger_level="normal",
         examples=("/think high", "/think off global"),
+        # THINK_VALUES is the handler's own value space (on/off plus the
+        # effort ladder), so the dispatcher's choice set cannot drift from
+        # the levels the picker offers.
+        params=(
+            CommandParam(
+                "mode",
+                choices=THINK_VALUES,
+                description="Thinking state or reasoning effort level",
+            ),
+            CommandParam(
+                "scope",
+                kind="scope",
+                description="Write the global default or this thread's override",
+            ),
+        ),
     )
     service.register(
         "provider",
         description="Show the active LLM provider, or browse one provider's actions",
         category="LLM",
-        usage="/provider [<provider>|setup|list|set|switch|test|cliproxy|reasoning-passback]",
         examples=("/provider anthropic", "/provider switch anthropic thread"),
+        # One optional token, a provider id, is all the binder enforces:
+        # registered subcommands never reach it (longest-prefix dispatch
+        # routes them first). The label keeps advertising them, since the
+        # usage line is where they are discovered.
+        params=(
+            CommandParam(
+                "provider",
+                choices_ref="providers",
+                label=(
+                    "<provider>|setup|list|set|switch|test|cliproxy"
+                    "|reasoning-passback"
+                ),
+                description="Provider id to browse",
+            ),
+        ),
     )
     # No chat-bot surfaces and no agent: the typed fallback path is
     # "/provider setup key <secret>", which on a chat platform would persist
@@ -451,30 +582,54 @@ def register_default_commands(service: "CommandService") -> None:
         description="List LLM providers grouped by support tier",
         category="LLM",
         aliases=("provider_list",),
+        params=(),
     )
     service.register(
         "provider set",
         description="Apply provider credentials to backend settings",
         category="LLM",
-        usage="/provider set <provider> <key=value> [key=value...]",
         aliases=("provider_set",),
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
+        # no_echo on the credential fields: a mistyped invocation pastes a
+        # bare secret where a key=value pair was expected, and the rejected
+        # token must not come back in the error copy.
+        params=(
+            CommandParam(
+                "provider",
+                required=True,
+                choices_ref="providers",
+                description="Provider whose credentials to write",
+            ),
+            CommandParam(
+                "values",
+                required=True,
+                repeatable=True,
+                no_echo=True,
+                label="key=value",
+                description="Credential fields, e.g. api_key=<key>",
+            ),
+        ),
     )
     service.register(
         "provider test",
         description="Test provider connectivity without saving anything",
         category="LLM",
-        usage="/provider test [provider]",
         aliases=("provider_test",),
         requires_admin=True,
+        params=(
+            CommandParam(
+                "provider",
+                choices_ref="providers",
+                description="Provider to test (default: the active one)",
+            ),
+        ),
     )
     service.register(
         "provider switch",
         description="Switch the active LLM provider globally or for this thread",
         category="LLM",
-        usage="/provider switch <provider> [global|thread]",
         aliases=("provider_switch",),
         # No requires_admin: the gate is per-scope in the handler (global
         # needs admin, thread scope is any user's own override; the /model
@@ -486,13 +641,30 @@ def register_default_commands(service: "CommandService") -> None:
             "/provider switch openrouter",
             "/provider switch anthropic thread",
         ),
+        # The provider set is dynamic (the llm_providers registry, aliases
+        # included), so the spec lookup stays in the handler and the
+        # declaration only advertises the reference.
+        params=(
+            CommandParam(
+                "provider",
+                required=True,
+                choices_ref="providers",
+                description="Provider id to switch to",
+            ),
+            CommandParam(
+                "scope",
+                kind="scope",
+                default="global",
+                description="Switch globally (default) or for this thread",
+            ),
+        ),
     )
     service.register(
         "provider reasoning-passback",
         description="Show whether prior-turn reasoning is replayed to the model",
         category="LLM",
-        usage="/provider reasoning-passback",
         aliases=("provider_reasoning_passback", "provider passback"),
+        params=(),
     )
     service.register(
         "config show",
