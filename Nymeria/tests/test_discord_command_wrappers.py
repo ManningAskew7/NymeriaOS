@@ -553,70 +553,30 @@ def test_hyphenated_command_path_is_relayed_in_the_spelling_users_type():
     )
 
 
-def test_models_autocomplete_resolver_filters_and_caps_suggestions():
-    from nymeria.triggers.discord_cogs.autocomplete import MAX_CHOICES, resolve_models
-
-    api = _FakeAPI()
-    api.models = (
-        [{"id": "gpt-5.5"}, {"id": "claude-fable-5"}, {"name": "gpt-mini"}]
-        + [{"id": f"gpt-filler-{index}"} for index in range(40)]
-    )
-    bot = _bot(api)
-    interaction = _FakeInteraction()
-
-    choices = asyncio.run(resolve_models(bot, interaction, "gpt"))
-
-    assert len(choices) == MAX_CHOICES
-    values = [choice.value for choice in choices]
-    assert values[:3] == ["gpt-5.5", "gpt-mini", "gpt-filler-0"]
-    assert "claude-fable-5" not in values
-
-
-def test_models_autocomplete_resolver_degrades_to_no_suggestions():
-    from nymeria.triggers.discord_cogs.autocomplete import resolve_models
-
-    class _BrokenAPI(_FakeAPI):
-        async def list_available_models(self, provider=None, user_id=None):
-            raise RuntimeError("provider unreachable")
-
-    bot = _bot(_BrokenAPI())
-
-    assert asyncio.run(resolve_models(bot, _FakeInteraction(), "gpt")) == []
-
-
-def test_tools_autocomplete_resolver_offers_categories_before_tool_names():
-    from nymeria.triggers.discord_cogs.autocomplete import resolve_tools
-
-    api = _FakeAPI()
-    api.tool_categories = {"email": ["a", "b"], "browser": ["c"]}
-    api.tools = [
-        {"name": "email_send", "description": "Send an email\nmore"},
-        {"name": "browser_open", "description": ""},
-    ]
-    bot = _bot(api)
-    interaction = _FakeInteraction()
-
-    choices = asyncio.run(resolve_tools(bot, interaction, "email"))
-
-    assert [choice.value for choice in choices] == [
-        "email",
-        "email_send",
-        "browser_open",
-    ]
-    assert choices[0].name == "email (category: 2 tools)"
-    assert choices[1].name == "email_send: Send an email"
-    assert api.tool_search_calls[0]["thread_id"] == "discord_123_456"
+# The bespoke models/tools autocomplete resolvers are gone (#110 slice 6):
+# every ref is answered by the backend option-resolver registry via
+# GET /commands/options/{ref}. The generic Discord-side resolver is pinned in
+# tests/test_discord_generated_cogs.py (scoping, filter, unlinked, fault,
+# cap); option CONTENT (categories first, meta badges) is pinned at the
+# backend in tests/test_command_option_resolvers.py.
 
 
 def test_tools_cog_autocomplete_delegates_to_the_shared_resolver():
     # The hand cog must not keep a second copy of the resolver: /tools enable
-    # and the generated commands have to suggest the same values.
+    # and the generated commands have to suggest the same values, now served
+    # by the backend option registry through the options endpoint.
     from nymeria.triggers.discord_cogs.tools import ToolsCog
 
-    api = _FakeAPI()
-    api.tool_categories = {"email": ["a"]}
-    api.tools = [{"name": "email_send", "description": "Send an email"}]
-    bot = _bot(api)
+    class _OptionsAPI(_FakeAPI):
+        async def list_command_options(self, ref, thread_id=None, user_id=None):
+            assert ref == "tools"
+            assert user_id is not None  # acted as the linked user
+            return [
+                {"id": "email", "label": "email", "meta": "category, 1 tool"},
+                {"id": "email_send", "label": "email_send", "meta": "on"},
+            ]
+
+    bot = _bot(_OptionsAPI())
     cog = ToolsCog(bot)
     interaction = _FakeInteraction()
 

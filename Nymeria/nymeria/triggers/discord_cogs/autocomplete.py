@@ -5,10 +5,16 @@ A `CommandParam` can name a DYNAMIC value set with `choices_ref` ("models",
 enforces those, so they cannot become static Discord choices; on Discord they
 become autocomplete instead.
 
-`AUTOCOMPLETE_RESOLVERS` maps a ref name to the resolver that answers it. The
-generator wires a callback for every declared ref that appears here; a ref with
-no resolver simply gets no autocomplete, so adding one here is all it takes to
-light up every argument that declares that ref.
+Every ref is answered by the backend's shared option-resolver registry
+(`core/command_option_resolvers.py`) through `GET /commands/options/{ref}`,
+acting as the INVOKING user's linked account, so a Discord suggestion list
+shows exactly what that user's picker or `/... list` command would (and an
+unlinked Discord user gets no suggestions, not another account's data).
+
+`AUTOCOMPLETE_RESOLVERS` derives its keys from that registry: adding a
+backend resolver is all it takes to light up every argument that declares
+the ref, after a cog regen (`scripts/generate_discord_cogs.py` reads the
+same table).
 
 Resolvers are best effort by design: an autocomplete request has a hard 3
 second Discord deadline and is fired on every keystroke, so a failing backend
@@ -22,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 import discord
 from discord import app_commands
 
+from ...core.command_option_resolvers import OPTION_RESOLVERS
 from ..discord_bot import make_thread_id
 
 if TYPE_CHECKING:
@@ -49,86 +56,61 @@ def mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
 
 
 def tool_name(tool: Mapping[str, Any]) -> str:
+    """A tool-search row's display name (shared with the /tools search cog)."""
     return str(tool.get("name") or tool.get("id") or tool.get("tool_id") or "")
 
 
-async def resolve_tools(
-    bot: NymeriaDiscordBot,
-    interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
-    """Tool and category names, categories first.
+def endpoint_resolver(ref: str) -> AutocompleteResolver:
+    """Build the resolver for one ref over the shared options endpoint.
 
-    Both are offered because the commands that declare `choices_ref="tools"`
-    accept either spelling ("/tools enable email" and "/tools enable
-    bash_execute" both work).
+    The typed text filters against the option's value, label, AND meta
+    (typing "disabled" narrows a hook list to disabled hooks); the choice
+    name shows the label with the meta badges, while the choice VALUE is
+    always the exact token the command accepts.
     """
-    if interaction.channel_id is None:
-        return []
-    try:
-        categories_payload = await bot.api.get_tool_categories()
-        categories = categories_payload.get("categories", {})
-        thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
-        data = await bot.api.search_tools(current, thread_id=thread_id, top_k=20)
-        available = mapping_sequence(data.get("results", []))
 
-        choices: list[app_commands.Choice[str]] = []
-        current_lower = current.lower()
-
-        for category_name, tools in sorted(categories.items()):
-            if current_lower in category_name:
-                label = f"{category_name} (category: {len(tools)} tools)"
-                choices.append(
-                    app_commands.Choice(name=label[:MAX_LABEL], value=category_name)
+    async def resolve(
+        bot: NymeriaDiscordBot,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            user_id = await bot.resolve_user_id(interaction.user.id)
+            if user_id is None:
+                return []
+            thread_id = None
+            if interaction.channel_id is not None:
+                thread_id = make_thread_id(
+                    interaction.guild_id, interaction.channel_id
                 )
+            options = await bot.api.list_command_options(
+                ref, thread_id=thread_id, user_id=user_id
+            )
+        except Exception:  # noqa: BLE001 - autocomplete degrades, never errors.
+            return []
 
-        seen = {choice.value for choice in choices}
-        for entry in available:
-            name = tool_name(entry)
-            if not name or name in seen:
+        needle = current.strip().lower()
+        choices: list[app_commands.Choice[str]] = []
+        for option in mapping_sequence(options):
+            value = str(option.get("id") or "")
+            if not value or len(value) > MAX_LABEL:
                 continue
-            description = (entry.get("description") or "").split("\n")[0][:60]
-            label = f"{name}: {description}" if description else name
-            choices.append(app_commands.Choice(name=label[:MAX_LABEL], value=name))
-            seen.add(name)
+            label = str(option.get("label") or value)
+            meta = str(option.get("meta") or "")
+            if needle and needle not in f"{value} {label} {meta}".lower():
+                continue
+            name = f"{label} · {meta}" if meta else label
+            choices.append(
+                app_commands.Choice(name=name[:MAX_LABEL], value=value)
+            )
+            if len(choices) >= MAX_CHOICES:
+                break
+        return choices
 
-        return choices[:MAX_CHOICES]
-    except Exception:  # noqa: BLE001 - autocomplete degrades, never errors.
-        return []
-
-
-async def resolve_models(
-    bot: NymeriaDiscordBot,
-    interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
-    """Model ids the active provider currently lists, filtered by the typed text.
-
-    Same source as the backend's own `/model` guard
-    (`GET /models/available`), so a suggestion here is a model that command
-    will accept without `--force`.
-    """
-    del interaction
-    try:
-        models = await bot.api.list_available_models()
-    except Exception:  # noqa: BLE001 - autocomplete degrades, never errors.
-        return []
-
-    current_lower = current.lower()
-    choices: list[app_commands.Choice[str]] = []
-    for entry in mapping_sequence(models):
-        model_id = str(entry.get("id") or entry.get("name") or "")
-        if not model_id or len(model_id) > MAX_LABEL:
-            continue
-        if current_lower and current_lower not in model_id.lower():
-            continue
-        choices.append(app_commands.Choice(name=model_id[:MAX_LABEL], value=model_id))
-        if len(choices) >= MAX_CHOICES:
-            break
-    return choices
+    resolve.__name__ = f"resolve_{ref}"
+    return resolve
 
 
 AUTOCOMPLETE_RESOLVERS: dict[str, AutocompleteResolver] = {
-    "models": resolve_models,
-    "tools": resolve_tools,
+    ref: endpoint_resolver(ref) for ref in OPTION_RESOLVERS
 }

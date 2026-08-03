@@ -145,12 +145,16 @@ EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
     "usage",
 )
 
-# `choices_ref` names that have a live resolver in
-# `nymeria/triggers/discord_cogs/autocomplete.py`. A ref that is not listed
-# here gets no autocomplete callback at all, rather than one that always
-# answers with an empty list and costs a round trip per keystroke.
+# `choices_ref` names with a live resolver in the backend's shared option
+# registry (`core/command_option_resolvers.py`). Discord's
+# AUTOCOMPLETE_RESOLVERS derives from the SAME table, so this is one source
+# of truth: a new backend resolver lights up autocomplete here on the next
+# regen, and a ref without one gets no callback at all rather than one that
+# always answers empty and costs a round trip per keystroke.
 # `tests/test_discord_generated_cogs.py` pins this against the real registry.
-RESOLVED_CHOICES_REFS: tuple[str, ...] = ("models", "tools")
+from nymeria.core.command_option_resolvers import OPTION_RESOLVERS  # noqa: E402
+
+RESOLVED_CHOICES_REFS: tuple[str, ...] = tuple(sorted(OPTION_RESOLVERS))
 
 HEADER = '''\
 # GENERATED FILE. DO NOT EDIT BY HAND.

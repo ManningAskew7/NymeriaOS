@@ -571,6 +571,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=True,
         )
 
+    @cmd_mcp_discover.autocomplete("server_id")
+    async def _ac_mcp_discover_server_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
+            self.bot, interaction, current
+        )
+
     @mcp_group.command(
         name="list",
         description="List configured MCP servers",
@@ -609,6 +619,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=True,
         )
 
+    @cmd_mcp_logs.autocomplete("server_id")
+    async def _ac_mcp_logs_server_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
+            self.bot, interaction, current
+        )
+
     @mcp_group.command(
         name="remove",
         description="Remove an MCP server and its tools",
@@ -631,6 +651,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=True,
         )
 
+    @cmd_mcp_remove.autocomplete("server_id")
+    async def _ac_mcp_remove_server_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
+            self.bot, interaction, current
+        )
+
     @mcp_group.command(
         name="retry",
         description="Retry setup for a draft or failed MCP server",
@@ -651,6 +681,16 @@ class GeneratedCommandsCog(commands.Cog):
             "mcp retry",
             args=" ".join(parts),
             require_admin=True,
+        )
+
+    @cmd_mcp_retry.autocomplete("server_id")
+    async def _ac_mcp_retry_server_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
+            self.bot, interaction, current
         )
 
     @mcp_group.command(
@@ -676,6 +716,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=True,
         )
 
+    @cmd_mcp_status.autocomplete("server_id")
+    async def _ac_mcp_status_server_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
+            self.bot, interaction, current
+        )
+
     @mcp_group.command(
         name="test",
         description="Test connectivity to an MCP server",
@@ -696,6 +746,16 @@ class GeneratedCommandsCog(commands.Cog):
             "mcp test",
             args=" ".join(parts),
             require_admin=True,
+        )
+
+    @cmd_mcp_test.autocomplete("server_id")
+    async def _ac_mcp_test_server_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["mcp_servers"](
+            self.bot, interaction, current
         )
 
     @memory_group.command(
@@ -933,6 +993,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @cmd_provider_switch.autocomplete("provider")
+    async def _ac_provider_switch_provider(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["providers"](
+            self.bot, interaction, current
+        )
+
     @provider_group.command(
         name="test",
         description="Test provider connectivity without saving anything",
@@ -954,6 +1024,16 @@ class GeneratedCommandsCog(commands.Cog):
             "provider test",
             args=" ".join(parts),
             require_admin=True,
+        )
+
+    @cmd_provider_test.autocomplete("provider")
+    async def _ac_provider_test_provider(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["providers"](
+            self.bot, interaction, current
         )
 
     @app_commands.command(
@@ -1115,6 +1195,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @cmd_skills_disable.autocomplete("name")
+    async def _ac_skills_disable_name(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["skills"](
+            self.bot, interaction, current
+        )
+
     @skills_group.command(
         name="enable",
         description="Enable a skill on this thread (default) or globally",
@@ -1144,6 +1234,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @cmd_skills_enable.autocomplete("name")
+    async def _ac_skills_enable_name(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["skills"](
+            self.bot, interaction, current
+        )
+
     @skills_group.command(
         name="inspect",
         description="Show full skill details (metadata, scope, tools, references)",
@@ -1164,6 +1264,16 @@ class GeneratedCommandsCog(commands.Cog):
             "skills inspect",
             args=" ".join(parts),
             require_admin=False,
+        )
+
+    @cmd_skills_inspect.autocomplete("name")
+    async def _ac_skills_inspect_name(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["skills"](
+            self.bot, interaction, current
         )
 
     @skills_group.command(
@@ -1273,6 +1383,16 @@ class GeneratedCommandsCog(commands.Cog):
             "skills show",
             args=" ".join(parts),
             require_admin=False,
+        )
+
+    @cmd_skills_show.autocomplete("name")
+    async def _ac_skills_show_name(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["skills"](
+            self.bot, interaction, current
         )
 
     @smart_group.command(
@@ -1440,6 +1560,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @cmd_triggers_delete.autocomplete("trigger_id")
+    async def _ac_triggers_delete_trigger_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["triggers"](
+            self.bot, interaction, current
+        )
+
     @triggers_group.command(
         name="disable",
         description="Disable an event trigger",
@@ -1462,6 +1592,16 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @cmd_triggers_disable.autocomplete("trigger_id")
+    async def _ac_triggers_disable_trigger_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["triggers"](
+            self.bot, interaction, current
+        )
+
     @triggers_group.command(
         name="enable",
         description="Enable an event trigger",
@@ -1482,6 +1622,16 @@ class GeneratedCommandsCog(commands.Cog):
             "triggers enable",
             args=" ".join(parts),
             require_admin=False,
+        )
+
+    @cmd_triggers_enable.autocomplete("trigger_id")
+    async def _ac_triggers_enable_trigger_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["triggers"](
+            self.bot, interaction, current
         )
 
     @triggers_group.command(
@@ -1509,6 +1659,16 @@ class GeneratedCommandsCog(commands.Cog):
             "triggers history",
             args=" ".join(parts),
             require_admin=False,
+        )
+
+    @cmd_triggers_history.autocomplete("trigger_id")
+    async def _ac_triggers_history_trigger_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["triggers"](
+            self.bot, interaction, current
         )
 
     @triggers_group.command(
