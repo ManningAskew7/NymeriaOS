@@ -208,6 +208,50 @@ def test_confirm_placeholder_free_template_dispatches_as_is() -> None:
     ]
 
 
+def test_generated_picker_payload_round_trips_through_the_client() -> None:
+    """#110 end to end: a form GENERATED from a declared schema (not
+    hand-authored) survives the client adapter and confirms into the exact
+    command string the dispatcher will re-bind."""
+    from nymeria.core.command_form_generation import generate_param_form
+    from nymeria.core.command_params import CommandParam
+    from nymeria.core.command_service import CommandService, _CommandExecutor
+
+    service = CommandService()
+    service.register(
+        "zzpick",
+        description="synthetic picker command",
+        category="Test",
+        params=(CommandParam("thing", required=True, choices=("alpha", "beta")),),
+    )
+    executor = _CommandExecutor(
+        api=object(),
+        thread_id="cli-thread",
+        user_id="alice",
+        actor="user",
+        is_admin=True,
+        service=service,
+        surface="cli",
+    )
+    payload = run(generate_param_form(service._commands["zzpick"], executor))
+    assert payload is not None
+
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    spec = form_spec_from_payload(payload, context=context)
+    assert spec is not None
+
+    run(
+        spec.on_confirm(
+            FormResult(
+                spec_title=spec.title,
+                tab_label=spec.tabs[0].label,
+                radio_value="beta",
+            )
+        )
+    )
+    assert client.calls == ["/zzpick beta"]
+
+
 def test_fieldless_action_tab_renders_and_dispatches() -> None:
     """#139: a FIELDLESS tab carrying its own submit template survives
     adaptation as a described action; one without a template stays
@@ -245,6 +289,36 @@ def test_fieldless_action_tab_renders_and_dispatches() -> None:
         )
     )
     assert client.calls == ["/provider test anthropic"]
+
+
+def test_fieldless_tab_with_a_placeholder_template_is_dropped() -> None:
+    """A fieldless tab dispatches its template AS-IS; one still carrying a
+    "{placeholder}" has no field to fill it and would submit the literal
+    braces to the backend, so the adapter treats it as malformed."""
+
+    payload = _form_payload(
+        title="Provider: Anthropic",
+        tabs=[
+            {
+                "label": "Test",
+                "submit": {"command": "provider test anthropic"},
+                "fields": [],
+            },
+            {
+                "label": "Use",
+                "submit": {"command": "provider switch anthropic {scope}"},
+                "description": "placeholder with nothing to fill it",
+                "fields": [],
+            },
+        ],
+        submit={"command": "provider {provider}"},
+    )
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    spec = form_spec_from_payload(payload, context=context)
+
+    assert spec is not None
+    assert [tab.label for tab in spec.tabs] == ["Test"]
 
 
 def test_confirm_with_empty_selection_is_a_quiet_noop() -> None:

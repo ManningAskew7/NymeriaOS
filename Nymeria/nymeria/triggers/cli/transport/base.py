@@ -142,8 +142,12 @@ class AgentClient(Protocol):
         actor: str | None = None,
         surface: str | None = None,
         user_id: str | None = None,
+        supports_forms: bool = False,
     ) -> Mapping[str, Any]:
-        """Execute a backend global slash command."""
+        """Execute a backend global slash command.
+
+        ``supports_forms`` declares the CALLER renders declarative form
+        payloads; only the Rich renderer passes True."""
 
     async def list_commands(
         self,

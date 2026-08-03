@@ -1003,14 +1003,24 @@ class NymeriaAPIClient:
         *,
         thread_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        q: Optional[str] = None,
+        limit: int = 0,
     ) -> List[dict]:
         """Resolve a ``choices_ref`` option set live (``GET
-        /commands/options/{ref}``), scoped to the acting user. Raises on
-        HTTP errors like every other method here; autocomplete callers
-        degrade to no suggestions themselves."""
+        /commands/options/{ref}``), scoped to the acting user. ``q``/``limit``
+        narrow server-side (per-keystroke callers must never pull whole
+        catalogs). Raises on HTTP errors like every other method here;
+        autocomplete callers degrade to no suggestions themselves."""
+        params: Dict[str, Any] = {}
+        if thread_id:
+            params["thread_id"] = thread_id
+        if q:
+            params["q"] = q
+        if limit > 0:
+            params["limit"] = limit
         data = await self._get(
             f"/commands/options/{ref}",
-            params={"thread_id": thread_id} if thread_id else None,
+            params=params or None,
             act_as=user_id,
         )
         return data if isinstance(data, list) else []

@@ -13,10 +13,18 @@ dicts (id, label, meta, description, current). Consumers:
   option lists HERE so a picker and an autocomplete can never drift.
 
 Resolver contract: takes the constructed ``_CommandExecutor`` for the
-calling identity (duck-typed; ``command_service`` imports this module, never
-the reverse), mirrors the VISIBILITY of the corresponding list command
-(same doors, same identity), degrades to ``[]`` on faults, and never
-mutates. Optional keyword arguments let a handler that already fetched the
+calling identity (typed under TYPE_CHECKING only: at runtime
+``command_service`` imports this module, and the reverse imports stay
+function-local to dodge the cycle, the repo's usual idiom), mirrors the
+VISIBILITY of the corresponding list command (same doors, same identity),
+degrades to ``[]`` on faults, and writes nothing ITSELF. The executor
+doors are not write-free, though: ``get_thread_config`` rides
+``_require_thread_access``, whose first touch of an unowned thread id
+records the caller as owner (the platform's TOFU thread-claim model, the
+same behavior every thread-scoped command and ``GET /threads/{id}/config``
+already carry). A review recorded rather than removed that ride-along
+(2026-08-03): it is the established ownership mechanism, not a new door.
+Optional keyword arguments let a handler that already fetched the
 underlying data pass it in instead of paying a second read; registry
 callers invoke ``resolver(executor)`` bare.
 """
@@ -25,9 +33,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .command_forms import form_option
+
+if TYPE_CHECKING:
+    from .command_service import _CommandExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +54,32 @@ def _first_line(value: Any, *, limit: int = _DESCRIPTION_LIMIT) -> str:
     return str(value or "").split("\n")[0][:limit].strip()
 
 
+def filter_command_options(
+    options: list[dict[str, Any]], *, q: str = "", limit: int = 0
+) -> list[dict[str, Any]]:
+    """Server-side narrowing for the options endpoint: case-folded substring
+    over id, label, AND meta (the predicate remote autocompletes apply
+    client-side), then an optional cap. Keeps whole-catalog payloads off
+    per-keystroke round trips (Discord autocomplete has a 3s deadline and
+    needs at most 25 rows)."""
+    needle = (q or "").strip().casefold()
+    if needle:
+        options = [
+            option
+            for option in options
+            if needle
+            in (
+                f"{option.get('id', '')} {option.get('label', '')} "
+                f"{option.get('meta', '')}"
+            ).casefold()
+        ]
+    if limit > 0:
+        options = options[:limit]
+    return options
+
+
 async def resolve_models(
-    executor: Any, *, current: str | None = None
+    executor: "_CommandExecutor", *, current: str | None = None
 ) -> list[dict[str, Any]]:
     """Model ids the active provider lists (best effort, like the picker:
     a provider with no listing endpoint yields no options, never an error).
@@ -87,7 +122,7 @@ async def resolve_models(
 
 
 async def resolve_providers(
-    executor: Any,
+    executor: "_CommandExecutor",
     *,
     settings: Mapping[str, Any] | None = None,
     status: Mapping[str, Mapping[str, str]] | None = None,
@@ -144,7 +179,27 @@ async def resolve_providers(
     return options
 
 
-async def resolve_tools(executor: Any) -> list[dict[str, Any]]:
+async def resolve_fallback_models(
+    executor: "_CommandExecutor",
+) -> list[dict[str, Any]]:
+    """The CONFIGURED fallback chain, in order: the value set of
+    ``/fallback remove``. Deliberately not the model catalog (which would
+    offer mostly values the handler rejects); an empty chain yields no
+    options, so the bare command keeps its usage error."""
+    try:
+        settings = await executor.api.get_settings()
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: settings read failed", exc_info=True)
+        return []
+    raw = str(settings.get("llm_fallback_models", "") or "")
+    models = [entry.strip() for entry in raw.split(",") if entry.strip()]
+    return [
+        form_option(model, meta=f"chain position {index}")
+        for index, model in enumerate(models, start=1)
+    ]
+
+
+async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     """Tool names AND category names, categories first.
 
     Both spellings are offered because that is what the ``/tools`` target
@@ -170,17 +225,23 @@ async def resolve_tools(executor: Any) -> list[dict[str, Any]]:
         logger.debug("options: tool listing failed", exc_info=True)
         return []
 
-    # The thread's own overlay, exactly as "/tools category" computes it.
+    # The thread's own overlay, exactly as "/tools enabled" computes it,
+    # INCLUDING live Skill Kit / TTL'd tools (the shared helper is the one
+    # liveness computation; an inline re-derivation here once dropped them).
+    from .command_service import live_temporary_tools
+
     thread_extras: set[str] = set()
     thread_disabled: set[str] = set()
+    live_temp: set[str] = set()
     if executor.thread_id:
         try:
             tc = await executor.api.get_thread_config(executor.thread_id) or {}
             thread_extras = {str(name) for name in (tc.get("enabled_tools") or [])}
             thread_disabled = {str(name) for name in (tc.get("disabled_tools") or [])}
+            live_temp = live_temporary_tools(tc)
         except Exception:  # noqa: BLE001 - state marking is cosmetic.
             logger.debug("options: thread tool state lookup failed", exc_info=True)
-    active = (default_names | thread_extras) - thread_disabled
+    active = (default_names | thread_extras | live_temp) - thread_disabled
 
     options: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -217,7 +278,7 @@ async def resolve_tools(executor: Any) -> list[dict[str, Any]]:
     return options
 
 
-async def resolve_skills(executor: Any) -> list[dict[str, Any]]:
+async def resolve_skills(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     """User-activatable skills and kits, the set ``/skills list`` shows.
 
     Reads the same door (``_visible_slash_skills``, which drops internal
@@ -267,7 +328,7 @@ async def resolve_skills(executor: Any) -> list[dict[str, Any]]:
     return options
 
 
-async def resolve_threads(executor: Any) -> list[dict[str, Any]]:
+async def resolve_threads(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     """The caller's own threads, ordered the way ``/thread list`` groups
     them (pinned first, then most recently updated).
 
@@ -313,7 +374,7 @@ async def resolve_threads(executor: Any) -> list[dict[str, Any]]:
     return options
 
 
-async def resolve_triggers(executor: Any) -> list[dict[str, Any]]:
+async def resolve_triggers(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     """The caller's event triggers, id-ordered like ``/triggers list``.
 
     Same manager and same user scoping as the list command, so an option is
@@ -347,7 +408,7 @@ async def resolve_triggers(executor: Any) -> list[dict[str, Any]]:
     return options
 
 
-async def resolve_hooks(executor: Any) -> list[dict[str, Any]]:
+async def resolve_hooks(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     """The caller's lifecycle hooks, id-ordered like ``/hook list``.
 
     Reads the shared HookManager singleton the commands use, so the virtual
@@ -381,14 +442,18 @@ async def resolve_hooks(executor: Any) -> list[dict[str, Any]]:
     return options
 
 
-async def resolve_mcp_servers(executor: Any) -> list[dict[str, Any]]:
+async def resolve_mcp_servers(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     """Configured MCP servers, id-ordered like ``/mcp list``.
 
     The registry is process-wide rather than per-user, and every ``/mcp``
-    command is admin-only, so the option set is gated on the same registry
-    flags the dispatcher enforces for ``/mcp list``. Without that, the
-    options endpoint would hand a non-admin the server inventory that the
-    command itself refuses.
+    command is admin-only, so the option set is gated on
+    ``_command_offerable``'s admin and agent axes. Its third axis,
+    ``blocked_surfaces``, is inert here: the options endpoint builds its
+    context without a surface (latent today, no resolver-backed command
+    declares one; if one ever does, the endpoint must learn a surface
+    parameter before the gate is real). Without the gate, the options
+    endpoint would hand a non-admin the server inventory that the command
+    itself refuses.
     """
     if not executor._command_offerable("mcp list"):
         return []
@@ -427,6 +492,7 @@ async def resolve_mcp_servers(executor: Any) -> list[dict[str, Any]]:
 OPTION_RESOLVERS: dict[str, OptionResolver] = {
     "models": resolve_models,
     "providers": resolve_providers,
+    "fallback_models": resolve_fallback_models,
     "tools": resolve_tools,
     "skills": resolve_skills,
     "threads": resolve_threads,

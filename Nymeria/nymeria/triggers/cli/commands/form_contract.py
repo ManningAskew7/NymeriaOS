@@ -255,7 +255,11 @@ def _tab_from_payload(raw_tab: Any) -> FormTab | None:
     # tab carrying its own submit template (#139): Enter dispatches the
     # template as-is and ``description`` explains what it will do.
     if not any(field.kind in _LIST_KINDS or field.kind == "text" for field in fields):
-        if fields or not _tab_submit_template(raw_tab):
+        template = _tab_submit_template(raw_tab)
+        # A fieldless tab dispatches its template AS-IS, so a template
+        # still carrying a "{placeholder}" has nothing to fill it and
+        # would submit the literal braces; treat it as malformed.
+        if fields or not template or "{" in template:
             return None
         return FormTab(
             label=label,

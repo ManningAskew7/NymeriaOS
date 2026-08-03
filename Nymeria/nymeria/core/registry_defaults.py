@@ -651,7 +651,10 @@ def register_default_commands(service: "CommandService") -> None:
                 "model",
                 required=True,
                 label="model-id",
-                choices_ref="models",
+                # The valid values are the CONFIGURED CHAIN, not the model
+                # catalog: a catalog-wide picker/autocomplete here offered
+                # mostly values the handler rejects (review-caught).
+                choices_ref="fallback_models",
                 description="Model id to remove",
             ),
         ),

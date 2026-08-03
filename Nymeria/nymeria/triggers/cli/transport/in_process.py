@@ -496,6 +496,7 @@ class InProcessAgentClient:
         actor: str | None = None,
         surface: str | None = None,
         user_id: str | None = None,
+        supports_forms: bool = False,
     ) -> Mapping[str, Any]:
         """Execute a backend slash command against the local agent."""
 
@@ -516,6 +517,7 @@ class InProcessAgentClient:
             actor=cast("CommandActor | None", actor),
             surface=cast("CommandSurface | None", surface),
             is_admin=True,
+            supports_forms=supports_forms,
         )
         api = CommandBackendClient.from_context(ctx, agent=self.agent)
         result = await get_command_service().execute(ctx, command, api=api)

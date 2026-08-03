@@ -266,6 +266,42 @@ def fmt_tokens(n: Optional[int]) -> str:
     return str(n)
 
 
+def _client_for_context(ctx: "CommandContext") -> Any:
+    """The client execute() and resolve_options construct when the caller
+    supplies none: in-process backend doors first, service-token HTTP
+    fallback. Raises RuntimeError when neither is available."""
+    try:
+        return CommandBackendClient.from_context(ctx)
+    except RuntimeError:
+        return CommandHttpClient.from_service_token()
+
+
+def live_temporary_tools(thread_config: Optional[dict[str, Any]]) -> set[str]:
+    """The still-in-date Skill Kit / TTL'd tool names of a thread config.
+
+    Skill Kit tools live in ``temporary_tools``, NOT ``enabled_tools``. The
+    graph folds the live (non-expired) ones into the bound tool list exactly
+    like ``enabled_tools``, so every effective-tool-set view must count them
+    too or an active Skill Kit's tools look absent on the thread. This is
+    THE one liveness computation: ``/tools enabled`` and the ``tools``
+    option resolver both call it; do not re-derive it inline.
+    """
+    live: set[str] = set()
+    temp_raw = thread_config.get("temporary_tools") if thread_config else None
+    if isinstance(temp_raw, dict):
+        now = utc_now()
+        for name, entry in temp_raw.items():
+            expires = entry.get("expires_at") if isinstance(entry, dict) else None
+            if not expires:
+                continue
+            try:
+                if ensure_aware_utc(datetime.fromisoformat(expires)) > now:
+                    live.add(str(name))
+            except (TypeError, ValueError):
+                continue
+    return live
+
+
 def http_error_detail(exc: httpx.HTTPStatusError, *, text_limit: int = 200) -> str:
     """Extract a concise user-facing detail from an HTTP status error."""
     response = exc.response
@@ -2711,12 +2747,9 @@ class CommandService:
         client = api
         if client is None:
             try:
-                client = CommandBackendClient.from_context(ctx)
-            except RuntimeError:
-                try:
-                    client = CommandHttpClient.from_service_token()
-                except RuntimeError as exc:
-                    return CommandResult(False, f"**Error:** {exc}", command_label, level="error")
+                client = _client_for_context(ctx)
+            except RuntimeError as exc:
+                return CommandResult(False, f"**Error:** {exc}", command_label, level="error")
 
         executor = _CommandExecutor(
             api=client,
@@ -2864,10 +2897,7 @@ class CommandService:
         owns_api = api is None
         client = api
         if client is None:
-            try:
-                client = CommandBackendClient.from_context(ctx)
-            except RuntimeError:
-                client = CommandHttpClient.from_service_token()
+            client = _client_for_context(ctx)
         executor = _CommandExecutor(
             api=client,
             thread_id=ctx.thread_id,
@@ -2879,6 +2909,11 @@ class CommandService:
         )
         try:
             return await resolver(executor)
+        except Exception:  # noqa: BLE001 - options are an enhancement, not data.
+            # Resolvers degrade to [] internally, but this endpoint must
+            # never 500 a client mid-autocomplete if one slips a raise.
+            logger.warning("options resolver %r failed", ref, exc_info=True)
+            return []
         finally:
             if owns_api and hasattr(client, "close"):
                 await client.close()
@@ -5361,24 +5396,7 @@ class _CommandExecutor(
         tc = _optional_dict_result(tc)
         thread_extras: set[str] = _string_set_result(tc.get("enabled_tools")) if tc else set()
         thread_disabled: set[str] = _string_set_result(tc.get("disabled_tools")) if tc else set()
-        # Skill Kit / TTL'd tools live in temporary_tools, NOT enabled_tools.
-        # The graph folds the live (non-expired) ones into the bound tool list
-        # exactly like enabled_tools, so they must be counted here too —
-        # otherwise an active Skill Kit's tools look absent on this thread.
-        # Mirror the graph's liveness check: keep only entries still in date.
-        live_temp: set[str] = set()
-        temp_raw = tc.get("temporary_tools") if tc else None
-        if isinstance(temp_raw, dict):
-            now = utc_now()
-            for name, entry in temp_raw.items():
-                expires = entry.get("expires_at") if isinstance(entry, dict) else None
-                if not expires:
-                    continue
-                try:
-                    if ensure_aware_utc(datetime.fromisoformat(expires)) > now:
-                        live_temp.add(str(name))
-                except (TypeError, ValueError):
-                    continue
+        live_temp = live_temporary_tools(tc)
         all_enabled = (default_names | thread_extras | live_temp) - thread_disabled
 
         lines = [f"Enabled Tools on this thread: {len(all_enabled)} active"]

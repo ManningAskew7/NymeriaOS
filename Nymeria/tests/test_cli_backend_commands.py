@@ -28,6 +28,7 @@ class _FakeCommandClient:
         actor: Optional[str] = None,
         surface: Optional[str] = None,
         user_id: Optional[str] = None,
+        supports_forms: bool = False,
     ) -> dict[str, Any]:
         self.calls.append(
             {

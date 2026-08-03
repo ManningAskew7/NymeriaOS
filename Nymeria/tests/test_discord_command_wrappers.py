@@ -568,7 +568,9 @@ def test_tools_cog_autocomplete_delegates_to_the_shared_resolver():
     from nymeria.triggers.discord_cogs.tools import ToolsCog
 
     class _OptionsAPI(_FakeAPI):
-        async def list_command_options(self, ref, thread_id=None, user_id=None):
+        async def list_command_options(
+            self, ref, thread_id=None, user_id=None, q=None, limit=0
+        ):
             assert ref == "tools"
             assert user_id is not None  # acted as the linked user
             return [

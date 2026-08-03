@@ -392,11 +392,14 @@ def test_endpoint_resolver_maps_options_to_scoped_choices() -> None:
 
     assert [choice.value for choice in choices] == ["hook-a", "hook-b"]
     assert choices[0].name == "Morning brief · enabled, post_turn"
-    # The call acted as the linked user, in the channel's thread.
+    # The call acted as the linked user, in the channel's thread, with the
+    # server-side cap so a keystroke never pulls a whole catalog.
     (ref, kwargs), = api.calls
     assert ref == "hooks"
     assert kwargs["user_id"] == "alice"
     assert kwargs["thread_id"] == make_thread_id(7, 42)
+    assert kwargs["q"] is None  # empty typed text sends no filter
+    assert kwargs["limit"] == 25
 
 
 def test_endpoint_resolver_filters_on_value_label_and_meta() -> None:

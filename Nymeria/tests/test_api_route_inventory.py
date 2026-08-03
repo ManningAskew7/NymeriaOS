@@ -77,6 +77,7 @@ EXPECTED_ROUTES = [
     ('/cliproxy/verify', ('POST',)),
     ('/commands', ('GET',)),
     ('/commands/execute', ('POST',)),
+    ('/commands/options/{ref}', ('GET',)),
     ('/connect/credentials/{prompt_id}/cancel', ('POST',)),
     ('/connect/credentials/{prompt_id}/exit', ('POST',)),
     ('/connect/credentials/{prompt_id}/prompt', ('GET',)),

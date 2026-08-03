@@ -2490,6 +2490,28 @@ def test_commands_api_options_endpoint_resolves_a_ref(
     )
 
 
+def test_commands_api_options_endpoint_filters_and_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """q/limit narrow server-side so per-keystroke callers (Discord's 3s
+    autocomplete deadline) never pull whole catalogs."""
+    api = _ModelCatalogCommandApi()
+    client = _client(api=api, monkeypatch=monkeypatch)
+    headers = {"Authorization": "Bearer token"}
+
+    filtered = client.get(
+        "/commands/options/models", params={"q": "next"}, headers=headers
+    )
+    assert filtered.status_code == 200
+    assert [option["id"] for option in filtered.json()] == ["gpt-next"]
+
+    capped = client.get(
+        "/commands/options/models", params={"limit": 1}, headers=headers
+    )
+    assert capped.status_code == 200
+    assert [option["id"] for option in capped.json()] == ["gpt-test"]
+
+
 def test_commands_api_options_endpoint_404_on_unknown_ref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3033,6 +3055,18 @@ def test_form_strip_keeps_state_hints(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kept.success is True
     assert kept.data is not None and "form" in kept.data
     assert kept.data["state"] == {"model": "kept"}
+
+
+def test_execution_kind_refusal_data_survives_without_the_flag() -> None:
+    """The strip is form-only: the failure-path execution_kind payload (the
+    bots' structural chat_stream re-route signal) must survive a form-less
+    caller untouched."""
+    service = CommandService()
+
+    result = run(service.execute(_no_forms_ctx(), "/skill demo", api=object()))
+
+    assert result.success is False
+    assert (result.data or {}).get("execution_kind") == "chat_stream"
 
 
 # ── missing-required rescue into a generated picker (backlog #110) ───────────
