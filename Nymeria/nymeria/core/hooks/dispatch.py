@@ -18,8 +18,9 @@ path, which have no running event loop). All hooks for an event run
 rather than contingent on an earlier hook short-circuiting.
 
 Fault policy: the veto path fails closed, everything else fails open. A raising
-PRE_TOOL_USE hook becomes a ``deny``; a raising POST/PROMPT/DONE hook is logged and
-skipped. A hook can never crash a turn.
+hook on a veto event (``VETO_EVENTS``: PRE_TOOL_USE and COMMAND_SUBMIT) becomes
+a ``deny``; a raising POST/PROMPT/DONE hook is logged and skipped. A hook can
+never crash a turn.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Set, cast
 
 from .base import (
     EVENT_OUTCOME_TYPES,
+    VETO_EVENTS,
     DoneOutcome,
     HookContext,
     HookEvent,
@@ -260,7 +262,7 @@ def _reentrance_outcome(event: HookEvent, depth: int) -> Optional[HookOutcome]:
     plane discards outcomes entirely, so it stops too.
     """
     _log_reentrance(event, depth)
-    if event is HookEvent.PRE_TOOL_USE:
+    if event in VETO_EVENTS:
         return PreToolOutcome(
             decision="deny",
             reason=(
@@ -272,25 +274,26 @@ def _reentrance_outcome(event: HookEvent, depth: int) -> Optional[HookOutcome]:
 
 
 def _fault_outcome(event: HookEvent, reg: Registration, exc: BaseException) -> Optional[HookOutcome]:
-    """Fault policy: PRE fails closed (deny), others fail open (skip).
+    """Fault policy: the veto events fail closed (deny), others fail open (skip).
 
     A pool-saturation timeout (the hook never ran) is logged at error level and
     carries a distinct deny reason, so operators can tell a starved dispatch pool
     apart from a hook that actually raised or ran too long. It still fails closed
-    on PRE: a guardrail that could not be evaluated must not silently pass.
+    on the veto events: a guardrail that could not be evaluated must not
+    silently pass.
     """
     if isinstance(exc, _HookTimeout) and not exc.started:
         logger.error(
             "hook %r could not run on %s: dispatch pool saturated", reg.name, event.value
         )
-        if event is HookEvent.PRE_TOOL_USE:
+        if event in VETO_EVENTS:
             return PreToolOutcome(
                 decision="deny",
                 reason=f"hook '{reg.name}' could not run (dispatch pool saturated)",
             )
         return None
     logger.warning("hook %r raised on %s: %s", reg.name, event.value, exc, exc_info=True)
-    if event is HookEvent.PRE_TOOL_USE:
+    if event in VETO_EVENTS:
         return PreToolOutcome(decision="deny", reason=f"hook '{reg.name}' error")
     return None
 
@@ -567,7 +570,7 @@ def _reduce(event: HookEvent, outcomes: List[HookOutcome]) -> Optional[HookOutco
         texts = [o.inject_context for o in outcomes if isinstance(o, PromptOutcome) and o.inject_context]
         return PromptOutcome(inject_context="\n".join(texts)) if texts else None
 
-    if event is HookEvent.PRE_TOOL_USE:
+    if event in VETO_EVENTS:
         pre = [o for o in outcomes if isinstance(o, PreToolOutcome)]
         denies = [o for o in pre if o.decision == "deny"]
         if denies:
@@ -628,7 +631,7 @@ def _reduce_safe(event: HookEvent, outcomes: List[HookOutcome]) -> Optional[Hook
         return _reduce(event, outcomes)
     except Exception:  # noqa: BLE001 - dispatch never raises into a turn
         logger.exception("hook outcome reduction failed on %s", event.value)
-        if event is HookEvent.PRE_TOOL_USE:
+        if event in VETO_EVENTS:
             return PreToolOutcome(decision="deny", reason="hook reduction error")
         return None
 

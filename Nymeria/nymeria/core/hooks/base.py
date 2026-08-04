@@ -30,6 +30,7 @@ class HookEvent(enum.Enum):
     PRE_TOOL_USE = "pre_tool_use"     # before a single tool call executes
     POST_TOOL_USE = "post_tool_use"   # after a single tool call executes
     DONE = "done"                     # turn finished
+    COMMAND_SUBMIT = "command_submit" # before a slash command's handler runs
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,21 @@ class HookContext:
     # DONE
     completed_normally: Optional[bool] = None
     final_text: Optional[str] = None
+    # COMMAND_SUBMIT. ``command`` is the canonical registry path ("tools list"),
+    # ``command_display`` the hyphenated user spelling ("tools-list"). The
+    # command's argument view rides ``tool_args`` as ``{"rest": <raw arg tail>}``
+    # (redacted for secret-bearing commands) so the guardrail actions'
+    # ``conditions`` matching works unchanged; ``tool_name`` stays None.
+    command: Optional[str] = None
+    command_display: Optional[str] = None
+    command_category: Optional[str] = None
+    command_danger_level: Optional[str] = None
+    command_mutates_state: Optional[bool] = None
+    command_actor: Optional[str] = None      # "user" | "agent" | "system"
+    command_surface: Optional[str] = None    # cli|api|telegram|discord|...
+    command_source: Optional[str] = None     # "user" | "agent" | "cli"
+    command_is_admin: Optional[bool] = None  # None = unknown (absent in fire data)
+    command_via_act_as: Optional[bool] = None
 
 
 # --- Outcome families: one per event. Returning None == observe/allow. ---
@@ -101,7 +117,15 @@ class PromptOutcome:
 
 @dataclass
 class PreToolOutcome:
-    """PRE_TOOL_USE result: allow, deny (veto), or modify the call's args."""
+    """Veto-plane result (PRE_TOOL_USE and COMMAND_SUBMIT): allow, deny, or modify.
+
+    On PRE_TOOL_USE ``updated_args`` shallow-merges into the tool call's args.
+    On COMMAND_SUBMIT the only recognized key is ``rest`` (the command's raw
+    argument tail), honored for SCHEMA'D commands only: the fire point
+    re-splits it and the strict binder validates the result, so a bad rewrite
+    fails as a usage error, never a silent wrong execution. Schema-less and
+    secret-bearing commands ignore rewrites (with a visible note).
+    """
 
     decision: Literal["allow", "deny", "modify"] = "allow"
     reason: Optional[str] = None          # shown to the model on deny
@@ -141,4 +165,10 @@ EVENT_OUTCOME_TYPES: dict[HookEvent, type] = {
     HookEvent.PRE_TOOL_USE: PreToolOutcome,
     HookEvent.POST_TOOL_USE: PostToolOutcome,
     HookEvent.DONE: DoneOutcome,
+    HookEvent.COMMAND_SUBMIT: PreToolOutcome,
 }
+
+# The veto-plane events: dispatch fails CLOSED for these (a hook fault, a
+# saturated pool, a reduction error, or hitting the re-entrance depth all
+# become a deny). A guardrail that was not evaluated must not silently pass.
+VETO_EVENTS = (HookEvent.PRE_TOOL_USE, HookEvent.COMMAND_SUBMIT)

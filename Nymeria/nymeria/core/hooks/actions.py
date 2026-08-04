@@ -140,6 +140,16 @@ def _template_vars(ctx: HookContext) -> Dict[str, str]:
         "tool_status": ctx.tool_status or "",
         "tool_args": tool_args,
         "final_text": ctx.final_text or "",
+        "command": ctx.command or "",
+        "command_display": ctx.command_display or "",
+        "command_category": ctx.command_category or "",
+        "command_danger_level": ctx.command_danger_level or "",
+        "command_actor": ctx.command_actor or "",
+        "command_surface": ctx.command_surface or "",
+        "command_source": ctx.command_source or "",
+        "command_mutates_state": (
+            "" if ctx.command_mutates_state is None else str(ctx.command_mutates_state)
+        ),
     }
     vars_.update(dict.fromkeys(_CONTEXT_VAR_KEYS, ""))
     vars_.update({k: str(v) for k, v in context_usage_fields(ctx).items()})
@@ -258,9 +268,10 @@ def _approval_denial_tail() -> str:
 
 
 async def require_approval(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
-    """Hold the tool call until the user approves/denies; timeout = deny.
+    """Hold the tool call (or slash command) until the user approves/denies;
+    timeout = deny.
 
-    Mutate plane, ``pre_tool_use`` only, and deliberately ``async``: on the
+    Mutate plane, ``pre_tool_use`` and ``command_submit``, deliberately ``async``: on the
     async dispatch path a coroutine hook is awaited on the event loop
     (occupying NO mutate-pool worker), and on the sync bridge it runs under
     ``asyncio.run`` on the calling thread, so a minutes-long hold can never
@@ -293,15 +304,35 @@ async def require_approval(ctx: HookContext, params: dict) -> Optional[HookOutco
         publish_resolved_event,
     )
     window = clamp_window(params.get("timeout_seconds"))
-    prompt_template = str(params.get("prompt") or "").strip() or "Approve tool call {tool_name}?"
+    is_command = ctx.event is HookEvent.COMMAND_SUBMIT
+    default_prompt = (
+        "Approve command /{command_display}?"
+        if is_command
+        else "Approve tool call {tool_name}?"
+    )
+    prompt_template = str(params.get("prompt") or "").strip() or default_prompt
     prompt = safe_format(prompt_template, _template_vars(ctx)).strip()
+    # Denial copy is event- and audience-aware: the anti-jailbreak tail is an
+    # instruction to a MODEL. It applies on the tool plane (the reason renders
+    # into the model's transcript) and to agent-submitted commands; a human
+    # typing a slash command gets the plain refusal without it.
+    subject_noun = "command" if is_command else "tool call"
+    harden = (not is_command) or ctx.command_actor == "agent"
+    denial_tail = _approval_denial_tail() if harden else ""
     try:
+        # On command_submit the record's tool_name slot carries the command's
+        # display spelling ("/tools-list") so every approval surface renders a
+        # recognizable subject; tool_call_id stays "" (no tool-call card
+        # anchor; the record-keyed approval surfaces are the resolvers).
+        subject = ctx.tool_name or ""
+        if ctx.event is HookEvent.COMMAND_SUBMIT and ctx.command_display:
+            subject = f"/{ctx.command_display}"
         record, future = create_pending_approval(
             user_id=ctx.user_id or "default",
             thread_id=ctx.thread_id or "",
             hook_id=str(params.get("__definition_id") or ""),
             hook_name=str(params.get("__definition_name") or ""),
-            tool_name=ctx.tool_name or "",
+            tool_name=subject,
             tool_call_id=ctx.tool_call_id or "",
             tool_args=ctx.tool_args,
             prompt=prompt,
@@ -324,20 +355,18 @@ async def require_approval(ctx: HookContext, params: dict) -> Optional[HookOutco
             result = await asyncio.wait_for(future, timeout=window)
         except asyncio.TimeoutError:
             outcome_label = "timeout"
-            return PreToolOutcome(
-                decision="deny",
-                reason=(
-                    f"Denied: the user did not approve this tool call within "
-                    f"{int(window)} seconds."
-                    + _approval_denial_tail()
-                    + " Silence is not consent."
-                ),
+            reason = (
+                f"Denied: the user did not approve this {subject_noun} within "
+                f"{int(window)} seconds."
             )
+            if harden:
+                reason += denial_tail + " Silence is not consent."
+            return PreToolOutcome(decision="deny", reason=reason)
         status = str((result or {}).get("status") or "") if isinstance(result, dict) else ""
         if status == "aborted":
             outcome_label = "aborted"
             return PreToolOutcome(
-                decision="deny", reason="turn cancelled while awaiting approval"
+                decision="deny", reason="cancelled while awaiting approval"
             )
         approved = bool((result or {}).get("approved"))
         resolved_by = str((result or {}).get("resolved_by") or "user")
@@ -349,7 +378,7 @@ async def require_approval(ctx: HookContext, params: dict) -> Optional[HookOutco
         reason = f"Denied by {resolved_by}"
         if note_text:
             reason += f": {note_text}"
-        return PreToolOutcome(decision="deny", reason=reason + "." + _approval_denial_tail())
+        return PreToolOutcome(decision="deny", reason=reason + "." + denial_tail)
     finally:
         # The waiter owns cleanup, on every exit shape including cancellation:
         # drop the rendezvous entry (no-op if a resolver already popped it),
@@ -475,6 +504,8 @@ def _run_command_env(ctx: HookContext) -> Dict[str, str]:
     env["NYMERIA_HOOK_USER_ID"] = ctx.user_id or ""
     if ctx.tool_name:
         env["NYMERIA_HOOK_TOOL_NAME"] = ctx.tool_name
+    if ctx.command:
+        env["NYMERIA_HOOK_COMMAND"] = ctx.command
     return env
 
 
@@ -671,13 +702,16 @@ def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     - ``prompt_submit`` (mutate): exit 0 with stdout -> inject it; anything else
       (empty output, nonzero exit, timeout, spawn failure) -> None. Injection is
       an enhancement, so this fails OPEN.
-    - ``pre_tool_use`` (mutate, guardrail): exit 0 + empty stdout -> allow; exit
-      0 + JSON ``{"decision","reason","updated_args"}`` -> that outcome; exit 2
+    - ``pre_tool_use`` / ``command_submit`` (mutate, guardrail): exit 0 + empty
+      stdout -> allow; exit 0 + JSON ``{"decision","reason","updated_args"}``
+      -> that outcome; exit 2
       -> deny (reason = stderr tail, Claude Code convention); other nonzero exit
       -> allow with a diagnostic note (script bug, non-blocking, but visible in
       the execution log and as an activity line); timeout / spawn failure ->
       DENY. A guardrail that could not be evaluated must not silently pass, so
-      this fails CLOSED (consistent with the dispatcher's PRE fault policy).
+      this fails CLOSED (consistent with the dispatcher's veto-event fault
+      policy). On ``command_submit`` the only ``updated_args`` key the fire
+      point honors is ``rest``.
     - ``post_tool_use`` / ``done`` (observe): run for side effects, return None.
 
     Never raises: every failure mode maps to an explicit outcome or None.
@@ -709,7 +743,7 @@ def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     timeout = float(params.get("timeout_seconds") or 10.0)
     # In-band (mutate) events must not block the turn for long; observe events
     # run off-turn and keep the author's full budget.
-    if event in (HookEvent.PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE):
+    if event in (HookEvent.PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE, HookEvent.COMMAND_SUBMIT):
         timeout = min(timeout, _RUN_COMMAND_MUTATE_TIMEOUT_CAP)
 
     result = _execute_command(ctx, command, timeout)
@@ -719,7 +753,7 @@ def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
             return PromptOutcome(inject_context=result.stdout.strip()[:_RUN_COMMAND_INJECT_CAP])
         return None
 
-    if event is HookEvent.PRE_TOOL_USE:
+    if event in (HookEvent.PRE_TOOL_USE, HookEvent.COMMAND_SUBMIT):
         if result.timed_out or result.spawn_failed:
             why = "timed out" if result.timed_out else "could not run"
             return PreToolOutcome(
@@ -855,6 +889,16 @@ def hook_event_payload(ctx: HookContext) -> dict:
         "tool_status": ctx.tool_status,
         "completed_normally": ctx.completed_normally,
         "final_text": _cap(ctx.final_text),
+        "command": ctx.command,
+        "command_display": ctx.command_display,
+        "command_category": ctx.command_category,
+        "command_danger_level": ctx.command_danger_level,
+        "command_mutates_state": ctx.command_mutates_state,
+        "command_actor": ctx.command_actor,
+        "command_surface": ctx.command_surface,
+        "command_source": ctx.command_source,
+        "command_is_admin": ctx.command_is_admin,
+        "command_via_act_as": ctx.command_via_act_as,
     }
 
 
@@ -899,7 +943,8 @@ async def run_workflow(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     - ``prompt_submit`` (mutate): envelope ok + output ``{"inject_context":
       str}`` (or a plain string) -> inject; empty -> no-op. Any failure
       RAISES so the dispatcher records an honest ``error`` and fails open.
-    - ``pre_tool_use`` (mutate, guardrail): never raises. ok + decision dict
+    - ``pre_tool_use`` / ``command_submit`` (mutate, guardrail): never raises.
+      ok + decision dict
       -> that outcome (see ``_pre_outcome_from_data``); ok + empty -> allow;
       refusal / error / timeout / malformed output / ``needs_approval`` (a
       suspended workflow cannot hold a tool call) -> the author's
@@ -912,7 +957,7 @@ async def run_workflow(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     """
     params = params or {}
     event = ctx.event
-    is_pre = event is HookEvent.PRE_TOOL_USE
+    is_pre = event in (HookEvent.PRE_TOOL_USE, HookEvent.COMMAND_SUBMIT)
     on_fault = str(params.get("on_fault") or "allow")
     workflow_id = str(params.get("workflow_id") or "").strip()
     if not workflow_id:

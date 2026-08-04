@@ -31,7 +31,11 @@ three events:
   prompt (a "run the checks now that you're done" style nudge). It batches with
   any user prompts queued in the meantime.
 
-PreToolUse is not an injection target and is not offered.
+PreToolUse and CommandSubmit are guardrail events (block/rewrite/approve, plus
+notify-style side effects on CommandSubmit), not injection targets; author
+those with `hook_config` directly (see its docstring), not this skill's
+injection workflow. A `command_submit` matcher targets command paths
+(`tools list|provider *`), not tool names.
 
 The text is static or templated: `{placeholder}` tokens interpolate from the
 event context (`{tool_name}`, `{tool_result}`, `{tool_status}`, `{tool_args}`,

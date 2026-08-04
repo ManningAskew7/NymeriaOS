@@ -72,18 +72,35 @@ def _run_async_from_sync(coro_factory: Callable[[], Coroutine[Any, Any, str]]) -
     Some tool callers still need a synchronous return value. Provide a sync
     wrapper here so slash_command works in both interactive and autonomous
     execution modes.
+
+    Both branches run under a SHORT-LIVED ``asyncio.run`` loop, which cancels
+    pending tasks the moment the coroutine returns. Command-submit hooks'
+    observe plane is scheduled as loop tasks (``schedule_observe``), so the
+    dispatch must drain them before the loop dies or a ``notify``/``webhook``
+    hook silently never fires (and never logs). The long-lived-loop path
+    (async tool call on the API loop) keeps normal fire-and-forget semantics
+    and must NOT drain: that would block the tool call on unrelated observers.
     """
+
+    async def _drained() -> str:
+        try:
+            return await coro_factory()
+        finally:
+            from ..core.hooks.dispatch import adrain_observe
+
+            await adrain_observe()
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro_factory())
+        return asyncio.run(_drained())
 
     result: dict[str, str] = {}
     error: dict[str, BaseException] = {}
 
     def _runner() -> None:
         try:
-            result["value"] = asyncio.run(coro_factory())
+            result["value"] = asyncio.run(_drained())
         except BaseException as exc:  # pragma: no cover - defensive bridge
             error["value"] = exc
 

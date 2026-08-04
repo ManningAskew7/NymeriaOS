@@ -30,7 +30,7 @@
     HOOK_EVENT_META,
     HOOK_OPERATORS,
     FIRE_GATE_OPERATORS,
-    HOOK_TOOL_EVENTS,
+    HOOK_MATCHER_EVENTS,
   } from '$lib/utils/hooks';
 
   interface Props {
@@ -63,7 +63,13 @@
 
   type UpdateRow = { key: string; value: string };
 
-  const EVENTS: HookEvent[] = ['prompt_submit', 'pre_tool_use', 'post_tool_use', 'done'];
+  const EVENTS: HookEvent[] = [
+    'prompt_submit',
+    'pre_tool_use',
+    'post_tool_use',
+    'done',
+    'command_submit',
+  ];
 
   // Seed the form once from the edit target (reading props inside a function
   // keeps the state initializers warning-free); the form owns its state after.
@@ -197,7 +203,9 @@
   // outside the authorable union, and a raw table miss here crashed the app
   // shell on `undefined.hint` when editing the built-in hook.
   const actionMeta = $derived(hookActionMeta(action));
-  const showMatcher = $derived(HOOK_TOOL_EVENTS.includes(event));
+  const showMatcher = $derived(HOOK_MATCHER_EVENTS.includes(event));
+  // command_submit matches command paths; the tool events match tool names.
+  const matcherIsCommand = $derived(event === 'command_submit');
   const isTextAction = $derived(
     action === 'inject_context' || action === 'notify' || action === 'create_todo'
   );
@@ -611,18 +619,26 @@
         </div>
       {/if}
 
-      <!-- Tool matcher (tool events only) -->
+      <!-- Name matcher (tool events: tool names; command_submit: command paths) -->
       {#if showMatcher}
         <div class="field-row">
-          <label class="field-label" for="hook-matcher">Tool matcher</label>
+          <label class="field-label" for="hook-matcher">
+            {matcherIsCommand ? 'Command matcher' : 'Tool matcher'}
+          </label>
           <input
             id="hook-matcher"
             class="field-input"
             type="text"
-            placeholder="e.g. bash, Edit|Write  (blank = any tool)"
+            placeholder={matcherIsCommand
+              ? 'e.g. clear, provider *  (blank = any command)'
+              : 'e.g. bash, Edit|Write  (blank = any tool)'}
             bind:value={matcher}
           />
-          <span class="field-hint">Only run for tools whose name matches. Leave blank for all tools.</span>
+          <span class="field-hint">
+            {matcherIsCommand
+              ? 'Only run for matching command paths; a trailing * matches a family. Leave blank for all commands.'
+              : 'Only run for tools whose name matches. Leave blank for all tools.'}
+          </span>
         </div>
       {/if}
 

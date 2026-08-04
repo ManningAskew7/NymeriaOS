@@ -68,6 +68,46 @@ def _matches(matcher: Optional[str], tool_name: Optional[str]) -> bool:
     return tool_name in matcher.split("|")
 
 
+def _normalize_command(value: str) -> str:
+    """Fold a command spelling to one comparable form.
+
+    Display spellings hyphenate BOTH path separators ("tools-list" for the
+    path ("tools", "list")) and intra-token underscores ("sequential-tools"
+    for the token "sequential_tools"), so hyphens, underscores, and spaces
+    all fold to a single space: "tools-list", "tools list", and the
+    path-joined "tools_list" compare equal. Lowercased, single-spaced.
+    """
+    return " ".join(
+        value.strip().lower().replace("-", " ").replace("_", " ").split()
+    )
+
+
+def _matches_command(matcher: Optional[str], command: Optional[str]) -> bool:
+    """Pipe-list matcher against a canonical command path (COMMAND_SUBMIT).
+
+    ``None`` matches every command. Entries are exact path matches after
+    normalization (``"tools list"``); an entry whose last segment is ``*``
+    prefix-matches a family INCLUDING its root (``"provider *"`` matches
+    ``provider``, ``provider set``, ...; a bare ``"*"`` matches everything).
+    """
+    if matcher is None:
+        return True
+    if not command:
+        return False
+    subject = _normalize_command(command)
+    for raw in matcher.split("|"):
+        entry = _normalize_command(raw)
+        if not entry:
+            continue
+        if entry.endswith("*"):
+            prefix = entry[:-1].strip()
+            if not prefix or subject == prefix or subject.startswith(prefix + " "):
+                return True
+        elif entry == subject:
+            return True
+    return False
+
+
 class HookRegistry:
     """A lock-guarded ordered collection of hook registrations.
 
@@ -142,7 +182,13 @@ class HookRegistry:
                 continue
             if observe is not None and reg.observe is not observe:
                 continue
-            if not _matches(reg.matcher, ctx.tool_name):
+            # Event-aware match subject: COMMAND_SUBMIT matches the canonical
+            # command path (with family-prefix support); tool events match the
+            # tool name exactly.
+            if event is HookEvent.COMMAND_SUBMIT:
+                if not _matches_command(reg.matcher, ctx.command):
+                    continue
+            elif not _matches(reg.matcher, ctx.tool_name):
                 continue
             out.append(reg)
         return out

@@ -406,13 +406,21 @@ def test_schema_endpoint_shape(client_env):
     resp = client.get("/hooks/schema", headers=headers)
     assert resp.status_code == 200
     schema = resp.json()
-    assert set(schema["events"]) == {"prompt_submit", "pre_tool_use", "post_tool_use", "done"}
+    assert set(schema["events"]) == {
+        "prompt_submit", "pre_tool_use", "post_tool_use", "done", "command_submit",
+    }
     assert schema["events"]["pre_tool_use"]["tool_event"] is True
     assert schema["events"]["done"]["tool_event"] is False
+    # command_submit is a matcher event (command paths) but not a tool event.
+    assert schema["events"]["command_submit"]["tool_event"] is False
+    assert schema["events"]["command_submit"]["matcher_event"] is True
+    assert schema["events"]["pre_tool_use"]["matcher_event"] is True
+    assert schema["events"]["done"]["matcher_event"] is False
+    assert "block_if_matches" in schema["events"]["command_submit"]["actions"]
     assert "block_if_matches" in schema["events"]["pre_tool_use"]["actions"]
     wh = schema["actions"]["webhook"]
     assert wh["plane"] == "observe"
-    assert wh["events"] == ["post_tool_use", "done"]
+    assert wh["events"] == ["post_tool_use", "done", "command_submit"]
     assert "url" in wh["params_schema"]["properties"]
     assert "action" not in wh["params_schema"]["properties"]
     inj = schema["actions"]["inject_context"]
@@ -432,6 +440,7 @@ def test_schema_exposes_plane_by_event_and_gated(client_env):
         "pre_tool_use": "mutate",
         "post_tool_use": "observe",
         "done": "observe",
+        "command_submit": "mutate",
     }
     # Every non-gated action stays single-plane across its legal events.
     assert schema["actions"]["notify"]["gated"] is False
@@ -978,11 +987,14 @@ def test_schema_exposes_run_workflow(client_env):
     schema = client.get("/hooks/schema", headers=headers).json()
     rw = schema["actions"]["run_workflow"]
     assert rw["gated"] is False  # the workflow approval gate is the control
-    assert rw["events"] == ["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
+    assert rw["events"] == [
+        "prompt_submit", "pre_tool_use", "post_tool_use", "done", "command_submit",
+    ]
     assert rw["plane_by_event"] == {
         "prompt_submit": "mutate",
         "pre_tool_use": "mutate",
         "post_tool_use": "observe",
         "done": "observe",
+        "command_submit": "mutate",
     }
     assert "workflow_id" in rw["params_schema"]["properties"]

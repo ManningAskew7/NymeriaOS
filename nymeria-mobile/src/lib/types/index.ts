@@ -2349,7 +2349,12 @@ export interface TriggerTestResult {
 // (`core/hook_manager.py`); `logic` is the action-specific config the backend
 // returns, discriminated on `action`.
 
-export type HookEvent = 'prompt_submit' | 'pre_tool_use' | 'post_tool_use' | 'done';
+export type HookEvent =
+  | 'prompt_submit'
+  | 'pre_tool_use'
+  | 'post_tool_use'
+  | 'done'
+  | 'command_submit';
 export type HookAction =
   | 'inject_context'
   | 'block_if_matches'

@@ -187,6 +187,10 @@ _SETTING_WRITE_PARAMS = (
         "value",
         kind="rest",
         required=True,
+        # no_echo: the value may be a credential (LLM_API_KEY and friends);
+        # keeps it out of error copy AND marks the command secret-bearing for
+        # the command-hook redaction predicate (#134 review fix).
+        no_echo=True,
         description="New value (coerced to bool, int, float, or string)",
     ),
 )
@@ -1011,6 +1015,9 @@ def register_default_commands(service: "CommandService") -> None:
                 "value",
                 kind="rest",
                 required=True,
+                # no_echo: env values are frequently API keys; see
+                # _SETTING_WRITE_PARAMS for the redaction rationale.
+                no_echo=True,
                 description="New value (coerced to bool, int, float, or string)",
             ),
         ),
@@ -1544,7 +1551,7 @@ def register_default_commands(service: "CommandService") -> None:
         danger_level="normal",
         agent_allowed=False,
         examples=(
-            '/hook create greet --event user_prompt_submit --action inject_text --text "Be brief."',
+            '/hook create greet --event prompt_submit --action inject_context --text "Be brief."',
         ),
         # The name is the bare-word remainder, exactly as the hand parser
         # read it: options are pulled out from any position and what is left
@@ -1584,7 +1591,10 @@ def register_default_commands(service: "CommandService") -> None:
                 "matcher",
                 kind="option",
                 label="A|B",
-                description="Tool filter for tool events",
+                description=(
+                    "Name filter: tool names on tool events, command paths "
+                    "on command-submit (trailing * matches a family)"
+                ),
             ),
             CommandParam(
                 "command", kind="option", description="Shell command for run_command"

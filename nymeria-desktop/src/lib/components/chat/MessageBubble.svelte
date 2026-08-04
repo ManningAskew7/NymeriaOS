@@ -234,6 +234,7 @@
     pre_tool_use: 'pre-tool',
     post_tool_use: 'post-tool',
     done: 'done',
+    command_submit: 'command',
   };
 
   // One-line summary for an ephemeral lifecycle-hook activity step. Reads like a
