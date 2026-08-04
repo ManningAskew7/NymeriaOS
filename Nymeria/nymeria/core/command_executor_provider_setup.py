@@ -64,8 +64,9 @@ class ProviderSetupCommandsMixin:
     user_id: str
 
     if TYPE_CHECKING:
-        @staticmethod
-        def _unknown_provider_error(provider: str) -> CommandOutput: ...
+        # An instance method since 2026-08-04: it consults
+        # _command_offerable before naming the CLIProxy catalog.
+        def _unknown_provider_error(self, provider: str) -> CommandOutput: ...
 
     # ── Provider setup flow (chained configure forms, backlog #110) ───────
     #

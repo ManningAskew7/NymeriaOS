@@ -208,7 +208,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/background set <model>` | Set the background-turn model. |
 | `/background set-url <url>` | Point background turns at a different base URL. |
 | `/background clear` | Clear the background model (falls back to the main model). |
-| `/provider list` | List LLM providers grouped by support tier. |
+| `/provider list [all] [tier]` | List LLM providers grouped by support tier. Defaults to the curated tiers plus the active provider; `all` adds the unverified tier, `tier` shows one tier only. The `cliproxy` tier is absent on Discord: `/provider cliproxy` is blocked here, so the section that advertises it is not rendered. |
 | `/provider switch <provider> [scope]` | Switch the active provider globally or for this channel. |
 | `/provider test [provider]` | Probe a provider's credentials and reachability. |
 | `/provider reasoning-passback [mode] [value]` | Control whether reasoning blocks are passed back to the model. |

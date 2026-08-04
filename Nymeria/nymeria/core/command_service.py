@@ -113,7 +113,52 @@ CHAT_PLATFORM_SURFACES: tuple[CommandSurface, ...] = (
 # them to the agent; command_naming.AGENT_BLOCKED_UNREGISTERED records them
 # and validate_registry fails on any OTHER unregistered entry.
 AGENT_BLOCKED = {"ask", "stop", "clear", "restart", "compact", "start"}
-SKILL_SHOW_MAX_CHARS = 12_000
+
+# Command output budgets, per surface. Truncating a command result is a
+# LAST RESORT, not a product limit: a clipped listing is silently wrong
+# information, so a command whose ordinary output outgrows the compact
+# budget gets SPLIT or filtered (the /provider list default view is the
+# worked example), never left to truncate.
+#
+# Roomy surfaces render into a scrollback or a scrollable view: the CLI
+# writes above its footer with native scrollback intact (mouse_support is
+# off precisely so the wheel still scrolls it), and the GUIs render a
+# scrollable card. The budget there is a runaway guard only, an order of
+# magnitude above the largest listing the catalog can currently produce
+# (`/provider list --all`, which the ratchet below measures).
+OUTPUT_BUDGET_ROOMY = 100_000
+# Everything else: the chat platforms (whose _send_text already chunks to
+# the platform limit, so this bounds message COUNT rather than API
+# validity), the agent surface (whose output is charged to the model's
+# context), and unknown callers. 12k was already the /skills show budget,
+# which is now simply the floor everywhere rather than a per-command
+# exemption. tests/test_command_output_budget.py ratchets the
+# catalog-driven listings against it (NOT every built-in: the ones whose
+# size tracks user data or a live agent are vacuous under the fixture,
+# and that test says so).
+OUTPUT_BUDGET_COMPACT = 12_000
+# Typed against the surface Literal so a typo or a renamed surface fails
+# type-check here rather than silently downgrading that surface to the
+# compact budget.
+ROOMY_OUTPUT_SURFACES: frozenset[CommandSurface] = frozenset(
+    {"cli", "desktop", "mobile", "api"}
+)
+
+
+def output_budget(surface: str | None) -> int:
+    """Max characters a command result may carry on *surface*.
+
+    Takes a loose ``str`` because surfaces arrive off the wire, where an
+    unrecognized value is a real possibility rather than a type error. It
+    lands on the compact budget: the conservative direction, since the
+    roomy budget assumes a client that can scroll. Same for a legacy
+    caller that sends no surface at all.
+    """
+    return (
+        OUTPUT_BUDGET_ROOMY
+        if surface in ROOMY_OUTPUT_SURFACES
+        else OUTPUT_BUDGET_COMPACT
+    )
 
 
 @dataclass(frozen=True)
@@ -538,10 +583,16 @@ def _parse_hook_on_fault(raw: str) -> tuple[str | None, str]:
     return value, ""
 
 
-def _truncate(text: str, limit: int = 4000) -> str:
+def _truncate(text: str, limit: int = OUTPUT_BUDGET_COMPACT) -> str:
     if len(text) <= limit:
         return text
-    return text[: limit - 80] + f"\n\n**Note:** Output truncated (was {len(text)} chars)."
+    note = f"\n\n**Note:** Output truncated (was {len(text)} chars)."
+    # Reserve room for the note INSIDE the limit. A naive `limit - 80`
+    # goes negative for a small limit and returns more than it was asked
+    # for; every live budget is far above that, but the function now takes
+    # its limit from a caller rather than a constant.
+    keep = max(0, limit - len(note))
+    return text[:keep] + note
 
 
 def _dict_result(value: Any) -> dict[str, Any]:
@@ -3280,10 +3331,9 @@ class CommandService:
                 # where forms are off, and they are small.
                 data = {k: v for k, v in data.items() if k != "form"} or None
             success, level, markdown = _render_result_markdown(raw_output, level)
-            limit = SKILL_SHOW_MAX_CHARS if definition.id == "skills.show" else 4000
             return _with_hook_notes(CommandResult(
                 success,
-                _truncate(markdown, limit=limit),
+                _truncate(markdown, limit=output_budget(ctx.effective_surface)),
                 command_label,
                 level=level,
                 data=data if success else None,
@@ -3901,9 +3951,10 @@ class _CommandExecutor(
 
         The old ``/skills inspect`` (metadata only) folded in here as an alias
         (backlog #131), so this renders the union: neither caller lost a
-        field. The dispatcher gives ``skills.show`` a 12,000-char truncation
-        budget (``SKILL_SHOW_MAX_CHARS``), which is what makes the body
-        affordable alongside the table.
+        field. The body is affordable alongside the table because 12,000
+        chars (``OUTPUT_BUDGET_COMPACT``) is now the FLOOR on every
+        surface; this command used to carry that number as its own
+        one-command exemption from a 4,000-char default.
         """
         agent = self._agent()
         service = get_command_service()
@@ -5780,7 +5831,7 @@ class _CommandExecutor(
                     lines.append(f"  [unset]  {e['name']}")
         lines.append("")
         lines.append("Use /env get <key> for unmasked values.")
-        return _truncate("\n".join(lines))
+        return "\n".join(lines)
 
     async def _cmd_env_get(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
@@ -5890,7 +5941,7 @@ class _CommandExecutor(
             lines.append("")
             lines.append(f"{cat_name} ({len(entries)}){tag}")
             lines.append(f"  {names}")
-        return _truncate("\n".join(lines))
+        return "\n".join(lines)
 
     async def _tools_enabled_markdown(self) -> str | CommandOutput:
         thread_error = self._require_thread()
@@ -5937,7 +5988,7 @@ class _CommandExecutor(
         else:
             lines.append("")
             lines.append("Optional enabled: none")
-        return _truncate("\n".join(lines))
+        return "\n".join(lines)
 
     async def _tools_category_markdown(self, cat_name: str) -> str | CommandOutput:
         thread_error = self._require_thread()
@@ -5975,7 +6026,7 @@ class _CommandExecutor(
                 lines.append(f"  {mark} {tool_name}{tag}: {desc}")
             else:
                 lines.append(f"  {mark} {tool_name}{tag}")
-        return _truncate("\n".join(lines))
+        return "\n".join(lines)
 
     async def _cmd_tools_enable(self, bound: BoundArgs) -> str | CommandOutput:
         thread_error = self._require_thread()
@@ -6043,7 +6094,7 @@ class _CommandExecutor(
             lines.append(f"  {mem.get('key', '?')}: {preview}")
         if len(memories) > 25:
             lines.append(f"(showing 25 of {len(memories)})")
-        return _truncate("\n".join(lines))
+        return "\n".join(lines)
 
     async def _cmd_memory_save(self, bound: BoundArgs) -> str | CommandOutput:
         key = str(bound.get("key") or "")
@@ -6071,7 +6122,7 @@ class _CommandExecutor(
             value = mem.get("value", "")
             preview = (value[:200] + "...") if len(value) > 200 else value
             lines.append(f"  {mem.get('key', '?')}: {preview}")
-        return _truncate("\n".join(lines))
+        return "\n".join(lines)
 
     async def _cmd_memory_limit(self, bound: BoundArgs) -> str | CommandOutput:
         from .memory_limits import (
@@ -6360,7 +6411,7 @@ class _CommandExecutor(
             lines.append("  " + " | ".join(parts))
         if len(items) > 25:
             lines.append(f"(showing 25 of {len(items)})")
-        return _truncate("\n".join(lines))
+        return "\n".join(lines)
 
     async def _cmd_todos_add(self, bound: BoundArgs) -> str | CommandOutput:
         from .todo_constants import validate_recurrence

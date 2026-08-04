@@ -75,6 +75,8 @@ _TIER_BADGES = {
     "unverified": "[UNVERIFIED]",
 }
 _TIER_ORDER = ("native", "gateway", "unverified")
+# Width of a provider's note preview in the /provider list table.
+_NOTE_PREVIEW_CHARS = 80
 
 _THINK_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # The whole /think value space: the registry declares this as the command's
@@ -908,6 +910,13 @@ class LLMCommandsMixin:
                 else "missing key"
             )
         )
+        # An applied CLIProxy route is stored as a plain anthropic/openai
+        # provider plus a proxy base URL, so the card would otherwise
+        # present a subscription as a direct-API credential.
+        base_url = str(settings.get("llm_base_url", "") or "")
+        base_url_text = base_url or "Provider default"
+        if self._active_route_is_cliproxy(settings):
+            base_url_text = f"{base_url_text} (via CLIProxy)"
         rows = [
             (
                 "Active provider",
@@ -915,16 +924,18 @@ class LLMCommandsMixin:
             ),
             ("Tier", tier_text),
             ("Model", settings.get("llm_model", "") or "Unknown"),
-            ("Base URL", settings.get("llm_base_url", "") or "Provider default"),
+            ("Base URL", base_url_text),
             ("Credential", credential_text),
         ]
         if active_spec is not None and active_spec.notes_for_user:
             rows.append(("Note", active_spec.notes_for_user))
         lines = ["Provider"]
         lines.extend(self._kv_lines(rows))
-        lines.append(
-            "Manage with: /provider [setup|list|set|switch|test|reasoning-passback]"
-        )
+        verbs = ["setup", "list", "set", "switch", "test"]
+        if self._command_offerable("provider cliproxy"):
+            verbs.append("cliproxy")
+        verbs.append("reasoning-passback")
+        lines.append(f"Manage with: /provider [{'|'.join(verbs)}]")
         text = "\n".join(lines)
         # The picker submits into the ungated per-provider action step
         # (/provider <name>), which itself scopes its tabs to the caller,
@@ -1253,7 +1264,35 @@ class LLMCommandsMixin:
         spec = get_llm_provider_spec(raw) if raw else None
         return spec.id if spec else raw
 
-    async def _cmd_provider_list(self, bound: BoundArgs) -> str:
+    async def _cmd_provider_list(self, bound: BoundArgs) -> str | CommandOutput:
+        """The provider table: CLIProxy targets, then the registry by tier.
+
+        Default view is deliberately SHORT. The registry carries 130+
+        specs of which the unverified tier is the overwhelming majority,
+        and a table that long used to be cut mid-row by the output
+        budget, which is worse than omitting rows: it reads as complete.
+        ``--all`` and ``--tier`` are the escape hatches, and the default
+        view's footer says how many rows it withheld and how to see them
+        (only the default view: once a ``--tier`` names the scope,
+        counting what that scope excludes is noise).
+        """
+        tier_filter = str(bound.get("tier") or "").strip().casefold()
+        show_all = bool(bound.get("all")) or tier_filter == "unverified"
+
+        if tier_filter == "cliproxy" and not self._command_offerable(
+            "provider cliproxy"
+        ):
+            # The cliproxy tier is the ONE whose rows this caller may not
+            # be shown, and it is not a registry tier, so without this the
+            # filtered view renders as a bare header: an empty answer that
+            # reads like "there are none". Say why instead. No disclosure
+            # cost: the gate itself refuses this caller in the same terms.
+            return command_error(
+                "The cliproxy tier lists subscription targets managed by "
+                "/provider cliproxy, which is not available to you on this "
+                "surface. /provider list shows the registry providers."
+            )
+
         settings = await self.api.get_settings()
         status = await self._provider_status_map()
         entries = self._provider_entries(settings, status)
@@ -1262,9 +1301,23 @@ class LLMCommandsMixin:
         for entry in entries:
             grouped[entry["tier"]].append(entry)
 
+        # The unverified tier is filtered, never the curated ones: an
+        # ACTIVE unverified provider always shows (hiding what you are
+        # currently using would be the one unforgivable omission).
+        hidden = 0
+        if not show_all:
+            kept = [entry for entry in grouped["unverified"] if entry["active"]]
+            hidden = len(grouped["unverified"]) - len(kept)
+            grouped["unverified"] = kept
+
+        via_cliproxy = self._active_route_is_cliproxy(settings)
+        notes_clipped = False
         lines = ["Providers (grouped by tier)"]
+        lines.extend(self._cliproxy_list_section(settings, tier_filter))
         header = "  Provider                    Active  Status          Source"
         for tier in _TIER_ORDER:
+            if tier_filter and tier_filter != tier:
+                continue
             tier_rows = grouped.get(tier, [])
             if not tier_rows:
                 continue
@@ -1273,13 +1326,118 @@ class LLMCommandsMixin:
             lines.append(header)
             for entry in tier_rows:
                 active = "yes" if entry["active"] else "no"
+                source = entry["source"] or "-"
+                if entry["active"] and via_cliproxy:
+                    source = f"{source} (via CLIProxy)"
                 lines.append(
                     f"  {entry['provider']:<26}  {active:<6} "
-                    f"{entry['status']:<14} {entry['source'] or '-'}"
+                    f"{entry['status']:<14} {source}"
                 )
                 if entry["tier"] == "unverified" and entry["notes_for_user"]:
-                    lines.append(f"    Note: {entry['notes_for_user']}")
+                    note = entry["notes_for_user"]
+                    preview = self._note_preview(note)
+                    # Compare lengths rather than sniffing a trailing
+                    # ellipsis: a note may legitimately end in one.
+                    notes_clipped = notes_clipped or len(preview) < len(
+                        " ".join(note.split())
+                    )
+                    lines.append(f"    Note: {preview}")
+        if notes_clipped:
+            lines.append("")
+            lines.append("  Full provider notes: /provider <id>")
+        # Only in the DEFAULT view: an explicit --tier already states the
+        # caller's scope, so counting what that scope excludes is noise.
+        if hidden and not tier_filter:
+            lines.append("")
+            lines.append(
+                f"  {hidden} more unverified providers: /provider list --all"
+            )
         return "\n".join(lines)
+
+    @staticmethod
+    def _note_preview(note: str) -> str:
+        """One-line preview of a registry provider's user note.
+
+        The registry's ``notes_for_user`` are full paragraphs: 26 of them
+        totalling ~4.7k chars, which was 43% of the whole ``--all``
+        listing. That is signal when you are reading ABOUT a provider and
+        noise when you are scanning FOR one, so the table previews and
+        the provider card (``/provider <id>``) keeps the full text.
+        """
+        collapsed = " ".join(note.split())
+        if len(collapsed) <= _NOTE_PREVIEW_CHARS:
+            return collapsed
+        return collapsed[: _NOTE_PREVIEW_CHARS - 3].rstrip() + "..."
+
+    def _cliproxy_list_section(
+        self, settings: Mapping[str, Any], tier_filter: str
+    ) -> list[str]:
+        """The ``[CLIPROXY]`` block: subscription targets, from the catalog.
+
+        Catalog-only on purpose. Login badges would need a management-API
+        round trip, which /provider cliproxy already does as its own job;
+        keeping the table offline means it renders identically whether or
+        not CLIProxy management is configured, and never makes the common
+        listing wait on a network call.
+
+        Hidden when the command it advertises would refuse the caller
+        (non-admin, agent, chat platform), matching how the picker form
+        already gates the same tab. That is cosmetic: the refusal itself
+        stays at the dispatch gate.
+        """
+        from ..cliproxy.catalog import list_cliproxy_providers
+
+        if tier_filter and tier_filter != "cliproxy":
+            return []
+        if not self._command_offerable("provider cliproxy"):
+            return []
+        targets = list_cliproxy_providers()
+        if not targets:
+            return []
+        active_note = (
+            "  Active route runs through CLIProxy."
+            if self._active_route_is_cliproxy(settings)
+            else ""
+        )
+        lines = [
+            "",
+            "  [CLIPROXY]  subscription OAuth, manage with /provider cliproxy",
+            "  Target                      Routes as   Default model",
+        ]
+        for proxy in targets:
+            lines.append(
+                f"  {proxy.id:<26}  {proxy.nymeria_provider:<10}  "
+                f"{proxy.default_model or '-'}"
+            )
+        if active_note:
+            lines.append(active_note)
+        return lines
+
+    @staticmethod
+    def _active_route_is_cliproxy(settings: Mapping[str, Any]) -> bool:
+        """Whether the active route's base URL points at a CLIProxy.
+
+        An applied CLIProxy route persists as a plain ``anthropic``/
+        ``openai`` provider plus a proxy base URL, so without this the
+        table shows a subscription as an ordinary direct-API credential.
+        Deliberately reports the MECHANISM, not the target: four of the
+        six targets share one provider and api_mode, so naming which
+        subscription is serving would be a guess.
+
+        Detection is the SAME predicate the provider factory uses to
+        decide whether to apply the CLIProxy treatment (cloak UA, beta
+        header, billing block). It is host- and port-shaped, so a
+        CLIProxy behind a vanity hostname on 443 is untagged here, and a
+        non-CLIProxy server on 8317/8318 is tagged. That is deliberate:
+        agreeing with what the runtime actually DOES to the route beats
+        being independently more accurate about it, since a tag that
+        disagreed with the applied treatment would be the more confusing
+        of the two errors.
+        """
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        base_url = str(settings.get("llm_base_url") or "").strip()
+        return bool(base_url) and looks_like_cliproxy_url(base_url)
 
     async def _cmd_provider_set(self, bound: BoundArgs) -> str | CommandOutput:
         raw_provider = str(bound.get("provider") or "")
@@ -1733,11 +1891,21 @@ class LLMCommandsMixin:
         status = entry.get("status", "missing key")
         return f"{status} ({source})" if source else status
 
-    @staticmethod
-    def _unknown_provider_error(provider: str) -> CommandOutput:
+    def _unknown_provider_error(self, provider: str) -> CommandOutput:
         """The shared "no such provider" failure, returned as-is by every
-        handler that resolves a provider name (also the setup mixin's)."""
-        return command_error(
-            f"Unknown provider: {provider}. "
-            "Run /provider list to see the registered providers."
-        )
+        handler that resolves a provider name (also the setup mixin's).
+
+        Names the CLIProxy path too, because a subscription target is the
+        likeliest thing a caller means by a name the registry does not
+        know. The three targets that are not also registry ids dispatch
+        straight from /provider, so they never reach here; the rest of
+        the catalog needs the pointer. Gated on offerability so a caller
+        the command would refuse is not sent at it.
+        """
+        hint = "Run /provider list to see the registered providers."
+        if self._command_offerable("provider cliproxy"):
+            hint += (
+                " Subscription (OAuth) targets are a separate catalog: "
+                "/provider cliproxy."
+            )
+        return command_error(f"Unknown provider: {provider}. {hint}")

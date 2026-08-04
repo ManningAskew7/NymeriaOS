@@ -48,6 +48,10 @@ class FakeCommandApi:
         ]
         self.memories = [{"key": "a", "value": "12345"}]
         self.env_set_keys: set[str] = set()
+        # Settable so a test can model an APPLIED CLIProxy route, which on
+        # the wire is an ordinary provider plus a proxy base URL.
+        self.llm_base_url: str | None = None
+        self.llm_provider = "openai"
         self.provider_test_result: dict[str, Any] = {"ok": True, "message": ""}
         self.thread_config = {"enabled_tools": [], "disabled_tools": [], "memory_char_limit": None}
         self.threads: list[dict[str, Any]] = [
@@ -197,9 +201,9 @@ class FakeCommandApi:
     async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
         self.calls.append(("get_settings", (), {"user_id": user_id}))
         return {
-            "llm_provider": "openai",
+            "llm_provider": self.llm_provider,
             "llm_model": "gpt-test",
-            "llm_base_url": None,
+            "llm_base_url": self.llm_base_url,
             "llm_extended_thinking": False,
             "llm_reasoning_effort": None,
             "context_management": "auto_compact",
@@ -1424,14 +1428,20 @@ def test_think_rejects_unknown_tokens() -> None:
 # ── /settings (delegating alias of the /config family) ─────────────────────
 
 
-def _run_command(api: FakeCommandApi, command: str, *, is_admin: bool = True):
+def _run_command(
+    api: FakeCommandApi,
+    command: str,
+    *,
+    is_admin: bool = True,
+    surface: str = "cli",
+):
     return run(
         CommandService().execute(
             CommandContext(
                 user_id="alice",
                 thread_id="thread-1",
                 actor="user",
-                surface="cli",
+                surface=surface,
                 is_admin=is_admin,
                 supports_forms=True,
             ),
@@ -1907,6 +1917,238 @@ def test_provider_list_groups_by_tier_without_secrets() -> None:
     assert "anthropic" in result.markdown
     assert "authenticated" in result.markdown
     assert "secret" not in result.markdown.lower()
+
+
+def test_provider_list_default_view_withholds_the_unverified_tier() -> None:
+    """The registry's 100+ unverified specs are opt-in, not the default.
+
+    The full table was long enough to be cut mid-row by the output
+    budget, which reads as a complete answer. The default view keeps the
+    curated tiers and says how many rows it withheld.
+    """
+    api = FakeCommandApi()
+
+    default = _run_command(api, "/provider list")
+
+    assert default.success is True
+    assert "[NATIVE]" in default.markdown
+    assert "[GATEWAY]" in default.markdown
+    # `deepinfra` is unverified and inactive: withheld from the default.
+    assert "deepinfra" not in default.markdown
+    assert "/provider list --all" in default.markdown
+    assert "more unverified providers" in default.markdown
+
+
+def test_provider_list_all_and_tier_filters_reach_the_full_registry() -> None:
+    api = FakeCommandApi()
+
+    everything = _run_command(api, "/provider list --all")
+    assert everything.success is True
+    assert "deepinfra" in everything.markdown
+    assert "[NATIVE]" in everything.markdown
+    # Nothing was withheld, so the footer must not claim otherwise.
+    assert "more unverified providers" not in everything.markdown
+
+    unverified = _run_command(api, "/provider list --tier unverified")
+    assert unverified.success is True
+    assert "deepinfra" in unverified.markdown
+    assert "[NATIVE]" not in unverified.markdown
+
+    native = _run_command(api, "/provider list --tier native")
+    assert native.success is True
+    assert "[NATIVE]" in native.markdown
+    assert "[GATEWAY]" not in native.markdown
+    assert "deepinfra" not in native.markdown
+    # An explicit --tier states the caller's scope, so the default view's
+    # "N more unverified" footer would just be counting what they excluded.
+    assert "more unverified providers" not in native.markdown
+
+    bogus = _run_command(api, "/provider list --tier nonsense")
+    assert bogus.success is False
+    assert "nonsense" in bogus.markdown
+
+
+def test_provider_list_always_shows_the_active_provider_whatever_its_tier() -> None:
+    """The one row that can never be withheld is the one in use."""
+    api = FakeCommandApi()
+    api.llm_provider = "deepinfra"
+
+    default = _run_command(api, "/provider list")
+
+    assert default.success is True
+    assert "deepinfra" in default.markdown
+
+
+def test_provider_list_carries_the_cliproxy_catalog() -> None:
+    """CLIProxy targets are a separate catalog and used to be invisible.
+
+    They appeared only inside form payloads, so every non-form surface
+    (and every user who typed the command rather than clicking) was told
+    the registry list was the whole story.
+    """
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider list")
+
+    assert result.success is True
+    assert "[CLIPROXY]" in result.markdown
+    # Inside the CLIProxy SECTION, not merely somewhere in the markdown:
+    # claude, kimi and grok are also registry-provider text.
+    section = result.markdown.split("[CLIPROXY]", 1)[1].split("[NATIVE]", 1)[0]
+    for target in ("claude", "codex", "gemini-cli", "antigravity", "kimi", "grok"):
+        assert target in section, target
+    assert "/provider cliproxy" in result.markdown
+
+    only = _run_command(api, "/provider list --tier cliproxy")
+    assert "[CLIPROXY]" in only.markdown
+    assert "[NATIVE]" not in only.markdown
+
+
+def test_provider_list_cliproxy_tier_explains_itself_when_it_is_withheld() -> None:
+    """A filtered view whose only rows are hidden must not answer blank.
+
+    /provider cliproxy is admin-only and chat-blocked, so its section is
+    dropped for those callers. `--tier cliproxy` then had nothing left to
+    render and returned a bare table header, which reads as "there are
+    none" rather than "you cannot see these".
+    """
+    api = FakeCommandApi()
+
+    non_admin = _run_command(api, "/provider list --tier cliproxy", is_admin=False)
+    assert non_admin.success is False
+    assert "not available to you" in non_admin.markdown
+    assert "/provider list" in non_admin.markdown
+
+    chat = _run_command(api, "/provider list --tier cliproxy", surface="discord")
+    assert chat.success is False
+    assert "not available to you" in chat.markdown
+
+
+def test_provider_list_hides_cliproxy_from_callers_it_would_refuse() -> None:
+    """Cosmetic gating only: the refusal itself stays at the dispatch gate.
+
+    /provider cliproxy is admin-only and blocked on chat platforms, so
+    advertising it to a non-admin or in Discord would be an offer the
+    gate refuses.
+    """
+    api = FakeCommandApi()
+
+    non_admin = _run_command(api, "/provider list", is_admin=False)
+    assert non_admin.success is True
+    assert "[CLIPROXY]" not in non_admin.markdown
+    assert "[NATIVE]" in non_admin.markdown
+
+    chat = _run_command(api, "/provider list", surface="discord")
+    assert chat.success is True
+    assert "[CLIPROXY]" not in chat.markdown
+
+
+def test_provider_list_tags_an_active_route_that_runs_through_cliproxy() -> None:
+    """An applied CLIProxy route persists as a plain provider + base URL.
+
+    Without the tag the table shows a subscription as an ordinary
+    direct-API credential, which is how a Claude Max route could sit in
+    the list looking like a plain Anthropic key.
+    """
+    direct = FakeCommandApi()
+    assert "via CLIProxy" not in _run_command(direct, "/provider list").markdown
+
+    proxied = FakeCommandApi()
+    proxied.llm_base_url = "http://cli-proxy-api:8317/v1"
+
+    result = _run_command(proxied, "/provider list")
+
+    assert result.success is True
+    assert "via CLIProxy" in result.markdown
+    # On the row that is actually active, not sprayed across the table.
+    active_rows = [
+        line
+        for line in result.markdown.splitlines()
+        if "via CLIProxy" in line and " yes " in line
+    ]
+    assert len(active_rows) == 1
+    assert "openai" in active_rows[0]
+
+    card = _run_command(proxied, "/provider")
+    assert "via CLIProxy" in card.markdown
+
+
+def test_provider_card_offers_cliproxy_only_where_it_is_usable() -> None:
+    api = FakeCommandApi()
+
+    assert "cliproxy" in _run_command(api, "/provider").markdown
+    assert "cliproxy" not in _run_command(api, "/provider", is_admin=False).markdown
+
+
+def test_provider_cliproxy_targets_dispatch_from_the_provider_root() -> None:
+    """`/provider gemini-cli` used to be told the name did not exist.
+
+    gemini-cli is a valid CLIProxy target; the handler fuzzy-matched the
+    token against /provider's subcommands only and never consulted the
+    catalog it imports four lines later.
+    """
+    from nymeria.cliproxy.catalog import get_cliproxy_provider
+
+    api = FakeCommandApi()
+
+    for target in ("gemini-cli", "codex", "antigravity"):
+        result = _run_command(api, f"/provider {target}")
+        assert "Unknown provider" not in result.markdown, target
+        # The CLIProxy target step for THAT target, identified by its
+        # own brief plus the catalog label the step renders.
+        assert "Routes as" in result.markdown, target
+        spec = get_cliproxy_provider(target)
+        assert spec is not None
+        assert spec.label in result.markdown, target
+
+
+def test_provider_registry_ids_keep_winning_over_cliproxy_targets() -> None:
+    """claude/kimi/grok are registry aliases first.
+
+    Their ungated, read-only provider card must not be replaced by an
+    admin-gated OAuth step; the card already offers CLIProxy as a tab.
+    """
+    api = FakeCommandApi()
+
+    for token, expected in (
+        ("claude", "Anthropic"),
+        ("kimi", "Moonshot"),
+        ("grok", "xAI"),
+    ):
+        result = _run_command(api, f"/provider {token}")
+        assert result.success is True, token
+        assert expected in result.markdown, token
+        assert "Routes as" not in result.markdown, token
+
+
+def test_provider_cliproxy_target_spellings_inherit_the_gates() -> None:
+    """An injected alias resolves to the target's definition, so it
+    cannot widen access: the same admin, agent and chat-surface refusals
+    apply to `/provider codex` as to `/provider cliproxy codex`."""
+    api = FakeCommandApi()
+
+    non_admin = _run_command(api, "/provider codex", is_admin=False)
+    assert non_admin.success is False
+    assert "admin" in non_admin.markdown.lower()
+
+    chat = _run_command(api, "/provider codex", surface="discord")
+    assert chat.success is False
+    assert "message history" in chat.markdown
+
+
+def test_unknown_provider_error_points_at_both_catalogs() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider switch definitely-not-real")
+
+    assert result.success is False
+    assert "/provider list" in result.markdown
+    assert "/provider cliproxy" in result.markdown
+
+    # Not advertised to a caller the CLIProxy command would refuse.
+    non_admin = _run_command(api, "/provider definitely-not-real", is_admin=False)
+    assert non_admin.success is False
+    assert "/provider cliproxy" not in non_admin.markdown
 
 
 def test_provider_set_maps_credential_fields_to_settings() -> None:
