@@ -1566,6 +1566,25 @@ own checkmark success copy and emits no `level`. The dispatch boundary
 still ACCEPTS the old prefixes from out-of-tree handlers (plugins) as a
 permanent compatibility path.
 
+**Output budget (2026-08-04).** `markdown` is capped per SURFACE, not
+globally. `cli`, `desktop`, `mobile` and `api` get 100,000 characters;
+every other surface, the `agent` actor, and a request that sends no
+`surface` at all get 12,000. Exceeding the budget appends
+`**Note:** Output truncated (was N chars).` and nothing else signals it,
+so treat that string as the truncation marker. The roomy budget assumes a
+client that can scroll (the terminal writes into native scrollback, the
+GUIs into a scrollable card); the compact one bounds how many messages a
+listing costs on a chat platform, whose senders already chunk to the
+platform limit, and how much of a model's context a slash command can
+consume. Before 2026-08-04 every surface shared one 4,000-char cap with a
+single per-command exemption, which cut ordinary listings (`/provider
+list`, `/tools list`) mid-row on surfaces that could have rendered them
+whole. Truncation is a backstop, not a paging design: a built-in whose
+ordinary output approaches the compact budget is expected to grow a
+shorter default view plus an explicit opt-in to the rest, which is what
+`/provider list --all` is (`tests/test_command_output_budget.py` fails
+the build when one outgrows it).
+
 Commands that require an active thread return a markdown error if `thread_id`
 is omitted. `/compact` appears in discovery with `execution_kind:
 "chat_stream"`, but `POST /commands/execute` returns a markdown error telling
