@@ -3,10 +3,13 @@
   import { Button, Icon } from '$lib/components/common';
   import { api } from '$lib/services/api.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { commandsStore } from '$lib/stores/commands.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { filterCommands } from '$lib/utils/commandSearch';
   import type { AttachmentLimits, FileAttachment, SlashCommandInfo } from '$lib/types';
   import FilePreview from './FilePreview.svelte';
   import ImageModal from './ImageModal.svelte';
+  import InputHintTips from './InputHintTips.svelte';
   import {
     processFile,
     getFilesFromClipboard,
@@ -37,14 +40,12 @@
   let pendingFiles = $state<FileAttachment[]>([]);
   let modalFile = $state<FileAttachment | null>(null);
   let errorMessage = $state<string | null>(null);
-  let commands = $state<SlashCommandInfo[]>([]);
-  let commandsLoaded = $state(false);
-  let commandsLoading = $state(false);
   // Escape closes the palette until the "/" name-entry context is left and
-  // re-entered. Clearing commandsLoaded instead (the old behavior) re-armed
-  // the fetch effect, so the palette reopened on the next tick.
+  // re-entered. (Resetting the shared catalog instead would re-arm the fetch
+  // effect, so the palette reopened on the next tick.)
   let paletteDismissed = $state(false);
   let highlightedCommandIndex = $state(0);
+  let paletteRef = $state<HTMLDivElement | null>(null);
 
   let isStreaming = $derived(chatStore.isStreaming);
   let isStopping = $derived(chatStore.isStopping);
@@ -146,15 +147,12 @@
   let slashQuery = $derived(
     isCommandNameEntry ? inputValue.slice(1).toLowerCase() : ''
   );
+  // Tiered ranking lives in the shared commandSearch util (prefix-on-name >
+  // substring-on-name > description-only); the catalog comes from the shared
+  // commands store, which also feeds the send-path routing in ChatPanel. No
+  // row cap: the palette scrolls (max-height + scroll-into-view below).
   let filteredCommands = $derived(
-    isCommandNameEntry
-      ? commands
-          .filter((command) => (
-            command.name.includes(slashQuery) ||
-            command.description.toLowerCase().includes(slashQuery)
-          ))
-          .slice(0, 8)
-      : []
+    isCommandNameEntry ? filterCommands(commandsStore.commands, slashQuery) : []
   );
   let showCommandPalette = $derived(
     isCommandNameEntry &&
@@ -165,8 +163,8 @@
   );
 
   $effect(() => {
-    if (isCommandNameEntry && !commandsLoaded && !commandsLoading) {
-      void loadCommands();
+    if (isCommandNameEntry) {
+      void commandsStore.ensureLoaded();
     }
   });
 
@@ -182,19 +180,16 @@
     }
   });
 
-  async function loadCommands() {
-    commandsLoading = true;
-    try {
-      commands = await api.listCommands();
-      commandsLoaded = true;
-    } catch (error) {
-      console.warn('[InputBar] Failed to load slash commands:', error);
-    } finally {
-      commandsLoading = false;
-    }
-  }
+  $effect(() => {
+    void highlightedCommandIndex;
+    void filteredCommands;
+    if (!paletteRef) return;
+    const active = paletteRef.children[highlightedCommandIndex] as HTMLElement | undefined;
+    active?.scrollIntoView({ block: 'nearest' });
+  });
 
   function insertCommand(command: SlashCommandInfo) {
+    hapticImpact('light');
     inputValue = `/${command.name} `;
     highlightedCommandIndex = 0;
     requestAnimationFrame(() => {
@@ -263,9 +258,6 @@
   }
 
   function handleInput() {
-    if (isCommandNameEntry && !commandsLoaded && !commandsLoading) {
-      void loadCommands();
-    }
     if (textareaRef) {
       textareaRef.style.height = 'auto';
       textareaRef.style.height = Math.min(textareaRef.scrollHeight, 120) + 'px';
@@ -396,7 +388,7 @@
   <FilePreview files={pendingFiles} onRemove={removeFile} onFileClick={openFileModal} />
 
   {#if showCommandPalette}
-    <div class="command-palette">
+    <div class="command-palette" bind:this={paletteRef}>
       {#each filteredCommands as command, index (command.name)}
         <button
           type="button"
@@ -412,6 +404,11 @@
       {/each}
     </div>
   {/if}
+
+  <!-- "/" discoverability + feature tips (backlog #135): above the composer,
+       where the soft keyboard cannot cover it while the keyboard-height
+       wiring is dead (backlog #145). -->
+  <InputHintTips paused={inputValue.trim().length > 0} />
 
   <div class="input-bar">
     {#if filesEnabled}

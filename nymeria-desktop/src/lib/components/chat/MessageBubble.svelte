@@ -421,7 +421,13 @@
     try {
       const recentMessages = chatStore.messages.slice(-10).map(m => ({
         role: m.role,
-        content: (m.content || '').substring(0, 500),
+        // Failed turns carry their error as structured state (backlog #98);
+        // fold it in or the report ships a blank assistant message for the
+        // very failure being reported.
+        content: (m.errorText
+          ? `${m.content || ''}\n\nError: ${m.errorText}`.trim()
+          : (m.content || '')
+        ).substring(0, 500),
         timestamp: m.timestamp.toISOString(),
         id: m.id
       }));
@@ -450,7 +456,22 @@
 </script>
 
 {#if message.kind === 'command_result'}
-<div class="command-result">
+<!-- Outcome accent keyed off the typed level (backlog #135). The status
+     fallback is defensive: addCommandResult, the only producer, always
+     stamps commandLevel. Polite live region, not role="alert": an alert
+     would announce the card's FULL markdown assertively. -->
+{@const commandLevel = message.commandLevel ?? (message.status === 'error' ? 'error' : 'success')}
+<div
+  class="command-result"
+  class:level-error={commandLevel === 'error'}
+  class:level-warning={commandLevel === 'warning'}
+  aria-live={commandLevel === 'error' ? 'polite' : undefined}
+>
+  {#if commandLevel === 'error' || commandLevel === 'warning'}
+    <div class="command-level-icon" class:warning={commandLevel === 'warning'}>
+      <Icon name={commandLevel === 'error' ? 'error' : 'warning'} size={18} />
+    </div>
+  {/if}
   <div class="command-body">
     {#if message.commandInput}
       <div class="command-input"><code>{message.commandInput}</code></div>
@@ -512,7 +533,7 @@
   </div>
 </div>
 {:else if !isHiddenMessage}
-<div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource}>
+<div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource} class:error={!isUser && message.status === 'error'}>
   <!--
     Crit 4 — aria-busy silences AT browse-mode reads of mid-stream content
     on the assistant bubble. Cleared when status leaves 'streaming', after
@@ -701,6 +722,18 @@
         </div>
       {/if}
     {/if}
+
+    {#if !isUser && message.status === 'error' && message.errorText}
+      <!-- Turn-error alert block (backlog #98): structured error state
+           rendered as a real alert below whatever streamed, never markdown
+           appended into the reply. -->
+      <div class="turn-error" role="alert">
+        <div class="turn-error-icon">
+          <Icon name="error" size={18} />
+        </div>
+        <div class="turn-error-body">{message.errorText}</div>
+      </div>
+    {/if}
   </div>
 
   <div class="message-footer">
@@ -824,6 +857,35 @@
     animation: msgIn var(--transition-normal);
   }
 
+  /* Outcome accents (backlog #135): border + tint only, matching the app's
+     alert-block pattern; success/info cards keep the neutral treatment. */
+  .command-result.level-error {
+    border-color: rgba(var(--error-rgb), 0.3);
+    background: rgba(var(--error-rgb), 0.08);
+  }
+
+  .command-result.level-warning {
+    border-color: rgba(var(--warning-rgb), 0.3);
+    background: rgba(var(--warning-rgb), 0.08);
+  }
+
+  .command-level-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 14%, transparent);
+    flex-shrink: 0;
+  }
+
+  .command-level-icon.warning {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+  }
+
   .command-body {
     flex: 1;
     min-width: 0;
@@ -897,6 +959,39 @@
   :global(html[data-chat-bubbles="on"]) .message-bubble.assistant {
     align-self: flex-start;
     max-width: min(70ch, 85%);
+  }
+
+  /* Errored turn (backlog #98): a subtle wash over the whole message; the
+     turn-error alert block below the content carries the loud part. */
+  .message-bubble.error {
+    background: rgba(var(--error-rgb), 0.04);
+    border-radius: var(--radius-lg);
+  }
+
+  .turn-error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid rgba(var(--error-rgb), 0.3);
+    border-radius: var(--radius-md);
+    background: rgba(var(--error-rgb), 0.08);
+  }
+
+  .turn-error-icon {
+    display: flex;
+    align-items: center;
+    color: var(--error);
+    flex-shrink: 0;
+    padding-top: 1px;
+  }
+
+  .turn-error-body {
+    font-size: var(--font-size-sm);
+    /* The humanized copy may carry a trailing "(code: X)" detail line. */
+    white-space: pre-line;
+    overflow-wrap: anywhere;
   }
 
   .bubble-content {

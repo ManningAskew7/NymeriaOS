@@ -199,11 +199,14 @@ export interface SlashCommandInfo {
   params?: SlashCommandParam[] | null;
 }
 
+// Typed outcome level of a command result (#132 server-side, #135 client-side).
+export type CommandResultLevel = 'info' | 'success' | 'warning' | 'error';
+
 export interface CommandExecuteResponse {
   success: boolean;
   markdown: string;
   command: string;
-  level: 'info' | 'success' | 'warning' | 'error';
+  level: CommandResultLevel;
   data?: Record<string, unknown> | null;
 }
 
@@ -234,6 +237,8 @@ export interface Message {
   fallbackPromptInfo?: FallbackPromptInfo; // Present on the LLM fallback consent card (parked model switch)
   dispatchInfo?: DispatchInfo;    // Present on responses routed to another thread
   commandInput?: string;          // Raw slash command typed by the user
+  commandLevel?: CommandResultLevel; // Outcome level of a command_result; drives the card accent (backlog #135)
+  errorText?: string;             // Turn-error text rendered as the in-bubble alert block (backlog #98)
 }
 
 export interface ToolCall {

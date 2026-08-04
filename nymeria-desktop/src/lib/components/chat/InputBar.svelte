@@ -3,7 +3,9 @@
   import { Button, Icon } from '$lib/components/common';
   import { api } from '$lib/services/api.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { commandsStore } from '$lib/stores/commands.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { filterCommands } from '$lib/utils/commandSearch';
   import type { AttachmentLimits, FileAttachment, SlashCommandInfo } from '$lib/types';
   import FilePreview from './FilePreview.svelte';
   import ImageModal from './ImageModal.svelte';
@@ -43,12 +45,9 @@
   let isDragOver = $state(false);
   let modalFile = $state<FileAttachment | null>(null);
   let errorMessage = $state<string | null>(null);
-  let commands = $state<SlashCommandInfo[]>([]);
-  let commandsLoaded = $state(false);
-  let commandsLoading = $state(false);
   // Escape closes the palette until the "/" name-entry context is left and
-  // re-entered. Clearing commandsLoaded instead (the old behavior) re-armed
-  // the fetch effect, so the palette reopened on the next tick.
+  // re-entered. (Resetting the shared catalog instead would re-arm the fetch
+  // effect, so the palette reopened on the next tick.)
   let paletteDismissed = $state(false);
   let highlightedCommandIndex = $state(0);
   let paletteRef = $state<HTMLDivElement | null>(null);
@@ -173,33 +172,11 @@
   let slashQuery = $derived(
     isCommandNameEntry ? inputValue.slice(1).toLowerCase() : ''
   );
-  // Tier matches so the slash-command palette surfaces what the user is
-  // most likely typing first: prefix-on-name > substring-on-name >
-  // description-only. Without tiers, a permissive description-match floods
-  // the list with commands whose descriptions happen to contain a common
-  // letter (e.g. "h" pulls in any command mentioning "the" or "thread"),
-  // and the backend's (category, name) sort then surfaces alphabetically
-  // early categories like "Goals" at the top regardless of relevance.
+  // Tiered ranking lives in the shared commandSearch util (prefix-on-name >
+  // substring-on-name > description-only); the catalog comes from the shared
+  // commands store, which also feeds the send-path routing in MainPanel.
   let filteredCommands = $derived(
-    isCommandNameEntry
-      ? (() => {
-          if (!slashQuery) return commands;
-          const prefix: typeof commands = [];
-          const nameSub: typeof commands = [];
-          const descOnly: typeof commands = [];
-          for (const cmd of commands) {
-            const name = cmd.name.toLowerCase();
-            if (name.startsWith(slashQuery)) {
-              prefix.push(cmd);
-            } else if (name.includes(slashQuery)) {
-              nameSub.push(cmd);
-            } else if (cmd.description.toLowerCase().includes(slashQuery)) {
-              descOnly.push(cmd);
-            }
-          }
-          return [...prefix, ...nameSub, ...descOnly];
-        })()
-      : []
+    isCommandNameEntry ? filterCommands(commandsStore.commands, slashQuery) : []
   );
   let showCommandPalette = $derived(
     isCommandNameEntry &&
@@ -210,8 +187,8 @@
   );
 
   $effect(() => {
-    if (isCommandNameEntry && !commandsLoaded && !commandsLoading) {
-      void loadCommands();
+    if (isCommandNameEntry) {
+      void commandsStore.ensureLoaded();
     }
   });
 
@@ -234,18 +211,6 @@
     const active = paletteRef.children[highlightedCommandIndex] as HTMLElement | undefined;
     active?.scrollIntoView({ block: 'nearest' });
   });
-
-  async function loadCommands() {
-    commandsLoading = true;
-    try {
-      commands = await api.listCommands();
-      commandsLoaded = true;
-    } catch (error) {
-      console.warn('[InputBar] Failed to load slash commands:', error);
-    } finally {
-      commandsLoading = false;
-    }
-  }
 
   function insertCommand(command: SlashCommandInfo) {
     inputValue = `/${command.name} `;
@@ -328,9 +293,6 @@
   }
 
   function handleInput() {
-    if (isCommandNameEntry && !commandsLoaded && !commandsLoading) {
-      void loadCommands();
-    }
     if (textareaRef) {
       // Auto-resize textarea
       textareaRef.style.height = 'auto';

@@ -4,6 +4,7 @@
   import { ThreadSettingsPanel } from '$lib/components/threads';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { commandsStore } from '$lib/stores/commands.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { errorsStore } from '$lib/stores/errors.svelte';
   import { rewindToMessage } from '$lib/utils/rewind';
@@ -178,42 +179,9 @@
     triggerCount > 0 || hasInstructions || isCallable
   );
   // Slash commands whose execution_kind is `chat_stream` on the backend must
-  // route through the /chat SSE endpoint, not /commands/execute. Derived
-  // from the backend catalog so new registrations cannot drift (the old
-  // hardcoded list was missing /done and /resume, which broke both here);
-  // the static fallback covers a failed catalog fetch.
-  const chatStreamFallbackRoots = new Set([
-    '/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick', '/done', '/resume'
-  ]);
-  let chatStreamRoots: Set<string> | null = null;
-  let chatStreamRootsPromise: Promise<Set<string>> | null = null;
-
-  function loadChatStreamRoots(): Promise<Set<string>> {
-    if (chatStreamRoots) return Promise.resolve(chatStreamRoots);
-    if (!chatStreamRootsPromise) {
-      chatStreamRootsPromise = api
-        .listCommands()
-        .then((commands) => {
-          const roots = new Set<string>();
-          for (const cmd of commands) {
-            if (cmd.execution_kind === 'chat_stream' && cmd.path.length > 0) {
-              roots.add(`/${cmd.path[0]}`);
-            }
-          }
-          chatStreamRoots = roots.size > 0 ? roots : chatStreamFallbackRoots;
-          return chatStreamRoots;
-        })
-        .catch(() => {
-          // Cache the fallback for this session: retrying on every send
-          // would re-toast the same transport error each time (listCommands
-          // routes failures through the shared error toast), and the
-          // fallback set matches the live chat_stream catalog.
-          chatStreamRoots = chatStreamFallbackRoots;
-          return chatStreamRoots;
-        });
-    }
-    return chatStreamRootsPromise;
-  }
+  // route through the /chat SSE endpoint, not /commands/execute. The root
+  // set comes from the shared commands store (one catalog fetch also serving
+  // the palette), which degrades to a static fallback on a failed fetch.
 
   async function handleSend(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
@@ -234,7 +202,7 @@
     // gate (the backend's busy-thread prompt queue covers the stale-read
     // race in the other direction).
     const streamingAtSend = chatStore.isStreaming;
-    const isChatStreamCommand = slashRoot !== '' && (await loadChatStreamRoots()).has(slashRoot);
+    const isChatStreamCommand = slashRoot !== '' && (await commandsStore.chatStreamRoots()).has(slashRoot);
 
     // While streaming: queue the prompt sub-turn-style. Slash commands and
     // attachments cannot be queued (backend rejects), so fall back to the
@@ -255,11 +223,14 @@
       const threadId = threadsStore.currentThreadId || undefined;
       try {
         const result = await api.executeCommand(trimmed, threadId);
-        chatStore.addCommandResult(trimmed, result.markdown, result.success);
+        chatStore.addCommandResult(trimmed, result.markdown, result.success, result.level);
       } catch (error) {
+        // The card is the ONE error surface for a failed command (backlog
+        // #135): humanized copy, error accent from the store's level
+        // fallback, no toast duplicate (the API layer no longer pushes one).
         chatStore.addCommandResult(
           trimmed,
-          `**Error:** ${error instanceof Error ? error.message : 'The command did not complete.'}`,
+          humanizeErrorText(error, { action: 'run', resource: `the ${slashRoot} command` }),
           false
         );
       }
@@ -875,7 +846,15 @@
           chatStore.finalizeStopped();
           break;
         }
-        chatStore.setLastMessageError(errData.message);
+        // Server-authored failure copy renders VERBATIM (review 2026-08-04):
+        // the backend classifies stream failures into purpose-written display
+        // text (rate limits, credits, tool-name faults), which the humanizer's
+        // presentability filter would discard and whose "connection reset"
+        // phrasing its connectivity heuristic would misread as a LOCAL drop.
+        // The alert block (backlog #98) supplies the error styling.
+        chatStore.setLastMessageError(
+          errData.code ? `${errData.message}\n(code: ${errData.code})` : errData.message
+        );
         break;
       }
 

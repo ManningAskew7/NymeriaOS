@@ -1,6 +1,7 @@
 import type {
   Message,
   AssistantActivityPhase,
+  CommandResultLevel,
   MessageStep,
   ToolCall,
   ToolCallStatus,
@@ -204,7 +205,12 @@ export function createChatStore() {
       return id;
     },
 
-    addCommandResult(commandInput: string, content: string, success: boolean): string {
+    addCommandResult(
+      commandInput: string,
+      content: string,
+      success: boolean,
+      level?: CommandResultLevel
+    ): string {
       const id = generateId();
       const message: Message = {
         id,
@@ -213,7 +219,10 @@ export function createChatStore() {
         commandInput,
         content,
         timestamp: new Date(),
-        status: success ? 'complete' : 'error'
+        status: success ? 'complete' : 'error',
+        // Typed outcome accent (backlog #135); derives from the success
+        // boolean for callers without a wire level.
+        commandLevel: level ?? (success ? 'success' : 'error')
       };
       messages = [...messages, message];
       return id;
@@ -353,6 +362,7 @@ export function createChatStore() {
           steps: [],
           intermediateContent: '',
           toolCalls: [],
+          errorText: undefined,
           status: 'streaming' as const,
           activityPhase: 'processing' as const,
           activityUpdatedAt: new Date()
@@ -360,6 +370,13 @@ export function createChatStore() {
       ];
     },
 
+    /**
+     * Store the turn error as structured state on the tail assistant message
+     * (backlog #98): the renderer draws it as an in-bubble alert block, so
+     * the text is NOT appended into content/steps markdown (the old idiom,
+     * which a separate alert block would double-render). Whatever streamed
+     * before the failure stays untouched above the block.
+     */
     setLastMessageError(error: string) {
       this._forceFlush();
       if (messages.length === 0) return;
@@ -368,44 +385,12 @@ export function createChatStore() {
       const lastMessage = messages[lastIndex];
 
       if (lastMessage.role === 'assistant') {
-        const existing = (lastMessage.content || '').trim();
-        const errorText = (error || 'The reply could not be completed.').trim();
-        let mergedContent = errorText;
-        let updatedSteps = lastMessage.steps;
-
-        if (existing) {
-          mergedContent = existing.includes(errorText)
-            ? existing
-            : `${existing}\n\n---\n**Error:** ${errorText}`;
-        }
-
-        if (lastMessage.steps) {
-          const errorStepText = `\n\n---\n**Error:** ${errorText}`;
-          const steps = [...lastMessage.steps];
-          const lastStep = steps[steps.length - 1];
-
-          if (lastStep && lastStep.type === 'response') {
-            const existingStepText = lastStep.content || '';
-            if (!existingStepText.includes(errorText)) {
-              steps[steps.length - 1] = {
-                ...lastStep,
-                content: existingStepText + errorStepText
-              };
-            }
-          } else {
-            steps.push({ type: 'response', content: errorStepText });
-          }
-
-          updatedSteps = steps;
-        }
-
         messages = [
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            content: mergedContent,
+            errorText: (error || 'The reply could not be completed.').trim(),
             status: 'error',
-            steps: updatedSteps,
             intermediateContent: lastMessage.intermediateContent || undefined
           }
         ];

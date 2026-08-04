@@ -57,6 +57,13 @@ export function messageToMarkdown(message: Message): string {
     }
   }
 
+  // Structured turn-error state (backlog #98): the error no longer lives in
+  // content/steps, so serialize it explicitly or a copied/reported failed
+  // turn reads as a clean partial reply.
+  if (message.errorText) {
+    sections.push(`**Error:** ${message.errorText}`);
+  }
+
   return sections.length > 0 ? sections.join('\n\n---\n\n') : '(empty message)';
 }
 
@@ -85,10 +92,17 @@ export function messageToResponseText(message: Message): string {
       }
     }
 
-    if (parts.length > 0) return parts.join('\n\n');
+    if (parts.length > 0) return withErrorText(message, parts.join('\n\n'));
   }
 
   // Legacy fallback or no trailing response steps
-  if (message.content) return message.content;
+  if (message.content) return withErrorText(message, message.content);
+  if (message.errorText) return `Error: ${message.errorText}`;
   return '(empty message)';
+}
+
+/** Append the structured turn error (backlog #98) so copies of a failed
+ *  turn say it failed. */
+function withErrorText(message: Message, text: string): string {
+  return message.errorText ? `${text}\n\nError: ${message.errorText}` : text;
 }
