@@ -41,6 +41,7 @@ from .command_forms import (
     form_payload,
     form_tab,
     radio_field,
+    render_outcome,
     search_field,
 )
 from .command_form_generation import generate_param_form
@@ -249,15 +250,20 @@ class ParsedCommand:
 class SkillSlashResult:
     """A prepared `/skill` or `/kit` dispatch for the chat-stream surface.
 
-    ``success`` is the outcome, so ``message`` is a plain BODY carrying no
-    legacy ``[Error]:``/``[Success]:`` prefix (#132): the caller authors
-    whatever outcome artifact its surface renders.
+    ``message`` is a plain BODY carrying no sentinel or artifact (#132);
+    ``level`` is the authored outcome the caller renders through
+    ``render_outcome`` for non-streaming results (#144: the deactivation
+    no-op is ``info``, not a ``**Done.**`` claim). It defaults to ``error``
+    because most non-streaming constructions are refusals; the two
+    non-error shapes set it explicitly. ``success`` stays for the
+    should-it-stream fork.
     """
 
     success: bool
     should_stream: bool
     message: str
     skill_name: str | None = None
+    level: CommandResultLevel = "error"
 
 
 def _path_param(value: Any) -> str:
@@ -567,12 +573,15 @@ def _render_result_markdown(
     """Render a handler's authored level into the markdown artifacts every
     surface reads (#132): ``**Error:**`` / ``**Done.**`` / ``**Warning:**``.
 
-    This is the ONE producer of those artifacts. Desktop, mobile, and the
-    five bots render the markdown with no branch on success or level, so
-    the artifact IS their outcome signal; the CLI pops it into a glyph.
-    ``info`` gets no artifact (readouts stay quiet) and instead the heading
-    heuristic: a multi-line body whose first line is plain text gets that
-    line promoted to ``### `` (the CLI renders it as a block heading).
+    The artifacts themselves come from ``command_forms.render_outcome``,
+    the ONE producer (#144). Desktop, mobile, and the five bots render the
+    markdown with no branch on success or level, so the artifact IS their
+    outcome signal; the CLI pops it into a glyph. ``info`` gets no artifact
+    (readouts stay quiet) and instead the heading heuristic: a multi-line
+    body whose first line is plain text gets that line promoted to ``### ``
+    (the CLI renders it as a block heading). Both dispatch-boundary extras
+    (the sentinel parse below, the heading heuristic) apply HERE only, not
+    in ``render_outcome``: chat.py's funnel must not rewrite bodies.
 
     Compat, PERMANENT: text still carrying a legacy ``[Error]:``/
     ``[Success]:``/``[Info]:`` sentinel wins over ``level``. First-party
@@ -593,11 +602,11 @@ def _render_result_markdown(
         stripped = stripped.removeprefix("[Info]:").strip()
 
     if level == "error":
-        return False, "error", f"**Error:** {stripped}"
+        return False, "error", render_outcome("error", stripped)
     if level == "success":
-        return True, "success", f"**Done.** {stripped}"
+        return True, "success", render_outcome("success", stripped)
     if level == "warning":
-        return True, "warning", f"**Warning:** {stripped}"
+        return True, "warning", render_outcome("warning", stripped)
 
     if not stripped:
         return True, "info", ""
@@ -2828,7 +2837,9 @@ class CommandService:
         self, parsed: ParsedCommand, ctx: CommandContext | None = None
     ) -> CommandResult:
         if not parsed.tokens:
-            return CommandResult(False, "**Error:** Empty command. Try `/help`.", "", level="error")
+            return CommandResult(
+                False, render_outcome("error", "Empty command. Try `/help`."), "", level="error"
+            )
 
         root = parsed.tokens[0]
         valid_subcommands = self._prefix_subcommands(root)
@@ -2836,9 +2847,10 @@ class CommandService:
             valid = ", ".join(valid_subcommands)
             return CommandResult(
                 False,
-                (
-                    f"**Error:** `/{root}` requires a subcommand. Valid: {valid}. "
-                    f"See `/help {root}`."
+                render_outcome(
+                    "error",
+                    f"`/{root}` requires a subcommand. Valid: {valid}. "
+                    f"See `/help {root}`.",
                 ),
                 root,
                 level="error",
@@ -2861,9 +2873,10 @@ class CommandService:
             command_label = f"{root} {parsed.tokens[1]}".strip()
             return CommandResult(
                 False,
-                (
-                    f"**Error:** Unknown subcommand `{parsed.tokens[1]}` for "
-                    f"`/{root}`.{hint} Valid: {valid}."
+                render_outcome(
+                    "error",
+                    f"Unknown subcommand `{parsed.tokens[1]}` for "
+                    f"`/{root}`.{hint} Valid: {valid}.",
                 ),
                 command_label,
                 level="error",
@@ -2872,7 +2885,7 @@ class CommandService:
         hint = self._did_you_mean(self._suggest_roots(root))
         return CommandResult(
             False,
-            f"**Error:** Unknown command `/{root}`.{hint} Use `/help`.",
+            render_outcome("error", f"Unknown command `/{root}`.{hint} Use `/help`."),
             root,
             level="error",
         )
@@ -2903,9 +2916,10 @@ class CommandService:
             available = ", ".join(definition.surfaces)
             return CommandResult(
                 False,
-                (
-                    f"**Error:** Command `/{definition.name}` is not available "
-                    f"on {surface}.{reason} Available on: {available}."
+                render_outcome(
+                    "error",
+                    f"Command `/{definition.name}` is not available "
+                    f"on {surface}.{reason} Available on: {available}.",
                 ),
                 command_label,
                 level="error",
@@ -2929,9 +2943,10 @@ class CommandService:
         if actor == "agent" and definition.path[0] in AGENT_BLOCKED:
             return CommandResult(
                 False,
-                (
-                    f"**Error:** Command `/{definition.path[0]}` is disabled for the agent "
-                    "because it would interrupt or destroy the current conversation."
+                render_outcome(
+                    "error",
+                    f"Command `/{definition.path[0]}` is disabled for the agent "
+                    "because it would interrupt or destroy the current conversation.",
                 ),
                 command_label,
                 level="error",
@@ -2940,21 +2955,27 @@ class CommandService:
         if actor == "agent" and not definition.agent_allowed:
             return CommandResult(
                 False,
-                f"**Error:** Command `/{definition.name}` is not available to the agent.",
+                render_outcome(
+                    "error", f"Command `/{definition.name}` is not available to the agent."
+                ),
                 command_label,
                 level="error",
             )
         if definition.requires_admin and ctx.is_admin is False:
             return CommandResult(
                 False,
-                f"**Error:** Command `/{definition.name}` requires an admin user.",
+                render_outcome(
+                    "error", f"Command `/{definition.name}` requires an admin user."
+                ),
                 command_label,
                 level="error",
             )
         if definition.requires_thread and not ctx.thread_id:
             return CommandResult(
                 False,
-                "**Error:** This command requires an active thread. Send a message first.",
+                render_outcome(
+                    "error", "This command requires an active thread. Send a message first."
+                ),
                 command_label,
                 level="error",
             )
@@ -2964,10 +2985,13 @@ class CommandService:
             # and re-route them into the normal chat path.
             return CommandResult(
                 False,
-                (
-                    f"**Error:** `/{definition.name}` is handled outside the command service. "
-                    f"{definition.note or ''}"
-                ).strip(),
+                render_outcome(
+                    "error",
+                    (
+                        f"`/{definition.name}` is handled outside the command service. "
+                        f"{definition.note or ''}"
+                    ).strip(),
+                ),
                 command_label,
                 level="error",
                 data={"execution_kind": definition.execution_kind},
@@ -2996,7 +3020,9 @@ class CommandService:
                     )
                     return CommandResult(
                         False,
-                        f"**Error:** Unknown command `/{target}`.{hint} Use `/help`.",
+                        render_outcome(
+                            "error", f"Unknown command `/{target}`.{hint} Use `/help`."
+                        ),
                         command_label,
                         level="error",
                     )
@@ -3035,7 +3061,9 @@ class CommandService:
                 client = _client_for_context(ctx)
             except RuntimeError as exc:
                 return _with_hook_notes(
-                    CommandResult(False, f"**Error:** {exc}", command_label, level="error")
+                    CommandResult(
+                        False, render_outcome("error", str(exc)), command_label, level="error"
+                    )
                 )
 
         executor = _CommandExecutor(
@@ -3054,7 +3082,10 @@ class CommandService:
         if method is None:
             return CommandResult(
                 False,
-                f"**Error:** Command `/{definition.name}` is registered but has no executor.",
+                render_outcome(
+                    "error",
+                    f"Command `/{definition.name}` is registered but has no executor.",
+                ),
                 command_label,
                 level="error",
             )
@@ -3122,10 +3153,11 @@ class CommandService:
                             )
                     return _with_hook_notes(CommandResult(
                         False,
-                        (
-                            f"**Error:** {problem}{hint} "
+                        render_outcome(
+                            "error",
+                            f"{problem}{hint} "
                             f"Usage: `{definition.usage}`. "
-                            f"See `/help {definition.name}`."
+                            f"See `/help {definition.name}`.",
                         ),
                         command_label,
                         level="error",
@@ -3159,12 +3191,15 @@ class CommandService:
             ))
         except httpx.HTTPStatusError as e:
             return _with_hook_notes(CommandResult(
-                False, f"**Error:** {http_error_detail(e)}", command_label, level="error"
+                False,
+                render_outcome("error", http_error_detail(e)),
+                command_label,
+                level="error",
             ))
         except Exception as e:
             logger.exception("command dispatch failed for /%s", definition.name)
             return _with_hook_notes(CommandResult(
-                False, f"**Error:** {e}", command_label, level="error"
+                False, render_outcome("error", str(e)), command_label, level="error"
             ))
         finally:
             if owns_api and hasattr(client, "close"):
@@ -3374,22 +3409,25 @@ def deactivate_skill_kit(
     thread_id: str,
     user_id: str | None = None,
     skill_name: str,
-) -> tuple[bool, str]:
+) -> tuple[CommandResultLevel, str]:
     """Deactivate a skill or Skill Kit on a thread.
 
     Removes the skill from ``ThreadConfig.enabled_skills``. For Skill Kits,
     evicts required tools from ``ThreadConfig.temporary_tools``. The graph
     rebuilds on the next turn naturally as the tool set has changed.
 
-    Returns ``(ok, message)``: ``ok`` IS the outcome, so ``message`` is a
-    plain body with no legacy sentinel prefix (#132).
+    Returns ``(level, message)``: ``message`` is a plain body with no
+    sentinel or artifact (#132). The level is authored HERE because a bool
+    cannot express the three outcomes (#144 review): ``success`` for a real
+    deactivation, ``info`` for the no-op ("was not active", a readout that
+    must not claim ``**Done.**``), ``error`` for failures.
     """
     if not thread_id:
-        return False, "No active thread; cannot deactivate skill."
+        return "error", "No active thread; cannot deactivate skill."
 
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
-        return False, f"No thread config for {thread_id}."
+        return "error", f"No thread config for {thread_id}."
 
     changed = False
     if skill_name in tc.enabled_skills:
@@ -3422,7 +3460,7 @@ def deactivate_skill_kit(
 
     if changed:
         if not agent.thread_config_manager.save_config(tc):
-            return False, "Failed to save thread config after deactivate."
+            return "error", "Failed to save thread config after deactivate."
         if hasattr(agent, "invalidate_thread_config_cache"):
             try:
                 agent.invalidate_thread_config_cache(thread_id)
@@ -3433,12 +3471,12 @@ def deactivate_skill_kit(
                 )
 
     label = "Skill kit" if skill is not None and skill.is_skill_kit else "Skill"
+    if not changed and not evicted:
+        return "info", f"{label} '{skill_name}' was not active."
     msg_parts = [f"{label} '{skill_name}' deactivated."]
     if evicted:
         msg_parts.append(f"Evicted tools: {', '.join(evicted)}.")
-    elif not changed:
-        msg_parts = [f"{label} '{skill_name}' was not active."]
-    return True, " ".join(msg_parts)
+    return "success", " ".join(msg_parts)
 
 
 def build_skill_slash_prompt(
@@ -3546,13 +3584,15 @@ def prepare_skill_slash_command(
         )
 
     if len(tail_args) == 1 and tail_args[0].lower() == "off":
-        ok, msg = deactivate_skill_kit(
+        level, msg = deactivate_skill_kit(
             agent=agent,
             thread_id=thread_id,
             user_id=user_id,
             skill_name=skill_name,
         )
-        return SkillSlashResult(ok, False, msg, skill_name)
+        return SkillSlashResult(
+            level != "error", False, msg, skill_name, level=level
+        )
 
     ttl_override: str | None = None
     prompt = tail
@@ -3585,6 +3625,7 @@ def prepare_skill_slash_command(
             has_attachments=has_attachments,
         ),
         skill_name,
+        level="info",  # streams; the level is never rendered on this arm
     )
 
 
@@ -3886,13 +3927,13 @@ class _CommandExecutor(
         lines: list[str] = []
         had_error = False
         for skill in active_skills:
-            ok, msg = deactivate_skill_kit(
+            level, msg = deactivate_skill_kit(
                 agent=agent,
                 thread_id=self.thread_id,
                 user_id=self.user_id,
                 skill_name=skill.name,
             )
-            had_error = had_error or not ok
+            had_error = had_error or level == "error"
             lines.append(f"- `{skill.name}`: {msg}")
 
         text = "Deactivated skills:\n" + "\n".join(lines)

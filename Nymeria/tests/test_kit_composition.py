@@ -523,7 +523,7 @@ def test_deactivate_skill_kit_evicts_expanded_union(tmp_path: Path):
             skill_name="outer-kit",
         )
         assert ok
-        ok, msg = deactivate_skill_kit(
+        level, msg = deactivate_skill_kit(
             agent=agent,
             thread_id="thread-a",
             user_id="user-a",
@@ -532,7 +532,8 @@ def test_deactivate_skill_kit_evicts_expanded_union(tmp_path: Path):
     finally:
         set_current_agent(None)
 
-    assert ok is True
+    # (level, message) contract (#144): a real deactivation authors success.
+    assert level == "success"
     assert "hello_test" in msg and "memory_clear_all" in msg
     tc = agent.thread_config_manager.get_config("thread-a")
     assert tc is not None

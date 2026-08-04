@@ -38,6 +38,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from .command_forms import render_outcome
 from .hooks.base import HookContext, HookEvent
 
 if TYPE_CHECKING:  # imported lazily at runtime to avoid the service cycle
@@ -278,10 +279,11 @@ async def fire_command_submit(
 
             result.denied = CommandResult(
                 False,
-                (
-                    f"**Error:** Command `/{definition.name}` was blocked by a "
+                render_outcome(
+                    "error",
+                    f"Command `/{definition.name}` was blocked by a "
                     "lifecycle hook"
-                    + (f": {reason}" if reason else ".")
+                    + (f": {reason}" if reason else "."),
                 ),
                 definition.name,
                 level="error",

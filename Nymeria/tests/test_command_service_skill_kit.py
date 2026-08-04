@@ -151,11 +151,12 @@ class TestDeactivateSkillKit:
             "test-kit", required_tools=["bash_execute"], tmp_path=tmp_path
         )
         agent = _make_agent(tmp_path, kit)
-        ok, msg = deactivate_skill_kit(
+        level, msg = deactivate_skill_kit(
             agent=agent, thread_id="t1", user_id="u1", skill_name="test-kit"
         )
-        # With no thread config yet, returns an error since the config doesn't exist.
-        assert not ok
+        # With no thread config yet, returns an error since the config
+        # doesn't exist ((level, message) contract, #144).
+        assert level == "error"
 
     def test_removes_skill_from_enabled_skills(self, tmp_path):
         kit = _make_skill(
@@ -170,10 +171,10 @@ class TestDeactivateSkillKit:
         assert tc_before is not None
         assert "test-kit" in tc_before.enabled_skills
 
-        ok, msg = deactivate_skill_kit(
+        level, msg = deactivate_skill_kit(
             agent=agent, thread_id="t1", user_id="u1", skill_name="test-kit"
         )
-        assert ok, msg
+        assert level == "success", msg
         tc_after = agent.thread_config_manager.get_config("t1")
         assert tc_after is not None
         assert "test-kit" not in tc_after.enabled_skills
@@ -196,10 +197,10 @@ class TestDeactivateSkillKit:
         assert tc_after_act is not None
         assert "memory_clear_all" in tc_after_act.temporary_tools
 
-        ok_deact, msg = deactivate_skill_kit(
+        level_deact, msg = deactivate_skill_kit(
             agent=agent, thread_id="t1", user_id="u1", skill_name="ttl-kit"
         )
-        assert ok_deact, msg
+        assert level_deact == "success", msg
         tc_after_deact = agent.thread_config_manager.get_config("t1")
         assert tc_after_deact is not None
         assert "memory_clear_all" not in tc_after_deact.temporary_tools
