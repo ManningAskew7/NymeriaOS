@@ -194,6 +194,49 @@ def test_recorded_unregistered_agent_blocked_entries_pass() -> None:
     )
 
 
+def test_cliproxy_target_spellings_never_shadow_a_registry_provider() -> None:
+    """`/provider <target>` may only claim names the registry does not own.
+
+    Three of the six CLIProxy targets ARE registry ids or aliases
+    (claude -> anthropic, kimi -> moonshotai, grok -> xai), whose
+    ungated, read-only provider card has to keep winning; the card
+    already offers CLIProxy as a tab for its matching target. A new
+    catalog entry that collided would otherwise silently convert an
+    ordinary browse into an admin-gated OAuth step.
+    """
+    from nymeria.cliproxy.catalog import list_cliproxy_providers
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    service = CommandService()
+    # Alias paths are stored normalized, so a catalog id folds its
+    # dashes to underscores on the way in (`gemini-cli` -> `gemini_cli`).
+    catalog = {spec.id.replace("-", "_"): spec.id for spec in list_cliproxy_providers()}
+    dispatched = {
+        catalog[path[1]]
+        for path, target in service._aliases.items()
+        if len(path) == 2
+        and path[0] == "provider"
+        and target == "provider.cliproxy"
+        and path[1] in catalog
+    }
+    # The three free ids dispatch; the colliding three deliberately do not.
+    assert dispatched == {"codex", "gemini-cli", "antigravity"}
+
+    for spelling in dispatched:
+        assert get_llm_provider_spec(spelling) is None, (
+            f"/provider {spelling} would shadow registry provider "
+            f"{spelling!r}; drop it from injected_aliases"
+        )
+
+    withheld = set(catalog.values()) - dispatched
+    assert withheld == {"claude", "kimi", "grok"}
+    for spelling in withheld:
+        assert get_llm_provider_spec(spelling) is not None, (
+            f"CLIProxy target {spelling!r} no longer collides with the "
+            "registry; it can dispatch straight through now"
+        )
+
+
 def _leading_single_token_aliases() -> dict[str, str]:
     """command id -> its FIRST single-token alias, in declaration order.
 

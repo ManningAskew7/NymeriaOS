@@ -862,11 +862,34 @@ class GeneratedCommandsCog(commands.Cog):
         name="list",
         description="List LLM providers grouped by support tier",
     )
-    async def cmd_provider_list(self, interaction: discord.Interaction) -> None:
+    @app_commands.describe(
+        all="Include every registry provider, unverified tier included",
+        tier="Show one tier only",
+    )
+    @app_commands.choices(
+        tier=[
+            app_commands.Choice(name="cliproxy", value="cliproxy"),
+            app_commands.Choice(name="native", value="native"),
+            app_commands.Choice(name="gateway", value="gateway"),
+            app_commands.Choice(name="unverified", value="unverified"),
+        ],
+    )
+    async def cmd_provider_list(
+        self,
+        interaction: discord.Interaction,
+        all: Optional[bool] = None,
+        tier: Optional[str] = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        if all is True:
+            parts.append("--all")
+        if tier is not None:
+            parts.extend(("--tier", shlex.quote(tier)))
         await self.bot._send_backend_command(
             interaction,
             "provider list",
+            args=" ".join(parts),
             require_admin=False,
         )
 

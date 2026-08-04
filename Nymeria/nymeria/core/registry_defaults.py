@@ -821,6 +821,21 @@ def register_default_commands(service: "CommandService") -> None:
             "|model|apply|cancel]"
         ),
         aliases=("provider_cliproxy",),
+        # A CLIProxy target id typed straight after /provider dispatches
+        # here. Only the ids that are NOT registry providers: `claude`,
+        # `kimi` and `grok` are registry aliases (anthropic, moonshotai,
+        # xai) whose ungated, read-only provider card must keep winning,
+        # and it already offers a CLIProxy tab for its matching target.
+        # tests/test_command_naming.py ratchets that disjointness, so a
+        # new catalog entry cannot silently hijack a provider. Injection
+        # resolves BEFORE the gates and reads the resolved definition, so
+        # these spellings inherit the admin/agent/chat-surface refusals
+        # rather than widening access (#133).
+        injected_aliases={
+            "provider codex": "codex",
+            "provider gemini-cli": "gemini-cli",
+            "provider antigravity": "antigravity",
+        },
         surfaces=("desktop", "mobile", "cli", "api"),
         blocked_surfaces=CHAT_PLATFORM_SURFACES,
         blocked_reason=(
@@ -837,7 +852,25 @@ def register_default_commands(service: "CommandService") -> None:
         description="List LLM providers grouped by support tier",
         category="LLM",
         aliases=("provider_list",),
-        params=(),
+        # The default view is the SHORT one (CLIProxy targets, native and
+        # gateway tiers, plus the active provider whatever its tier): the
+        # unverified tier is 100+ registry entries nobody browses, and a
+        # listing long enough to need truncating is a listing that lies.
+        params=(
+            CommandParam(
+                "all",
+                kind="flag",
+                type="bool",
+                description="Include every registry provider, unverified tier included",
+            ),
+            CommandParam(
+                "tier",
+                kind="option",
+                choices=("cliproxy", "native", "gateway", "unverified"),
+                description="Show one tier only",
+            ),
+        ),
+        examples=("/provider list", "/provider list --tier cliproxy", "/provider list --all"),
     )
     service.register(
         "provider set",
