@@ -27,6 +27,7 @@ _EVENT_CHOICES = [
     app_commands.Choice(name="before a tool runs", value="pre_tool_use"),
     app_commands.Choice(name="after a tool runs", value="post_tool_use"),
     app_commands.Choice(name="turn done", value="done"),
+    app_commands.Choice(name="before a command runs", value="command_submit"),
 ]
 
 _ACTION_CHOICES = [

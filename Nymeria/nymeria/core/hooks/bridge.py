@@ -34,6 +34,9 @@ _ONCE_KEY_PREFIX = "hook_once:"
 FIRE_CONDITION_META_FIELDS = (
     "event", "thread_id", "user_id", "is_autonomous", "holder_kind",
     "trigger_label", "tool_name", "tool_status", "prompt", "final_text",
+    "command", "command_display", "command_category", "command_danger_level",
+    "command_mutates_state", "command_actor", "command_surface",
+    "command_source", "command_is_admin", "command_via_act_as",
 )
 FIRE_CONDITION_CONTEXT_FIELDS = (
     "context_tokens", "context_limit", "compact_trigger_tokens",
@@ -61,8 +64,24 @@ def fire_condition_data(ctx: HookContext) -> dict:
         "tool_status": ctx.tool_status or "",
         "prompt": ctx.prompt or "",
         "final_text": ctx.final_text or "",
+        # COMMAND_SUBMIT meta ("" / False elsewhere). The command's argument
+        # tail is in ``args.rest`` (via tool_args), redacted for
+        # secret-bearing commands.
+        "command": ctx.command or "",
+        "command_display": ctx.command_display or "",
+        "command_category": ctx.command_category or "",
+        "command_danger_level": ctx.command_danger_level or "",
+        "command_mutates_state": bool(ctx.command_mutates_state),
+        "command_actor": ctx.command_actor or "",
+        "command_surface": ctx.command_surface or "",
+        "command_source": ctx.command_source or "",
+        "command_via_act_as": bool(ctx.command_via_act_as),
         "args": dict(ctx.tool_args) if isinstance(ctx.tool_args, dict) else {},
     }
+    # Tri-state: absent when unknown (the numeric-field idiom), so a
+    # condition on it is a non-match rather than a compare against False.
+    if ctx.command_is_admin is not None:
+        data["command_is_admin"] = ctx.command_is_admin
     data.update(context_usage_fields(ctx))
     return data
 

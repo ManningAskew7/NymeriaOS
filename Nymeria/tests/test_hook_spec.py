@@ -23,7 +23,9 @@ from nymeria.core.hook_manager import (
 )
 from nymeria.core.hook_spec import (
     ACTION_SPECS,
+    COMMAND_EVENTS,
     EVENTS,
+    MATCHER_EVENTS,
     TOOL_EVENTS,
     action_planes,
     event_actions,
@@ -57,6 +59,8 @@ def test_events_cover_engine_event_set():
     assert set(EVENTS) == {e.value for e in EVENT_OUTCOME_TYPES}
     assert set(get_args(HookEventName)) == set(EVENTS)
     assert set(TOOL_EVENTS) <= set(EVENTS)
+    assert set(COMMAND_EVENTS) <= set(EVENTS)
+    assert set(MATCHER_EVENTS) == set(TOOL_EVENTS) | set(COMMAND_EVENTS)
 
 
 def test_every_spec_event_is_known_and_nonempty():
@@ -79,6 +83,7 @@ def test_plane_for_resolves_per_event():
     # run_command flips: mutate on the in-band events, observe on the after events.
     assert plane_for("run_command", "prompt_submit") == "mutate"
     assert plane_for("run_command", "pre_tool_use") == "mutate"
+    assert plane_for("run_command", "command_submit") == "mutate"
     assert plane_for("run_command", "post_tool_use") == "observe"
     assert plane_for("run_command", "done") == "observe"
     # Unknown action falls back to mutate; plane_by_event covers all legal events.
@@ -88,6 +93,7 @@ def test_plane_for_resolves_per_event():
         "pre_tool_use": "mutate",
         "post_tool_use": "observe",
         "done": "observe",
+        "command_submit": "mutate",
     }
 
 
@@ -129,3 +135,22 @@ def test_frontend_taxonomy_matches_backend():
         _FRONTEND_TAXONOMY.read_text(encoding="utf-8")
     )
     assert parsed == {event: set(actions) for event, actions in EVENT_ACTIONS.items()}
+
+
+def test_frontend_matcher_events_match_backend():
+    """HOOK_TOOL_EVENTS + HOOK_COMMAND_EVENTS in utils/hooks.ts must mirror
+    the backend matcher taxonomy, or a future matcher event would silently
+    not show the matcher field in either GUI."""
+    if not _FRONTEND_TAXONOMY.exists():
+        pytest.skip("frontend tree not present in this checkout")
+    text = _FRONTEND_TAXONOMY.read_text(encoding="utf-8")
+
+    def _parse_list(name: str) -> set:
+        m = re.search(rf"{name}: HookEvent\[\] = \[([^\]]*)\]", text)
+        assert m, f"{name} not found in utils/hooks.ts"
+        return {v.strip().strip("'\"") for v in m.group(1).split(",") if v.strip()}
+
+    assert _parse_list("HOOK_TOOL_EVENTS") == set(TOOL_EVENTS)
+    assert _parse_list("HOOK_COMMAND_EVENTS") == set(COMMAND_EVENTS)
+    # HOOK_MATCHER_EVENTS is composed from the two lists in-source; the two
+    # asserts above plus MATCHER_EVENTS' own pin cover the union.

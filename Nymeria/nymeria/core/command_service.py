@@ -3010,13 +3010,33 @@ class CommandService:
                 )
             return CommandResult(True, markdown, command_label, level="info")
 
+        # COMMAND_SUBMIT lifecycle hooks (#134): the ONE fire point, after
+        # parsing/aliases/gates (so a hook always sees the canonical command
+        # and can never reopen a closed gate) and BEFORE the backend client
+        # exists (so a deny leaks nothing), before binding (so a `rest`
+        # rewrite feeds the strict binder). Notes render for human actors on
+        # every post-seam exit via apply_hook_notes.
+        from .command_hooks import apply_hook_notes, fire_command_submit
+
+        hook_outcome = await fire_command_submit(ctx, definition, parsed)
+        if hook_outcome.denied is not None:
+            return hook_outcome.denied
+        if hook_outcome.parsed is not None:
+            parsed = hook_outcome.parsed
+        hook_notes = hook_outcome.notes if actor != "agent" else []
+
+        def _with_hook_notes(result: CommandResult) -> CommandResult:
+            return apply_hook_notes(result, hook_notes)
+
         owns_api = api is None
         client = api
         if client is None:
             try:
                 client = _client_for_context(ctx)
             except RuntimeError as exc:
-                return CommandResult(False, f"**Error:** {exc}", command_label, level="error")
+                return _with_hook_notes(
+                    CommandResult(False, f"**Error:** {exc}", command_label, level="error")
+                )
 
         executor = _CommandExecutor(
             api=client,
@@ -3062,7 +3082,7 @@ class CommandService:
                             definition, executor
                         )
                         if rescue_form is not None:
-                            return CommandResult(
+                            return _with_hook_notes(CommandResult(
                                 True,
                                 (
                                     f"Select a value for `/{definition.name}`. "
@@ -3071,7 +3091,7 @@ class CommandService:
                                 command_label,
                                 level="info",
                                 data=command_data(form=rescue_form),
-                            )
+                            ))
                     problem = (
                         bind_error.problem if bind_error else "Invalid arguments."
                     )
@@ -3100,7 +3120,7 @@ class CommandService:
                             hint += (
                                 " Valid subcommands: " + ", ".join(subs) + "."
                             )
-                    return CommandResult(
+                    return _with_hook_notes(CommandResult(
                         False,
                         (
                             f"**Error:** {problem}{hint} "
@@ -3109,7 +3129,7 @@ class CommandService:
                         ),
                         command_label,
                         level="error",
-                    )
+                    ))
                 raw_output = await method(bound)
             else:
                 raw_output = await method(parsed.args, parsed.rest)
@@ -3130,18 +3150,22 @@ class CommandService:
                 data = {k: v for k, v in data.items() if k != "form"} or None
             success, level, markdown = _render_result_markdown(raw_output, level)
             limit = SKILL_SHOW_MAX_CHARS if definition.id == "skills.show" else 4000
-            return CommandResult(
+            return _with_hook_notes(CommandResult(
                 success,
                 _truncate(markdown, limit=limit),
                 command_label,
                 level=level,
                 data=data if success else None,
-            )
+            ))
         except httpx.HTTPStatusError as e:
-            return CommandResult(False, f"**Error:** {http_error_detail(e)}", command_label, level="error")
+            return _with_hook_notes(CommandResult(
+                False, f"**Error:** {http_error_detail(e)}", command_label, level="error"
+            ))
         except Exception as e:
             logger.exception("command dispatch failed for /%s", definition.name)
-            return CommandResult(False, f"**Error:** {e}", command_label, level="error")
+            return _with_hook_notes(CommandResult(
+                False, f"**Error:** {e}", command_label, level="error"
+            ))
         finally:
             if owns_api and hasattr(client, "close"):
                 await client.close()

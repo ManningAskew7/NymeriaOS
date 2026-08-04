@@ -477,7 +477,7 @@ def render_hook_detail(hook: HookDefinition) -> str:
         lines.append(f"  workflow_id: {logic.workflow_id}")
         lines.append(f"  params: {logic.params or '(none)'}")
         lines.append(f"  timeout_seconds: {logic.timeout_seconds}")
-        lines.append(f"  on_fault: {logic.on_fault} (pre_tool_use only)")
+        lines.append(f"  on_fault: {logic.on_fault} (guardrail events: pre_tool_use/command_submit)")
     lines.append(f"  created_by: {hook.created_by}")
     return "\n".join(lines)
 
@@ -518,38 +518,50 @@ def render_hook_test(hook: HookDefinition) -> str:
             f"[Info]: Hook {hook.id} (webhook) POSTs to {safe_format(logic.url, _SAMPLE_VARS)} "
             f"on {hook.event} with body text {safe_format(logic.text, _SAMPLE_VARS)!r}."
         )
+    is_command_event = hook.event == "command_submit"
+    subject_noun = "command" if is_command_event else "tool call"
+    subject_any = "any command" if is_command_event else "any tool"
     if logic.action == "block_if_matches":
-        cond = "any tool call it matches" if not logic.conditions else (
-            "a tool call whose args satisfy: "
+        cond = f"any {subject_noun} it matches" if not logic.conditions else (
+            f"a {subject_noun} whose args satisfy: "
             + " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
         )
-        tool = hook.matcher or "any tool"
+        target = hook.matcher or subject_any
+        seen_by = "The caller sees" if is_command_event else "The model sees"
         return (
-            f"[Info]: Hook {hook.id} (block_if_matches) denies {tool} on {cond}. "
-            f"The model sees: {safe_format(logic.reason or 'blocked by a lifecycle hook', _SAMPLE_VARS)!r}"
+            f"[Info]: Hook {hook.id} (block_if_matches) denies {target} on {cond}. "
+            f"{seen_by}: {safe_format(logic.reason or 'blocked by a lifecycle hook', _SAMPLE_VARS)!r}"
         )
     if logic.action == "rewrite_arg":
         cond = "always" if not logic.conditions else (
             " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
         )
-        tool = hook.matcher or "any tool"
+        target = hook.matcher or subject_any
+        tail = (
+            " (only the 'rest' key applies on command_submit, schema'd commands only)"
+            if is_command_event
+            else ""
+        )
         return (
-            f"[Info]: Hook {hook.id} (rewrite_arg) on {tool} (gate: {cond}) rewrites args: "
-            f"{logic.updates}."
+            f"[Info]: Hook {hook.id} (rewrite_arg) on {target} (gate: {cond}) rewrites args: "
+            f"{logic.updates}.{tail}"
         )
     if logic.action == "require_approval":
         cond = "always" if not logic.conditions else (
             " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
         )
-        tool = hook.matcher or "any tool"
-        prompt = safe_format(
-            logic.prompt or "Approve tool call {tool_name}?", _SAMPLE_VARS
+        target = hook.matcher or subject_any
+        default_prompt = (
+            "Approve command /{command_display}?"
+            if is_command_event
+            else "Approve tool call {tool_name}?"
         )
+        prompt = safe_format(logic.prompt or default_prompt, _SAMPLE_VARS)
         return (
-            f"[Info]: Hook {hook.id} (require_approval) holds {tool} (gate: {cond}) "
+            f"[Info]: Hook {hook.id} (require_approval) holds {target} (gate: {cond}) "
             f"and asks the user: {prompt!r}. No answer within "
-            f"{logic.timeout_seconds:.0f}s denies the call. No call is held by "
-            "this dry run."
+            f"{logic.timeout_seconds:.0f}s denies the {subject_noun}. Nothing is "
+            "held by this dry run."
         )
     if logic.action == "run_command":
         from ..core.hook_spec import plane_for
@@ -557,6 +569,7 @@ def render_hook_test(hook: HookDefinition) -> str:
         effect = {
             "prompt_submit": "its stdout is injected into the turn",
             "pre_tool_use": "exit 2 (or stdout JSON) denies/rewrites the tool call",
+            "command_submit": "exit 2 (or stdout JSON) denies/rewrites the command",
             "post_tool_use": "it runs off-turn for side effects (output is logged)",
             "done": "it runs off-turn for side effects (output is logged)",
         }.get(hook.event, "it runs")
@@ -573,6 +586,10 @@ def render_hook_test(hook: HookDefinition) -> str:
             "pre_tool_use": (
                 'its result ({"decision": "allow"|"deny"|"modify", ...}) gates the '
                 f"tool call (on_fault={logic.on_fault})"
+            ),
+            "command_submit": (
+                'its result ({"decision": "allow"|"deny"|"modify", ...}) gates the '
+                f"command (on_fault={logic.on_fault})"
             ),
             "post_tool_use": "it runs off-turn for side effects",
             "done": "it runs off-turn for side effects",
@@ -670,7 +687,10 @@ def hook_config(
         event: The lifecycle event. "pre_tool_use" takes block_if_matches/
             rewrite_arg/require_approval; "prompt_submit" takes inject_context;
             "post_tool_use"/"done" take inject_context/notify/create_todo/
-            webhook. run_command attaches to all four (admin +
+            webhook; "command_submit" (before a slash command's handler runs,
+            on every surface) takes block_if_matches/rewrite_arg/
+            require_approval plus notify/create_todo/webhook (fired at
+            submission). run_command attaches to all five (admin +
             HOOKS_RUN_COMMAND_ENABLED only).
         hook_action: The hook's action. "inject_context" (default) injects text;
             "block_if_matches"/"rewrite_arg" guard a tool call;
@@ -703,14 +723,26 @@ def hook_config(
             done it runs off-turn for side effects.
             Operators: equals, not_equals, contains, starts_with, matches_regex,
             plus the numeric gt, gte, lt, lte.
-            Conditions match the tool call's ARGS (field is an arg name).
-        matcher: Pipe-list tool-NAME filter for pre_tool_use/post_tool_use, e.g.
-            "Edit|Write" (omit to match every tool). Ignored on other events.
+            Conditions match the tool call's ARGS (field is an arg name). On
+            command_submit the args view is {"rest": "<raw argument tail>"}
+            (field "rest"; redacted for secret-bearing commands), and a
+            rewrite_arg/modify may only update "rest" (re-split and validated
+            by the command's declared schema).
+        matcher: Pipe-list name filter. On pre_tool_use/post_tool_use it
+            matches tool NAMES, e.g. "Edit|Write" (omit to match every tool).
+            On command_submit it matches canonical command PATHS, e.g.
+            "tools list|provider *" (a trailing * matches a whole family
+            including its root; hyphen and space spellings both work; omit to
+            match every command). Ignored on other events.
         fire_conditions: Definition-level fire gate (any event, any action): a
             list of {"field","operator","value"} conditions ANDed and evaluated
             BEFORE the hook's logic runs; empty/omitted = always fire. Fields:
             meta (event, tool_name, tool_status, is_autonomous, holder_kind,
-            trigger_label, prompt, final_text), tool args as "args.<name>", and
+            trigger_label, prompt, final_text; on command_submit also command,
+            command_display, command_category, command_danger_level,
+            command_mutates_state, command_actor, command_surface,
+            command_source, command_is_admin, command_via_act_as), tool args
+            as "args.<name>", and
             context usage (context_tokens, context_limit,
             compact_trigger_tokens, context_pct_of_trigger,
             context_pct_of_limit). Operators add gt/gte/lt/lte for numeric

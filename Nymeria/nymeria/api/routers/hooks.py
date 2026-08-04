@@ -27,7 +27,9 @@ from ...core.text_format import safe_format
 
 logger = logging.getLogger(__name__)
 
-HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
+HookEventName = Literal[
+    "prompt_submit", "pre_tool_use", "post_tool_use", "done", "command_submit"
+]
 HookActionName = Literal[
     "inject_context", "block_if_matches", "rewrite_arg", "require_approval",
     "notify", "create_todo", "webhook", "run_command", "run_workflow",
@@ -322,6 +324,7 @@ def create_hook_router(
         from ...core.hook_spec import (
             ACTION_SPECS,
             EVENTS,
+            MATCHER_EVENTS,
             TOOL_EVENTS,
             event_actions,
             plane_by_event,
@@ -359,7 +362,13 @@ def create_hook_router(
 
         return {
             "events": {
-                e: {"tool_event": e in TOOL_EVENTS, "actions": sorted(legality[e])}
+                e: {
+                    "tool_event": e in TOOL_EVENTS,
+                    # matcher legality: tool events match tool names,
+                    # command_submit matches command paths ("provider *").
+                    "matcher_event": e in MATCHER_EVENTS,
+                    "actions": sorted(legality[e]),
+                }
                 for e in EVENTS
             },
             "actions": actions,
@@ -685,7 +694,11 @@ def create_hook_router(
         elif logic.action == "run_workflow":
             from ...core.hook_spec import plane_for
             plane = plane_for("run_workflow", hook.event)
-            fault = f", on_fault={logic.on_fault}" if hook.event == "pre_tool_use" else ""
+            fault = (
+                f", on_fault={logic.on_fault}"
+                if hook.event in ("pre_tool_use", "command_submit")
+                else ""
+            )
             result["rendered"] = (
                 f"Runs workflow {logic.workflow_id!r} ({plane} plane, wall clock "
                 f"{logic.timeout_seconds:.0f}s{fault}); the hook context rides the "

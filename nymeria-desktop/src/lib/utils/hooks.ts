@@ -29,10 +29,27 @@ export const HOOK_EVENT_ACTIONS: Record<HookEvent, HookAction[]> = {
     'run_workflow',
   ],
   done: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command', 'run_workflow'],
+  command_submit: [
+    'block_if_matches',
+    'rewrite_arg',
+    'require_approval',
+    'notify',
+    'create_todo',
+    'webhook',
+    'run_command',
+    'run_workflow',
+  ],
 };
 
 /** Events that fire around a tool call, where a tool-name matcher applies. */
 export const HOOK_TOOL_EVENTS: HookEvent[] = ['pre_tool_use', 'post_tool_use'];
+
+/** Events that fire around a slash-command dispatch: the matcher targets
+ * canonical command paths ('tools list', 'provider *') instead. */
+export const HOOK_COMMAND_EVENTS: HookEvent[] = ['command_submit'];
+
+/** All events on which the name matcher applies (the authoring form's gate). */
+export const HOOK_MATCHER_EVENTS: HookEvent[] = [...HOOK_TOOL_EVENTS, ...HOOK_COMMAND_EVENTS];
 
 const CATEGORY_OF: Record<HookAction, HookCategory> = {
   block_if_matches: 'guardrails',
@@ -192,6 +209,10 @@ export const HOOK_EVENT_META: Record<HookEvent, HookEventMeta> = {
   done: {
     label: 'When the turn ends',
     hint: "Fires once the agent's reply is complete.",
+  },
+  command_submit: {
+    label: 'Before a command runs',
+    hint: 'Fires when a slash command is dispatched, on every surface; can block, rewrite, or require approval.',
   },
 };
 

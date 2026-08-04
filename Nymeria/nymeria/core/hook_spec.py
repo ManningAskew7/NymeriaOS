@@ -25,10 +25,19 @@ from typing import Dict, Set, Tuple
 
 # The fixed event set (mirrors core/hooks/base.py HookEvent values; pinned by
 # tests/test_hook_spec.py).
-EVENTS: Tuple[str, ...] = ("prompt_submit", "pre_tool_use", "post_tool_use", "done")
+EVENTS: Tuple[str, ...] = (
+    "prompt_submit", "pre_tool_use", "post_tool_use", "done", "command_submit",
+)
 
 # Events that fire around a tool call, where a tool-name matcher applies.
 TOOL_EVENTS: Tuple[str, ...] = ("pre_tool_use", "post_tool_use")
+
+# Events that fire around a slash-command dispatch, where the matcher targets
+# the canonical command path instead ("tools list", "provider *").
+COMMAND_EVENTS: Tuple[str, ...] = ("command_submit",)
+
+# All events on which a set matcher is legal (authoring nulls it elsewhere).
+MATCHER_EVENTS: Tuple[str, ...] = TOOL_EVENTS + COMMAND_EVENTS
 
 
 @dataclass(frozen=True)
@@ -64,15 +73,24 @@ ACTION_SPECS: Dict[str, ActionSpec] = {
             "inject_context", "mutate",
             ("prompt_submit", "post_tool_use", "done"), text_action=True,
         ),
-        ActionSpec("block_if_matches", "mutate", ("pre_tool_use",)),
-        ActionSpec("rewrite_arg", "mutate", ("pre_tool_use",)),
-        ActionSpec("require_approval", "mutate", ("pre_tool_use",)),
-        ActionSpec("notify", "observe", ("post_tool_use", "done"), text_action=True),
-        ActionSpec("create_todo", "observe", ("post_tool_use", "done"), text_action=True),
-        ActionSpec("webhook", "observe", ("post_tool_use", "done")),
+        ActionSpec("block_if_matches", "mutate", ("pre_tool_use", "command_submit")),
+        ActionSpec("rewrite_arg", "mutate", ("pre_tool_use", "command_submit")),
+        ActionSpec("require_approval", "mutate", ("pre_tool_use", "command_submit")),
+        # On command_submit the observe actions fire AT SUBMISSION (after the
+        # access gates, before the handler), scheduled off-band; outcome-aware
+        # firing would need a future command_done event.
+        ActionSpec(
+            "notify", "observe",
+            ("post_tool_use", "done", "command_submit"), text_action=True,
+        ),
+        ActionSpec(
+            "create_todo", "observe",
+            ("post_tool_use", "done", "command_submit"), text_action=True,
+        ),
+        ActionSpec("webhook", "observe", ("post_tool_use", "done", "command_submit")),
         ActionSpec(
             "run_command", "mutate",
-            ("prompt_submit", "pre_tool_use", "post_tool_use", "done"),
+            ("prompt_submit", "pre_tool_use", "post_tool_use", "done", "command_submit"),
             observe_events=("post_tool_use", "done"),
         ),
         # The workflow logic substrate (backlog #80): the hook's logic is a
@@ -82,7 +100,7 @@ ACTION_SPECS: Dict[str, ActionSpec] = {
         # post_tool_use/done.
         ActionSpec(
             "run_workflow", "mutate",
-            ("prompt_submit", "pre_tool_use", "post_tool_use", "done"),
+            ("prompt_submit", "pre_tool_use", "post_tool_use", "done", "command_submit"),
             observe_events=("post_tool_use", "done"),
         ),
         # The system turn-metadata hook's logic (backlog #66): renders the

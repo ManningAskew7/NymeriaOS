@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from .conditions import HookCondition
 from .hook_spec import (
-    TOOL_EVENTS,
+    MATCHER_EVENTS,
     event_actions,
     system_actions,
     system_event_actions,
@@ -74,7 +74,9 @@ _log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hook-exec-
 # the lockstep). ``pre_tool_use`` carries the mutate-plane guardrail actions
 # (deny/rewrite); the observe-plane actions (notify/create_todo/webhook) attach
 # to the "after something happened" events (post_tool_use/done).
-HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
+HookEventName = Literal[
+    "prompt_submit", "pre_tool_use", "post_tool_use", "done", "command_submit"
+]
 EVENT_ACTIONS: Dict[str, set] = event_actions()
 
 # Actions whose sole logic config is a single ``text`` field (a bare ``text`` is
@@ -316,8 +318,9 @@ class RunCommandLogic(BaseModel):
         le=300.0,
         description=(
             "Subprocess wall-clock budget. The action clamps mutate-plane events "
-            "(prompt_submit/pre_tool_use, which run in-band) to 60s; observe "
-            "events (post_tool_use/done, off-turn) keep the full range."
+            "(prompt_submit/pre_tool_use/command_submit, which run in-band) to "
+            "60s; observe events (post_tool_use/done, off-turn) keep the full "
+            "range."
         ),
     )
 
@@ -363,9 +366,10 @@ class RunWorkflowLogic(BaseModel):
     on_fault: Literal["allow", "deny"] = Field(
         default="allow",
         description=(
-            "pre_tool_use only: whether the gated tool call proceeds when the "
-            "workflow faults (error/timeout/suspension). 'allow' surfaces a "
-            "diagnostic note; 'deny' fails closed"
+            "Guardrail events (pre_tool_use/command_submit) only: whether the "
+            "gated tool call or command proceeds when the workflow faults "
+            "(error/timeout/suspension). 'allow' surfaces a diagnostic note; "
+            "'deny' fails closed"
         ),
     )
 
@@ -463,7 +467,11 @@ class HookDefinition(BaseModel):
     event: HookEventName = Field(..., description="Lifecycle event this hook attaches to")
     matcher: Optional[str] = Field(
         default=None,
-        description="Pipe-list tool-name filter (tool events only), e.g. 'Edit|Write'",
+        description=(
+            "Pipe-list name filter: tool names on the tool events "
+            "('Edit|Write'), command paths on command_submit "
+            "('tools list|provider *'; a trailing * matches a family)"
+        ),
     )
     # Definition-level fire gate (the WHEN layer). Evaluated by the engine
     # BEFORE the logic runs, so it gates every logic substrate uniformly
@@ -536,10 +544,10 @@ class HookDefinition(BaseModel):
         # disabling a tool hook a caller meant to apply to all tools.
         if self.matcher is not None and not self.matcher.strip():
             self.matcher = None
-        # A matcher (tool-name filter) only makes sense on a tool event; on any
-        # other event a set matcher would silently never match (no tool_name),
-        # disabling the hook.
-        if self.event not in TOOL_EVENTS and self.matcher:
+        # A matcher only makes sense on a matcher event (tool events match the
+        # tool name, command_submit matches the command path); on any other
+        # event a set matcher would silently never match, disabling the hook.
+        if self.event not in MATCHER_EVENTS and self.matcher:
             self.matcher = None
         return self
 
