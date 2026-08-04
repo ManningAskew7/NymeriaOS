@@ -249,7 +249,7 @@ def test_skill_or_kit_off_deactivates(
 
     def fake_deactivate(**kwargs):
         calls.append(kwargs)
-        return True, "deactivated"
+        return "success", "deactivated"
 
     monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
 
@@ -283,7 +283,7 @@ def test_skill_slash_off_deactivates_plain_skill(
 
     def fake_deactivate(**kwargs):
         calls.append(kwargs)
-        return True, "deactivated"
+        return "success", "deactivated"
 
     monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
 
@@ -454,7 +454,7 @@ def test_skills_off_all_deactivates_visible_active_skills(
 
     def fake_deactivate(**kwargs):
         calls.append(kwargs["skill_name"])
-        return True, "deactivated"
+        return "success", "deactivated"
 
     monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
 
@@ -490,7 +490,7 @@ def test_skills_disable_all_is_the_canonical_spelling_of_the_old_off_all(
 
     def fake_deactivate(**kwargs):
         calls.append(kwargs["skill_name"])
-        return True, "deactivated"
+        return "success", "deactivated"
 
     monkeypatch.setattr(command_service_mod, "deactivate_skill_kit", fake_deactivate)
 
@@ -570,18 +570,54 @@ def test_deactivate_skill_kit_threads_user_id_through_lookup(tmp_path: Path) -> 
         )
     )
 
-    ok, msg = deactivate_skill_kit(
+    level, msg = deactivate_skill_kit(
         agent=agent,
         thread_id="thread-1",
         user_id="alice",
         skill_name="user-kit",
     )
 
-    assert ok, msg
-    # The (ok, message) contract carries the outcome in the bool, so the
-    # message is a plain body with no legacy sentinel (#132).
+    assert level == "success"
+    # The (level, message) contract (#144) authors the outcome at the
+    # source; the message stays a plain body with no sentinel or artifact.
     assert msg == "Skill kit 'user-kit' deactivated. Evicted tools: tool_a."
     assert agent.skill_manager.get_calls == [("user-kit", "alice")]
     tc = agent.thread_config_manager.get_config("thread-1")
     assert tc is not None
     assert "tool_a" not in tc.temporary_tools
+
+
+def test_deactivate_skill_kit_noop_is_an_info_readout(tmp_path: Path) -> None:
+    """#144 review catch: 'was not active' is a readout, not a completed
+    action, so the helper authors ``info``: no surface may render
+    ``**Done.**`` for it (the CLI glyphs a checkmark off exactly that
+    artifact, which would claim a deactivation that never happened)."""
+    plain = _skill(tmp_path, "plain-skill")
+    agent = _agent(tmp_path, [plain])
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-1", enabled_skills=[])
+    )
+
+    level, msg = deactivate_skill_kit(
+        agent=agent,
+        thread_id="thread-1",
+        user_id="alice",
+        skill_name="plain-skill",
+    )
+
+    assert level == "info"
+    assert msg == "Skill 'plain-skill' was not active."
+
+    # The /skill <name> off relay carries the authored level out verbatim,
+    # which is what the chat router renders (test_api_chat_router pins the
+    # wire side).
+    result = prepare_skill_slash_command(
+        agent=agent,
+        thread_id="thread-1",
+        user_id="alice",
+        mode="skill",
+        rest="plain-skill off",
+    )
+    assert result.level == "info"
+    assert result.success is True
+    assert result.should_stream is False

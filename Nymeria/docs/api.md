@@ -1539,25 +1539,32 @@ invalid values stay errors for every caller.
 }
 ```
 
-**Result levels (2026-08-03).** Handlers author a typed outcome:
-`level` is one of `info` (a readout: lists, status views), `success` (a
-completed action), `warning` (completed with a caveat), or `error`.
-`success` is `level != "error"`. The dispatcher is the single producer
-of the markdown outcome artifacts, rendered FROM the level: `error`
-bodies open with `**Error:** `, `success` with `**Done.** `, `warning`
-with `**Warning:** `; `info` gets no artifact (plus the heading rule: a
-multi-line info body whose first line is plain text has it promoted to
-`### `). Clients may branch on `level` or on the artifacts; they share
-provenance and cannot disagree. Two invariants: `data` is dropped when
+**Result levels (2026-08-03; one producer 2026-08-04).** Handlers author
+a typed outcome: `level` is one of `info` (a readout: lists, status
+views), `success` (a completed action), `warning` (completed with a
+caveat), or `error`. `success` is `level != "error"`. ONE function
+(`command_forms.render_outcome`, backlog #144) produces the markdown
+outcome artifacts everywhere in the backend, rendered FROM the level:
+`error` bodies open with `**Error:** `, `success` with `**Done.** `,
+`warning` with `**Warning:** `; `info` gets no artifact. The dispatcher
+additionally applies the heading rule to `info` (a multi-line body whose
+first line is plain text has it promoted to `### `); the chat-stream
+surfaces do not. Clients may branch on `level` or on the artifacts; they
+share provenance and cannot disagree, enforced by an AST ratchet over the
+command layer and the chat router. Two invariants: `data` is dropped when
 `level` is `error` (a failure never ships a form or state hint) and
 survives `warning`; and `info` is reported honestly (older backends
 collapsed it into `success`, so a bare success level from them does not
 imply a confirmation). The retired `[Error]:`/`[Success]:`/`[Info]:`
 string prefixes never appear in first-party output anymore, including
 the chat-stream command surfaces (`/goal`, `/orchestrate`, `/quick`,
-`/done`, skill relays), which now speak the same artifact vocabulary
-over SSE; the dispatch boundary still ACCEPTS the old prefixes from
-out-of-tree handlers (plugins) as a permanent compatibility path.
+`/done`, skill relays), which speak the same artifact vocabulary over
+SSE; since 2026-08-04 their one-shot `response` frame also carries a
+`level` field with the same value (additive; current clients render the
+markdown and ignore it). Exception: the `/compact` intercept keeps its
+own checkmark success copy and emits no `level`. The dispatch boundary
+still ACCEPTS the old prefixes from out-of-tree handlers (plugins) as a
+permanent compatibility path.
 
 Commands that require an active thread return a markdown error if `thread_id`
 is omitted. `/compact` appears in discovery with `execution_kind:

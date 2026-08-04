@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +25,7 @@ from nymeria.core.command_forms import (
     form_payload,
     form_tab,
     radio_field,
+    render_outcome,
 )
 from nymeria.core.command_service import (
     CommandBackendClient,
@@ -3550,26 +3552,41 @@ def test_form_strip_keeps_state_hints(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── typed result levels (#132) ───────────────────────────────────────────────
 
 _SENTINELS = ("[Error]:", "[Success]:", "[Info]:", "[Saved]:")
-_COMMAND_LAYER_MODULES = (
-    "command_service.py",
-    "command_forms.py",
-    "command_executor_context.py",
-    "command_executor_threads.py",
-    "command_executor_llm.py",
-    "command_executor_provider_setup.py",
-    "command_executor_cliproxy.py",
-)
+_NYMERIA_PKG = Path(__file__).resolve().parents[1] / "nymeria"
+# Paths relative to the nymeria/ package root: the producer surface is no
+# longer core-only (#144 folded api/routers/chat.py in). The core half is
+# GLOB-derived so a new command_* module (the #133 aliases mixin was missed
+# by the old hand list) joins both ratchets automatically.
+_COMMAND_LAYER_MODULES = tuple(
+    f"core/{p.name}" for p in sorted(_NYMERIA_PKG.glob("core/command_*.py"))
+) + ("api/routers/chat.py",)
 # The only functions allowed to spell a sentinel: the boundary's transition
-# parser (soft landing for plugin/out-of-tree handlers) and the one handler
-# that legitimately PARSES the tool-channel protocol.
+# parser (soft landing for plugin/out-of-tree handlers) and the two sites
+# that legitimately PARSE a sentinel-shaped protocol (the /notepad
+# tool-channel parse, and the goal-supervisor spawn's tool-channel check in
+# chat.py, which today spells the colon-less "[Error]" but must not trip
+# the ratchet if its comment's accurate "[Error]:" spelling ever lands).
 _SENTINEL_ALLOWED = {
-    ("command_service.py", "_render_result_markdown"),
-    ("command_service.py", "_cmd_notepad_write"),
+    ("core/command_service.py", "_render_result_markdown"),
+    ("core/command_service.py", "_cmd_notepad_write"),
+    ("api/routers/chat.py", "_spawn_goal_supervisor"),
+}
+
+# The outcome-artifact ratchet (#144): render_outcome in command_forms.py is
+# THE producer of **Error:** / **Done.** / **Warning:**. Substring match, not
+# startswith: several retired sites were f-string fragments, and a mid-string
+# leak is exactly the bug class #132 fixed six of. `**Note:**` (truncation
+# annotation) is a different artifact and is deliberately not matched. The
+# CLI's _pop_level_signal CONSUMES the artifacts and must never join this
+# module list.
+_ARTIFACTS = ("**Error:**", "**Done.**", "**Warning:**")
+_ARTIFACT_ALLOWED = {
+    ("core/command_forms.py", "render_outcome"),
 }
 
 
-def _sentinel_literals(module_path) -> list[tuple[str, str, int]]:
-    """(function, literal, line) for every non-docstring sentinel string."""
+def _flagged_literals(module_path, is_flagged) -> list[tuple[str, str, int]]:
+    """(function, literal, line) for every non-docstring flagged string."""
     import ast
 
     tree = ast.parse(module_path.read_text(encoding="utf-8"))
@@ -3597,7 +3614,7 @@ def _sentinel_literals(module_path) -> list[tuple[str, str, int]]:
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and id(node) not in skip
-            and any(node.value.startswith(s) for s in _SENTINELS)
+            and is_flagged(node.value)
         ):
             hits.append((func, node.value[:40], node.lineno))
         for child in ast.iter_child_nodes(node):
@@ -3607,23 +3624,44 @@ def _sentinel_literals(module_path) -> list[tuple[str, str, int]]:
     return hits
 
 
+def _ratchet_violations(is_flagged, allowed: set[tuple[str, str]]) -> list[str]:
+    violations: list[str] = []
+    for name in _COMMAND_LAYER_MODULES:
+        for func, literal, line in _flagged_literals(_NYMERIA_PKG / name, is_flagged):
+            if (name, func) in allowed:
+                continue
+            violations.append(f"{name}:{line} in {func}: {literal!r}")
+    return violations
+
+
 def test_command_layer_carries_no_sentinel_literals() -> None:
     """The #132 ratchet: the prefix protocol is retired in the command
     layer. New sentinel literals mean a handler is bypassing the typed
     constructors; use command_error/command_success/command_info instead.
     (The tool layer's identical spelling is a DIFFERENT protocol and is
     deliberately out of scope here.)"""
-    from pathlib import Path
-
-    core = Path(__file__).resolve().parents[1] / "nymeria" / "core"
-    violations: list[str] = []
-    for name in _COMMAND_LAYER_MODULES:
-        for func, literal, line in _sentinel_literals(core / name):
-            if (name, func) in _SENTINEL_ALLOWED:
-                continue
-            violations.append(f"{name}:{line} in {func}: {literal!r}")
+    violations = _ratchet_violations(
+        lambda value: any(value.startswith(s) for s in _SENTINELS),
+        _SENTINEL_ALLOWED,
+    )
     assert not violations, (
         "Sentinel literals outside the allowlist (author a typed level "
+        "instead):\n" + "\n".join(violations)
+    )
+
+
+def test_command_layer_carries_no_handwritten_outcome_artifacts() -> None:
+    """The #144 ratchet: render_outcome is THE producer of the markdown
+    outcome artifacts. A new hand-spelled **Error:** / **Done.** /
+    **Warning:** in the command layer or the chat_stream router means a
+    site is bypassing it (level and artifact can then disagree); pass a
+    level to render_outcome / _slash_sse_response instead."""
+    violations = _ratchet_violations(
+        lambda value: any(artifact in value for artifact in _ARTIFACTS),
+        _ARTIFACT_ALLOWED,
+    )
+    assert not violations, (
+        "Outcome-artifact literals outside render_outcome (author a level "
         "instead):\n" + "\n".join(violations)
     )
 
@@ -3716,6 +3754,22 @@ def test_legacy_sentinel_still_wins_over_authored_level(
     assert result.success is False
     assert result.level == "error"
     assert result.markdown == "**Error:** legacy path"
+
+
+def test_render_outcome_is_byte_exact_per_level() -> None:
+    """The #144 producer: exact artifact bytes per level, info untouched.
+
+    These four strings are the wire contract every surface reads; the
+    dispatcher's equality tests above pin the same bytes through execute(),
+    this pins the producer directly (chat.py's funnel uses it without the
+    dispatcher's sentinel/heading extras)."""
+    assert render_outcome("error", "nope") == "**Error:** nope"
+    assert render_outcome("success", "Model set.") == "**Done.** Model set."
+    assert render_outcome("warning", "partial") == "**Warning:** partial"
+    body = "Status\n\nProvider  anthropic"
+    # info is VERBATIM: no artifact, and none of the dispatcher's
+    # heading-heuristic rewriting (that would change /goal status bytes).
+    assert render_outcome("info", body) == body
 
 
 def test_execution_kind_refusal_data_survives_without_the_flag() -> None:

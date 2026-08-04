@@ -972,6 +972,209 @@ def test_done_hooks_disabled_failure_uses_markdown_outcome(
     assert _user_hooks(agent) == []
 
 
+def test_slash_response_frame_carries_the_level(
+    tmp_path: Path, api_client_builder
+):
+    """#144: the one-shot slash frame carries the authored ``level``
+    alongside the rendered markdown (additive; lets a client style these
+    outcomes without string matching). Error and info both pinned so the
+    field provably tracks the outcome rather than a constant."""
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/quick", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+    (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
+    assert frame["level"] == "error"
+    assert frame["content"].startswith("**Error:** Usage: `/quick")
+
+    agent._thread_locks.busy_responses = [True, True]
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done check the tests", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+    (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
+    assert frame["level"] == "info"
+    assert frame["content"].startswith("Follow-up armed:")
+
+
+def test_skill_deactivation_relay_confirms_with_done_artifact(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#144 normalization: a real /skill deactivation renders the same
+    ``**Done.**`` artifact the dispatcher gives every completed action (it
+    used to arrive as a bare unstyled body), while the deactivation NO-OP
+    ("was not active") stays an artifact-free info readout: the router
+    renders whatever level the command layer authored
+    (`SkillSlashResult.level`; the authoring itself is pinned in
+    test_skill_kit_slash_commands.py)."""
+    from nymeria.core import command_service as cs
+
+    prepared = cs.SkillSlashResult(
+        True, False, "Deactivated skill 'demo'.", "demo", level="success"
+    )
+    monkeypatch.setattr(
+        cs, "prepare_skill_slash_command", lambda **kwargs: prepared
+    )
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    def _stream_frame() -> dict[str, Any]:
+        with client.stream(
+            "POST",
+            "/chat",
+            headers=api_client_builder.auth(token),
+            json={"message": "/skill demo off", "thread_id": "caller-1"},
+        ) as response:
+            body = "".join(response.iter_text())
+        (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
+        return frame
+
+    frame = _stream_frame()
+    assert frame["content"] == "**Done.** Deactivated skill 'demo'."
+    assert frame["level"] == "success"
+
+    # Sync parity: same helper, same level passthrough, ChatResponse body.
+    resp = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/skill demo off", "thread_id": "caller-1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "**Done.** Deactivated skill 'demo'."
+
+    # The no-op must NOT claim **Done.** (the #144 review catch): the CLI
+    # turns that artifact into a checkmark glyph, which would be a lie.
+    prepared = cs.SkillSlashResult(
+        True, False, "Skill 'demo' was not active.", "demo", level="info"
+    )
+    frame = _stream_frame()
+    assert frame["content"] == "Skill 'demo' was not active."
+    assert frame["level"] == "info"
+    assert agent.astream_calls == [] and agent.chat_calls == []
+
+
+def test_orchestrate_clear_renders_the_authored_level(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#144 normalization, the third relayed-success site: /orchestrate
+    clear renders deactivate_skill_kit's authored level (Done. on a real
+    deactivation, bare info body on the no-op)."""
+    from nymeria.core import command_service as cs
+
+    outcome = ("success", "Skill kit 'orchestrate' deactivated.")
+    monkeypatch.setattr(
+        cs, "deactivate_skill_kit", lambda **kwargs: outcome
+    )
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    def _frame() -> dict[str, Any]:
+        with client.stream(
+            "POST",
+            "/chat",
+            headers=api_client_builder.auth(token),
+            json={"message": "/orchestrate clear", "thread_id": "caller-1"},
+        ) as response:
+            body = "".join(response.iter_text())
+        (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
+        return frame
+
+    frame = _frame()
+    assert frame["content"] == "**Done.** Skill kit 'orchestrate' deactivated."
+    assert frame["level"] == "success"
+
+    outcome = ("info", "Skill kit 'orchestrate' was not active.")
+    frame = _frame()
+    assert frame["content"] == "Skill kit 'orchestrate' was not active."
+    assert frame["level"] == "info"
+    assert agent.astream_calls == []
+
+
+def test_goal_cancel_and_clear_with_no_goal_are_errors(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#144 normalization: refusing an action because there is no goal is an
+    error like the sibling approve/pause/resume refusals (cancel and clear
+    used to answer with an unmarked info body); the status readout stays an
+    artifact-free info readout."""
+    from nymeria.core import goal_manager as gm_module
+
+    gm = SimpleNamespace(get_active_goal_for_thread=lambda *a, **k: None)
+    monkeypatch.setattr(gm_module, "get_goal_manager", lambda: gm)
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    def _frame(message: str) -> dict[str, Any]:
+        with client.stream(
+            "POST",
+            "/chat",
+            headers=api_client_builder.auth(token),
+            json={"message": message, "thread_id": "caller-1"},
+        ) as response:
+            body = "".join(response.iter_text())
+        (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
+        return frame
+
+    cancel = _frame("/goal cancel")
+    assert cancel["content"] == "**Error:** No active goal to cancel."
+    assert cancel["level"] == "error"
+
+    clear = _frame("/goal clear")
+    assert clear["content"] == "**Error:** No active goal on this thread."
+    assert clear["level"] == "error"
+
+    status = _frame("/goal status")
+    assert status["level"] == "info"
+    assert status["content"].startswith("No active goal on this thread.")
+    assert "**" not in status["content"]
+
+
+def test_goal_approve_partial_success_is_a_warning(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#144 normalization: a spawned supervisor with a failed kit activation
+    is a partial success, so it renders the ``**Warning:**`` artifact (it
+    used to claim ``**Error:**`` even though the supervisor thread exists)."""
+    from nymeria.api.routers import chat as chat_module
+    from nymeria.core import command_service as cs
+    from nymeria.core import goal_manager as gm_module
+
+    goal = SimpleNamespace(
+        goal_id="g-1",
+        status="pending_approval",
+        tasks=[SimpleNamespace(status="pending")],
+    )
+    gm = SimpleNamespace(get_active_goal_for_thread=lambda *a, **k: goal)
+    monkeypatch.setattr(gm_module, "get_goal_manager", lambda: gm)
+    monkeypatch.setattr(
+        chat_module, "_spawn_goal_supervisor", lambda *a, **k: ("sup-1", None)
+    )
+    monkeypatch.setattr(
+        cs, "activate_skill_kit", lambda **kwargs: (False, "kit missing")
+    )
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/goal approve", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+    (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
+    assert frame["content"] == (
+        "**Warning:** Supervisor spawned (sup-1) but "
+        "kit activation failed: kit missing"
+    )
+    assert frame["level"] == "warning"
+    assert agent.astream_calls == []
+
+
 def test_resume_stream_busy_acks_error_without_queueing(
     tmp_path: Path, api_client_builder
 ):

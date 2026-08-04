@@ -148,6 +148,29 @@ def command_error(
     return CommandOutput(text, data=data, level="error")
 
 
+def render_outcome(level: CommandResultLevel, text: str) -> str:
+    """THE producer of the markdown outcome artifacts (#132, #144).
+
+    Maps ``error``/``success``/``warning`` to their ``**Error:**`` /
+    ``**Done.**`` / ``**Warning:**`` prefixes; ``info`` is a readout and
+    returns ``text`` unchanged (no artifact). Every surface reads the
+    artifact as the outcome signal, so no other module may spell these
+    literals: the artifact ratchet in ``test_command_service.py`` fails the
+    build on a new hand-authored copy (this function is its only allowlist
+    entry, so keep the literals inside the function body). Dispatch-boundary
+    extras (legacy sentinel parse, the info heading heuristic) stay in
+    ``command_service._render_result_markdown``, which delegates its
+    artifact arms here.
+    """
+    if level == "error":
+        return f"**Error:** {text}"
+    if level == "success":
+        return f"**Done.** {text}"
+    if level == "warning":
+        return f"**Warning:** {text}"
+    return text
+
+
 def form_option(
     option_id: str,
     label: str | None = None,
