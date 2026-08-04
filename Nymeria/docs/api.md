@@ -4456,15 +4456,21 @@ A `pre_tool_use` guardrail instead sends `action` plus per-action fields:
 }
 ```
 
-`event` is one of `prompt_submit`, `pre_tool_use`, `post_tool_use`, `done`;
+`event` is one of `prompt_submit`, `pre_tool_use`, `post_tool_use`, `done`,
+`command_submit`;
 `action` is `inject_context` (default), `block_if_matches`, `rewrite_arg`,
 `require_approval`, `notify`, `create_todo`, `webhook`, or `run_command`, and
 must be legal for the
-event (`notify`/`create_todo`/`webhook` are `post_tool_use`/`done` only;
-`require_approval` is `pre_tool_use` only;
-`run_command` is legal on all four). `matcher` (a pipe-list tool-NAME filter)
-applies to the tool events (`pre_tool_use`/`post_tool_use`) and is dropped on
-others. Per-action fields: `text` (inject_context / notify / create_todo, and
+event (`notify`/`create_todo`/`webhook` are `post_tool_use`/`done`/
+`command_submit`; the guardrails `block_if_matches`/`rewrite_arg`/
+`require_approval` are `pre_tool_use`/`command_submit`;
+`run_command` is legal on all five). `matcher` (a pipe-list name filter)
+applies to the tool events (`pre_tool_use`/`post_tool_use`, tool names) and to
+`command_submit` (canonical command paths, e.g. `tools list|provider *`; a
+trailing `*` matches a family) and is dropped on
+others. Command-hook semantics (canonical-path matching, `rest`-only rewrites,
+secret redaction, visible note lines): the "Command hooks" section of
+`docs/agent-systems/hooks.md`. Per-action fields: `text` (inject_context / notify / create_todo, and
 the webhook body, `{placeholder}` interpolated); `conditions` + `reason`
 (block_if_matches); `conditions` + `updates` (rewrite_arg); `conditions` +
 `text` (the approval prompt) + `timeout_seconds` (require_approval, window

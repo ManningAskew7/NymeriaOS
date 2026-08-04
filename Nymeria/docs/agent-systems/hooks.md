@@ -23,14 +23,14 @@ actions that ship today, and the events they attach to (`EVENT_ACTIONS` in
 | Action | Plane | Events | Effect |
 | --- | --- | --- | --- |
 | `inject_context` | mutate | `prompt_submit`, `post_tool_use`, `done` | inject a string into the model's context |
-| `block_if_matches` | mutate | `pre_tool_use` | **deny** a tool call when conditions match its args |
-| `rewrite_arg` | mutate | `pre_tool_use` | **modify** a tool call's args when conditions match |
-| `require_approval` | mutate | `pre_tool_use` | **hold** a tool call until the user approves or denies it; no answer = deny |
-| `notify` | observe | `post_tool_use`, `done` | send an in-app + push notification |
-| `create_todo` | observe | `post_tool_use`, `done` | add a user TODO |
-| `webhook` | observe | `post_tool_use`, `done` | POST a JSON payload to a URL |
-| `run_command` | mutate on `prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done` | all four | run a shell command with the hook context as JSON on stdin (admin + flag gated) |
-| `run_workflow` | mutate on `prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done` | all four | run a published, approved `nym` workflow with the hook context as its `event` param |
+| `block_if_matches` | mutate | `pre_tool_use`, `command_submit` | **deny** a tool call (or slash command) when conditions match its args |
+| `rewrite_arg` | mutate | `pre_tool_use`, `command_submit` | **modify** a tool call's args (or a command's `rest` tail) when conditions match |
+| `require_approval` | mutate | `pre_tool_use`, `command_submit` | **hold** a tool call or command until the user approves or denies it; no answer = deny |
+| `notify` | observe | `post_tool_use`, `done`, `command_submit` | send an in-app + push notification |
+| `create_todo` | observe | `post_tool_use`, `done`, `command_submit` | add a user TODO |
+| `webhook` | observe | `post_tool_use`, `done`, `command_submit` | POST a JSON payload to a URL |
+| `run_command` | mutate on `prompt_submit`/`pre_tool_use`/`command_submit`, observe on `post_tool_use`/`done` | all five | run a shell command with the hook context as JSON on stdin (admin + flag gated) |
+| `run_workflow` | mutate on `prompt_submit`/`pre_tool_use`/`command_submit`, observe on `post_tool_use`/`done` | all five | run a published, approved `nym` workflow with the hook context as its `event` param |
 | `turn_metadata` | mutate | `prompt_submit` (reserved: the system hook only) | render the built-in `[Time:]/[Trigger:]` block (see "The system turn-metadata hook" below) |
 
 **`inject_context`** appends its text to the model-facing tail (`prompt_submit`), to the
@@ -41,7 +41,9 @@ interpolate from the event context (`{tool_name}`, `{tool_result}`, `{tool_statu
 unknown placeholders and brace-free text pass through verbatim
 (`core/text_format.py::safe_format`, shared with triggers).
 
-**`block_if_matches`** / **`rewrite_arg`** are the `pre_tool_use` guardrails. Two
+**`block_if_matches`** / **`rewrite_arg`** are the veto-plane guardrails
+(`pre_tool_use`, and `command_submit` with command-path matcher semantics: see
+"Command hooks" below). Two
 independent gates apply: `matcher` filters by tool NAME (exact pipe-list, e.g.
 `"Edit|Write"`), and `conditions` filter by the call's ARGS. Conditions are the shared
 `HookCondition` model (`core/conditions.py`, also used by triggers): a list of
@@ -583,7 +585,7 @@ A hook has three parts:
 The engine owns the two ends (the fire points and the return contract); the logic in
 the middle is pluggable. Everything crosses the same typed boundary.
 
-## The four events
+## The five events
 
 | Event | Fires | Can |
 | --- | --- | --- |
@@ -591,10 +593,70 @@ the middle is pluggable. Everything crosses the same typed boundary.
 | `PRE_TOOL_USE` | before a single tool call executes | allow / deny (veto) / modify the call's args |
 | `POST_TOOL_USE` | after a single tool call executes | rewrite the tool result or append a note for the model |
 | `DONE` | when a turn finishes (observe fires on normal completion and on error) | observe (fire-and-forget) and/or continue (force another turn) |
+| `COMMAND_SUBMIT` | before a slash command's handler runs, on every dispatch surface | allow / deny (veto) / rewrite the raw argument tail / require approval; observe at submission |
 
 `PROMPT_SUBMIT` firing on autonomous turns too (scheduled TODOs, triggers, watchdog,
 dreams) is a deliberate upgrade over Claude Code's user-only event: `HookContext`
 carries `is_autonomous` / `holder_kind` so a hook can scope to a turn source.
+
+## Command hooks (`command_submit`, backlog #134)
+
+The fire point lives at ONE seam in `CommandService.execute()`
+(`core/command_hooks.py` owns the seam logic): after parsing, alias
+resolution, and every access gate, before argument binding and the handler.
+Consequences, each deliberate:
+
+- **Hooks always see the canonical command.** User aliases (#133) and
+  built-in aliases resolve before the seam, so no spelling dodges a matcher,
+  and a hook can never reopen a gate that already refused the command
+  (`blocked_surfaces`, `AGENT_BLOCKED`, `agent_allowed`, `requires_admin`).
+- **Matcher = command paths.** On `command_submit` the `matcher` pipe-list
+  targets canonical command paths, not tool names. Hyphen, underscore, and
+  space spellings fold together (`tools-list` == `tools list`), and an entry
+  whose last segment is `*` prefix-matches a family INCLUDING its root
+  (`provider *`; bare `*` matches every command). This differs from the tool
+  plane, where `*` is a literal name.
+- **Deny/rewrite/approve.** A deny renders as an honest error on the calling
+  surface ("Command `/x` was blocked by a lifecycle hook: <reason>"). A
+  rewrite may update only the `rest` key (the raw argument tail), and only
+  for SCHEMA'D commands: the seam re-splits it and the declared-schema
+  binder validates the result, so a bad rewrite fails as a usage error,
+  never a silently wrong execution; schema-less (`params is None`) and
+  secret-bearing commands ignore rewrites with a visible note.
+  `require_approval` holds the command in-band (the HTTP request stays open;
+  keep windows short) and resolves from the record-keyed approval surfaces;
+  there is no tool-call card anchor for command holds. Its denial copy is
+  audience-aware: the model-directed no-consent tail applies to
+  agent-submitted commands (and the tool plane), not to a human's typed
+  command.
+- **Visible feedback.** For human actors, an applied rewrite and any
+  allow-with-note story (an approval grant, a guardrail script-bug note)
+  append italic note lines to the command result; for the agent actor the
+  notes are suppressed (notes never steer the model). Every fire lands in
+  the execution log either way.
+- **Secret redaction.** Commands with a `no_echo` param (which includes the
+  credential-writing `/settings set` and `/env set` value tails), and the
+  two params-exempt provider secret rails (`provider setup`,
+  `provider cliproxy`), fire with `{"rest": "[redacted]"}` and their
+  rewrites are ignored (with a visible note), so a secret never reaches hook
+  logic, conditions, `run_command` stdin, workflow payloads, or the log.
+  A classification ratchet in `tests/test_command_hooks.py` forces every
+  new schema-less command to be filed as secret-rail or reviewed-non-secret.
+- **Fire-condition meta.** `command`, `command_display`, `command_category`,
+  `command_danger_level`, `command_mutates_state`, `command_actor`,
+  `command_surface`, `command_source`, `command_is_admin` (absent when
+  unknown), and `command_via_act_as` join the fire-gate data; the argument
+  tail is `args.rest`. `is_autonomous` is always False on this event (a
+  dispatch is not a turn): scope by `command_actor` instead.
+  `command_danger_level equals dangerous` + `require_approval` is the
+  recipe for confirm-gating destructive commands from bots (#130 axis c).
+- **Boundaries.** `/help` and `/<cmd> help` cards return before the seam;
+  `chat_stream` commands (`/skill`, `/kit`) run as ordinary agent turns and
+  are covered by `prompt_submit` instead; CLI client-local commands never
+  reach the backend; a chain fires once per step. Observe actions fire at
+  SUBMISSION (before the outcome exists); outcome-aware automation would
+  need a future `command_done` event. Threadless dispatches (no
+  `thread_id`) fire GLOBAL-scope hooks only.
 
 ## Two planes
 
@@ -607,16 +669,19 @@ carries `is_autonomous` / `holder_kind` so a hook can scope to a turn source.
   shutdown.
 - **Mutate plane**: synchronous, in-band (`dispatch` / `adispatch`). The fire point
   awaits the reduced outcome and applies it. Fault policy: the veto path fails closed
-  (a raising `PRE_TOOL_USE` hook becomes a `deny`); every other path fails open
+  (a raising hook on a veto event, `PRE_TOOL_USE` or `COMMAND_SUBMIT`, becomes a
+  `deny`); every other path fails open
   (logged and skipped). A hook can never crash a turn: dispatch isolates each hook's
   run *and* the application of its outcome (a malformed `scratch_patch` or
   `updated_args` is dropped, not propagated), and the final reduction is wrapped so it
   can never raise into a turn.
 
-`DONE` and `POST_TOOL_USE` have observe fire points (the latter is scheduled after the mutate
-POST apply, seeing the original tool result; `tool_hooks_active` activates the tool-node seam
-for observe-only tool hooks too). `PROMPT_SUBMIT` / `PRE_TOOL_USE` dispatch on the mutate plane
-only; an observe registration on those events is inert (no product action needs it yet).
+`DONE`, `POST_TOOL_USE`, and `COMMAND_SUBMIT` have observe fire points (the POST one is
+scheduled after the mutate POST apply, seeing the original tool result; `tool_hooks_active`
+activates the tool-node seam for observe-only tool hooks too; the command one fires at
+submission, after the mutate decision). `PROMPT_SUBMIT` / `PRE_TOOL_USE` dispatch on the
+mutate plane only; an observe registration on those events is inert (no product action
+needs it yet).
 Because observe now dispatches **off-turn** (`schedule_observe`), a slow observe hook no longer
 adds latency to the tool call or the turn tail: the POST observe is scheduled and the tool
 returns immediately. When observe hooks *do* run, the two planes run their sync hooks on
@@ -645,7 +710,9 @@ and reasons concatenate.
   best-effort) rides the same contract, so a future workflow-substrate hook
   receives it unchanged.
 - Outcome families: `PromptOutcome`, `PreToolOutcome`, `PostToolOutcome`,
-  `DoneOutcome`. An outcome must match its event or the engine drops it.
+  `DoneOutcome`. An outcome must match its event or the engine drops it
+  (`PreToolOutcome` is the shared veto-plane outcome: `pre_tool_use` AND
+  `command_submit`).
 - `HookProvenance` carries the DONE-continuation loop-guard state from day one.
 
 ## DONE continuation and the loop guard
@@ -737,6 +804,11 @@ endpoints (GUI, CLI, bots); self-invoked agent turns are excluded.
   `DoneOutcome.user_message` is delivered out-of-band through the same notification surface
   as the `notify` action (`_deliver_hook_user_message`), whether or not a continuation is
   also requested.
+- `COMMAND_SUBMIT`: one seam in `CommandService.execute()` delegating to
+  `core/command_hooks.py` (registry resolution mirrors the agent's per-turn resolver but
+  runs agentless: ambient-agent managers when inside a turn, module-cached instances on the
+  HTTP/bot paths). Mutate dispatch is awaited (`adispatch`); the observe plane is
+  `schedule_observe`d after it. See "Command hooks" above for semantics and boundaries.
 
 ## In-chat activity lines (desktop)
 
