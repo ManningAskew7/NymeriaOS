@@ -115,6 +115,11 @@ class GeneratedCommandsCog(commands.Cog):
         description="List your callable-thread teams",
     )
 
+    todos_group = app_commands.Group(
+        name="todos",
+        description="Manage scheduled tasks and reminders",
+    )
+
     triggers_group = app_commands.Group(
         name="triggers",
         description="Event-trigger automation commands",
@@ -1218,7 +1223,7 @@ class GeneratedCommandsCog(commands.Cog):
         if source is not None:
             parts.extend(("--source", shlex.quote(source)))
         if query is not None:
-            parts.append(query)
+            parts.append(" ".join(shlex.quote(_word) for _word in query.split()))
         await self.bot._send_backend_command(
             interaction,
             "skills search",
@@ -1376,6 +1381,289 @@ class GeneratedCommandsCog(commands.Cog):
             "think",
             args=" ".join(parts),
             require_admin=False,
+        )
+
+    @todos_group.command(
+        name="add",
+        description="Add a TODO",
+    )
+    @app_commands.describe(
+        task="Task text",
+        schedule="When to fire (45s/2h/1d or absolute; `none` for no schedule; default 1d)",
+        notes="Notes attached to the TODO",
+        repeat="Recurrence interval (daily, 2h, weekly, ...)",
+        thread="Thread to attach to (default: current)",
+    )
+    async def cmd_todos_add(
+        self,
+        interaction: discord.Interaction,
+        task: str,
+        schedule: Optional[str] = None,
+        notes: Optional[str] = None,
+        repeat: Optional[str] = None,
+        thread: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        if schedule is not None:
+            parts.extend(("--schedule", shlex.quote(schedule)))
+        if notes is not None:
+            parts.extend(("--notes", shlex.quote(notes)))
+        if repeat is not None:
+            parts.extend(("--repeat", shlex.quote(repeat)))
+        if thread is not None:
+            parts.extend(("--thread", shlex.quote(thread)))
+        parts.append(" ".join(shlex.quote(_word) for _word in task.split()))
+        await self.bot._send_backend_command(
+            interaction,
+            "todos add",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @todos_group.command(
+        name="complete",
+        description="Complete a TODO",
+    )
+    @app_commands.describe(
+        todo_id="TODO id or unique id prefix",
+    )
+    async def cmd_todos_complete(
+        self,
+        interaction: discord.Interaction,
+        todo_id: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(todo_id))
+        await self.bot._send_backend_command(
+            interaction,
+            "todos complete",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @cmd_todos_complete.autocomplete("todo_id")
+    async def _ac_todos_complete_todo_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["todos"](
+            self.bot, interaction, current
+        )
+
+    @todos_group.command(
+        name="delete",
+        description="Delete a TODO",
+    )
+    @app_commands.describe(
+        todo_id="TODO id or unique id prefix",
+        yes="Accepted for compatibility; deletion does not prompt",
+    )
+    async def cmd_todos_delete(
+        self,
+        interaction: discord.Interaction,
+        todo_id: str,
+        yes: Optional[bool] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        if yes is True:
+            parts.append("--yes")
+        parts.append(shlex.quote(todo_id))
+        await self.bot._send_backend_command(
+            interaction,
+            "todos delete",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @cmd_todos_delete.autocomplete("todo_id")
+    async def _ac_todos_delete_todo_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["todos"](
+            self.bot, interaction, current
+        )
+
+    @todos_group.command(
+        name="edit",
+        description="Edit a TODO",
+    )
+    @app_commands.describe(
+        todo_id="TODO id or unique id prefix",
+        task="New task text",
+        status="New status",
+        notes="Replace the notes",
+        schedule="New fire time",
+        clear_schedule="Remove the schedule",
+        repeat="New recurrence interval",
+        clear_repeat="Remove the recurrence",
+        thread="Rebind to a thread",
+    )
+    @app_commands.choices(
+        status=[
+            app_commands.Choice(name="pending", value="pending"),
+            app_commands.Choice(name="in_progress", value="in_progress"),
+            app_commands.Choice(name="done", value="done"),
+        ],
+    )
+    async def cmd_todos_edit(
+        self,
+        interaction: discord.Interaction,
+        todo_id: str,
+        task: Optional[str] = None,
+        status: Optional[str] = None,
+        notes: Optional[str] = None,
+        schedule: Optional[str] = None,
+        clear_schedule: Optional[bool] = None,
+        repeat: Optional[str] = None,
+        clear_repeat: Optional[bool] = None,
+        thread: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        if status is not None:
+            parts.extend(("--status", shlex.quote(status)))
+        if notes is not None:
+            parts.extend(("--notes", shlex.quote(notes)))
+        if schedule is not None:
+            parts.extend(("--schedule", shlex.quote(schedule)))
+        if clear_schedule is True:
+            parts.append("--clear-schedule")
+        if repeat is not None:
+            parts.extend(("--repeat", shlex.quote(repeat)))
+        if clear_repeat is True:
+            parts.append("--clear-repeat")
+        if thread is not None:
+            parts.extend(("--thread", shlex.quote(thread)))
+        parts.append(shlex.quote(todo_id))
+        if task is not None:
+            parts.append(" ".join(shlex.quote(_word) for _word in task.split()))
+        await self.bot._send_backend_command(
+            interaction,
+            "todos edit",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @cmd_todos_edit.autocomplete("todo_id")
+    async def _ac_todos_edit_todo_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["todos"](
+            self.bot, interaction, current
+        )
+
+    @todos_group.command(
+        name="list",
+        description="List TODOs",
+    )
+    @app_commands.describe(
+        filter="Status filter (default: active)",
+        thread="Only TODOs on this thread (`current` for the active one)",
+    )
+    @app_commands.choices(
+        filter=[
+            app_commands.Choice(name="active", value="active"),
+            app_commands.Choice(name="pending", value="pending"),
+            app_commands.Choice(name="in_progress", value="in_progress"),
+            app_commands.Choice(name="done", value="done"),
+            app_commands.Choice(name="all", value="all"),
+        ],
+    )
+    async def cmd_todos_list(
+        self,
+        interaction: discord.Interaction,
+        filter: Optional[str] = None,
+        thread: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        if thread is not None:
+            parts.extend(("--thread", shlex.quote(thread)))
+        if filter is not None:
+            parts.append(shlex.quote(filter))
+        await self.bot._send_backend_command(
+            interaction,
+            "todos list",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @todos_group.command(
+        name="repeat",
+        description="Set or clear a TODO's recurrence",
+    )
+    @app_commands.describe(
+        todo_id="TODO id or unique id prefix",
+        interval="Recurrence interval (daily, 2h, weekly, ...), or `clear`",
+    )
+    async def cmd_todos_repeat(
+        self,
+        interaction: discord.Interaction,
+        todo_id: str,
+        interval: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(todo_id))
+        parts.append(shlex.quote(interval))
+        await self.bot._send_backend_command(
+            interaction,
+            "todos repeat",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @cmd_todos_repeat.autocomplete("todo_id")
+    async def _ac_todos_repeat_todo_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["todos"](
+            self.bot, interaction, current
+        )
+
+    @todos_group.command(
+        name="schedule",
+        description="Set or clear a TODO's fire time",
+    )
+    @app_commands.describe(
+        todo_id="TODO id or unique id prefix",
+        when="New fire time, or `clear` to remove it",
+    )
+    async def cmd_todos_schedule(
+        self,
+        interaction: discord.Interaction,
+        todo_id: str,
+        when: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(todo_id))
+        parts.append(" ".join(shlex.quote(_word) for _word in when.split()))
+        await self.bot._send_backend_command(
+            interaction,
+            "todos schedule",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @cmd_todos_schedule.autocomplete("todo_id")
+    async def _ac_todos_schedule_todo_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["todos"](
+            self.bot, interaction, current
         )
 
     @triggers_group.command(
@@ -1604,6 +1892,13 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "team list",
     "team show",
     "think",
+    "todos add",
+    "todos complete",
+    "todos delete",
+    "todos edit",
+    "todos list",
+    "todos repeat",
+    "todos schedule",
     "triggers delete",
     "triggers disable",
     "triggers enable",
@@ -1668,6 +1963,13 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "team list": "Thread",
     "team show": "Thread",
     "think": "LLM",
+    "todos add": "TODOs",
+    "todos complete": "TODOs",
+    "todos delete": "TODOs",
+    "todos edit": "TODOs",
+    "todos list": "TODOs",
+    "todos repeat": "TODOs",
+    "todos schedule": "TODOs",
     "triggers delete": "Automation",
     "triggers disable": "Automation",
     "triggers enable": "Automation",

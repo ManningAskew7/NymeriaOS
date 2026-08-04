@@ -9,7 +9,7 @@ Interactive terminal CLI for Nymeria.
 ## Contents
 
 - `app.py`  -  main CLI app
-- `commands/`  -  slash command handlers (context, memory, model, system, threads, todos, tools)
+- `commands/`  -  slash command handlers (context, memory, model, system, threads, tools; the todo family is backend-owned since #143)
 - `rendering/`  -  terminal output formatting
 - `transport/`  -  communication layer
 - `state/`  -  CLI session state

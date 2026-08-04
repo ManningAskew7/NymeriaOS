@@ -246,12 +246,14 @@ class TodoList(BaseModel):
 
         if clear_schedule:
             item.scheduled_for = None
-            # thread_id is preserved (scoping stays even when schedule is cleared)
-        else:
-            if scheduled_for is not None:
-                item.scheduled_for = scheduled_for
-            if thread_id is not None:
-                item.thread_id = thread_id
+        elif scheduled_for is not None:
+            item.scheduled_for = scheduled_for
+        # thread_id is independent of the schedule: an unspecified one is
+        # preserved (scoping stays even when the schedule is cleared), and an
+        # explicit rebind applies even in the same patch as clear_schedule
+        # (pre-#143 the clear branch silently dropped it).
+        if thread_id is not None:
+            item.thread_id = thread_id
 
         if clear_recurrence:
             item.recurrence = None

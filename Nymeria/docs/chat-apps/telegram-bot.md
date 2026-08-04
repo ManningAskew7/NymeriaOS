@@ -188,10 +188,13 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 
 | Command | Description |
 |---------|-------------|
-| `/todo_list [status]` | List TODOs. Filter: active (default), pending, in_progress, done, all |
-| `/todo_add <task> \| <schedule> \| <repeat> \| <notes>` | Create a TODO. Schedule: any relative duration such as "45s", "17m", "2h", "1w", or an absolute/ISO datetime. Repeat: 5min, hourly, daily, etc. Pipe-delimited. |
-| `/todo_complete <id>` | Mark a TODO as done (first 8 chars of ID) |
-| `/todo_delete <id>` | Delete a TODO permanently |
+| `/todo_list [status] [--thread current\|<id>]` | List TODOs. Filter: active (default), pending, in_progress, done, all |
+| `/todo_add <task> \| <schedule> \| <repeat> \| <notes>` | Create a TODO. Schedule: any relative duration such as "45s", "17m", "2h", "1w", an absolute/ISO datetime, or `none` for a plain checklist item. Repeat: any recurrence interval (daily, 90m, weekly, ...). The pipe form and the flag form (`--schedule 2h --repeat daily --notes ...`) both work (#143). |
+| `/todo_edit <id> [new task] [--status ...] [--notes ...] [--schedule ...\|--clear-schedule] [--repeat ...\|--clear-repeat] [--thread ...]` | Edit any field of a TODO (unique id prefix works) |
+| `/todo_schedule <id> <when\|clear>` | Set or clear a TODO's fire time |
+| `/todo_repeat <id> <interval\|clear>` | Set or clear a TODO's recurrence |
+| `/todo_complete <id>` | Mark a TODO as done (unique id prefix works) |
+| `/todo_delete <id>` | Delete a TODO permanently (unique id prefix works) |
 
 ### Settings and environment
 

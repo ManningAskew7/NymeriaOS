@@ -11,7 +11,6 @@ wrapper cannot express.
 - `autocomplete.py`  -  `choices_ref` autocomplete resolvers, shared by the
   generated cog and `tools.py`
 - `chat.py`  -  `/ask`, `/clear`, `/compact`, `/stop`, message handling
-- `todos.py`  -  `/todos` group (kept for `/todos add`'s pipe syntax)
 - `config.py`  -  `/restart` (the bot self-restart branch)
 - `tools.py`  -  `/tools` group (kept for the Discord-local `/tools search`)
 - `memory.py`  -  `/notepad` group (kept for `/notepad write`'s mode prefix)

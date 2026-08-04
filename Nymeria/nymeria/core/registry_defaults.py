@@ -145,13 +145,14 @@ _TOOL_TARGET_PARAM = CommandParam(
     description="Tool name or tool category",
 )
 
-# ``/todos list`` (and its ``/tasks`` alias) filters on status. No ``choices``:
-# the handler compares the token against whatever status the store reports, so
-# an unlisted status still filters rather than erroring.
+# ``/todos list`` (and its ``/tasks`` alias) filters on status. Declared
+# ``choices`` (#143 review): the status set is a closed enum, so the old
+# label-only shape let a typo return "No <typo> TODOs." instead of a bind
+# error, and cost Discord its dropdown when the family went generated.
 _TODO_FILTER_PARAM = CommandParam(
     "filter",
     default="active",
-    label="active|pending|in_progress|done|all",
+    choices=("active", "pending", "in_progress", "done", "all"),
     description="Status filter (default: active)",
 )
 
@@ -2075,7 +2076,10 @@ def register_default_commands(service: "CommandService") -> None:
         # Bare "/todos" lists (rule 2 of the style guide). Every verb is a
         # registered child routed before this handler, so the root binds
         # strictly with zero arguments and a typo gets the dispatcher's
-        # did-you-mean plus the valid-subcommand list.
+        # did-you-mean plus the valid-subcommand list. The singular family
+        # (`/todo ...`) is whole-path aliases per verb (#143 folded the
+        # CLI-local family into this one), per rule 2's number aliasing.
+        aliases=("todo",),
         params=(),
     )
     service.register(
@@ -2084,30 +2088,186 @@ def register_default_commands(service: "CommandService") -> None:
         category="TODOs",
         # `/tasks` was a near-duplicate root with its own implementation;
         # backlog #131 folds it in as a whole-path alias of this command.
-        aliases=("todos_list", "tasks"),
-        params=(_TODO_FILTER_PARAM,),
+        aliases=("todos_list", "tasks", "todo list"),
+        params=(
+            _TODO_FILTER_PARAM,
+            CommandParam(
+                "thread",
+                kind="option",
+                label="current|<id>",
+                description="Only TODOs on this thread (`current` for the active one)",
+            ),
+        ),
     )
     service.register(
         "todos add",
         description="Add a TODO",
         category="TODOs",
-        usage="/todos add <task> [| <schedule>] [| <repeat>] [| <notes>]",
-        aliases=("todos_add",),
+        aliases=("todos_add", "todo add"),
         mutates_state=True,
         danger_level="normal",
-        examples=("/todos add Check logs | 2h | daily",),
-    )  # params-exempt: raw-rest pipe grammar (task | schedule | repeat | notes)
+        params=(
+            # Repeatable positional, NOT rest: options stay bindable on
+            # either side of the task text (the /thread branch precedent),
+            # and the legacy pipe grammar re-collects intact from the
+            # joined tokens (the handler still splits on `|`).
+            CommandParam(
+                "task",
+                repeatable=True,
+                required=True,
+                description="Task text",
+            ),
+            CommandParam(
+                "schedule",
+                kind="option",
+                aliases=("--when",),
+                description="When to fire (45s/2h/1d or absolute; `none` for no schedule; default 1d)",
+            ),
+            CommandParam(
+                "notes",
+                kind="option",
+                description="Notes attached to the TODO",
+            ),
+            CommandParam(
+                "repeat",
+                kind="option",
+                aliases=("--recurrence",),
+                description="Recurrence interval (daily, 2h, weekly, ...)",
+            ),
+            CommandParam(
+                "thread",
+                kind="option",
+                label="current|<id>",
+                description="Thread to attach to (default: current)",
+            ),
+        ),
+        examples=(
+            "/todos add Check logs --schedule 2h --repeat daily",
+            "/todos add Check logs | 2h | daily",
+        ),
+    )
     service.register(
-        "todos complete",
-        description="Complete a TODO",
+        "todos edit",
+        description="Edit a TODO",
         category="TODOs",
-        aliases=("todos_complete",),
+        aliases=("todos_edit", "todo edit"),
         mutates_state=True,
         danger_level="normal",
         params=(
             CommandParam(
                 "todo_id",
                 required=True,
+                choices_ref="todos",
+                description="TODO id or unique id prefix",
+            ),
+            CommandParam(
+                "task",
+                repeatable=True,
+                description="New task text",
+            ),
+            CommandParam(
+                "status",
+                kind="option",
+                choices=("pending", "in_progress", "done"),
+                description="New status",
+            ),
+            CommandParam(
+                "notes",
+                kind="option",
+                description="Replace the notes",
+            ),
+            CommandParam(
+                "schedule",
+                kind="option",
+                aliases=("--when",),
+                description="New fire time",
+            ),
+            CommandParam(
+                "clear_schedule",
+                kind="flag",
+                type="bool",
+                description="Remove the schedule",
+            ),
+            CommandParam(
+                "repeat",
+                kind="option",
+                aliases=("--recurrence",),
+                description="New recurrence interval",
+            ),
+            CommandParam(
+                "clear_repeat",
+                kind="flag",
+                type="bool",
+                aliases=("--clear-recurrence",),
+                description="Remove the recurrence",
+            ),
+            CommandParam(
+                "thread",
+                kind="option",
+                label="current|<id>",
+                description="Rebind to a thread",
+            ),
+        ),
+        examples=("/todos edit 1a2b3c Water the plants --schedule 2h",),
+    )
+    service.register(
+        "todos schedule",
+        description="Set or clear a TODO's fire time",
+        category="TODOs",
+        aliases=("todos_schedule", "todo schedule"),
+        mutates_state=True,
+        danger_level="normal",
+        params=(
+            CommandParam(
+                "todo_id",
+                required=True,
+                choices_ref="todos",
+                description="TODO id or unique id prefix",
+            ),
+            # Repeatable: absolute times span tokens ("2026-08-05 09:00").
+            CommandParam(
+                "when",
+                repeatable=True,
+                required=True,
+                label="when|clear",
+                description="New fire time, or `clear` to remove it",
+            ),
+        ),
+    )
+    service.register(
+        "todos repeat",
+        description="Set or clear a TODO's recurrence",
+        category="TODOs",
+        aliases=("todos_repeat", "todos recurrence", "todo repeat", "todo recurrence"),
+        mutates_state=True,
+        danger_level="normal",
+        params=(
+            CommandParam(
+                "todo_id",
+                required=True,
+                choices_ref="todos",
+                description="TODO id or unique id prefix",
+            ),
+            CommandParam(
+                "interval",
+                required=True,
+                label="interval|clear",
+                description="Recurrence interval (daily, 2h, weekly, ...), or `clear`",
+            ),
+        ),
+    )
+    service.register(
+        "todos complete",
+        description="Complete a TODO",
+        category="TODOs",
+        aliases=("todos_complete", "todo done", "todo complete"),
+        mutates_state=True,
+        danger_level="normal",
+        params=(
+            CommandParam(
+                "todo_id",
+                required=True,
+                choices_ref="todos",
                 description="TODO id or unique id prefix",
             ),
         ),
@@ -2116,14 +2276,24 @@ def register_default_commands(service: "CommandService") -> None:
         "todos delete",
         description="Delete a TODO",
         category="TODOs",
-        aliases=("todos_delete",),
+        aliases=("todos_delete", "todo delete", "todo remove", "todo rm"),
         mutates_state=True,
         danger_level="dangerous",
         params=(
             CommandParam(
                 "todo_id",
                 required=True,
+                choices_ref="todos",
                 description="TODO id or unique id prefix",
+            ),
+            # The retired CLI-local family took --yes for its own confirm
+            # prompt; accepted as a no-op so old muscle memory does not
+            # usage-error. Generic danger confirmation is backlog #147.
+            CommandParam(
+                "yes",
+                kind="flag",
+                type="bool",
+                description="Accepted for compatibility; deletion does not prompt",
             ),
         ),
     )

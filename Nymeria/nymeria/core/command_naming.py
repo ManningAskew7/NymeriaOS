@@ -54,8 +54,10 @@ SANCTIONED_LEAF_TOKENS: dict[str, str] = {
     "pause": "goal lifecycle verb",
     "resume": "goal lifecycle verb",
     "cancel": "goal lifecycle verb",
-    "edit": "in-place mutation of hooks and goals",
+    "edit": "in-place mutation of hooks, goals and todos",
     "complete": "todos are completed, not deleted",
+    "schedule": "todos fire-time verb: set or clear when a TODO fires",
+    "repeat": "todos recurrence verb: set or clear the recurrence interval",
     # Domain verbs where the generic word would lie
     "switch": "threads and providers are switched, not set",
     "save": "memories are saved (memory family)",

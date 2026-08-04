@@ -16,7 +16,6 @@ from nymeria.triggers.cli.commands import (
     artifacts,
     doctor,
     memory,
-    todos,
     triggers,
 )
 from nymeria.triggers.cli.events import (
@@ -38,24 +37,6 @@ class PersonalFakeClient:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.todos = [
-            {
-                "id": "todo-1",
-                "task": "File taxes",
-                "status": "pending",
-                "scheduled_for": None,
-                "recurrence": None,
-                "thread_id": "thread-1",
-            },
-            {
-                "id": "todo-2",
-                "task": "Water plants",
-                "status": "done",
-                "scheduled_for": None,
-                "recurrence": "weekly",
-                "thread_id": "thread-1",
-            },
-        ]
         self.memories = [
             {"key": "city", "value": "Tulsa", "access_count": 2},
             {"key": "color", "value": "green", "access_count": 1},
@@ -86,80 +67,6 @@ class PersonalFakeClient:
                 "thread_id": "thread-1",
             }
         ]
-
-    async def list_todos(
-        self,
-        user_id: str,
-        *,
-        filter_status: str | None = None,
-        thread_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        self.calls.append(
-            (
-                "list_todos",
-                {
-                    "user_id": user_id,
-                    "filter_status": filter_status,
-                    "thread_id": thread_id,
-                },
-            )
-        )
-        todos = copy.deepcopy(self.todos)
-        if filter_status and filter_status != "all":
-            todos = [item for item in todos if item["status"] == filter_status]
-        if thread_id:
-            todos = [item for item in todos if item["thread_id"] == thread_id]
-        return todos
-
-    async def add_todo(
-        self,
-        user_id: str,
-        task: str,
-        scheduled_for: str | None = None,
-        notes: str | None = None,
-        recurrence: str | None = None,
-        thread_id: str | None = None,
-    ) -> dict[str, Any]:
-        self.calls.append(
-            (
-                "add_todo",
-                {
-                    "user_id": user_id,
-                    "task": task,
-                    "scheduled_for": scheduled_for,
-                    "notes": notes,
-                    "recurrence": recurrence,
-                    "thread_id": thread_id,
-                },
-            )
-        )
-        item = {
-            "id": "todo-new",
-            "task": task,
-            "status": "pending",
-            "scheduled_for": scheduled_for,
-            "recurrence": recurrence,
-            "thread_id": thread_id,
-        }
-        self.todos.append(item)
-        return copy.deepcopy(item)
-
-    async def update_todo(self, user_id: str, todo_id: str, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("update_todo", {"user_id": user_id, "todo_id": todo_id, **kwargs}))
-        for item in self.todos:
-            if item["id"] == todo_id:
-                item.update(kwargs)
-                return copy.deepcopy(item)
-        return {"id": todo_id, **kwargs}
-
-    async def complete_todo(self, user_id: str, todo_id: str) -> dict[str, Any]:
-        self.calls.append(("complete_todo", {"user_id": user_id, "todo_id": todo_id}))
-        return await self.update_todo(user_id, todo_id, status="done")
-
-    async def delete_todo(self, user_id: str, todo_id: str) -> dict[str, Any]:
-        self.calls.append(("delete_todo", {"user_id": user_id, "todo_id": todo_id}))
-        self.todos = [item for item in self.todos if item["id"] != todo_id]
-        return {"deleted": True, "todo_id": todo_id}
 
     async def list_memories(self, user_id: str) -> list[dict[str, Any]]:
         self.calls.append(("list_memories", {"user_id": user_id}))
@@ -389,7 +296,6 @@ class PersonalFakeClient:
 
 def make_registry() -> CommandRegistry:
     registry = CommandRegistry()
-    todos.register(registry)
     memory.register(registry)
     account.register(registry)
     triggers.register(registry)
@@ -445,33 +351,14 @@ def make_context(
     )
 
 
-def test_todo_and_memory_commands_use_api_client_methods() -> None:
+def test_memory_commands_use_api_client_methods() -> None:
+    # The local /todo family that used to share this test was retired by
+    # #143: the whole todo surface is backend-owned now and covered by the
+    # command-service tests.
     client = PersonalFakeClient()
     registry = make_registry()
-    sink = ListCommandOutputSink()
-    unconfirmed = make_context(client, output=sink, confirm=False)
-
-    assert run(registry.dispatch_async(unconfirmed, "/todos all")).ok is True
-    assert run(
-        registry.dispatch_async(
-            unconfirmed,
-            "/todo add Call Bob --schedule 2h --recurrence daily --notes phone",
-        )
-    ).ok is True
-    assert run(
-        registry.dispatch_async(unconfirmed, "/todo edit todo-new Call Alice --status in_progress")
-    ).ok is True
-    assert run(registry.dispatch_async(unconfirmed, "/todo schedule todo-new clear")).ok is True
-    assert run(registry.dispatch_async(unconfirmed, "/todo recurrence todo-new weekly")).ok is True
-    assert run(registry.dispatch_async(unconfirmed, "/todo done todo-new")).ok is True
-    delete_result = run(registry.dispatch_async(unconfirmed, "/todo delete todo-new"))
-
-    assert delete_result.ok is True
-    assert sink.messages[-1].level == "warning"
-    assert not any(name == "delete_todo" for name, _payload in client.calls)
 
     confirmed = make_context(client, output=ListCommandOutputSink(), confirm=True)
-    assert run(registry.dispatch_async(confirmed, "/todo delete todo-new")).ok is True
     assert run(registry.dispatch_async(confirmed, "/memory list")).ok is True
     assert run(registry.dispatch_async(confirmed, "/memory search Tulsa")).ok is True
     assert run(registry.dispatch_async(confirmed, "/memory save timezone UTC")).ok is True
@@ -479,53 +366,8 @@ def test_todo_and_memory_commands_use_api_client_methods() -> None:
     # retired the local declaration, so deletion is a backend command now.
     assert not any(name == "forget_memory" for name, _payload in client.calls)
 
-    assert (
-        "add_todo",
-        {
-            "user_id": "alice",
-            "task": "Call Bob",
-            "scheduled_for": "2h",
-            "notes": "phone",
-            "recurrence": "1d",
-            "thread_id": "thread-1",
-        },
-    ) in client.calls
-    assert ("complete_todo", {"user_id": "alice", "todo_id": "todo-new"}) in client.calls
-    assert ("delete_todo", {"user_id": "alice", "todo_id": "todo-new"}) in client.calls
     assert ("search_memories", {"user_id": "alice", "query": "Tulsa"}) in client.calls
     assert ("save_memory", {"user_id": "alice", "key": "timezone", "value": "UTC"}) in client.calls
-
-
-def test_todo_add_accepts_arbitrary_recurrence_interval() -> None:
-    client = PersonalFakeClient()
-    registry = make_registry()
-    ctx = make_context(client, output=ListCommandOutputSink(), confirm=False)
-
-    assert run(
-        registry.dispatch_async(
-            ctx,
-            "/todo add Heartbeat --schedule 5m --recurrence 90m",
-        )
-    ).ok is True
-    assert (
-        "add_todo",
-        {
-            "user_id": "alice",
-            "task": "Heartbeat",
-            "scheduled_for": "5m",
-            "notes": None,
-            "recurrence": "90m",
-            "thread_id": "thread-1",
-        },
-    ) in client.calls
-
-    too_short = run(
-        registry.dispatch_async(
-            ctx,
-            "/todo add NoGood --schedule 5m --recurrence 30s",
-        )
-    )
-    assert too_short.ok is False
 
 
 def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None:

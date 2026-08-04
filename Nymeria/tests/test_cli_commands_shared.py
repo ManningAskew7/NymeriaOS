@@ -22,9 +22,9 @@ from nymeria.triggers.cli.commands import (
     artifacts,
     doctor,
     mcp,
+    memory,
     skills,
     system,
-    todos,
     tools,
     triggers,
 )
@@ -76,7 +76,7 @@ class TestStringList:
         assert _shared.string_list(123) == []
 
 
-@pytest.mark.parametrize("module", [account, skills, mcp, triggers, todos, tools])
+@pytest.mark.parametrize("module", [account, skills, mcp, triggers, tools])
 def test_modules_share_mapping_sequence(module: ModuleType) -> None:
     assert module._mapping_sequence is _shared.mapping_sequence
 
@@ -355,7 +355,9 @@ _TOOLKIT_WIRING = [
     (account, "compact_id"),
     (skills, "one_line"),
     (mcp, "confirmation_granted"),
-    (todos, "unsupported_transport_result"),
+    # memory took over this wiring row when #143 retired the local todo
+    # family (the shared symbol itself is still imported by 13 modules).
+    (memory, "unsupported_transport_result"),
     (triggers, "parse_scalar"),
     (tools, "parse_scalar"),
     # system.py stopped importing parse_scalar when /settings moved to the

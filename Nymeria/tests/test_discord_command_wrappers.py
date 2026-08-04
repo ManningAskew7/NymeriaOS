@@ -13,7 +13,6 @@ from nymeria.triggers.discord_cogs.chat import ChatCog
 from nymeria.triggers.discord_cogs.generated_cogs import GeneratedCommandsCog
 from nymeria.triggers.discord_cogs.hooks import HooksCog
 from nymeria.triggers.discord_cogs.info import InfoCog
-from nymeria.triggers.discord_cogs.todos import TodosCog
 
 
 class _FakeAPI:
@@ -347,31 +346,58 @@ def test_compact_uses_chat_stream_endpoint():
     )
 
 
-def test_todos_add_preserves_discord_fields_as_backend_pipe_syntax():
+def test_todos_add_maps_discord_fields_onto_declared_flags():
+    # The hand TodosCog and its pipe mapping retired with #143: the todos
+    # family is generated from the declared schema now, so the Discord
+    # fields must arrive as the canonical flag grammar (options first,
+    # multi-word values quoted, the task tail verbatim).
     api = _FakeAPI()
     bot = _bot(api)
     interaction = _FakeInteraction()
-    cog = TodosCog(bot)
-
-    class _Repeat:
-        value = "daily"
+    cog = GeneratedCommandsCog(bot)
 
     async def run() -> None:
-        await TodosCog.cmd_todos_add.callback(
+        await GeneratedCommandsCog.cmd_todos_add.callback(
             cog,
             interaction,
             "Check logs",
-            "2h",
-            _Repeat(),
-            "include worker",
+            schedule="2h",
+            notes="include worker",
+            repeat="daily",
         )
 
     asyncio.run(run())
 
     assert api.command_calls[0]["command"] == (
-        "/todos add Check logs | 2h | daily | include worker"
+        "/todos add --schedule 2h --notes 'include worker' --repeat daily Check logs"
     )
     assert api.command_calls[0]["thread_id"] == "discord_123_456"
+
+
+def test_todos_add_task_apostrophe_survives_the_flatten():
+    # The repeatable task tail is quoted per word: an unquoted apostrophe
+    # would flip the dispatcher to whitespace-split fallback and mis-bind
+    # the neighbouring option values (verified corruption: task swallowed
+    # half the notes value). Plain words must stay unquoted.
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = GeneratedCommandsCog(bot)
+
+    async def run() -> None:
+        await GeneratedCommandsCog.cmd_todos_add.callback(
+            cog,
+            interaction,
+            "Bob's plan",
+            schedule="2h",
+            notes="include worker",
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == (
+        "/todos add --schedule 2h --notes 'include worker' 'Bob'\"'\"'s' plan"
+    )
 
 
 def test_admin_only_generated_command_rejects_non_admin_before_backend_call():

@@ -175,7 +175,6 @@ class CLIApp:
             statusbar,
             system,
             theme,
-            todos,
             toolicon,
             tools,
             triggers,
@@ -197,7 +196,6 @@ class CLIApp:
         tools.register(self.registry)
         skills.register(self.registry)
         mcp.register(self.registry)
-        todos.register(self.registry)
         memory.register(self.registry)
         account.register(self.registry)
         triggers.register(self.registry)

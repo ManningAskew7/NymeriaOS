@@ -1060,6 +1060,9 @@ class NymeriaTelegramBot:
         # TODO commands
         command("todo_add", self._cmd_todo_add)
         command("todo_list", self._cmd_todo_list)
+        command("todo_edit", self._cmd_todo_edit)
+        command("todo_schedule", self._cmd_todo_schedule)
+        command("todo_repeat", self._cmd_todo_repeat)
         command("todo_complete", self._cmd_todo_complete)
         command("todo_delete", self._cmd_todo_delete)
 
@@ -2535,6 +2538,7 @@ class NymeriaTelegramBot:
         if not raw:
             await update.message.reply_text(
                 "Usage: /todo_add <task> | <schedule> | <repeat> | <notes>\n"
+                "or: /todo_add <task> --schedule 2h --repeat daily --notes ...\n"
                 "Example: /todo_add Check logs | 2h | daily"
             )
             return
@@ -2566,6 +2570,20 @@ class NymeriaTelegramBot:
             return
 
         await self._send_backend_command(update, context, "todos delete")
+
+    async def _cmd_todo_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /todo_edit <id> [new task] [--flags] (#143 family port)."""
+        # Pure relay: the backend's generated usage answers a bare call, so
+        # no local usage copy to drift.
+        await self._send_backend_command(update, context, "todos edit")
+
+    async def _cmd_todo_schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /todo_schedule <id> <when|clear>."""
+        await self._send_backend_command(update, context, "todos schedule")
+
+    async def _cmd_todo_repeat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /todo_repeat <id> <interval|clear>."""
+        await self._send_backend_command(update, context, "todos repeat")
 
     # =========================================================================
     # Lifecycle-hook Commands
