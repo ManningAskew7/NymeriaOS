@@ -99,9 +99,13 @@ Both apps now use the same modular API service layout:
 | `services/api.svelte.ts` | EXACT_MATCH | Compatibility entrypoint; re-exports from `services/api/index.ts`. |
 | `services/api/index.ts` | EXACT_MATCH | Constructs the concrete `NymeriaAPI` facade from the domain class chain. |
 | `services/api/credentials.ts` | EXACT_MATCH | Shared credential-vault API client. |
-| `services/api/commands.ts` | EXACT_MATCH | Shared slash-command execute/list API client used by chat input autocomplete. It derives `surface` at runtime so the file remains identical. |
+| `services/api/commands.ts` | EXACT_MATCH | Shared slash-command execute/list API client used by chat input autocomplete. It derives `surface` at runtime so the file remains identical. On a failed execute only a 401 raises a toast; the command-result card is the one error surface otherwise (backlog #135). |
 | `services/api/*.ts` domain modules | KNOWN_DRIFT | Same module names and inheritance order, but the desktop API surface is still a superset in a few administrative areas. |
 | `stores/credentials.svelte.ts` | EXACT_MATCH | Shared credential-vault state and actions. |
+| `stores/commands.svelte.ts` | EXACT_MATCH | The one client-side slash-command catalog cache (backlog #135): one memoized `GET /commands` fetch serves the composer palette and the chat-stream routing fork, with a static fallback root set and a 15s retry window on failure. |
+| `utils/commandSearch.ts` | EXACT_MATCH | Tiered palette ranking (name-prefix > name-substring > description-only), shared by both composers; deliberately not the fuzzy `toolSearch` scorer. |
+| `utils/inputTips.ts` | EXACT_MATCH | The rotating composer tip copy; `desktopOnly` flags mark desktop-chrome tips mobile filters out. |
+| `components/chat/InputHintTips.svelte` | KNOWN_DRIFT | Tip presentation: desktop has hover-pause, clip tooltip, and the elbow connector; mobile is a plain line above the composer. |
 | `utils/toolSearch.ts` | EXACT_MATCH | Local fuzzy scorer used by tool panels for fast typeahead before backend search is needed. |
 | `utils/transitions.ts` | EXACT_MATCH | Shared dropdown and collapsible slide timing constants. |
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
