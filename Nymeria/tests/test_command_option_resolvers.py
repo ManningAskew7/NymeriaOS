@@ -24,6 +24,7 @@ from nymeria.core.command_option_resolvers import (
     resolve_providers,
     resolve_skills,
     resolve_threads,
+    resolve_todos,
     resolve_tools,
     resolve_triggers,
 )
@@ -529,6 +530,63 @@ def test_resolve_threads_degrades_to_empty_on_listing_fault() -> None:
             raise RuntimeError("thread store down")
 
     assert run(resolve_threads(_executor(_Broken()))) == []
+
+
+# ── resolve_todos ────────────────────────────────────────────────────────────
+
+
+class _TodosApi:
+    def __init__(self) -> None:
+        self.list_calls: list[dict[str, Any]] = []
+
+    async def list_todos(
+        self,
+        user_id: str,
+        *,
+        filter_status: str | None = None,
+        thread_id: str | None = None,
+    ) -> list[Any]:
+        self.list_calls.append(
+            {"user_id": user_id, "filter_status": filter_status, "thread_id": thread_id}
+        )
+        return [
+            {
+                "id": "abc12345-full-id",
+                "task": "Water the plants",
+                "status": "pending",
+                "scheduled_for": "2026-08-05T09:00:00Z",
+                "recurrence": "1d",
+            },
+            {"id": "def67890-full-id", "task": "Old chore", "status": "done"},
+            {"task": "no id, skipped"},
+        ]
+
+
+def test_resolve_todos_offers_full_ids_across_every_status() -> None:
+    api = _TodosApi()
+    options = run(resolve_todos(_executor(api)))
+
+    # Full id as the value (the todo_id params resolve exact-or-prefix),
+    # task text as the label, and done TODOs included: edit and delete
+    # address them too.
+    assert [o["id"] for o in options] == ["abc12345-full-id", "def67890-full-id"]
+    assert [o["label"] for o in options] == ["Water the plants", "Old chore"]
+    by_id = {o["id"]: o for o in options}
+    assert by_id["abc12345-full-id"]["meta"] == (
+        "abc12345, pending, fires 2026-08-05T09:00, repeats 1d"
+    )
+    assert by_id["def67890-full-id"]["meta"] == "def67890, done"
+    assert api.list_calls == [
+        {"user_id": "alice", "filter_status": "all", "thread_id": None}
+    ]
+
+
+def test_resolve_todos_degrades_to_empty_on_listing_fault() -> None:
+    class _Broken:
+        async def list_todos(self, user_id: str, **_kwargs: Any) -> list[Any]:
+            raise RuntimeError("todo store down")
+
+    assert run(resolve_todos(_executor(_Broken()))) == []
 
 
 # ── resolve_triggers ─────────────────────────────────────────────────────────

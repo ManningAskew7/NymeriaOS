@@ -115,9 +115,11 @@ self-restart (`/restart`), Discord-local rendering (`/export`, `/help`,
 `/tools search`, `/channel-context`, `/show-tools`), the two commands that give
 back a capability the group rule took (`/set-model`, `/show-settings`, below),
 and the families whose
-group name they must own for one of those reasons (`/tools`, `/todos`,
+group name they must own for one of those reasons (`/tools`,
 `/notepad`, `/thread`, `/hook`, `/fallback`). The generator's
 `HAND_WRITTEN_FAMILIES` and `EXCLUDED_COMMANDS` name each one and why.
+(The `/todos` family moved to the generated half in #143, when the
+registry adopted its whole grammar.)
 
 Dynamic value sets (`choices_ref`) become autocomplete rather than static
 choices. Since 2026-08-03 every ref is answered by the backend's shared
@@ -217,10 +219,13 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 
 | Command | Description |
 |---------|-------------|
-| `/todos list [filter]` | List TODOs. Filter: `active` (default), `pending`, `in_progress`, `done`, `all`. |
-| `/todos add <task> [schedule] [repeat] [notes]` | Create a TODO. Schedule: any relative duration such as `"45s"`, `"17m"`, `"2h"`, `"1w"`, or an absolute/ISO datetime such as `"2024-12-25 14:00"`. Repeat: `5min` through `monthly`. Associates with the current channel. |
-| `/todos complete <todo_id>` | Mark a TODO as done (first 8 chars of ID). Recurring TODOs auto-reschedule. |
-| `/todos delete <todo_id>` | Permanently delete a TODO (first 8 chars of ID). |
+| `/todos list [filter] [thread]` | List TODOs. Filter: `active` (default), `pending`, `in_progress`, `done`, `all`. Thread: `current` or a thread id. |
+| `/todos add <task> [schedule] [notes] [repeat] [thread]` | Create a TODO. Schedule: any relative duration such as `"45s"`, `"17m"`, `"2h"`, `"1w"`, an absolute/ISO datetime such as `"2024-12-25 14:00"`, or `none` for a plain checklist item (default `1d`). Repeat: any recurrence interval (`daily`, `90m`, `weekly`, ...). Associates with the current channel unless `thread` says otherwise. |
+| `/todos edit <todo_id> [task] [status] [notes] [schedule] [repeat] [thread] [clear flags]` | Edit any field of a TODO (id autocompletes). |
+| `/todos schedule <todo_id> <when>` | Set a TODO's fire time, or `clear` to remove it. |
+| `/todos repeat <todo_id> <interval>` | Set a TODO's recurrence, or `clear` to remove it. |
+| `/todos complete <todo_id>` | Mark a TODO as done (id autocompletes; a unique id prefix works). Recurring TODOs auto-reschedule. |
+| `/todos delete <todo_id>` | Permanently delete a TODO (id autocompletes; a unique id prefix works). |
 
 ### Settings & Environment
 
@@ -537,7 +542,7 @@ buffered text, stops sending chunks, and skips the sync-fallback and
 | What | Where |
 |------|-------|
 | Bot implementation | `nymeria/triggers/discord_bot.py` |
-| Slash command Cogs | `nymeria/triggers/discord_cogs/` (`generated_cogs.py` plus the hand cogs: chat, todos, config, tools, memory, info, hooks, fallback) |
+| Slash command Cogs | `nymeria/triggers/discord_cogs/` (`generated_cogs.py` plus the hand cogs: chat, config, tools, memory, info, hooks, fallback) |
 | Cog generator | `scripts/generate_discord_cogs.py` (writes `generated_cogs.py`; freshness-gated by `tests/test_discord_generated_cogs.py`) |
 | Autocomplete resolvers | `nymeria/triggers/discord_cogs/autocomplete.py` (`choices_ref` -> live values) |
 | API client | `nymeria/triggers/api_client.py` |

@@ -689,8 +689,14 @@ class CommandHttpClient:
     async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request("POST", path, json_body=json, params=params, act_as=act_as)
 
-    async def _patch(self, path: str, json: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
-        return await self._request("PATCH", path, json_body=json, act_as=act_as)
+    async def _patch(
+        self,
+        path: str,
+        json: Optional[dict] = None,
+        params: Optional[dict] = None,
+        act_as: Optional[str] = None,
+    ) -> Any:
+        return await self._request("PATCH", path, json_body=json, params=params, act_as=act_as)
 
     async def _delete(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request("DELETE", path, params=params, act_as=act_as)
@@ -882,6 +888,14 @@ class CommandHttpClient:
     async def delete_todo(self, user_id: str, todo_id: str) -> dict:
         return await self._delete(
             f"/todos/{_path_param(todo_id)}",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
+    async def update_todo(self, user_id: str, todo_id: str, **patch: Any) -> dict:
+        return await self._patch(
+            f"/todos/{_path_param(todo_id)}",
+            json=patch,
             params={"user_id": user_id},
             act_as=user_id,
         )
@@ -1674,6 +1688,91 @@ class CommandBackendClient:
                 _raise_http_status(404, f"TODO '{todo_id}' not found")
             schedule_db.remove_scheduled(todo_id)
         return {"status": "ok", "deleted_id": todo_id}
+
+    async def update_todo(self, user_id: str, todo_id: str, **patch: Any) -> dict:
+        # Mirrors the REST PATCH /todos/{id} handler (api/routers/todos.py):
+        # same field set and validation, same done-auto-reschedule and
+        # schedule-db sync ordering. Like the local complete/delete twins it
+        # runs the executing-guard once, before the lock (the REST handler
+        # re-checks inside it), and relies on update_item's truncation
+        # rather than the request-model max_length caps.
+        from fastapi import HTTPException
+
+        from ..api.routers.todos import (
+            _get_todo_schedule_db,
+            _parse_scheduled_for,
+            _raise_if_todo_executing,
+            _reschedule_recurring_done,
+            _todo_to_response,
+        )
+        from .todo_constants import validate_recurrence
+        from .todo_manager import TodoManager, TodoStatus
+
+        target_user_id = self._checked_user_id(user_id)
+        settings = self._settings()
+        todo_manager = TodoManager(settings.data_dir)
+        schedule_db = _get_todo_schedule_db(settings)
+
+        status = None
+        raw_status = patch.get("status")
+        if raw_status:
+            try:
+                status = TodoStatus(str(raw_status).lower())
+            except ValueError:
+                _raise_http_status(
+                    400,
+                    f"Invalid status: '{raw_status}'. Use: pending, in_progress, done",
+                )
+        clear_schedule = bool(patch.get("clear_schedule"))
+        clear_recurrence = bool(patch.get("clear_recurrence"))
+        recurrence = None
+        if patch.get("recurrence") and not clear_recurrence:
+            try:
+                recurrence = validate_recurrence(str(patch["recurrence"]))
+            except ValueError as exc:
+                _raise_http_status(400, str(exc))
+        scheduled_for = None
+        if patch.get("scheduled_for") and not clear_schedule:
+            try:
+                scheduled_for = _parse_scheduled_for(str(patch["scheduled_for"]))
+            except HTTPException as exc:
+                # See add_todo: forward the 400, let real faults propagate.
+                _raise_http_status(exc.status_code, str(exc.detail))
+
+        existing = todo_manager.get_todos(target_user_id).get_item(todo_id)
+        if not existing:
+            _raise_http_status(404, f"TODO '{todo_id}' not found")
+        try:
+            _raise_if_todo_executing(schedule_db, todo_id, target_user_id, settings)
+        except HTTPException as exc:
+            # See complete_todo: forward the 409, let real faults propagate.
+            _raise_http_status(exc.status_code, str(exc.detail))
+        with todo_manager.atomic_update(target_user_id) as todo_list:
+            item = todo_list.get_item(todo_id)
+            if not item:
+                _raise_http_status(404, f"TODO '{todo_id}' not found")
+            success = todo_list.update_item(
+                todo_id=todo_id,
+                task=patch.get("task"),
+                status=status,
+                notes=patch.get("notes"),
+                scheduled_for=scheduled_for,
+                clear_schedule=clear_schedule,
+                thread_id=patch.get("thread_id"),
+                recurrence=recurrence,
+                clear_recurrence=clear_recurrence,
+            )
+            if not success:
+                _raise_http_status(404, f"TODO '{todo_id}' not found")
+            if status == TodoStatus.DONE:
+                updated = todo_list.get_item(todo_id)
+                if updated:
+                    _reschedule_recurring_done(todo_list, updated, todo_id)
+            updated_item = todo_list.get_item(todo_id)
+        if updated_item is None:
+            _raise_http_status(404, f"TODO '{todo_id}' not found after update")
+        todo_manager.sync_schedule_to_db(target_user_id, todo_id, schedule_db)
+        return _todo_to_response(updated_item).model_dump(mode="json")
 
     async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
         self._require_admin()
@@ -3675,6 +3774,33 @@ class _CommandExecutor(
             "This command requires an active thread. Send a message first."
         )
 
+    def _resolve_thread_token(
+        self, raw: Any, *, default_current: bool = False
+    ) -> tuple[Optional[str], Optional[CommandOutput]]:
+        """One grammar for `--thread` tokens across the catalog (#143
+        consolidation of four per-handler dialects): `current` or `.` is
+        the active thread and ERRORS when none is active (the caller asked
+        to narrow or target; silently widening to no-filter, or rebinding
+        to the default thread, would lie), `none`/`default` maps to None
+        (no filter, or the caller's own spelling of the default thread),
+        and anything else passes through as an id. With ``default_current``
+        an ABSENT token means the active thread when one exists and stays
+        None otherwise: the add-command default, deliberately unguarded so
+        a threadless surface can still create TODOs.
+        """
+        token = str(raw or "").strip()
+        if not token:
+            return ((self.thread_id or None) if default_current else None), None
+        folded = token.casefold()
+        if folded in {"current", "."}:
+            thread_error = self._require_thread()
+            if thread_error is not None:
+                return None, thread_error
+            return self.thread_id, None
+        if folded in {"none", "default"}:
+            return None, None
+        return token, None
+
     def _usage_error(self, name: str, *, hint: str | None = None) -> CommandOutput:
         """Render the standard usage error for a registered command.
 
@@ -4206,17 +4332,17 @@ class _CommandExecutor(
 
         return _get_trigger_manager()
 
-    async def _cmd_triggers(self, bound: BoundArgs) -> str:
+    async def _cmd_triggers(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/triggers" lists; every verb is a registered child routed first.
         # The root takes zero arguments, so a typo is answered by the dispatcher
         # with did-you-mean plus the valid-subcommand list.
         return await self._cmd_triggers_list(BoundArgs())
 
-    async def _cmd_triggers_list(self, bound: BoundArgs) -> str:
+    async def _cmd_triggers_list(self, bound: BoundArgs) -> str | CommandOutput:
         enabled_only = bool(bound.get("enabled_only"))
-        thread_id = str(bound.get("thread") or "")
-        if thread_id == "current":
-            thread_id = self.thread_id
+        thread_id, thread_error = self._resolve_thread_token(bound.get("thread"))
+        if thread_error is not None:
+            return thread_error
 
         manager = self._trigger_manager()
         triggers = manager.get_triggers(self.user_id) or []
@@ -4341,14 +4467,12 @@ class _CommandExecutor(
         enabled_only = bool(bound.get("enabled_only"))
         scope = bound.get("scope")
         global_only = scope == "global"
-        thread_id = str(bound.get("thread") or "")
-        if scope == "thread" and not thread_id:
-            thread_id = "current"
-        if thread_id == "current":
-            thread_error = self._require_thread()
-            if thread_error:
-                return thread_error
-            thread_id = self.thread_id
+        thread_token = str(bound.get("thread") or "")
+        if scope == "thread" and not thread_token:
+            thread_token = "current"
+        thread_id, thread_error = self._resolve_thread_token(thread_token)
+        if thread_error is not None:
+            return thread_error
         hooks = self._hook_manager().get_hooks(self.user_id) or []
         if enabled_only:
             hooks = [h for h in hooks if h.enabled]
@@ -4976,9 +5100,9 @@ class _CommandExecutor(
 
         limit = max(1, int(bound.get("limit", 20)))
         activity_type_str = str(bound.get("type") or "") or None
-        thread_id: str | None = str(bound.get("thread") or "") or None
-        if thread_id is not None and thread_id.casefold() in {"current", "."}:
-            thread_id = self.thread_id
+        thread_id, thread_error = self._resolve_thread_token(bound.get("thread"))
+        if thread_error is not None:
+            return thread_error
 
         type_filter = None
         if activity_type_str:
@@ -6167,7 +6291,7 @@ class _CommandExecutor(
 
     # ── TODOs ─────────────────────────────────────────────────────────────
 
-    async def _cmd_todos(self, bound: BoundArgs) -> str:
+    async def _cmd_todos(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/todos" lists; every verb is a registered child routed before
         # this handler, so the root takes zero arguments and a typo is
         # answered by the dispatcher with did-you-mean plus the
@@ -6175,9 +6299,47 @@ class _CommandExecutor(
         # `todos list`, so it arrives with the filter it was given.
         return await self._cmd_todos_list(BoundArgs())
 
-    async def _cmd_todos_list(self, bound: BoundArgs) -> str:
+    def _resolve_todo_prefix(
+        self, items: list[dict], token: str
+    ) -> dict | CommandOutput:
+        """Resolve a TODO by exact id or unique id prefix.
+
+        An ambiguous prefix errors listing the candidates (ported from the
+        CLI-local family, #143): the old first-match pick could silently
+        act on the wrong TODO. An empty token is refused for the same
+        reason: ``startswith("")`` matches everything, so a store with one
+        TODO would "resolve" it.
+        """
+        if not token:
+            return command_error("A TODO id (or unique id prefix) is required.")
+        matches = [i for i in items if i.get("id", "") == token]
+        if not matches:
+            matches = [i for i in items if i.get("id", "").startswith(token)]
+        if not matches:
+            return command_error(f"No TODO found matching '{token}'.")
+        if len(matches) > 1:
+            preview = "; ".join(
+                f"{i.get('id', '')[:8]} {i.get('task', '')[:40]}"
+                for i in matches[:5]
+            )
+            return command_error(
+                f"Ambiguous TODO id '{token}' matches {len(matches)}: {preview}"
+            )
+        return matches[0]
+
+    async def _cmd_todos_list(self, bound: BoundArgs) -> str | CommandOutput:
         filter_val = str(bound.get("filter") or "active").lower()
-        items = await self.api.list_todos(self.user_id)
+        thread_id, thread_error = self._resolve_thread_token(bound.get("thread"))
+        if thread_error is not None:
+            return thread_error
+        # filter_status="all": both clients default to ACTIVE-only, which
+        # would make the done/all branches below filter an already-truncated
+        # list (the pre-#143 bug this handler shipped with; the retired
+        # CLI-local family passed the filter through and was the only
+        # surface that answered `done` truthfully).
+        items = await self.api.list_todos(
+            self.user_id, filter_status="all", thread_id=thread_id
+        )
         if filter_val == "active":
             items = [i for i in items if i.get("status") != "done"]
         elif filter_val != "all":
@@ -6200,41 +6362,179 @@ class _CommandExecutor(
             lines.append(f"(showing 25 of {len(items)})")
         return _truncate("\n".join(lines))
 
-    async def _cmd_todos_add(self, args: list[str], rest: str) -> str | CommandOutput:
-        if not rest.strip():
-            return command_error(
-                "Usage: /todos add <task> [| <schedule>] [| <repeat>] [| <notes>]\n"
-                "Example: /todos add Check logs | 2h | daily"
-            )
-        parts = [p.strip() for p in rest.split("|")]
-        task = parts[0]
-        schedule = parts[1] if len(parts) > 1 and parts[1] else "1d"
-        recurrence = parts[2] if len(parts) > 2 and parts[2] else None
-        notes = parts[3] if len(parts) > 3 and parts[3] else None
+    async def _cmd_todos_add(self, bound: BoundArgs) -> str | CommandOutput:
+        from .todo_constants import validate_recurrence
 
+        text = " ".join(bound.get("task") or []).strip()
+        schedule = str(bound.get("schedule") or "").strip()
+        notes = str(bound.get("notes") or "").strip() or None
+        repeat = str(bound.get("repeat") or "").strip() or None
+        # Legacy pipe grammar (task | schedule | repeat | notes) re-collects
+        # from the joined task tokens, but ONLY when no option flag was
+        # given: with a flag present the task passes verbatim, so a task
+        # containing a literal `|` is never silently truncated (review
+        # catch, #143). The two grammars do not mix.
+        if "|" in text and not (schedule or notes or repeat):
+            parts = [p.strip() for p in text.split("|")]
+            text = parts[0]
+            if len(parts) > 1 and parts[1]:
+                schedule = parts[1]
+            if len(parts) > 2 and parts[2]:
+                repeat = parts[2]
+            if len(parts) > 3 and parts[3]:
+                notes = parts[3]
+        if not text:
+            return self._usage_error("todos add")
+        if repeat:
+            try:
+                repeat = validate_recurrence(repeat)
+            except ValueError as exc:
+                return command_error(str(exc))
+        thread_id, thread_error = self._resolve_thread_token(
+            bound.get("thread"), default_current=True
+        )
+        if thread_error is not None:
+            return thread_error
+        # `none`/`off`/`clear` creates a plain checklist item that never
+        # fires; an absent schedule keeps the historical 1d default.
+        unscheduled = schedule.casefold() in {"none", "off", "clear"}
         result = await self.api.add_todo(
             user_id=self.user_id,
-            task=task,
-            scheduled_for=schedule,
+            task=text,
+            scheduled_for=None if unscheduled else (schedule or "1d"),
             notes=notes,
-            recurrence=recurrence,
-            thread_id=self.thread_id,
+            recurrence=repeat,
+            thread_id=thread_id,
         )
         todo_id = result.get("id", "")[:8]
         scheduled = result.get("scheduled_for", "")
-        out = [f"Created TODO {todo_id}: {task}"]
+        out = [f"Created TODO {todo_id}: {text}"]
         if scheduled:
             out.append(f"Fires: {scheduled[:16]}")
-        if recurrence:
-            out.append(f"Repeats: {recurrence}")
+        if repeat:
+            out.append(f"Repeats: {repeat}")
         return command_success("\n".join(out))
 
+    # Patch keys -> the words the edit confirmation speaks (raw field names
+    # like clear_recurrence are internals, not user copy).
+    _TODO_PATCH_WORDS = {
+        "task": "task",
+        "status": "status",
+        "notes": "notes",
+        "scheduled_for": "schedule",
+        "clear_schedule": "schedule",
+        "thread_id": "thread",
+        "recurrence": "repeat",
+        "clear_recurrence": "repeat",
+    }
+
+    async def _cmd_todos_edit(self, bound: BoundArgs) -> str | CommandOutput:
+        from .todo_constants import validate_recurrence
+
+        items = await self.api.list_todos(self.user_id, filter_status="all")
+        match = self._resolve_todo_prefix(items, str(bound.get("todo_id") or ""))
+        if isinstance(match, CommandOutput):
+            return match
+        patch: dict[str, Any] = {}
+        new_task = " ".join(bound.get("task") or []).strip()
+        if new_task:
+            patch["task"] = new_task
+        if bound.get("status"):
+            patch["status"] = str(bound.get("status"))
+        if "notes" in bound.values:
+            patch["notes"] = str(bound.get("notes"))
+        # The clear words the sibling verbs take (`/todos schedule <id>
+        # clear`) work on the flags too, one spelling family-wide.
+        schedule = str(bound.get("schedule") or "").strip()
+        if bound.get("clear_schedule") or schedule.casefold() in {
+            "clear",
+            "none",
+            "off",
+        }:
+            patch["clear_schedule"] = True
+        elif schedule:
+            patch["scheduled_for"] = schedule
+        repeat = str(bound.get("repeat") or "").strip()
+        if bound.get("clear_repeat") or repeat.casefold() in {"clear", "none", "off"}:
+            patch["clear_recurrence"] = True
+        elif repeat:
+            try:
+                patch["recurrence"] = validate_recurrence(repeat)
+            except ValueError as exc:
+                return command_error(str(exc))
+        if "thread" in bound.values:
+            thread_id, thread_error = self._resolve_thread_token(bound.get("thread"))
+            if thread_error is not None:
+                return thread_error
+            patch["thread_id"] = thread_id or f"default-{self.user_id}"
+        if not patch:
+            return self._usage_error(
+                "todos edit", hint="No TODO updates were provided."
+            )
+        updated = await self.api.update_todo(self.user_id, match["id"], **patch)
+        changed = ", ".join(
+            sorted({self._TODO_PATCH_WORDS.get(key, key) for key in patch})
+        )
+        return command_success(
+            f"Updated TODO {updated.get('id', '')[:8]} ({changed}): "
+            f"{updated.get('task', '')[:80]}"
+        )
+
+    async def _cmd_todos_schedule(self, bound: BoundArgs) -> str | CommandOutput:
+        items = await self.api.list_todos(self.user_id, filter_status="all")
+        match = self._resolve_todo_prefix(items, str(bound.get("todo_id") or ""))
+        if isinstance(match, CommandOutput):
+            return match
+        when = " ".join(bound.get("when") or []).strip()
+        task = str(match.get("task", ""))[:60]
+        if when.casefold() in {"clear", "none", "off"}:
+            updated = await self.api.update_todo(
+                self.user_id, match["id"], clear_schedule=True
+            )
+            return command_success(
+                f"Schedule cleared: {updated.get('id', '')[:8]} {task}"
+            )
+        updated = await self.api.update_todo(
+            self.user_id, match["id"], scheduled_for=when
+        )
+        fires = str(updated.get("scheduled_for") or "")[:16]
+        return command_success(
+            f"Schedule updated: {updated.get('id', '')[:8]} {task} fires {fires}"
+        )
+
+    async def _cmd_todos_repeat(self, bound: BoundArgs) -> str | CommandOutput:
+        from .todo_constants import validate_recurrence
+
+        items = await self.api.list_todos(self.user_id, filter_status="all")
+        match = self._resolve_todo_prefix(items, str(bound.get("todo_id") or ""))
+        if isinstance(match, CommandOutput):
+            return match
+        interval = str(bound.get("interval") or "").strip()
+        task = str(match.get("task", ""))[:60]
+        if interval.casefold() in {"clear", "none", "off"}:
+            updated = await self.api.update_todo(
+                self.user_id, match["id"], clear_recurrence=True
+            )
+            return command_success(
+                f"Recurrence cleared: {updated.get('id', '')[:8]} {task}"
+            )
+        try:
+            canonical = validate_recurrence(interval)
+        except ValueError as exc:
+            return command_error(str(exc))
+        updated = await self.api.update_todo(
+            self.user_id, match["id"], recurrence=canonical
+        )
+        return command_success(
+            f"Recurrence updated: {updated.get('id', '')[:8]} {task} "
+            f"repeats {updated.get('recurrence') or canonical}"
+        )
+
     async def _cmd_todos_complete(self, bound: BoundArgs) -> str | CommandOutput:
-        todo_id = str(bound.get("todo_id") or "")
-        items = await self.api.list_todos(self.user_id)
-        match = next((i for i in items if i.get("id", "").startswith(todo_id)), None)
-        if not match:
-            return command_error(f"No TODO found matching '{todo_id}'.")
+        items = await self.api.list_todos(self.user_id, filter_status="all")
+        match = self._resolve_todo_prefix(items, str(bound.get("todo_id") or ""))
+        if isinstance(match, CommandOutput):
+            return match
         result = await self.api.complete_todo(self.user_id, match["id"])
         task = match.get("task", "")
         recurrence = result.get("recurrence")
@@ -6247,11 +6547,10 @@ class _CommandExecutor(
         return command_success(f"Completed '{task}'.")
 
     async def _cmd_todos_delete(self, bound: BoundArgs) -> str | CommandOutput:
-        todo_id = str(bound.get("todo_id") or "")
-        items = await self.api.list_todos(self.user_id)
-        match = next((i for i in items if i.get("id", "").startswith(todo_id)), None)
-        if not match:
-            return command_error(f"No TODO found matching '{todo_id}'.")
+        items = await self.api.list_todos(self.user_id, filter_status="all")
+        match = self._resolve_todo_prefix(items, str(bound.get("todo_id") or ""))
+        if isinstance(match, CommandOutput):
+            return match
         await self.api.delete_todo(self.user_id, match["id"])
         return command_success(f"Deleted '{match.get('task', '')}'.")
 

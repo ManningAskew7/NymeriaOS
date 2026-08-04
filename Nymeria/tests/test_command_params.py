@@ -499,7 +499,6 @@ _PARAMS_EXEMPT: frozenset[str] = frozenset(
         "help",
         # Raw-rest grammars: prefix parsing or quote fidelity on the raw tail.
         "notepad.write",
-        "todos.add",
         # Free-text tail with int-ambiguity (minutes-or-note).
         "fallback.approve",
         "fallback.deny",

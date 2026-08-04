@@ -42,6 +42,10 @@ class FakeCommandApi:
     def __init__(self) -> None:
         self.closed = False
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.todos: list[dict[str, Any]] = [
+            {"status": "pending"},
+            {"status": "in_progress"},
+        ]
         self.memories = [{"key": "a", "value": "12345"}]
         self.env_set_keys: set[str] = set()
         self.provider_test_result: dict[str, Any] = {"ok": True, "message": ""}
@@ -251,12 +255,76 @@ class FakeCommandApi:
         self.calls.append(("get_tool_categories", (), {}))
         return {"categories": {"general": ["bash_execute"], "web": ["browser"]}}
 
-    async def list_todos(self, user_id: str) -> list[dict[str, Any]]:
-        self.calls.append(("list_todos", (user_id,), {}))
-        return [
-            {"status": "pending"},
-            {"status": "in_progress"},
-        ]
+    async def list_todos(
+        self,
+        user_id: str,
+        *,
+        filter_status: str | None = None,
+        thread_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            (
+                "list_todos",
+                (user_id,),
+                {"filter_status": filter_status, "thread_id": thread_id},
+            )
+        )
+        # Honor the filter the way both real clients do (active-only when
+        # unset), so a handler that forgets filter_status="all" cannot pass
+        # a done-visibility test (#143 review catch).
+        items = [dict(item) for item in self.todos]
+        if filter_status == "all":
+            return items
+        if filter_status:
+            return [i for i in items if i.get("status") == filter_status]
+        return [i for i in items if i.get("status") != "done"]
+
+    async def add_todo(
+        self,
+        user_id: str,
+        task: str,
+        scheduled_for: str | None = "1d",
+        notes: str | None = None,
+        recurrence: str | None = None,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "add_todo",
+                (user_id,),
+                {
+                    "task": task,
+                    "scheduled_for": scheduled_for,
+                    "notes": notes,
+                    "recurrence": recurrence,
+                    "thread_id": thread_id,
+                },
+            )
+        )
+        return {
+            "id": "todo-new-12345",
+            "task": task,
+            "status": "pending",
+            "scheduled_for": scheduled_for,
+            "recurrence": recurrence,
+            "thread_id": thread_id,
+        }
+
+    async def update_todo(self, user_id: str, todo_id: str, **patch: Any) -> dict[str, Any]:
+        self.calls.append(("update_todo", (user_id, todo_id), dict(patch)))
+        base = next((dict(t) for t in self.todos if t.get("id") == todo_id), {"id": todo_id})
+        base.update({k: v for k, v in patch.items() if not k.startswith("clear_")})
+        return base
+
+    async def complete_todo(self, user_id: str, todo_id: str) -> dict[str, Any]:
+        self.calls.append(("complete_todo", (user_id, todo_id), {}))
+        base = next((dict(t) for t in self.todos if t.get("id") == todo_id), {"id": todo_id})
+        base["status"] = "done"
+        return base
+
+    async def delete_todo(self, user_id: str, todo_id: str) -> dict[str, Any]:
+        self.calls.append(("delete_todo", (user_id, todo_id), {}))
+        return {"status": "ok", "deleted_id": todo_id}
 
     async def get_env_var(
         self,
@@ -2758,6 +2826,86 @@ def test_complete_todo_propagates_unexpected_error(
         run(backend.complete_todo("owner", todo_id))
 
 
+def test_update_todo_patches_and_clears_fields_in_the_store(
+    api_client_builder, tmp_path
+) -> None:
+    # The in-process twin of PATCH /todos/{id} (#143): same field set, same
+    # validation, observable through the store it writes.
+    backend, settings = _todo_backend(api_client_builder, tmp_path)
+    todo_id = _seed_todo(settings)
+
+    updated = run(
+        backend.update_todo(
+            "owner",
+            todo_id,
+            task="renamed task",
+            status="in_progress",
+            notes="say less",
+            recurrence="daily",
+        )
+    )
+    assert updated["task"] == "renamed task"
+    assert updated["status"] == "in_progress"
+    assert updated["notes"] == "say less"
+    assert updated["recurrence"] == "1d"  # canonicalized
+
+    # A thread rebind in the SAME patch as clear_schedule applies (the
+    # store's clear branch used to silently drop it, so the edit verb
+    # claimed a change that never happened).
+    cleared = run(
+        backend.update_todo(
+            "owner",
+            todo_id,
+            clear_schedule=True,
+            clear_recurrence=True,
+            thread_id="other-thread",
+        )
+    )
+    assert cleared["scheduled_for"] is None
+    assert cleared["recurrence"] is None
+    assert cleared["thread_id"] == "other-thread"
+
+    # The write is durable, not just the response shape.
+    stored = TodoManager(settings.data_dir).get_todos("owner").get_item(todo_id)
+    assert stored is not None
+    assert stored.task == "renamed task"
+    assert stored.scheduled_for is None
+    assert stored.recurrence is None
+    assert stored.thread_id == "other-thread"
+
+
+def test_update_todo_rejects_a_bad_status_with_a_clean_400(
+    api_client_builder, tmp_path
+) -> None:
+    backend, settings = _todo_backend(api_client_builder, tmp_path)
+    todo_id = _seed_todo(settings)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(backend.update_todo("owner", todo_id, status="sideways"))
+    assert excinfo.value.response.status_code == 400
+    assert "Invalid status" in excinfo.value.response.json()["detail"]
+
+    # The bad patch left the stored task untouched.
+    stored = TodoManager(settings.data_dir).get_todos("owner").get_item(todo_id)
+    assert stored is not None and stored.task == "task"
+
+
+def test_update_todo_forwards_httpexception_status(
+    api_client_builder, tmp_path, monkeypatch
+) -> None:
+    backend, settings = _todo_backend(api_client_builder, tmp_path)
+    todo_id = _seed_todo(settings)
+
+    def _executing(*_args, **_kwargs):
+        raise HTTPException(status_code=409, detail="currently executing")
+
+    monkeypatch.setattr(todos_router, "_raise_if_todo_executing", _executing)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(backend.update_todo("owner", todo_id, task="renamed"))
+    assert excinfo.value.response.status_code == 409
+
+
 def test_delete_todo_forwards_httpexception_status(
     api_client_builder, tmp_path, monkeypatch
 ) -> None:
@@ -2809,9 +2957,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # (147 after the backlog #131 rename wave: thirteen commands folded away
     # into aliases of others, and seven arrived, five of them the overview
     # roots style-guide rule 2 requires. 151 after #133 added the /alias
-    # family: root overview + create + delete + list.)
-    assert len(service._commands) == 151
-    assert sum(cmd.executable for cmd in service._commands.values()) == 134
+    # family: root overview + create + delete + list. 154 after #143 ported
+    # the CLI-local todo verbs: todos edit + todos schedule + todos repeat.)
+    assert len(service._commands) == 154
+    assert sum(cmd.executable for cmd in service._commands.values()) == 137
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -5744,6 +5893,291 @@ def test_todos_list_rejects_a_second_filter_word() -> None:
     assert result.success is False
     assert "Unexpected argument `pending`" in result.markdown
     assert not [call for call in api.calls if call[0] == "list_todos"]
+
+
+# ── #143: the CLI-local /todo family ported into the backend catalog ─────────
+
+
+def _todos_call(api: FakeCommandApi, name: str) -> tuple[str, tuple, dict]:
+    matches = [call for call in api.calls if call[0] == name]
+    assert len(matches) == 1, f"expected one {name} call, saw {matches}"
+    return matches[0]
+
+
+def test_todos_add_flag_and_pipe_grammars_bind_the_same_call() -> None:
+    service = CommandService()
+    flag_api = FakeCommandApi()
+    flags = run(
+        service.execute(
+            _ctx(),
+            "/todos add Check logs --schedule 2h --repeat daily --notes phone",
+            api=flag_api,
+        )
+    )
+    assert flags.success is True, flags.markdown
+    assert "Created TODO todo-new" in flags.markdown
+    _, _, flag_kwargs = _todos_call(flag_api, "add_todo")
+
+    pipe_api = FakeCommandApi()
+    pipe = run(
+        service.execute(
+            _ctx(), "/todos add Check logs | 2h | daily | phone", api=pipe_api
+        )
+    )
+    assert pipe.success is True, pipe.markdown
+    _, _, pipe_kwargs = _todos_call(pipe_api, "add_todo")
+
+    assert flag_kwargs == pipe_kwargs == {
+        "task": "Check logs",
+        "scheduled_for": "2h",
+        "notes": "phone",
+        # validate_recurrence canonicalizes "daily" before the call.
+        "recurrence": "1d",
+        "thread_id": "thread-1",
+    }
+
+
+def test_todos_add_flags_disable_the_pipe_fallback() -> None:
+    # With any option flag present the task passes VERBATIM: the pipe
+    # grammar only applies to the pure legacy form, so a task containing a
+    # literal `|` is never silently truncated (review catch: the
+    # fire-on-any-pipe merge dropped ` b parser` on the floor here).
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            _ctx(), "/todos add Fix the a|b parser --schedule 2h", api=api
+        )
+    )
+    assert result.success is True, result.markdown
+    _, _, kwargs = _todos_call(api, "add_todo")
+    assert kwargs["scheduled_for"] == "2h"
+    assert kwargs["task"] == "Fix the a|b parser"
+
+
+def test_todos_list_done_and_all_reach_past_the_active_default() -> None:
+    # Both clients default to ACTIVE-only, so the handler must ask for the
+    # full set and filter locally; before the #143 review round `done` was
+    # always empty and `all` silently meant active.
+    service = CommandService()
+    api = FakeCommandApi()
+    api.todos = [
+        {"id": "abc12345", "task": "Water plants", "status": "pending"},
+        {"id": "def67890", "task": "Old chore", "status": "done"},
+    ]
+    done = run(service.execute(_ctx(), "/todos list done", api=api))
+    assert done.success is True, done.markdown
+    assert "Old chore" in done.markdown
+    _, _, kwargs = _todos_call(api, "list_todos")
+    assert kwargs["filter_status"] == "all"
+
+    everything = run(service.execute(_ctx(), "/todos list all", api=api))
+    assert "TODOs (all): 2 items" in everything.markdown
+
+
+def test_todos_list_rejects_an_unknown_filter() -> None:
+    # The status set is a closed enum, so a typo is a bind error with the
+    # valid list, not an empty "No bogus TODOs." readout.
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/todos list bogus", api=api))
+    assert result.success is False
+    assert "bogus" in result.markdown
+    assert not [call for call in api.calls if call[0] == "list_todos"]
+
+
+def test_todo_thread_current_without_an_active_thread_errors() -> None:
+    # An explicit `--thread current` on a threadless surface must refuse
+    # rather than silently widen (list) or rebind to the default thread
+    # (edit); a BARE add still works there (the default is unguarded).
+    service = CommandService()
+    api = FakeCommandApi()
+    api.todos = [{"id": "abc12345", "task": "T", "status": "pending"}]
+    threadless = CommandContext(
+        user_id="alice",
+        thread_id=None,
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    listed = run(service.execute(threadless, "/todos list --thread current", api=api))
+    assert listed.success is False
+    assert "requires an active thread" in listed.markdown
+
+    edited = run(
+        service.execute(threadless, "/todos edit abc1 --thread current", api=api)
+    )
+    assert edited.success is False
+    assert not [call for call in api.calls if call[0] == "update_todo"]
+
+    added = run(service.execute(threadless, "/todos add Buy milk", api=api))
+    assert added.success is True, added.markdown
+    _, _, kwargs = _todos_call(api, "add_todo")
+    assert kwargs["thread_id"] is None
+
+
+def test_todos_edit_clear_words_match_the_sibling_verbs() -> None:
+    # `--schedule none` and `--repeat off` clear, exactly like
+    # `/todos schedule <id> clear`; before the review round the words were
+    # forwarded verbatim and 400'd. The confirmation speaks prose words,
+    # not raw patch keys.
+    api = FakeCommandApi()
+    api.todos = [{"id": "abc12345", "task": "T", "status": "pending"}]
+    result = run(
+        CommandService().execute(
+            _ctx(), "/todos edit abc1 --schedule none --repeat off", api=api
+        )
+    )
+    assert result.success is True, result.markdown
+    _, _, patch = _todos_call(api, "update_todo")
+    assert patch == {"clear_schedule": True, "clear_recurrence": True}
+    assert "(repeat, schedule)" in result.markdown
+
+
+def test_todos_add_keeps_the_1d_default_and_none_unschedules() -> None:
+    service = CommandService()
+    default_api = FakeCommandApi()
+    assert run(
+        service.execute(_ctx(), "/todos add Buy milk", api=default_api)
+    ).success is True
+    _, _, default_kwargs = _todos_call(default_api, "add_todo")
+    assert default_kwargs["scheduled_for"] == "1d"
+
+    none_api = FakeCommandApi()
+    assert run(
+        service.execute(_ctx(), "/todos add Buy milk --schedule none", api=none_api)
+    ).success is True
+    _, _, none_kwargs = _todos_call(none_api, "add_todo")
+    assert none_kwargs["scheduled_for"] is None
+
+
+def test_todos_add_rejects_a_bad_recurrence_before_the_api_call() -> None:
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            _ctx(), "/todos add Heartbeat --schedule 5m --repeat 30s", api=api
+        )
+    )
+    assert result.success is False
+    assert not [call for call in api.calls if call[0] == "add_todo"]
+
+
+def test_todos_edit_builds_a_minimal_patch() -> None:
+    api = FakeCommandApi()
+    api.todos = [
+        {"id": "abc12345", "task": "Old words", "status": "pending"},
+    ]
+    result = run(
+        CommandService().execute(
+            _ctx(), "/todos edit abc1 New words --status in_progress", api=api
+        )
+    )
+    assert result.success is True, result.markdown
+    _, args, patch = _todos_call(api, "update_todo")
+    assert args == ("alice", "abc12345")
+    assert patch == {"task": "New words", "status": "in_progress"}
+    # Resolution listed every status so done TODOs stay addressable.
+    _, _, list_kwargs = _todos_call(api, "list_todos")
+    assert list_kwargs["filter_status"] == "all"
+
+
+def test_todos_edit_without_changes_is_a_usage_error() -> None:
+    api = FakeCommandApi()
+    api.todos = [{"id": "abc12345", "task": "Old", "status": "pending"}]
+    result = run(CommandService().execute(_ctx(), "/todos edit abc1", api=api))
+    assert result.success is False
+    assert "No TODO updates were provided." in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_todo"]
+
+
+def test_todos_schedule_and_repeat_clear_arms_patch_the_clear_flags() -> None:
+    service = CommandService()
+    schedule_api = FakeCommandApi()
+    schedule_api.todos = [{"id": "abc12345", "task": "T", "status": "pending"}]
+    cleared = run(
+        service.execute(_ctx(), "/todos schedule abc1 clear", api=schedule_api)
+    )
+    assert cleared.success is True, cleared.markdown
+    _, _, schedule_patch = _todos_call(schedule_api, "update_todo")
+    assert schedule_patch == {"clear_schedule": True}
+
+    repeat_api = FakeCommandApi()
+    repeat_api.todos = [{"id": "abc12345", "task": "T", "status": "pending"}]
+    cleared = run(service.execute(_ctx(), "/todos repeat abc1 clear", api=repeat_api))
+    assert cleared.success is True, cleared.markdown
+    _, _, repeat_patch = _todos_call(repeat_api, "update_todo")
+    assert repeat_patch == {"clear_recurrence": True}
+
+
+def test_todos_repeat_rejects_a_bad_interval_before_the_api_call() -> None:
+    api = FakeCommandApi()
+    api.todos = [{"id": "abc12345", "task": "T", "status": "pending"}]
+    result = run(CommandService().execute(_ctx(), "/todos repeat abc1 30s", api=api))
+    assert result.success is False
+    assert not [call for call in api.calls if call[0] == "update_todo"]
+
+
+def test_todo_prefix_resolution_refuses_ambiguity() -> None:
+    api = FakeCommandApi()
+    api.todos = [
+        {"id": "abc12345", "task": "First", "status": "pending"},
+        {"id": "abc99999", "task": "Second", "status": "done"},
+    ]
+    ambiguous = run(CommandService().execute(_ctx(), "/todos complete abc", api=api))
+    assert ambiguous.success is False
+    assert "Ambiguous TODO id 'abc' matches 2" in ambiguous.markdown
+    assert "First" in ambiguous.markdown and "Second" in ambiguous.markdown
+    assert not [call for call in api.calls if call[0] == "complete_todo"]
+
+    # An empty id token is refused too: `startswith("")` matches
+    # everything, so a one-item store would otherwise "resolve".
+    empty = run(CommandService().execute(_ctx(), '/todos delete ""', api=api))
+    assert empty.success is False
+    assert "id (or unique id prefix) is required" in empty.markdown
+    assert not [call for call in api.calls if call[0] == "delete_todo"]
+
+    # A unique prefix resolves, and a done TODO is addressable (all-status
+    # resolution): the pre-#143 first-match pick listed active only.
+    deleted = run(CommandService().execute(_ctx(), "/todos delete abc9", api=api))
+    assert deleted.success is True, deleted.markdown
+    _, args, _ = _todos_call(api, "delete_todo")
+    assert args == ("alice", "abc99999")
+
+
+def test_todos_list_thread_filter_maps_current_to_the_active_thread() -> None:
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(_ctx(), "/todos list --thread current", api=api)
+    )
+    assert result.success is True, result.markdown
+    _, _, kwargs = _todos_call(api, "list_todos")
+    assert kwargs["thread_id"] == "thread-1"
+
+
+def test_singular_todo_spellings_alias_the_todos_family() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    api.todos = [{"id": "abc12345", "task": "T", "status": "pending"}]
+
+    listed = run(service.execute(_ctx(), "/todo", api=api))
+    assert listed.success is True, listed.markdown
+    assert [call for call in api.calls if call[0] == "list_todos"]
+
+    done = run(service.execute(_ctx(), "/todo done abc1", api=api))
+    assert done.success is True, done.markdown
+    assert [call[1] for call in api.calls if call[0] == "complete_todo"] == [
+        ("alice", "abc12345")
+    ]
+
+    recur = run(service.execute(_ctx(), "/todo recurrence abc1 clear", api=api))
+    assert recur.success is True, recur.markdown
+    assert [call for call in api.calls if call[0] == "update_todo"]
+
+    # The retired CLI family's --yes confirm flag stays accepted as a no-op.
+    removed = run(service.execute(_ctx(), "/todo rm abc1 --yes", api=api))
+    assert removed.success is True, removed.markdown
+    assert [call[1] for call in api.calls if call[0] == "delete_todo"] == [
+        ("alice", "abc12345")
+    ]
 
 
 def test_status_and_context_reject_stray_words() -> None:

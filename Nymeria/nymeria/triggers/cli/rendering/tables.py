@@ -40,40 +40,6 @@ def render_thread_table(
     console.print(table)
 
 
-def render_todo_table(console: Console, todos: List[Any]) -> None:
-    """Render a table of TODO items."""
-    if not todos:
-        console.print("[dim]No TODOs found.[/dim]")
-        return
-
-    table = Table(box=box.SIMPLE, show_edge=False, pad_edge=False)
-    table.add_column("ID", style="dim", width=8)
-    table.add_column("Status", width=12)
-    table.add_column("Task", min_width=30)
-    table.add_column("Thread", style="dim", max_width=10)
-
-    status_colors = {
-        "pending": "yellow",
-        "in_progress": "cyan",
-        "done": "green",
-    }
-
-    for item in todos:
-        status = item.status.value if hasattr(item.status, "value") else str(item.status)
-        color = status_colors.get(status, "white")
-        task_display = item.task[:60] + "..." if len(item.task) > 60 else item.task
-        thread_display = (item.thread_id or "")[:8]
-
-        table.add_row(
-            item.id,
-            f"[{color}]{status}[/{color}]",
-            task_display,
-            thread_display,
-        )
-
-    console.print(table)
-
-
 def render_tools_table(
     console: Console,
     tools: List[Dict[str, str]],

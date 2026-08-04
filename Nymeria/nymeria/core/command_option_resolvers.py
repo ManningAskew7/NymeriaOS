@@ -374,6 +374,46 @@ async def resolve_threads(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     return options
 
 
+async def resolve_todos(executor: "_CommandExecutor") -> list[dict[str, Any]]:
+    """The caller's TODOs across every status, store order (#143).
+
+    The full id is the option value because the ``todo_id`` params resolve
+    exact-or-prefix; the task text is the label, and the meta carries the
+    short id plus the status/schedule columns ``/todos list`` shows. All
+    statuses are listed because edit and delete address done TODOs too.
+    """
+    try:
+        items = await executor.api.list_todos(
+            executor.user_id, filter_status="all"
+        )
+    except Exception:  # noqa: BLE001 - option sets degrade, never block.
+        logger.debug("options: list_todos failed", exc_info=True)
+        return []
+
+    options: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, Mapping):
+            continue
+        todo_id = str(item.get("id") or "")
+        if not todo_id:
+            continue
+        meta_parts = [todo_id[:8], str(item.get("status") or "")]
+        scheduled = str(item.get("scheduled_for") or "")
+        if scheduled:
+            meta_parts.append(f"fires {scheduled[:16]}")
+        recurrence = str(item.get("recurrence") or "")
+        if recurrence:
+            meta_parts.append(f"repeats {recurrence}")
+        options.append(
+            form_option(
+                todo_id,
+                label=_first_line(item.get("task") or todo_id),
+                meta=", ".join(part for part in meta_parts if part),
+            )
+        )
+    return options
+
+
 async def resolve_triggers(executor: "_CommandExecutor") -> list[dict[str, Any]]:
     """The caller's event triggers, id-ordered like ``/triggers list``.
 
@@ -496,6 +536,7 @@ OPTION_RESOLVERS: dict[str, OptionResolver] = {
     "tools": resolve_tools,
     "skills": resolve_skills,
     "threads": resolve_threads,
+    "todos": resolve_todos,
     "triggers": resolve_triggers,
     "hooks": resolve_hooks,
     "mcp_servers": resolve_mcp_servers,

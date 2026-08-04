@@ -64,22 +64,21 @@ MAX_NAME_LENGTH = 32
 MAX_DESCRIPTION_LENGTH = 100
 
 # Top-level slots left for the hand-written cogs (chat, config's /restart,
-# info, tools, todos, notepad, hook, fallback). Subtracted from the global cap
+# info, tools, notepad, hook, fallback). Subtracted from the global cap
 # so the generated tree cannot quietly eat the budget the hand cogs need.
 RESERVED_TOP_LEVEL_SLOTS = 25
 
 # Families whose Discord group stays hand-written. A Discord name has exactly
 # one owner, so a family that cannot be generated WHOLE cannot be generated at
 # all: the generated members would collide with the hand cog's group.
+# (todos left this dict in #143: the registry adopted `todos add` with
+# declared flags, so the hand cog's reason to exist retired with it.)
 HAND_WRITTEN_FAMILIES: dict[str, str] = {
     # info.py `/thread` relays the registry's `thread` ROOT (active-thread
     # context usage). Generating the subcommands would turn `thread` into a
     # group and take that command away, and thread switching/creation is a
     # CLI/desktop concept: a Discord thread id is derived from the channel.
     "thread": "info.py owns /thread; a group would remove the root command",
-    # todos.py `/todos add` maps four Discord fields onto the backend's pipe
-    # syntax and the registry leaves it unadopted (no params).
-    "todos": "todos.py owns /todos add (pipe syntax, unadopted in the registry)",
     # memory.py `/notepad write` maps a mode choice onto the backend's
     # `replace:` value prefix; the registry leaves it unadopted.
     "notepad": "memory.py owns /notepad write (replace: prefix, unadopted)",
@@ -122,6 +121,7 @@ EXCLUDED_COMMANDS: dict[str, str] = {
 GROUP_DESCRIPTIONS: dict[tuple[str, ...], str] = {
     ("env",): "View and set environment variables",
     ("memory",): "Manage Nymeria's memories about you",
+    ("todos",): "Manage scheduled tasks and reminders",
 }
 
 # Family roots the group rule drops from Discord (a group is not invokable,
@@ -155,6 +155,10 @@ EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
     "skills",
     "smart",
     "team",
+    # The todos family generated since #143. The bare `/todos` list was
+    # never invokable on Discord anyway (the hand cog was also a group);
+    # `todos list` carries it.
+    "todos",
     "triggers",
     "usage",
 )
@@ -563,8 +567,11 @@ def _render_flatten(definition: CommandDefinition) -> list[str]:
     order, then the trailing scope token: exactly the grammar `bind_args`
     parses back. Values are `shlex.quote`d because the dispatcher shlex-splits
     the line, so a multi-word value must survive as one token. A REPEATABLE
-    positional is the exception: it is meant to arrive as several tokens, so
-    its space-separated text goes through verbatim.
+    positional is meant to arrive as several tokens, so it is quoted PER
+    WORD rather than as one token: plain words pass unchanged, while an
+    apostrophe is escaped (an unquoted one flips the whole line to the
+    whitespace-split fallback and mis-binds neighbouring option values;
+    review catch, #143).
     """
     params = definition.params or ()
     ordered = (
@@ -584,7 +591,7 @@ def _render_flatten(definition: CommandDefinition) -> list[str]:
             lines.append(f"{indent}if {name} is not None:")
             indent += "    "
         if param.repeatable:
-            value = name
+            value = f'" ".join(shlex.quote(_word) for _word in {name}.split())'
         elif param.type == "int":
             value = f"shlex.quote(str({name}))"
         else:
