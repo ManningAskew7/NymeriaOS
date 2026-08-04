@@ -236,8 +236,9 @@ def calculate_next_recurrence_time(recurrence: str, anchor: datetime, *,
 
 Legacy preset names map to canonical durations via `LEGACY_RECURRENCE_ALIASES`:
 `hourly → 1h`, `daily → 1d`, `weekly → 1w`, `monthly → 1mo`,
-`5min → 5m` ... `30min → 30m`. The API, agent tool, CLI and command service
-all call `validate_recurrence(...)` and persist the returned canonical string.
+`5min → 5m` ... `30min → 30m`. The API, agent tool and command service all
+call `validate_recurrence(...)` and persist the returned canonical string
+(the CLI rides the command service since #143 retired its local family).
 Existing TODO data stored as `30d` (the previous canonical for `monthly`)
 keeps working as a 30-day fixed interval; only new TODOs and re-saved ones
 pick up the calendar-month behaviour.

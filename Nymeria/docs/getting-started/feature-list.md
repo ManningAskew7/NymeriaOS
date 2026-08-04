@@ -339,7 +339,7 @@ total).
 ### Discord Bot (30 slash commands)
 - /ask, /stop, /clear, /compact, /thread, /context, /export, /restart, /help
 - /model list, /think, /status
-- /todos (list/add/complete/delete), /settings (get/set), /tools (core/optional/enabled/category/enable/disable)
+- /todos (list/add/edit/schedule/repeat/complete/delete), /settings (get/set), /tools (core/optional/enabled/category/enable/disable)
 - /memory (list/save/delete/search), /notepad (read/write/clear)
 - /show-tools, /channel-context
 - SSE streaming (~1.5s edit intervals), channel context toggle, workspace artifact upload
