@@ -35,7 +35,10 @@ export class CommandsApi extends LlmFallbackApi {
     });
 
     if (!response.ok) {
-      const message = await this._toastAndExtractError(response, 'Command failed');
+      // The command-result card is the ONE error surface for command
+      // execution (backlog #135): no toast on top of it, except the
+      // session-level 401 handling the base helper preserves.
+      const message = await this._extractErrorWithAuthSignal(response, 'Command failed');
       throw new Error(message);
     }
 
@@ -52,7 +55,11 @@ export class CommandsApi extends LlmFallbackApi {
     });
 
     if (!response.ok) {
-      const message = await this._toastAndExtractError(response, 'Failed to load commands');
+      // Fully quiet by design, 401 included: this is a passive background
+      // fetch (the commands store retries with backoff and degrades to its
+      // fallback roots), so it must not sign the user out or toast on a
+      // transient auth hiccup; user-initiated calls carry the auth signal.
+      const message = await this._extractError(response, 'Failed to load commands');
       throw new Error(message);
     }
 

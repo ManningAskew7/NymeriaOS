@@ -1,9 +1,13 @@
 # Input hint tips
 
 Master list of the rotating tips shown under the prompt bar (the little `L`
-connector on the bottom left). The live source of truth is the `tips` array in
-`InputHintTips.svelte`; keep this file in sync when you add, reword, or remove a
-tip so we can track them all and avoid duplicates.
+connector on the bottom left). The live source of truth is the shared
+EXACT_MATCH data file `src/lib/utils/inputTips.ts` (backlog #135): both apps'
+`InputHintTips.svelte` components render from it, mobile filtering out the
+`desktopOnly` entries (desktop chrome: sidebars, dashboard clicks, the
+context dot), so the drift gate keeps the copy in sync. Keep this file in
+sync when you add, reword, or remove a tip so we can track them all and
+avoid duplicates.
 
 ## Style guide
 

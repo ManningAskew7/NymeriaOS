@@ -173,6 +173,21 @@ export class ApiBase {
   }
 
   /**
+   * Extract-only variant for callers whose result renders inline but whose
+   * 401 must still fire the session-level auth handling (pushAuthInvalid
+   * also signs the app out, which an inline surface cannot carry). 403/409
+   * deliberately do NOT toast here: they are messages, and the caller's
+   * inline surface is the one place they should appear. Keeps the
+   * status-code semantics in this class (backlog #135).
+   */
+  protected async _extractErrorWithAuthSignal(response: Response, fallback: string): Promise<string> {
+    if (response.status === 401) {
+      return this._toastAndExtractError(response, fallback);
+    }
+    return this._extractError(response, fallback);
+  }
+
+  /**
    * Surface a structured toast for known account/admin failure modes and then
    * extract a human-readable error message to throw. Called from the new
    * /me/* and /admin/* wrappers — keeps the toast UI in sync with backend

@@ -319,9 +319,26 @@
 </script>
 
 {#if message.kind === 'command_result'}
-<div class="command-result">
-  <div class="command-icon">
-    <Icon name="terminal" size={18} />
+<!-- Outcome accent keyed off the typed level (backlog #135). The status
+     fallback is defensive: addCommandResult, the only producer, always
+     stamps commandLevel. Polite live region, not role="alert": an alert
+     would announce the card's FULL markdown assertively. -->
+{@const commandLevel = message.commandLevel ?? (message.status === 'error' ? 'error' : 'success')}
+<div
+  class="command-result"
+  class:level-error={commandLevel === 'error'}
+  class:level-warning={commandLevel === 'warning'}
+  aria-live={commandLevel === 'error' ? 'polite' : undefined}
+>
+  <div
+    class="command-icon"
+    class:error={commandLevel === 'error'}
+    class:warning={commandLevel === 'warning'}
+  >
+    <Icon
+      name={commandLevel === 'error' ? 'error' : commandLevel === 'warning' ? 'warning' : 'terminal'}
+      size={18}
+    />
   </div>
   <div class="command-body">
     {#if message.commandInput}
@@ -390,6 +407,7 @@
   class:user={isUser}
   class:assistant={!isUser}
   class:autonomous-prompt={!!message.autonomousSource}
+  class:error={!isUser && message.status === 'error'}
   onpointerdown={handleBubblePointerDown}
   onpointerup={handleBubblePressCancel}
   onpointermove={handleBubblePointerMove}
@@ -556,6 +574,18 @@
         </div>
       {/if}
     {/if}
+
+    {#if !isUser && message.status === 'error' && message.errorText}
+      <!-- Turn-error alert block (backlog #98): structured error state
+           rendered as a real alert below whatever streamed, never markdown
+           appended into the reply. -->
+      <div class="turn-error" role="alert">
+        <div class="turn-error-icon">
+          <Icon name="error" size={18} />
+        </div>
+        <div class="turn-error-body">{message.errorText}</div>
+      </div>
+    {/if}
   </div>
 
   <time class="timestamp">
@@ -595,6 +625,18 @@
     animation: msgIn var(--transition-normal);
   }
 
+  /* Outcome accents (backlog #135): border + tint only, matching the app's
+     alert-block pattern; success/info cards keep the neutral treatment. */
+  .command-result.level-error {
+    border-color: rgba(var(--error-rgb), 0.3);
+    background: rgba(var(--error-rgb), 0.08);
+  }
+
+  .command-result.level-warning {
+    border-color: rgba(var(--warning-rgb), 0.3);
+    background: rgba(var(--warning-rgb), 0.08);
+  }
+
   .command-icon {
     display: flex;
     align-items: center;
@@ -605,6 +647,16 @@
     color: var(--accent-primary);
     background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
     flex-shrink: 0;
+  }
+
+  .command-icon.error {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 14%, transparent);
+  }
+
+  .command-icon.warning {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
   }
 
   .command-body {
@@ -672,6 +724,39 @@
 
   .message-bubble.assistant {
     align-self: flex-start;
+  }
+
+  /* Errored turn (backlog #98): a subtle wash over the whole message; the
+     turn-error alert block below the content carries the loud part. */
+  .message-bubble.error {
+    background: rgba(var(--error-rgb), 0.04);
+    border-radius: var(--radius-lg);
+  }
+
+  .turn-error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid rgba(var(--error-rgb), 0.3);
+    border-radius: var(--radius-md);
+    background: rgba(var(--error-rgb), 0.08);
+  }
+
+  .turn-error-icon {
+    display: flex;
+    align-items: center;
+    color: var(--error);
+    flex-shrink: 0;
+    padding-top: 1px;
+  }
+
+  .turn-error-body {
+    font-size: var(--font-size-sm);
+    /* The humanized copy may carry a trailing "(code: X)" detail line. */
+    white-space: pre-line;
+    overflow-wrap: anywhere;
   }
 
   .bubble-content {

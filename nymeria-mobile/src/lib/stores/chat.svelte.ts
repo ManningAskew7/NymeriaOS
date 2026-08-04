@@ -1,4 +1,4 @@
-import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, TurnPausedInfo, FallbackPromptInfo, WorkspaceArtifact, DispatchInfo, PendingPrompt, PendingPromptStatus, StopThreadResult, ThreadTurnStatus, ViewerAttachRequest } from '$lib/types';
+import type { Message, MessageStep, ToolCall, ToolCallStatus, CommandResultLevel, FileAttachment, ContextStats, ToolReloadInfo, TurnPausedInfo, FallbackPromptInfo, WorkspaceArtifact, DispatchInfo, PendingPrompt, PendingPromptStatus, StopThreadResult, ThreadTurnStatus, ViewerAttachRequest } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 import { generateId } from '$lib/utils/ids';
 
@@ -191,7 +191,12 @@ export function createChatStore() {
       return id;
     },
 
-    addCommandResult(commandInput: string, content: string, success: boolean): string {
+    addCommandResult(
+      commandInput: string,
+      content: string,
+      success: boolean,
+      level?: CommandResultLevel
+    ): string {
       const id = generateId();
       const message: Message = {
         id,
@@ -200,7 +205,10 @@ export function createChatStore() {
         commandInput,
         content,
         timestamp: new Date(),
-        status: success ? 'complete' : 'error'
+        status: success ? 'complete' : 'error',
+        // Typed outcome accent (backlog #135); derives from the success
+        // boolean for callers without a wire level.
+        commandLevel: level ?? (success ? 'success' : 'error')
       };
       messages = [...messages, message];
       return id;
@@ -326,11 +334,19 @@ export function createChatStore() {
           ...lastMessage,
           content: '',
           steps: [],
+          errorText: undefined,
           status: 'streaming' as const
         }
       ];
     },
 
+    /**
+     * Store the turn error as structured state on the tail assistant message
+     * (backlog #98): the renderer draws it as an in-bubble alert block, so
+     * the text is NOT appended into content/steps markdown (the old idiom,
+     * which a separate alert block would double-render). Whatever streamed
+     * before the failure stays untouched above the block.
+     */
     setLastMessageError(error: string) {
       this._forceFlush();
       if (messages.length === 0) return;
@@ -339,44 +355,12 @@ export function createChatStore() {
       const lastMessage = messages[lastIndex];
 
       if (lastMessage.role === 'assistant') {
-        const existing = (lastMessage.content || '').trim();
-        const errorText = (error || 'The reply could not be completed.').trim();
-        let mergedContent = errorText;
-        let updatedSteps = lastMessage.steps;
-
-        if (existing) {
-          mergedContent = existing.includes(errorText)
-            ? existing
-            : `${existing}\n\n---\n**Error:** ${errorText}`;
-        }
-
-        if (lastMessage.steps) {
-          const errorStepText = `\n\n---\n**Error:** ${errorText}`;
-          const steps = [...lastMessage.steps];
-          const lastStep = steps[steps.length - 1];
-
-          if (lastStep && lastStep.type === 'response') {
-            const existingStepText = lastStep.content || '';
-            if (!existingStepText.includes(errorText)) {
-              steps[steps.length - 1] = {
-                ...lastStep,
-                content: existingStepText + errorStepText
-              };
-            }
-          } else {
-            steps.push({ type: 'response', content: errorStepText });
-          }
-
-          updatedSteps = steps;
-        }
-
         messages = [
           ...messages.slice(0, lastIndex),
           {
             ...lastMessage,
-            content: mergedContent,
-            status: 'error',
-            steps: updatedSteps
+            errorText: (error || 'The reply could not be completed.').trim(),
+            status: 'error'
           }
         ];
       }

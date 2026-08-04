@@ -143,10 +143,11 @@ export class ApiBase {
   /**
    * Surface a structured toast for known account/admin failure modes and then
    * extract a human-readable error message to throw. See desktop counterpart.
+   * (The non-toasting `_parseDetail`/`_extractError` siblings live further
+   * down in this class.)
    */
   protected async _toastAndExtractError(response: Response, fallback: string): Promise<string> {
-    const detail = await response.json().catch(() => ({}));
-    const detailMessage = typeof detail?.detail === 'string' ? detail.detail : null;
+    const detailMessage = await this._parseDetail(response);
     const message = detailMessage || `${fallback} (${response.status})`;
 
     if (response.status === 401) {
@@ -276,6 +277,21 @@ export class ApiBase {
   protected async _extractError(response: Response, fallback: string): Promise<string> {
     const detailMessage = await this._parseDetail(response);
     return detailMessage || `${fallback} (${response.status})`;
+  }
+
+  /**
+   * Extract-only variant for callers whose result renders inline but whose
+   * 401 must still fire the session-level auth handling (pushAuthInvalid
+   * also signs the app out, which an inline surface cannot carry). 403/409
+   * deliberately do NOT toast here: they are messages, and the caller's
+   * inline surface is the one place they should appear. Keeps the
+   * status-code semantics in this class (backlog #135).
+   */
+  protected async _extractErrorWithAuthSignal(response: Response, fallback: string): Promise<string> {
+    if (response.status === 401) {
+      return this._toastAndExtractError(response, fallback);
+    }
+    return this._extractError(response, fallback);
   }
 
   // =========================================================================

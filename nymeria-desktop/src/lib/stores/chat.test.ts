@@ -1189,3 +1189,84 @@ describe('chatStore: LLM fallback consent card (llm-fallback-consent Phase 2)', 
     expect(store.messages).toEqual(snapshot);
   });
 });
+
+describe('chatStore: command levels + structured turn errors (backlog #135 + #98)', () => {
+  let store: ReturnType<typeof createChatStore>;
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  it('addCommandResult stores the wire level', () => {
+    store.addCommandResult('/env set', 'Set with a caveat.', true, 'warning');
+
+    const msg = store.messages[0];
+    expect(msg.kind).toBe('command_result');
+    expect(msg.commandLevel).toBe('warning');
+    expect(msg.status).toBe('complete');
+  });
+
+  it('addCommandResult derives the level from the success boolean when no level rides', () => {
+    store.addCommandResult('/model x', 'Done.', true);
+    store.addCommandResult('/model y', 'No such model.', false);
+
+    expect(store.messages[0].commandLevel).toBe('success');
+    expect(store.messages[0].status).toBe('complete');
+    expect(store.messages[1].commandLevel).toBe('error');
+    expect(store.messages[1].status).toBe('error');
+  });
+
+  it('setLastMessageError stores structured errorText and leaves content/steps untouched', () => {
+    store.addUserMessage('hi');
+    store.addAssistantMessage();
+    store.appendToLastMessage('partial reply');
+    store._forceFlush();
+
+    store.setLastMessageError('Could not reach the model. (code: upstream)');
+
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.status).toBe('error');
+    expect(tail.errorText).toBe('Could not reach the model. (code: upstream)');
+    // The old idiom appended "**Error:** ..." markdown into BOTH content and
+    // steps; the alert block renders errorText, so neither may carry it.
+    expect(tail.content).toBe('partial reply');
+    const stepText = (tail.steps ?? []).map((s) => s.content ?? '').join('');
+    expect(stepText).not.toContain('**Error:**');
+  });
+
+  it('setLastMessageError falls back to the default copy for an empty message', () => {
+    store.addAssistantMessage();
+    store.setLastMessageError('');
+    expect(store.messages[0].errorText).toBe('The reply could not be completed.');
+  });
+
+  it('setLastMessageError no-ops when the tail is not an assistant message', () => {
+    store.addCommandResult('/x', 'Done.', true);
+    const snapshot = structuredClone(store.messages);
+
+    store.setLastMessageError('Boom');
+
+    expect(store.messages).toEqual(snapshot);
+  });
+
+  it('completion after an error preserves the error state', () => {
+    store.addAssistantMessage();
+    store.setLastMessageError('Boom');
+    store.setLastMessageComplete();
+
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.status).toBe('error');
+    expect(tail.errorText).toBe('Boom');
+  });
+
+  it('resetLastMessageForReplay clears stale errorText for the rebuilt turn', () => {
+    store.addAssistantMessage();
+    store.setLastMessageError('Boom');
+
+    store.resetLastMessageForReplay();
+
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.errorText).toBeUndefined();
+    expect(tail.status).toBe('streaming');
+  });
+});

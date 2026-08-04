@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { fade } from 'svelte/transition';
   import { tooltipWhenClipped } from '$lib/actions/tooltip';
+  import { INPUT_TIPS } from '$lib/utils/inputTips';
 
   interface Props {
     /** Pause rotation while the user is actively composing a message. */
@@ -14,31 +15,9 @@
   // sentence without feeling stale.
   const ROTATE_MS = 9000;
 
-  const tips = [
-    'Type / to browse slash commands.',
-    'Use /skill <name> to load a skill for this thread.',
-    'Use /kit <name> to bind a Skill Kit and its tools.',
-    'Each thread keeps its own model, tools, and memory.',
-    'Switch the model for a thread from its settings.',
-    'Schedule a task and Nymeria will run it on its own.',
-    'Set up triggers to start threads from email, RSS, webhooks, and HTTP polls.',
-    'Give a thread its own custom instructions in settings.',
-    'Create callable threads to hand work to a sub-agent.',
-    'Click the dot to minimise the context usage above.',
-    'Click any Global Dashboard item to open its thread.',
-    'Collapse either sidebar to free up room.',
-    'Skill Kits hot-load tools into the agent instantly.',
-    'Nymeria helps providers cache prompts to cut costs.',
-    'Nymeria can build new tools with tool_create mid-turn.',
-    'Use @<title> to message another thread in place.',
-    'Enable rag_search so Nymeria recalls details on demand.',
-    'Set the compaction threshold by tokens, not percentage.',
-    'Start a new thread when you switch tasks.',
-    'Use cheap models per thread for repetitive tasks.',
-    'Toggle dreaming to let a thread manage its own work.',
-    'Group threads into a team to hide them from the rest.',
-    'Use /orchestrate to spin up and manage an agent swarm.',
-  ];
+  // Copy lives in the shared EXACT_MATCH data file (mobile renders the
+  // non-desktopOnly subset); this component owns only the presentation.
+  const tips = INPUT_TIPS.map((t) => t.text);
 
   // Start somewhere random so the first tip varies between sessions, then
   // cycle through in order.
