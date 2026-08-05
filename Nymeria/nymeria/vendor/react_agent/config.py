@@ -45,6 +45,13 @@ class LLMConfig:
     presence_penalty: Optional[float] = None  # Encourage new topics (-2.0 to 2.0)
     reasoning_effort: Optional[str] = None  # "off", "low", "medium", "high", "xhigh", "max" (None = unset/inherit; "off" wins over extended_thinking)
     extended_thinking: bool = False  # Enable extended thinking/reasoning tokens
+    # Stable per-conversation cache-routing key (OpenAI `prompt_cache_key`).
+    # The host sets it from the thread id; without it, stateless full-history
+    # replay (store=False, no previous_response_id) never hits the upstream
+    # prefix cache: CLIProxy's Codex path mints a fresh session UUID per
+    # request, and a live A/B measured 0 cached tokens without the key vs a
+    # 62% prefix hit with it. None = don't send.
+    prompt_cache_key: Optional[str] = None
     provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     # Adapter route for providers with both a native partner package and an
     # OpenAI-compatible shim. None = use the provider registry default.

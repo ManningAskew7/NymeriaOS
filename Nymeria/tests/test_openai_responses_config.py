@@ -238,6 +238,87 @@ class _ToolOrderingFakeModel(BaseChatModel):
         )
 
 
+def test_openai_prompt_cache_key_rides_both_api_modes():
+    """A configured prompt_cache_key lands top level in the payload: it is
+    what pins CLIProxy's Codex session across turns, and without it the
+    upstream prefix cache never hits on stateless full-history replay
+    (measured live 2026-08-05: 0 vs 62% cached tokens). Absent when unset."""
+    llm = create_llm(
+        _openai_config(openai_api_mode="responses", prompt_cache_key="nym-t1")
+    )
+    payload = llm._get_request_payload([HumanMessage(content="Hi")])
+    assert payload["prompt_cache_key"] == "nym-t1"
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        chat_llm = create_llm(
+            _openai_config(
+                openai_api_mode="chat_completions", prompt_cache_key="nym-t1"
+            )
+        )
+    chat_payload = chat_llm._get_request_payload([HumanMessage(content="Hi")])
+    assert chat_payload["prompt_cache_key"] == "nym-t1"
+
+    bare = create_llm(_openai_config(openai_api_mode="responses"))
+    bare_payload = bare._get_request_payload([HumanMessage(content="Hi")])
+    assert "prompt_cache_key" not in bare_payload
+
+
+def test_prompt_cache_key_scoping_local_vs_cliproxy_vs_openrouter():
+    """The key is skipped for plain local OpenAI-compatible servers (no
+    routing benefit; strict ones 400 on unknown fields) but MUST survive a
+    CLIProxy base even though localhost:8318 looks local too: the slim
+    shape is the primary beneficiary. The openrouter factory never sends
+    it (different vendor semantics, deliberately unwired)."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        local = create_llm(
+            _openai_config(
+                base_url="http://localhost:11434/v1",
+                openai_api_mode="chat_completions",
+                prompt_cache_key="nym-t1",
+            )
+        )
+    assert "prompt_cache_key" not in local._get_request_payload(
+        [HumanMessage(content="Hi")]
+    )
+
+    cliproxy = create_llm(
+        _openai_config(
+            base_url="http://localhost:8318/v1",
+            openai_api_mode="responses",
+            prompt_cache_key="nym-t1",
+        )
+    )
+    assert (
+        cliproxy._get_request_payload([HumanMessage(content="Hi")])[
+            "prompt_cache_key"
+        ]
+        == "nym-t1"
+    )
+
+    openrouter = create_llm(
+        llm_config(
+            {
+                "provider": "openrouter",
+                "model": "openai/gpt-5.5",
+            },
+            prompt_cache_key="nym-t1",
+        )
+    )
+    assert "prompt_cache_key" not in openrouter._get_request_payload(
+        [HumanMessage(content="Hi")]
+    )
+
+
 def test_chat_openai_with_reasoning_is_importable_stable_class():
     assert providers._get_chat_openai_with_reasoning() is ChatOpenAIWithReasoning
     assert (

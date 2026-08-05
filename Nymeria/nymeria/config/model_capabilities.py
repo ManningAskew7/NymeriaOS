@@ -232,6 +232,14 @@ DEFAULT_CONTEXT_LIMITS = {
     # two.
     "grok-code-fast": 256000,
     "xai/grok-code-fast": 256000,
+    # The antigravity channel's flash lineage (quality-suffixed live-pool ids
+    # like gemini-3.6-flash-high/-low). No catalog row exists for 3.6 yet;
+    # the bundled catalog answers 1,048,576 for every gemini-3 flash row it
+    # does know (3-flash-preview, 3.5-flash), matching Google's published
+    # flash-family window. SHORTEST alias on purpose (see grok-code-fast
+    # above): this one row also answers the -high/-low/-extra-low suffixes.
+    "gemini-3.6-flash": 1048576,
+    "google/gemini-3.6-flash": 1048576,
     "_default": 128000,
 }
 
@@ -603,11 +611,26 @@ def _openai_reasoning_efforts(model_text: str) -> tuple:
 
 
 def _google_reasoning_efforts(model_text: str) -> tuple:
-    """Effort ladder for Gemini models."""
+    """Effort ladder for Gemini models.
+
+    The serving registries (CLIProxy's gemini-cli and antigravity channels)
+    validate thinking LEVELS strictly, a hard 400 rather than a clamp, and
+    the 3.x pro ids accept low/high ONLY (verified in the CLIProxy registry
+    for the gemini-cli previews and the antigravity -high/-low forms,
+    2026-08-05); the flash lineage also accepts medium. "off" stays on the
+    ladder even though 3.x+ cannot fully disable thinking: it wires the
+    explicit "none", which bypasses level validation (ModeNone) and floors
+    to the lowest level with thoughts hidden, the closest honest off that
+    exists. Exotic variants (flash-image) carry narrower per-model sets
+    this static ladder cannot know; a management-API-driven ladder is the
+    complete fix (backlog #150, which also tracks whether Google's NATIVE
+    surface accepts medium on 3.x pro, where the CLIProxy registries do
+    not).
+    """
     if "gemini-3" in model_text or "gemini-4" in model_text:
-        # thinking_level tops out at high; "off" maps to "minimal" (cannot
-        # fully disable thinking on 3.x+).
-        return ("off", "low", "medium", "high")
+        if "flash" in model_text:
+            return ("off", "low", "medium", "high")
+        return ("off", "low", "high")
     # Gemini <= 2.5 thinking_budget: every tier maps to a budget value.
     return EFFORT_LEVELS
 

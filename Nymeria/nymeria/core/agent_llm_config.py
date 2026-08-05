@@ -1023,6 +1023,11 @@ def get_llm_config_for_thread(
         presence_penalty=presence_penalty,
         reasoning_effort=reasoning_effort,
         extended_thinking=extended_thinking,
+        # Stable cache-routing key so stateless full-history replay can hit
+        # upstream prefix caches (see the LLMConfig field comment). Synthetic
+        # thread ids (todo-<id>, trigger threads) are stable per logical
+        # conversation, which is exactly the granularity the cache wants.
+        prompt_cache_key=f"nym-{thread_id}" if thread_id else None,
         context_length=context_length,
         ollama_num_ctx=ollama_num_ctx,
         provider_route=provider_route,

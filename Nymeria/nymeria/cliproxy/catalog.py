@@ -163,14 +163,18 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         url_shape="v1",
         key_setting="openai_api_key",
         api_mode="chat_completions",
-        default_model="gemini-3-pro-preview",
+        # Antigravity's own upstream naming (quality-suffixed ids, not the
+        # gemini-cli -preview spellings). Live-verified 2026-08-05 on the
+        # first real login: the pool carried gemini-3.6-flash-high (this
+        # pick, proven serving), gemini-3.5-flash-low/-extra-low,
+        # gemini-3.1-pro-low, gemini-3-flash(-agent), plus claude and
+        # gpt-oss entries; no plain gemini-3-pro-high appeared.
+        default_model="gemini-3.6-flash-high",
         auth_file_provider="antigravity",
-        # Per proxy source, NOT "google": antigravity is the one channel
-        # whose model list is fetched live from Google per login, and the
-        # fetcher stamps every entry OwnedBy "antigravity"
-        # (antigravity_executor.go). Pending live confirmation on a real
-        # login; a wrong value only costs the grouping, since zero matches
-        # falls back to the flat list.
+        # NOT "google": antigravity is the one channel whose model list is
+        # fetched live from Google per login, and entries carry owned_by
+        # "antigravity" (antigravity_executor.go; live-confirmed 2026-08-05
+        # on a real login's /v1/models).
         model_owner="antigravity",
     ),
     CLIProxyProviderSpec(

@@ -107,14 +107,26 @@ def test_data_plane_url_root_vs_v1():
     )
 
 
+def test_default_models_resolve_real_context_windows(monkeypatch):
+    """Every catalog default_model must resolve its context window from a
+    real tier (curated row, bundled catalog, or family rule), never the
+    128k _default: the default is what a fresh subscription login compacts
+    against, and a silent 128k cap on a 1M-window model was a review
+    finding (2026-08-05, antigravity's gemini-3.6-flash-high)."""
+    from nymeria.config import model_capabilities as mc
+
+    monkeypatch.setattr(mc, "_fetch_openrouter_models", lambda: {})
+    for spec in CLIPROXY_PROVIDERS:
+        limit = mc.get_context_limit(spec.default_model)
+        assert limit and limit > 128000, (spec.id, spec.default_model, limit)
+
+
 def test_model_owner_set_only_where_verified():
     """owned_by attribution for the proxy's flat /v1/models pool. Verified
-    live on v7.1.61 for claude/codex/gemini-cli (2026-08-05); antigravity
-    is source-derived (the proxy's live model fetcher stamps entries
-    OwnedBy "antigravity", antigravity_executor.go) and safe if wrong
-    (zero matches degrades to the flat list). Kimi and grok MUST stay
-    unset until observed on a live login: consumers partition on this
-    field, and a wrong guess would bury real models."""
+    live on v7.1.61 for claude/codex/gemini-cli and, since the first real
+    antigravity login (2026-08-05), for antigravity too. Kimi and grok
+    MUST stay unset until observed on a live login: consumers partition on
+    this field, and a wrong guess would bury real models."""
     owners = {
         spec.id: spec.model_owner for spec in CLIPROXY_PROVIDERS
     }
