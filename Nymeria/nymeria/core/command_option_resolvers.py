@@ -79,33 +79,59 @@ def filter_command_options(
 
 
 async def resolve_models(
-    executor: "_CommandExecutor", *, current: str | None = None
+    executor: "_CommandExecutor",
+    *,
+    current: str | None = None,
+    provider: str | None = None,
 ) -> list[dict[str, Any]]:
     """Model ids the active provider lists (best effort, like the picker:
     a provider with no listing endpoint yields no options, never an error).
 
     ``current`` marks the calling thread's effective model; when not
     supplied it is resolved the way bare ``/model`` reports it (thread
-    override, else the global default).
+    override, else the global default). ``provider`` lists for a NAMED
+    provider instead of the settings default (the switch handoff: after a
+    thread-scope /provider switch, the settings default would list the
+    wrong provider's models).
     """
     from .command_service import fmt_tokens
 
     try:
-        models = await executor.api.list_available_models()
+        # Provider always passed (None = the settings default): every real
+        # facade takes it as the first optional positional.
+        models = await executor.api.list_available_models(provider)
     except Exception:  # noqa: BLE001 - option sets degrade, never block.
         logger.debug("options: list_available_models failed", exc_info=True)
         return []
+    settings: Mapping[str, Any] | None = None
+    try:
+        settings = await executor.api.get_settings()
+    except Exception:  # noqa: BLE001 - gate + current marking degrade.
+        logger.debug("options: settings lookup failed", exc_info=True)
+    # Source attribution only against a CLIProxy pool (same predicate the
+    # runtime keys the route treatment on): direct providers carry
+    # owned_by too, and there it is noise, not routing signal (OpenAI's
+    # own listing spans system/openai/openai-internal).
+    attribute_sources = False
+    if settings is not None:
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        base_url = str(settings.get("llm_base_url") or "")
+        attribute_sources = bool(base_url) and looks_like_cliproxy_url(
+            base_url
+        )
     if current is None:
         current = ""
         try:
-            settings = await executor.api.get_settings()
             thread_model = ""
             if executor.thread_id:
                 tc = await executor.api.get_thread_config(executor.thread_id)
                 thread_model = ((tc or {}).get("llm_config") or {}).get(
                     "model"
                 ) or ""
-            current = str(thread_model or settings.get("llm_model", "") or "")
+            current = str(
+                thread_model or (settings or {}).get("llm_model", "") or ""
+            )
         except Exception:  # noqa: BLE001 - current marking is cosmetic.
             logger.debug("options: current-model lookup failed", exc_info=True)
     options: list[dict[str, Any]] = []
@@ -114,7 +140,15 @@ async def resolve_models(
         if not model_id:
             continue
         ctx_len = entry.get("context_length") or entry.get("context_window")
-        meta = f"{fmt_tokens(ctx_len)} ctx" if ctx_len else ""
+        # Source attribution first: a CLIProxy pool spans every logged-in
+        # subscription, and an unattributed flat list is how a Claude id
+        # ends up "inexplicably" offered on a Gemini route.
+        parts = (
+            [str(entry.get("owned_by") or "")] if attribute_sources else []
+        )
+        if ctx_len:
+            parts.append(f"{fmt_tokens(ctx_len)} ctx")
+        meta = " · ".join(part for part in parts if part)
         options.append(
             form_option(model_id, meta=meta, current=model_id == current)
         )

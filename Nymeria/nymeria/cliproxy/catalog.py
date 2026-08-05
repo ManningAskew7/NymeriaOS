@@ -59,6 +59,13 @@ class CLIProxyProviderSpec:
     # (oauth_model_alias.go) and the listing is built from that rewritten
     # value (auth_files.go); match via `auth_file_providers`.
     auth_file_provider: str = ""
+    # The `owned_by` value this CLI's models carry in the proxy's
+    # /v1/models listing (one flat pool across every logged-in
+    # subscription; verified live on v7.1.61 for claude/codex/gemini-cli).
+    # Empty means unknown/unverified: consumers must degrade to the
+    # unpartitioned list, never filter on a guess (kimi and grok stay
+    # unset until observed on a live login).
+    model_owner: str = ""
 
     @property
     def auth_file_providers(self) -> tuple[str, ...]:
@@ -103,6 +110,7 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         key_setting="anthropic_api_key",
         default_model="claude-opus-4-7",
         auth_file_provider="claude",
+        model_owner="anthropic",
     ),
     CLIProxyProviderSpec(
         id="codex",
@@ -120,6 +128,7 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         api_mode="responses",
         default_model="gpt-5.5",
         auth_file_provider="codex",
+        model_owner="openai",
     ),
     CLIProxyProviderSpec(
         id="gemini-cli",
@@ -138,6 +147,7 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         default_model="gemini-3-pro-preview",
         tos_warning=GEMINI_CLI_TOS_WARNING,
         auth_file_provider="gemini",
+        model_owner="google",
     ),
     CLIProxyProviderSpec(
         id="antigravity",
@@ -155,6 +165,9 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         api_mode="chat_completions",
         default_model="gemini-3-pro-preview",
         auth_file_provider="antigravity",
+        # Tentative (antigravity serves Gemini models); a wrong value only
+        # costs the grouping, since zero matches falls back to the flat list.
+        model_owner="google",
     ),
     CLIProxyProviderSpec(
         id="kimi",

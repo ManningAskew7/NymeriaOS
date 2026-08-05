@@ -2256,6 +2256,72 @@ def test_provider_switch_thread_scope_writes_the_thread_override() -> None:
     ]
 
 
+def test_provider_switch_hands_off_to_model_pick() -> None:
+    """The switch is half a route: both scopes end with an explicit model
+    next step (B15), and a form-capable caller gets the picker resolved
+    for the provider JUST switched to, not the settings default (B16)."""
+
+    class _SwitchModelsApi(FakeCommandApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model_list_providers: list[str | None] = []
+
+        async def list_available_models(
+            self,
+            provider: str | None = None,
+            user_id: str | None = None,
+            *,
+            api_key: str | None = None,
+            base_url: str | None = None,
+        ) -> list[dict[str, Any]]:
+            self.model_list_providers.append(provider)
+            return [
+                {"id": "claude-opus-4-7", "owned_by": "anthropic"},
+                {"id": "claude-haiku-4-5", "owned_by": "anthropic"},
+            ]
+
+    api = _SwitchModelsApi()
+    # A CLIProxy-shaped base URL so the picker metas carry attribution
+    # (the gate suppresses owned_by on direct providers).
+    api.llm_base_url = "http://localhost:8318/v1"
+    result = _run_command(api, "/provider switch anthropic thread")
+
+    assert result.success is True
+    assert (
+        "Next: pick this thread's model: /model <name> thread"
+        in result.markdown
+    )
+    assert api.model_list_providers == ["anthropic"]
+    form = (result.data or {}).get("form")
+    assert form is not None
+    assert form["submit"]["command"] == "model {model} thread"
+    options = form["tabs"][0]["fields"][1]["options"]
+    assert [o["id"] for o in options] == [
+        "claude-opus-4-7",
+        "claude-haiku-4-5",
+    ]
+    assert options[0]["meta"] == "anthropic"
+
+    api2 = _SwitchModelsApi()
+    result2 = _run_command(api2, "/provider switch anthropic")
+    assert "Next: pick the model: /model <name> global" in result2.markdown
+    form2 = (result2.data or {}).get("form")
+    assert form2 is not None
+    assert form2["submit"]["command"] == "model {model} global"
+
+
+def test_provider_switch_without_listing_keeps_text_next_step() -> None:
+    """No listing endpoint: the explicit next step still lands, form-free
+    (the base FakeCommandApi has no list_available_models at all)."""
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider switch anthropic")
+
+    assert result.success is True
+    assert "Next: pick the model: /model <name> global" in result.markdown
+    assert result.data is None
+
+
 def test_provider_switch_thread_scope_requires_an_active_thread() -> None:
     api = FakeCommandApi()
     result = run(
@@ -2409,6 +2475,60 @@ def test_provider_test_failure_renders_backend_message() -> None:
 
     assert result.success is False
     assert "401 unauthorized" in result.markdown
+
+
+def test_provider_test_translates_cliproxy_unknown_model() -> None:
+    """The proxy's raw 502 reads as a Nymeria bug; through a CLIProxy base
+    URL the failure gains the what-it-means line (dogfood 2026-08-05)."""
+    api = FakeCommandApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+    api.provider_test_result = {
+        "ok": False,
+        "message": (
+            "Provider returned HTTP 502: unknown provider for model"
+            " gemini-3.5-flash"
+        ),
+    }
+
+    result = _run_command(api, "/provider test openai")
+
+    assert result.success is False
+    assert "unknown provider for model gemini-3.5-flash" in result.markdown
+    assert "no logged-in subscription" in result.markdown
+    assert "/provider cliproxy" in result.markdown
+
+
+def test_provider_test_translates_cliproxy_upstream_not_found() -> None:
+    api = FakeCommandApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+    api.provider_test_result = {
+        "ok": False,
+        "message": (
+            "Provider returned HTTP 404: Requested entity was not found."
+        ),
+    }
+
+    result = _run_command(api, "/provider test openai")
+
+    assert result.success is False
+    assert "does not serve this model id" in result.markdown
+
+
+def test_provider_test_failure_untouched_off_cliproxy() -> None:
+    """A direct-API failure carrying the same phrase gains no CLIProxy
+    editorial (the hint keys on the runtime's own URL predicate)."""
+    api = FakeCommandApi()
+    api.llm_base_url = "https://api.example.com/v1"
+    api.provider_test_result = {
+        "ok": False,
+        "message": "unknown provider for model gpt-x",
+    }
+
+    result = _run_command(api, "/provider test openai")
+
+    assert result.success is False
+    assert "unknown provider for model gpt-x" in result.markdown
+    assert "no logged-in subscription" not in result.markdown
 
 
 def test_default_execution_uses_current_agent_backend_without_http(
@@ -3792,8 +3912,10 @@ def test_alias_claimed_by_a_later_builtin_goes_dormant(alias_repo) -> None:
 
 
 class _ModelCatalogCommandApi(FakeCommandApi):
-    async def list_available_models(self) -> list[dict[str, Any]]:
-        self.calls.append(("list_available_models", (), {}))
+    async def list_available_models(
+        self, provider: str | None = None, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        self.calls.append(("list_available_models", (provider,), {}))
         return [
             {"id": "gpt-test", "context_length": 128000},
             {"id": "gpt-next", "context_length": 400000},
@@ -3869,6 +3991,162 @@ def test_model_set_thread_scope_returns_state_hint() -> None:
     global_result = run(service.execute(_cli_ctx(), "/model gpt-next", api=api))
     assert global_result.success is True
     assert global_result.data is None
+
+
+def test_model_set_claude_on_openai_cliproxy_route_warns() -> None:
+    """A claude-* id on the openai-routed proxy serves but silently loses
+    the Claude OAuth treatment; the success message says so (B14)."""
+    service = CommandService()
+    api = FakeCommandApi()
+    api.llm_base_url = "http://cli-proxy-api:8317/v1"
+
+    result = run(
+        service.execute(_cli_ctx(), "/model claude-opus-4-7 --force", api=api)
+    )
+
+    assert result.success is True
+    assert "Global model set to claude-opus-4-7." in result.markdown
+    assert "skips the" in result.markdown
+    assert "/provider cliproxy claude" in result.markdown
+
+
+def test_model_set_claude_off_cliproxy_has_no_drift_note() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    api.llm_base_url = "https://api.example.com/v1"
+
+    result = run(
+        service.execute(_cli_ctx(), "/model claude-opus-4-7 --force", api=api)
+    )
+
+    assert result.success is True
+    assert "skips the" not in result.markdown
+
+
+def test_model_set_claude_on_anthropic_cliproxy_route_has_no_drift_note() -> None:
+    """The provider axis of the gate: a claude model on the ANTHROPIC
+    CLIProxy route is the correctly-treated combination, so no note (a
+    note there would tell a well-routed user their route is degraded)."""
+    service = CommandService()
+    api = FakeCommandApi()
+    api.llm_provider = "anthropic"
+    api.llm_base_url = "http://cli-proxy-api:8317"
+
+    result = run(
+        service.execute(_cli_ctx(), "/model claude-opus-4-7 --force", api=api)
+    )
+
+    assert result.success is True
+    assert "skips the" not in result.markdown
+
+
+def test_model_set_thread_scope_drift_note_follows_thread_route() -> None:
+    """Thread scope resolves the EFFECTIVE route: a thread inheriting the
+    global openai+CLIProxy route gets the note; a thread overridden to
+    anthropic over the same globals does not."""
+    service = CommandService()
+    api = FakeCommandApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+
+    inherited = run(
+        service.execute(
+            _cli_ctx(), "/model claude-opus-4-7 --force thread", api=api
+        )
+    )
+    assert "Model for this thread set to claude-opus-4-7." in inherited.markdown
+    assert "skips the" in inherited.markdown
+
+    api.thread_config["llm_config"] = {"provider": "anthropic"}
+    overridden = run(
+        service.execute(
+            _cli_ctx(), "/model claude-opus-4-7 --force thread", api=api
+        )
+    )
+    assert "skips the" not in overridden.markdown
+
+
+class _MixedPoolApi(FakeCommandApi):
+    async def list_available_models(
+        self, provider: str | None = None, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        return [
+            {"id": "claude-opus-4-7", "owned_by": "anthropic"},
+            {"id": "gemini-2.5-pro", "owned_by": "google", "context_length": 1048576},
+            {"id": "gpt-5.5", "owned_by": "openai"},
+            {"id": "gemini-3-pro-preview", "owned_by": "google"},
+        ]
+
+
+def test_model_list_groups_by_source_when_mixed() -> None:
+    """A multi-source CLIProxy listing (the pool spans every logged-in
+    subscription) groups rows under owner headings so a Claude id on a
+    Gemini route reads as attribution, not as a bug. Headings and rows
+    render at column 0 (the outcome renderer dedents the first body
+    line, so indented blocks would come out lopsided)."""
+    service = CommandService()
+    api = _MixedPoolApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+
+    result = run(service.execute(_cli_ctx(), "/model list", api=api))
+
+    assert result.success is True
+    lines = result.markdown.splitlines()
+    assert "[anthropic]" in lines
+    assert "[google]" in lines
+    assert "[openai]" in lines
+    # Group members sit under their heading, same column.
+    google_at = lines.index("[google]")
+    assert lines[google_at + 1] == "- gemini-2.5-pro | 1.0M ctx"
+    assert lines[google_at + 2] == "- gemini-3-pro-preview"
+
+
+def test_model_list_direct_provider_never_groups() -> None:
+    """owned_by exists on direct providers too (OpenAI lists system /
+    openai / openai-internal) and there it is noise: grouping keys on the
+    runtime's CLIProxy URL predicate, so a direct base URL stays flat."""
+    service = CommandService()
+    api = _MixedPoolApi()
+    api.llm_base_url = "https://api.example.com/v1"
+
+    result = run(service.execute(_cli_ctx(), "/model list", api=api))
+
+    assert result.success is True
+    assert "- claude-opus-4-7" in result.markdown
+    assert "[google]" not in result.markdown
+
+
+def test_model_list_single_owner_stays_flat() -> None:
+    """One displayed source, even through CLIProxy: no headings."""
+
+    class _OneOwnerApi(FakeCommandApi):
+        async def list_available_models(
+            self, provider: str | None = None, user_id: str | None = None
+        ) -> list[dict[str, Any]]:
+            return [
+                {"id": "gemini-2.5-pro", "owned_by": "google"},
+                {"id": "gemini-3-pro-preview", "owned_by": "google"},
+            ]
+
+    service = CommandService()
+    api = _OneOwnerApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+
+    result = run(service.execute(_cli_ctx(), "/model list", api=api))
+
+    assert result.success is True
+    assert "- gemini-2.5-pro" in result.markdown
+    assert "[google]" not in result.markdown
+
+
+def test_model_list_unattributed_listing_stays_flat() -> None:
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/model list", api=api))
+
+    assert result.success is True
+    assert "- gpt-test" in result.markdown
+    assert "[" not in result.markdown.split("\n", 1)[1]
 
 
 # ── supports_forms capability gating (backlog #110) ──────────────────────────

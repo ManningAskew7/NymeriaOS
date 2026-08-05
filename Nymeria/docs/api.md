@@ -4735,7 +4735,7 @@ route shapes; frontends never derive base URLs or key slots themselves.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/cliproxy/catalog` | Static provider catalog (id, label, flow, route shape, default model, ToS warning) |
-| GET | `/cliproxy/status` | Reachability plus per-provider support (live probe, cached 15 min; `?refresh=true` re-probes) and login state. Degrades to `configured/reachable: false` instead of erroring |
+| GET | `/cliproxy/status` | Reachability plus per-provider support (live probe, cached 15 min; `?refresh=true` re-probes) and login state. Per provider, `logged_in` means an active entry SERVES; `unavailable: true` means an enabled login exists but the proxy reports it in error backoff (a transient upstream cooldown, not logged out; one suspended model can flag a whole login). Degrades to `configured/reachable: false` instead of erroring |
 | POST | `/cliproxy/oauth/start` | `{provider}` -> `{url, state, flow}`; open `url` in any browser |
 | GET | `/cliproxy/oauth/status?state=&provider=` | Poll the pending login: `{status: wait\|ok\|error, detail}`. `ok` is server-CONFIRMED against the auth-file list (the proxy answers a bare ok for unknown or expired sessions, so an unconfirmed ok comes back as `error` with the trap explained in `detail`); a confirmed ok carries the account label in `detail`, and for Claude re-asserts `tool_prefix_disabled` on the auth file |
 | POST | `/cliproxy/oauth/callback` | `{provider, redirect_url}` (or `code`+`state`): deliver a browser callback that landed on a dead localhost page |

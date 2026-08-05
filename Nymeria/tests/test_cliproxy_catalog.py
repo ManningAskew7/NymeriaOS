@@ -105,3 +105,22 @@ def test_data_plane_url_root_vs_v1():
         cliproxy_data_plane_url("http://localhost:8318/", codex)
         == "http://localhost:8318/v1"
     )
+
+
+def test_model_owner_set_only_where_verified():
+    """owned_by attribution for the proxy's flat /v1/models pool. Verified
+    live on v7.1.61 for claude/codex/gemini-cli (2026-08-05); antigravity
+    is tentative-but-safe (zero matches degrades to the flat list). Kimi
+    and grok MUST stay unset until observed on a live login: consumers
+    partition on this field, and a wrong guess would bury real models."""
+    owners = {
+        spec.id: spec.model_owner for spec in CLIPROXY_PROVIDERS
+    }
+    assert owners == {
+        "claude": "anthropic",
+        "codex": "openai",
+        "gemini-cli": "google",
+        "antigravity": "google",
+        "kimi": "",
+        "grok": "",
+    }

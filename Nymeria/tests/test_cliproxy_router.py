@@ -201,10 +201,33 @@ def test_status_merges_probe_and_login_state():
     by_id = {p["id"]: p for p in payload["providers"]}
     assert payload["reachable"] is True
     assert by_id["claude"]["logged_in"] is True
-    # Disabled auth files do not count as logged in.
+    assert by_id["claude"]["unavailable"] is False
+    # Disabled auth files do not count as logged in, and are not a backoff.
     assert by_id["codex"]["logged_in"] is False
+    assert by_id["codex"]["unavailable"] is False
     assert by_id["grok"]["supported"] is False
     assert payload["management_html_url"] == "http://proxy.test:8317/management.html"
+
+
+def test_status_reports_backoff_as_unavailable_not_logged_out():
+    """Additive field: logged_in keeps meaning "an active entry serves";
+    an enabled entry in the proxy's error backoff surfaces as
+    unavailable=True so clients can render the truthful state."""
+    FakeManagementClient.probed = {"gemini-cli": True}
+    FakeManagementClient.auth_files = [
+        {
+            "name": "gemini-a.json",
+            "provider": "gemini-cli",
+            "disabled": False,
+            "unavailable": True,
+        },
+    ]
+    client, _, _ = make_app()
+    payload = client.get("/cliproxy/status").json()
+    by_id = {p["id"]: p for p in payload["providers"]}
+    assert by_id["gemini-cli"]["logged_in"] is False
+    assert by_id["gemini-cli"]["unavailable"] is True
+    assert by_id["claude"]["unavailable"] is False
 
 
 def test_oauth_start_returns_flow_and_state():
