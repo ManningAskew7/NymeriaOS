@@ -165,9 +165,13 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         api_mode="chat_completions",
         default_model="gemini-3-pro-preview",
         auth_file_provider="antigravity",
-        # Tentative (antigravity serves Gemini models); a wrong value only
-        # costs the grouping, since zero matches falls back to the flat list.
-        model_owner="google",
+        # Per proxy source, NOT "google": antigravity is the one channel
+        # whose model list is fetched live from Google per login, and the
+        # fetcher stamps every entry OwnedBy "antigravity"
+        # (antigravity_executor.go). Pending live confirmation on a real
+        # login; a wrong value only costs the grouping, since zero matches
+        # falls back to the flat list.
+        model_owner="antigravity",
     ),
     CLIProxyProviderSpec(
         id="kimi",
