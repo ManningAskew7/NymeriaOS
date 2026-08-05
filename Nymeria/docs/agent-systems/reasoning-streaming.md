@@ -211,6 +211,7 @@ All under `Nymeria/`:
 | Ollama OpenAI-compatible (`provider="ollama"`, `provider_route="openai_compat"`) | `/v1/chat/completions` | OpenAI-compatible chat deltas; reasoning support depends on the local Ollama shim | ⚠ compatibility route; prefer native when thinking is enabled |
 | CLIProxy GPT-5.5 sidecar with `openai_api_mode="chat_completions"` | `/v1/chat/completions` | `delta.reasoning_content` (plaintext summary, translated from upstream) | ✅ yes, via subclass; not recommended if thinking is enabled |
 | CLIProxy GPT-5.5 sidecar with default `openai_api_mode="responses"` | `/v1/responses` | typed `reasoning` summary blocks + `resp_*` id | ✅ yes, with checkpoint replay |
+| Gemini via CLIProxy subscription targets (gemini-cli, antigravity; `provider="openai"`, `openai_api_mode="chat_completions"`) | `/v1/chat/completions` | `delta.reasoning_content`, emitted only when an effort level is on the wire (since 2026-08-05 `/think on` sends one; before that the branch ignored `extended_thinking` and thinking never streamed) | ✅ live streaming yes; multi-turn passback is `none` (thought signatures are dropped by the proxy translator; backlog #150 tracks the responses-mode upgrade). Effort ladders are wire-honest: gemini-3 pro ids offer off/low/high (medium hard-400s at the proxy), and "off" sends the explicit `none`, which hides thoughts and floors the level, because omission leaves the model thinking invisibly |
 | OpenRouter with default `openai_api_mode="responses"` | `/api/v1/responses` | typed `reasoning` summaries; OpenRouter may also stream `response.reasoning.delta` / `response.reasoning_text.delta` or finalize Claude reasoning in `reasoning.content[].text` | ✅ yes, with stateless full-history replay, OpenRouter history normalization, and inline `<think>` leak stripping |
 | OpenRouter DeepSeek-R1 / Qwen thinking / Claude-via-OR with `openai_api_mode="chat_completions"` and `reasoning.enabled=true` | `/chat/completions` | `delta.reasoning` and/or `delta.reasoning_details` | ✅ yes, via subclass; prior OpenRouter assistant reasoning is replayed with `message.reasoning_details` when available |
 | Pure OpenAI reasoning models via `openai.com` with default `openai_api_mode="responses"` | `/v1/responses` | Typed reasoning blocks; summary optional and often empty | ✅ surfaces plaintext summaries when present |
@@ -334,7 +335,7 @@ sending a probe request.
 | `openrouter_reasoning_details` | OpenRouter, Vercel AI Gateway, AIHubMix on chat-completions | signed | every turn |
 | `flat_reasoning_content` | DeepSeek, Alibaba/Qwen, Baseten, LiteLLM, Together, Novita, Fireworks, Moonshot, native Ollama | plaintext | every turn, or tool-call turns only |
 | `gemini_thought_signatures` / `bedrock_reasoning` | native Google / Bedrock partner packages | signed | every turn |
-| `none` | any other OpenAI-compatible provider on `chat_completions` | none | reasoning is dropped |
+| `none` | any other OpenAI-compatible provider on `chat_completions`, including CLIProxy's gemini-cli/antigravity targets | none | reasoning is dropped |
 
 ### How it is determined (drift-proof)
 

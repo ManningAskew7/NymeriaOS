@@ -100,9 +100,23 @@ def test_effort_levels_rank_order():
         ("anthropic", "claude-fable-5", ("low", "medium", "high", "xhigh", "max")),
         ("anthropic", "claude-mythos-1", ("low", "medium", "high", "xhigh", "max")),
         ("anthropic", "claude-sonnet-4-5", EFFORT_LEVELS),
-        # Gemini
-        ("google", "gemini-3-pro", ("off", "low", "medium", "high")),
+        # Gemini 3.x+: thinking cannot be disabled (min budget 128, so no
+        # "off"; the clamp lifts it to low) and the serving registries
+        # validate levels strictly (hard 400, never a clamp): pro ids accept
+        # low/high ONLY, the flash lineage also accepts medium. Covers both
+        # the gemini-cli -preview ids and the antigravity -high/-low ids,
+        # on either the google or the CLIProxy openai provider path.
+        ("google", "gemini-3-pro", ("off", "low", "high")),
+        ("google", "gemini-3.1-pro-preview", ("off", "low", "high")),
+        ("openai", "gemini-3-pro-high", ("off", "low", "high")),
+        ("openai", "gemini-3-flash-preview", ("off", "low", "medium", "high")),
+        ("openai", "gemini-3.5-flash", ("off", "low", "medium", "high")),
+        # Neither pro nor flash: strictest (pro-shaped) set, mirrored by the
+        # wire mapping, because a fallback candidate can carry an unclamped
+        # effort onto an unknown 3.x id.
+        ("openai", "gemini-3-deepthink", ("off", "low", "high")),
         ("google", "gemini-2.5-pro", EFFORT_LEVELS),
+        ("openai", "gemini-2.5-flash", EFFORT_LEVELS),
         # xAI
         ("xai", "grok-4", ("off",)),
         ("xai", "grok-4-fast", ("off",)),
@@ -259,6 +273,11 @@ def test_max_reasoning_effort(provider, model, expected):
         ("openai", "o3-mini", "off", "low"),
         ("openai", "o3", "off", "low"),
         ("ollama", "gpt-oss:20b", "max", "high"),
+        # Gemini 3.x pro: medium is a mid-ladder gap (low/high only) and
+        # clamps UP; "off" is supported (it wires the explicit "none").
+        ("openai", "gemini-3-pro-preview", "medium", "high"),
+        ("openai", "gemini-3-pro-high", "off", "off"),
+        ("openai", "gemini-3.5-flash", "max", "high"),
         # grok-4 lineage accepts no effort at all.
         ("xai", "grok-4-fast", "medium", "off"),
         ("xai", "grok-4.3", "max", "high"),
@@ -305,6 +324,28 @@ def test_clamp_reasoning_effort(provider, model, requested, expected):
         ("gpt-5.5-pro", "low", "medium"),
         ("gpt-5.5-pro", "high", "high"),
         ("gpt-5.5-pro", "max", "xhigh"),
+        # Gemini ids reach this path via CLIProxy's gemini-cli/antigravity
+        # channels: unsupported levels hard-400 upstream (never a clamp),
+        # and omitting the parameter does NOT disable thinking (the model
+        # thinks invisibly), so "off" sends the explicit "none".
+        ("gemini-3-pro-preview", "medium", "high"),
+        ("gemini-3-pro-high", "xhigh", "high"),
+        ("gemini-3-pro-high", "low", "low"),
+        ("gemini-3.1-pro-preview", "off", "none"),
+        ("gemini-3.5-flash", "medium", "medium"),
+        ("gemini-3.5-flash", "max", "high"),
+        ("gemini-2.5-flash", "off", "none"),
+        ("gemini-2.5-pro", "xhigh", "high"),
+        # Neither pro nor flash mirrors the strict pro set.
+        ("gemini-3-deepthink", "medium", "high"),
+        # CLIProxy's grok channel rides the openai factory; the grok-4
+        # lineage 400s on ANY reasoning_effort value, so nothing is sent
+        # even for the extended_thinking-only "medium" default.
+        ("grok-4-fast", "medium", None),
+        ("grok-4-fast", "off", None),
+        # Non-reasoning OpenAI chat models reject the parameter outright.
+        ("gpt-4o", "medium", None),
+        ("gpt-4.1", "high", None),
     ],
 )
 def test_openai_reasoning_effort_wire_value(model, effort, expected):
@@ -386,6 +427,104 @@ def test_openai_chat_completions_off_translates_to_none():
     ])
 
     assert payload["reasoning_effort"] == "none"
+
+
+def test_openai_chat_completions_extended_thinking_alone_sends_effort():
+    """/think on writes only the extended_thinking flag; the chat-completions
+    branch must honor it like its Responses and compat siblings (before
+    2026-08-05 it silently sent nothing, so CLIProxy's chat_completions
+    targets never streamed thinking while the model thought and billed)."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        llm = create_llm(
+            _openai_config(
+                openai_api_mode="chat_completions",
+                extended_thinking=True,
+            )
+        )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert payload["reasoning_effort"] == "medium"
+
+
+def test_openai_chat_completions_gemini_think_on_defaults_inside_registry():
+    """The factory default for an unset effort must land inside the gemini
+    pro registry (low/high): the proxy hard-400s unsupported levels, so the
+    generic "medium" default would fail every turn."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        llm = create_llm(
+            _openai_config(
+                model="gemini-3-pro-high",
+                openai_api_mode="chat_completions",
+                extended_thinking=True,
+            )
+        )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert payload["reasoning_effort"] == "high"
+
+
+def test_openai_chat_completions_gemini_off_sends_none():
+    """Omitting the parameter does not disable Gemini thinking (the model
+    thinks invisibly and the tokens are billed); "off" must send the
+    proxy's explicit "none"."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        llm = create_llm(
+            _openai_config(
+                model="gemini-3-flash-preview",
+                openai_api_mode="chat_completions",
+                reasoning_effort="off",
+            )
+        )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert payload["reasoning_effort"] == "none"
+
+
+def test_openai_chat_completions_grok_extended_thinking_sends_nothing():
+    """CLIProxy's grok channel rides this factory, and the grok-4 lineage
+    400s on ANY reasoning_effort value: /think on must stay a silent no-op
+    there (regression guard for a review-caught bug that never shipped)."""
+    llm = create_llm(
+        _openai_config(
+            model="grok-4-fast",
+            openai_api_mode="chat_completions",
+            extended_thinking=True,
+        )
+    )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert "reasoning_effort" not in payload
 
 
 # ---------------------------------------------------------------------------

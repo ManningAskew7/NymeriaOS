@@ -1980,7 +1980,10 @@ def _openai_reasoning_effort_value(model: str, effort: str) -> str | None:
     omitted entirely (unknown models with effort "off").
     Unsupported values HARD-400 on OpenAI, so over-asks degrade to the
     model's ceiling here as a defensive fallback; the real per-model clamp
-    happens upstream in agent_llm_config.
+    happens upstream in agent_llm_config. Gemini ids reach this path via
+    CLIProxy's gemini-cli/antigravity channels, whose thinking-level
+    validation is also a hard 400 (never a clamp), so the gemini branch
+    mirrors _google_reasoning_efforts exactly.
     """
     model_text = (model or "").strip().lower()
     effort_text = (effort or "").strip().lower()
@@ -2011,6 +2014,49 @@ def _openai_reasoning_effort_value(model: str, effort: str) -> str | None:
                 return "medium"
             return effort_text or "high"
         return "high"
+
+    if _grok_lacks_reasoning_effort(model_text):
+        # CLIProxy's grok channel rides this factory too, and the
+        # grok-4/-fast/4.1 lineage 400s on ANY reasoning_effort value (the
+        # compat factory guards the same fact with the same predicate).
+        return None
+    if model_text.startswith(("gpt-4", "gpt-3.5", "chatgpt")):
+        # Non-reasoning OpenAI chat models reject the parameter outright
+        # (400 "Unrecognized request argument"); nothing can be sent at
+        # any effort, including the extended_thinking-only default.
+        return None
+    if "gemini" in model_text:
+        # CLIProxy's Gemini channels (gemini-cli previews, antigravity
+        # -high/-low ids). Two wire facts drive every line (surface audit
+        # 2026-08-05): unsupported thinking levels are a hard 400, and
+        # omitting the parameter does not disable thinking, it leaves the
+        # model thinking invisibly (includeThoughts defaults false, so the
+        # tokens are billed and never shown).
+        if effort_text == "off":
+            # The explicit disable value. ModeNone bypasses level
+            # validation entirely, so it is safe on every model: it truly
+            # disables thinking where allowed (2.5 flash family) and
+            # floors to the lowest LEVEL with includeThoughts false on
+            # 3.x (hidden, minimal, but not zero).
+            return "none"
+        if "gemini-3" in model_text or "gemini-4" in model_text:
+            if "flash" in model_text:
+                # Flash lineage tops out at high (no xhigh level exists).
+                if effort_text in {"xhigh", "max"}:
+                    return "high"
+                return effort_text or "medium"
+            # Pro, and any 3.x+ id that is neither pro nor flash, accepts
+            # low/high ONLY per the registry; medium and above land on
+            # high (mirrors clamp_reasoning_effort's gap rule).
+            if effort_text in {"low", "high"}:
+                return effort_text
+            if effort_text in {"medium", "xhigh", "max"}:
+                return "high"
+            return "low"
+        # 2.5 and earlier are budget-based upstream (every level converts to
+        # a budget) and need no arm of their own: only the "off" -> "none"
+        # line above is gemini-specific; the generic tail below already caps
+        # xhigh/max at "high" for non-gpt-5 ids.
 
     if effort_text == "off":
         if is_o_series:
@@ -2119,14 +2165,36 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
             "replaying checkpointed Responses items",
             config.model,
         )
-    # OpenAI chat-completions reasoning models use reasoning_effort via model_kwargs.
-    elif config.reasoning_effort is not None:
+    # OpenAI chat-completions reasoning models use reasoning_effort via
+    # model_kwargs. extended_thinking alone must count (same predicate as the
+    # Responses branch above and the compat factory): /think on writes only
+    # the flag, and before 2026-08-05 this branch ignored it, so thinking
+    # never streamed on CLIProxy's chat_completions targets (gemini-cli,
+    # antigravity, kimi, grok) despite the model still thinking and billing.
+    elif config.extended_thinking or config.reasoning_effort is not None:
         wire_effort = _openai_reasoning_effort_value(
             config.model,
-            config.reasoning_effort,
+            str(config.reasoning_effort or "") or "medium",
         )
         if wire_effort is not None:
-            kwargs["model_kwargs"] = {"reasoning_effort": wire_effort}
+            _set_model_kwarg(kwargs, "reasoning_effort", wire_effort)
+
+    if config.prompt_cache_key and not (
+        base_url
+        and is_local_llm_base_url(base_url)
+        and not looks_like_cliproxy_url(base_url)
+    ):
+        # Stable prefix-cache routing key, top-level in the payload for both
+        # api modes (plumbing verified against _get_request_payload). On the
+        # CLIProxy Codex path this is what pins the upstream session across
+        # turns; without it every request gets a fresh UUID and the prefix
+        # cache never hits (measured live: 0 vs 62% cached tokens). Local
+        # OpenAI-compatible servers are skipped (they gain nothing from a
+        # routing hint and strict ones 400 on unknown body fields), but a
+        # CLIProxy base is NOT "local" for this purpose even on localhost:
+        # the slim shape talks to the proxy at localhost:8318 and is the
+        # primary beneficiary of the key.
+        _set_model_kwarg(kwargs, "prompt_cache_key", config.prompt_cache_key)
 
     preserve_stream_usage = (
         not config.base_url
@@ -3257,19 +3325,33 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
         effort = (str(config.reasoning_effort or "") or "medium").strip().lower()
         if is_gemini_3_plus:
             # thinking_level tops out at "high"; 3.x cannot fully disable
-            # thinking, so "off" maps to the documented "minimal" floor.
-            # The 3.x pro line does not list "minimal" (3.1 Pro is
-            # low/medium/high), so its floor is "low".
-            floor = "low" if "pro" in model_name else "minimal"
-            level_map = {
-                "off": floor,
-                "low": "low",
-                "medium": "medium",
-                "high": "high",
-                "xhigh": "high",
-                "max": "high",
-            }
-            kwargs["thinking_level"] = level_map.get(effort, "medium")
+            # thinking, so "off" maps to the lowest listed level. The pro
+            # line accepts low/high ONLY (the CLIProxy channel registries,
+            # hermes-agent, and openclaw all clamp pro to low/high, 3-way
+            # agreement recorded 2026-08-05; level validation is a hard
+            # 400, never a clamp), so pro maps medium up to "high" the
+            # same way the openai-path mirror and clamp_reasoning_effort
+            # do. Flash keeps medium and floors at "minimal".
+            if "pro" in model_name:
+                level_map = {
+                    "off": "low",
+                    "low": "low",
+                    "medium": "high",
+                    "high": "high",
+                    "xhigh": "high",
+                    "max": "high",
+                }
+                kwargs["thinking_level"] = level_map.get(effort, "high")
+            else:
+                level_map = {
+                    "off": "minimal",
+                    "low": "low",
+                    "medium": "medium",
+                    "high": "high",
+                    "xhigh": "high",
+                    "max": "high",
+                }
+                kwargs["thinking_level"] = level_map.get(effort, "medium")
         elif effort == "off":
             # 2.5 flash/flash-lite disable with budget 0; 2.5 pro rejects 0
             # and uses 128 as its documented minimum.

@@ -66,7 +66,7 @@
       id: 'antigravity', label: 'Antigravity (Google account)', description: '',
       flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
       api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
-      default_model: 'gemini-3-pro-preview', tos_warning: '', auth_file_provider: 'antigravity',
+      default_model: 'gemini-3.6-flash-high', tos_warning: '', auth_file_provider: 'antigravity',
       supported: null, logged_in: null
     },
     {

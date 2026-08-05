@@ -87,6 +87,20 @@ def test_llm_config_resolution_uses_global_defaults_without_thread_config():
     assert config.fallbacks[0].model == "claude-haiku-4-5-20251001"
 
 
+def test_llm_config_carries_thread_scoped_prompt_cache_key():
+    """The stable cache-routing key derives from the thread id: stateless
+    full-history replay only hits upstream prefix caches when the same key
+    rides every request of a conversation (CLIProxy's Codex path otherwise
+    mints a fresh session UUID per request). No thread id, no key."""
+    agent = _make_agent()
+
+    config = agent._get_llm_config_for_thread("thread-1")
+    assert config.prompt_cache_key == "nym-thread-1"
+
+    global_config = agent._get_llm_config_for_thread("")
+    assert global_config.prompt_cache_key is None
+
+
 def test_llm_config_resolution_preserves_falsey_thread_overrides():
     agent = _make_agent(
         ThreadLLMConfig(
