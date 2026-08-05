@@ -28,7 +28,7 @@ from ..config import get_settings
 from .command_executor_aliases import AliasCommandsMixin
 from .command_executor_cliproxy import CliproxyCommandsMixin
 from .command_executor_context import ContextCommandsMixin
-from .command_executor_llm import LLMCommandsMixin
+from .command_executor_llm import LLMCommandsMixin, model_select_form
 from .command_executor_provider_setup import ProviderSetupCommandsMixin
 from .command_executor_threads import ThreadCommandsMixin
 from .command_forms import (
@@ -38,11 +38,7 @@ from .command_forms import (
     command_error,
     command_info,
     command_success,
-    form_payload,
-    form_tab,
-    radio_field,
     render_outcome,
-    search_field,
 )
 from .command_form_generation import generate_param_form
 from .command_naming import validate_command_naming
@@ -5505,6 +5501,17 @@ class _CommandExecutor(
                     " Use --force to set it anyway."
                 )
 
+        # B14: a claude-* id on an openai-routed CLIProxy base URL serves
+        # but silently loses the Claude OAuth treatment; say so with the
+        # success rather than letting identity drift be the first evidence.
+        # The note keys on the scope actually WRITTEN (bare scope = global,
+        # matching the branch below).
+        drift_note = ""
+        if name.casefold().startswith("claude"):
+            drift_note = await self._claude_on_openai_cliproxy_note(
+                "thread" if scope == "thread" else "global"
+            )
+
         if scope == "thread":
             thread_error = self._require_thread()
             if thread_error:
@@ -5513,14 +5520,14 @@ class _CommandExecutor(
                 self.thread_id, user_id=self.user_id, llm_config={"model": name}
             )
             return command_success(
-                f"Model for this thread set to {name}.",
+                f"Model for this thread set to {name}.{drift_note}",
                 data=command_data(state={"model": name}),
             )
         result = await self.api.update_settings(user_id=self.user_id, llm_model=name)
         msg = f"Global model set to {name}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return command_success(msg)
+        return command_success(msg + drift_note)
 
     async def _available_model_ids(self) -> list[str]:
         """Model ids the active provider currently lists, or [] when unknown.
@@ -5560,20 +5567,8 @@ class _CommandExecutor(
         if not options:
             return None
         scope = scope or ("thread" if self.thread_id else "global")
-        return form_payload(
-            "Select model",
-            [
-                form_tab(
-                    "Models",
-                    [
-                        search_field("filter", placeholder="Filter models…"),
-                        radio_field("model", options),
-                    ],
-                )
-            ],
-            submit_command=f"model {{model}} {scope}",
-            footer_hint="Enter apply · Esc cancel",
-        )
+        # One payload builder shared with the /provider switch handoff.
+        return model_select_form(options, scope)
 
     async def _cmd_model_list(self, bound: BoundArgs) -> str:
         models = await self.api.list_available_models()
@@ -5584,12 +5579,37 @@ class _CommandExecutor(
         lines = [
             f"Available Models: {len(models)} from {settings.get('llm_provider', '?')}"
         ]
-        for m in models[:25]:
+
+        def _row(m: dict) -> str:
             model_id = m.get("id") or m.get("name", "?")
             ctx_len = m.get("context_length") or m.get("context_window")
             ctx_str = f" | {fmt_tokens(ctx_len)} ctx" if ctx_len else ""
             marker = " (current)" if model_id == current else ""
-            lines.append(f"- {model_id}{marker}{ctx_str}")
+            return f"- {model_id}{marker}{ctx_str}"
+
+        shown = models[:25]
+        # Group by source only against a CLIProxy pool (it spans every
+        # logged-in subscription, and the flat view is how Claude ids read
+        # as a bug on a Gemini route) and only when the DISPLAYED rows span
+        # more than one source. Direct providers carry owned_by too
+        # (OpenAI: system/openai/openai-internal) and there it is noise,
+        # so the gate is the runtime's own URL predicate. Headings and
+        # rows stay at column 0: the outcome renderer dedents the first
+        # body line, so indented group blocks would render lopsided.
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        base_url = str(settings.get("llm_base_url") or "")
+        via_cliproxy = bool(base_url) and looks_like_cliproxy_url(base_url)
+        owners = {str(m.get("owned_by") or "") for m in shown}
+        if via_cliproxy and len({owner for owner in owners if owner}) > 1:
+            groups: dict[str, list[dict]] = {}
+            for m in shown:
+                groups.setdefault(str(m.get("owned_by") or ""), []).append(m)
+            for owner in sorted(groups, key=lambda o: (o == "", o)):
+                lines.append(f"[{owner or 'unattributed'}]")
+                lines.extend(_row(m) for m in groups[owner])
+        else:
+            lines.extend(_row(m) for m in shown)
         if len(models) > 25:
             lines.append(f"(showing 25 of {len(models)})")
         return "\n".join(lines)

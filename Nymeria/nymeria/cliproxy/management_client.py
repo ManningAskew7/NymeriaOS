@@ -174,6 +174,32 @@ def active_login_entry(
     return None
 
 
+def present_login_entry(
+    files: Sequence[dict[str, Any]], spec: CLIProxyProviderSpec
+) -> Optional[dict[str, Any]]:
+    """The first enabled entry for this provider, INCLUDING one the proxy
+    reports unavailable (error backoff); an available entry wins when both
+    exist. None only when no enabled entry matches at all.
+
+    Presence and availability are different questions. The listing's
+    entry-level `unavailable` aggregates per-model error states, and those
+    states exist only for models that have errored, so ONE suspended model
+    can flag a whole login unavailable (observed 2026-08-05: a single
+    upstream not_found on a Gemini model read a valid login as logged out
+    and the target step offered only a fresh OAuth, which a re-login would
+    not even fix). Use this where the question is "does a login exist"
+    (the target step, badges); keep `active_login_entry` where the login
+    must actually be SERVING (the confirm ladder, the headless preflight).
+    """
+    available = active_login_entry(files, spec)
+    if available is not None:
+        return available
+    for entry in files:
+        if auth_entry_matches_spec(entry, spec) and not entry.get("disabled"):
+            return entry
+    return None
+
+
 def login_account_label(entry: dict[str, Any]) -> str:
     """Best-effort account identity from an auth-file entry ("" when unknown)."""
     return str(entry.get("account") or entry.get("email") or "")

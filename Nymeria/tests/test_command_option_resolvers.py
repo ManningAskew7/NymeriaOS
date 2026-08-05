@@ -97,7 +97,9 @@ class _ModelsApi:
     def __init__(self) -> None:
         self.thread_config_reads: list[str] = []
 
-    async def list_available_models(self) -> list[dict[str, Any]]:
+    async def list_available_models(
+        self, provider: str | None = None, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         return [
             {"id": "gpt-test", "context_length": 128000},
             {"id": "gpt-next"},
@@ -134,10 +136,60 @@ def test_resolve_models_explicit_current_skips_the_lookup() -> None:
 
 def test_resolve_models_degrades_to_empty_on_listing_fault() -> None:
     class _Broken:
-        async def list_available_models(self) -> list[dict[str, Any]]:
+        async def list_available_models(
+            self, provider: str | None = None, user_id: str | None = None
+        ) -> list[dict[str, Any]]:
             raise RuntimeError("provider has no listing endpoint")
 
     assert run(resolve_models(_executor(_Broken()))) == []
+
+
+class _AttributedApi:
+    """A mixed-owner listing behind a configurable base URL."""
+
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
+
+    async def list_available_models(
+        self, provider: str | None = None, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        return [
+            {"id": "gemini-2.5-pro", "owned_by": "google", "context_length": 1048576},
+            {"id": "claude-opus-4-7", "owned_by": "anthropic"},
+            {"id": "gpt-test", "context_length": 128000},
+        ]
+
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        return {"llm_base_url": self._base_url}
+
+
+def test_resolve_models_meta_carries_source_attribution_on_cliproxy() -> None:
+    """owned_by leads the meta against a CLIProxy pool (it spans every
+    logged-in subscription; unattributed rows are how Claude ids read as
+    a bug on a Gemini route). Entries without owned_by keep the ctx-only
+    meta."""
+    api = _AttributedApi("http://localhost:8318/v1")
+
+    options = run(resolve_models(_executor(api), current=""))
+
+    metas = {o["id"]: o["meta"] for o in options}
+    assert metas["gemini-2.5-pro"] == "google · 1.0M ctx"
+    assert metas["claude-opus-4-7"] == "anthropic"
+    assert metas["gpt-test"] == "128.0k ctx"
+
+
+def test_resolve_models_meta_skips_attribution_off_cliproxy() -> None:
+    """Direct providers carry owned_by too (OpenAI: system / openai /
+    openai-internal) and there it is noise: attribution keys on the
+    runtime's CLIProxy URL predicate."""
+    api = _AttributedApi("https://api.example.com/v1")
+
+    options = run(resolve_models(_executor(api), current=""))
+
+    metas = {o["id"]: o["meta"] for o in options}
+    assert metas["gemini-2.5-pro"] == "1.0M ctx"
+    assert metas["claude-opus-4-7"] == ""
+    assert metas["gpt-test"] == "128.0k ctx"
 
 
 # ── resolve_providers ────────────────────────────────────────────────────────

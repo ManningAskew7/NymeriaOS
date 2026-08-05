@@ -34,6 +34,12 @@ class CLIProxyProviderInfo(BaseModel):
     # Live state (None when the proxy is unreachable / not yet probed).
     supported: Optional[bool] = None
     logged_in: Optional[bool] = None
+    # True when an enabled login EXISTS but the proxy currently reports it
+    # unavailable (error backoff), in which case logged_in stays False
+    # (its meaning, "an active entry serves", is unchanged for existing
+    # clients). Presence-vs-availability rationale: management_client.
+    # present_login_entry.
+    unavailable: Optional[bool] = None
 
 
 class CLIProxyStatusResponse(BaseModel):

@@ -149,6 +149,10 @@ class PendingCliproxyLogin:
     # not need a per-render auth-file round trip.
     logged_in: bool = False
     account: str = ""
+    # Whether the login's listing entry carried the proxy's transient
+    # error-backoff flag when last probed; rides the record so the Apply
+    # review can restate it without a per-render auth-file round trip.
+    backing_off: bool = False
     model: str | None = None
     model_custom: bool = False
     model_options: list[dict[str, object]] | None = None

@@ -26,6 +26,7 @@ from nymeria.cliproxy.management_client import (
     CLIProxyUnreachable,
     CLIProxyUnsupported,
     active_login_entry,
+    present_login_entry,
     auth_entry_matches_spec,
     confirm_login_landed,
 )
@@ -213,6 +214,22 @@ def test_auth_entry_match_falls_back_to_type_when_provider_is_missing():
     # binary that lists without provider) must still resolve.
     entry = _entry(name="gemini-a.json", type="gemini")
     assert active_login_entry([entry], GEMINI_SPEC) is entry
+
+
+def test_present_login_entry_keeps_backoff_and_prefers_available():
+    """Presence vs availability (dogfood 2026-08-05): an error-backoff
+    entry is still a login; an available sibling wins when both exist;
+    disabled stays a hard no for both predicates."""
+    backoff = _entry(
+        name="gemini-a.json", provider="gemini-cli", unavailable=True
+    )
+    available = _entry(name="gemini-b.json", provider="gemini")
+    assert present_login_entry([backoff, available], GEMINI_SPEC) is available
+    assert present_login_entry([backoff], GEMINI_SPEC) is backoff
+    # The strict predicate keeps refusing the backoff entry.
+    assert active_login_entry([backoff], GEMINI_SPEC) is None
+    disabled = _entry(name="gemini-c.json", provider="gemini", disabled=True)
+    assert present_login_entry([disabled], GEMINI_SPEC) is None
 
 
 def test_auth_entry_match_never_crosses_providers():

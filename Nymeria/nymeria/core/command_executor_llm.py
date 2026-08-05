@@ -78,6 +78,18 @@ _TIER_ORDER = ("native", "gateway", "unverified")
 # Width of a provider's note preview in the /provider list table.
 _NOTE_PREVIEW_CHARS = 80
 
+# Claude models DO serve through the proxy's OpenAI-compatible path (the
+# proxy translates), but only the anthropic provider path carries the
+# CLIProxy treatment (cloak-skip UA + billing fingerprint; see
+# docs/private/cliproxy.md), so the working-but-degraded combination gets a
+# warning wherever it can be chosen.
+CLAUDE_VIA_OPENAI_ROUTE_WARNING = (
+    "a Claude model on the OpenAI-compatible CLIProxy route skips the"
+    " Claude OAuth treatment (identity cloak bypass and billing"
+    " fingerprint), so identity and subscription tier can drift. Prefer"
+    " the claude target: /provider cliproxy claude."
+)
+
 _THINK_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # The whole /think value space: the registry declares this as the command's
 # choices, so the dispatcher rejects exactly what the handler cannot act on
@@ -93,6 +105,29 @@ def custom_model_tab(placeholder: str, submit_command: str) -> dict[str, Any]:
         "Model",
         [text_field("model", label="Model id", placeholder=placeholder)],
         submit_command=submit_command,
+    )
+
+
+def model_select_form(
+    options: list[dict[str, Any]], scope: str
+) -> dict[str, Any]:
+    """The standalone model-picker payload, shared by bare ``/model`` and
+    the ``/provider switch`` handoff (one builder so the two cannot drift;
+    the chained steps share their tail via ``model_pick_tab`` below)."""
+
+    return form_payload(
+        "Select model",
+        [
+            form_tab(
+                "Models",
+                [
+                    search_field("filter", placeholder="Filter models…"),
+                    radio_field("model", options),
+                ],
+            )
+        ],
+        submit_command=f"model {{model}} {scope}",
+        footer_hint="Enter apply · Esc cancel",
     )
 
 
@@ -1512,12 +1547,21 @@ class LLMCommandsMixin:
             if model:
                 suffix += (
                     f" The thread's effective model ({model}) stays"
-                    " unchanged; update it if it belongs to the previous"
-                    " provider (/model <name> thread)."
+                    " unchanged."
                 )
+            # B15/B16: the switch is half a route; hand off to the model
+            # pick instead of a hedged "update it if" aside.
+            suffix += (
+                " Next: pick this thread's model: /model <name> thread"
+                " (/model to browse)."
+            )
+            form = await self._switch_model_handoff_form(
+                spec, scope="thread", current=model
+            )
             return command_success(
                 "Provider for this thread set to "
-                f"{self._provider_label(provider)}.{suffix}"
+                f"{self._provider_label(provider)}.{suffix}",
+                data=command_data(form=form) if form else None,
             )
 
         # Global scope: the settings write is the admin-only surface. The
@@ -1551,17 +1595,47 @@ class LLMCommandsMixin:
                 )
                 if part
             )
+            suffix += f" The configured {kept} stays unchanged."
+        # B15/B16: the switch is half a route; hand off to the model pick
+        # instead of a hedged "update it if" aside.
+        suffix += (
+            " Next: pick the model: /model <name> global (/model to"
+            " browse)."
+        )
+        if base_url:
             suffix += (
-                f" The configured {kept} stays unchanged; update it if it"
-                " belongs to the previous provider (/model, /env set"
-                " llm_base_url)."
+                " If the base URL belongs to the previous provider:"
+                " /env set llm_base_url <url>."
             )
         if result.get("restart_required"):
             suffix += " Restart required."
+        form = await self._switch_model_handoff_form(
+            spec, scope="global", current=model
+        )
         return command_success(
             f"Switched provider to {self._provider_label(provider)}."
-            f"{suffix}"
+            f"{suffix}",
+            data=command_data(form=form) if form else None,
         )
+
+    async def _switch_model_handoff_form(
+        self, spec: "LLMProviderSpec", *, scope: str, current: str
+    ) -> dict[str, Any] | None:
+        """The B16 handoff picker attached to a switch success, or None.
+
+        Options are resolved for the provider JUST SWITCHED TO, passed
+        explicitly: after a thread-scope switch the settings default would
+        list the previous provider's models. Best effort like every model
+        picker: no listing, no form.
+        """
+        from .command_option_resolvers import resolve_models
+
+        options = await resolve_models(
+            cast("_CommandExecutor", self), current=current, provider=spec.id
+        )
+        if not options:
+            return None
+        return model_select_form(options, scope)
 
     async def _switch_credential_suffix(self, spec: "LLMProviderSpec") -> str:
         """Credential feedback for a switch, shared by both scopes.
@@ -1610,7 +1684,76 @@ class LLMCommandsMixin:
         if bool(result.get("ok", False)):
             return command_success(f"{label} provider test succeeded.")
         message = str(result.get("message", "") or "").strip() or "unknown error"
+        hint = self._cliproxy_failure_hint(
+            str(request.get("llm_base_url") or ""), message
+        )
+        if hint:
+            message += f" {hint}"
         return command_error(f"{label} provider test failed: {message}")
+
+    async def _claude_on_openai_cliproxy_note(self, scope: str) -> str:
+        """The B14 drift note for /model, or "" when not applicable.
+
+        Applicable when the EFFECTIVE route for the written scope is the
+        openai provider over a CLIProxy-shaped base URL (thread overrides
+        win for scope "thread"). Best effort: any lookup fault returns ""
+        rather than failing a successful model write.
+        """
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        try:
+            settings = await self.api.get_settings()
+        except Exception:  # noqa: BLE001 - the note degrades, never fails.
+            return ""
+        provider = str(settings.get("llm_provider") or "")
+        base_url = str(settings.get("llm_base_url") or "")
+        if scope == "thread" and self.thread_id:
+            try:
+                tc = await self.api.get_thread_config(self.thread_id)
+            except Exception:  # noqa: BLE001 - same degrade stance.
+                tc = None
+            llm = (tc or {}).get("llm_config") or {}
+            if isinstance(llm, Mapping):
+                provider = str(llm.get("provider") or "") or provider
+                base_url = str(llm.get("base_url") or "") or base_url
+        if self._canonical_provider(provider) != "openai":
+            return ""
+        if not base_url or not looks_like_cliproxy_url(base_url):
+            return ""
+        return f" Note: {CLAUDE_VIA_OPENAI_ROUTE_WARNING}"
+
+    @staticmethod
+    def _cliproxy_failure_hint(base_url: str, message: str) -> str:
+        """Plain-language line for the two CLIProxy model-failure shapes.
+
+        Both raw messages are misread in practice (dogfood 2026-08-05):
+        the proxy's 502 "unknown provider for model X" reads as a Nymeria
+        config bug, and the upstream's 404 "Requested entity was not
+        found" says nothing actionable. Keyed on the SAME predicate the
+        runtime uses to decide the route is a CLIProxy
+        (looks_like_cliproxy_url), so a direct-API failure is never
+        editorialized.
+        """
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        if not base_url or not looks_like_cliproxy_url(base_url):
+            return ""
+        lowered = message.casefold()
+        if "unknown provider for model" in lowered:
+            return (
+                "This means no logged-in subscription on the proxy has"
+                " registered that model id (its registry is exact-match,"
+                " no prefixes). Pick from the live list: /provider cliproxy"
+                " <target>, or /model."
+            )
+        if "requested entity was not found" in lowered:
+            return (
+                "The subscription's upstream does not serve this model id"
+                " for your account, even though the proxy registered it."
+                " Pick a different model: /provider cliproxy <target>, or"
+                " /model."
+            )
+        return ""
 
     _RP_STATUS_TEXT = {
         "active": "active (confirmed on the last turn)",

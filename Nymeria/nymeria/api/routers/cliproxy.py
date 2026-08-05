@@ -36,6 +36,7 @@ from ...cliproxy.management_client import (
     configured_gatekeeper_keys,
     confirm_login_landed,
     import_auth_file,
+    present_login_entry,
     resolve_or_mint_gatekeeper,
 )
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
@@ -71,6 +72,7 @@ def _provider_info(
     *,
     supported: Optional[bool] = None,
     logged_in: Optional[bool] = None,
+    unavailable: Optional[bool] = None,
 ) -> CLIProxyProviderInfo:
     return CLIProxyProviderInfo(
         id=spec.id,
@@ -87,6 +89,7 @@ def _provider_info(
         auth_file_providers=list(spec.auth_file_providers),
         supported=supported,
         logged_in=logged_in,
+        unavailable=unavailable,
     )
 
 
@@ -376,8 +379,11 @@ async def list_cliproxy_models(
     """Live model list through the proxy's data plane.
 
     The proxy's OpenAI-compatible /v1/models spans every logged-in
-    subscription (there is no per-provider attribution), so the list is
-    unfiltered. The gatekeeper is READ through the management API (the
+    subscription in one flat pool, so the list is unfiltered here; each
+    entry's ``owned_by`` (anthropic/openai/google on v7.1.61) attributes it
+    to its source, and consumers group or partition on that (the chain's
+    model step via the catalog's ``model_owner``, the /model picker meta).
+    The gatekeeper is READ through the management API (the
     api-keys knob is masked on REST reads, so no frontend can resolve one
     itself); a key-less proxy has an OPEN data plane, so the request then
     goes out unauthenticated. Never mints: a read must not flip the proxy
@@ -491,22 +497,23 @@ def create_cliproxy_router(
                 detail=str(error),
                 providers=[_provider_info(s) for s in list_cliproxy_providers()],
             )
-        active_entries = [
-            entry
-            for entry in auth_files
-            if not entry.get("disabled") and not entry.get("unavailable")
-        ]
-        providers = [
-            _provider_info(
-                spec,
-                supported=probed.get(spec.id),
-                logged_in=any(
-                    auth_entry_matches_spec(entry, spec)
-                    for entry in active_entries
-                ),
+        # Enabled-but-unavailable (the proxy's error backoff) is reported
+        # as its own field, ADDITIVELY: logged_in keeps meaning "an active
+        # entry serves", so existing clients read exactly what they always
+        # did. One presence predicate for REST and the command chain:
+        # management_client.present_login_entry (available sibling wins).
+        providers = []
+        for spec in list_cliproxy_providers():
+            entry = present_login_entry(auth_files, spec)
+            logged_in = entry is not None and not entry.get("unavailable")
+            providers.append(
+                _provider_info(
+                    spec,
+                    supported=probed.get(spec.id),
+                    logged_in=logged_in,
+                    unavailable=entry is not None and not logged_in,
+                )
             )
-            for spec in list_cliproxy_providers()
-        ]
         return CLIProxyStatusResponse(
             configured=True,
             reachable=True,

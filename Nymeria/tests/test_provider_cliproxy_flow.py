@@ -914,6 +914,100 @@ def test_check_before_login_is_refused() -> None:
     assert "Start the login first" in result.markdown
 
 
+def test_target_backoff_login_still_offers_use() -> None:
+    """The dogfood repro (2026-08-05): one upstream not_found suspended the
+    only tracked model state, the proxy flagged the whole Gemini login
+    unavailable, and the target step then offered ONLY a fresh OAuth. A
+    backoff is not a logged-out state (and a re-login would not clear a
+    model suspension), so presence keeps use/relogin with an honest note."""
+    api = FakeCliproxyApi()
+    api.auth_files = [
+        {
+            "provider": "gemini-cli",
+            "account": "alice@example.com",
+            "disabled": False,
+            "unavailable": True,
+        }
+    ]
+
+    result = _run(api, "/provider cliproxy gemini-cli")
+
+    assert "alice@example.com" in result.markdown
+    assert "temporarily unavailable" in result.markdown
+    tab = _active_tab(_form(result))
+    option_ids = [o["id"] for o in tab["fields"][0]["options"]]
+    assert option_ids == ["use", "relogin", "cancel"]
+
+
+def test_typed_use_accepts_a_backoff_login() -> None:
+    """The typed-reachable `use` re-verify shares the target step's
+    presence stance: a login that appeared (or recovered) as backoff-only
+    after the target step rendered still proceeds to the model step."""
+    api = FakeCliproxyApi()
+    _run(api, "/provider cliproxy gemini-cli")  # no auth files: logged out
+    api.auth_files = [
+        {
+            "provider": "gemini-cli",
+            "account": "alice@example.com",
+            "disabled": False,
+            "unavailable": True,
+        }
+    ]
+
+    result = _run(api, "/provider cliproxy use")
+
+    assert "Not logged in" not in result.markdown
+    tab = _active_tab(_form(result))
+    assert tab["label"] == "Model"
+
+
+def test_typed_use_still_refuses_with_no_login() -> None:
+    api = FakeCliproxyApi()
+    _run(api, "/provider cliproxy gemini-cli")
+
+    result = _run(api, "/provider cliproxy use")
+
+    assert result.success is False
+    assert "Not logged in" in result.markdown
+
+
+def test_target_disabled_login_reads_as_logged_out() -> None:
+    """disabled is an operator decision, not a transient state: it keeps
+    today's not-logged-in rendering."""
+    api = FakeCliproxyApi()
+    api.auth_files = [
+        {
+            "provider": "claude",
+            "account": "alice@example.com",
+            "disabled": True,
+            "unavailable": False,
+        }
+    ]
+
+    result = _run(api, "/provider cliproxy claude")
+
+    tab = _active_tab(_form(result))
+    option_ids = [o["id"] for o in tab["fields"][0]["options"]]
+    assert option_ids == ["login", "cancel"]
+    assert "temporarily unavailable" not in result.markdown
+
+
+def test_overview_badge_marks_backoff() -> None:
+    api = FakeCliproxyApi()
+    api.auth_files = [
+        {
+            "provider": "claude",
+            "account": "alice@example.com",
+            "disabled": False,
+            "unavailable": True,
+        }
+    ]
+
+    result = _run(api, "/provider cliproxy")
+
+    assert "[logged in: alice@example.com, backing off]" in result.markdown
+
+
 # ── model step ──────────────────────────────────────────────────────────────
 
 
@@ -928,7 +1022,9 @@ def test_use_existing_login_lists_models_and_caches() -> None:
 
     result = _run(api, "/provider cliproxy use")
 
-    assert "2 models listed" in result.markdown
+    # A mixed pool partitions for a known-owner target (B1); the claude
+    # entry leads and the note names the split (singular noun for one).
+    assert "1 Claude (Max/Pro subscription) model listed first" in result.markdown
     tab = _active_tab(_form(result))
     option_ids = [o["id"] for o in tab["fields"][1]["options"]]
     assert option_ids == ["claude-opus-4-7", "gpt-5.5", "custom"]
@@ -970,6 +1066,201 @@ def test_model_custom_switches_to_text_entry() -> None:
     assert tab["label"] == "Model"
     assert tab["fields"][0]["kind"] == "text"
     assert tab["submit"] == {"command": "provider cliproxy model {model}"}
+
+
+LOGGED_IN_GEMINI = {
+    "provider": "gemini-cli",
+    "account": "alice@example.com",
+    "disabled": False,
+    "unavailable": False,
+}
+
+MIXED_POOL_MODELS = [
+    {"id": "claude-opus-4-7", "owned_by": "anthropic"},
+    {"id": "gemini-2.5-pro", "owned_by": "google"},
+    {"id": "gpt-5.5", "owned_by": "openai"},
+    {"id": "gemini-3-pro-preview", "owned_by": "google"},
+]
+
+
+def test_model_step_lists_target_models_first() -> None:
+    """The proxy pool spans every logged-in subscription; the target's own
+    models (matched on owned_by) come first, and the note names the split
+    (dogfood 2026-08-05: the flat view led to a guessed, unserved id)."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_GEMINI)]
+    api.models = [dict(entry) for entry in MIXED_POOL_MODELS]
+    _run(api, "/provider cliproxy gemini-cli")
+
+    result = _run(api, "/provider cliproxy use")
+
+    tab = _active_tab(_form(result))
+    option_ids = [o["id"] for o in tab["fields"][1]["options"]]
+    assert option_ids == [
+        "gemini-2.5-pro",
+        "gemini-3-pro-preview",
+        "claude-opus-4-7",
+        "gpt-5.5",
+        "custom",
+    ]
+    assert (
+        "2 Gemini CLI (Google account) models listed first" in result.markdown
+    )
+    assert "2 from other logged-in subscriptions below" in result.markdown
+
+
+def test_model_step_unmapped_owner_keeps_flat_list() -> None:
+    """A target with no verified model_owner (kimi) never partitions: a
+    guessed mapping could hide pickable models, so the flat all-providers
+    view stands."""
+    api = FakeCliproxyApi()
+    api.auth_files = [
+        {
+            "provider": "kimi",
+            "account": "alice@example.com",
+            "disabled": False,
+            "unavailable": False,
+        }
+    ]
+    api.models = [dict(entry) for entry in MIXED_POOL_MODELS]
+    _run(api, "/provider cliproxy kimi")
+
+    result = _run(api, "/provider cliproxy use")
+
+    tab = _active_tab(_form(result))
+    option_ids = [o["id"] for o in tab["fields"][1]["options"]]
+    # Original proxy order, no regrouping; preselect (spec default) is
+    # inserted at the front because the pool does not list it.
+    assert option_ids == [
+        "kimi-k2.5",
+        "claude-opus-4-7",
+        "gemini-2.5-pro",
+        "gpt-5.5",
+        "gemini-3-pro-preview",
+        "custom",
+    ]
+    assert "all logged-in providers" in result.markdown
+
+
+def test_model_step_zero_owner_matches_degrades_to_flat_list() -> None:
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_GEMINI)]
+    api.models = [{"id": "claude-opus-4-7", "owned_by": "anthropic"}]
+    _run(api, "/provider cliproxy gemini-cli")
+
+    result = _run(api, "/provider cliproxy use")
+
+    tab = _active_tab(_form(result))
+    option_ids = [o["id"] for o in tab["fields"][1]["options"]]
+    assert option_ids == ["gemini-3-pro-preview", "claude-opus-4-7", "custom"]
+    assert "all logged-in providers" in result.markdown
+    assert "listed first" not in result.markdown
+
+
+def test_apply_review_warns_on_off_list_model() -> None:
+    """A custom-typed id absent from the proxy pool warns at the review
+    step (the proxy's registry is exact-match; an unlisted id fails with
+    its raw 'unknown provider for model'), and never blocks apply."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_GEMINI)]
+    api.models = [dict(entry) for entry in MIXED_POOL_MODELS]
+    _run(api, "/provider cliproxy gemini-cli")
+    _run(api, "/provider cliproxy use")
+    _run(api, "/provider cliproxy model custom")
+
+    result = _run(api, "/provider cliproxy model gemini-3.5-flash")
+
+    assert (
+        "gemini-3.5-flash is not in the proxy's current model list"
+        in result.markdown
+    )
+    applied = _run(api, "/provider cliproxy apply")
+    assert applied.success is True
+    assert _calls(api, "apply_route") == [
+        {"provider": "gemini-cli", "model": "gemini-3.5-flash", "scope": "global"}
+    ]
+
+
+def test_apply_review_listed_model_has_no_warning() -> None:
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_GEMINI)]
+    api.models = [dict(entry) for entry in MIXED_POOL_MODELS]
+    _run(api, "/provider cliproxy gemini-cli")
+    _run(api, "/provider cliproxy use")
+
+    result = _run(api, "/provider cliproxy model gemini-3-pro-preview")
+
+    assert "not in the proxy's current model list" not in result.markdown
+
+
+def test_apply_review_warns_on_claude_model_via_openai_route() -> None:
+    """A claude-* model on an openai-routed target serves, but without the
+    anthropic-path CLIProxy treatment (cloak skip + billing fingerprint);
+    the review names the drift and the better target."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_GEMINI)]
+    api.models = [dict(entry) for entry in MIXED_POOL_MODELS]
+    _run(api, "/provider cliproxy gemini-cli")
+    _run(api, "/provider cliproxy use")
+
+    result = _run(api, "/provider cliproxy model claude-opus-4-7")
+
+    assert "skips the" in result.markdown
+    assert "/provider cliproxy claude" in result.markdown
+
+
+def test_apply_review_claude_model_on_claude_target_has_no_drift_warning() -> None:
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [{"id": "claude-opus-4-7", "owned_by": "anthropic"}]
+    _run(api, "/provider cliproxy claude")
+    _run(api, "/provider cliproxy use")
+
+    result = _run(api, "/provider cliproxy model claude-opus-4-7")
+
+    assert "skips the" not in result.markdown
+
+
+def test_apply_review_restates_a_backoff_login() -> None:
+    """The target step's backoff honesty carries to the point of
+    commitment: the Apply review reminds that the route may not serve
+    until the proxy's error backoff clears."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_GEMINI) | {"unavailable": True}]
+    api.models = [dict(entry) for entry in MIXED_POOL_MODELS]
+    _run(api, "/provider cliproxy gemini-cli")
+    _run(api, "/provider cliproxy use")
+
+    result = _run(api, "/provider cliproxy model gemini-3-pro-preview")
+
+    assert "error backoff" in result.markdown
+    # An available login never carries the note.
+    api2 = FakeCliproxyApi()
+    api2.auth_files = [dict(LOGGED_IN_GEMINI)]
+    api2.models = [dict(entry) for entry in MIXED_POOL_MODELS]
+    _run(api2, "/provider cliproxy gemini-cli")
+    _run(api2, "/provider cliproxy use")
+    clean = _run(api2, "/provider cliproxy model gemini-3-pro-preview")
+    assert "error backoff" not in clean.markdown
+
+
+def test_apply_review_degraded_list_has_no_warning() -> None:
+    """No pool to check against means no warning: a degraded list must not
+    smear every custom id as suspect."""
+
+    class _BrokenModelsApi(FakeCliproxyApi):
+        async def cliproxy_models(self, *, user_id: str | None = None):
+            raise _http_error(502, "proxy offline")
+
+    api = _BrokenModelsApi()
+    api.auth_files = [dict(LOGGED_IN_GEMINI)]
+    _run(api, "/provider cliproxy gemini-cli")
+    _run(api, "/provider cliproxy use")
+    _run(api, "/provider cliproxy model custom")
+
+    result = _run(api, "/provider cliproxy model gemini-3.5-flash")
+
+    assert "not in the proxy's current model list" not in result.markdown
 
 
 # ── apply + cancel + store ──────────────────────────────────────────────────

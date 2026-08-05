@@ -30,7 +30,11 @@ if TYPE_CHECKING:
     from ..cliproxy.catalog import CLIProxyProviderSpec
     from .provider_setup import PendingCliproxyLogin
 
-from .command_executor_llm import custom_model_tab, model_pick_tab
+from .command_executor_llm import (
+    CLAUDE_VIA_OPENAI_ROUTE_WARNING,
+    custom_model_tab,
+    model_pick_tab,
+)
 from .command_forms import (
     CommandOutput,
     chain_form_output,
@@ -153,8 +157,8 @@ class CliproxyCommandsMixin:
         """The catalog overview with logged-in badges from the auth files."""
         from ..cliproxy.catalog import list_cliproxy_providers
         from ..cliproxy.management_client import (
-            active_login_entry,
             login_account_label,
+            present_login_entry,
         )
 
         url_set, key_set = await self._cliproxy_management_status()
@@ -173,11 +177,16 @@ class CliproxyCommandsMixin:
         for spec in list_cliproxy_providers():
             badge = ""
             if files is not None:
-                entry = active_login_entry(files, spec)
+                entry = present_login_entry(files, spec)
                 if entry is not None:
                     account = login_account_label(entry)
+                    qualifier = (
+                        ", backing off" if entry.get("unavailable") else ""
+                    )
                     badge = (
-                        f"  [logged in: {account}]" if account else "  [logged in]"
+                        f"  [logged in: {account}{qualifier}]"
+                        if account
+                        else f"  [logged in{qualifier}]"
                     )
             lines.append(f"  {spec.id:<12} {spec.label}{badge}")
         lines.append(
@@ -232,13 +241,14 @@ class CliproxyCommandsMixin:
     ) -> str | CommandOutput:
         """The target step: detail brief + login-state-aware action form."""
         from ..cliproxy.management_client import (
-            active_login_entry,
             login_account_label,
+            present_login_entry,
         )
         from . import provider_setup as setup_store
 
         account = ""
         logged_in = False
+        backing_off = False
         unconfigured = False
         state_note = ""
         try:
@@ -256,9 +266,13 @@ class CliproxyCommandsMixin:
                     + self._cliproxy_error_detail(error)
                 )
         else:
-            entry = active_login_entry(files, spec)
+            # Presence, not availability: an error-backoff entry is still a
+            # login (a re-login would not clear a model suspension anyway),
+            # so it keeps use/relogin on the table and gets an honest note.
+            entry = present_login_entry(files, spec)
             if entry is not None:
                 logged_in = True
+                backing_off = bool(entry.get("unavailable"))
                 account = login_account_label(entry)
 
         shape = self._CLIPROXY_URL_SHAPES.get(spec.url_shape, spec.url_shape)
@@ -275,6 +289,13 @@ class CliproxyCommandsMixin:
         lines = [f"CLIProxy: {spec.label}", f"  {spec.description}"]
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
+        if backing_off:
+            lines.append(
+                "  Note: the proxy reports this login temporarily"
+                " unavailable (error backoff after upstream failures). It"
+                " usually clears on its own; a re-login does not speed it"
+                " up."
+            )
         if spec.tos_warning:
             lines.append(f"  Warning: {spec.tos_warning}")
         if state_note:
@@ -292,7 +313,10 @@ class CliproxyCommandsMixin:
 
         pending = setup_store.start_cliproxy_login(self.user_id, spec.id)
         updated = setup_store.update_cliproxy_login(
-            self.user_id, logged_in=logged_in, account=account
+            self.user_id,
+            logged_in=logged_in,
+            account=account,
+            backing_off=backing_off,
         )
         if updated is not None:
             pending = updated
@@ -369,10 +393,12 @@ class CliproxyCommandsMixin:
             if not pending.logged_in:
                 # "use" is only offered when logged in, but it is typed-
                 # reachable; applying a global route with no login would
-                # break every turn, so re-verify.
+                # break every turn, so re-verify. Presence suffices (the
+                # target step's stance): a backoff entry still routes once
+                # the proxy's cooldown lapses.
                 from ..cliproxy.management_client import (
-                    active_login_entry,
                     login_account_label,
+                    present_login_entry,
                 )
 
                 try:
@@ -381,7 +407,7 @@ class CliproxyCommandsMixin:
                     )
                 except httpx.HTTPError:
                     files = []
-                entry = active_login_entry(files, spec)
+                entry = present_login_entry(files, spec)
                 if entry is None:
                     return command_error(
                         f"Not logged in to {spec.label}."
@@ -391,6 +417,7 @@ class CliproxyCommandsMixin:
                     self.user_id,
                     account=login_account_label(entry),
                     logged_in=True,
+                    backing_off=bool(entry.get("unavailable")),
                 )
             return await self._cliproxy_model_chain(pending, spec)
         if token == "paste":
@@ -874,15 +901,38 @@ class CliproxyCommandsMixin:
                 raw.append(
                     {"id": model_id, "meta": str(entry.get("owned_by") or "")}
                 )
-            note = (
-                f"{len(raw)} models listed from the proxy (all logged-in"
-                " providers)."
-                if raw
-                else (
+            # The proxy's /v1/models is one flat pool across every
+            # logged-in subscription, but entries carry owned_by, so the
+            # TARGET's own models list first when the catalog knows the
+            # owner (dogfood 2026-08-05: the flat 28-model view led to a
+            # guessed gemini id that no provider served). Zero matches or
+            # an unset owner degrades to the unpartitioned list: never
+            # hide a pickable model behind a guessed mapping.
+            owner = str(spec.model_owner or "").casefold()
+            mine = [
+                entry
+                for entry in raw
+                if owner and str(entry.get("meta") or "").casefold() == owner
+            ]
+            if mine and len(mine) < len(raw):
+                others = [entry for entry in raw if entry not in mine]
+                raw = mine + others
+                noun = "model" if len(mine) == 1 else "models"
+                note = (
+                    f"{len(mine)} {spec.label} {noun} listed first;"
+                    f" {len(others)} from other logged-in subscriptions"
+                    " below."
+                )
+            elif raw:
+                note = (
+                    f"{len(raw)} models listed from the proxy (all logged-in"
+                    " providers)."
+                )
+            else:
+                note = (
                     "Model list unavailable from the proxy; showing the"
                     " known default."
                 )
-            )
             # An empty list is never cached (None keeps the next render
             # retrying): the proxy may just be settling after the login.
             setup_store.update_cliproxy_login(
@@ -939,6 +989,41 @@ class CliproxyCommandsMixin:
         lines = ["Review the CLIProxy route (applies globally)"]
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
+        # A custom-typed id the proxy does not list will fail at turn time
+        # with the proxy's raw "unknown provider for model" (its registry
+        # is exact-match, no prefix routing). Warn, never block: the
+        # cached list can be stale or degraded, and --force-shaped escape
+        # hatches stay escape hatches.
+        model = str(pending.model or "")
+        listed = pending.model_options or []
+        if (
+            model
+            and listed
+            and all(str(entry.get("id") or "") != model for entry in listed)
+        ):
+            lines.append(
+                f"  Warning: {model} is not in the proxy's current model"
+                " list, so no logged-in subscription serves it and the"
+                " route will likely fail. Check the id or re-pick from the"
+                " Model tab."
+            )
+        # B13: a claude-* model DOES serve on an openai-routed target, but
+        # without the anthropic-path CLIProxy treatment; warn at the review
+        # so identity drift is a choice, not a surprise.
+        if (
+            spec.nymeria_provider == "openai"
+            and model.casefold().startswith("claude")
+        ):
+            lines.append(f"  Warning: {CLAUDE_VIA_OPENAI_ROUTE_WARNING}")
+        if pending.backing_off:
+            # Carry the target step's honesty to the point of commitment:
+            # the route can apply now, but it may not serve until the
+            # proxy's error backoff on this login clears.
+            lines.append(
+                "  Note: this login is in error backoff at the proxy; the"
+                " route applies now but may not serve until the backoff"
+                " clears (it does so on its own)."
+            )
         lines.append("Choose: /provider cliproxy apply | cancel")
         options = [
             form_option("apply", label="Apply the route", current=True),
