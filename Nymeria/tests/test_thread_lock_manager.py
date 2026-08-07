@@ -25,10 +25,10 @@ def test_get_lock_returns_same_lock_for_same_thread():
 def test_lock_info_roundtrip():
     mgr = ThreadLockManager()
     before = time.time()
-    mgr.set_lock_info("t1", holder="astream", task_id="task-42")
+    mgr.set_lock_info("t1", holder="autonomous", task_id="task-42")
     info = mgr.get_lock_info("t1")
     assert info is not None
-    assert info["holder"] == "astream"
+    assert info["holder"] == "autonomous"
     assert info["task_id"] == "task-42"
     assert info["acquired_at"] >= before
     assert info["held_seconds"] >= 0
@@ -53,6 +53,46 @@ def test_abort_event_signal_and_clear():
     # signal_abort on an unknown thread should create the event and set it
     mgr.signal_abort("new-thread")
     assert mgr.get_abort_event("new-thread").is_set()
+
+
+def test_active_locks_lists_held_locks_with_metadata_and_skips_free_ones():
+    mgr = ThreadLockManager()
+    held = mgr.get_lock("t-busy")
+    mgr.get_lock("t-free")  # known but not held
+    held.acquire()
+    mgr.set_lock_info("t-busy", holder="autonomous", task_id="task-1")
+    try:
+        active = mgr.active_locks()
+        assert [entry["thread_id"] for entry in active] == ["t-busy"]
+        assert active[0]["holder"] == "autonomous"
+        assert active[0]["held_seconds"] >= 0
+    finally:
+        held.release()
+        mgr.clear_lock_info("t-busy")
+    assert mgr.active_locks() == []
+
+
+def test_active_locks_reports_held_lock_without_metadata_as_unknown():
+    # The held lock IS the activity signal; missing metadata must not hide it.
+    mgr = ThreadLockManager()
+    lock = mgr.get_lock("t-anon")
+    lock.acquire()
+    try:
+        active = mgr.active_locks()
+        assert active == [
+            {"thread_id": "t-anon", "holder": "unknown", "held_seconds": None}
+        ]
+    finally:
+        lock.release()
+
+
+def test_active_locks_ignores_stale_metadata_when_lock_is_released():
+    # A holder that crashed past clear_lock_info leaves metadata behind;
+    # phantom activity would wedge the deploy-sync idle gate forever.
+    mgr = ThreadLockManager()
+    mgr.get_lock("t-stale")
+    mgr.set_lock_info("t-stale", holder="user")
+    assert mgr.active_locks() == []
 
 
 def test_is_thread_busy_when_held_and_free():

@@ -151,3 +151,42 @@ class ThreadLockManager:
             lock.release()
             return False
         return True
+
+    def active_locks(self) -> list[Dict[str, Any]]:
+        """Snapshot of currently HELD locks with holder metadata.
+
+        Serves ``GET /status/turns`` (the deploy-sync idle gate). A
+        thread is listed only when its lock is actually held at read time
+        (``locked()``, a pure read; NEVER the ``is_thread_busy``
+        probe-acquire, which momentarily TAKES each free lock and can
+        steal it from a real turn's concurrent non-blocking acquire,
+        sending that turn into the queued-wait path against a holder that
+        does not exist). Metadata left behind by a holder that skipped
+        ``clear_lock_info`` cannot report phantom activity; the inverse (a
+        held lock with no metadata) is still listed, because the held lock
+        IS the activity signal. The read-then-read pair is deliberately
+        unsynchronized: this is a monitoring snapshot, and a turn starting
+        or ending mid-enumeration lands on the next poll.
+        """
+        with self._meta_lock:
+            snapshot = list(self._locks.items())
+        now = time.time()
+        active: list[Dict[str, Any]] = []
+        for thread_id, lock in snapshot:
+            if not lock.locked():
+                continue
+            with self._meta_lock:
+                info = dict(self._lock_info.get(thread_id) or {})
+            acquired_at = info.get("acquired_at")
+            active.append(
+                {
+                    "thread_id": thread_id,
+                    "holder": info.get("holder") or "unknown",
+                    "held_seconds": (
+                        round(now - acquired_at, 1)
+                        if isinstance(acquired_at, (int, float))
+                        else None
+                    ),
+                }
+            )
+        return active

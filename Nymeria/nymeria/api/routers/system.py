@@ -16,11 +16,14 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from ...core.accounts import AuthenticatedUser
+from ...core.interactive_admission import get_interactive_turn_gate
 from ..schemas.system import (
+    BusyThread,
     DependencyReadiness,
     HealthResponse,
     ReadinessResponse,
     ReportRequest,
+    TurnActivityResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -309,6 +312,46 @@ def create_system_router(
                 getattr(settings, "scheduler_active_execution_stale_minutes", 1440)
             ),
         }
+
+    @router.get("/status/turns", response_model=TurnActivityResponse)
+    async def status_turns(
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Live turn activity; the deploy-sync idle gate reads this.
+
+        ``active_turns`` counts currently held thread locks, which every
+        turn shape (interactive, autonomous, dream) takes in this process;
+        ``interactive_active`` covers the admission-to-lock gap;
+        ``background_jobs`` covers detached bash jobs, which hold no lock
+        by design. All-zero means a restart severs no tracked work (the
+        Claude Code bridge's detached runs have no registry and are the
+        one documented exception). Any authenticated caller gets the
+        counts; ``busy_threads`` detail (thread ids, holder labels) is
+        cross-user metadata and is included for admins only.
+        """
+        # Same defensive shape as thread_overview: a partially initialized
+        # agent answers 503 (the sync script then fails safe and defers)
+        # rather than a raw 500.
+        locks = getattr(get_agent_fn(), "_thread_locks", None)
+        if locks is None:
+            raise HTTPException(
+                status_code=503, detail="Agent runtime is not ready."
+            )
+        from ...tools.bash_background import get_registry as get_bash_registry
+
+        busy = locks.active_locks()
+        background = sum(
+            1
+            for record in get_bash_registry().records()
+            if getattr(record, "status", "") == "running"
+        )
+        detail = busy if getattr(user, "role", "") == "admin" else []
+        return TurnActivityResponse(
+            active_turns=len(busy),
+            interactive_active=get_interactive_turn_gate().active,
+            background_jobs=background,
+            busy_threads=[BusyThread(**entry) for entry in detail],
+        )
 
     @router.get("/scheduler/status")
     async def scheduler_status(

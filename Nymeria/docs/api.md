@@ -116,6 +116,42 @@ required dependency fails.
 
 ---
 
+### Turn Activity
+
+```http
+GET /status/turns
+Authorization: Bearer <token>
+```
+
+Live activity; the idle gate that deployment automation (for example a
+restart-on-new-commit timer) should poll before restarting the backend.
+`active_turns` counts currently held thread locks, which every turn shape
+(interactive, autonomous, dream) takes in the API process.
+`interactive_active` counts held interactive admission slots (admission
+happens before the thread lock is taken, so this covers that gap).
+`background_jobs` counts running detached background bash jobs, which hold
+no thread lock by design. All-zero means a restart severs no tracked work;
+the one documented exception is detached Claude Code bridge runs, which
+have no registry and are not counted.
+
+Any authenticated caller gets the counts. `busy_threads` (thread ids,
+holder labels, held duration) is cross-user metadata and is populated only
+for admin callers; other callers receive an empty list.
+
+**Response:**
+```json
+{
+  "active_turns": 1,
+  "interactive_active": 1,
+  "background_jobs": 0,
+  "busy_threads": [
+    {"thread_id": "cli-a1b2", "holder": "astream", "held_seconds": 12.3}
+  ]
+}
+```
+
+---
+
 ### Restart API Server
 
 ```http

@@ -191,6 +191,7 @@ EXPECTED_ROUTES = [
     ('/skills/marketplace/search', ('GET',)),
     ('/skills/{name}', ('DELETE',)),
     ('/skills/{name}', ('GET',)),
+    ('/status/turns', ('GET',)),
     ('/thread-teams', ('GET',)),
     ('/thread-teams', ('POST',)),
     ('/thread-teams/{team_id}', ('DELETE',)),
