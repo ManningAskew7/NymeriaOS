@@ -100,6 +100,22 @@ def test_gemini_cli_carries_tos_warning():
     assert spec.tos_warning
 
 
+def test_gemini_cli_is_demoted_to_legacy_below_antigravity():
+    """Every Gemini-channel surface steers users to Antigravity.
+
+    Consumers (wizard, /provider list, GET /cliproxy/status, desktop
+    picker) render the catalog in declaration order and show the label
+    and description verbatim, so the ordering and the wording ARE the
+    steering mechanism; there is no separate UI rule."""
+    ids = [spec.id for spec in list_cliproxy_providers()]
+    assert ids.index("antigravity") < ids.index("gemini-cli")
+    spec = get_cliproxy_provider("gemini-cli")
+    assert spec is not None
+    assert "legacy" in spec.label.lower()
+    assert spec.description.startswith("LEGACY")
+    assert "antigravity" in spec.description.lower()
+
+
 def test_kimi_is_a_device_flow():
     spec = get_cliproxy_provider("kimi")
     assert spec is not None

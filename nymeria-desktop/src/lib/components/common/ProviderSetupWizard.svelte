@@ -56,17 +56,17 @@
       supported: null, logged_in: null
     },
     {
-      id: 'gemini-cli', label: 'Gemini CLI (Google account)', description: '',
-      flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
-      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
-      default_model: 'gemini-3-pro-preview', tos_warning: '', auth_file_provider: 'gemini',
-      supported: null, logged_in: null
-    },
-    {
       id: 'antigravity', label: 'Antigravity (Google account)', description: '',
       flow: 'browser', nymeria_provider: 'google', url_shape: 'root',
       api_mode: '', key_env_var: 'GEMINI_API_KEY',
       default_model: 'gemini-3.6-flash-high', tos_warning: '', auth_file_provider: 'antigravity',
+      supported: null, logged_in: null
+    },
+    {
+      id: 'gemini-cli', label: 'Gemini CLI (Google account, legacy)', description: '',
+      flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
+      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
+      default_model: 'gemini-3-pro-preview', tos_warning: '', auth_file_provider: 'gemini',
       supported: null, logged_in: null
     },
     {

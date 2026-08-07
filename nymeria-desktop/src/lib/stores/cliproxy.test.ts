@@ -19,7 +19,7 @@ import type { CLIProxyProviderInfo } from '$lib/types';
 
 const GEMINI_PROVIDER: CLIProxyProviderInfo = {
   id: 'gemini-cli',
-  label: 'Gemini CLI (Google account)',
+  label: 'Gemini CLI (Google account, legacy)',
   description: '',
   flow: 'browser',
   nymeria_provider: 'openai',

@@ -336,7 +336,7 @@ sending a probe request.
 | `openrouter_reasoning_details` | OpenRouter, Vercel AI Gateway, AIHubMix on chat-completions | signed | every turn |
 | `flat_reasoning_content` | DeepSeek, Alibaba/Qwen, Baseten, LiteLLM, Together, Novita, Fireworks, Moonshot, native Ollama | plaintext | every turn, or tool-call turns only |
 | `gemini_thought_signatures` / `bedrock_reasoning` | native Google / Bedrock partner packages | signed | every turn |
-| `none` | any other OpenAI-compatible provider on `chat_completions`, including CLIProxy's gemini-cli/antigravity targets | none | reasoning is dropped |
+| `none` | any other OpenAI-compatible provider on `chat_completions`, including CLIProxy's legacy gemini-cli target (and antigravity threads configured before the 2026-08-07 native-route switch) | none | reasoning is dropped |
 
 ### How it is determined (drift-proof)
 
