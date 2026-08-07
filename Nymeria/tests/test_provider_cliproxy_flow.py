@@ -1104,7 +1104,8 @@ def test_model_step_lists_target_models_first() -> None:
         "custom",
     ]
     assert (
-        "2 Gemini CLI (Google account) models listed first" in result.markdown
+        "2 Gemini CLI (Google account, legacy) models listed first"
+        in result.markdown
     )
     assert "2 from other logged-in subscriptions below" in result.markdown
 

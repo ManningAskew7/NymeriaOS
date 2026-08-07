@@ -140,25 +140,6 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         model_owner="openai",
     ),
     CLIProxyProviderSpec(
-        id="gemini-cli",
-        label="Gemini CLI (Google account)",
-        description=(
-            "Google Code Assist OAuth with GCP project onboarding. Routes "
-            "through the proxy's OpenAI-compatible /v1 endpoint."
-        ),
-        oauth_endpoint="gemini-cli",
-        flow="browser",
-        callback_provider="gemini",
-        nymeria_provider="openai",
-        url_shape="v1",
-        key_setting="openai_api_key",
-        api_mode="chat_completions",
-        default_model="gemini-3-pro-preview",
-        tos_warning=GEMINI_CLI_TOS_WARNING,
-        auth_file_provider="gemini",
-        model_owner="google",
-    ),
-    CLIProxyProviderSpec(
         id="antigravity",
         label="Antigravity (Google account)",
         description=(
@@ -189,6 +170,31 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         # "antigravity" (antigravity_executor.go; live-confirmed 2026-08-05
         # on a real login's /v1/models).
         model_owner="antigravity",
+    ),
+    CLIProxyProviderSpec(
+        id="gemini-cli",
+        label="Gemini CLI (Google account, legacy)",
+        description=(
+            "LEGACY: prefer Antigravity for Gemini (lossless native wire, "
+            "richer model pool). Google Code Assist OAuth with GCP project "
+            "onboarding, kept as a separate-quota fallback for when "
+            "Antigravity is unavailable. Deliberately stays on the proxy's "
+            "OpenAI-compatible /v1 endpoint: the proxy's native inbound for "
+            "this channel destroys ALL thought signatures, so the "
+            "sentinel-stamped compat wire is the least-bad option "
+            "(measured 2026-08-07)."
+        ),
+        oauth_endpoint="gemini-cli",
+        flow="browser",
+        callback_provider="gemini",
+        nymeria_provider="openai",
+        url_shape="v1",
+        key_setting="openai_api_key",
+        api_mode="chat_completions",
+        default_model="gemini-3-pro-preview",
+        tos_warning=GEMINI_CLI_TOS_WARNING,
+        auth_file_provider="gemini",
+        model_owner="google",
     ),
     CLIProxyProviderSpec(
         id="kimi",
