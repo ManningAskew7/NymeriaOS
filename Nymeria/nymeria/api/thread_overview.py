@@ -24,6 +24,7 @@ from ..core.thread_classification import (
     NATIVE_THREAD_PLATFORMS,
     classify_platform,
 )
+from ..cliproxy.catalog import cliproxy_channel_label
 from ..core.thread_config import ThreadConfig
 from ..core.time_utils import ensure_aware_utc, utc_now
 from ..tools import SEED_TOOLS, CATALOG_TOOLS
@@ -433,7 +434,9 @@ def _llm_defaults(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
     effort_effective = _effective_reasoning_effort(provider, model, effort)
     return {
         "provider": provider,
-        "provider_label": _provider_label(provider, getattr(settings, "llm_base_url", None)),
+        "provider_label": _provider_label(
+            provider, getattr(settings, "llm_base_url", None), model
+        ),
         "model": model,
         "api_mode": mode,
         "api_mode_label": _api_mode_label(provider, mode),
@@ -477,7 +480,7 @@ def _llm_section(
         effort_effective = _effective_reasoning_effort(provider, model, effort)
         data = {
             "provider": provider,
-            "provider_label": _provider_label(provider, base_url),
+            "provider_label": _provider_label(provider, base_url, model),
             "model": model,
             "api_mode": mode,
             "api_mode_label": _api_mode_label(provider, mode),
@@ -527,22 +530,31 @@ def _llm_section(
     return data
 
 
-def _provider_label(provider: str, base_url: Any) -> str:
+def _provider_label(provider: str, base_url: Any, model: str) -> str:
+    """Mirror of triggers/cli/header._provider_label; kept in sync by the
+    parity test in tests/test_api_thread_overview.py."""
     provider_text = str(provider or "").strip()
     normalized = provider_text.casefold()
     base = str(base_url or "").strip()
+    is_cliproxy = bool(base) and looks_like_cliproxy_url(base)
+    if is_cliproxy:
+        channel = cliproxy_channel_label(normalized, model)
+        if channel:
+            return f"cliproxy {channel}"
     if normalized == "anthropic":
-        if base and looks_like_cliproxy_url(base):
-            return "cliproxy OAuth"
         if base:
             return "custom Claude"
         return "Claude API"
     if normalized == "openai":
-        if base and looks_like_cliproxy_url(base):
+        if is_cliproxy:
             return "OpenAI proxy"
         if base:
             return "OpenAI compat"
         return "OpenAI API"
+    if normalized == "google":
+        if base:
+            return "custom Gemini"
+        return "Gemini API"
     if normalized == "openrouter":
         return "OpenRouter"
     if normalized == "custom":

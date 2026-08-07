@@ -252,6 +252,64 @@ def get_cliproxy_provider(provider_id: str) -> Optional[CLIProxyProviderSpec]:
     return None
 
 
+# Display names for the channels a CLIProxy request can be served by, used
+# by the banner/overview provider labels ("cliproxy {channel}"). Short names,
+# not the catalog labels: the label strings carry subscription detail the
+# one-line banner has no room for.
+_CHANNEL_BY_PROVIDER: dict[str, str] = {
+    # These provider slots are single-channel: the slot alone names it.
+    "anthropic": "Claude",
+    "google": "Antigravity",
+}
+_CHANNEL_BY_MODEL_PREFIX: tuple[tuple[str, str], ...] = (
+    # Order matters: gpt-oss before gpt-. gpt-oss ids were observed in the
+    # ANTIGRAVITY pool (2026-08-05 live login), so the Codex guess would be
+    # wrong; they stay unknown and callers fall back to a channel-blind
+    # label.
+    ("gpt-oss", ""),
+    ("gpt-", "Codex"),
+    ("codex-", "Codex"),
+    # The same 2026-08-05 pool observation also listed claude entries, so a
+    # claude id on the compat wire COULD be antigravity-served; unlike
+    # gpt-oss the label still names the model's own channel sensibly, so
+    # the mapping is kept (deliberate, reviewed 2026-08-07).
+    ("claude-", "Claude"),
+    # Either Google channel (antigravity or legacy gemini-cli) can serve a
+    # gemini id on the compat wire; which one is the proxy's routing
+    # decision, so the channel stays generic here.
+    ("gemini-", "Gemini"),
+    ("kimi-", "Kimi"),
+    ("grok-", "Grok"),
+)
+
+
+def cliproxy_channel_label(provider: str, model: str) -> str:
+    """Best-effort display name of the CLIProxy channel serving a route.
+
+    ``provider`` is the Nymeria provider slot, ``model`` the effective model
+    id. Callers must already have established that the base URL is
+    CLIProxy-shaped (``looks_like_cliproxy_url``); this function only names
+    the channel. Returns "" when the channel is not inferable, in which case
+    callers keep their channel-blind label.
+
+    The anthropic and google slots map one-to-one onto catalog channels.
+    The openai slot is the shared OpenAI-compat surface (codex, gemini-cli,
+    kimi, grok, and stale pre-native antigravity routes), where the model id
+    is the proxy's routing key and therefore also ours.
+    """
+    slot = (provider or "").strip().casefold()
+    direct = _CHANNEL_BY_PROVIDER.get(slot)
+    if direct is not None:
+        return direct
+    if slot != "openai":
+        return ""
+    model_id = (model or "").strip().casefold()
+    for prefix, channel in _CHANNEL_BY_MODEL_PREFIX:
+        if model_id.startswith(prefix):
+            return channel
+    return ""
+
+
 def cliproxy_data_plane_url(management_url: str, spec: CLIProxyProviderSpec) -> str:
     """Derive the LLM base URL for a CLI from the proxy management URL.
 
@@ -273,6 +331,7 @@ __all__ = [
     "CLIPROXY_PROVIDERS",
     "CLIProxyProviderSpec",
     "GEMINI_CLI_TOS_WARNING",
+    "cliproxy_channel_label",
     "cliproxy_data_plane_url",
     "get_cliproxy_provider",
     "list_cliproxy_providers",
