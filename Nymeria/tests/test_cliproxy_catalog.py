@@ -63,12 +63,46 @@ def test_codex_routes_openai_v1_responses():
 
 
 def test_generic_clis_route_openai_v1_chat_completions():
-    for provider_id in ("gemini-cli", "kimi", "grok"):
+    """gemini-cli and kimi stay on chat_completions deliberately: for
+    gemini-cli it is the least-bad wire (native inbound destroys thought
+    signatures), and for kimi it is the channel's BEST wire (the openai to
+    openai pair is a byte-level passthrough, while the kimi responses
+    translator drops replayed reasoning items and sampling params; kimi
+    channel audit 2026-08-07)."""
+    for provider_id in ("gemini-cli", "kimi"):
         spec = get_cliproxy_provider(provider_id)
         assert spec is not None, provider_id
         assert spec.nymeria_provider == "openai", provider_id
         assert spec.url_shape == "v1", provider_id
         assert spec.api_mode == "chat_completions", provider_id
+
+
+def test_grok_routes_openai_v1_responses():
+    """Grok rides /v1/responses like codex, because the xai channel's
+    upstream format IS codex: that surface is a near byte-for-byte
+    passthrough (reasoning items stream and replay across turns, no
+    injected medium effort default, upstream failures produce terminal
+    events), while the chat_completions translator silently drops replayed
+    reasoning_content and injects effort medium when omitted (xai channel
+    audit 2026-08-07)."""
+    spec = get_cliproxy_provider("grok")
+    assert spec is not None
+    assert spec.nymeria_provider == "openai"
+    assert spec.url_shape == "v1"
+    assert spec.api_mode == "responses"
+
+
+def test_kimi_and_grok_default_models():
+    """kimi-k3 is the user-priority default (newest, 1M context per the
+    proxy's live registry; source-audit-verified, no live login yet).
+    grok-4.3 stays default over grok-4.5 until the proxy upgrade (backlog
+    #151): the pinned v7.1.61 deletes grok-4.5's reasoning config before
+    the POST, so it would think invisibly."""
+    kimi = get_cliproxy_provider("kimi")
+    grok = get_cliproxy_provider("grok")
+    assert kimi is not None and grok is not None
+    assert kimi.default_model == "kimi-k3"
+    assert grok.default_model == "grok-4.3"
 
 
 def test_antigravity_routes_google_native_at_the_proxy_root():

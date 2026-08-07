@@ -88,6 +88,67 @@ _CASES = [
         rp.SCOPE_ALL,
         rp.STATUS_WIRED,
     ),
+    # CLIProxy kimi: provider openai + kimi model + proxy base URL. Without
+    # the model-keyed flat replay the proxy FABRICATES reasoning_content on
+    # tool-call turns ("[reasoning unavailable]"; kimi channel audit
+    # 2026-08-07), so this combination must classify as flat/all, echoed.
+    (
+        dict(
+            provider="openai",
+            model="kimi-k3",
+            base_url="http://cli-proxy-api:8317/v1",
+            openai_api_mode="chat_completions",
+        ),
+        rp.MECH_FLAT_REASONING,
+        rp.FIDELITY_PLAINTEXT,
+        rp.SCOPE_ALL,
+        rp.STATUS_WIRED,
+    ),
+    # A kimi model id on a NON-proxy openai base URL stays dropped: the
+    # replay key is the cliproxy URL + model pair, not the name alone.
+    (
+        dict(
+            provider="openai",
+            model="kimi-k3",
+            base_url="http://localhost:11434/v1",
+            openai_api_mode="chat_completions",
+        ),
+        rp.MECH_NONE,
+        rp.FIDELITY_NONE,
+        rp.SCOPE_NONE,
+        rp.STATUS_DROPPED,
+    ),
+    # base_url None with a kimi model must CLASSIFY, not crash (the URL
+    # predicate is not None-tolerant; review-caught AttributeError
+    # 2026-08-07, reachable from thread-overview and /provider
+    # reasoning-passback on spec-default base URLs).
+    (
+        dict(
+            provider="openai",
+            model="kimi-k3",
+            base_url=None,
+            openai_api_mode="chat_completions",
+        ),
+        rp.MECH_NONE,
+        rp.FIDELITY_NONE,
+        rp.SCOPE_NONE,
+        rp.STATUS_DROPPED,
+    ),
+    # CLIProxy grok on responses mode: reasoning items replay, but UNSIGNED
+    # (the xai channel strips the encrypted-content include from every
+    # request), so fidelity is plaintext, not signed.
+    (
+        dict(
+            provider="openai",
+            model="grok-4.3",
+            base_url="http://cli-proxy-api:8317/v1",
+            openai_api_mode="responses",
+        ),
+        rp.MECH_RESPONSES_ITEMS,
+        rp.FIDELITY_PLAINTEXT,
+        rp.SCOPE_ALL,
+        rp.STATUS_WIRED,
+    ),
     (
         dict(
             provider="mistral",

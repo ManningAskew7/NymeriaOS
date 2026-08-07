@@ -96,7 +96,9 @@ def test_finalize_cliproxy_slim_docker_uses_host_gateway(monkeypatch, tmp_path):
     assert rc == 0
     content = (root / ".env.docker").read_text(encoding="utf-8")
     assert _env_line(content, "LLM_BASE_URL") == "http://host.docker.internal:8318/v1"
-    assert _env_line(content, "OPENAI_API_MODE") == "chat_completions"
+    # responses since the 2026-08-07 kimi/grok pass (grok rides the codex
+    # translator family; responses is its passthrough wire).
+    assert _env_line(content, "OPENAI_API_MODE") == "responses"
     assert _env_line(content, "LLM_MODEL") == "grok-4.3"
 
 

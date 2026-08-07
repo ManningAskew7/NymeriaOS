@@ -73,13 +73,13 @@
       id: 'kimi', label: 'Kimi (Moonshot subscription)', description: '',
       flow: 'device', nymeria_provider: 'openai', url_shape: 'v1',
       api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
-      default_model: 'kimi-k2.5', tos_warning: '', auth_file_provider: 'kimi',
+      default_model: 'kimi-k3', tos_warning: '', auth_file_provider: 'kimi',
       supported: null, logged_in: null
     },
     {
       id: 'grok', label: 'Grok (SuperGrok/X Premium subscription)', description: '',
       flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
-      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
+      api_mode: 'responses', key_env_var: 'OPENAI_API_KEY',
       default_model: 'grok-4.3', tos_warning: '', auth_file_provider: 'xai',
       supported: null, logged_in: null
     }

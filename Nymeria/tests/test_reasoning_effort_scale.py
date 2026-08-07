@@ -122,6 +122,40 @@ def test_effort_levels_rank_order():
         ("xai", "grok-4-fast", ("off",)),
         ("xai", "grok-4.1-fast", ("off",)),
         ("xai", "grok-4.3", ("off", "low", "medium", "high")),
+        # grok-4.3 is the only lineage with a real "none" level; 4.5,
+        # multi-agent and 3-mini publish low|medium|high with no disable
+        # (proxy registry, xai channel audit 2026-08-07). The provider
+        # "openai" rows are the CLIProxy route, which resolves by model
+        # substring.
+        ("xai", "grok-4.5", ("low", "medium", "high")),
+        ("openai", "grok-4.5", ("low", "medium", "high")),
+        ("xai", "grok-3-mini", ("low", "medium", "high")),
+        ("openai", "grok-4.20-multi-agent-0309", ("low", "medium", "high")),
+        # Plain grok-4.20 ids declare no thinking config at all.
+        ("openai", "grok-4.20-0309-reasoning", ("off",)),
+        # CLIProxy kimi threads: provider openai + kimi model id. Level wire
+        # low|high (k3 adds max); zero allowed on the k2 thinking lineage
+        # only; plain kimi-k2 has no thinking support (kimi channel audit
+        # 2026-08-07). Direct moonshotai keeps the binary partner ladder
+        # asserted below.
+        ("openai", "kimi-k3", ("low", "high", "max")),
+        ("openai", "kimi-k3-256k", ("low", "high", "max")),
+        ("openai", "kimi-k2.5", ("off", "low", "high")),
+        ("openai", "kimi-k2.6", ("off", "low", "high")),
+        ("openai", "kimi-k2-thinking", ("off", "low", "high")),
+        ("openai", "kimi-k2.7-code", ("low", "high")),
+        ("openai", "kimi-k2.7-code-highspeed", ("low", "high")),
+        ("openai", "kimi-k2", ("off",)),
+        ("openai", "kimi-k2-0905", ("off",)),
+        ("groq", "moonshotai/kimi-k2-instruct", ("off",)),
+        # Venice spells K2.5 (a thinking model) "kimi-k2-5": the off-only
+        # branch must NOT swallow it (review-caught 2026-08-07; a broad
+        # dot-less kimi-k2 test silently disabled its reasoning).
+        ("venice", "kimi-k2-5", ("off", "low", "high")),
+        # No thinking config on the live registry: effort cannot be
+        # transmitted, so only off is honest.
+        ("openai", "grok-build-0.1", ("off",)),
+        ("openai", "grok-composer-2.5-fast", ("off",)),
         # gpt-oss cannot disable reasoning, on any provider.
         ("groq", "openai/gpt-oss-120b", ("low", "medium", "high")),
         ("ollama", "gpt-oss:20b", ("low", "medium", "high")),
@@ -281,6 +315,21 @@ def test_max_reasoning_effort(provider, model, expected):
         # grok-4 lineage accepts no effort at all.
         ("xai", "grok-4-fast", "medium", "off"),
         ("xai", "grok-4.3", "max", "high"),
+        # grok-4.5 cannot disable thinking (no none level): off floors to
+        # low; over-asks clamp to the high ceiling.
+        ("openai", "grok-4.5", "off", "low"),
+        ("openai", "grok-4.5", "max", "high"),
+        # Kimi via CLIProxy: level wire low|high (k3 adds max). medium is
+        # a mid-ladder gap and clamps UP; xhigh on k3 gap-clamps to max
+        # (matching the wire arm); off floors to low where zero is not
+        # allowed (k2.7-code, k3); plain kimi-k2 accepts no effort.
+        ("openai", "kimi-k2.5", "xhigh", "high"),
+        ("openai", "kimi-k2.5", "medium", "high"),
+        ("openai", "kimi-k3", "max", "max"),
+        ("openai", "kimi-k3", "xhigh", "max"),
+        ("openai", "kimi-k3", "off", "low"),
+        ("openai", "kimi-k2.7-code", "off", "low"),
+        ("openai", "kimi-k2", "high", "off"),
         # Unknown tokens pass through for provider-level defaults.
         ("openai", "gpt-5.5", "bananas", "bananas"),
     ],
@@ -343,6 +392,36 @@ def test_clamp_reasoning_effort(provider, model, requested, expected):
         # even for the extended_thinking-only "medium" default.
         ("grok-4-fast", "medium", None),
         ("grok-4-fast", "off", None),
+        # grok-4.2+: the CLIProxy xai channel hard-400s xhigh/max on its
+        # openai-family surfaces, and off must be the explicit "none"
+        # (omission triggers a medium injection on the chat wire).
+        ("grok-4.3", "off", "none"),
+        ("grok-4.3", "xhigh", "high"),
+        ("grok-4.5", "off", "none"),
+        ("grok-4.5", "low", "low"),
+        ("grok-4.5", "medium", "medium"),
+        ("grok-4.5", "high", "high"),
+        ("grok-4.5", "xhigh", "high"),
+        ("grok-4.5", "max", "high"),
+        # minimal and junk tokens are reachable from file-authored thread
+        # configs (the schema rejects them, the clamp passes them through)
+        # and unknown level strings hard-400 at the proxy AND burn every
+        # credential on the deterministic retry: emit only known levels.
+        ("grok-4.3", "minimal", "low"),
+        ("grok-4.3", "bananas", "low"),
+        ("kimi-k2.5", "minimal", "low"),
+        ("kimi-k2.5", "bananas", "high"),
+        # Kimi via CLIProxy: off is the explicit "none" (maps to Moonshot
+        # thinking disabled; omission thinks invisibly), and the level
+        # wire is low|high with max on k3 only.
+        ("kimi-k2.5", "off", "none"),
+        ("kimi-k2.5", "low", "low"),
+        ("kimi-k2.5", "medium", "high"),
+        ("kimi-k2.5", "xhigh", "high"),
+        ("kimi-k3", "off", "none"),
+        ("kimi-k3", "max", "max"),
+        ("kimi-k3", "xhigh", "max"),
+        ("kimi-k3-256k", "high", "high"),
         # Non-reasoning OpenAI chat models reject the parameter outright.
         ("gpt-4o", "medium", None),
         ("gpt-4.1", "high", None),
@@ -525,6 +604,97 @@ def test_openai_chat_completions_grok_extended_thinking_sends_nothing():
     ])
 
     assert "reasoning_effort" not in payload
+
+
+def test_openai_responses_grok_off_sends_none_without_summary():
+    """Grok rides the openai factory's Responses branch via CLIProxy since
+    2026-08-07. Off must be the explicit effort "none" (grok-4.3 has a real
+    none level), with no summary requested: there is no reasoning to
+    summarize, and the responses surface is the one wire that injects no
+    default when the config is honest."""
+    llm = create_llm(
+        _openai_config(
+            model="grok-4.3",
+            openai_api_mode="responses",
+            extended_thinking=True,
+            reasoning_effort="off",
+        )
+    )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert payload["reasoning"] == {"effort": "none"}
+
+
+def test_openai_responses_grok_high_requests_summary():
+    llm = create_llm(
+        _openai_config(
+            model="grok-4.3",
+            openai_api_mode="responses",
+            extended_thinking=True,
+            reasoning_effort="high",
+        )
+    )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert payload["reasoning"] == {"summary": "auto", "effort": "high"}
+
+
+def test_openai_chat_completions_kimi_off_sends_none():
+    """Kimi via CLIProxy: off must reach the wire as the explicit "none"
+    (the proxy maps it to Moonshot thinking:{type:"disabled"}); omitting
+    the parameter leaves the model thinking invisibly, billed and
+    undisplayed (kimi channel audit 2026-08-07)."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        llm = create_llm(
+            _openai_config(
+                model="kimi-k3",
+                openai_api_mode="chat_completions",
+                reasoning_effort="off",
+            )
+        )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert payload["reasoning_effort"] == "none"
+
+
+def test_openai_chat_completions_kimi_k3_max_stays_max():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        llm = create_llm(
+            _openai_config(
+                model="kimi-k3",
+                openai_api_mode="chat_completions",
+                reasoning_effort="max",
+            )
+        )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert payload["reasoning_effort"] == "max"
 
 
 # ---------------------------------------------------------------------------

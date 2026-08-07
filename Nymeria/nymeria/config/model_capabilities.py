@@ -221,8 +221,29 @@ DEFAULT_CONTEXT_LIMITS = {
     # compaction trigger is min(operator threshold, this limit).
     "kimi-k2.5": 262144,
     "moonshot/kimi-k2.5": 262144,
+    # 2026-08-07 kimi/grok pass: the newer kimi lineage and grok-4.5, from the
+    # proxy's live model registry (models.json, hot-swapped every 3h) at the
+    # audit date; source-audit-verified only, no live kimi/grok login observed
+    # (the coding-plan caveat above applies to all kimi rows). kimi-k3-256k
+    # MUST keep its own row: it is the smaller-window variant of kimi-k3, and
+    # the substring pass resolves longest-known-name-first, so dropping it
+    # would hand it k3's 1M (the over-claim direction). kimi-k2.7-code is the
+    # SHORTEST alias on purpose (see grok-code-fast below): the substring pass
+    # also answers kimi-k2.7-code-highspeed with this one row.
+    "kimi-k2.6": 262144,
+    "moonshot/kimi-k2.6": 262144,
+    "kimi-k2.7-code": 262144,
+    "moonshot/kimi-k2.7-code": 262144,
+    "kimi-k3": 1048576,
+    "moonshot/kimi-k3": 1048576,
+    "kimi-k3-256k": 262144,
+    "moonshot/kimi-k3-256k": 262144,
     "grok-4.3": 1000000,
     "xai/grok-4.3": 1000000,
+    "grok-4.5": 500000,
+    "xai/grok-4.5": 500000,
+    "grok-composer-2.5-fast": 200000,
+    "xai/grok-composer-2.5-fast": 200000,
     "grok-build-0.1": 256000,
     "xai/grok-build-0.1": 256000,
     # Same model under its published aliases. The SHORTEST alias is the key on
@@ -639,7 +660,32 @@ def _google_reasoning_efforts(model_text: str) -> tuple:
 
 
 def _xai_reasoning_efforts(model_text: str) -> tuple:
-    """Effort ladder for xAI Grok models."""
+    """Effort ladder for xAI Grok models.
+
+    grok-4.3 is the only current lineage with a real "none" level (proxy
+    registry + live models.json, 2026-08-07 xai channel audit), so only it
+    advertises off. The rest of the reasoning-capable set (grok-4.5,
+    grok-4.20-multi-agent, grok-3-mini) publishes low|medium|high with no
+    disable: requesting off there floors to low on the wire, so advertising
+    it would lie (same no-off precedent as Baseten). The plain grok-4.20
+    ids declare no thinking config at all (effort is stripped silently), so
+    only off is honest there. xhigh/minimal/max are hard 400s on the
+    CLIProxy xai channel's openai-family surfaces, never a downgrade, so
+    they stay off every grok ladder; the model(value) suffix remains the
+    clamping escape hatch. One deliberate tension: grok-4.5's tiers are
+    real for direct xAI and for v7.2.x proxies, but the pinned v7.1.61
+    CLIProxy deletes its whole reasoning config (hardcoded allowlist), so
+    effort there is display-only until the #151 upgrade; the catalog
+    default stays grok-4.3 for exactly that reason (this ladder has no
+    route context, so it describes the model, not the pinned proxy).
+    """
+    if "grok-3-mini" in model_text:
+        return ("low", "medium", "high")
+    if "grok-build" in model_text or "grok-composer" in model_text:
+        # Both declare no thinking config on the live registry (and the
+        # pinned proxy deletes their reasoning object before the POST), so
+        # effort cannot be transmitted; only off is honest.
+        return ("off",)
     minor_match = _GROK_4_MINOR_RE.search(model_text)
     if minor_match:
         minor = int(minor_match.group(1)) if minor_match.group(1) else 0
@@ -647,7 +693,48 @@ def _xai_reasoning_efforts(model_text: str) -> tuple:
             # grok-4 / grok-4-fast / grok-4.1-fast 400 on any reasoning_effort
             # value; the only honest tier is "off" (param omitted entirely).
             return ("off",)
+        if minor == 20:
+            # grok-4.20-multi-agent declares low|medium|high (no none); the
+            # plain -reasoning/-non-reasoning ids declare no thinking config.
+            if "multi-agent" in model_text:
+                return ("low", "medium", "high")
+            return ("off",)
+        if minor >= 5:
+            # grok-4.5+: low|medium|high, no none level.
+            return ("low", "medium", "high")
     return ("off", "low", "medium", "high")
+
+
+def _kimi_reasoning_efforts(model_text: str) -> tuple:
+    """Effort ladder for Kimi models on level-based wires (CLIProxy kimi).
+
+    The proxy's kimi registry declares levels low|high on every thinking
+    model, k3 adds max, and zero (off) is allowed on the k2 thinking
+    lineage but not on k2.7-code or k3 (live models.json, 2026-08-07 kimi
+    channel audit). Unsupported levels CLAMP on this channel (cross-family
+    validation), so this ladder is honesty, not 400-avoidance. Plain
+    kimi-k2 has no thinking support at all: effort is stripped silently,
+    so only off is honest. Direct Moonshot (provider moonshotai) keeps its
+    binary thinking.type ladder via the partner arm, which resolves first;
+    this arm answers the CLIProxy route, whose provider id is openai.
+    Scope note: dispatch is model-keyed, so any other non-partner host
+    serving a kimi id (groq, cerebras, deepinfra) also lands here; the
+    same convention the grok and gemini arms already follow.
+    """
+    if "kimi-k3" in model_text:
+        return ("low", "high", "max")
+    if "kimi-k2.7" in model_text:
+        return ("low", "high")
+    if re.search(r"kimi-k2(-\d{4})?$", model_text) or (
+        "kimi-k2" in model_text and "instruct" in model_text
+    ):
+        # kimi-k2, its dated variants and the Instruct spins: non-thinking,
+        # effort is stripped upstream, so only off is honest. Deliberately
+        # NARROW (review-caught 2026-08-07): Venice spells K2.5 as
+        # "kimi-k2-5", and a broad dot-less "kimi-k2" test disabled
+        # reasoning on a thinking model.
+        return ("off",)
+    return ("off", "low", "high")
 
 
 # OpenRouter's unified reasoning config normalizes effort across models and
@@ -793,6 +880,10 @@ def supported_reasoning_efforts(
         return _anthropic_reasoning_efforts(bare_model)
     if provider_text == "xai" or "grok" in bare_model:
         return _xai_reasoning_efforts(bare_model)
+    if "kimi" in bare_model:
+        # CLIProxy kimi threads carry provider "openai" with a kimi model
+        # id; the moonshotai partner arm above never fires for them.
+        return _kimi_reasoning_efforts(bare_model)
     if provider_text == "google" or "gemini" in bare_model:
         return _google_reasoning_efforts(bare_model)
     if provider_text == "openai" or _looks_like_openai_model(bare_model):

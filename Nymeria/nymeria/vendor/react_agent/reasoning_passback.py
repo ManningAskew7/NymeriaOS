@@ -43,6 +43,7 @@ from nymeria.config.llm_providers import (
 from nymeria.config.model_capabilities import supported_reasoning_efforts
 
 from .config import LLMConfig
+from .cliproxy import looks_like_cliproxy_url
 from .providers import (
     _flat_reasoning_content_replay_mode,
     _supports_openrouter_style_reasoning_replay,
@@ -224,16 +225,21 @@ def _mechanism_for(config: LLMConfig, provider: str, route: str) -> str:
         return MECH_RESPONSES_ITEMS
     if _supports_openrouter_style_reasoning_replay(provider, base_url):
         return MECH_OPENROUTER_DETAILS
-    if _flat_reasoning_content_replay_mode(provider, base_url) is not None:
+    if (
+        _flat_reasoning_content_replay_mode(
+            provider, base_url, getattr(config, "model", None)
+        )
+        is not None
+    ):
         return MECH_FLAT_REASONING
     return MECH_NONE
 
 
-def _scope_for(mechanism: str, provider: str, base_url) -> str:
+def _scope_for(mechanism: str, provider: str, base_url, model) -> str:
     if mechanism == MECH_NONE:
         return SCOPE_NONE
     if mechanism == MECH_FLAT_REASONING:
-        mode = _flat_reasoning_content_replay_mode(provider, base_url)
+        mode = _flat_reasoning_content_replay_mode(provider, base_url, model)
         # None (e.g. native Ollama) replays every turn; "all" every turn;
         # "tool_calls_only" only on tool-call turns.
         return SCOPE_TOOL_CALLS_ONLY if mode == "tool_calls_only" else SCOPE_ALL
@@ -257,13 +263,24 @@ def classify_reasoning_passback(config: LLMConfig) -> ReasoningPassbackInfo:
         bool(getattr(config, "extended_thinking", False)),
     )
     mechanism = _mechanism_for(config, provider, route)
-    scope = _scope_for(mechanism, provider, base_url)
+    scope = _scope_for(mechanism, provider, base_url, model)
 
     if mechanism == MECH_NONE:
         fidelity = FIDELITY_NONE
     elif mechanism in _SIGNED_MECHANISMS:
         fidelity = FIDELITY_SIGNED
     else:
+        fidelity = FIDELITY_PLAINTEXT
+    if (
+        mechanism == MECH_RESPONSES_ITEMS
+        and "grok" in model.lower()
+        and looks_like_cliproxy_url(str(base_url or ""))
+    ):
+        # The CLIProxy xai channel strips the encrypted-content include from
+        # every request, so Grok reasoning items replay as UNSIGNED summary
+        # text: the mechanism is responses-items, the fidelity is not signed
+        # (xai channel audit 2026-08-07). Displaying "signed" here would be
+        # the same class of lie as verified-on-dropped (backlog #150).
         fidelity = FIDELITY_PLAINTEXT
 
     if not enabled:
