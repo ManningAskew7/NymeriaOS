@@ -67,8 +67,9 @@ export interface ProviderSaveInput {
  *   the provider's declared env var (the same var the CLI finalize writes), so
  *   one code path covers the whole registry.
  * - cliproxy path keeps the dedicated gateway slots: the cpx- gatekeeper goes
- *   to ANTHROPIC_API_KEY or OPENAI_API_KEY, never a *_DIRECT_* slot, exactly
- *   as ProviderSetupWizard saves today.
+ *   to the spec's key slot (ANTHROPIC_API_KEY, OPENAI_API_KEY, or
+ *   GEMINI_API_KEY), never a *_DIRECT_* slot, exactly as
+ *   ProviderSetupWizard saves today.
  * - local path stores no key (Ollama), only provider/model/base URL.
  */
 export function buildProviderSaveUpdate(input: ProviderSaveInput): ServerSettingsUpdate {
@@ -83,11 +84,17 @@ export function buildProviderSaveUpdate(input: ProviderSaveInput): ServerSetting
   }
 
   if (input.authPath === 'cliproxy') {
-    if (input.cliproxySpec?.key_env_var === 'OPENAI_API_KEY') {
-      updates.openai_api_key = input.apiKey.trim();
-    } else {
-      updates.anthropic_api_key = input.apiKey.trim();
-    }
+    // key_env_var -> settings field, mirroring the backend catalog invariant
+    // (spec.key_setting IS a ServerSettingsUpdate field name). A hardcoded
+    // openai-else-anthropic binary here once routed antigravity's gatekeeper
+    // into anthropic_api_key, clobbering a real credential.
+    const keySlots: Record<string, 'openai_api_key' | 'anthropic_api_key' | 'gemini_api_key'> = {
+      OPENAI_API_KEY: 'openai_api_key',
+      ANTHROPIC_API_KEY: 'anthropic_api_key',
+      GEMINI_API_KEY: 'gemini_api_key',
+    };
+    const slot = keySlots[input.cliproxySpec?.key_env_var ?? ''] ?? 'anthropic_api_key';
+    updates[slot] = input.apiKey.trim();
     if (input.cliproxySpec?.api_mode) {
       updates.openai_api_mode = input.cliproxySpec.api_mode as OpenAIApiMode;
     }
@@ -175,6 +182,11 @@ export function detectCliproxyEntry(
   settings: Pick<ServerSettings, 'llm_provider' | 'llm_model' | 'openai_api_mode'>
 ): string {
   if (settings.llm_provider === 'anthropic') return 'claude';
+  if (settings.llm_provider === 'google') {
+    // The native-Gemini CLIProxy shape (antigravity since 2026-08-07).
+    const googleEntry = catalog.find((entry) => entry.nymeria_provider === 'google');
+    return googleEntry?.id ?? 'antigravity';
+  }
   if ((settings.openai_api_mode ?? 'responses') === 'responses') return 'codex';
   const model = (settings.llm_model || '').trim();
   const byModel = catalog.find(
@@ -191,7 +203,9 @@ export function detectAuthPath(
 ): SetupAuthPath {
   if (settings.llm_provider === 'ollama') return 'local';
   if (
-    (settings.llm_provider === 'anthropic' || settings.llm_provider === 'openai') &&
+    (settings.llm_provider === 'anthropic'
+      || settings.llm_provider === 'openai'
+      || settings.llm_provider === 'google') &&
     settings.llm_base_url
   ) {
     return 'cliproxy';

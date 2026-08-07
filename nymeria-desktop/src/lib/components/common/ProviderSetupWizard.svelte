@@ -64,8 +64,8 @@
     },
     {
       id: 'antigravity', label: 'Antigravity (Google account)', description: '',
-      flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
-      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
+      flow: 'browser', nymeria_provider: 'google', url_shape: 'root',
+      api_mode: '', key_env_var: 'GEMINI_API_KEY',
       default_model: 'gemini-3.6-flash-high', tos_warning: '', auth_file_provider: 'antigravity',
       supported: null, logged_in: null
     },
@@ -154,10 +154,14 @@
   );
 
   // The api-mode value the test and save payloads carry, or null when the
-  // provider has a single API surface. CLIProxy entries pin their own mode.
+  // provider has a single API surface. CLIProxy entries pin their own mode;
+  // a spec with api_mode '' (claude, antigravity) has NO openai api mode,
+  // and falling back to the picker here used to write a stray
+  // openai_api_mode into global settings on save.
   const effectiveApiMode = $derived.by<OpenAIApiMode | null>(() => {
     if (authMethod === 'cliproxy') {
-      return (cliproxySpec?.api_mode as OpenAIApiMode) || openaiApiMode;
+      if (cliproxySpec) return (cliproxySpec.api_mode as OpenAIApiMode) || null;
+      return openaiApiMode;
     }
     return supportsApiModePick ? openaiApiMode : null;
   });
@@ -251,7 +255,9 @@
       model = currentSettings.llm_model || defaultModelFor(currentSettings.llm_provider);
       openaiApiMode = currentSettings.openai_api_mode ?? 'responses';
       const isCliproxyShape =
-        (currentSettings.llm_provider === 'anthropic' || currentSettings.llm_provider === 'openai')
+        (currentSettings.llm_provider === 'anthropic'
+          || currentSettings.llm_provider === 'openai'
+          || currentSettings.llm_provider === 'google')
         && !!currentSettings.llm_base_url;
       if (isCliproxyShape) {
         authMethod = 'cliproxy';

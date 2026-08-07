@@ -1007,11 +1007,15 @@ class CliproxyCommandsMixin:
                 " route will likely fail. Check the id or re-pick from the"
                 " Model tab."
             )
-        # B13: a claude-* model DOES serve on an openai-routed target, but
-        # without the anthropic-path CLIProxy treatment; warn at the review
-        # so identity drift is a choice, not a surprise.
+        # B13: a claude-* model DOES serve on a non-anthropic-routed target,
+        # but without the anthropic-path CLIProxy treatment; warn at the
+        # review so identity drift is a choice, not a surprise. Gate is
+        # "not anthropic" rather than "== openai": the antigravity pool
+        # carries claude entries too, and a google-native request for a
+        # claude model is a harder failure than the one this warning was
+        # written for.
         if (
-            spec.nymeria_provider == "openai"
+            spec.nymeria_provider != "anthropic"
             and model.casefold().startswith("claude")
         ):
             lines.append(f"  Warning: {CLAUDE_VIA_OPENAI_ROUTE_WARNING}")

@@ -135,6 +135,10 @@ def _apply_route_thread(
     llm.base_url = base_url
     llm.api_key = gatekeeper
     llm.openai_api_mode = spec.api_mode or None
+    # Pin (or clear) the route: a stale openai_compat toggle on this thread
+    # would otherwise outrank the provider dispatch in create_llm and
+    # silently downgrade a native target to the lossy wire.
+    llm.provider_route = spec.provider_route or None
     manager.save_config(config)
     # Evict the cached per-thread graph so the route applies to the
     # next turn (mirrors PATCH /threads/{id}/config).
@@ -179,6 +183,10 @@ def _apply_route_global(
     setattr(updates, spec.key_setting, gatekeeper)
     if spec.api_mode:
         updates.openai_api_mode = spec.api_mode
+    if spec.provider_route:
+        # Same rationale as the thread path: a global llm_provider_route of
+        # openai_compat would silently downgrade the native wire.
+        updates.llm_provider_route = spec.provider_route
     result = apply_server_settings_update(
         updates,
         settings=settings,

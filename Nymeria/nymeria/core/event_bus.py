@@ -352,6 +352,13 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     # fatal silent shape as output_truncated when it fires before any text
     # or tool call, so it is mirrored for the same reason.
     "response_refused",
+    # A NORMAL stop with no text and no tool call (Gemini's reasoning-only
+    # stop is the archetype): the agent node re-invokes in place
+    # (empty_turn_retry, per attempt) and attaches a visible note when the
+    # retries also come back empty (empty_turn). Third member of the fatal
+    # silent family above, mirrored for the same reason.
+    "empty_turn_retry",
+    "empty_turn",
     # A refusal that produced nothing was rewound server-side (backlog #105):
     # the refused exchange was removed from the checkpoint and clients should
     # truncate their transcript and (controlled clients) restore the prompt.

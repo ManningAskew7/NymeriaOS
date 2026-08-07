@@ -166,7 +166,13 @@ def _extract_models(body: Any) -> list[dict[str, Any]]:
             model_id = item.get("id") or item.get("name") or item.get("model")
             if isinstance(model_id, str) and model_id.strip():
                 model = dict(item)
-                model["id"] = model_id.strip()
+                cleaned = model_id.strip()
+                # Google's native listing names entries "models/<id>"; the
+                # bare id is what configs carry and what the default-model
+                # matcher compares against.
+                if cleaned.startswith("models/"):
+                    cleaned = cleaned[len("models/") :]
+                model["id"] = cleaned
                 models.append(model)
     return models
 
@@ -232,6 +238,13 @@ def _headers(provider: str, api_key: str, *, api_format: str) -> dict[str, str]:
             "anthropic-version": ANTHROPIC_API_VERSION,
             "Content-Type": "application/json",
         }
+    if api_format == "google_genai":
+        # The google-genai wire authenticates with x-goog-api-key (what the
+        # SDK sends); CLIProxy's /v1beta surface accepts the same header
+        # against its local key list, so the antigravity native route tests
+        # with no header surgery. A Bearer here would also work on CLIProxy
+        # but not on Google itself.
+        return {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -446,6 +459,15 @@ def _chat_payload(*, api_format: str, api_mode: ApiMode, model: str) -> dict[str
             "max_tokens": 16,
             "messages": [{"role": "user", "content": "Reply exactly: ok"}],
         }
+    if api_format == "google_genai":
+        # The model rides the URL on this wire, not the body. 64 output
+        # tokens: thinking models spend the first tokens on thought, and a
+        # cap of 16 can end the probe inside it (still HTTP 200, but the
+        # text validator would report an empty candidate).
+        return {
+            "contents": [{"role": "user", "parts": [{"text": "Reply exactly: ok"}]}],
+            "generationConfig": {"maxOutputTokens": 64},
+        }
     if api_mode == "responses":
         return {
             "model": model,
@@ -631,6 +653,10 @@ async def _run_live_checks(
         if api_format == "anthropic_messages" and not clean_base_url.endswith("/v1")
         else "messages"
         if api_format == "anthropic_messages"
+        # Native Gemini: the model rides the URL (Google and CLIProxy
+        # /v1beta alike).
+        else f"v1beta/models/{selected_model}:generateContent"
+        if api_format == "google_genai"
         else "responses"
         if effective_api_mode == "responses"
         else "chat/completions"
@@ -640,9 +666,13 @@ async def _run_live_checks(
     if options.run_chat_completion:
         validator = (
             _response_has_responses_text
-            if effective_api_mode == "responses"
+            if effective_api_mode == "responses" and api_format == "openai_chat"
             else _response_has_chat_text
             if api_format == "openai_chat"
+            # Gemini: candidates prove the request served; text may be
+            # absent when the tiny probe cap ends inside thinking.
+            else (lambda body: isinstance(body, dict) and bool(body.get("candidates")))
+            if api_format == "google_genai"
             else lambda body: isinstance(body, dict) and bool(body.get("content"))
         )
         step, _body = await _timed_post(
@@ -832,6 +862,9 @@ async def run_provider_test_suite(
                     if clean_base_url.endswith("/v1")
                     else _append_endpoint(clean_base_url, "v1/models")
                 )
+            elif api_format == "google_genai":
+                # Native Gemini listing (Google and CLIProxy /v1beta alike).
+                models_url = _append_endpoint(clean_base_url, "v1beta/models")
             else:
                 models_url = _append_endpoint(clean_base_url, "models")
             step, body = await _timed_get(client, models_url, headers=headers, secrets=secrets)

@@ -211,8 +211,9 @@ def test_google_genai_effort_off_budget_zero_on_flash_and_128_on_pro(monkeypatch
 def test_google_genai_gemini_3_clamps_above_high_and_maps_off_to_floor(monkeypatch):
     """Gemini 3 thinking_level tops out at high; off maps to the model floor.
 
-    The 3.x pro line does not list "minimal" (3.1 Pro is low/medium/high), so
-    its floor is "low"; flash keeps the documented "minimal" floor.
+    The 3.x pro line accepts low/high only (three-way agreement recorded
+    2026-08-05: CLIProxy channel registries, hermes-agent, openclaw), so its
+    floor is "low"; flash keeps the documented "minimal" floor.
     """
     capture = _fresh_capture()
     import sys
@@ -232,6 +233,56 @@ def test_google_genai_gemini_3_clamps_above_high_and_maps_off_to_floor(monkeypat
     assert capture.captured[2].get("thinking_level") == "low"
     assert capture.captured[3].get("thinking_level") == "minimal"
     assert all("thinking_budget" not in kwargs for kwargs in capture.captured)
+
+
+def test_google_genai_base_url_reaches_the_client(monkeypatch):
+    """config.base_url must reach the partner client: it is what points the
+    REST SDK at CLIProxy's native Gemini inbound surface, the lossless
+    antigravity route (real functionCall thoughtSignatures round-trip;
+    the chat_completions wire cannot carry them). Absent when unset so the
+    SDK keeps its Google default host."""
+    capture = _fresh_capture()
+    import sys
+    import types
+
+    fake_module = types.ModuleType("langchain_google_genai")
+    fake_module.ChatGoogleGenerativeAI = capture
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
+
+    create_llm(_google_config(base_url="http://localhost:8318"))
+    # base_url=None explicitly: the LLMConfig field default reads the
+    # LLM_BASE_URL env var, which sibling tests may leak under xdist.
+    create_llm(_google_config(base_url=None))
+
+    assert capture.captured[0].get("base_url") == "http://localhost:8318"
+    assert "base_url" not in capture.captured[1]
+
+
+def test_google_genai_off_hides_thoughts_on_every_line(monkeypatch):
+    """Effort "off" pairs the floor level/budget with include_thoughts=False.
+
+    The native-path mirror of the chat_completions route's explicit "none"
+    (which floors the level AND sets includeThoughts false): 3.x cannot
+    fully disable thinking, so hiding the thoughts is the reachable half of
+    an honest off. Any other effort leaves the field unset so the server
+    default (thoughts included) stands and reasoning keeps streaming."""
+    capture = _fresh_capture()
+    import sys
+    import types
+
+    fake_module = types.ModuleType("langchain_google_genai")
+    fake_module.ChatGoogleGenerativeAI = capture
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
+
+    create_llm(_google_config(model="gemini-3-flash", reasoning_effort="off"))
+    create_llm(_google_config(model="gemini-3-pro", reasoning_effort="off"))
+    create_llm(_google_config(model="gemini-2.5-flash", reasoning_effort="off"))
+    create_llm(_google_config(model="gemini-3-flash", reasoning_effort="high"))
+
+    assert capture.captured[0].get("include_thoughts") is False
+    assert capture.captured[1].get("include_thoughts") is False
+    assert capture.captured[2].get("include_thoughts") is False
+    assert "include_thoughts" not in capture.captured[3]
 
 
 def test_bedrock_dispatches_to_converse_partner_package(monkeypatch):

@@ -17,6 +17,7 @@ from ..vendor.react_agent import (
     ToolRegistry,
 )
 from ..vendor.react_agent.nodes import (
+    _EMPTY_ROUND_NOTICE,
     is_context_overflow_error,
 )
 
@@ -3399,7 +3400,14 @@ class NymeriaAgent:
             try:
                 # First pass: the user's message against the current graph.
                 self._prepare_tool_reload_state_for_turn(thread_id, "astream")
+                # Tracks whether any pass annotated an exhausted empty round
+                # (nodes._finish_response attaches the notice AFTER the
+                # stream ended, so a trailing chunk below is the only way
+                # streaming surfaces ever see it).
+                empty_turn_annotated = False
                 async for evt in stream_processor.drive(graph, input_state):
+                    if isinstance(evt, dict) and evt.get("type") == "empty_turn":
+                        empty_turn_annotated = True
                     yield evt
 
                 # In-turn tool reload: if tool_manage(action="enable") added a
@@ -3419,6 +3427,8 @@ class NymeriaAgent:
                     context_label="tool reload",
                     graph_sink=_reload_graphs,
                 ):
+                    if isinstance(evt, dict) and evt.get("type") == "empty_turn":
+                        empty_turn_annotated = True
                     yield evt
                 if _reload_graphs:
                     # Reassign for the rest of astream (token tracking,
@@ -3702,6 +3712,18 @@ class NymeriaAgent:
                 # notice attached by the graph stays in place (never worse
                 # than before). Runs on the graph-idle post-astream tail, the
                 # same window the /rewind route uses when no turn is running.
+                if empty_turn_annotated:
+                    # Exhausted empty round: the notice was attached to the
+                    # checkpointed message AFTER the stream ended
+                    # (nodes._finish_response), so streaming surfaces would
+                    # deliver this turn as pure silence, the exact symptom
+                    # the guard exists to remove, while history reload shows
+                    # the notice. Emit the same text as a trailing response
+                    # chunk so the live view matches history. Mirrors the
+                    # refusal-notice trailing chunk below (live-probe
+                    # finding, 2026-08-07).
+                    yield {"type": "response", "content": _EMPTY_ROUND_NOTICE}
+
                 refusal_rewind: Optional[Dict[str, Any]] = None
                 try:
                     refusal_rewind = await asyncio.to_thread(

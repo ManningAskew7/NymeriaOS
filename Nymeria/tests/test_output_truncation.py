@@ -165,13 +165,23 @@ class _FakeStreamLLM:
 
 @pytest.fixture()
 def events(monkeypatch):
-    """Capture dispatched custom events (see tests/test_tool_node_sequential.py)."""
+    """Capture dispatched custom events (see tests/test_tool_node_sequential.py).
+
+    Both spellings: _finish_response dispatches synchronously even on the
+    async node, but the in-loop retry/swap events on the streaming path go
+    through the async twin (adispatch_custom_event).
+    """
     captured: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         nodes_module,
         "dispatch_custom_event",
         lambda name, payload, config=None: captured.append((name, payload)),
     )
+
+    async def _acapture(name, payload, config=None):
+        captured.append((name, payload))
+
+    monkeypatch.setattr(nodes_module, "adispatch_custom_event", _acapture)
     return captured
 
 
@@ -822,6 +832,321 @@ class TestColdStartCeiling:
 
         monkeypatch.setattr(nodes_module, "resolve_max_output_tokens", boom)
         await nodes_module._warm_max_output_ceiling(_anthropic_llm_config(), 0)
+
+
+def _silent_empty_response(metadata: dict | None = None) -> AIMessage:
+    """The incident shape (2026-08-06, thread 1a1aaee2): a NORMAL stop with
+    no text and no tool calls. gemini-3.6-flash via CLIProxy leaked its
+    intended tool call into the thinking channel as `call:default_api:`
+    prose and stopped "successfully" having emitted nothing."""
+    return AIMessage(
+        content="",
+        additional_kwargs={
+            "reasoning_content": (
+                "I've just initiated a file read operation using the "
+                "`call:default_api:file_read` function"
+            )
+        },
+        response_metadata=metadata
+        or {"finish_reason": "stop", "model_name": "gemini-3.6-flash-high"},
+        usage_metadata={
+            "input_tokens": 100000,
+            "output_tokens": 204,
+            "total_tokens": 100204,
+        },
+    )
+
+
+class _SequencedLLM:
+    """Sync stand-in that returns a different response per call."""
+
+    def __init__(self, responses: list[AIMessage]):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def invoke(self, _messages, **kwargs):
+        response = self._responses[min(self.calls, len(self._responses) - 1)]
+        self.calls += 1
+        return response
+
+
+class _SequencedStreamLLM:
+    """Async stand-in that streams a different response per call."""
+
+    def __init__(self, responses: list[AIMessage]):
+        self._responses = list(responses)
+        self.calls = 0
+
+    async def astream(self, _messages, **kwargs):
+        response = self._responses[min(self.calls, len(self._responses) - 1)]
+        self.calls += 1
+        yield AIMessageChunk(
+            content=response.content,
+            additional_kwargs=response.additional_kwargs,
+            response_metadata=response.response_metadata,
+            usage_metadata=response.usage_metadata,
+            tool_calls=response.tool_calls,
+        )
+
+
+class TestSilentStopPredicate:
+    """Rows for _is_silent_stop_response: normal-stop empties only."""
+
+    def test_normal_stop_empty_shapes_are_silent(self):
+        pred = nodes_module._is_silent_stop_response
+        assert pred(_silent_empty_response())
+        # Missing metadata counts as a normal stop (some providers send none).
+        assert pred(AIMessage(content=""))
+        # Reasoning-only content is not visible output.
+        assert pred(
+            AIMessage(
+                content=[{"type": "thinking", "thinking": "t", "signature": "s"}]
+            )
+        )
+
+    def test_owned_causes_and_healthy_shapes_are_not_silent(self):
+        pred = nodes_module._is_silent_stop_response
+        assert not pred(AIMessage(content="x"))
+        assert not pred(
+            AIMessage(content="", response_metadata={"finish_reason": "length"})
+        )
+        assert not pred(
+            AIMessage(
+                content="", response_metadata={"finish_reason": "content_filter"}
+            )
+        )
+        assert not pred(
+            AIMessage(content="", response_metadata={"stop_reason": "max_tokens"})
+        )
+        assert not pred(
+            AIMessage(content="", response_metadata={"stop_reason": "refusal"})
+        )
+        assert not pred(
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "t", "args": {}, "id": "c", "type": "tool_call"}],
+            )
+        )
+
+    def test_provider_spellings_are_case_blind(self):
+        """langchain-google-genai reports finish_reason as the UPPERCASE enum
+        name (STOP/MAX_TOKENS/SAFETY/...), and the Responses API reports
+        truncation as status="incomplete" with no finish_reason at all.
+        Case-sensitive lowercase compares were dead code on the native
+        Gemini route: a MAX_TOKENS dead turn was retried twice at full cost
+        and mislabeled with the wrong notice (cold review, 2026-08-07)."""
+        pred = nodes_module._is_silent_stop_response
+        # Owned causes, Gemini spellings: never retried as silent stops.
+        for reason in ("MAX_TOKENS", "SAFETY", "PROHIBITED_CONTENT", "RECITATION"):
+            assert not pred(
+                AIMessage(content="", response_metadata={"finish_reason": reason})
+            ), reason
+        # Responses-API truncation spelling.
+        assert not pred(
+            AIMessage(
+                content="",
+                response_metadata={
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                },
+            )
+        )
+        # A normal Gemini stop IS the silent-stop shape.
+        assert pred(AIMessage(content="", response_metadata={"finish_reason": "STOP"}))
+        # MALFORMED_FUNCTION_CALL is transient: retrying is the point.
+        assert pred(
+            AIMessage(
+                content="",
+                response_metadata={"finish_reason": "MALFORMED_FUNCTION_CALL"},
+            )
+        )
+
+    def test_gemini_uppercase_dead_turn_gets_truncation_treatment(self, events):
+        """A Gemini MAX_TOKENS dead turn must reach the truncation branch
+        (right notice, output_truncated event), not the retry loop."""
+        llm = _SequencedLLM(
+            [
+                AIMessage(
+                    content="",
+                    response_metadata={"finish_reason": "MAX_TOKENS"},
+                    usage_metadata={
+                        "input_tokens": 10,
+                        "output_tokens": 4096,
+                        "total_tokens": 4106,
+                    },
+                ),
+                AIMessage(content="never reached"),
+            ]
+        )
+        node = create_agent_node(llm, "system prompt")
+        result = node.invoke(
+            {"messages": [HumanMessage(content="hi")]}, {"configurable": {}}
+        )
+        assert llm.calls == 1
+        assert [n for n, _ in events if n == "output_truncated"] == ["output_truncated"]
+        assert [n for n, _ in events if n == "empty_turn_retry"] == []
+        assert nodes_module._TRUNCATION_NOTICE in _visible_text_of(
+            result["messages"][0].content
+        )
+
+    def test_gemini_safety_block_gets_refusal_treatment(self, events):
+        """A Gemini SAFETY block is a deterministic filter: retrying re-refuses.
+        It must take the refusal branch (event + rewind marker), not retry."""
+        llm = _SequencedLLM(
+            [
+                AIMessage(content="", response_metadata={"finish_reason": "SAFETY"}),
+                AIMessage(content="never reached"),
+            ]
+        )
+        node = create_agent_node(llm, "system prompt")
+        result = node.invoke(
+            {"messages": [HumanMessage(content="hi")]}, {"configurable": {}}
+        )
+        assert llm.calls == 1
+        assert [n for n, _ in events if n == "response_refused"] == ["response_refused"]
+        assert [n for n, _ in events if n == "empty_turn_retry"] == []
+        assert result["messages"][0].additional_kwargs.get("empty_turn_refusal") is True
+
+
+class TestEmptyRoundRetry:
+    """Third empty-turn cause: normal stop, nothing in it (2026-08-06).
+
+    Unlike truncation and refusal, this shape is retried IN PLACE before any
+    notice: the round executed nothing, so re-asking is inherently
+    replay-safe, and Gemini's reasoning-only stops are probabilistic enough
+    that a plain re-invoke usually recovers. The notice is the last resort,
+    and doubles as the guarantee that the checkpointed message is never
+    empty (an empty model turn 400s Gemini via CLIProxy on history replay,
+    permanently wedging the thread)."""
+
+    def test_empty_round_retries_in_place_and_recovers(self, events, caplog):
+        llm = _SequencedLLM(
+            [_silent_empty_response(), AIMessage(content="the answer")]
+        )
+        node = create_agent_node(llm, "system prompt")
+        with caplog.at_level("WARNING", logger="nymeria"):
+            result = node.invoke(
+                {"messages": [HumanMessage(content="hi")]}, {"configurable": {}}
+            )
+        out = result["messages"][0]
+        assert llm.calls == 2
+        # The recovered answer, with NO notice bolted onto it and no trace of
+        # the discarded empty attempt in graph state.
+        assert _visible_text_of(out.content) == "the answer"
+        assert "EMPTY ROUND" in caplog.text
+        assert [p["retry"] for n, p in events if n == "empty_turn_retry"] == [1]
+        assert [n for n, _ in events if n == "empty_turn"] == []
+
+    @pytest.mark.asyncio
+    async def test_empty_round_retry_on_the_streaming_path(self, events):
+        # Interactive turns stream; the guard must live on that path too.
+        llm = _SequencedStreamLLM(
+            [_silent_empty_response(), AIMessage(content="the answer")]
+        )
+        node = create_agent_node(llm, "system prompt")
+        result = await node.ainvoke(
+            {"messages": [HumanMessage(content="hi")]}, {"configurable": {}}
+        )
+        assert llm.calls == 2
+        assert _visible_text_of(result["messages"][0].content) == "the answer"
+        assert [p["retry"] for n, p in events if n == "empty_turn_retry"] == [1]
+
+    def test_exhausted_retries_attach_notice_and_event(self, events, caplog):
+        llm = _SequencedLLM([_silent_empty_response()])  # empty every time
+        node = create_agent_node(llm, "system prompt")
+        with caplog.at_level("WARNING", logger="nymeria"):
+            result = node.invoke(
+                {"messages": [HumanMessage(content="hi")]}, {"configurable": {}}
+            )
+        out = result["messages"][0]
+        assert llm.calls == 1 + nodes_module._EMPTY_ROUND_RETRY_LIMIT
+        # The checkpointed message must carry THIS cause's notice: silence
+        # for the user otherwise, and asserting the exact text pins that the
+        # truncation notice was not attached in its place.
+        assert nodes_module._EMPTY_ROUND_NOTICE in _visible_text_of(out.content)
+        assert "EMPTY TURN" in caplog.text
+        assert [p["retry"] for n, p in events if n == "empty_turn_retry"] == [1, 2]
+        emitted = [p for n, p in events if n == "empty_turn"]
+        assert len(emitted) == 1
+        assert emitted[0]["produced_output"] is False
+        assert emitted[0]["retries"] == nodes_module._EMPTY_ROUND_RETRY_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_on_the_streaming_path(self, events):
+        llm = _SequencedStreamLLM([_silent_empty_response()])
+        node = create_agent_node(llm, "system prompt")
+        result = await node.ainvoke(
+            {"messages": [HumanMessage(content="hi")]}, {"configurable": {}}
+        )
+        assert llm.calls == 1 + nodes_module._EMPTY_ROUND_RETRY_LIMIT
+        assert nodes_module._EMPTY_ROUND_NOTICE in _visible_text_of(
+            result["messages"][0].content
+        )
+        assert [p["retry"] for n, p in events if n == "empty_turn_retry"] == [1, 2]
+        assert [n for n, _ in events if n == "empty_turn"] == ["empty_turn"]
+
+    def test_truncated_empty_round_is_not_retried(self, events):
+        # max_tokens dead turns keep their own treatment: retrying would just
+        # reproduce the cap, and the truncation notice tells the user how to
+        # actually fix it.
+        llm = _SequencedLLM(
+            [
+                _thinking_only_response({"stop_reason": "max_tokens"}),
+                AIMessage(content="never reached"),
+            ]
+        )
+        node = create_agent_node(llm, "system prompt")
+        node.invoke({"messages": [HumanMessage(content="hi")]}, {"configurable": {}})
+        assert llm.calls == 1
+        assert [n for n, _ in events if n == "empty_turn_retry"] == []
+
+    def test_refused_empty_round_is_not_retried(self, events):
+        # Refusals have their own machinery (swap + rewind); retrying the same
+        # model on the same context tends to re-refuse and would double-bill.
+        llm = _SequencedLLM(
+            [
+                _refused_thinking_only_response({"stop_reason": "refusal"}),
+                AIMessage(content="never reached"),
+            ]
+        )
+        node = create_agent_node(llm, "system prompt")
+        node.invoke({"messages": [HumanMessage(content="hi")]}, {"configurable": {}})
+        assert llm.calls == 1
+        assert [n for n, _ in events if n == "empty_turn_retry"] == []
+
+    def test_tool_call_round_is_not_retried(self, events):
+        llm = _SequencedLLM(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "t", "args": {}, "id": "c1", "type": "tool_call"}
+                    ],
+                )
+            ]
+        )
+        node = create_agent_node(llm, "system prompt")
+        node.invoke({"messages": [HumanMessage(content="hi")]}, {"configurable": {}})
+        assert llm.calls == 1
+        assert [n for n, _ in events if n in ("empty_turn_retry", "empty_turn")] == []
+
+    def test_healthy_round_is_untouched(self, events):
+        llm = _SequencedLLM([AIMessage(content="fine")])
+        node = create_agent_node(llm, "system prompt")
+        result = node.invoke(
+            {"messages": [HumanMessage(content="hi")]}, {"configurable": {}}
+        )
+        assert llm.calls == 1
+        assert result["messages"][0].content == "fine"
+        assert [n for n, _ in events if n in ("empty_turn_retry", "empty_turn")] == []
+
+    def test_events_are_mirrored_to_autonomous_consumers(self):
+        # Autonomous turns are exactly the ones nobody watches; see the
+        # output_truncated mirror rationale.
+        from nymeria.core.event_bus import AGENT_STREAM_AUTONOMOUS_EVENT_TYPES
+
+        assert "empty_turn_retry" in AGENT_STREAM_AUTONOMOUS_EVENT_TYPES
+        assert "empty_turn" in AGENT_STREAM_AUTONOMOUS_EVENT_TYPES
 
 
 def test_visible_text_accepts_both_spellings_of_a_text_block():

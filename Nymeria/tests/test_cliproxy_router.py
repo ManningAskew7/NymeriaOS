@@ -686,6 +686,72 @@ def test_apply_route_global_codex_writes_openai_v1_responses():
     assert payload["api_mode"] == "responses"
 
 
+def test_apply_route_global_antigravity_writes_google_native_root():
+    """The whole native-route shape in one end-to-end assertion set: this is
+    the test the 2026-08-07 review round said would have caught the probe,
+    key-slot, and route-toggle gaps at once."""
+    captured: dict[str, Any] = {}
+
+    def fake_apply(updates, *, settings, agent, get_settings_fn):
+        captured["updates"] = updates
+        return {"restart_required": False}
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    client, _, _ = make_app()
+    import unittest.mock as mock
+
+    with mock.patch.object(
+        settings_router_module, "apply_server_settings_update", fake_apply
+    ):
+        payload = client.post(
+            "/cliproxy/apply-route",
+            json={"provider": "antigravity", "gatekeeper_key": "cpx-gate"},
+        ).json()
+
+    updates = captured["updates"]
+    assert updates.llm_provider == "google"
+    # Root, not /v1: the google-genai SDK appends /v1beta itself.
+    assert updates.llm_base_url == "http://proxy.test:8317"
+    # The gatekeeper claims the google key slot, not openai/anthropic.
+    assert updates.gemini_api_key == "cpx-gate"
+    assert updates.openai_api_key is None
+    assert updates.anthropic_api_key is None
+    # No openai api mode on a native route; the route is PINNED so a stale
+    # global openai_compat toggle cannot silently downgrade the wire.
+    assert updates.openai_api_mode is None
+    assert updates.llm_provider_route == "native"
+    assert payload["base_url"] == "http://proxy.test:8317"
+    assert payload["model"] == "gemini-3.6-flash-high"
+    assert payload["api_mode"] == ""
+
+
+def test_apply_route_thread_antigravity_pins_route_and_key_on_the_thread():
+    client, _, agent = make_app(thread_access=lambda user, thread_id: None)
+    response = client.post(
+        "/cliproxy/apply-route",
+        json={
+            "provider": "antigravity",
+            "scope": "thread",
+            "thread_id": "t-native",
+            "gatekeeper_key": "cpx-gate",
+        },
+    )
+    assert response.status_code == 200
+
+    llm = agent.thread_config_manager.saved["t-native"].llm_config
+    assert llm is not None
+    assert llm.provider == "google"
+    # Root, not /v1: the google-genai SDK appends /v1beta itself.
+    assert llm.base_url == "http://proxy.test:8317"
+    assert llm.api_key == "cpx-gate"
+    assert llm.openai_api_mode is None
+    # A stale per-thread openai_compat toggle would outrank the provider
+    # dispatch in create_llm; the apply pins the catalog's declared route.
+    assert llm.provider_route == "native"
+    assert llm.model == "gemini-3.6-flash-high"
+
+
 def test_apply_route_reuses_configured_gatekeeper_key():
     captured: dict[str, Any] = {}
 

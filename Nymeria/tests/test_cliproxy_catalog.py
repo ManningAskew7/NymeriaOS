@@ -22,9 +22,15 @@ def test_every_entry_has_a_complete_route_shape():
     for spec in list_cliproxy_providers():
         assert spec.id and spec.label and spec.oauth_endpoint, spec
         assert spec.flow in ("browser", "device"), spec.id
-        assert spec.nymeria_provider in ("anthropic", "openai"), spec.id
+        assert spec.nymeria_provider in ("anthropic", "openai", "google"), spec.id
         assert spec.url_shape in ("root", "v1"), spec.id
-        assert spec.key_setting in ("anthropic_api_key", "openai_api_key"), spec.id
+        # By catalog invariant every key_setting is a ServerSettingsUpdate
+        # field name (the global apply-route setattrs it verbatim).
+        assert spec.key_setting in (
+            "anthropic_api_key",
+            "openai_api_key",
+            "gemini_api_key",
+        ), spec.id
         assert spec.default_model, spec.id
         # Browser flows complete via POST /oauth-callback and need the
         # normalizer name; device flows complete server-side without one.
@@ -54,12 +60,38 @@ def test_codex_routes_openai_v1_responses():
 
 
 def test_generic_clis_route_openai_v1_chat_completions():
-    for provider_id in ("gemini-cli", "antigravity", "kimi", "grok"):
+    for provider_id in ("gemini-cli", "kimi", "grok"):
         spec = get_cliproxy_provider(provider_id)
         assert spec is not None, provider_id
         assert spec.nymeria_provider == "openai", provider_id
         assert spec.url_shape == "v1", provider_id
         assert spec.api_mode == "chat_completions", provider_id
+
+
+def test_antigravity_routes_google_native_at_the_proxy_root():
+    """Antigravity rides the native Gemini wire, not the OpenAI shim.
+
+    The native inbound surface is the lossless one: real functionCall
+    thoughtSignatures round-trip (the OpenAI translator replaces every one
+    with the bypass sentinel, which measurably degrades long agentic
+    loops), and the translator never manufactures an empty model turn.
+    Root URL because the google-genai SDK appends /v1beta/models/... to
+    its base itself; the key lands in GEMINI_API_KEY, which the google
+    factory reads. Live-verified 2026-08-07
+    (docs: private/cliproxy-gemini-native-inbound-2026-08.md; the
+    surface audit's antigravity x native row corroborates)."""
+    spec = get_cliproxy_provider("antigravity")
+    assert spec is not None
+    assert spec.nymeria_provider == "google"
+    assert spec.url_shape == "root"
+    assert spec.api_mode == ""
+    assert spec.key_env_var == "GEMINI_API_KEY"
+    # Bare host root: the SDK appends /v1beta itself; a /v1 here would
+    # produce /v1/v1beta/... and break routing.
+    assert (
+        cliproxy_data_plane_url("http://localhost:8318/", spec)
+        == "http://localhost:8318"
+    )
 
 
 def test_gemini_cli_carries_tos_warning():
