@@ -5,6 +5,8 @@ import io
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from cli_fixtures import FakeTerminalCapabilities, run
 from rich.cells import cell_len
 from rich.console import Console
@@ -401,10 +403,10 @@ class CLIProxyHeaderClient(HeaderFakeClient):
         self.settings["llm_base_url"] = "http://localhost:8317"
 
 
-def test_header_snapshot_labels_anthropic_cliproxy_oauth_provider() -> None:
+def test_header_snapshot_labels_anthropic_cliproxy_claude_channel() -> None:
     snapshot = run(build_header_snapshot(make_state(), CLIProxyHeaderClient()))
 
-    assert snapshot.provider == "cliproxy OAuth"
+    assert snapshot.provider == "cliproxy Claude"
     assert snapshot.api_type == "messages/v1"
 
 
@@ -439,6 +441,140 @@ def test_header_snapshot_labels_openai_api_modes() -> None:
     client.thread_config["llm_config"] = {"openai_api_mode": "chat_completions"}
     completions_snapshot = run(build_header_snapshot(make_state(), client))
     assert completions_snapshot.api_type == "chat completions/v1"
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url", "model", "api_mode", "expected_provider", "expected_api_type"),
+    [
+        # The compat surface names the channel from the model id.
+        (
+            "openai",
+            "http://localhost:8317/v1",
+            "gpt-5.5",
+            "responses",
+            "cliproxy Codex",
+            "responses/v1",
+        ),
+        (
+            "openai",
+            "http://cli-proxy-api:8317/v1",
+            "gemini-3.6-flash-high",
+            "chat_completions",
+            "cliproxy Gemini",
+            "chat completions/v1",
+        ),
+        (
+            "openai",
+            "http://localhost:8317/v1",
+            "kimi-k2.5",
+            "chat_completions",
+            "cliproxy Kimi",
+            "chat completions/v1",
+        ),
+        (
+            "openai",
+            "http://localhost:8317/v1",
+            "grok-4.3",
+            "chat_completions",
+            "cliproxy Grok",
+            "chat completions/v1",
+        ),
+        (
+            "openai",
+            "http://localhost:8317/v1",
+            "claude-fable-5",
+            "chat_completions",
+            "cliproxy Claude",
+            "chat completions/v1",
+        ),
+        # gpt-oss ids were observed in the antigravity pool, so the Codex
+        # guess would be wrong: fall back to the channel-blind label.
+        (
+            "openai",
+            "http://localhost:8317/v1",
+            "gpt-oss-120b",
+            "responses",
+            "OpenAI proxy",
+            "responses/v1",
+        ),
+        (
+            "openai",
+            "http://localhost:8317/v1",
+            "llama-3-70b",
+            "responses",
+            "OpenAI proxy",
+            "responses/v1",
+        ),
+        # The native google route is the antigravity channel; no API-type
+        # label exists for google yet (backlog #153), so the slot is empty.
+        (
+            "google",
+            "http://cli-proxy-api:8317",
+            "gemini-3.6-flash-high",
+            "responses",
+            "cliproxy Antigravity",
+            "",
+        ),
+        # Non-cliproxy google mirrors the anthropic/openai branch shapes.
+        (
+            "google",
+            "https://generativelanguage.example.com",
+            "gemini-3-pro",
+            "responses",
+            "custom Gemini",
+            "",
+        ),
+        ("google", None, "gemini-3-pro", "responses", "Gemini API", ""),
+    ],
+)
+def test_header_snapshot_names_cliproxy_channels(
+    provider: str,
+    base_url: str | None,
+    model: str,
+    api_mode: str,
+    expected_provider: str,
+    expected_api_type: str,
+) -> None:
+    client = HeaderFakeClient()
+    client.settings.update(
+        {
+            "llm_provider": provider,
+            "llm_model": model,
+            "llm_base_url": base_url,
+            "openai_api_mode": api_mode,
+        }
+    )
+    client.context_stats["model"] = model
+
+    snapshot = run(build_header_snapshot(make_state(), client))
+
+    assert snapshot.provider == expected_provider
+    assert snapshot.api_type == expected_api_type
+
+
+def test_header_snapshot_derives_google_cliproxy_base_from_global_openai_route() -> None:
+    """A thread override to google against a GLOBAL openai-compat CLIProxy
+    route (the live antigravity upgrade path) must derive its base URL from
+    the global CLIProxy URL, exactly as agent_llm_config resolves the real
+    traffic, and never fall through to "" (which would render the
+    direct-key "Gemini API" while the traffic goes to the proxy)."""
+    client = HeaderFakeClient()
+    client.settings.update(
+        {
+            "llm_provider": "openai",
+            "llm_model": "gpt-5.5",
+            "llm_base_url": "http://localhost:8317/v1",
+        }
+    )
+    client.thread_config["llm_config"] = {
+        "provider": "google",
+        "model": "gemini-3.6-flash-high",
+    }
+    client.context_stats["model"] = "gemini-3.6-flash-high"
+
+    snapshot = run(build_header_snapshot(make_state(), client))
+
+    assert snapshot.provider == "cliproxy Antigravity"
 
 
 def test_header_snapshot_labels_openrouter_concisely() -> None:

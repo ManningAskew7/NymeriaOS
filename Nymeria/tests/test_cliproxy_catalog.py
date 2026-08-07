@@ -10,8 +10,11 @@ split and vendor/react_agent/providers.py for the root-vs-/v1 handling).
 
 from __future__ import annotations
 
+import pytest
+
 from nymeria.cliproxy.catalog import (
     CLIPROXY_PROVIDERS,
+    cliproxy_channel_label,
     cliproxy_data_plane_url,
     get_cliproxy_provider,
     list_cliproxy_providers,
@@ -186,3 +189,82 @@ def test_model_owner_set_only_where_verified():
         "kimi": "",
         "grok": "",
     }
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        # Provider slot alone names the channel for the single-channel slots.
+        ("anthropic", "claude-fable-5", "Claude"),
+        ("anthropic", "", "Claude"),
+        ("google", "gemini-3.6-flash-high", "Antigravity"),
+        ("google", "", "Antigravity"),
+        # The openai slot is the shared compat surface: the model id names
+        # the channel.
+        ("openai", "gpt-5.5", "Codex"),
+        ("openai", "codex-mini", "Codex"),
+        ("openai", "claude-fable-5", "Claude"),
+        ("openai", "kimi-k2.5", "Kimi"),
+        ("openai", "grok-4.3", "Grok"),
+        # Either Google channel can serve a gemini id on the compat wire,
+        # so the channel stays generic (plan decision: no spelling
+        # heuristic).
+        ("openai", "gemini-3.6-flash-high", "Gemini"),
+        ("openai", "gemini-3-pro-preview", "Gemini"),
+        # Case-insensitive on both axes.
+        ("OpenAI", "GPT-5.5", "Codex"),
+        ("Anthropic", "claude-fable-5", "Claude"),
+    ],
+)
+def test_channel_label_names_the_serving_channel(provider, model, expected):
+    assert cliproxy_channel_label(provider, model) == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        # gpt-oss ids were observed in the ANTIGRAVITY pool (catalog note,
+        # 2026-08-05), so the Codex guess would be wrong: stay unknown.
+        ("openai", "gpt-oss-120b"),
+        # Unrecognized ids and empty models on the shared surface.
+        ("openai", "llama-3-70b"),
+        ("openai", ""),
+        # Slots no CLIProxy channel routes as.
+        ("openrouter", "gpt-5.5"),
+        ("custom", "gemini-3-pro"),
+        ("", "gpt-5.5"),
+    ],
+)
+def test_channel_label_returns_empty_when_channel_is_not_inferable(provider, model):
+    assert cliproxy_channel_label(provider, model) == ""
+
+
+def test_channel_label_covers_every_catalog_spec():
+    """Register-style ratchet tying the label tables to the spec rows.
+
+    cliproxy_channel_label's provider/prefix tables restate what the
+    CLIPROXY_PROVIDERS rows determine, and nothing else ties the two
+    together: without this, a future spec (new provider slot or new model
+    family) would silently render the channel-blind fallback. gemini-cli
+    deliberately maps to the generic "Gemini" (either Google channel can
+    serve a gemini id on the compat wire). A new spec must land a row here,
+    which is the decision this test exists to force.
+    """
+    labels = {
+        spec.id: cliproxy_channel_label(spec.nymeria_provider, spec.default_model)
+        for spec in CLIPROXY_PROVIDERS
+    }
+    assert labels == {
+        "claude": "Claude",
+        "codex": "Codex",
+        "antigravity": "Antigravity",
+        "gemini-cli": "Gemini",
+        "kimi": "Kimi",
+        "grok": "Grok",
+    }
+
+
+def test_channel_label_strips_padded_inputs():
+    assert cliproxy_channel_label("  openai  ", "  GPT-5.5  ") == "Codex"
+    assert cliproxy_channel_label(" Anthropic ", "") == "Claude"
+    assert cliproxy_channel_label("openai", "   ") == ""

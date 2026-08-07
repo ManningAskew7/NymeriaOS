@@ -49,6 +49,11 @@ FORBIDDEN_AT_CLI_IMPORT = (
     "transformers",
     "torch",
     "fastapi",
+    # ~120ms, measured 2026-08-07 when an eager nymeria/cliproxy/__init__.py
+    # rode the header's catalog import onto the launch path. The transport
+    # modules that need httpx are themselves imported lazily, so launch
+    # never needs it.
+    "httpx",
 )
 
 # Packages whose public export surface this file pins. Most serve `__all__`
@@ -57,6 +62,7 @@ FORBIDDEN_AT_CLI_IMPORT = (
 # shrank in the same pass, so the checks below tolerate the table's absence.
 EXPORT_SURFACE_PACKAGES = (
     "nymeria",
+    "nymeria.cliproxy",
     "nymeria.core",
     "nymeria.triggers",
     "nymeria.triggers.cli.transport",

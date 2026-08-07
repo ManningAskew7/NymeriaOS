@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ...cliproxy.catalog import cliproxy_channel_label
 from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from .transport.disconnected import is_disconnected_client
 
@@ -668,7 +669,7 @@ def _resolve_llm(
     if effort is None:
         effort = settings.get("llm_reasoning_effort")
     return (
-        _provider_label(provider, base_url),
+        _provider_label(provider, base_url, model),
         _api_type_label(provider, settings, llm_config),
         model,
         thinking_mode(provider=provider, model=model, extended=extended, effort=effort),
@@ -688,27 +689,42 @@ def _resolve_llm_base_url(
     global_provider = str(settings.get("llm_provider") or "")
     global_url = str(settings.get("llm_base_url") or "").strip().rstrip("/")
     if provider != global_provider:
-        if provider == "anthropic" and global_url and looks_like_cliproxy_url(global_url):
-            return global_url[:-3] if global_url.endswith("/v1") else global_url
-        return ""
+        # THE cross-provider CLIProxy derivation lives in llm_providers
+        # (agent_llm_config resolves the real traffic with it); a hand copy
+        # here once diverged, rendering a confident "Gemini API" for a
+        # google thread whose traffic went to the proxy. Function-local:
+        # llm_providers costs ~340ms to import and this runs only on the
+        # degraded no-overview header path.
+        from ...config.llm_providers import cliproxy_base_url_for_provider
+
+        return cliproxy_base_url_for_provider(provider, global_url) or ""
     return global_url
 
 
-def _provider_label(provider: str, base_url: str) -> str:
+def _provider_label(provider: str, base_url: str, model: str) -> str:
+    """Mirror of thread_overview._provider_label; kept in sync by the
+    parity test in tests/test_api_thread_overview.py."""
     provider_text = str(provider or "").strip()
     normalized = provider_text.casefold()
+    is_cliproxy = bool(base_url) and looks_like_cliproxy_url(base_url)
+    if is_cliproxy:
+        channel = cliproxy_channel_label(normalized, model)
+        if channel:
+            return f"cliproxy {channel}"
     if normalized == "anthropic":
-        if base_url and looks_like_cliproxy_url(base_url):
-            return "cliproxy OAuth"
         if base_url:
             return "custom Claude"
         return "Claude API"
     if normalized == "openai":
-        if base_url and looks_like_cliproxy_url(base_url):
+        if is_cliproxy:
             return "OpenAI proxy"
         if base_url:
             return "OpenAI compat"
         return "OpenAI API"
+    if normalized == "google":
+        if base_url:
+            return "custom Gemini"
+        return "Gemini API"
     if normalized == "openrouter":
         return "OpenRouter"
     if normalized == "custom":

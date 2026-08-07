@@ -5,6 +5,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.thread_config import (
@@ -411,6 +413,122 @@ def test_thread_overview_returns_resolved_sections(
     assert body["chat_apps"]["in_app_notification_level"] == "all_autonomous"
     assert body["user"] == {"id": "owner", "display_name": "Owner", "role": "user"}
     assert body["section_errors"] == {}
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url", "model", "expected_label"),
+    [
+        # Native google route at the proxy root = the antigravity channel.
+        (
+            "google",
+            "http://cli-proxy-api:8317",
+            "gemini-3.6-flash-high",
+            "cliproxy Antigravity",
+        ),
+        # On the shared compat surface the model id names the channel;
+        # gemini stays generic (either Google channel can serve it).
+        (
+            "openai",
+            "http://localhost:8317/v1",
+            "gemini-3.6-flash-high",
+            "cliproxy Gemini",
+        ),
+        ("openai", "http://localhost:8317/v1", "gpt-5.5", "cliproxy Codex"),
+        ("anthropic", "http://localhost:8317", "claude-fable-5", "cliproxy Claude"),
+        # Direct-key google gets a proper label instead of the raw slot.
+        ("google", None, "gemini-3-pro", "Gemini API"),
+    ],
+)
+def test_thread_overview_provider_label_names_cliproxy_channel(
+    tmp_path: Path,
+    api_client_builder,
+    provider: str,
+    base_url: str | None,
+    model: str,
+    expected_label: str,
+):
+    client, agent, _settings, token = _client(tmp_path, api_client_builder)
+    thread_id = "label-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._get_llm_config_for_thread = lambda thread_id="": LLMConfig(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        api_key="configured",
+    )
+
+    response = client.get(
+        f"/threads/{thread_id}/overview",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["llm"]["provider_label"] == expected_label
+
+
+def test_thread_overview_llm_defaults_label_when_resolver_is_missing(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The degrade path (_llm_defaults) labels from global settings.
+
+    It is live in production twice: as the fallback value when _llm_section
+    raises, and inside _llm_section when the agent has no LLM-config
+    resolver. Before this test the call site was entirely uncovered (a
+    mutated label there left the whole overview suite green)."""
+    client, agent, settings, token = _client(tmp_path, api_client_builder)
+    thread_id = "defaults-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._get_llm_config_for_thread = None
+    settings.llm_provider = "openai"
+    settings.llm_base_url = "http://localhost:8317/v1"
+    settings.llm_model = "gemini-3.6-flash-high"
+
+    response = client.get(
+        f"/threads/{thread_id}/overview",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    llm = response.json()["llm"]
+    assert llm["provider_label"] == "cliproxy Gemini"
+    assert llm["model"] == "gemini-3.6-flash-high"
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url", "model"),
+    [
+        ("anthropic", "http://localhost:8317", "claude-fable-5"),
+        ("anthropic", "https://gateway.example.com", "claude-fable-5"),
+        ("anthropic", None, "claude-fable-5"),
+        ("openai", "http://cli-proxy-api:8317/v1", "gpt-5.5"),
+        ("openai", "http://cli-proxy-api:8317/v1", "gemini-3.6-flash-high"),
+        ("openai", "http://cli-proxy-api:8317/v1", "kimi-k2.5"),
+        ("openai", "http://cli-proxy-api:8317/v1", "grok-4.3"),
+        ("openai", "http://cli-proxy-api:8317/v1", "claude-fable-5"),
+        ("openai", "http://cli-proxy-api:8317/v1", "gpt-oss-120b"),
+        ("openai", "http://cli-proxy-api:8317/v1", "llama-3-70b"),
+        ("openai", "https://api.example.com/v1", "gpt-5.5"),
+        ("openai", None, "gpt-5.5"),
+        ("google", "http://localhost:8318", "gemini-3.6-flash-high"),
+        ("google", "https://generativelanguage.example.com", "gemini-3-pro"),
+        ("google", None, "gemini-3-pro"),
+        ("openrouter", "http://localhost:8317/v1", "gpt-5.5"),
+        ("custom", "http://localhost:8317/v1", "some-model"),
+        ("", None, ""),
+        ("  anthropic  ", "http://localhost:8317", " CLAUDE-FABLE-5 "),
+    ],
+)
+def test_provider_label_mirrors_agree(provider, base_url, model):
+    """The two _provider_label bodies each claim sync in a docstring; this
+    gates the claim so a drift in either mirror fails instead of shipping
+    a divergent CLI-vs-GUI label."""
+    from nymeria.api.thread_overview import _provider_label as overview_label
+    from nymeria.triggers.cli.header import _provider_label as header_label
+
+    assert overview_label(provider, base_url, model) == header_label(
+        provider, base_url or "", model
+    )
 
 
 def test_thread_overview_enforces_thread_access(tmp_path: Path, api_client_builder):
