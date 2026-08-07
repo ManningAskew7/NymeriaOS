@@ -173,9 +173,12 @@ export function registryProviderGroups(catalog: LLMProviderSpec[]): ProviderSele
 /**
  * Recover which CLIProxy catalog entry a saved settings pair points at, so the
  * section prefills correctly for a CLI-configured backend. Shared with
- * ProviderSetupWizard: anthropic = claude; a Responses-mode openai route =
- * codex; otherwise resolve the chat-mode CLI by its catalog default model,
- * falling back to the first chat-mode entry.
+ * ProviderSetupWizard: anthropic = claude; google = the native-Gemini entry;
+ * then an exact default-model match across the catalog (grok-4.3 vs gpt-5.5
+ * disambiguate the two Responses-mode openai routes since grok moved to
+ * responses on 2026-08-07), then a model-name family fallback for the two
+ * name-scoped CLIs (a grok-4.5 or kimi-k2.6 thread is still that
+ * subscription), then the old mode heuristics.
  */
 export function detectCliproxyEntry(
   catalog: CLIProxyProviderInfo[],
@@ -187,12 +190,16 @@ export function detectCliproxyEntry(
     const googleEntry = catalog.find((entry) => entry.nymeria_provider === 'google');
     return googleEntry?.id ?? 'antigravity';
   }
+  const model = (settings.llm_model || '').trim().toLowerCase();
+  if (model) {
+    const byModel = catalog.find(
+      (entry) => (entry.default_model || '').toLowerCase() === model
+    );
+    if (byModel) return byModel.id;
+    if (model.includes('grok')) return 'grok';
+    if (model.includes('kimi')) return 'kimi';
+  }
   if ((settings.openai_api_mode ?? 'responses') === 'responses') return 'codex';
-  const model = (settings.llm_model || '').trim();
-  const byModel = catalog.find(
-    (entry) => entry.api_mode === 'chat_completions' && entry.default_model === model
-  );
-  if (byModel) return byModel.id;
   const chatEntry = catalog.find((entry) => entry.api_mode === 'chat_completions');
   return chatEntry?.id ?? 'codex';
 }

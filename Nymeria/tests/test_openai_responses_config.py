@@ -1977,6 +1977,92 @@ def test_fireworks_and_moonshot_use_flat_replay_all():
     assert _flat_reasoning_content_replay_mode(None, "https://api.moonshot.cn/v1") == "all"
 
 
+def test_cliproxy_kimi_uses_flat_replay_all():
+    """CLIProxy kimi threads carry provider "openai", so the replay key is
+    the proxy base URL plus a kimi model id. Without the echo the proxy
+    fabricates reasoning_content on tool-call turns (kimi channel audit
+    2026-08-07). The pair is the key: a kimi name on a non-proxy URL and a
+    non-kimi model on the proxy URL both stay unwired."""
+    assert (
+        _flat_reasoning_content_replay_mode(
+            "openai", "http://cli-proxy-api:8317/v1", "kimi-k3"
+        )
+        == "all"
+    )
+    assert (
+        _flat_reasoning_content_replay_mode(
+            "openai", "http://localhost:8318/v1", "kimi-k2.5"
+        )
+        == "all"
+    )
+    assert (
+        _flat_reasoning_content_replay_mode(
+            "openai", "http://localhost:11434/v1", "kimi-k3"
+        )
+        is None
+    )
+    # A None base_url must classify (not crash): reachable from
+    # classify_reasoning_passback on any config with a kimi model id and no
+    # base URL (the URL predicate is not None-tolerant).
+    assert _flat_reasoning_content_replay_mode("openai", None, "kimi-k3") is None
+    assert (
+        _flat_reasoning_content_replay_mode(
+            "openai", "http://cli-proxy-api:8317/v1", "grok-4.3"
+        )
+        is None
+    )
+
+
+def test_cliproxy_kimi_replays_reasoning_content_on_every_turn():
+    """Payload-level proof that a CLIProxy kimi thread echoes captured
+    reasoning_content on assistant turns (mode "all": tool-call turns AND
+    plain turns), so the proxy's "[reasoning unavailable]" fabrication
+    never fires on turns Nymeria captured."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        llm = create_llm(
+            llm_config(
+                {
+                    "provider": "openai",
+                    "model": "kimi-k3",
+                    "base_url": "http://cli-proxy-api:8317/v1",
+                    "openai_api_mode": "chat_completions",
+                },
+                extended_thinking=True,
+                reasoning_effort="high",
+            )
+        )
+
+    tool_turn = AIMessage(
+        content="",
+        additional_kwargs={"reasoning_content": "tool-turn trace"},
+        tool_calls=[{"name": "lookup", "args": {}, "id": "call_1"}],
+    )
+    plain_turn = AIMessage(
+        content="Answer",
+        additional_kwargs={"reasoning_content": "plain-turn trace"},
+    )
+    payload = llm._get_request_payload([
+        HumanMessage(content="Hi"),
+        tool_turn,
+        ToolMessage(content="result", tool_call_id="call_1"),
+        plain_turn,
+        HumanMessage(content="And?"),
+    ])
+
+    assistants = [
+        m for m in payload["messages"] if m.get("role") == "assistant"
+    ]
+    assert [m.get("reasoning_content") for m in assistants] == [
+        "tool-turn trace",
+        "plain-turn trace",
+    ]
+
+
 def test_fireworks_sets_reasoning_history_when_reasoning_enabled():
     with warnings.catch_warnings():
         warnings.filterwarnings(

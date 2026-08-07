@@ -686,6 +686,41 @@ def test_apply_route_global_codex_writes_openai_v1_responses():
     assert payload["api_mode"] == "responses"
 
 
+def test_apply_route_global_grok_writes_openai_v1_responses():
+    """Grok's global apply mirrors codex since the 2026-08-07 pass: openai
+    provider, /v1 base, responses mode (the xai channel's passthrough
+    wire)."""
+    captured: dict[str, Any] = {}
+
+    def fake_apply(updates, *, settings, agent, get_settings_fn):
+        captured["updates"] = updates
+        return {"restart_required": False}
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    client, _, _ = make_app()
+    import unittest.mock as mock
+
+    with mock.patch.object(
+        settings_router_module, "apply_server_settings_update", fake_apply
+    ):
+        payload = client.post(
+            "/cliproxy/apply-route",
+            json={
+                "provider": "grok",
+                "model": "grok-4.3",
+                "gatekeeper_key": "cpx-gate",
+            },
+        ).json()
+
+    updates = captured["updates"]
+    assert updates.llm_provider == "openai"
+    assert updates.llm_base_url == "http://proxy.test:8317/v1"
+    assert updates.openai_api_mode == "responses"
+    assert updates.openai_api_key == "cpx-gate"
+    assert payload["api_mode"] == "responses"
+
+
 def test_apply_route_global_antigravity_writes_google_native_root():
     """The whole native-route shape in one end-to-end assertion set: this is
     the test the 2026-08-07 review round said would have caught the probe,
@@ -933,7 +968,9 @@ def test_apply_route_thread_writes_thread_llm_config():
     assert saved.llm_config.provider == "openai"
     assert saved.llm_config.base_url == "http://proxy.test:8317/v1"
     assert saved.llm_config.api_key == "cpx-gate"
-    assert saved.llm_config.openai_api_mode == "chat_completions"
+    # Grok rides /v1/responses since the 2026-08-07 kimi/grok pass (the xai
+    # channel's upstream format is codex; responses is its passthrough wire).
+    assert saved.llm_config.openai_api_mode == "responses"
     assert saved.llm_config.model == "grok-4.3"
     assert saved.active_llm_fallback is None
     # Same guarantees as PATCH /threads/{id}/config: access checked/claimed,
@@ -1069,7 +1106,7 @@ def test_apply_route_thread_helper_skips_gate_when_no_access_fn():
     assert saved.llm_config is not None
     assert saved.llm_config.provider == "openai"
     assert saved.llm_config.api_key == "cpx-gate"
-    assert saved.llm_config.openai_api_mode == "chat_completions"
+    assert saved.llm_config.openai_api_mode == "responses"
     assert resp.scope == "thread"
     assert resp.thread_id == "t-9"
     # No access fn -> no gate raised; the cache eviction still fires.
@@ -1086,7 +1123,12 @@ def test_apply_route_thread_helper_merges_existing_config_and_clears_fallback():
         source_model="gpt-5.5",
         expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
     )
-    existing.llm_config = ThreadLLMConfig(temperature=0.4)
+    # Stale chat_completions from a pre-2026-08-07 grok apply: the re-apply
+    # must overwrite it with the spec's responses mode, or the thread stays
+    # on the lossy wire.
+    existing.llm_config = ThreadLLMConfig(
+        temperature=0.4, openai_api_mode="chat_completions"
+    )
     agent.thread_config_manager.saved["t-keep"] = existing
 
     cliproxy_router_module._apply_route_thread(
@@ -1106,6 +1148,7 @@ def test_apply_route_thread_helper_merges_existing_config_and_clears_fallback():
     assert saved.llm_config is existing.llm_config
     assert saved.llm_config.temperature == 0.4
     assert saved.llm_config.api_key == "cpx-new"
+    assert saved.llm_config.openai_api_mode == "responses"
     assert saved.active_llm_fallback is None
 
 

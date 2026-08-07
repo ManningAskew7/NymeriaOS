@@ -1130,10 +1130,11 @@ def test_model_step_unmapped_owner_keeps_flat_list() -> None:
 
     tab = _active_tab(_form(result))
     option_ids = [o["id"] for o in tab["fields"][1]["options"]]
-    # Original proxy order, no regrouping; preselect (spec default) is
-    # inserted at the front because the pool does not list it.
+    # Original proxy order, no regrouping; preselect (spec default,
+    # kimi-k3 since the 2026-08-07 kimi/grok pass) is inserted at the
+    # front because the pool does not list it.
     assert option_ids == [
-        "kimi-k2.5",
+        "kimi-k3",
         "claude-opus-4-7",
         "gemini-2.5-pro",
         "gpt-5.5",

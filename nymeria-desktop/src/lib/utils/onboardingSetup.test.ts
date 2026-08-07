@@ -318,7 +318,13 @@ describe('auth path detection', () => {
         id: 'kimi',
         nymeria_provider: 'openai',
         api_mode: 'chat_completions',
-        default_model: 'kimi-k2.5',
+        default_model: 'kimi-k3',
+      }),
+      cliproxyEntry({
+        id: 'grok',
+        nymeria_provider: 'openai',
+        api_mode: 'responses',
+        default_model: 'grok-4.3',
       }),
     ];
     expect(
@@ -335,6 +341,30 @@ describe('auth path detection', () => {
         openai_api_mode: 'responses',
       })
     ).toBe('codex');
+    expect(
+      detectCliproxyEntry(catalog, {
+        llm_provider: 'openai',
+        llm_model: 'kimi-k3',
+        openai_api_mode: 'chat_completions',
+      })
+    ).toBe('kimi');
+    // Grok rides responses since 2026-08-07: the default-model match must
+    // beat the old "responses-mode openai = codex" shortcut.
+    expect(
+      detectCliproxyEntry(catalog, {
+        llm_provider: 'openai',
+        llm_model: 'grok-4.3',
+        openai_api_mode: 'responses',
+      })
+    ).toBe('grok');
+    // Non-default models on the name-scoped CLIs resolve by family.
+    expect(
+      detectCliproxyEntry(catalog, {
+        llm_provider: 'openai',
+        llm_model: 'grok-4.5',
+        openai_api_mode: 'responses',
+      })
+    ).toBe('grok');
     expect(
       detectCliproxyEntry(catalog, {
         llm_provider: 'openai',

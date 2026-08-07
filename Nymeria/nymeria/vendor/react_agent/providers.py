@@ -217,18 +217,32 @@ def _looks_like_deepseek_base_url(base_url: Any) -> bool:
 
 
 def _flat_reasoning_content_replay_mode(
-    provider: Any, base_url: Any = None
+    provider: Any, base_url: Any = None, model: Any = None
 ) -> str | None:
     """Return how to replay a flat `reasoning_content` string for a provider.
 
     See `_FLAT_REASONING_CONTENT_REPLAY_BY_PROVIDER` for the modes. Keys on the
     provider id first; falls back to the base-URL predicates for the providers
-    wired before id-threading (DeepSeek / Fireworks / Moonshot).
+    wired before id-threading (DeepSeek / Fireworks / Moonshot). The model is
+    the tiebreaker for CLIProxy, whose threads all carry provider "openai": a
+    kimi model id there is the proxy's kimi channel, an identity chat wire to
+    Moonshot. Without the echo the proxy
+    FABRICATES reasoning_content on every tool-call turn: an earlier turn's
+    reasoning, the turn's own visible text, or the literal string "[reasoning
+    unavailable]", fed to the model as if it were its own prior thinking
+    (kimi channel audit 2026-08-07, normalizeKimiToolMessageLinks). Real
+    traces must ride back on every assistant turn instead.
     """
     if provider:
         mode = _FLAT_REASONING_CONTENT_REPLAY_BY_PROVIDER.get(str(provider))
         if mode is not None:
             return mode
+    if (
+        model
+        and "kimi" in str(model).lower()
+        and looks_like_cliproxy_url(str(base_url or ""))
+    ):
+        return "all"
     if _looks_like_deepseek_base_url(base_url):
         return "tool_calls_only"
     base = str(base_url or "").lower()
@@ -1159,7 +1173,9 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
         # top-level string on the assistant message. Capture into
         # additional_kwargs already happens on the way in
         # (_convert_chunk_to_generation_chunk).
-        flat_replay = _flat_reasoning_content_replay_mode(provider, base_url)
+        flat_replay = _flat_reasoning_content_replay_mode(
+            provider, base_url, getattr(self, "model_name", None)
+        )
         if flat_replay is not None:
             source_messages = self._convert_input(input_).to_messages()
             for source, wire_message in zip(source_messages, payload["messages"]):
@@ -2103,6 +2119,55 @@ def _openai_reasoning_effort_value(model: str, effort: str) -> str | None:
         # grok-4/-fast/4.1 lineage 400s on ANY reasoning_effort value (the
         # compat factory guards the same fact with the same predicate).
         return None
+    if "grok" in model_text:
+        # The CLIProxy xai channel hard-400s xhigh/max on its openai-family
+        # surfaces (strict same-family validation, never a clamp; xai
+        # channel audit 2026-08-07), so emit only the four levels the
+        # registry declares. Off is the explicit "none": grok-4.3 has a
+        # real none level, and on the none-less models the proxy floors
+        # ModeNone to the lowest level, matching the ladder that no longer
+        # advertises off there. Omission is worse on the chat wire (the
+        # proxy injects effort medium when the field is absent). The
+        # DIRECT xai provider deliberately keeps its own arm in
+        # _apply_chat_reasoning_toggles: api.x.ai validates differently
+        # from the proxy channel and cannot be live-tested from here.
+        if effort_text == "off":
+            return "none"
+        if effort_text in {"xhigh", "max"}:
+            return "high"
+        if effort_text in {"low", "medium", "high"}:
+            return effort_text
+        if not effort_text:
+            return "medium"
+        # minimal or any unrecognized token. Reachable despite the schema:
+        # the per-thread config file is file_write-editable and the clamp
+        # passes unknown tokens through unchanged. The proxy hard-400s
+        # unknown level strings on the openai-family surfaces and the
+        # conductor burns every credential retrying a deterministic 400,
+        # so emit only known levels; the floor is the least-wrong stand-in.
+        return "low"
+    if "kimi" in model_text:
+        # CLIProxy's kimi channel (identity chat wire). Off must be the
+        # explicit "none": the proxy maps it to Moonshot's
+        # thinking:{type:"disabled"}, while omission leaves the model
+        # thinking invisibly, billed and undisplayed (kimi channel audit
+        # 2026-08-07). The registry levels are low|high (k3 adds max); an
+        # unrecognized level string is the channel's only hard 400, so
+        # emit only known ones.
+        if effort_text == "off":
+            return "none"
+        if effort_text in {"low", "minimal"}:
+            # minimal is reachable only from file-authored configs (the
+            # schema rejects it; the clamp passes unknown tokens through);
+            # the floor is the honest mapping, not the high fallthrough.
+            return "low"
+        if effort_text in {"xhigh", "max"} and "kimi-k3" in model_text:
+            return "max"
+        # medium and above land on high (registry has no medium level;
+        # explicit beats the proxy's nearest-level clamp). Unrecognized
+        # tokens also land here: an unknown level string is this channel's
+        # only hard 400, so never emit one.
+        return "high"
     if model_text.startswith(("gpt-4", "gpt-3.5", "chatgpt")):
         # Non-reasoning OpenAI chat models reject the parameter outright
         # (400 "Unrecognized request argument"); nothing can be sent at

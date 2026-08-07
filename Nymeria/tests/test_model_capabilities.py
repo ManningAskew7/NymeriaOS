@@ -1745,6 +1745,19 @@ def test_cliproxy_subscription_defaults_resolve_a_real_window(monkeypatch):
         ("gemini-3-pro-preview", 1048576),
         ("kimi-k2.5", 262144),
         ("grok-4.3", 1000000),
+        # 2026-08-07 kimi/grok pass rows (proxy live registry; source-audit
+        # verified). kimi-k3-256k is the over-claim trap: it CONTAINS
+        # kimi-k3, so without its own row the longest-first substring pass
+        # would hand the 256k variant k3's 1M window and delay compaction
+        # 4x. kimi-k2.7-code-highspeed proves the shortest-alias rule
+        # answers the sibling.
+        ("kimi-k3", 1048576),
+        ("kimi-k3-256k", 262144),
+        ("kimi-k2.6", 262144),
+        ("kimi-k2.7-code", 262144),
+        ("kimi-k2.7-code-highspeed", 262144),
+        ("grok-4.5", 500000),
+        ("grok-composer-2.5-fast", 200000),
     ):
         assert capabilities.get_context_limit(model_id) == expected, model_id
 

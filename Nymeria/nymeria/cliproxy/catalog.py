@@ -199,9 +199,16 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
     CLIProxyProviderSpec(
         id="kimi",
         label="Kimi (Moonshot subscription)",
+        # chat_completions is DELIBERATE, not a fallback: on this channel
+        # that pair is a byte-level passthrough (reasoning_content and
+        # Moonshot fields survive verbatim), while the proxy's responses
+        # translator drops replayed reasoning and sampling params
+        # (docs/private/cliproxy-kimi-channel-audit-2026-08.md).
         description=(
             "Kimi device-code login (approve on kimi.com, no callback). "
-            "Routes through the proxy's OpenAI-compatible /v1 endpoint."
+            "Routes through the proxy's OpenAI-compatible /v1 endpoint in "
+            "chat_completions mode, the highest-fidelity wire for this "
+            "channel (reasoning streams and replays)."
         ),
         oauth_endpoint="kimi",
         flow="device",
@@ -210,15 +217,26 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         url_shape="v1",
         key_setting="openai_api_key",
         api_mode="chat_completions",
-        default_model="kimi-k2.5",
+        # Newest/largest kimi (1M context, low/high/max thinking levels) per
+        # the proxy's live model registry; source-audit-verified only, no
+        # live kimi login observed yet (entitlement unconfirmed).
+        default_model="kimi-k3",
         auth_file_provider="kimi",
     ),
     CLIProxyProviderSpec(
         id="grok",
         label="Grok (SuperGrok/X Premium subscription)",
+        # responses is the channel's passthrough wire: the xai channel's
+        # upstream format is literally codex, so /v1/responses streams and
+        # replays reasoning items with no injected effort default and
+        # surfaces upstream failures, while its chat_completions translator
+        # drops replayed reasoning and injects a medium effort when the
+        # field is omitted
+        # (docs/private/cliproxy-xai-channel-audit-2026-08.md).
         description=(
-            "xAI OAuth (7.1.x proxies only). Routes through the proxy's "
-            "OpenAI-compatible /v1 endpoint."
+            "xAI OAuth (7.1.x proxies only). Routes as the openai provider "
+            "in responses mode at the proxy /v1 URL, the highest-fidelity "
+            "wire for this channel (reasoning streams and replays)."
         ),
         oauth_endpoint="xai",
         flow="browser",
@@ -226,7 +244,12 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         nymeria_provider="openai",
         url_shape="v1",
         key_setting="openai_api_key",
-        api_mode="chat_completions",
+        api_mode="responses",
+        # grok-4.3: full none/low/medium/high ladder + 1M context + the only
+        # flagship inside the pinned v7.1.61 reasoning allowlist. grok-4.5
+        # stays non-default until the proxy upgrade (backlog #151): v7.1.61
+        # deletes its reasoning config before the POST, so it thinks
+        # invisibly.
         default_model="grok-4.3",
         auth_file_provider="xai",
     ),
