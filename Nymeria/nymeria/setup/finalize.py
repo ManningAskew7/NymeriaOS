@@ -983,9 +983,16 @@ def _resolve_optional_env(
     api_key: str,
 ) -> dict[str, str]:
     optional_env = {k: v.strip() for k, v in state.optional_env.items() if v}
-    if spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars:
-        # The primary key already writes OPENAI_API_KEY; never duplicate it.
-        optional_env.pop("OPENAI_API_KEY", None)
+    if spec is not None:
+        # The primary provider key already writes its own env var(s); never
+        # duplicate or shadow them from the optional pool. Generalized from
+        # the OPENAI_API_KEY-only pop when the antigravity CLIProxy route
+        # made GEMINI_API_KEY a primary slot too (2026-08-07): without this,
+        # a typed Gemini media key silently shadowed or was shadowed by the
+        # proxy gatekeeper, and the capability summary reported Gemini media
+        # tools ready off a proxy-local key that cannot serve them.
+        for env_name in spec.api_key_env_vars:
+            optional_env.pop(env_name, None)
     return optional_env
 
 

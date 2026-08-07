@@ -526,6 +526,46 @@ def test_llm_provider_test_uses_anthropic_proxy_root_and_cloak_header(
     assert FakeAsyncClient.calls[0]["headers"]["User-Agent"] == "claude-cli/2.1.113"
 
 
+def test_llm_provider_test_uses_google_native_wire_on_cliproxy_root(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The antigravity native route (catalog 2026-08-07): provider google
+    with a CLIProxy root base must probe the /v1beta generateContent
+    surface with x-goog-api-key. The old fallthrough built
+    {root}/chat/completions, which 404s at the proxy root, so credential
+    verify was permanently inconclusive and the desktop wizard's Save
+    (gated on a passing test) could not complete for antigravity."""
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}}]
+    }
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "google",
+            "llm_model": "gemini-3.6-flash-high",
+            "api_key": "cpx-secret-key",
+            "llm_base_url": "http://localhost:8318",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert (
+        FakeAsyncClient.calls[0]["url"]
+        == "http://localhost:8318/v1beta/models/gemini-3.6-flash-high:generateContent"
+    )
+    assert FakeAsyncClient.calls[0]["headers"]["x-goog-api-key"] == "cpx-secret-key"
+    assert "Authorization" not in FakeAsyncClient.calls[0]["headers"]
+    assert FakeAsyncClient.calls[0]["json"]["contents"][0]["parts"][0]["text"]
+
+
 def test_llm_provider_test_redacts_secret_from_failure_response(
     tmp_path: Path,
     monkeypatch,

@@ -595,6 +595,9 @@ _LLM_CREDENTIAL_FIELDS = frozenset(
         "anthropic_api_key",
         "anthropic_direct_api_key",
         "openai_api_key",
+        # An LLM-route credential since the antigravity native route
+        # (catalog key_setting, 2026-08-07), not just a media-tools key.
+        "gemini_api_key",
         "openrouter_api_key",
         # The generic slot (routed to the selected provider's declared key var)
         # is a credential change like the four above: the key is baked into the
@@ -812,6 +815,13 @@ async def _test_llm_provider_config(
         else:
             api_key = "not-needed"
 
+    provider_spec = get_llm_provider_spec(provider)
+    google_native = (
+        provider_spec is not None
+        and getattr(provider_spec, "api_format", "") == "google_genai"
+        and provider_route != "openai_compat"
+    )
+
     if provider == "anthropic":
         clean_base = base_url or "https://api.anthropic.com"
         url = f"{clean_base}/v1/messages"
@@ -822,6 +832,23 @@ async def _test_llm_provider_config(
             "model": model,
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "Reply with ok."}],
+        }
+        response_api_mode = None
+    elif google_native:
+        # Native Gemini wire (google-genai REST shape). The configured base
+        # is honored so CLIProxy's /v1beta inbound surface (antigravity
+        # native route, catalog 2026-08-07) is testable; without a base this
+        # probes Google directly. Bearer/chat-completions here would 404 the
+        # proxy root, which silently broke antigravity credential verify and
+        # gated the desktop wizard's Save behind a test that could not pass.
+        clean_base = (base_url or "https://generativelanguage.googleapis.com").rstrip(
+            "/"
+        )
+        url = f"{clean_base}/v1beta/models/{model}:generateContent"
+        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": "Reply with ok."}]}],
+            "generationConfig": {"maxOutputTokens": 64},
         }
         response_api_mode = None
     else:

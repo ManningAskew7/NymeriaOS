@@ -310,6 +310,70 @@ def _strip_inline_thinking_from_responses_content(content: Any) -> Any:
     return cleaned
 
 
+# Model-visible on replay (the model reads prior assistant turns as its own
+# words), so it is a bracketed meta-note rather than first-person prose, the
+# same pattern openclaw ships as "[assistant reasoning omitted]". Never
+# applied to tool-call turns.
+_EMPTY_ASSISTANT_PLACEHOLDER = "[no output produced this round]"
+
+
+def _assistant_wire_content_is_empty(content: Any) -> bool:
+    """True when serialized assistant content carries nothing at all.
+
+    Empty means: None, "", [], or a parts list whose every part is a
+    text-ish part ("text"/"output_text") with empty text. Any non-text part
+    (image, refusal, unknown) counts as substance and is left alone.
+    """
+    if content is None or content == "" or content == []:
+        return True
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                return False
+        elif isinstance(part, dict):
+            if part.get("type") not in ("text", "output_text"):
+                return False
+            if part.get("text"):
+                return False
+        else:
+            return False
+    return True
+
+
+def _pad_empty_assistant_messages(payload: dict[str, Any]) -> dict[str, Any]:
+    """Give placeholder text to assistant messages that serialize to nothing.
+
+    An assistant turn with no content and no tool calls is legal on the
+    OpenAI wire but poisons some proxied upstreams on history replay:
+    CLIProxy's openai->antigravity translator turns it into a Gemini model
+    turn with an empty parts array, which Google 400s (INVALID_ARGUMENT),
+    permanently wedging the thread (incident 2026-08-06, thread 1a1aaee2).
+    The agent nodes now retry-then-annotate NEW empty rounds, but histories
+    written before that guard (or by other writers) still replay; padding at
+    the payload boundary neutralizes them at send time, no storage surgery.
+    Runs on the FINAL payload, after the reasoning-replay branches, because
+    inline-thinking stripping can itself empty a message. Tool-call turns
+    are never touched: on chat-completions the tool_calls guard skips them,
+    and on Responses an empty tool-call message emits no message item at
+    all.
+    """
+    items = payload.get("messages")
+    if not isinstance(items, list):
+        items = payload.get("input")
+    if not isinstance(items, list):
+        return payload
+    for item in items:
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        if item.get("tool_calls") or item.get("function_call"):
+            continue
+        if _assistant_wire_content_is_empty(item.get("content")):
+            item["content"] = _EMPTY_ASSISTANT_PLACEHOLDER
+    return payload
+
+
 def _normalize_openrouter_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Fill OpenRouter-required Responses history fields LangChain can omit."""
     payload.pop("previous_response_id", None)
@@ -1012,6 +1076,21 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
         stop: list[str] | None = None,
         **kwargs: Any,
     ) -> dict:
+        # Funnel: every payload shape and branch below exits through the
+        # empty-assistant padding, which must see the FINAL wire content
+        # (inline-thinking stripping in the replay branches can itself empty
+        # a message). See _pad_empty_assistant_messages for why.
+        return _pad_empty_assistant_messages(
+            self._reasoning_adjusted_payload(input_, stop=stop, **kwargs)
+        )
+
+    def _reasoning_adjusted_payload(
+        self,
+        input_,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         base_url = getattr(self, "openai_api_base", None)
         provider = getattr(self, "nymeria_provider", None)
@@ -1424,7 +1503,11 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
         and config.provider_route != "openai_compat"
         and config.openai_api_mode != "responses"
     ):
-        logger.warning(
+        # DEBUG, not WARNING: a global OPENAI_API_MODE alongside a
+        # non-OpenAI per-thread provider is a normal configuration (the
+        # antigravity native route made it the default path on some
+        # deployments), and this fires per turn.
+        logger.debug(
             "[LLM] Ignoring openai_api_mode=%s for non-OpenAI-compatible provider %s",
             config.openai_api_mode,
             config.provider,
@@ -3301,6 +3384,24 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
         "max_retries": _GOOGLE_GENAI_DISABLE_RETRIES,
     }
 
+    if config.base_url:
+        # Point the google-genai REST client at an alternate host. The
+        # primary target is CLIProxy's native Gemini inbound surface: the
+        # SDK appends /v1beta/models/{model}:generateContent to this base
+        # and sends the key as x-goog-api-key, which CLIProxy checks
+        # against its local api-keys list, so a bare host root (e.g.
+        # http://localhost:8318) plus the CLIProxy local key in
+        # config.api_key is the whole configuration. This is the lossless
+        # antigravity route: real functionCall thoughtSignatures round-trip
+        # verbatim (the proxy's gemini-inbound translator only substitutes
+        # the bypass sentinel for missing/short signatures), where the
+        # chat_completions shape structurally cannot carry them. Verified
+        # live 2026-08-07
+        # (docs/private/cliproxy-gemini-native-inbound-2026-08.md).
+        # langchain-google-genai 4.x aliases base_url to client_options;
+        # REST only, no gRPC implication.
+        kwargs["base_url"] = config.base_url
+
     if config.temperature is not None:
         kwargs["temperature"] = config.temperature
     if config.top_p is not None:
@@ -3370,6 +3471,16 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
                 # 2.5 pro accepts up to 32768.
                 budget = 24576
             kwargs["thinking_budget"] = budget
+        if effort == "off":
+            # Honest "off", native-path half: the level/budget maps above
+            # already floor the effort at the lowest each line accepts
+            # (3.x cannot fully disable thinking); hiding the thoughts is
+            # the other reachable half, mirroring what the
+            # chat_completions route gets from the proxy's explicit
+            # "none" (ModeNone: floor the level, includeThoughts false).
+            # thinking_level's Literal has no "none", so this pair is the
+            # closest the typed field allows.
+            kwargs["include_thoughts"] = False
 
     return ChatGoogleGenerativeAI(**kwargs)
 

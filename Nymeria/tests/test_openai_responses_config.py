@@ -319,6 +319,117 @@ def test_prompt_cache_key_scoping_local_vs_cliproxy_vs_openrouter():
     )
 
 
+def _empty_assistant_history() -> list:
+    """The wedged-thread shape (2026-08-06, thread 1a1aaee2): an assistant
+    turn with empty content, no tool calls, reasoning only, mid-history."""
+    return [
+        HumanMessage(content="hi"),
+        AIMessage(
+            content="",
+            additional_kwargs={"reasoning_content": "leaked tool-call prose"},
+        ),
+        HumanMessage(content="continue"),
+    ]
+
+
+def test_empty_assistant_turns_are_padded_on_both_api_modes():
+    """An assistant turn serializing to no content and no tool calls is
+    legal OpenAI input but poisons proxied Gemini upstreams on replay:
+    CLIProxy's openai->antigravity translator manufactures a model turn
+    with an empty parts array from it and Google 400s INVALID_ARGUMENT,
+    permanently wedging the thread. Padding at the payload boundary
+    neutralizes histories that already contain the shape: no DB surgery."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        chat_llm = create_llm(_openai_config(openai_api_mode="chat_completions"))
+    chat_messages = chat_llm._get_request_payload(_empty_assistant_history())[
+        "messages"
+    ]
+    assistant = [m for m in chat_messages if m.get("role") == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0]["content"] == providers._EMPTY_ASSISTANT_PLACEHOLDER
+
+    responses_llm = create_llm(_openai_config(openai_api_mode="responses"))
+    input_items = responses_llm._get_request_payload(_empty_assistant_history())[
+        "input"
+    ]
+    assistant_items = [i for i in input_items if i.get("role") == "assistant"]
+    assert len(assistant_items) == 1
+    assert assistant_items[0]["content"] == providers._EMPTY_ASSISTANT_PLACEHOLDER
+
+
+def test_tool_call_assistant_turns_are_never_padded():
+    """An empty-content tool-call turn is legal AND meaningful; injecting
+    placeholder text into it teaches the model that tool calls come with
+    prose (the mimicry failure documented across other harnesses)."""
+    history = [
+        HumanMessage(content="hi"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "t", "args": {"x": 1}, "id": "call_1", "type": "tool_call"}
+            ],
+        ),
+        ToolMessage(content="result", tool_call_id="call_1"),
+    ]
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        chat_llm = create_llm(_openai_config(openai_api_mode="chat_completions"))
+    chat_payload = chat_llm._get_request_payload(history)
+    assistant = [
+        m for m in chat_payload["messages"] if m.get("role") == "assistant"
+    ]
+    assert len(assistant) == 1
+    assert assistant[0].get("content") in (None, "")
+
+    responses_llm = create_llm(_openai_config(openai_api_mode="responses"))
+    responses_payload = responses_llm._get_request_payload(history)
+    # Responses mode emits no assistant message item at all for this shape,
+    # only the function_call item; nothing to pad, nothing padded.
+    roles = [i.get("role") for i in responses_payload["input"]]
+    assert "assistant" not in roles
+    assert providers._EMPTY_ASSISTANT_PLACEHOLDER not in str(responses_payload)
+
+
+def test_openrouter_thinking_only_turn_is_padded_after_stripping():
+    """Funnel order: the openrouter replay branch strips inline thinking
+    from assistant content, which can EMPTY a message that arrived with
+    text. Padding runs on the final payload, after that stripping."""
+    openrouter = create_llm(_openrouter_config())
+    history = [
+        HumanMessage(content="hi"),
+        AIMessage(content="<think>only private thoughts</think>"),
+        HumanMessage(content="go on"),
+    ]
+    messages = openrouter._get_request_payload(history)["messages"]
+    assistant = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0]["content"] == providers._EMPTY_ASSISTANT_PLACEHOLDER
+
+
+def test_assistant_wire_content_emptiness_rules():
+    empty = providers._assistant_wire_content_is_empty
+    assert empty(None)
+    assert empty("")
+    assert empty([])
+    assert empty([""])
+    assert empty([{"type": "text", "text": ""}])
+    assert empty([{"type": "output_text", "text": "", "annotations": []}])
+    assert not empty("x")
+    assert not empty(["x"])
+    assert not empty([{"type": "text", "text": "x"}])
+    # Any non-text part counts as substance: never pad next to an image.
+    assert not empty([{"type": "image_url", "image_url": {"url": "data:x"}}])
+
+
 def test_chat_openai_with_reasoning_is_importable_stable_class():
     assert providers._get_chat_openai_with_reasoning() is ChatOpenAIWithReasoning
     assert (

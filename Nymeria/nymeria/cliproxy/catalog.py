@@ -25,6 +25,8 @@ from typing import Literal, Optional
 OAuthFlow = Literal["browser", "device"]
 UrlShape = Literal["root", "v1"]
 ApiMode = Literal["", "chat_completions", "responses"]
+# Mirrors LLMConfig.provider_route plus "" for single-route providers.
+ProviderRoute = Literal["", "native", "openai_compat", "anthropic_messages"]
 
 GEMINI_CLI_TOS_WARNING = (
     "Google treats third-party use of the Gemini CLI OAuth client as a policy "
@@ -50,6 +52,13 @@ class CLIProxyProviderSpec:
     url_shape: UrlShape
     key_setting: str
     api_mode: ApiMode = ""
+    # Provider ROUTE the target requires, for multi-route providers
+    # (google: native vs openai_compat). Both apply paths pin it so a
+    # stale per-thread/global route toggle cannot silently downgrade the
+    # wire (openai_compat is checked BEFORE the provider dispatch in
+    # create_llm). Empty = single-route provider, apply clears the thread
+    # field and leaves the global untouched.
+    provider_route: ProviderRoute = ""
     default_model: str = ""
     tos_warning: str = ""
     # The `provider` string this CLI's entries carry in GET /auth-files.
@@ -153,16 +162,20 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         id="antigravity",
         label="Antigravity (Google account)",
         description=(
-            "Antigravity OAuth (separate Google client). Routes through the "
-            "proxy's OpenAI-compatible /v1 endpoint."
+            "Antigravity OAuth (separate Google client). Routes as the "
+            "native google provider at the proxy root URL: the Gemini SDK "
+            "appends /v1beta itself, and the native wire is the lossless "
+            "one (real thought signatures round-trip; the OpenAI-compat "
+            "path replaces them with a bypass sentinel, which measurably "
+            "degrades long agentic loops). Verified live 2026-08-07."
         ),
         oauth_endpoint="antigravity",
         flow="browser",
         callback_provider="antigravity",
-        nymeria_provider="openai",
-        url_shape="v1",
-        key_setting="openai_api_key",
-        api_mode="chat_completions",
+        nymeria_provider="google",
+        url_shape="root",
+        key_setting="gemini_api_key",
+        provider_route="native",
         # Antigravity's own upstream naming (quality-suffixed ids, not the
         # gemini-cli -preview spellings). Live-verified 2026-08-05 on the
         # first real login: the pool carried gemini-3.6-flash-high (this
@@ -237,8 +250,10 @@ def cliproxy_data_plane_url(management_url: str, spec: CLIProxyProviderSpec) -> 
     """Derive the LLM base URL for a CLI from the proxy management URL.
 
     The management URL is the proxy host root (data plane and control plane
-    share one port). Claude uses the root (the Anthropic SDK appends
-    /v1/messages); everything else uses the OpenAI-compatible /v1 path.
+    share one port). Root-shape targets hand the SDK the bare host (the
+    Anthropic SDK appends /v1/messages; the google-genai SDK appends
+    /v1beta/models/...); v1-shape targets use the OpenAI-compatible /v1
+    path.
     """
     base = (management_url or "").strip().rstrip("/")
     if base.endswith("/v1"):

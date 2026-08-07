@@ -618,10 +618,13 @@ def _google_reasoning_efforts(model_text: str) -> tuple:
     the 3.x pro ids accept low/high ONLY (verified in the CLIProxy registry
     for the gemini-cli previews and the antigravity -high/-low forms,
     2026-08-05); the flash lineage also accepts medium. "off" stays on the
-    ladder even though 3.x+ cannot fully disable thinking: it wires the
-    explicit "none", which bypasses level validation (ModeNone) and floors
-    to the lowest level with thoughts hidden, the closest honest off that
-    exists. Exotic variants (flash-image) carry narrower per-model sets
+    ladder even though 3.x+ cannot fully disable thinking. Per wire: the
+    chat_completions path sends the explicit "none", which bypasses level
+    validation (ModeNone) and floors to the lowest level with thoughts
+    hidden; the native google path (antigravity default since 2026-08-07)
+    pairs the floor level/budget with include_thoughts=False, since
+    langchain's typed thinking_level has no "none". Same honest off, two
+    spellings. Exotic variants (flash-image) carry narrower per-model sets
     this static ladder cannot know; a management-API-driven ladder is the
     complete fix (backlog #150, which also tracks whether Google's NATIVE
     surface accepts medium on 3.x pro, where the CLIProxy registries do

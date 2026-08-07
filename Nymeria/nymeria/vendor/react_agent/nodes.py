@@ -1125,11 +1125,79 @@ def _is_empty_refusal_response(response: Any) -> bool:
     the user already saw content, so they are never swapped (or rewound).
     """
     metadata = getattr(response, "response_metadata", None) or {}
-    refused = (
-        metadata.get("stop_reason") == "refusal"
-        or metadata.get("finish_reason") == "content_filter"
+    if not _is_refused_metadata(metadata):
+        return False
+    if _visible_text_of(getattr(response, "content", None)):
+        return False
+    return not bool(getattr(response, "tool_calls", None))
+
+
+def _finish_spelling(metadata: dict, key: str) -> str:
+    """One finish/stop-reason value, lowercased for provider-blind compares.
+
+    langchain-google-genai reports finish_reason as the UPPERCASE enum name
+    (``STOP``, ``MAX_TOKENS``, ``SAFETY``, ...); OpenAI and Anthropic report
+    lowercase strings. Case-sensitive compares here were dead code on the
+    native Gemini route (cold review, 2026-08-07).
+    """
+    value = metadata.get(key)
+    return value.lower() if isinstance(value, str) else ""
+
+
+def _is_truncated_metadata(metadata: dict) -> bool:
+    """Provider-blind output-cap detection.
+
+    ``length`` (OpenAI chat), ``max_tokens`` (Anthropic stop_reason AND
+    Gemini's MAX_TOKENS finish enum, which lowercases to the same string),
+    plus the Responses-API spelling: ``status: "incomplete"`` with no
+    finish_reason at all.
+    """
+    if _finish_spelling(metadata, "finish_reason") in ("length", "max_tokens"):
+        return True
+    if _finish_spelling(metadata, "stop_reason") == "max_tokens":
+        return True
+    return _finish_spelling(metadata, "status") == "incomplete"
+
+
+def _is_refused_metadata(metadata: dict) -> bool:
+    """Provider-blind refusal/content-block detection.
+
+    ``refusal`` (Anthropic), ``content_filter`` (OpenAI), and Gemini's
+    block-family finish enums (SAFETY / PROHIBITED_CONTENT / RECITATION /
+    BLOCKLIST / SPII, all deterministic filters where a plain retry
+    re-refuses). MALFORMED_FUNCTION_CALL is deliberately NOT here: a
+    malformed call is transient and exactly what the silent-stop retry
+    exists to re-ask.
+    """
+    if _finish_spelling(metadata, "stop_reason") == "refusal":
+        return True
+    return _finish_spelling(metadata, "finish_reason") in (
+        "content_filter",
+        "safety",
+        "prohibited_content",
+        "recitation",
+        "blocklist",
+        "spii",
     )
-    if not refused:
+
+
+def _is_silent_stop_response(response: Any) -> bool:
+    """True for a NORMAL-stop response with no visible text and no tool calls.
+
+    The third empty-turn cause, alongside truncation and refusal (see the
+    two metadata helpers above), which are both excluded here because each
+    has its own handling. Gemini 3 is the archetype producer: the intended
+    tool call leaks into the thinking channel as ``call:default_api:`` prose
+    and the model stops "successfully" having emitted nothing (incident
+    2026-08-06, thread 1a1aaee2; the shape is Google-acknowledged upstream
+    with no fix). Reasoning-only output does not count as visible:
+    ``_visible_text_of`` ignores thinking blocks, which is exactly what
+    makes this shape fatal downstream: the checkpointed assistant message
+    is empty, silence for the user and a history entry some upstreams
+    reject on replay.
+    """
+    metadata = getattr(response, "response_metadata", None) or {}
+    if _is_truncated_metadata(metadata) or _is_refused_metadata(metadata):
         return False
     if _visible_text_of(getattr(response, "content", None)):
         return False
@@ -1245,6 +1313,19 @@ _REFUSAL_NOTICE = (
     "/undo in the CLI) and rephrase the request; if it still refuses, "
     "rewind further, compact the thread (/compact), or switch this thread "
     "to a different model and continue from here."
+)
+
+# The third empty-turn cause (alongside truncation and refusal above): a
+# NORMAL stop that emitted neither text nor a tool call. Both agent nodes
+# retry this shape in place before it can reach _finish_response, so by the
+# time this notice is attached the retries have already come back empty too;
+# the text says so honestly. First person for the same reason the truncation
+# notice is: the model reads its prior turns as its own words.
+_EMPTY_ROUND_RETRY_LIMIT = 2
+_EMPTY_ROUND_NOTICE = (
+    "That round of work ended without any output or tool call from me, and "
+    "automatic retries came back empty as well. Nothing was lost; ask me to "
+    "continue and I'll pick the task back up."
 )
 
 
@@ -2308,15 +2389,15 @@ def create_agent_node(
         # Anthropic path: measured across 658 Anthropic messages, `finish_reason`
         # was present in exactly zero of them.
         metadata = getattr(response, "response_metadata", None) or {}
-        truncated = (
-            metadata.get("finish_reason") == "length"          # OpenAI-shaped
-            or metadata.get("stop_reason") == "max_tokens"     # Anthropic-shaped
-        )
+        # Provider-blind spellings: see _is_truncated_metadata /
+        # _is_refused_metadata (Gemini reports UPPERCASE finish enums, the
+        # Responses API reports status="incomplete" with no finish_reason).
+        truncated = _is_truncated_metadata(metadata)
         if truncated:
             reason = (
                 "stop_reason='max_tokens'"
-                if metadata.get("stop_reason") == "max_tokens"
-                else "finish_reason='length'"
+                if _finish_spelling(metadata, "stop_reason") == "max_tokens"
+                else f"finish_reason='{_finish_spelling(metadata, 'finish_reason') or 'status=incomplete'}'"
             )
             output_tokens = (getattr(response, "usage_metadata", None) or {}).get(
                 "output_tokens"
@@ -2377,10 +2458,7 @@ def create_agent_node(
         # "refusal", and the turn delivered pure silence that was reported as
         # a client bug. Same fatal shape as the dead turn above, different
         # cause, so it gets the same treatment: never let it pass quietly.
-        refused = (
-            metadata.get("stop_reason") == "refusal"           # Anthropic-shaped
-            or metadata.get("finish_reason") == "content_filter"  # OpenAI-shaped
-        )
+        refused = _is_refused_metadata(metadata)
         if refused:
             output_tokens = (getattr(response, "usage_metadata", None) or {}).get(
                 "output_tokens"
@@ -2431,6 +2509,37 @@ def create_agent_node(
                     config,
                 )
 
+        # Third empty-turn cause: a NORMAL stop with nothing in it. Both
+        # agent nodes retry this shape in place (_EMPTY_ROUND_RETRY_LIMIT)
+        # before it can reach here, so an empty response at this point has
+        # already survived those retries; same fatal silent shape as the two
+        # branches above, same treatment: never let it pass quietly. The
+        # notice also keeps the checkpointed message non-empty, which some
+        # upstreams require on history replay (incident 2026-08-06: an empty
+        # model turn 400s Gemini via CLIProxy, wedging the thread). The
+        # predicate is the SAME one the nodes retry on, so the two sites
+        # cannot drift.
+        if _is_silent_stop_response(response):
+            output_tokens = (getattr(response, "usage_metadata", None) or {}).get(
+                "output_tokens"
+            )
+            logger.warning(
+                f"[LLM] EMPTY TURN: normal stop with no text or tool call "
+                f"survived {_EMPTY_ROUND_RETRY_LIMIT} in-place retries "
+                f"(output_tokens={output_tokens}); attaching a visible note."
+            )
+            _dispatch_provider_event(
+                "empty_turn",
+                {
+                    "produced_output": False,
+                    "output_tokens": output_tokens,
+                    "model": getattr(llm_config, "model", "") or "",
+                    "retries": _EMPTY_ROUND_RETRY_LIMIT,
+                },
+                config,
+            )
+            response = _with_empty_turn_notice(response, _EMPTY_ROUND_NOTICE)
+
         return {"messages": [response]}
 
     def agent_node(state: AgentState, config: Any = None) -> dict:
@@ -2451,6 +2560,7 @@ def create_agent_node(
         call_started_at = time.monotonic()
         image_strip_attempted = False
         refusal_swap_attempted = False
+        empty_round_retries = 0
         state_messages = state.get("messages") or []
         note_sink: List[Any] = []
         _consume_pending_fallback_note(
@@ -2525,6 +2635,34 @@ def create_agent_node(
                                 note_sink.append(upsert)
                             refusal_swap_attempted = True
                             continue
+                # Empty-round retry: a NORMAL stop with no text and no tool
+                # calls would checkpoint an empty assistant message: silence
+                # for the user, and a history entry some upstreams reject on
+                # replay (see _is_silent_stop_response). The round executed
+                # nothing, so re-asking is inherently replay-safe. Truncation
+                # and refusals are excluded by the predicate: each has its
+                # own handling. Mirrors the async block in async_agent_node.
+                if (
+                    empty_round_retries < _EMPTY_ROUND_RETRY_LIMIT
+                    and _is_silent_stop_response(response)
+                ):
+                    empty_round_retries += 1
+                    logger.warning(
+                        "[LLM] EMPTY ROUND: normal stop with no text and no "
+                        "tool calls; re-invoking in place (retry %d/%d)",
+                        empty_round_retries,
+                        _EMPTY_ROUND_RETRY_LIMIT,
+                    )
+                    _dispatch_provider_event(
+                        "empty_turn_retry",
+                        {
+                            "retry": empty_round_retries,
+                            "limit": _EMPTY_ROUND_RETRY_LIMIT,
+                            "model": getattr(llm_config, "model", "") or "",
+                        },
+                        config,
+                    )
+                    continue
                 break
             except Exception as exc:
                 # One-shot image strip-and-retry: a model that rejects image/file
@@ -2580,6 +2718,7 @@ def create_agent_node(
         candidate_cache = {0: llm_with_tools}
         image_strip_attempted = False
         refusal_swap_attempted = False
+        empty_round_retries = 0
         state_messages = state.get("messages") or []
         note_sink: List[Any] = []
         _consume_pending_fallback_note(
@@ -2744,6 +2883,43 @@ def create_agent_node(
                             )
                             merged_chunk = None
                             continue
+
+                # Empty-round retry: a NORMAL stop with no text and no tool
+                # calls would checkpoint an empty assistant message: silence
+                # for the user, and a history entry some upstreams reject on
+                # replay (see _is_silent_stop_response). The round executed
+                # nothing, so re-asking is inherently replay-safe. Like the
+                # refusal swap above, the discarded attempt streamed at most
+                # thinking, never visible text or tool calls, so re-running
+                # can duplicate a reasoning trace on screen but never
+                # duplicates output. Mirrors the sync block in agent_node.
+                if (
+                    empty_round_retries < _EMPTY_ROUND_RETRY_LIMIT
+                    and _is_silent_stop_response(response)
+                ):
+                    empty_round_retries += 1
+                    logger.warning(
+                        "[LLM] EMPTY ROUND: normal stop with no text and no "
+                        "tool calls; re-invoking in place (retry %d/%d)",
+                        empty_round_retries,
+                        _EMPTY_ROUND_RETRY_LIMIT,
+                    )
+                    await _adispatch_provider_event(
+                        "empty_turn_retry",
+                        {
+                            "retry": empty_round_retries,
+                            "limit": _EMPTY_ROUND_RETRY_LIMIT,
+                            "model": getattr(llm_config, "model", "") or "",
+                        },
+                        config,
+                    )
+                    # The empty attempt completed and billed (reasoning)
+                    # tokens; its generation time counts.
+                    _accumulate_llm_seconds(
+                        config, time.monotonic() - attempt_started_at
+                    )
+                    merged_chunk = None
+                    continue
 
                 # Only successful calls contribute generation time (a failed
                 # attempt's tokens are discarded with it).

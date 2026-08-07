@@ -1422,6 +1422,14 @@ def cliproxy_base_url_for_provider(
         return url[:-3] if url.endswith("/v1") else url
     if p == "openai":
         return url if url.endswith("/v1") else f"{url}/v1"
+    if p == "google":
+        # Native Gemini rides the proxy ROOT (the google-genai SDK appends
+        # /v1beta/models/... itself; the antigravity route, catalog
+        # 2026-08-07). Without this branch a per-thread google provider on
+        # a CLIProxy deployment fell through to the resolver's public
+        # default, billing generativelanguage.googleapis.com direct with
+        # the proxy-local key.
+        return url[:-3] if url.endswith("/v1") else url
     return None
 
 
