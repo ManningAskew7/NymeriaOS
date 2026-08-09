@@ -75,6 +75,16 @@ def _format_todo_item(item, show_notes: bool = False) -> str:
     if item.recurrence:
         line += f" [recurring: {item.recurrence}]"
 
+    if getattr(item, "schedule_paused_at", None) is not None:
+        # Auto-paused by the recurring-failure policy: without this segment
+        # a paused TODO is indistinguishable from an unscheduled one.
+        line += (
+            f" [paused: {getattr(item, 'consecutive_failures', 0)}"
+            f" consecutive failures; reschedule to resume]"
+        )
+    elif getattr(item, "consecutive_failures", 0):
+        line += f" [failing: {item.consecutive_failures} consecutive runs]"
+
     if show_notes and item.notes:
         line += f"\n    Notes: {item.notes}"
 

@@ -86,10 +86,16 @@ class TriggerDefinition(BaseModel):
     thread_id: str = Field(default="", description="Persistent thread for this trigger")
     created_at: datetime = Field(default_factory=utc_now)
     created_by: str = Field(default="agent", description="'agent' or 'user'")
-    # Health tracking
+    # Health tracking. ONE counter fed by two outcome planes (#154):
+    # source checks and action fires. `last_error_kind` scopes the reset: a
+    # successful SOURCE check says nothing about a broken ACTION, so it must
+    # not heal an action-failure streak (source checks succeed every poll,
+    # which would zero the streak before it could ever reach a threshold);
+    # an ACTION success implies the whole pipeline worked and resets either.
     consecutive_errors: int = Field(default=0)
     last_error: Optional[str] = Field(default=None)
     last_error_at: Optional[datetime] = Field(default=None)
+    last_error_kind: Optional[Literal["source", "action"]] = Field(default=None)
     health_status: Literal["healthy", "degraded", "failing"] = Field(default="healthy")
     # Pending events deferred because the thread was busy
     pending_events: List[dict] = Field(default_factory=list)
@@ -142,6 +148,47 @@ class TriggerStore(BaseModel):
             if t.id == trigger_id:
                 return t
         return None
+
+
+def _apply_health_outcome(
+    trigger: TriggerDefinition,
+    error: Optional[str],
+    now: datetime,
+    *,
+    kind: Literal["source", "action"],
+) -> bool:
+    """Apply one source-check or action outcome to the shared health fields.
+
+    The ONE copy of the thresholds for BOTH writers (``check_triggers`` for
+    source checks, ``_record_action_health`` for action fires), so the
+    documented rule (one owner alert on the transition into "failing") holds
+    no matter which plane crosses. Returns True on that transition.
+
+    Reset scoping (#154): a successful source check must NOT heal an
+    action-failure streak (see the field comment on
+    ``TriggerDefinition.consecutive_errors``); an action success resets
+    unconditionally.
+    """
+    if error is None:
+        if kind == "source" and trigger.last_error_kind == "action":
+            return False
+        if trigger.consecutive_errors > 0:
+            trigger.consecutive_errors = 0
+            trigger.health_status = "healthy"
+            trigger.last_error = None
+            trigger.last_error_kind = None
+        return False
+
+    trigger.consecutive_errors += 1
+    trigger.last_error = error[:200]
+    trigger.last_error_at = now
+    trigger.last_error_kind = kind
+    previous = trigger.health_status
+    if trigger.consecutive_errors >= 5:
+        trigger.health_status = "failing"
+    elif trigger.consecutive_errors >= 2:
+        trigger.health_status = "degraded"
+    return previous != "failing" and trigger.health_status == "failing"
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +613,7 @@ class TriggerManager:
         )
 
         results: List[Tuple[TriggerDefinition, List[dict]]] = []
+        newly_failing: List[TriggerDefinition] = []
 
         with self.atomic_update(user_id) as store:
             now = utc_now()
@@ -581,8 +629,17 @@ class TriggerManager:
                     if elapsed < trigger.cooldown_seconds:
                         continue
 
-                # Exponential backoff for failing triggers
+                # Backoff for failing triggers: skip until the counter hits
+                # a multiple of 10. Counting the SKIPPED cycle is what makes
+                # the backoff lapse (pre-existing bug, caught in the #154
+                # review: a check failure lands the counter on 5-9 and a
+                # frozen counter then skips every future cycle forever, so
+                # "failing" was permanent). While failing, the counter
+                # therefore reads "errors plus backed-off polls", which is
+                # fine: thresholds are crossings from below, and any scoped
+                # success still resets it.
                 if trigger.health_status == "failing" and trigger.consecutive_errors % 10 != 0:
+                    trigger.consecutive_errors += 1
                     continue
 
                 source = get_source(trigger.source_type)
@@ -592,19 +649,12 @@ class TriggerManager:
 
                 try:
                     events = source.check(trigger.source_config, trigger.state, user_id)
-                    # Reset health on success
-                    if trigger.consecutive_errors > 0:
-                        trigger.consecutive_errors = 0
-                        trigger.health_status = "healthy"
-                        trigger.last_error = None
+                    _apply_health_outcome(trigger, None, now, kind="source")
                 except Exception as e:
-                    trigger.consecutive_errors += 1
-                    trigger.last_error = str(e)[:200]
-                    trigger.last_error_at = now
-                    if trigger.consecutive_errors >= 5:
-                        trigger.health_status = "failing"
-                    elif trigger.consecutive_errors >= 2:
-                        trigger.health_status = "degraded"
+                    if _apply_health_outcome(
+                        trigger, str(e), now, kind="source"
+                    ):
+                        newly_failing.append(trigger)
                     logger.error(f"Source check failed for trigger {trigger.id}: {e}")
                     continue
 
@@ -663,6 +713,17 @@ class TriggerManager:
                 trigger.last_fired = now
                 trigger.fire_count += len(events)
                 results.append((trigger, events))
+
+        # Alerts go out AFTER the store lock releases (the sender does
+        # network/store work that must not run inside atomic_update).
+        for trigger in newly_failing:
+            self._send_failing_alert(
+                user_id,
+                trigger.id,
+                trigger.name,
+                trigger.thread_id or f"trigger-{trigger.id}",
+                trigger.last_error or "",
+            )
 
         return results
 
@@ -785,6 +846,7 @@ class TriggerManager:
         )
 
         try:
+            known_action = True
             if action.type == "agent_prompt":
                 self._fire_agent_prompt(action.config, template_vars, agent, user_id, trigger)
             elif action.type == "notify":
@@ -795,7 +857,13 @@ class TriggerManager:
                 self._fire_run_workflow(action.config, event, agent, user_id, trigger)
             else:
                 logger.error(f"Unknown action type: {action.type}")
+                known_action = False
             execution.status = "success"
+            if known_action:
+                # An unknown action type ran nothing: recording it as a
+                # healthy action outcome would report a misconfigured
+                # trigger as working.
+                self._record_action_health(user_id, trigger.id, None)
         except Exception as e:
             execution.status = "error"
             execution.error_message = str(e)[:200]
@@ -803,6 +871,7 @@ class TriggerManager:
                 f"[TRIGGER] Action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
+            self._record_action_health(user_id, trigger.id, str(e))
             self._publish_trigger_error(
                 trigger,
                 user_id,
@@ -900,6 +969,8 @@ class TriggerManager:
 
             execution.status = "partial" if iteration_limit_hit else "success"
             execution.response_summary = response[:200]
+            # Partial (iteration-limit) still ran the turn: healthy.
+            self._record_action_health(user_id, trigger.id, None)
 
             self._publish_trigger_completion(
                 trigger=trigger,
@@ -925,6 +996,7 @@ class TriggerManager:
                 f"[TRIGGER] Batched action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
+            self._record_action_health(user_id, trigger.id, str(e))
             self._publish_trigger_error(
                 trigger,
                 user_id,
@@ -1169,6 +1241,87 @@ class TriggerManager:
                 "partial": partial,
             },
         )
+
+    def _record_action_health(
+        self, user_id: str, trigger_id: str, error: Optional[str]
+    ) -> None:
+        """Feed ACTION outcomes into the shared trigger health fields.
+
+        Pre-#154 only ``check_triggers``'s source-check except branch touched
+        ``consecutive_errors``/``health_status``, so a trigger whose ACTION
+        (agent turn, notify, workflow) errored on every fire stayed
+        "healthy" forever. The rules live in ``_apply_health_outcome`` (one
+        copy shared with the source-check site); the kind-scoped reset there
+        keeps every poll cycle's successful source check from zeroing an
+        action-failure streak. The existing failing-trigger backoff in
+        ``check_triggers`` governs action-failure episodes too. On the
+        transition INTO "failing", one owner alert goes out (once per
+        episode; success resets). Fault-isolated: health bookkeeping must
+        never break a fire.
+        """
+        try:
+            entered_failing = False
+            trigger_name = trigger_id
+            thread_id = f"trigger-{trigger_id}"
+            last_error = ""
+            with self.atomic_update(user_id) as store:
+                trigger = next(
+                    (t for t in store.triggers if t.id == trigger_id), None
+                )
+                if trigger is None:
+                    return
+                entered_failing = _apply_health_outcome(
+                    trigger, error, utc_now(), kind="action"
+                )
+                trigger_name = trigger.name
+                thread_id = trigger.thread_id or f"trigger-{trigger_id}"
+                last_error = trigger.last_error or ""
+            if entered_failing:
+                self._send_failing_alert(
+                    user_id, trigger_id, trigger_name, thread_id, last_error
+                )
+        except Exception:
+            logger.warning(
+                "Failed to record action health for trigger %s",
+                trigger_id,
+                exc_info=True,
+            )
+
+    def _send_failing_alert(
+        self,
+        user_id: str,
+        trigger_id: str,
+        trigger_name: str,
+        thread_id: str,
+        last_error: str,
+    ) -> None:
+        """One owner alert for a trigger entering "failing", either plane.
+
+        Never raises (a broken alert plane must not break the poll loop or
+        a fire).
+        """
+        try:
+            from ..config import get_settings
+            from .notification_dispatch import send_owner_alert
+
+            send_owner_alert(
+                (
+                    f"[TRIGGER FAILING] Trigger \"{trigger_name}\" "
+                    f"({trigger_id}) keeps erroring and is now marked "
+                    f"failing (checks back off). Last error: {last_error}. "
+                    f"Manage it with /triggers."
+                ),
+                get_settings(),
+                user_id=user_id,
+                thread_id=thread_id,
+                task_id=f"trigger-{trigger_id}",
+            )
+        except Exception:
+            logger.warning(
+                "Failing-transition alert failed for trigger %s",
+                trigger_id,
+                exc_info=True,
+            )
 
     def _publish_trigger_error(
         self,

@@ -81,6 +81,52 @@ def test_reschedule_recurring_done_adopts_and_pins_month_origin(
         assert item.scheduled_for != first_slot
 
 
+def test_paused_todo_state_is_wire_visible_and_done_does_not_resume(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """#154: the failure-policy fields ride the response (api.md documents
+    them), and completing a paused recurring TODO must NOT silently resume
+    it (the done re-arm writes scheduled_for, which would trip the
+    resume-clear and erase the pause marker plus the streak)."""
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+    tm = TodoManager(tmp_path)
+    now = datetime.now(timezone.utc)
+    with tm.atomic_update("owner") as todo_list:
+        created = todo_list.add_item(
+            "Morning briefing",
+            thread_id="thread-1",
+            recurrence="1d",
+            notes="Include weather",
+        )
+        assert created is not None
+        item = todo_list.get_item(created.id)
+        item.consecutive_failures = 5
+        item.last_failure = "provider exploded"
+        item.last_failure_at = now
+        item.schedule_paused_at = now
+    todo_id = created.id
+
+    listed = client.get("/todos", headers=headers)
+    assert listed.status_code == 200
+    row = next(i for i in listed.json()["items"] if i["id"] == todo_id)
+    assert row["consecutive_failures"] == 5
+    assert row["last_failure"] == "provider exploded"
+    assert row["last_failure_at"] is not None
+    assert row["schedule_paused_at"] is not None
+
+    done = client.post(f"/todos/{todo_id}/complete", headers=headers)
+    assert done.status_code == 200
+    body = done.json()
+    assert body["status"] == "done"
+    assert body["schedule_paused_at"] is not None
+    assert body["consecutive_failures"] == 5
+    assert body["scheduled_for"] is None
+    assert _scheduled_row_count(tmp_path, todo_id) == 0
+
+
 def test_todo_crud_routes_filter_reschedule_and_sync_schedule_db(
     tmp_path: Path,
     api_client_builder,

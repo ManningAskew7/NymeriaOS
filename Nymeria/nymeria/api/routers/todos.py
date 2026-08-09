@@ -67,6 +67,13 @@ def _reschedule_recurring_done(
     """
     if not item.recurrence:
         return
+    if item.schedule_paused_at is not None:
+        # Auto-paused by the recurring-failure policy (#154): "done" must
+        # not silently resume the schedule (the reschedule below would set
+        # scheduled_for, and update_item's resume-clear would erase the
+        # pause marker and the failure streak). The TODO completes as done
+        # with the pause intact; resume stays an explicit reschedule.
+        return
     recurrence_anchor = _recurrence_anchor(item)
     next_execution, origin_to_persist = compute_recurrence_reschedule(
         item.recurrence, recurrence_anchor, item.recurrence_anchor
@@ -103,6 +110,10 @@ def _todo_to_response(item: TodoItem) -> TodoItemResponse:
         recurrence=item.recurrence,
         workflow_id=item.workflow_id,
         workflow_params=item.workflow_params,
+        consecutive_failures=item.consecutive_failures,
+        last_failure=item.last_failure,
+        last_failure_at=item.last_failure_at,
+        schedule_paused_at=item.schedule_paused_at,
     )
 
 

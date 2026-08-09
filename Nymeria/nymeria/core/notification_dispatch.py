@@ -306,6 +306,38 @@ def create_autonomous_notification(
             logger.warning("FCM push failed during autonomous notification: %s", e)
 
 
+def send_owner_alert(
+    message: str,
+    settings,
+    *,
+    user_id: str,
+    thread_id: str = "",
+    task_id: Optional[str] = None,
+) -> None:
+    """Owner-directed escalation alert (one :func:`send_via_profile` call).
+
+    Used by the recurring-failure policy (#154: ticker consecutive-failure
+    alerts, trigger health entering \"failing\"): the external destinations
+    of the user's resolved profile, plus an in-app row with delivery badges
+    and the live ``in_app_only`` event. Deliberately NOT
+    :func:`create_autonomous_notification`: an escalation alert must not be
+    silenced by ``in_app_notification_level`` or the per-thread autonomous
+    gate (no ``in_app_level`` is passed, so the in-app half always lands).
+    Never raises; delivery failure must not break a ticker cycle or a
+    trigger fire.
+    """
+    try:
+        send_via_profile(
+            message=message,
+            user_id=user_id,
+            thread_id=thread_id,
+            task_id=task_id,
+            settings=settings,
+        )
+    except Exception as e:
+        logger.error("Owner-alert dispatch failed: %s", e)
+
+
 def send_external_notifications(
     message: str,
     settings,

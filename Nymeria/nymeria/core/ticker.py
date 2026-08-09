@@ -21,7 +21,11 @@ from rich.panel import Panel
 from .activity_log import ActivityType, log_activity
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
-from .notification_dispatch import create_autonomous_notification, should_notify_autonomous
+from .notification_dispatch import (
+    create_autonomous_notification,
+    send_owner_alert,
+    should_notify_autonomous,
+)
 from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from .scheduler_state import SchedulerStateManager
 from .storage_paths import safe_path_segment
@@ -364,6 +368,13 @@ class Ticker:
         self._active_execution_stale_seconds = int(
             getattr(settings, "scheduler_active_execution_stale_minutes", 1440)
         ) * 60
+        # Recurring-failure policy thresholds (#154); 0 disables a stage.
+        self._failure_alert_after = max(
+            0, int(getattr(settings, "scheduler_failure_alert_after", 2))
+        )
+        self._failure_pause_after = max(
+            0, int(getattr(settings, "scheduler_failure_pause_after", 5))
+        )
         self._scheduler_state = SchedulerStateManager(settings.data_dir)
         persisted_state = self._scheduler_state.load()
         self._pending_startup_missed_ids: set[str] = set(
@@ -973,6 +984,7 @@ class Ticker:
             )
 
         self._handle_recurrence(entry, todo)
+        self._reset_failure_streak(entry.user_id, todo.id)
         current = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
         if current and not current.recurrence:
             # The agent path leaves closing the TODO to the agent turn; a
@@ -1247,6 +1259,7 @@ class Ticker:
         )
 
         self._handle_recurrence(entry, todo)
+        self._reset_failure_streak(entry.user_id, todo.id)
 
         if todo.id in self._retry_counts:
             del self._retry_counts[todo.id]
@@ -1463,7 +1476,31 @@ class Ticker:
                     todo.id,
                     retry_count,
                 )
-                self._handle_recurrence(entry, current_todo)
+                # Failure policy (#154): ONE streak increment per exhausted
+                # occurrence (this branch), never per intra-occurrence retry.
+                failure_count = self._record_recurring_failure(
+                    entry, current_todo, error
+                )
+                if (
+                    self._failure_pause_after
+                    and failure_count >= self._failure_pause_after
+                ):
+                    # Pause INSTEAD of re-arming; recurrence is kept and the
+                    # marker makes the schedule-less shape deliberate.
+                    self._pause_recurring_schedule(
+                        entry, current_todo, thread_id, error, failure_count
+                    )
+                else:
+                    self._handle_recurrence(entry, current_todo)
+                    if (
+                        self._failure_alert_after
+                        and failure_count == self._failure_alert_after
+                    ):
+                        # Fires once per episode: only success resets the
+                        # streak, so the count crosses the threshold once.
+                        self._send_failure_alert(
+                            entry, current_todo, thread_id, error, failure_count
+                        )
                 log_activity(
                     ActivityType.TASK_FAILED,
                     f"Recurring TODO occurrence failed: {todo.task[:80]} - {str(error)[:50]}",
@@ -1474,6 +1511,7 @@ class Ticker:
                         "error": str(error),
                         "retries": retry_count,
                         "recurring": True,
+                        "consecutive_failures": failure_count,
                     },
                 )
                 return
@@ -1497,6 +1535,178 @@ class Ticker:
             )
         else:
             logger.info(f"TODO {todo.id} will retry (attempt {retry_count + 1}/{self.MAX_RETRIES})")
+
+    # ── Recurring-failure policy (#154) ──────────────────────────────────
+    # One streak increment per exhausted occurrence; alert at
+    # scheduler_failure_alert_after, auto-pause at
+    # scheduler_failure_pause_after, any success resets. Sits ON TOP of the
+    # re-arm-on-failure precedent above; every helper is fault-isolated so
+    # policy bookkeeping can never break the cycle.
+
+    def _record_recurring_failure(
+        self, entry: ScheduledTodoEntry, todo, error: Exception
+    ) -> int:
+        """Persist one failed occurrence; returns the new streak count.
+
+        Returns 0 when nothing persisted (todo vanished, or the save
+        failed): unpersisted state must not drive the alert/pause policy.
+        """
+        count = 0
+        try:
+            with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                item = todo_list.get_item(todo.id)
+                if item:
+                    count = item.consecutive_failures + 1
+                    item.consecutive_failures = count
+                    item.last_failure = str(error)[:300]
+                    item.last_failure_at = datetime.now(timezone.utc)
+        except Exception:
+            logger.warning(
+                "Failed to record failure streak for TODO %s",
+                todo.id,
+                exc_info=True,
+            )
+            # Unpersisted state must not drive policy: with 0 the alert and
+            # pause branches both no-op, so an alert can never fire on a
+            # streak that is not on disk (and then re-fire next occurrence).
+            count = 0
+        return count
+
+    def _reset_failure_streak(self, user_id: str, todo_id: str) -> None:
+        """A successful occurrence ends the failure episode."""
+        try:
+            current = self.todo_manager.get_todo_by_id(user_id, todo_id)
+            if not current or not (
+                current.consecutive_failures
+                or current.last_failure
+                or current.last_failure_at
+                or current.schedule_paused_at
+            ):
+                return
+            with self.todo_manager.atomic_update(user_id) as todo_list:
+                item = todo_list.get_item(todo_id)
+                if item:
+                    item.consecutive_failures = 0
+                    item.last_failure = None
+                    item.last_failure_at = None
+                    item.schedule_paused_at = None
+        except Exception:
+            logger.warning(
+                "Failed to reset failure streak for TODO %s",
+                todo_id,
+                exc_info=True,
+            )
+
+    def _pause_recurring_schedule(
+        self,
+        entry: ScheduledTodoEntry,
+        todo,
+        thread_id: str,
+        error: Exception,
+        failure_count: int,
+    ) -> None:
+        """Auto-pause: clear the schedule, KEEP recurrence, set the marker.
+
+        Startup recovery cannot resurrect a paused schedule because
+        ``rebuild_from_todos`` reads ``scheduled_for``, now None. Resume is
+        an explicit reschedule (update_item clears the failure state when
+        the pause marker is set).
+        """
+        try:
+            # PREPEND the pause reason: notes are prompt input on every run
+            # (and the user's own instructions), so they must survive the
+            # pause; update_item's resume-clear strips this prefix back off.
+            pause_note = (
+                f"[auto-paused after {failure_count} consecutive failed "
+                f"runs: {str(error)[:100]}]"
+            )
+            with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                item = todo_list.get_item(todo.id)
+                existing = (item.notes or "").strip() if item else ""
+                todo_list.update_item(
+                    todo.id,
+                    status=TodoStatus.PENDING,
+                    notes=f"{pause_note} {existing}".strip()[:1000],
+                    clear_schedule=True,
+                )
+                item = todo_list.get_item(todo.id)
+                if item:
+                    item.schedule_paused_at = datetime.now(timezone.utc)
+            # Row removal AFTER the marker persists: if the JSON save fails,
+            # the TODO is still scheduled (loud, keeps retrying) instead of
+            # orphaned with neither row nor marker.
+            self.schedule_db.remove_scheduled(todo.id)
+            logger.warning(
+                "Recurring TODO %s auto-paused after %d consecutive failures",
+                todo.id,
+                failure_count,
+            )
+        except Exception:
+            logger.error(
+                "Failed to auto-pause recurring TODO %s", todo.id, exc_info=True
+            )
+            return
+        try:
+            # send_owner_alert's own contract is never-raise; this belt
+            # keeps a broken alert plane from escaping the failure handler
+            # (which runs inside _execute_scheduled_todo's except block,
+            # where a raise would skip the execution-marker note path).
+            send_owner_alert(
+                (
+                    f"[SCHEDULED TASK PAUSED] Recurring TODO [{todo.id}] "
+                    f"\"{(todo.task or '')[:80]}\" was auto-paused after "
+                    f"{failure_count} consecutive failed runs. Last error: "
+                    f"{str(error)[:200]}. Its recurrence is kept; reschedule "
+                    f"it (/todos schedule {todo.id} ...) to resume."
+                ),
+                self.settings,
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                task_id=todo.id,
+            )
+        except Exception:
+            logger.error(
+                "Pause alert dispatch failed for TODO %s",
+                todo.id,
+                exc_info=True,
+            )
+
+    def _send_failure_alert(
+        self,
+        entry: ScheduledTodoEntry,
+        todo,
+        thread_id: str,
+        error: Exception,
+        failure_count: int,
+    ) -> None:
+        pause_note = (
+            f" It auto-pauses after {self._failure_pause_after} consecutive "
+            f"failures."
+            if self._failure_pause_after
+            else ""
+        )
+        try:
+            # Same belt as the pause alert: never let the alert plane break
+            # the failure handler.
+            send_owner_alert(
+                (
+                    f"[SCHEDULED TASK ALERT] Recurring TODO [{todo.id}] "
+                    f"\"{(todo.task or '')[:80]}\" has failed {failure_count} "
+                    f"consecutive runs. Last error: {str(error)[:200]}. It "
+                    f"will keep retrying on schedule.{pause_note} Manage it "
+                    f"with /todos."
+                ),
+                self.settings,
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                task_id=todo.id,
+            )
+        except Exception:
+            logger.error(
+                "Failure alert dispatch failed for TODO %s",
+                todo.id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _log_stream_chunk(todo_id: str, chunk: dict, collection: StreamCollection) -> None:

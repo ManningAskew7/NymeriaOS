@@ -16,7 +16,7 @@ Event-driven automations that react to external events  -  webhooks, emails, RSS
 
 **Thread binding**  -  every trigger is bound to exactly one thread. When the agent creates a trigger, it auto-binds to the current conversation thread. API-created triggers can specify `thread_id` explicitly, or leave it empty to get a dedicated `trigger-{id}` thread.
 
-**Health**  -  automatic tracking of source errors. 2 consecutive failures → `degraded`, 5 → `failing` with exponential backoff (only retries every 10th cycle). Resets to `healthy` on success.
+**Health**  -  automatic tracking of source AND action errors (one shared counter). 2 consecutive failures → `degraded`, 5 → `failing` with exponential backoff (only retries every 10th cycle) plus a one-time owner alert. Resets to `healthy` on success.
 
 **Busy-thread deferral**  -  for `agent_prompt` actions, poll-sourced triggers check if the target thread is busy (non-blocking lock check). If busy, events are stored in `pending_events` and retried next cycle. No thread-pool slots are blocked. Webhook triggers bypass this  -  they POST to `/chat` which queues on the lock naturally.
 
@@ -322,7 +322,10 @@ Both poll-source and webhook fires log `TriggerExecution` records. Webhook fires
 
 ## Health Monitoring
 
-Health status is tracked per trigger based on source check outcomes:
+Health status is tracked per trigger. Source-check outcomes AND action
+outcomes (the agent turn, notify, create_todo, or workflow run the trigger
+fires) feed one shared counter, so a trigger whose action errors on every
+fire degrades the same way as one whose source is broken:
 
 | Status | Condition | Behavior |
 |--------|-----------|----------|
@@ -330,7 +333,16 @@ Health status is tracked per trigger based on source check outcomes:
 | `degraded` | 2+ consecutive errors | Normal polling, warning logged |
 | `failing` | 5+ consecutive errors | Exponential backoff  -  only checks every 10th cycle (~5 min) |
 
-Resets to `healthy` on the first successful check. Health status and last error are visible in the UI and API responses.
+The reset is scoped by which plane last failed (`last_error_kind`): a
+successful source check heals a source-failure streak but NOT an
+action-failure streak (source checks succeed on every poll cycle, which
+would otherwise zero the action streak before it could reach a threshold);
+a successful action fire heals either, since it proves the whole pipeline
+works. Health status and last error are visible in the UI and API
+responses. On the transition into `failing` (from either plane), the owner
+gets one alert (in-app plus the external destinations of their default
+notification profile); it fires once per episode, since only the scoped
+success resets the counter.
 
 ## Chat-Bot Emoji Reaction Triggers
 

@@ -1454,6 +1454,27 @@ class Settings(BaseSettings):
             "considered stale after an interrupted scheduler process."
         ),
     )
+    scheduler_failure_alert_after: int = Field(
+        default=2,
+        ge=0,
+        le=100,
+        description=(
+            "Consecutive failed occurrences of a recurring scheduled TODO "
+            "before the owner is alerted once (in-app plus external "
+            "notification destinations). 0 disables the alert."
+        ),
+    )
+    scheduler_failure_pause_after: int = Field(
+        default=5,
+        ge=0,
+        le=1000,
+        description=(
+            "Consecutive failed occurrences of a recurring scheduled TODO "
+            "before its schedule is auto-paused with a resumable marker "
+            "(recurrence is kept; rescheduling resumes it). 0 disables "
+            "auto-pause."
+        ),
+    )
     # Context Management Settings
     context_management: Literal["auto_compact", "sliding_window", "none"] = Field(
         default="auto_compact",

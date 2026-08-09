@@ -22,6 +22,13 @@ class TodoItemResponse(BaseModel):
     recurrence: Optional[str] = None
     workflow_id: Optional[str] = None
     workflow_params: Optional[dict] = None
+    # Recurring-failure policy state (#154): consecutive failed occurrences
+    # (any success resets), the most recent failure, and the auto-pause
+    # marker (recurrence kept; a new scheduled_for resumes and clears).
+    consecutive_failures: int = 0
+    last_failure: Optional[str] = None
+    last_failure_at: Optional[datetime] = None
+    schedule_paused_at: Optional[datetime] = None
 
 
 class TodoCreateRequest(BaseModel):
