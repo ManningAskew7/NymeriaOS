@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from nymeria.config.llm_providers import (
     _DOWNGRADED_ROUTE_WARNED,
@@ -32,7 +33,10 @@ from nymeria.config.llm_providers import (
 )
 from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.config import LLMConfig
-from nymeria.vendor.react_agent.providers import create_llm
+from nymeria.vendor.react_agent.providers import (
+    _strip_foreign_reasoning_for_google,
+    create_llm,
+)
 
 from _provider_test_helpers import llm_config  # type: ignore[import-not-found]
 
@@ -728,3 +732,193 @@ def test_catalog_response_round_trips_all_new_route_fields():
         "https://generativelanguage.googleapis.com/v1beta/openai"
     )
     assert payload["tier"] == "native"
+
+
+# ---------------------------------------------------------------------------
+# Google history sanitizer (foreign reasoning artifacts on the native route)
+#
+# Incident 2026-08-09 (Docker thread 00b626e8): responses-wire reasoning
+# blocks in a checkpointed history KeyError'd langchain-google-genai's
+# request builder on every turn INCLUDING the compaction summary, wedging
+# the thread permanently. The sanitizer strips what the builder cannot
+# replay; these tests pin each rule.
+# ---------------------------------------------------------------------------
+
+
+def _responses_reasoning_block() -> dict:
+    """The exact shape Nymeria's responses-wire capture checkpoints."""
+    return {
+        "type": "reasoning",
+        "summary": [{"index": 0, "type": "summary_text", "text": "thought"}],
+        "index": 0,
+        "id": "rs_123",
+    }
+
+
+def test_google_strip_drops_responses_shape_reasoning_foreign_provenance():
+    """A gpt-5.5 reasoning block (no "reasoning" key) is dropped; text stays."""
+    original_content = [
+        _responses_reasoning_block(),
+        {"type": "text", "text": "the answer"},
+    ]
+    message = AIMessage(
+        content=list(original_content),
+        response_metadata={"model_name": "gpt-5.5"},
+    )
+
+    (sanitized,) = _strip_foreign_reasoning_for_google([message])
+
+    assert sanitized.content == [{"type": "text", "text": "the answer"}]
+    # Checkpointed state must never be mutated in place.
+    assert message.content == original_content
+
+
+def test_google_strip_drops_keyless_reasoning_even_without_provenance():
+    """No provenance stamp: the crash-shape block still goes (KeyError guard),
+    and the reasoning-only message goes WITH it: the library filters only
+    empty HumanMessages, so an empty assistant message would ship as the
+    empty-parts Content that 400s (the 2026-08-06 wedge shape)."""
+    message = AIMessage(content=[_responses_reasoning_block()])
+
+    assert _strip_foreign_reasoning_for_google([message]) == []
+
+
+def test_google_strip_keeps_v1_reasoning_with_key_on_unknown_provenance():
+    """A well-formed v1 reasoning block with unknown provenance is kept."""
+    block = {"type": "reasoning", "reasoning": "t", "extras": {"signature": "cw=="}}
+    message = AIMessage(content=[block])
+
+    (sanitized,) = _strip_foreign_reasoning_for_google([message])
+
+    assert sanitized.content == [block]
+    assert sanitized is message  # unchanged content: no copy made
+
+
+def test_google_strip_drops_foreign_thinking_and_foreign_v1_reasoning():
+    """Claude-provenance blocks are dropped even when well-formed: their
+    signatures must never be base64-decoded and sent to Google."""
+    message = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "t", "signature": "YW50aA=="},
+            {"type": "reasoning", "reasoning": "t", "extras": {"signature": "cw=="}},
+            {"type": "text", "text": "kept"},
+        ],
+        response_metadata={"model_name": "claude-opus-4-8"},
+    )
+
+    (sanitized,) = _strip_foreign_reasoning_for_google([message])
+
+    assert sanitized.content == [{"type": "text", "text": "kept"}]
+
+
+def test_google_strip_foreign_by_model_provider_stamp_alone():
+    """The v1 model_provider stamp decides when model_name is absent; a
+    thinking-only foreign message drops entirely (empty-parts 400 guard)."""
+    message = AIMessage(
+        content=[{"type": "thinking", "thinking": "t", "signature": "cw=="}],
+        response_metadata={"model_provider": "anthropic"},
+    )
+
+    assert _strip_foreign_reasoning_for_google([message]) == []
+
+
+def test_google_strip_keeps_gemini_thinking_with_signature():
+    """Gemini's own thinking blocks keep their signature round-trip intact."""
+    block = {"type": "thinking", "thinking": "t", "signature": "Z2VtaW5p"}
+    for metadata in (
+        {"model_name": "gemini-3.6-flash-high"},
+        {"model_provider": "google_genai"},
+        {},  # unknown provenance deliberately reads as NOT foreign
+    ):
+        message = AIMessage(content=[block], response_metadata=metadata)
+        (sanitized,) = _strip_foreign_reasoning_for_google([message])
+        assert sanitized.content == [block], metadata
+
+
+def test_google_strip_drops_keyless_thinking_even_on_gemini_provenance():
+    """A thinking block missing its text key would KeyError the builder;
+    with nothing left and no tool calls, the message drops entirely."""
+    message = AIMessage(
+        content=[{"type": "thinking", "signature": "Z2VtaW5p"}],
+        response_metadata={"model_name": "gemini-3.6-flash-high"},
+    )
+
+    assert _strip_foreign_reasoning_for_google([message]) == []
+
+
+def test_google_strip_keeps_emptied_message_with_tool_calls():
+    """The most common real shape: a foreign assistant turn whose visible
+    content is only reasoning but which carries tool calls. The reasoning
+    goes; the message stays so its function-call parts (and the anchored
+    ToolMessages) survive."""
+    message = AIMessage(
+        content=[_responses_reasoning_block()],
+        tool_calls=[{"name": "search", "args": {"q": "x"}, "id": "c1"}],
+        response_metadata={"model_name": "gpt-5.5"},
+    )
+
+    (sanitized,) = _strip_foreign_reasoning_for_google([message])
+
+    assert sanitized.content == []
+    assert sanitized.tool_calls == message.tool_calls
+
+
+def test_google_strip_passes_bare_strings_in_mixed_content():
+    """langchain allows ["prose", {...}] mixed lists; bare strings pass."""
+    message = AIMessage(
+        content=["prose chunk", _responses_reasoning_block()],
+        response_metadata={"model_name": "gpt-5.5"},
+    )
+
+    (sanitized,) = _strip_foreign_reasoning_for_google([message])
+
+    assert sanitized.content == ["prose chunk"]
+
+
+def test_google_strip_leaves_non_assistant_and_string_content_alone():
+    """Only AIMessage list content is inspected; everything else passes."""
+    human = HumanMessage(
+        content=[{"type": "reasoning", "summary": []}, {"type": "text", "text": "q"}]
+    )
+    tool = ToolMessage(content="result", tool_call_id="c1")
+    plain = AIMessage(
+        content="just text", response_metadata={"model_name": "gpt-5.5"}
+    )
+
+    sanitized = _strip_foreign_reasoning_for_google([human, tool, plain])
+
+    assert sanitized == [human, tool, plain]
+    assert human.content[0] == {"type": "reasoning", "summary": []}
+
+
+def test_google_factory_returns_sanitizing_subclass(monkeypatch):
+    """The factory wires the sanitizer into _prepare_request: one poisoned
+    history block in, sanitized messages reach the base class."""
+    import sys
+    import types
+
+    class _PreparingCapture:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.prepared: list = []
+
+        def _prepare_request(self, messages, **kw):
+            self.prepared.append(messages)
+            return {"messages": messages}
+
+    fake_module = types.ModuleType("langchain_google_genai")
+    fake_module.ChatGoogleGenerativeAI = _PreparingCapture
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
+
+    llm = create_llm(_google_config())
+    assert isinstance(llm, _PreparingCapture)
+    assert type(llm) is not _PreparingCapture  # a sanitizing subclass
+
+    poisoned = AIMessage(
+        content=[_responses_reasoning_block(), {"type": "text", "text": "a"}],
+        response_metadata={"model_name": "gpt-5.5"},
+    )
+    result = llm._prepare_request([poisoned])
+
+    assert llm.prepared[0][0].content == [{"type": "text", "text": "a"}]
+    assert result == {"messages": llm.prepared[0]}

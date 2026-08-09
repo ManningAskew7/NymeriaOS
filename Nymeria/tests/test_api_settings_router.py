@@ -708,6 +708,117 @@ def test_available_models_uses_provider_endpoint_and_caches_metadata(
     }
 
 
+def test_available_models_google_native_lists_gemini_shape(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """provider=google lists via the native /v1beta/models wire (W6, backlog
+    close-out of the 2026-08-09 incident: this used to fall through to the
+    unconditional empty return, and the resulting "No models returned"
+    pushed a blind, unserved model pick)."""
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {
+        "models": [
+            {
+                "name": "models/gemini-3.6-flash-high",
+                "displayName": "Gemini 3.6 Flash High",
+                "inputTokenLimit": 1048576,
+                "outputTokenLimit": 65536,
+                "supportedGenerationMethods": ["generateContent", "countTokens"],
+            },
+            {
+                # Not chat-pickable: filtered out by generation-method.
+                "name": "models/gemini-embedding-001",
+                "supportedGenerationMethods": ["embedContent"],
+            },
+            {
+                # No declared methods: kept (lenient when the listing is bare).
+                "name": "models/gemini-flash-latest",
+            },
+        ]
+    }
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    try:
+        response = client.get(
+            "/models/available?provider=google&base_url=http://localhost:8318",
+            headers=_auth(token),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        call = FakeAsyncClient.calls[0]
+        assert call["url"] == "http://localhost:8318/v1beta/models"
+        # Gemini wire auth: x-goog-api-key, never a Bearer header.
+        assert "x-goog-api-key" in call["headers"]
+        assert "Authorization" not in call["headers"]
+        assert [m["id"] for m in body] == [
+            "gemini-3.6-flash-high",
+            "gemini-flash-latest",
+        ]
+        assert body[0]["name"] == "Gemini 3.6 Flash High"
+        assert body[0]["context_length"] == 1048576
+        assert body[0]["max_completion_tokens"] == 65536
+    finally:
+        FakeAsyncClient.response_status = 200
+        FakeAsyncClient.response_body = None
+        FakeAsyncClient.calls = []
+
+
+def test_available_models_google_never_sends_a_stored_key_to_a_named_host(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The new google listing branch honors the same caller-named-destination
+    credential gate as the anthropic branch (differential, same rationale as
+    the anthropic test above: the control leg proves the stored key DOES ride
+    to the configured destination, so the attack leg's absence is the gate)."""
+    stored_key = "gemini-stored-token"
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"models": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    settings = FakeSettings(
+        project_root=tmp_path, data_dir=tmp_path, gemini_api_key=stored_key
+    )
+    client, agent, _admin_token, _provider = _client(
+        monkeypatch, tmp_path, settings=settings
+    )
+    agent.accounts_repo.create_user("mallory", "mallory@example.com", "Mallory")
+    user_token = agent.accounts_repo.issue_token("mallory")
+
+    try:
+        # Control: configured destination, the stored key is expected to ride.
+        configured = client.get(
+            "/models/available?provider=google", headers=_auth(user_token)
+        )
+        assert configured.status_code == 200
+        control_call = FakeAsyncClient.calls[-1]
+        assert "generativelanguage.googleapis.com" in control_call["url"]
+        assert control_call["headers"].get("x-goog-api-key") == stored_key, (
+            "control leg did not carry the stored key, so this test cannot "
+            f"prove the gate does anything: {control_call['headers']}"
+        )
+
+        # The gate: same user, same provider, caller-named destination.
+        before = len(FakeAsyncClient.calls)
+        attacked = client.get(
+            "/models/available"
+            "?provider=google&base_url=http://attacker.invalid",
+            headers=_auth(user_token),
+        )
+        assert attacked.status_code == 200
+        new_calls = FakeAsyncClient.calls[before:]
+        assert all(
+            stored_key not in call["headers"].values() for call in new_calls
+        ), f"stored google key leaked to a caller-named host: {new_calls}"
+    finally:
+        FakeAsyncClient.response_status = 200
+        FakeAsyncClient.response_body = None
+        FakeAsyncClient.calls = []
+
+
 def test_available_models_returns_empty_on_provider_http_error(
     tmp_path: Path,
     monkeypatch,

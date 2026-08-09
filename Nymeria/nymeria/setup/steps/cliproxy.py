@@ -57,9 +57,10 @@ from ..cliproxy_deploy import (
 # monkeypatch nymeria.setup.steps.cliproxy, not nymeria.setup.cliproxy_login.
 from ..cliproxy_login import (
     LOGIN_POLL_INTERVAL_SECONDS,
+    CLIPROXY_BACKOFF_NOTE,
     LOGIN_TIMEOUT_SECONDS,
     _browser_launch_blocked,
-    active_login_entry,
+    present_login_entry,
     ensure_claude_tool_prefix_disabled,
     ensure_gatekeeper_key,
     login_account_label,
@@ -441,12 +442,19 @@ class CLIProxyLoginStep(WizardStep):
             self._status(f"Cannot reach the proxy: {error}")
             return
 
-        active = active_login_entry(files, spec)
-        if active is not None and not self._force_relogin:
-            account = login_account_label(active)
+        # PRESENT, not active (#149): a login in the proxy's error backoff
+        # still exists; starting a fresh OAuth for it is pointless (the
+        # backoff clears on its own) and used to happen here.
+        entry = present_login_entry(files, spec)
+        if entry is not None and not self._force_relogin:
+            account = login_account_label(entry)
+            backoff_note = (
+                f" ({CLIPROXY_BACKOFF_NOTE})" if entry.get("unavailable") else ""
+            )
             await self._post_login(client, spec)
             self._status(
-                f"Already logged in{f' as {account}' if account else ''}. "
+                f"Already logged in{f' as {account}' if account else ''}"
+                f"{backoff_note}. "
                 "Press Enter to continue, or Ctrl+R to log in again."
             )
             return

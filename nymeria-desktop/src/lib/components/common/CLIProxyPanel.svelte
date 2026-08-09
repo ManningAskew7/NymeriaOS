@@ -187,6 +187,8 @@
               <span class="badge muted">Not supported by this proxy build</span>
             {:else if provider.logged_in}
               <span class="badge ok">Logged in</span>
+            {:else if provider.unavailable}
+              <span class="badge warn">Logged in, backing off</span>
             {:else}
               <span class="badge warn">No login</span>
             {/if}
@@ -194,6 +196,13 @@
 
           {#if provider.tos_warning}
             <p class="hint warning">{provider.tos_warning}</p>
+          {/if}
+
+          {#if provider.supported !== false && provider.unavailable}
+            <p class="hint warning">
+              Provider backoff: this usually clears on its own, but a revoked
+              login shows the same way. If it persists, use Re-login.
+            </p>
           {/if}
 
           {#if files.length > 0}
@@ -244,7 +253,7 @@
               disabled={provider.supported === false || !tosAccepted}
             >
               <Icon name="key" size={14} />
-              {provider.logged_in ? 'Re-login' : 'Log in'}
+              {provider.logged_in || provider.unavailable ? 'Re-login' : 'Log in'}
             </Button>
             <Button
               variant="secondary"

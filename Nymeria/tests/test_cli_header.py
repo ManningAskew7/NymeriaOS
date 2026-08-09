@@ -505,15 +505,16 @@ def test_header_snapshot_labels_openai_api_modes() -> None:
             "OpenAI proxy",
             "responses/v1",
         ),
-        # The native google route is the antigravity channel; no API-type
-        # label exists for google yet (backlog #153), so the slot is empty.
+        # The native google route names its wire (#153): gemini/v1beta,
+        # regardless of any stray openai_api_mode riding the config (the
+        # "responses" mode below must NOT leak into the label).
         (
             "google",
             "http://cli-proxy-api:8317",
             "gemini-3.6-flash-high",
             "responses",
             "cliproxy Antigravity",
-            "",
+            "gemini/v1beta",
         ),
         # Non-cliproxy google mirrors the anthropic/openai branch shapes.
         (
@@ -522,9 +523,9 @@ def test_header_snapshot_labels_openai_api_modes() -> None:
             "gemini-3-pro",
             "responses",
             "custom Gemini",
-            "",
+            "gemini/v1beta",
         ),
-        ("google", None, "gemini-3-pro", "responses", "Gemini API", ""),
+        ("google", None, "gemini-3-pro", "responses", "Gemini API", "gemini/v1beta"),
     ],
 )
 def test_header_snapshot_names_cliproxy_channels(

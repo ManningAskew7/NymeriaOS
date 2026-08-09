@@ -81,10 +81,64 @@ def test_llm_config_resolution_uses_global_defaults_without_thread_config():
     assert config.reasoning_effort == "medium"
     assert config.base_url is None
     assert config.api_key == "anthropic-direct-key"
-    assert config.openai_api_mode == "responses"
+    # The global "responses" mode is an OpenAI-wire concept and is NOT
+    # carried onto non-openai-wire providers (#153); anthropic ignores it
+    # at dispatch, and carrying it only fed the overview a wrong wire label.
+    assert config.openai_api_mode is None
     assert len(config.fallbacks) == 1
     assert config.fallbacks[0].provider == "anthropic"
     assert config.fallbacks[0].model == "claude-haiku-4-5-20251001"
+
+
+def test_openai_api_mode_gated_to_openai_wire_providers():
+    """#153: a host-level OPENAI_API_MODE must not ride onto providers that
+    do not speak an OpenAI wire (google rendered `(responses)` in the
+    overview while the CLI showed nothing). The gate mirrors the dispatch's
+    own ignore predicate."""
+    google_agent = _make_agent(llm_provider="google", llm_model="gemini-3-pro")
+    google_config = google_agent._get_llm_config_for_thread("thread-1")
+    assert google_config.openai_api_mode is None
+
+    openai_agent = _make_agent(llm_provider="openai", llm_model="gpt-5.5")
+    openai_config = openai_agent._get_llm_config_for_thread("thread-1")
+    assert openai_config.openai_api_mode == "responses"
+
+
+def test_openai_api_mode_kept_on_openai_compat_route():
+    """#153's gate is wire-based, not provider-name-based: a google provider
+    explicitly routed over the OpenAI-compat wire DOES speak the mode."""
+    agent = _make_agent(
+        llm_provider="google",
+        llm_model="gemini-3-pro",
+        llm_provider_route="openai_compat",
+    )
+    config = agent._get_llm_config_for_thread("thread-1")
+    assert config.openai_api_mode == "responses"
+
+
+def test_openai_api_mode_gate_applies_to_fallback_candidates():
+    """Fallback candidates run through the same #153 gate independently of
+    the primary: an openai primary keeps "responses" while its anthropic
+    fallback drops it, and an openai fallback keeps it under a google
+    primary."""
+    agent = _make_agent(llm_provider="openai", llm_model="gpt-5.5")
+    config = agent._get_llm_config_for_thread("thread-1")
+    assert config.openai_api_mode == "responses"
+    anthropic_fallbacks = [
+        f for f in config.fallbacks if f.provider == "anthropic"
+    ]
+    assert anthropic_fallbacks
+    assert all(f.openai_api_mode is None for f in anthropic_fallbacks)
+
+    agent = _make_agent(
+        llm_provider="google",
+        llm_model="gemini-3-pro",
+        llm_fallback_models="openai:gpt-5.5-mini",
+    )
+    config = agent._get_llm_config_for_thread("thread-1")
+    assert config.openai_api_mode is None
+    assert config.fallbacks[0].provider == "openai"
+    assert config.fallbacks[0].openai_api_mode == "responses"
 
 
 def test_llm_config_carries_thread_scoped_prompt_cache_key():

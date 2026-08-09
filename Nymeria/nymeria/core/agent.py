@@ -1237,9 +1237,27 @@ class NymeriaAgent:
         from .agent_results import extract_http_status_code
         return extract_http_status_code(error)
 
-    def _classify_stream_exception(self, error: Exception) -> Dict[str, Any]:
+    def _classify_stream_exception(
+        self, error: Exception, thread_id: str = ""
+    ) -> Dict[str, Any]:
         from .agent_results import classify_stream_exception
-        return classify_stream_exception(error)
+
+        # Resolve the active LLM destination so CLIProxy-shaped failures get
+        # the /provider-test hints (#148). The THREAD's effective config is
+        # the only truthful source: falling back to the global
+        # settings.llm_base_url would attach CLIProxy advice to a direct-API
+        # thread's failure on hosts whose global default is the proxy. Best
+        # effort inside an error handler: resolution faults must never mask
+        # the turn error itself.
+        base_url: Optional[str] = None
+        try:
+            if thread_id:
+                base_url = getattr(
+                    self._get_llm_config_for_thread(thread_id), "base_url", None
+                )
+        except Exception:  # noqa: BLE001 - hint resolution is decorative
+            base_url = None
+        return classify_stream_exception(error, base_url=base_url)
 
     @classmethod
     def _parse_subagent_error_marker(cls, result: str) -> Optional[Dict[str, Any]]:
@@ -2760,7 +2778,7 @@ class NymeriaAgent:
                     final_text="",
                 )
                 done_observe_fired = True
-                error_event = self._classify_stream_exception(e)
+                error_event = self._classify_stream_exception(e, thread_id=thread_id)
                 return str(error_event.get("content") or f"An error occurred: {str(e)}")
         finally:
             # Deferred DONE observe (see astream's finally): covers BaseException
@@ -3865,7 +3883,7 @@ class NymeriaAgent:
                         thread_id,
                         (compact_result or {}).get("reason", compact_result),
                     )
-                yield self._classify_stream_exception(e)
+                yield self._classify_stream_exception(e, thread_id=thread_id)
 
                 # Try to track tokens + cost even after error so status bar
                 # stays alive; skipped when the success path already recorded

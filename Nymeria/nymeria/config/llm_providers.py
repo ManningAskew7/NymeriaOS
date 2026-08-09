@@ -1097,6 +1097,18 @@ def is_openai_compatible_provider(provider: str | None) -> bool:
     return bool(spec and spec.api_format == "openai_chat")
 
 
+def is_google_native_provider(provider: str | None) -> bool:
+    """True when the provider's declared wire is the google-genai REST shape.
+
+    The ONE spelling of this predicate (probe headers, provider test, models
+    listing): keying any of those sites on the literal id "google" instead
+    would hand a future google-family spec (e.g. vertex) the native /v1beta
+    URL shape with the wrong auth header.
+    """
+    spec = get_llm_provider_spec(provider)
+    return bool(spec and spec.api_format == "google_genai")
+
+
 def normalize_provider_route(route: Any) -> ProviderRoute | None:
     """Normalize a provider route value, returning None for blanks/unknowns."""
     value = str(route or "").strip().lower()

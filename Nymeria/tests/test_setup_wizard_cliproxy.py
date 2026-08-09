@@ -222,6 +222,95 @@ def test_noninteractive_cliproxy_preflight_blocks_when_not_logged_in(
     assert not (root / "config.env").exists()
 
 
+def test_noninteractive_cliproxy_preflight_still_blocks_on_backing_off_login(
+    monkeypatch, tmp_path, capsys
+):
+    """#149 boundary: the finalize preflight deliberately stays on the STRICT
+    active predicate. A backing-off login skips the pointless re-login
+    elsewhere, but proving the credential SERVES is this gate's whole job."""
+    _stub_llm(monkeypatch)
+    backing_off = _active_auth("claude")
+    backing_off["unavailable"] = True
+    _fake_cliproxy_client(monkeypatch, auth_files=[backing_off])
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-gatekeeper-key", "cpx-gate",
+                               "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "No active Claude" in out
+    assert not (root / "config.env").exists()
+
+
+def test_cliproxy_console_login_skips_oauth_for_backing_off_login(
+    monkeypatch, tmp_path, capsys
+):
+    """#149: a present-but-backing-off login must NOT trigger a fresh OAuth
+    (the backoff clears on its own); the skip says so honestly."""
+    _stub_llm(monkeypatch)
+    backing_off = _active_auth("claude", account="max@example.com")
+    backing_off["unavailable"] = True
+    fake = _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[backing_off],
+        knobs={"api-keys": ["cpx-existing"]},
+    )
+
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-login", "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert "Already logged in" in out
+    assert "max@example.com" in out
+    assert "backing off" in out
+    # Both causes named: the self-clearing backoff and the revoked login
+    # that presents identically (where a fresh OAuth IS the fix).
+    assert "revoked" in out
+    assert not [c for c in fake.calls if c[0] == "start_oauth"]
+    assert rc == 0
+
+
+def test_cliproxy_console_login_backing_off_confirm_forces_fresh_oauth(
+    monkeypatch, tmp_path, capsys
+):
+    """The console escape for the revoked-credential case: confirming the
+    prompt on a backing-off login runs a real OAuth instead of skipping."""
+    import queue as queue_mod
+
+    from nymeria.setup import cliproxy_login as cliproxy_login_mod
+
+    _stub_llm(monkeypatch)
+    backing_off = _active_auth("claude", account="max@example.com")
+    backing_off["unavailable"] = True
+    fake = _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[backing_off],
+        knobs={"api-keys": ["cpx-existing"]},
+        status_script=["wait", "ok"],
+        login_lands=_active_auth("claude", account="max@example.com"),
+    )
+    pasted = queue_mod.Queue()
+    pasted.put("http://localhost:54545/callback?code=abc&state=s1")
+    monkeypatch.setattr(cliproxy_login_mod, "_start_paste_reader", lambda: pasted)
+    monkeypatch.setattr(cliproxy_login_mod, "_browser_launch_blocked", lambda: True)
+    monkeypatch.setattr(cliproxy_login_mod, "LOGIN_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(
+        cliproxy_login_mod, "_confirm_backoff_relogin", lambda: True
+    )
+
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-login", "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "backing off" in out
+    assert [c for c in fake.calls if c[0] == "start_oauth"]
+    assert "Logged in to Claude" in out
+
+
 def test_noninteractive_cliproxy_preflight_warns_on_unreachable_with_gatekeeper(
     monkeypatch, tmp_path, capsys
 ):

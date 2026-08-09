@@ -63,8 +63,18 @@ def extract_http_status_code(error: Exception) -> Optional[int]:
     return None
 
 
-def classify_stream_exception(error: Exception) -> Dict[str, Any]:
-    """Map raw exceptions into frontend-friendly structured error payloads."""
+def classify_stream_exception(
+    error: Exception, *, base_url: Optional[str] = None
+) -> Dict[str, Any]:
+    """Map raw exceptions into frontend-friendly structured error payloads.
+
+    ``base_url`` is the active LLM destination when the caller knows it; on a
+    CLIProxy-shaped base the known model/auth failure shapes get the same
+    actionable hint ``/provider test`` renders (backlog #148). This seam runs
+    only AFTER the retry/fallback machinery has exhausted (the exception
+    escaped to the terminal handlers), so appending copy here cannot change
+    retry or fallback classification.
+    """
     raw_message = str(error)
     status_code = extract_http_status_code(error)
     lower = raw_message.lower()
@@ -147,6 +157,21 @@ def classify_stream_exception(error: Exception) -> Dict[str, Any]:
         }
 
     details = {"http_status": status_code} if status_code is not None else {}
+
+    if base_url:
+        # Function-local: keeps this module's import graph unchanged (the
+        # helper itself lazily imports the vendored CLIProxy predicate).
+        from .llm_provider_utils import cliproxy_failure_hint
+
+        hint = cliproxy_failure_hint(base_url, raw_message)
+        if hint:
+            return {
+                "type": "error",
+                "content": f"An error occurred: {raw_message}\n\n{hint}",
+                "code": "cliproxy_model_error",
+                "details": details,
+            }
+
     return {
         "type": "error",
         "content": f"An error occurred: {raw_message}",
