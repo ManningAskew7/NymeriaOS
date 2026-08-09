@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ...config import Settings
 from ...config.llm_providers import (
     get_llm_provider_spec,
+    is_google_native_provider,
     is_openai_compatible_provider,
     list_llm_provider_specs,
     normalize_llm_provider,
@@ -815,11 +816,8 @@ async def _test_llm_provider_config(
         else:
             api_key = "not-needed"
 
-    provider_spec = get_llm_provider_spec(provider)
     google_native = (
-        provider_spec is not None
-        and getattr(provider_spec, "api_format", "") == "google_genai"
-        and provider_route != "openai_compat"
+        is_google_native_provider(provider) and provider_route != "openai_compat"
     )
 
     if provider == "anthropic":
@@ -845,7 +843,9 @@ async def _test_llm_provider_config(
             "/"
         )
         url = f"{clean_base}/v1beta/models/{model}:generateContent"
-        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+        # Shared with the models listing so the two google probes cannot
+        # drift; Content-Type comes from the json= post.
+        headers = provider_probe_headers(provider, api_key)
         payload = {
             "contents": [{"role": "user", "parts": [{"text": "Reply with ok."}]}],
             "generationConfig": {"maxOutputTokens": 64},
@@ -1014,6 +1014,7 @@ async def _available_models(
     both address and key is spending only their own credential.
     """
     effective_provider = normalize_llm_provider(provider or settings.llm_provider)
+    google_native = is_google_native_provider(effective_provider)
     use_stored_credentials = not destination_redirects_away_from_config(
         base_url,
         configured=configured_llm_destinations(effective_provider, settings=settings),
@@ -1059,6 +1060,35 @@ async def _available_models(
             if clean_base.endswith("/v1")
             else f"{clean_base}/v1/models"
         )
+    elif google_native:
+        # Native Gemini wire (google-genai REST shape), mirroring the
+        # provider-test branch: the configured base is honored so CLIProxy's
+        # /v1beta inbound (the antigravity native route) is listable with the
+        # CLIProxy local key; without a base this lists Google directly.
+        # Before this branch the google provider fell through to the empty
+        # return below, and "/models" rendering "No models returned from
+        # provider." is what pushed the blind model pick in the 2026-08-09
+        # wedged-thread incident (see the google history sanitizer in
+        # vendor/react_agent/providers.py). No provider_route check here,
+        # unlike the test probe: this function has no route parameter, and
+        # for the default native base the listing serves the same pool
+        # either route. Known limits: an EXPLICIT compat-shim base
+        # (.../v1beta/openai) still gets the native URL appended and 404s
+        # into the same empty list the old code returned (route-awareness
+        # needs the parameter plumbed through), and only the FIRST page is
+        # read (real Google paginates via nextPageToken, default page size
+        # 50, so a direct-Google listing can miss tail models; CLIProxy
+        # returns one page).
+        if use_stored_credentials:
+            api_key = api_key or resolve_provider_api_key(
+                effective_provider,
+                settings=settings,
+            )
+        effective_base_url = (
+            effective_base_url or "https://generativelanguage.googleapis.com"
+        )
+        clean_base = effective_base_url.rstrip("/")
+        models_url = f"{clean_base}/v1beta/models"
     elif is_openai_compatible_provider(effective_provider):
         if use_stored_credentials:
             api_key = api_key or resolve_provider_api_key(
@@ -1099,7 +1129,26 @@ async def _available_models(
             resp.raise_for_status()
             data = resp.json()
 
-        raw_models = data.get("data", [])
+        if google_native:
+            # Gemini listing shape: {"models": [{"name": "models/<id>", ...}]}.
+            # Normalize into the id/name shape the shared loop expects; the
+            # camelCase token limits ride along for extract_model_metadata
+            # (which reads inputTokenLimit/outputTokenLimit). Rows that cannot
+            # generateContent (embedding models, aqa) are not chat-pickable
+            # and are filtered when the listing declares methods at all.
+            raw_models = []
+            for m in data.get("models", []) or []:
+                methods = m.get("supportedGenerationMethods") or []
+                if methods and "generateContent" not in methods:
+                    continue
+                model_id = str(m.get("name") or "").removeprefix("models/")
+                if not model_id:
+                    continue
+                raw_models.append(
+                    {**m, "id": model_id, "name": m.get("displayName") or model_id}
+                )
+        else:
+            raw_models = data.get("data", [])
         result = []
         for m in sorted(raw_models, key=lambda x: x.get("id", "")):
             model_id = m.get("id", "")

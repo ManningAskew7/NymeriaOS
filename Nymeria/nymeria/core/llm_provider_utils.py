@@ -22,6 +22,7 @@ import httpx
 from ..config.llm_providers import (
     cliproxy_base_url_for_provider,
     get_llm_provider_spec,
+    is_google_native_provider,
     normalize_llm_provider,
     resolve_provider_base_url,
 )
@@ -347,10 +348,69 @@ def provider_probe_headers(
 
             headers["User-Agent"] = CLIPROXY_CLAUDE_USER_AGENT
         return headers
+    if is_google_native_provider(provider):
+        # Native Gemini wire: the key rides x-goog-api-key (a Bearer header
+        # is ignored by Google and by CLIProxy's /v1beta inbound alike).
+        return {"x-goog-api-key": api_key}
     headers = {"Authorization": f"Bearer {api_key}"}
     if provider == "openrouter":
         headers.update(OPENROUTER_ATTRIBUTION_HEADERS)
     return headers
+
+
+def cliproxy_failure_hint(base_url: str | None, message: str) -> str:
+    """Plain-language hint for the CLIProxy model/auth failure shapes, or "".
+
+    The raw messages are misread in practice (dogfood 2026-08-05): the
+    proxy's 502 "unknown provider for model X" reads as a Nymeria config
+    bug, the upstream's 404 "Requested entity was not found" says nothing
+    actionable, and the proxy-local 503 ``auth_unavailable`` looks like a
+    logged-out credential when it is a self-clearing backoff. Keyed on the
+    SAME predicate the runtime uses to decide the route is a CLIProxy
+    (``looks_like_cliproxy_url``), so a direct-API failure is never
+    editorialized. ONE shared helper for /provider test AND the live-turn
+    error path (backlog #148): the two surfaces must not drift. This
+    appends copy to an already-failed request; it never classifies behavior
+    off message text (the trap `docs/private/cliproxy.md` documents for the
+    verify endpoint). Taxonomy: that doc's "Interpreting proxy auth errors".
+    """
+    if not base_url:
+        return ""
+    # Function-local vendored import, same reason as the cloak header above.
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+    if not looks_like_cliproxy_url(base_url):
+        return ""
+    lowered = message.casefold()
+    if "unknown provider for model" in lowered:
+        return (
+            "This means no logged-in subscription on the proxy has"
+            " registered that model id (its registry is exact-match,"
+            " no prefixes). Pick from the live list: /provider cliproxy"
+            " <target>, or /model."
+        )
+    if "requested entity was not found" in lowered:
+        return (
+            "The subscription's upstream does not serve this model id"
+            " for your account, even though the proxy registered it."
+            " Pick a different model: /provider cliproxy <target>, or"
+            " /model."
+        )
+    if "auth_unavailable" in lowered or "no auth available" in lowered:
+        # Two causes share this wire shape (taxonomy): the usual TEMPORARY
+        # error backoff, and a revoked/disabled login (upstream 401 also
+        # marks unavailable with a retry timer). The copy must not send the
+        # revoked case into an endless wait.
+        return (
+            "Every proxy login that could serve this model is unavailable"
+            " (auth_unavailable), so nothing was dispatched upstream."
+            " Usually this is a temporary error backoff that clears on its"
+            " own (re-login does not help there). If it persists across"
+            " retries, the login is likely revoked or disabled, and then a"
+            " re-login IS the fix. Check /provider status, or switch model:"
+            " /model."
+        )
+    return ""
 
 
 def redact_secrets(text: str, *secrets: str | None) -> str:

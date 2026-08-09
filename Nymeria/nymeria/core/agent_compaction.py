@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# One WARN per distinct (setting, window) clamp pair per process: the
+# token-mode trigger saturating to the window edge is a silent
+# misconfiguration until #115's arithmetic fix lands. See
+# CompactionManager.compact_trigger_tokens.
+_CLAMP_WARNED_PAIRS: set[tuple[int, int]] = set()
+
 
 def hook_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Optional[int]]:
     """Best-effort context-usage numbers for lifecycle-hook fire points.
@@ -414,10 +420,31 @@ class CompactionManager:
 
         ``mode="percentage"`` returns ``int(model_limit * threshold)``.
         ``mode="tokens"`` returns ``tokens`` clamped to ``model_limit`` so an
-        oversized absolute setting never disables compaction.
+        oversized absolute setting never disables compaction. A setting at or
+        above the window WARNS once per (setting, window) pair: the clamped
+        trigger sits on the window edge and leaves no room for the response,
+        so the thread can overflow before compaction fires. Interim
+        visibility only; the arithmetic fix (an output reserve) is the open
+        half of backlog #115.
         """
         if mode == "tokens":
-            return max(1, min(int(tokens), int(model_limit)))
+            requested = int(tokens)
+            limit = int(model_limit)
+            if requested >= limit:
+                pair = (requested, limit)
+                if pair not in _CLAMP_WARNED_PAIRS:
+                    _CLAMP_WARNED_PAIRS.add(pair)
+                    logger.warning(
+                        "[COMPACTION] compact_threshold_tokens=%d is at or"
+                        " above the model window (%d). The trigger is clamped"
+                        " to the window edge, leaving no room for the"
+                        " response, so the thread may OVERFLOW before"
+                        " compaction fires. Lower the threshold or use"
+                        " percentage mode (backlog #115).",
+                        requested,
+                        limit,
+                    )
+            return max(1, min(requested, limit))
         return max(1, int(model_limit * threshold))
 
     # ------------------------------------------------------------------

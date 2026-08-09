@@ -27,6 +27,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..config.llm_providers import (
     cliproxy_base_url_for_provider,
+    is_openai_compatible_provider,
     normalize_llm_provider,
     resolve_provider_route,
     resolve_provider_api_key,
@@ -535,6 +536,16 @@ def activate_temporary_llm_fallback(
     }
 
 
+def _speaks_openai_wire(provider: str | None, provider_route: str | None) -> bool:
+    """True when ``openai_api_mode`` is meaningful for this provider/route
+    pair (#153). ONE spelling for the primary and fallback-candidate gates;
+    unregistered/"custom" providers pass via the openai_compat route
+    default, so the gate never nulls a provider that reads the mode."""
+    return bool(
+        is_openai_compatible_provider(provider) or provider_route == "openai_compat"
+    )
+
+
 def get_llm_config_for_thread(
     host: LLMConfigHost,
     thread_id: str = "",
@@ -585,6 +596,16 @@ def get_llm_config_for_thread(
         if active_fallback and active_fallback.openai_api_mode
         else resolve("openai_api_mode", host.settings.openai_api_mode)
     )
+    if openai_api_mode and not _speaks_openai_wire(provider, provider_route):
+        # The mode is an OpenAI-wire concept. Carrying it onto google or
+        # anthropic effective configs only fed the overview a wire the
+        # provider does not speak (#153: `cliproxy Antigravity (responses)`
+        # on a host with OPENAI_API_MODE set). Behavior-neutral at dispatch:
+        # every consumer spells `mode or <provider default>` and the
+        # non-openai factories never read it (providers.py notes the stray
+        # field as ignorable at DEBUG); this gate just stops the display
+        # layers from believing it.
+        openai_api_mode = None
     model = resolve("model", host.settings.llm_model)
     if active_fallback:
         model = active_fallback.model
@@ -975,9 +996,10 @@ def get_llm_config_for_thread(
                     fallback_base_url,
                 ),
                 base_url=fallback_base_url,
-                openai_api_mode=resolve(
-                    "openai_api_mode",
-                    host.settings.openai_api_mode,
+                openai_api_mode=(
+                    resolve("openai_api_mode", host.settings.openai_api_mode)
+                    if _speaks_openai_wire(fallback_provider, fallback_route)
+                    else None  # same gate as the primary (#153)
                 ),
                 context_length=None,
                 ollama_num_ctx=None,

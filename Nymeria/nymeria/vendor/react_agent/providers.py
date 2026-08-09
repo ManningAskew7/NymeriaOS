@@ -3410,6 +3410,90 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
 _GOOGLE_GENAI_DISABLE_RETRIES = 1
 
 
+_GOOGLE_FAMILY_MODEL_MARKERS = ("gemini", "gemma")
+
+
+def _google_foreign_provenance(message: Any) -> bool:
+    """True when a history message is KNOWN to come from a non-Gemini model.
+
+    Provenance is read from ``response_metadata``: the v1 ``model_provider``
+    stamp when present, else the ``model_name``/``model`` stamp both
+    langchain-anthropic and langchain-google-genai set. Unknown provenance
+    (no stamp at all) deliberately reads as NOT foreign: wrongly dropping a
+    genuine Gemini thinking block severs its thought-signature round-trip,
+    which is the native route's whole purpose (gemini-3 tool follow-ups 4xx
+    without it), while wrongly keeping a foreign block risks only what the
+    strip below already guards case by case.
+    """
+    meta = getattr(message, "response_metadata", None) or {}
+    provider = str(meta.get("model_provider") or "").strip().casefold()
+    if provider:
+        return "google" not in provider
+    model = str(meta.get("model_name") or meta.get("model") or "").strip().casefold()
+    if model:
+        return not any(marker in model for marker in _GOOGLE_FAMILY_MODEL_MARKERS)
+    return False
+
+
+def _strip_foreign_reasoning_for_google(messages: List[Any]) -> List[Any]:
+    """Drop reasoning artifacts the google-genai request builder cannot replay.
+
+    The google route is the only provider route with no history sanitizer,
+    and mixed-provider histories are first-class here (per-thread model
+    switches, mid-turn fallback swaps), so foreign reasoning artifacts WILL
+    reach it. Two failure classes, both real:
+
+    - Nymeria's responses-wire capture stores reasoning as
+      ``{"type": "reasoning", "summary": [...]}`` (no ``"reasoning"`` key).
+      langchain-google-genai's ``_convert_to_parts`` does
+      ``part["reasoning"]`` unconditionally, so ONE such block in history
+      KeyErrors while building the request: every turn fails, including the
+      compaction summary that would have rescued the thread (incident
+      2026-08-09, Docker thread 00b626e8, gpt-5.5 history replayed to
+      gemini-flash-5).
+    - The builder base64-decodes any ``signature``/``extras.signature`` on
+      thinking/reasoning blocks and sends it to Google as a
+      ``thought_signature``. Anthropic thinking blocks are shape-identical
+      to google's stored ones, so a claude-to-gemini switch would ship an
+      Anthropic signature to Google.
+
+    Rules: reasoning/thinking blocks from known-foreign messages are
+    dropped; blocks missing the text key their google branch subscripts
+    (``reasoning``/``thinking``) are dropped regardless of provenance; all
+    other content passes through untouched. Messages are copied on change,
+    never mutated (they are checkpointed state). A tool-call-free message
+    whose content list empties entirely is dropped from the REQUEST (never
+    the checkpoint): the library's ``_filter_messages`` removes only empty
+    HumanMessages, so an empty assistant message would ship as
+    ``Content(role="model", parts=[])``, the exact empty-parts 400 the
+    2026-08-06 incident documented. A message WITH tool_calls survives with
+    empty content (the builder emits its function-call parts).
+    """
+    sanitized: List[Any] = []
+    for message in messages:
+        content = getattr(message, "content", None)
+        if isinstance(message, AIMessage) and isinstance(content, list):
+            foreign = _google_foreign_provenance(message)
+
+            def _keep(block: Any) -> bool:
+                if not isinstance(block, dict):
+                    return True
+                block_type = block.get("type")
+                if block_type == "reasoning":
+                    return (not foreign) and ("reasoning" in block)
+                if block_type == "thinking":
+                    return (not foreign) and ("thinking" in block)
+                return True
+
+            kept = [block for block in content if _keep(block)]
+            if len(kept) != len(content):
+                if not kept and not getattr(message, "tool_calls", None):
+                    continue
+                message = message.model_copy(update={"content": kept})
+        sanitized.append(message)
+    return sanitized
+
+
 def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
     """Create a Google Gemini LLM using the dedicated partner package.
 
@@ -3432,6 +3516,22 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
             "langchain-google-genai is required for the Google Gemini "
             "provider. Install with: pip install langchain-google-genai"
         ) from exc
+
+    class _HistorySanitizingChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
+        """ChatGoogleGenerativeAI with the foreign-reasoning history strip.
+
+        ``_prepare_request`` is the single seam every generate/stream path
+        (sync and async) funnels through in langchain-google-genai 4.x, so
+        sanitizing here covers graph turns, compaction summaries, and
+        titling alike. Defined per factory call, mirroring the anthropic
+        subclass shape above; LLM creation is not hot enough to warrant a
+        cache.
+        """
+
+        def _prepare_request(self, messages: List[Any], **kwargs: Any) -> Any:
+            return super()._prepare_request(
+                _strip_foreign_reasoning_for_google(messages), **kwargs
+            )
 
     api_key = (
         config.api_key
@@ -3547,7 +3647,7 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
             # closest the typed field allows.
             kwargs["include_thoughts"] = False
 
-    return ChatGoogleGenerativeAI(**kwargs)
+    return _HistorySanitizingChatGoogleGenerativeAI(**kwargs)
 
 
 def _create_bedrock_llm(config: LLMConfig) -> BaseChatModel:

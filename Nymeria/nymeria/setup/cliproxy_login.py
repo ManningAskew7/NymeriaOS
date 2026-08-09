@@ -34,6 +34,7 @@ from ..cliproxy.management_client import (
     CLIProxyUnsupported,
     SESSION_OK_GUARD_SECONDS,
     active_login_entry,
+    present_login_entry,
     auth_entry_matches_spec,
     confirm_login_landed,
     import_auth_file,
@@ -209,6 +210,32 @@ async def _import_auth_file(
     return True
 
 
+# Shared with the wizard login step (setup/steps/cliproxy.py) so the two
+# surfaces cannot drift. Both causes named: the usual self-clearing backoff,
+# and the revoked login that presents identically (upstream 401 also marks
+# the entry unavailable with a retry timer).
+CLIPROXY_BACKOFF_NOTE = (
+    "temporarily backing off; this usually clears on its own, but a revoked"
+    " login shows the same way"
+)
+
+
+def _confirm_backoff_relogin() -> bool:
+    """y/N prompt for forcing a fresh OAuth over a backing-off login.
+
+    Without this escape a REVOKED credential (which presents as backing off)
+    would be unfixable from the console path; the wizard's equivalent is
+    Ctrl+R. EOF/closed stdin defaults to NO so scripted runs keep the skip.
+    """
+    try:
+        answer = input(
+            "Start a fresh login anyway (fixes a revoked login)? [y/N] "
+        )
+    except (EOFError, OSError):
+        return False
+    return answer.strip().casefold() in {"y", "yes"}
+
+
 async def _login_console(
     state: WizardState,
     client: CLIProxyManagementClient,
@@ -227,15 +254,30 @@ async def _login_console(
     except CLIProxyManagementError as exc:
         console.print(f"[red]Cannot reach the proxy: {escape(str(exc))}[/red]")
         return False
-    entry = active_login_entry(files, spec)
+    # PRESENT, not active (#149): a backing-off login must not auto-trigger
+    # a fresh OAuth (the usual backoff clears on its own), but the console
+    # keeps a y/N escape because a revoked login presents the same way.
+    # The verify-step preflight below deliberately stays on the strict
+    # active_login_entry: proving a credential SERVES is its whole job.
+    entry = present_login_entry(files, spec)
     if entry is not None:
         account = login_account_label(entry)
-        console.print(
-            f"[green]Already logged in to {spec.label}"
-            f"{f' as {escape(account)}' if account else ''}.[/green]"
-        )
-        await _post_login_console(state, client, spec)
-        return True
+        who = f" as {escape(account)}" if account else ""
+        if entry.get("unavailable"):
+            console.print(
+                f"[yellow]Already logged in to {spec.label}{who}"
+                f" ({CLIPROXY_BACKOFF_NOTE}).[/yellow]"
+            )
+            if not _confirm_backoff_relogin():
+                await _post_login_console(state, client, spec)
+                return True
+            # Fall through to a fresh OAuth.
+        else:
+            console.print(
+                f"[green]Already logged in to {spec.label}{who}.[/green]"
+            )
+            await _post_login_console(state, client, spec)
+            return True
 
     try:
         started = await client.start_oauth(spec)

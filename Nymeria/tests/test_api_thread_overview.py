@@ -466,6 +466,48 @@ def test_thread_overview_provider_label_names_cliproxy_channel(
     assert response.json()["llm"]["provider_label"] == expected_label
 
 
+@pytest.mark.parametrize(
+    ("provider", "base_url", "api_mode", "expected"),
+    [
+        # google names its real wire; a stray "responses" mode on the config
+        # must NOT leak into the label (#153: the pre-fix overview rendered
+        # "responses" here while the CLI showed nothing).
+        ("google", "http://cli-proxy-api:8317", "responses", "gemini/v1beta"),
+        ("google", None, "responses", "gemini/v1beta"),
+        ("openai", "http://localhost:8317/v1", "responses", "responses/v1"),
+        ("anthropic", "http://localhost:8317", None, "messages/v1"),
+    ],
+)
+def test_thread_overview_api_mode_label_mirrors_cli_header(
+    tmp_path: Path,
+    api_client_builder,
+    provider: str,
+    base_url: str | None,
+    api_mode: str | None,
+    expected: str,
+):
+    """_api_mode_label is the overview mirror of the CLI's _api_type_label;
+    this pins the pair so they cannot silently diverge again (#153)."""
+    client, agent, _settings, token = _client(tmp_path, api_client_builder)
+    thread_id = "mode-label-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._get_llm_config_for_thread = lambda thread_id="": LLMConfig(
+        provider=provider,
+        model="any-model",
+        base_url=base_url,
+        api_key="configured",
+        openai_api_mode=api_mode,
+    )
+
+    response = client.get(
+        f"/threads/{thread_id}/overview",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["llm"]["api_mode_label"] == expected
+
+
 def test_thread_overview_llm_defaults_label_when_resolver_is_missing(
     tmp_path: Path,
     api_client_builder,
@@ -529,6 +571,35 @@ def test_provider_label_mirrors_agree(provider, base_url, model):
     assert overview_label(provider, base_url, model) == header_label(
         provider, base_url or "", model
     )
+
+
+@pytest.mark.parametrize(
+    ("provider", "mode"),
+    [
+        ("anthropic", None),
+        ("google", None),
+        ("google", "responses"),  # stray mode must not leak on either side
+        ("openai", None),
+        ("openai", "responses"),
+        ("openai", "chat_completions"),
+        ("openrouter", "chat_completions"),
+        ("custom", "completions"),
+        # Openai-compatible but outside both branch sets: BOTH sides blank
+        # (the overview used to leak str(mode) here, the #153 class).
+        ("deepseek", "chat_completions"),
+        ("", None),
+    ],
+)
+def test_api_mode_label_mirrors_cli_api_type_label(provider, mode):
+    """Executable lockstep for the api-type pair, same idiom as the
+    _provider_label gate above: both bodies are called on one table so a
+    drift in either mirror fails instead of shipping CLI-vs-GUI skew."""
+    from nymeria.api.thread_overview import _api_mode_label
+    from nymeria.triggers.cli.header import _api_type_label
+
+    assert _api_mode_label(provider, mode) == _api_type_label(
+        provider, {}, {"openai_api_mode": mode}
+    ), (provider, mode)
 
 
 def test_thread_overview_enforces_thread_access(tmp_path: Path, api_client_builder):

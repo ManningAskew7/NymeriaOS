@@ -740,6 +740,12 @@ def _api_type_label(
     normalized = str(provider or "").strip().casefold()
     if normalized == "anthropic":
         return "messages/v1"
+    if normalized == "google":
+        # The google-genai SDK appends /v1beta itself; spelling matches the
+        # existing wire-naming style (messages/v1, responses/v1). Covers
+        # CLIProxy antigravity and direct-key google alike (#153). Mirrored
+        # in api/thread_overview.py::_api_mode_label; keep in lockstep.
+        return "gemini/v1beta"
     if normalized in {"openai", "openrouter", "custom"}:
         mode = str(
             llm_config.get("openai_api_mode")

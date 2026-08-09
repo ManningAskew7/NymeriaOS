@@ -166,6 +166,9 @@
                   Not supported by this proxy build
                 {:else if provider.logged_in}
                   Logged in
+                {:else if provider.unavailable}
+                  Logged in, backing off (usually clears on its own; a revoked
+                  login shows the same way, so re-login if it persists)
                 {:else}
                   No login
                 {/if}
@@ -177,7 +180,7 @@
                 onclick={() => login(provider)}
                 disabled={provider.supported === false}
               >
-                {provider.logged_in ? 'Re-login' : 'Log in'}
+                {provider.logged_in || provider.unavailable ? 'Re-login' : 'Log in'}
               </Button>
               <Button
                 variant="primary"

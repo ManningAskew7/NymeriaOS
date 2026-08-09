@@ -1684,7 +1684,11 @@ class LLMCommandsMixin:
         if bool(result.get("ok", False)):
             return command_success(f"{label} provider test succeeded.")
         message = str(result.get("message", "") or "").strip() or "unknown error"
-        hint = self._cliproxy_failure_hint(
+        # ONE shared helper with the live-turn error path (#148): the two
+        # surfaces must not drift. Function-local import per module pattern.
+        from .llm_provider_utils import cliproxy_failure_hint
+
+        hint = cliproxy_failure_hint(
             str(request.get("llm_base_url") or ""), message
         )
         if hint:
@@ -1722,38 +1726,6 @@ class LLMCommandsMixin:
             return ""
         return f" Note: {CLAUDE_VIA_OPENAI_ROUTE_WARNING}"
 
-    @staticmethod
-    def _cliproxy_failure_hint(base_url: str, message: str) -> str:
-        """Plain-language line for the two CLIProxy model-failure shapes.
-
-        Both raw messages are misread in practice (dogfood 2026-08-05):
-        the proxy's 502 "unknown provider for model X" reads as a Nymeria
-        config bug, and the upstream's 404 "Requested entity was not
-        found" says nothing actionable. Keyed on the SAME predicate the
-        runtime uses to decide the route is a CLIProxy
-        (looks_like_cliproxy_url), so a direct-API failure is never
-        editorialized.
-        """
-        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
-
-        if not base_url or not looks_like_cliproxy_url(base_url):
-            return ""
-        lowered = message.casefold()
-        if "unknown provider for model" in lowered:
-            return (
-                "This means no logged-in subscription on the proxy has"
-                " registered that model id (its registry is exact-match,"
-                " no prefixes). Pick from the live list: /provider cliproxy"
-                " <target>, or /model."
-            )
-        if "requested entity was not found" in lowered:
-            return (
-                "The subscription's upstream does not serve this model id"
-                " for your account, even though the proxy registered it."
-                " Pick a different model: /provider cliproxy <target>, or"
-                " /model."
-            )
-        return ""
 
     _RP_STATUS_TEXT = {
         "active": "active (confirmed on the last turn)",

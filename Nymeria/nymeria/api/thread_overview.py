@@ -563,9 +563,16 @@ def _provider_label(provider: str, base_url: Any, model: str) -> str:
 
 
 def _api_mode_label(provider: str, mode: Any) -> str:
+    # Mirror of triggers/cli/header.py::_api_type_label; keep in lockstep
+    # (the missing mirror note is how the google divergence survived, #153).
     normalized_provider = str(provider or "").strip().casefold()
     if normalized_provider == "anthropic":
         return "messages/v1"
+    if normalized_provider == "google":
+        # Before this branch google fell through to str(mode) and could
+        # render a wire google does not speak ("responses") while the CLI
+        # showed nothing (#153).
+        return "gemini/v1beta"
     if normalized_provider in {"openai", "openrouter", "custom"}:
         normalized = str(mode or "responses").strip().casefold().replace("-", "_")
         if normalized == "chat_completions":
@@ -574,7 +581,10 @@ def _api_mode_label(provider: str, mode: Any) -> str:
             return "responses/v1"
         if normalized == "completions":
             return "completions/v1"
-    return str(mode or "").strip()
+    # Everything else: no label, matching the CLI mirror exactly (the old
+    # str(mode) fallthrough leaked a wire name for providers whose branch
+    # set does not include them, the #153 divergence class).
+    return ""
 
 
 def _thinking_label(

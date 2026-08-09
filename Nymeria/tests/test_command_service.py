@@ -2514,6 +2514,26 @@ def test_provider_test_translates_cliproxy_upstream_not_found() -> None:
     assert "does not serve this model id" in result.markdown
 
 
+def test_provider_test_translates_cliproxy_auth_unavailable() -> None:
+    """The proxy-local 503 backoff shape gains the honest self-clearing
+    copy (#148 shared helper; the shape reads as logged-out otherwise)."""
+    api = FakeCommandApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+    api.provider_test_result = {
+        "ok": False,
+        "message": (
+            "Provider returned HTTP 503: auth_unavailable: no auth available"
+            " (providers=claude, model=claude-fable-5)"
+        ),
+    }
+
+    result = _run_command(api, "/provider test openai")
+
+    assert result.success is False
+    assert "error backoff" in result.markdown
+    assert "re-login does not help" in result.markdown
+
+
 def test_provider_test_failure_untouched_off_cliproxy() -> None:
     """A direct-API failure carrying the same phrase gains no CLIProxy
     editorial (the hint keys on the runtime's own URL predicate)."""

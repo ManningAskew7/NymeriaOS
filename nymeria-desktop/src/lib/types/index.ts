@@ -1503,6 +1503,11 @@ export interface CLIProxyProviderInfo {
   /** null when the proxy has not been probed (unconfigured/unreachable). */
   supported: boolean | null;
   logged_in: boolean | null;
+  /** True when an enabled login EXISTS but the proxy reports it in error
+   * backoff (`logged_in` keeps meaning "an active entry serves", so it is
+   * false here). The backoff clears on its own; re-login does not help.
+   * Absent on older backends. */
+  unavailable?: boolean | null;
 }
 
 export interface CLIProxyStatus {

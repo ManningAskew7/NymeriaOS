@@ -69,3 +69,144 @@ def test_generic_error_falls_back_to_runtime_error():
     result = classify_stream_exception(Exception("kaboom"))
     assert result["code"] == "agent_runtime_error"
     assert result["content"] == "An error occurred: kaboom"
+
+
+# --- CLIProxy turn-time hints (#148) ------------------------------------------
+# The three taxonomy shapes gain the same actionable line /provider test
+# renders, gated on the destination actually being a CLIProxy base. See
+# docs/private/cliproxy.md "Interpreting proxy auth errors".
+
+_CLIPROXY_BASE = "http://cli-proxy-api:8317"
+
+_UNKNOWN_MODEL_502 = (
+    "Error code: 502 - unknown provider for model gemini-flash-5"
+)
+_NOT_FOUND_404 = (
+    "Error code: 404 - {'error': {'code': 404, 'message': "
+    "'Requested entity was not found.', 'status': 'NOT_FOUND'}}"
+)
+_AUTH_UNAVAILABLE_503 = (
+    "Error code: 503 - auth_unavailable: no auth available "
+    "(providers=claude, model=claude-fable-5)"
+)
+
+
+def test_cliproxy_unknown_model_gains_hint_on_cliproxy_base():
+    result = classify_stream_exception(
+        Exception(_UNKNOWN_MODEL_502), base_url=_CLIPROXY_BASE
+    )
+    assert result["code"] == "cliproxy_model_error"
+    # Raw provider text retained, hint appended.
+    assert "unknown provider for model gemini-flash-5" in result["content"]
+    assert "no logged-in subscription" in result["content"]
+    assert result["details"]["http_status"] == 502
+
+
+def test_cliproxy_upstream_not_found_gains_hint_on_cliproxy_base():
+    result = classify_stream_exception(
+        Exception(_NOT_FOUND_404), base_url=_CLIPROXY_BASE
+    )
+    assert result["code"] == "cliproxy_model_error"
+    assert "does not serve this model id" in result["content"]
+    assert result["details"]["http_status"] == 404
+
+
+def test_cliproxy_auth_unavailable_gains_backoff_hint():
+    result = classify_stream_exception(
+        Exception(_AUTH_UNAVAILABLE_503), base_url=_CLIPROXY_BASE
+    )
+    assert result["code"] == "cliproxy_model_error"
+    assert "error backoff" in result["content"]
+    # Both causes named: the self-clearing backoff AND the revoked login
+    # (which shares the wire shape and where re-login IS the fix).
+    assert "re-login does not help" in result["content"]
+    assert "revoked" in result["content"]
+    assert result["details"]["http_status"] == 503
+
+
+def test_cliproxy_shapes_untouched_off_cliproxy_base():
+    """A direct-API failure carrying the same phrase gains no editorial, and
+    renders byte-identically to the no-base-url call."""
+    for text in (_UNKNOWN_MODEL_502, _NOT_FOUND_404, _AUTH_UNAVAILABLE_503):
+        bare = classify_stream_exception(Exception(text))
+        off_proxy = classify_stream_exception(
+            Exception(text), base_url="https://api.example.com/v1"
+        )
+        assert off_proxy == bare
+        assert off_proxy["code"] == "agent_runtime_error"
+
+
+def test_cliproxy_base_without_matching_shape_stays_runtime_error():
+    result = classify_stream_exception(
+        Exception("kaboom"), base_url=_CLIPROXY_BASE
+    )
+    assert result["code"] == "agent_runtime_error"
+    assert result["content"] == "An error occurred: kaboom"
+
+
+# --- Facade wiring: the agent resolves the active destination -----------------
+
+
+def _bare_agent():
+    from types import SimpleNamespace
+
+    from nymeria.core.agent import NymeriaAgent
+
+    agent = object.__new__(NymeriaAgent)
+    agent.settings = SimpleNamespace(llm_base_url=None)
+    return agent
+
+
+def test_facade_uses_thread_config_base_url():
+    from types import SimpleNamespace
+
+    agent = _bare_agent()
+    agent._get_llm_config_for_thread = lambda thread_id: SimpleNamespace(
+        base_url=_CLIPROXY_BASE
+    )
+
+    result = agent._classify_stream_exception(
+        Exception(_UNKNOWN_MODEL_502), thread_id="t1"
+    )
+    assert result["code"] == "cliproxy_model_error"
+
+
+def test_facade_never_falls_back_to_global_settings_base_url():
+    """Without a thread there is no truthful destination: a global CLIProxy
+    base must NOT editorialize a turn that may have run direct-API."""
+    agent = _bare_agent()
+    agent.settings.llm_base_url = _CLIPROXY_BASE
+
+    result = agent._classify_stream_exception(Exception(_UNKNOWN_MODEL_502))
+    assert result["code"] == "agent_runtime_error"
+
+
+def test_facade_thread_config_without_base_url_gets_no_hint():
+    """A thread whose provider resolves no base_url ran against the
+    provider's default public endpoint; no CLIProxy hint applies."""
+    from types import SimpleNamespace
+
+    agent = _bare_agent()
+    agent.settings.llm_base_url = _CLIPROXY_BASE
+    agent._get_llm_config_for_thread = lambda thread_id: SimpleNamespace(
+        base_url=None
+    )
+
+    result = agent._classify_stream_exception(
+        Exception(_UNKNOWN_MODEL_502), thread_id="t1"
+    )
+    assert result["code"] == "agent_runtime_error"
+
+
+def test_facade_resolution_fault_never_masks_the_turn_error():
+    def _boom(thread_id):
+        raise RuntimeError("config store down")
+
+    agent = _bare_agent()
+    agent._get_llm_config_for_thread = _boom
+
+    result = agent._classify_stream_exception(
+        Exception(_UNKNOWN_MODEL_502), thread_id="t1"
+    )
+    assert result["code"] == "agent_runtime_error"
+    assert "unknown provider for model" in result["content"]

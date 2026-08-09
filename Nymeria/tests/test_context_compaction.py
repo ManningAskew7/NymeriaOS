@@ -81,6 +81,46 @@ def test_compact_trigger_tokens_token_mode_clamped_to_model_limit():
     )
 
 
+def test_compact_trigger_clamp_warns_once_per_pair(monkeypatch, caplog):
+    """#115 interim visibility: a setting at or above the window warns the
+    operator (the clamped trigger leaves no room for the response), once per
+    distinct (setting, window) pair, not per turn."""
+    import logging
+
+    from nymeria.core import agent_compaction
+
+    monkeypatch.setattr(agent_compaction, "_CLAMP_WARNED_PAIRS", set())
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_compaction"):
+        CompactionManager.compact_trigger_tokens(128_000, mode="tokens", tokens=500_000)
+        CompactionManager.compact_trigger_tokens(128_000, mode="tokens", tokens=500_000)
+        CompactionManager.compact_trigger_tokens(64_000, mode="tokens", tokens=64_000)
+
+    overflow_warnings = [
+        r.getMessage() for r in caplog.records if "OVERFLOW" in r.getMessage()
+    ]
+    assert len(overflow_warnings) == 2  # one per distinct pair, repeat silent
+    assert "compact_threshold_tokens=500000" in overflow_warnings[0]
+    assert "128000" in overflow_warnings[0]
+    assert "#115" in overflow_warnings[0]
+
+
+def test_compact_trigger_no_clamp_warning_below_window_or_percentage(
+    monkeypatch, caplog
+):
+    import logging
+
+    from nymeria.core import agent_compaction
+
+    monkeypatch.setattr(agent_compaction, "_CLAMP_WARNED_PAIRS", set())
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_compaction"):
+        CompactionManager.compact_trigger_tokens(
+            1_050_000, mode="tokens", tokens=100_000
+        )
+        CompactionManager.compact_trigger_tokens(128_000, 0.95, mode="percentage")
+
+    assert not [r for r in caplog.records if "OVERFLOW" in r.getMessage()]
+
+
 def test_auto_compact_token_mode_global_setting():
     agent = _agent_with_compaction(mode="tokens", tokens=100_000)
 

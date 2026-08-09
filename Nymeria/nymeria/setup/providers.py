@@ -154,8 +154,12 @@ def _models_request(
 ) -> tuple[str, dict[str, str]] | None:
     """Build (url, headers) for a GET /models probe, or None if not listable.
 
-    Mirrors the backend `GET /models/available` logic so the wizard lists the
-    same models a running backend would.
+    Close to, but NOT a mirror of, the backend `GET /models/available`
+    logic: since 2026-08-09 the backend lists google via the native
+    `/v1beta/models` wire with `x-goog-api-key`, while this wizard probe
+    still uses the OpenAI-compat shim with a Bearer header. Consolidating
+    the (by now four) model-listing implementations onto shared helpers is
+    recorded follow-up work in the 2026-08-09 shipped note.
     """
     key = (api_key or "").strip()
     if spec.api_format == "anthropic_messages":
