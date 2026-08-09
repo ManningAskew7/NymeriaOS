@@ -208,6 +208,22 @@ kill the schedule by leaving `recurrence` set with a null `scheduled_for`); a
 **one-time** TODO has its schedule cleared and is left `pending` with a failure
 note.
 
+Recurring failures also feed an escalation policy so a permanently broken
+schedule cannot loop silently forever. Each exhausted occurrence increments
+`consecutive_failures` on the TODO (with `last_failure`/`last_failure_at`);
+any success resets it. At `SCHEDULER_FAILURE_ALERT_AFTER` consecutive
+failures (default 2) the owner gets one alert, in-app plus their external
+notification destinations. At `SCHEDULER_FAILURE_PAUSE_AFTER` (default 5)
+the schedule auto-pauses instead of re-arming: `scheduled_for` clears,
+`recurrence` is KEPT, `schedule_paused_at` marks the pause, the pause
+reason is prepended to the notes (the original notes survive; the prefix
+is stripped again on resume), and a second alert explains how to resume.
+Explicitly rescheduling a paused TODO (command, API, or tool) clears the
+pause and the streak and re-arms it; marking a paused TODO done completes
+it WITHOUT silently resuming the schedule. The failure state is visible on
+the wire (`GET /todos`) and in the todo tool and `/todos list` renderings.
+Either threshold set to 0 disables that stage.
+
 The interval calculation lives in `core/todo_constants.py`:
 
 ```python

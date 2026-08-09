@@ -1680,7 +1680,11 @@ class CommandBackendClient:
             item = todo_list.get_item(todo_id)
             if not item:
                 _raise_http_status(404, f"TODO '{todo_id}' not found")
-            has_recurrence = item.recurrence
+            # A paused schedule (#154) must not be silently resumed by
+            # "done": mirror _reschedule_recurring_done's guard.
+            has_recurrence = (
+                item.recurrence if item.schedule_paused_at is None else None
+            )
             if not todo_list.complete_item(todo_id):
                 _raise_http_status(404, f"TODO '{todo_id}' not found")
             if has_recurrence:
@@ -6427,6 +6431,13 @@ class _CommandExecutor(
                 parts.append(f"fires={item['scheduled_for'][:16]}")
             if item.get("recurrence"):
                 parts.append(f"repeat={item['recurrence']}")
+            if item.get("schedule_paused_at"):
+                parts.append(
+                    f"paused ({item.get('consecutive_failures', 0)} failures;"
+                    f" reschedule to resume)"
+                )
+            elif item.get("consecutive_failures"):
+                parts.append(f"failures={item['consecutive_failures']}")
             lines.append(f"- {task}")
             lines.append("  " + " | ".join(parts))
         if len(items) > 25:

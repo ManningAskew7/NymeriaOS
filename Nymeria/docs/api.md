@@ -2681,12 +2681,24 @@ Authorization: Bearer <token>
       "scheduled_for": "2026-02-02T14:00:00Z",
       "thread_id": "thread-xyz",
       "recurrence": "1d",
-      "created_by": "user"
+      "created_by": "user",
+      "consecutive_failures": 0,
+      "last_failure": null,
+      "last_failure_at": null,
+      "schedule_paused_at": null
     }
   ],
   "total": 1
 }
 ```
+
+The last four fields carry the recurring-failure policy state: consecutive
+failed occurrences (any success resets), the most recent failure and its
+time, and the auto-pause marker (set when the schedule was paused after
+repeated failures; recurrence is kept and setting a new `scheduled_for`
+resumes and clears the episode). Thresholds:
+`SCHEDULER_FAILURE_ALERT_AFTER` / `SCHEDULER_FAILURE_PAUSE_AFTER` in
+`configuration.md`.
 
 ---
 

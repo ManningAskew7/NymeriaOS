@@ -92,7 +92,39 @@ class TodoItem(BaseModel):
         default=None, description="Parameters bound to the scheduled workflow run"
     )
 
-    @field_validator("created_at", "updated_at", "scheduled_for", "last_execution", "recurrence_anchor")
+    # Recurring-failure policy (#154). One increment per failed OCCURRENCE
+    # (the ticker's retry-cap branch, never per intra-occurrence retry); any
+    # successful occurrence resets all three. `schedule_paused_at` is the
+    # auto-pause marker: recurrence stays set while `scheduled_for` is None,
+    # which is deliberate and distinguishable from the pre-2026-07-09 bug
+    # shape that silently killed schedules. An explicit reschedule of a
+    # PAUSED todo clears the whole failure state (update_item); the ticker's
+    # own re-arm also writes scheduled_for, which is why the clear is keyed
+    # on the pause marker rather than on any reschedule.
+    consecutive_failures: int = Field(
+        default=0,
+        description="Consecutive failed occurrences of this recurring TODO",
+    )
+    last_failure: Optional[str] = Field(
+        default=None, max_length=300, description="Most recent failure message"
+    )
+    last_failure_at: Optional[datetime] = Field(
+        default=None, description="When the most recent occurrence failed"
+    )
+    schedule_paused_at: Optional[datetime] = Field(
+        default=None,
+        description="Set when the failure policy auto-paused this schedule",
+    )
+
+    @field_validator(
+        "created_at",
+        "updated_at",
+        "scheduled_for",
+        "last_execution",
+        "recurrence_anchor",
+        "last_failure_at",
+        "schedule_paused_at",
+    )
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
         if value is None:
@@ -247,6 +279,26 @@ class TodoList(BaseModel):
         if clear_schedule:
             item.scheduled_for = None
         elif scheduled_for is not None:
+            if item.schedule_paused_at is not None:
+                # Resuming an auto-paused schedule (#154): the explicit
+                # reschedule is the operator saying "try again", so the
+                # whole failure episode ends here. Keyed on the pause
+                # marker, NOT on any reschedule: the ticker's recurrence
+                # re-arm also lands in this branch and must preserve the
+                # consecutive-failure streak.
+                item.schedule_paused_at = None
+                item.consecutive_failures = 0
+                item.last_failure = None
+                item.last_failure_at = None
+                # The pause PREPENDED its reason to the notes (which are
+                # prompt input and user instructions); strip that prefix so
+                # a resumed TODO does not carry a stale pause banner.
+                pause_prefix = "[auto-paused after"
+                existing_notes = item.notes or ""
+                if existing_notes.startswith(pause_prefix):
+                    close = existing_notes.find("]")
+                    if close != -1:
+                        item.notes = existing_notes[close + 1 :].strip() or None
             item.scheduled_for = scheduled_for
         # thread_id is independent of the schedule: an unspecified one is
         # preserved (scoping stays even when the schedule is cleared), and an

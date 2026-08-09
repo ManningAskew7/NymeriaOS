@@ -1522,6 +1522,8 @@ registry, and REST API.
 | `WATCHDOG_INTERVAL_MINUTES` | `5` | Minutes between watchdog checks (1-60) |
 | `TODO_STALENESS_MINUTES` | `20` | Minutes without update before TODO is stale (5-1440) |
 | `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before the ticker removes completed TODOs from the active TODO JSON list (1-30) |
+| `SCHEDULER_FAILURE_ALERT_AFTER` | `2` | Consecutive failed occurrences of a recurring scheduled TODO before the owner is alerted once, in-app plus external notification destinations (0 disables the alert; 0-100) |
+| `SCHEDULER_FAILURE_PAUSE_AFTER` | `5` | Consecutive failed occurrences before a recurring TODO's schedule auto-pauses with a resumable marker; recurrence is kept and rescheduling resumes it (0 disables auto-pause; 0-1000) |
 | `ACTIVITY_RETENTION_HOURS` | `12` | Hours to retain activity log entries (1-168) |
 | `DREAM_DEFAULT_MIN_INTERVAL_HOURS` | `6` | Default shortest gap between dreams; a thread inherits this when its `dreaming.min_interval_hours` is blank (1-168) |
 | `DREAM_DEFAULT_MIN_IDLE_MINUTES` | `30` | Default idle time before a dream may start; inherited when `dreaming.min_idle_minutes` is blank (5-10080) |
