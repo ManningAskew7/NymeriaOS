@@ -287,3 +287,261 @@ def test_file_edit_is_seed_default_and_has_metadata():
     assert meta is not None
     assert meta.security_level == SecurityLevel.MODERATE
     assert meta.default_enabled is True
+
+
+# --- Line-convention alignment with file_read windows (plan addendum 15-17,
+#     tmp/file-read-offset-plan.md) ---
+
+
+def test_replace_range_accepts_lf_old_text_on_crlf_file(tmp_path):
+    path = tmp_path / "dos.txt"
+    path.write_bytes(b"one\r\ntwo\r\nthree\r\nfour\r\n")
+
+    # old_text as lifted from a file_read window (LF-normalized).
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 2,
+                "end_line": 3,
+                "old_text": "two\nthree\n",
+                "new_text": "TWO\nTHREE\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    # Splice is byte-honest and new_text lands in the file's newline style.
+    assert path.read_bytes() == b"one\r\nTWO\r\nTHREE\r\nfour\r\n"
+
+
+def test_replace_range_still_accepts_byte_exact_crlf_old_text(tmp_path):
+    path = tmp_path / "dos.txt"
+    path.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 2,
+                "end_line": 2,
+                "old_text": "two\r\n",
+                "new_text": "TWO\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    assert path.read_bytes() == b"one\r\nTWO\r\nthree\r\n"
+
+
+def test_replace_range_content_mismatch_still_rejected_on_crlf(tmp_path):
+    path = tmp_path / "dos.txt"
+    original = b"one\r\ntwo\r\nthree\r\n"
+    path.write_bytes(original)
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 2,
+                "end_line": 2,
+                "old_text": "not two\n",
+                "new_text": "X\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "range_context_mismatch"
+    assert path.read_bytes() == original
+
+
+def test_replace_range_line_numbers_split_on_lf_only(tmp_path):
+    # A form feed is NOT a line break for grep -n, editors, or file_read's
+    # windows; splitlines() treats it as one. Line 2 must be "b\x0cc".
+    path = tmp_path / "feed.txt"
+    path.write_bytes(b"a\nb\x0cc\nd\n")
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 2,
+                "end_line": 2,
+                "old_text": "b\x0cc\n",
+                "new_text": "B\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    assert path.read_bytes() == b"a\nB\nd\n"
+
+
+def test_replace_range_edits_last_line_of_file_without_trailing_newline(tmp_path):
+    path = tmp_path / "tail.txt"
+    path.write_bytes(b"one\ntwo\nthree")
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 3,
+                "end_line": 3,
+                "old_text": "three",
+                "new_text": "THREE",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    assert path.read_bytes() == b"one\ntwo\nTHREE"
+
+
+def test_replace_range_first_line_edit_preserves_untailed_last_line(tmp_path):
+    path = tmp_path / "tail.txt"
+    path.write_bytes(b"one\ntwo\nthree")
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 1,
+                "end_line": 1,
+                "old_text": "one\n",
+                "new_text": "ONE\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    # The tail line, which has no trailing newline, must survive intact.
+    assert path.read_bytes() == b"ONE\ntwo\nthree"
+
+
+def test_replace_range_forgives_missing_eof_newline_only_at_eof(tmp_path):
+    path = tmp_path / "tail.txt"
+    path.write_bytes(b"one\ntwo\nthree")
+
+    # The natural reconstruction from a numbered window appends "\n"; at EOF
+    # that single difference is forgiven.
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 3,
+                "end_line": 3,
+                "old_text": "three\n",
+                "new_text": "THREE\n",
+            }
+        ],
+    )
+    assert result["ok"] is True
+    assert path.read_bytes() == b"one\ntwo\nTHREE\n"
+
+    # The same phantom newline on a NON-final range is still a mismatch.
+    path.write_bytes(b"one\ntwo\nthree")
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 1,
+                "end_line": 1,
+                "old_text": "one\n\n",
+                "new_text": "X\n",
+            }
+        ],
+    )
+    assert result["ok"] is False
+    assert result["error"]["type"] == "range_context_mismatch"
+
+
+def test_replace_range_rejects_line_count_mismatch_on_bare_cr_content(tmp_path):
+    # A bare \r is line CONTENT (not a break); old_text claiming it as a
+    # break has the wrong line count and must not match (tolerance is
+    # CRLF-vs-LF only).
+    path = tmp_path / "cr.txt"
+    original = b"a\rb\nsecond\n"
+    path.write_bytes(original)
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": 1,
+                "end_line": 1,
+                "old_text": "a\nb\n",
+                "new_text": "Z\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "range_context_mismatch"
+    assert path.read_bytes() == original
+
+
+def test_file_read_window_to_replace_range_round_trip_without_trailing_newline(
+    tmp_path,
+):
+    from nymeria.tools.filesystem import file_read
+
+    path = tmp_path / "tail.txt"
+    path.write_bytes(b"alpha\nbeta\ngamma")
+
+    shown, _ = file_read.func(str(path), offset=3)
+    rows = [line.split("\t", 1) for line in shown.splitlines() if "\t" in line]
+    old_text = "".join(f"{text}\n" for _, text in rows)  # natural reconstruction
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": int(rows[0][0]),
+                "end_line": int(rows[-1][0]),
+                "old_text": old_text,
+                "new_text": "GAMMA\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    assert path.read_bytes() == b"alpha\nbeta\nGAMMA\n"
+
+
+def test_file_read_window_to_replace_range_round_trip_on_crlf(tmp_path):
+    from nymeria.tools.filesystem import file_read
+
+    path = tmp_path / "dos.txt"
+    path.write_bytes(b"".join(b"line %d\r\n" % i for i in range(1, 6)))
+
+    shown, _ = file_read.func(str(path), max_lines=2, offset=3)
+    rows = [line.split("\t", 1) for line in shown.splitlines() if "\t" in line]
+    old_text = "".join(f"{text}\n" for _, text in rows)
+
+    result = _call(
+        path,
+        [
+            {
+                "operation": "replace_range",
+                "start_line": int(rows[0][0]),
+                "end_line": int(rows[-1][0]),
+                "old_text": old_text,
+                "new_text": "REPLACED\n",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    assert path.read_bytes() == b"line 1\r\nline 2\r\nREPLACED\r\nline 5\r\n"
