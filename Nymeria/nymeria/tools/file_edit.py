@@ -44,7 +44,9 @@ class FileEditOperation(BaseModel):
         default=None,
         description=(
             "Exact text to match. Required for every operation. For "
-            "replace_range it must equal the selected line range exactly."
+            "replace_range it must equal the selected line range (line "
+            "endings are compared leniently, so text copied from a "
+            "file_read window matches a CRLF file)."
         ),
     )
     new_text: str = Field(
@@ -62,7 +64,10 @@ class FileEditOperation(BaseModel):
     start_line: Optional[int] = Field(
         default=None,
         ge=1,
-        description="1-based inclusive start line for replace_range.",
+        description=(
+            "1-based inclusive start line for replace_range. Lines split on "
+            "\\n, matching grep -n and file_read's windowed line numbers."
+        ),
     )
     end_line: Optional[int] = Field(
         default=None,
@@ -150,6 +155,34 @@ def _normalize_newlines(text: str, newline: str) -> str:
     return normalized.replace("\n", newline)
 
 
+def _split_lines_keepends(content: str) -> list[str]:
+    """Split on \\n ONLY, keeping ends.
+
+    The same line convention grep -n and file_read's windowed reads use.
+    Deliberately not splitlines(), which also breaks on \\x0c/\\x0b/\\u2028
+    and made replace_range's "line N" disagree with every other surface
+    that numbers lines.
+    """
+    if not content:
+        return []
+    parts = content.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def _normalize_for_compare(text: str) -> str:
+    """CRLF-vs-LF tolerance ONLY, deliberately not bare \\r.
+
+    Folding bare \\r as well would let an old_text with the WRONG line count
+    match a range whose content contains a stray CR (review finding D2,
+    tmp/file-read-offset-plan.md), and no legitimate caller produces it: a
+    file_read window keeps a mid-line \\r as content.
+    """
+    return text.replace("\r\n", "\n")
+
+
 def _find_occurrence(
     content: str,
     old_text: str,
@@ -219,7 +252,7 @@ def _replace_line_range(
             "message": "replace_range requires non-empty old_text",
         }
 
-    lines = content.splitlines(keepends=True)
+    lines = _split_lines_keepends(content)
     if not lines:
         return None, {
             "type": "invalid_range",
@@ -239,10 +272,22 @@ def _replace_line_range(
     prefix = "".join(lines[: op.start_line - 1])
     selected = "".join(lines[op.start_line - 1 : op.end_line])
     suffix = "".join(lines[op.end_line :])
-    if selected != op.old_text:
+    # Newline-tolerant compare: old_text lifted from an LF-normalized view
+    # (a file_read window, a diff, a chat transcript) must still match a
+    # CRLF file's range. Content differences beyond newline flavor still
+    # mismatch, and the splice below stays byte-honest.
+    selected_cmp = _normalize_for_compare(selected)
+    old_cmp = _normalize_for_compare(op.old_text)
+    matches = selected == op.old_text or selected_cmp == old_cmp
+    if not matches and op.end_line == len(lines) and not selected_cmp.endswith("\n"):
+        # The file's last line has no trailing newline, which a numbered
+        # file_read window cannot convey, so the natural reconstruction
+        # appends one. Forgive exactly that, only at EOF (review finding D3).
+        matches = old_cmp == selected_cmp + "\n"
+    if not matches:
         return None, {
             "type": "range_context_mismatch",
-            "message": "old_text does not exactly match the selected line range",
+            "message": "old_text does not match the selected line range",
         }
 
     return prefix + _normalize_newlines(op.new_text, newline) + suffix, None

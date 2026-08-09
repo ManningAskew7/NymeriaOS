@@ -246,7 +246,7 @@ bash_job(action: str, job_id: str = "", lines: int = 50)
 Read the contents of a file, including images.
 
 ```python
-file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = None, extraction_prompt: str = "")
+file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = None, offset: Optional[int] = None, extraction_prompt: str = "")
 ```
 
 Relative paths resolve from the same detected default tool cwd used by `bash_execute`, normally `settings.project_root`. Shell `cd` commands do not affect file tool paths.
@@ -254,10 +254,13 @@ Relative paths resolve from the same detected default tool cwd used by `bash_exe
 **Parameters:**
 - `file_path` (`str`): Absolute or relative path to the file. Relative paths resolve from the detected default tool cwd.
 - `encoding` (`str`, default `"utf-8"`): File encoding (text files only)
-- `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read (text files only)
-- `extraction_prompt` (`str`, default `""`): Leave empty to return the file as-is. Provide a prompt (e.g. `"the failed requests and their timestamps"`) and a secondary LLM reads the file and returns only what the prompt asks for. Best for large files where you want a few specific facts; skip it for small files. The LLM sees the file up to ~30k tokens (grep/sed huge files first); ignored for images; the result is tagged `[Extracted by <model>]`. Shares the `background` model tier with `fetch_url_nymeria` (see its Extraction step)
+- `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read (text files only). With `offset`, the window size
+- `offset` (`Optional[int]`, default `None`): 1-based line number to start reading from (text files only; ignored for images). Enables windowed reads of large files without pulling the whole file into context
+- `extraction_prompt` (`str`, default `""`): Leave empty to return the file as-is. Provide a prompt (e.g. `"the failed requests and their timestamps"`) and a secondary LLM reads the file and returns only what the prompt asks for. Best for large files where you want a few specific facts; skip it for small files. The LLM sees the file up to ~30k tokens (window with `offset`/`max_lines`, or grep, first); ignored for images; the result is tagged `[Extracted by <model>]`. Shares the `background` model tier with `fetch_url_nymeria` (see its Extraction step)
 
 **Returns:** File contents as text, or, for an image file, a loaded-image note with the image surfaced to the model. With `extraction_prompt`, the extracted text followed by an `[Extracted by <model>]` line.
+
+**Windowed reads:** when `offset` is set, output switches to navigation mode: each line is prefixed `cat -n` style with its true file line number, and the result ends with a `[Showing lines A-B of N]` position marker (N is the file's total line count). An `offset` past the end of the file is an `[Error]` naming the total, so the agent can retry in range. Lines split on `\n` only, so the shown numbers are the same 1-based numbers `grep -n` reports and `file_edit`'s `replace_range` (`start_line`/`end_line`) consumes, including on CRLF files (the range comparison is newline-tolerant on the edit side), closing the grep, windowed read, range edit loop without bash. Line counting happens on raw bytes and only the window is decoded, so an undecodable byte elsewhere in the file (a binary blob in a log) does not fail a windowed read; non-ASCII-compatible encodings like utf-16 fall back to whole-file decoding. Without `offset`, output is the raw file text exactly as before (`max_lines` alone still truncates from the top with `[Truncated after N lines]`; negative `max_lines` is an `[Error]`, `0` means no limit). With `extraction_prompt`, the extraction LLM receives the raw un-numbered window.
 
 **Images:** When the target is an image (png/jpeg/webp/gif, plus bmp/tiff which are converted), `file_read` detects it by magic bytes and surfaces it to the model through the same native-vision replay path as `image_gen_*` (a `nymeria_native_image` artifact hydrated just-in-time, so history stays compact). It is a `content_and_artifact` tool. Large images are downscaled to the active model's `max_image_bytes` cap (a long edge ceiling bounds tokens); the downscaled copy is written to the per-thread fetch sandbox. Unlike generated images, `file_read` may surface images from any readable path (matching its text-read scope). If the active model/route cannot carry a tool-result image (a non-vision model, or an OpenAI-compatible `chat_completions` route), it returns a `[Note]: ...` explaining how the user can attach the image directly instead. A combined sliding window bounds the total images sent per turn across all sources (generated, file_read, and user-attached): the newest N are kept and older ones drop out of context (older user images become a disk-path placeholder so they can be re-viewed with `file_read`). N is the per-thread Agent-tab "image window" setting, defaulting to the model's `max_images_per_request` (Claude 100, OpenAI 1500, Gemini 3000).
 
@@ -310,9 +313,9 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 - `delete`: requires `old_text`; removes the match
 - `insert_before`: requires `old_text`; inserts `new_text` before the match
 - `insert_after`: requires `old_text`; inserts `new_text` after the match
-- `replace_range`: requires `start_line`, `end_line`, and `old_text`; replaces the 1-based inclusive line range with `new_text` only if `old_text` exactly equals the selected range
+- `replace_range`: requires `start_line`, `end_line`, and `old_text`; replaces the 1-based inclusive line range with `new_text` only if `old_text` matches the selected range. Lines split on `\n` only (the same convention as `grep -n` and `file_read`'s windowed line numbers; form feeds, bare `\r`, and unicode separators are not line breaks). The `old_text` comparison tolerates exactly two mismatches: `\r\n` vs `\n` endings compare equal (so text lifted from a `file_read` window matches a CRLF file), and when the range ends at EOF on a file with no final newline, one phantom trailing newline in `old_text` is forgiven. Any other difference, including a bare `\r` treated as a line break, is still a `range_context_mismatch`. The splice itself stays byte-honest and `new_text` is written in the file's dominant newline style
 
-**Matching rules:** `old_text` must be exact and non-empty. If `occurrence` is omitted, `old_text` must match exactly once. If `occurrence` is provided, it is 1-based and selects that exact match. Fuzzy matching is intentionally not used.
+**Matching rules:** `old_text` must be exact and non-empty (for `replace_range`, exact up to newline flavor, as above). If `occurrence` is omitted, `old_text` must match exactly once. If `occurrence` is provided, it is 1-based and selects that exact match. Fuzzy matching is intentionally not used.
 
 **Returns:** JSON with `ok`, `dry_run`, `file_path`, `edits_applied`, `original_sha256`, `new_sha256`, `changed`, `diff`, and `diff_truncated`; errors include a structured `error.type`, message, and `edit_index` when relevant.
 

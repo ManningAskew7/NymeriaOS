@@ -425,11 +425,58 @@ def _read_image(path: Path, file_size: int, config: Optional[RunnableConfig]):
     return note, artifact
 
 
+def _line_window(
+    data: bytes, offset: int, max_lines: Optional[int], encoding: str
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Select a 1-based line window from raw file bytes.
+
+    Returns (raw_window, numbered_window, error); exactly one side of
+    (raw, numbered) vs error is set. Lines split on \\n ONLY: the same
+    convention grep -n and file_edit's replace_range use, deliberately not
+    splitlines(), which also breaks on \\x0c/\\x0b/\\u2028 and would make
+    "line N" disagree across the file toolset. Counting happens on bytes so
+    an undecodable byte OUTSIDE the window cannot fail the read (one inside
+    the window still raises UnicodeDecodeError to the caller). Display
+    parity with the plain text-mode read is kept by stripping one trailing
+    \\r per line, as universal-newline translation would have.
+    """
+    if "\n".encode(encoding) == b"\n":
+        parts: list = data.split(b"\n")
+    else:
+        # utf-16/32 family: \n encodes multi-byte, so a raw byte split would
+        # cut codepoints. Decode everything first (pre-window decode
+        # resilience is lost for these encodings, matching text-mode reads).
+        parts = data.decode(encoding).split("\n")
+    ends_with_newline = bool(parts) and not parts[-1]
+    if ends_with_newline:
+        parts = parts[:-1]
+    total_lines = len(parts)
+    if total_lines < offset:
+        return None, None, (
+            f"offset {offset} is past the end of the file ({total_lines} lines)."
+        )
+    end = offset - 1 + max_lines if max_lines else total_lines
+    window: list[str] = []
+    for part in parts[offset - 1 : end]:
+        text = part if isinstance(part, str) else part.decode(encoding)
+        window.append(text[:-1] if text.endswith("\r") else text)
+    last_line = offset + len(window) - 1
+    raw = "\n".join(window)
+    if last_line < total_lines or ends_with_newline:
+        raw += "\n"
+    numbered = "".join(
+        f"{n:>6}\t{text}\n" for n, text in enumerate(window, start=offset)
+    )
+    numbered += f"[Showing lines {offset}-{last_line} of {total_lines}]"
+    return raw, numbered, None
+
+
 @tool(response_format="content_and_artifact")
 def file_read(
     file_path: str,
     encoding: str = "utf-8",
     max_lines: Optional[int] = None,
+    offset: Optional[int] = None,
     extraction_prompt: str = "",
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> tuple[str, dict]:
@@ -442,28 +489,41 @@ def file_read(
     model or provider route cannot receive images, you get a "[Note]: ..."
     explaining how the user can attach the image instead.
 
+    To read a precise window of a large text file, pass offset (1-based start
+    line) plus max_lines (window size): for example after a line-numbered
+    grep, offset=810 with max_lines=90 reads lines 810-899. Windowed output
+    is line-numbered, and those numbers feed file_edit's replace_range
+    (start_line/end_line) directly.
+
     Args:
         file_path: Absolute or relative path to the file. Relative paths
             resolve from Nymeria's detected default tool cwd.
         encoding: File encoding for text files (default utf-8)
         max_lines: Maximum number of lines to read for text files (optional,
-            reads all if not specified)
+            reads all if not specified). With offset, this is the window size.
+            Negative is an error; 0 means no limit.
+        offset: 1-based line number to start reading from (optional). When
+            set, the output has "cat -n" style line-number prefixes and ends
+            with a "[Showing lines A-B of N]" position marker. Ignored for
+            images.
         extraction_prompt: Leave empty to return the file contents as-is.
             Provide a prompt (e.g. "the failed requests and their timestamps")
             and a secondary LLM reads the file and returns only what the prompt
             asks for, instead of the full text. Best for large files where you
             want a few specific facts; skip it for small files (just read them).
             The LLM sees the file up to ~30k tokens, so for very large files
-            grep/sed to the relevant section first; the result is tagged with
-            the model that produced it. Ignored for images, and leave max_lines
-            unset when extracting from a whole file.
+            narrow with offset/max_lines (or grep) to the relevant section
+            first; the result is tagged with the model that produced it.
+            Ignored for images. With offset, extraction reads the raw window
+            (no line numbers).
 
     Returns:
         File contents as plain text, or a loaded-image note (with the image
         attached for you to view). Truncated text ends with
-        "[Truncated after N lines]". When extraction_prompt is used, the
-        extracted text ends with "[Extracted by <model>]". Errors:
-        "[Error]: <reason>".
+        "[Truncated after N lines]". Windowed reads (offset set) are
+        line-numbered and end with "[Showing lines A-B of N]". When
+        extraction_prompt is used, the extracted text ends with
+        "[Extracted by <model>]". Errors: "[Error]: <reason>".
     """
     logger.info(f"Reading file: {file_path}")
 
@@ -501,17 +561,32 @@ def file_read(
         if file_size > max_size:
             return f"[Error]: File too large ({file_size} bytes). Max size is {max_size} bytes.", {}
 
-        with open(path, "r", encoding=encoding) as f:
-            if max_lines:
-                lines = []
-                for i, line in enumerate(f):
-                    if i >= max_lines:
-                        lines.append(f"\n[Truncated after {max_lines} lines]")
-                        break
-                    lines.append(line)
-                content = "".join(lines)
-            else:
-                content = f.read()
+        if offset is not None and offset < 1:
+            return f"[Error]: offset must be a 1-based line number (got {offset}).", {}
+        if max_lines is not None and max_lines < 0:
+            return f"[Error]: max_lines must be non-negative (got {max_lines}).", {}
+
+        if offset is not None:
+            raw, numbered, window_error = _line_window(
+                path.read_bytes(), offset, max_lines, encoding
+            )
+            if window_error is not None:
+                return f"[Error]: {window_error}", {}
+            assert raw is not None and numbered is not None
+            content = raw  # raw un-numbered window, used for extraction
+        else:
+            numbered = None
+            with open(path, "r", encoding=encoding) as f:
+                if max_lines:
+                    lines = []
+                    for i, line in enumerate(f):
+                        if i >= max_lines:
+                            lines.append(f"\n[Truncated after {max_lines} lines]")
+                            break
+                        lines.append(line)
+                    content = "".join(lines)
+                else:
+                    content = f.read()
 
         logger.debug(f"Read {len(content)} characters from {file_path}")
 
@@ -523,6 +598,8 @@ def file_read(
                 return extracted, {}
             return f"{extracted}\n\n[Extracted by {model}]", {}
 
+        if numbered is not None:
+            return numbered, {}
         return content, {}
 
     except UnicodeDecodeError:
