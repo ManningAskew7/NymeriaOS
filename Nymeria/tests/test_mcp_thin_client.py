@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 from nymeria.mcp_backend_client import (
     ChatTranscript,
@@ -199,7 +200,7 @@ class FakeChatClient:
 def test_collect_chat_transcript_can_include_raw_events():
     async def _run():
         return await collect_chat_transcript(
-            FakeChatClient(),
+            cast(NymeriaBackendClient, FakeChatClient()),
             message="hello",
             user_id="default",
             include_events=True,
@@ -239,7 +240,7 @@ class FakeChatClientWithHistory:
 def test_collect_chat_transcript_prefers_persisted_step_order_for_copy_output():
     async def _run():
         return await collect_chat_transcript(
-            FakeChatClientWithHistory(),
+            cast(NymeriaBackendClient, FakeChatClientWithHistory()),
             message="hello",
             user_id="default",
             include_events=True,
@@ -274,7 +275,7 @@ class FakeChatClientWithStaleHistory:
 def test_collect_chat_transcript_ignores_stale_persisted_history():
     async def _run():
         return await collect_chat_transcript(
-            FakeChatClientWithStaleHistory(),
+            cast(NymeriaBackendClient, FakeChatClientWithStaleHistory()),
             message="new prompt",
             user_id="default",
         )
@@ -331,3 +332,179 @@ def test_get_client_falls_back_to_minted_token_file(tmp_path, monkeypatch):
     client = mcp_server._get_client()
 
     assert client.service_token == "nym_minted"
+
+
+# -- nymeria_command --------------------------------------------------------
+
+
+class _RecordingBackend:
+    """Fake backend client capturing POSTs so request shape is assertable."""
+
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    async def post(self, path, json_body=None, params=None, act_as=None):
+        self.calls.append(
+            {
+                "path": path,
+                "json_body": json_body,
+                "params": params,
+                "act_as": act_as,
+            }
+        )
+        return self.response
+
+
+def _run_command_tool(monkeypatch, response, **kwargs):
+    import nymeria.mcp_server as mcp_server
+
+    backend = _RecordingBackend(response)
+    monkeypatch.setattr(mcp_server, "_get_client", lambda: backend)
+    result = asyncio.run(mcp_server.nymeria_command(**kwargs))
+    return backend, result
+
+
+def test_nymeria_command_forwards_user_shaped_request_and_passes_result_through(monkeypatch):
+    """The tool must emulate a formless user surface, not an agent caller."""
+    backend, result = _run_command_tool(
+        monkeypatch,
+        {
+            "success": True,
+            "markdown": "**Model set** to `claude-fable-5`.",
+            "command": "model",
+            "level": "success",
+            "data": None,
+        },
+        command="/model claude-fable-5",
+        thread_id="thread-9",
+    )
+
+    assert backend.calls == [
+        {
+            "path": "/commands/execute",
+            "json_body": {
+                "command": "/model claude-fable-5",
+                "thread_id": "thread-9",
+                "source": "user",
+                "actor": "user",
+                "surface": "api",
+                "supports_forms": False,
+            },
+            "params": None,
+            "act_as": "default",
+        }
+    ]
+    assert result["success"] is True
+    assert result["level"] == "success"
+    assert result["markdown"] == "**Model set** to `claude-fable-5`."
+    # A plain command result must not grow a chat redirect hint.
+    assert "hint" not in result
+
+
+def test_nymeria_command_surface_and_act_as_reach_the_wire(monkeypatch):
+    """Admin inbound identity honors an explicit acted-as user, and the
+    chosen surface rides the request so per-surface blocking is testable."""
+    import nymeria.mcp_auth as mcp_auth
+
+    token = mcp_auth.set_identity({"user_id": "manning", "role": "admin"})
+    try:
+        backend, _ = _run_command_tool(
+            monkeypatch,
+            {"success": True, "markdown": "ok", "command": "help", "level": "info"},
+            command="/help",
+            user_id="claude-test",
+            surface="telegram",
+        )
+    finally:
+        mcp_auth.reset_identity(token)
+
+    call = backend.calls[0]
+    assert call["act_as"] == "claude-test"
+    assert call["json_body"]["surface"] == "telegram"
+
+
+def test_nymeria_command_chat_stream_result_gains_chat_hint(monkeypatch):
+    """chat_stream commands are detected structurally (data.execution_kind),
+    and the hint routes the caller to nymeria_chat."""
+    backend, result = _run_command_tool(
+        monkeypatch,
+        {
+            "success": False,
+            "markdown": "`/goal` is handled outside the command service.",
+            "command": "goal",
+            "level": "error",
+            "data": {"execution_kind": "chat_stream"},
+        },
+        command="/goal ship the beta",
+        thread_id="thread-7",
+    )
+
+    assert backend.calls, "chat_stream detection must come from the response, not pre-parsing"
+    # The backend only emits execution_kind data past the requires-thread
+    # gate, so the emulated request must carry the thread.
+    assert backend.calls[0]["json_body"]["thread_id"] == "thread-7"
+    assert "nymeria_chat" in result["hint"]
+    # The backend's own markdown stays intact alongside the hint.
+    assert result["markdown"] == "`/goal` is handled outside the command service."
+
+
+def test_nymeria_command_empty_command_errors_without_backend_call(monkeypatch):
+    backend, result = _run_command_tool(
+        monkeypatch,
+        {"success": True, "markdown": "never", "command": "x", "level": "info"},
+        command="   ",
+    )
+
+    assert result == {"error": "command is required"}
+    assert backend.calls == []
+
+
+def test_nymeria_command_successful_result_with_data_gets_no_hint(monkeypatch):
+    """Successful commands routinely carry dict data (e.g. /model returns
+    data.state); that must never trip the chat_stream redirect."""
+    _, result = _run_command_tool(
+        monkeypatch,
+        {
+            "success": True,
+            "markdown": "**Model set** to `claude-fable-5`.",
+            "command": "model",
+            "level": "success",
+            "data": {"state": {"model": "claude-fable-5"}},
+        },
+        command="/model claude-fable-5",
+        thread_id="thread-9",
+    )
+
+    assert "hint" not in result
+
+
+def test_nymeria_command_non_chat_stream_kind_gets_no_hint(monkeypatch):
+    """surface_local commands also come back non-executable with an
+    execution_kind; the redirect must key on chat_stream specifically."""
+    _, result = _run_command_tool(
+        monkeypatch,
+        {
+            "success": False,
+            "markdown": "`/theme` is handled outside the command service.",
+            "command": "theme",
+            "level": "error",
+            "data": {"execution_kind": "surface_local"},
+        },
+        command="/theme dark",
+        thread_id="thread-9",
+    )
+
+    assert "hint" not in result
+
+
+def test_nymeria_command_docstring_lists_every_command_surface():
+    """Ratchet: the docstring's surface list must track CommandSurface."""
+    from typing import get_args
+
+    from nymeria.api.schemas.commands import CommandSurface
+    from nymeria.mcp_server import nymeria_command
+
+    doc = nymeria_command.__doc__ or ""
+    missing = [s for s in get_args(CommandSurface) if s not in doc]
+    assert missing == []

@@ -42,8 +42,8 @@ mcp = FastMCP(
     "nymeria",
     instructions=(
         "Nymeria Personal AI Assistant thin client. Tools call the Nymeria "
-        "backend API for chat, thread management, configuration, TODOs, "
-        "triggers, memories, and RAG search."
+        "backend API for chat, slash commands, thread management, "
+        "configuration, TODOs, triggers, memories, and RAG search."
     ),
     stateless_http=True,
 )
@@ -409,6 +409,72 @@ async def nymeria_chat_collect(
         "events": list(ctx["events"]),
         "error": ctx.get("error"),
     }
+
+
+# =============================================================================
+# Slash commands
+# =============================================================================
+
+
+@mcp.tool()
+async def nymeria_command(
+    command: str,
+    user_id: str = "default",
+    thread_id: Optional[str] = None,
+    surface: str = "api",
+) -> Dict[str, Any]:
+    """
+    Run a slash command as a user would, returning the markdown a user sees.
+
+    Forwards the raw command line (leading slash optional) to the backend
+    command dispatcher as a formless USER-actor caller: a missing required
+    argument returns the usage error, never a generated picker form. The
+    call carries user authority for the acted-as account (the connection's
+    bearer identity governs who that can be), so admin and surface gates
+    apply to that user, not to an agent actor; only wire this surface to a
+    caller trusted with that account's authority.
+
+    Commands that execute through the chat pipeline (/skill, /kit, /goal,
+    /compact, and others) are not run here: with a thread_id the result
+    carries a hint to send the same line via nymeria_chat, and without one
+    the thread-required error comes back first, as on any frontend.
+
+    surface: which frontend to emulate for discovery, per-surface blocking,
+    and the per-surface output budget (long results truncate to the emulated
+    surface's cap). One of: desktop, mobile, cli, discord, telegram, slack,
+    whatsapp, teams, twitch, api, agent. Default api, the surface whose real
+    callers are formless (the Rich CLI and desktop render forms). Unknown
+    values return the backend's validation error.
+    """
+    if not command or not command.strip():
+        return {"error": "command is required"}
+    result = await _json_call(
+        "POST",
+        "/commands/execute",
+        user_id=user_id,
+        body={
+            "command": command,
+            "thread_id": thread_id,
+            "source": "user",
+            "actor": "user",
+            "surface": surface,
+            "supports_forms": False,
+        },
+    )
+    # Same structural contract as the generic bot passthroughs
+    # (triggers/bot_helpers.py): failed result + data.execution_kind.
+    if (
+        isinstance(result, dict)
+        and not result.get("success")
+        and isinstance(result.get("data"), dict)
+        and result["data"].get("execution_kind") == "chat_stream"
+    ):
+        result["hint"] = (
+            "This command runs through the chat pipeline, not the command "
+            "dispatcher. Send the same line as a nymeria_chat message to "
+            "execute it."
+        )
+    return result
 
 
 @mcp.tool()
