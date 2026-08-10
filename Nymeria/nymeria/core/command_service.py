@@ -38,6 +38,7 @@ from .command_forms import (
     command_error,
     command_info,
     command_success,
+    command_warning,
     render_outcome,
 )
 from .command_form_generation import generate_param_form
@@ -1827,19 +1828,37 @@ class CommandBackendClient:
 
     async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
         self._require_admin()
+        from fastapi import HTTPException
+
         from ..api.routers.settings import apply_server_settings_update
         from ..api.schemas.settings import ServerSettingsUpdate
+
+        from pydantic import ValidationError
 
         # One canonical applier shared with PATCH /settings: atomic 0600 quoted env
         # write, os.environ sync, settings-cache clear, agent re-bind, graph rebuild,
         # and restart reporting all live there so this path cannot drift from the route.
-        updates = ServerSettingsUpdate(**kwargs)
-        return apply_server_settings_update(
-            updates,
-            settings=self._settings(),
-            agent=self.agent,
-            get_settings_fn=self.settings_fn,
-        )
+        try:
+            updates = ServerSettingsUpdate(**kwargs)
+            return apply_server_settings_update(
+                updates,
+                settings=self._settings(),
+                agent=self.agent,
+                get_settings_fn=self.settings_fn,
+            )
+        except ValidationError as exc:
+            # A wrong-typed value (`/env set TWITCH_PULSE_ENABLED maybe`) fails
+            # the update model itself; the HTTP shape answers that with a 422,
+            # so the in-process shape must not answer it with a stack trace.
+            first = exc.errors()[0]
+            loc = ".".join(str(part) for part in first.get("loc", ())) or "value"
+            _raise_http_status(400, f"Invalid value for {loc}: {first.get('msg', 'invalid value')}")
+        except HTTPException as exc:
+            # The applier raises only 400s a user can act on (unknown setting
+            # keys, invalid values, a provider with no key slot); forward those
+            # as the user-facing status. Anything else is a genuine fault and
+            # propagates to the dispatcher's logger.exception handler.
+            _raise_http_status(exc.status_code, str(exc.detail))
 
     async def test_llm_provider_config(
         self,
@@ -2151,23 +2170,21 @@ class CommandBackendClient:
 
     async def get_env_var(self, key: str, *, user_id: Optional[str] = None) -> dict:
         self._require_admin()
-        from ..api.schemas.settings import HIDDEN_CONFIG_SETTINGS
+        from fastapi import HTTPException
 
-        settings = self._settings()
-        key_lower = key.lower()
-        if key_lower in HIDDEN_CONFIG_SETTINGS:
-            _raise_http_status(404, f"Unknown setting: {key}")
-        val = getattr(settings, key, None)
-        if val is None:
-            val = getattr(settings, key_lower, None)
-            if val is None:
-                _raise_http_status(404, f"Unknown setting: {key}")
-            key = key_lower
-        return {
-            "name": key,
-            "env_var": key.upper(),
-            "value": str(val) if val is not None else None,
-        }
+        from ..api.routers.settings import serialize_env_var
+
+        # Shared serializer with GET /settings/env/{key} (the serialize_env_entries
+        # idiom): the prior hand-built body skipped secret masking entirely,
+        # mislabeled env_var with a naive key.upper(), and 404'd known-but-unset
+        # settings as "Unknown". reveal=True matches the HTTP client, which
+        # requests the unmasked value for the explicit `/env get` admin reveal.
+        try:
+            return serialize_env_var(
+                self._settings(), key, reveal=True, actor=str(user_id or "command")
+            )
+        except HTTPException as exc:
+            _raise_http_status(exc.status_code, str(exc.detail))
 
     async def list_available_models(
         self,
@@ -2966,15 +2983,31 @@ class CommandService:
 
         Canonical roots are tried first so a typo of "provider" suggests
         `/provider`, not the flat bot alias `/provider_set` alongside it.
+        A matched root that cannot dispatch bare (a subcommand-only family
+        like `restart`) expands to its full path when unique: suggesting a
+        spelling that only produces another error is a dead end.
         """
         roots = sorted(
             {cmd.path[0] for cmd in self._commands.values() if not cmd.hidden}
         )
         matches = difflib.get_close_matches(token, roots, n=2, cutoff=0.6)
         if matches:
-            return matches
+            return [self._expand_suggested_root(m) for m in matches]
         aliases = sorted({alias[0] for alias in self._aliases if len(alias) == 1})
         return difflib.get_close_matches(token, aliases, n=2, cutoff=0.6)
+
+    def _expand_suggested_root(self, root: str) -> str:
+        """Full path for a suggested root with no bare command, when unique."""
+        if (root,) in self._path_index or (root,) in self._aliases:
+            return root
+        full_paths = {
+            cmd.path
+            for cmd in self._commands.values()
+            if not cmd.hidden and cmd.path and cmd.path[0] == root
+        }
+        if len(full_paths) == 1:
+            return " ".join(next(iter(full_paths)))
+        return root
 
     @staticmethod
     def _did_you_mean(suggestions: list[str], *, prefix: str = "/") -> str:
@@ -5819,12 +5852,39 @@ class _CommandExecutor(
         return command_error(f"Unknown setting '{key}'. Available: {available}")
 
     async def _cmd_settings_set(self, bound: BoundArgs) -> str | CommandOutput:
-        key = str(bound.get("key") or "")
+        from ..api.schemas.settings import resolve_settings_field_name
+
+        # One spelling rule with /env set: field names and env-var names both
+        # resolve; the applier rejects genuinely unknown keys.
+        key = resolve_settings_field_name(str(bound.get("key") or ""))
         parsed = coerce_value(str(bound.get("value") or ""))
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
+        return self._render_settings_write(key, parsed, result)
+
+    def _render_settings_write(
+        self, key: str, parsed: Any, result: dict
+    ) -> str | CommandOutput:
+        """Honest outcome for a settings write, shared by /settings set and /env set.
+
+        The applier can accept a request yet apply nothing (an explicit None
+        outside _CLEARABLE_NULL_SETTINGS is filtered); reporting "set" without
+        consulting ``updated`` would be the same silent-drop lie the applier's
+        unknown-key rejection exists to kill. Server warnings ride the typed
+        warning level (#132), not hand-authored text in a success body.
+        """
+        if key not in (result.get("updated") or []):
+            if parsed is None:
+                return command_error(
+                    f"{key} was not applied: this setting does not support "
+                    "clearing. Set a real value instead."
+                )
+            return command_error(f"{key} was not applied.")
         msg = f"{key} set to {parsed}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
+        warnings = [str(w) for w in (result.get("warnings") or [])]
+        if warnings:
+            return command_warning("\n".join([msg] + warnings))
         return command_success(msg)
 
     # ── Env ───────────────────────────────────────────────────────────────
@@ -5866,21 +5926,26 @@ class _CommandExecutor(
                 return command_error(f"Unknown variable '{key}'.")
             raise
         val = data.get("value")
-        name = data.get("name", key)
+        # /env speaks env-var names: label with the canonical spelling the
+        # user would put in a file, not the internal field name.
+        label = data.get("env_var") or data.get("name", key)
         if val:
-            return f"{name} = {val}"
-        return f"{name} is not set."
+            return f"{label} = {val}"
+        return f"{label} is not set."
 
     async def _cmd_env_set(self, bound: BoundArgs) -> str | CommandOutput:
-        key = str(bound.get("key") or "")
+        from ..api.schemas.settings import resolve_settings_field_name
+
+        # /env speaks env-var names (NYMERIA_PUBLIC_URL), the update model
+        # speaks field names (nymeria_public_url); the shared resolver maps
+        # the divergent spellings (the S3 family) and case-folds the rest.
+        # Without it an uppercase spelling of a real setting silently missed
+        # the model. Mirror telegram: env set uses update_settings; the
+        # applier rejects unknown keys with a 400 the dispatcher renders.
+        key = resolve_settings_field_name(str(bound.get("key") or ""))
         parsed = coerce_value(str(bound.get("value") or ""))
-        # Mirror telegram: env set uses update_settings; the /settings model
-        # maps env-var keys through.
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
-        msg = f"{key} set to {parsed}."
-        if result.get("restart_required"):
-            msg += " (restart required to take effect)"
-        return command_success(msg)
+        return self._render_settings_write(key, parsed, result)
 
     # ── Tools ─────────────────────────────────────────────────────────────
 

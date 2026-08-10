@@ -247,6 +247,49 @@ class ServerSettingsResponse(BaseModel):
 class ServerSettingsUpdate(BaseModel):
     """Request model for updating server settings."""
 
+    # extra="allow" is deliberate and load-bearing: unknown keys must reach
+    # `apply_server_settings_update`, which rejects them with a 400 naming the
+    # key and suggesting near-matches. Pydantic's extra="ignore" default
+    # silently dropped unknown keys, so every caller (the GUI, /env set,
+    # /settings set) reported success for writes that never happened.
+    model_config = ConfigDict(extra="allow")
+
+    # Platform/infra fields advertised by /env show (_ENV_CATEGORIES) but
+    # formerly missing here, so PATCHing them false-succeeded; visibility
+    # implies patchability now (guarded by tests/test_settings_env_mapping.py).
+    # Range constraints mirror the Settings fields so bad values 422 at the
+    # request; the applier's Settings-field validation is the backstop.
+    nymeria_public_url: Optional[str] = None
+    nymeria_data_dir: Optional[str] = None
+    redis_url: Optional[str] = None
+    redis_enabled: Optional[bool] = None
+    postgres_uri: Optional[str] = None
+    lock_timeout: Optional[int] = Field(default=None, ge=30, le=600)
+    max_concurrent_autonomous: Optional[int] = Field(default=None, ge=0)
+    ticker_poll_interval: Optional[int] = Field(default=None, ge=1, le=60)
+    todo_auto_archive_days: Optional[int] = Field(default=None, ge=1, le=30)
+
+    # Chat-platform credentials and knobs, same provenance as the block above
+    # (advertised, previously unpatchable). Bot processes read most of these
+    # at their own boot; the token fields are in the restart-required table.
+    discord_bot_token: Optional[str] = None
+    discord_webhook_url: Optional[str] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_default_chat_id: Optional[str] = None
+    twitch_bot_access_token: Optional[str] = None
+    twitch_bot_refresh_token: Optional[str] = None
+    twitch_bot_user_id: Optional[str] = None
+    twitch_broadcaster_refresh_token: Optional[str] = None
+    twitch_broadcaster_token: Optional[str] = None
+    twitch_buffer_size: Optional[int] = Field(default=None, ge=50, le=5000)
+    twitch_channel: Optional[str] = None
+    twitch_client_id: Optional[str] = None
+    twitch_client_secret: Optional[str] = None
+    twitch_pulse_enabled: Optional[bool] = None
+    twitch_pulse_interval: Optional[int] = Field(default=None, ge=60, le=3600)
+    twitch_respond_mode: Optional[str] = None
+    twitch_system_prompt: Optional[str] = Field(default=None, max_length=50000)
+
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_fast_model: Optional[str] = None
@@ -300,7 +343,10 @@ class ServerSettingsUpdate(BaseModel):
     rag_rerank_model: Optional[str] = None
     rag_rerank_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
+    gemini_extraction_model: Optional[str] = None
     perplexity_api_key: Optional[str] = None
+    perplexity_search_model: Optional[str] = None
+    groq_api_key: Optional[str] = None
     # Capability-backend keys the CLI wizard's backend_keys step writes
     # (web search / fetch / image generation), exposed here so GUI onboarding
     # can store them through the same PATCH path. Write-only like every key.
@@ -837,10 +883,12 @@ class ServerSettingsUpdate(BaseModel):
     tts_voice: Optional[str] = None
     tts_output_format: Optional[str] = None
     tts_speed: Optional[float] = None
+    tts_api_key: Optional[str] = None
     stt_provider: Optional[str] = None
     stt_base_url: Optional[str] = None
     stt_model: Optional[str] = None
     stt_language: Optional[str] = None
+    stt_api_key: Optional[str] = None
     voice_default_thread_id: Optional[str] = None
 
     @field_validator("llm_reasoning_effort", mode="before")
@@ -903,6 +951,21 @@ def server_settings_env_mapping() -> dict[str, str]:
         for name in ServerSettingsUpdate.model_fields
         if name not in VIRTUAL_UPDATE_FIELDS
     }
+
+
+def resolve_settings_field_name(key: str) -> str:
+    """Resolve a user-typed settings key to its field name, best effort.
+
+    The ONE spelling rule for the whole config surface (`/env set`,
+    `/settings set`, `GET /settings/env/{key}` all use it): an exact env-var
+    name resolves through the reverse of `server_settings_env_mapping()` so
+    the divergent spellings (the S3 family: AWS_ACCESS_KEY_ID ->
+    s3_access_key_id) land on the right field, everything else case-folds.
+    Unknown keys pass through folded; the callers' own unknown-key handling
+    (the applier's 400, the env reader's 404) stays authoritative.
+    """
+    reverse = {v: k for k, v in server_settings_env_mapping().items()}
+    return reverse.get(key.upper(), key.lower())
 
 
 class LLMProviderTestRequest(BaseModel):

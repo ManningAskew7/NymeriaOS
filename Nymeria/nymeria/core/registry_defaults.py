@@ -2424,6 +2424,12 @@ def register_default_commands(service: "CommandService") -> None:
         description="Restart the API server process (admin-only)",
         category="System",
         usage="/restart api",
+        # Flat-alias convention (provider_set, orchestrate_clear, ...): its
+        # absence left /restart_api answered by a did-you-mean pointing at
+        # bare /restart, which bot-local handlers intercept on bot surfaces
+        # (restarting the BOT, not the API) and which elsewhere only yields
+        # the subcommand listing (2026-08-10 outage, bug 3).
+        aliases=("restart_api",),
         agent_allowed=False,
         requires_admin=True,
         mutates_state=True,

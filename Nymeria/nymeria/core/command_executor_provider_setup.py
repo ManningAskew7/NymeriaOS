@@ -791,10 +791,10 @@ class ProviderSetupCommandsMixin:
     ) -> tuple[str, ...]:
         """Settings fields a ""-patch can actually clear.
 
-        ``ServerSettingsUpdate`` silently drops unknown fields
-        (``extra='ignore'``), so a clear is only offered (and applied) for
-        key fields the update model declares; anything else would be a
-        silent no-op.
+        A clear is only offered for key fields the update model declares:
+        anything else now 400s at the applier's unknown-key gate (it was a
+        silent no-op before 2026-08-10), so offering it would trade a silent
+        lie for a confusing hard error.
         """
         from ..api.schemas.settings import ServerSettingsUpdate
 
@@ -907,9 +907,9 @@ class ProviderSetupCommandsMixin:
         elif pending.key_choice == "clear":
             # Re-derive the clearable fields at apply time (the world may
             # have changed since start); an empty result must be an honest
-            # refusal, because the ""-patches would silently drop
-            # (ServerSettingsUpdate ignores unknown fields) and the user
-            # would believe the key is gone.
+            # refusal, because a ""-patch for an undeclared field now 400s
+            # at the applier's unknown-key gate and the clear would fail
+            # noisily instead of completing.
             clearable = self._setup_clearable_fields(
                 await self._setup_existing_key_fields(spec)
             )

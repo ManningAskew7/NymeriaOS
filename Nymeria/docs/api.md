@@ -2024,6 +2024,8 @@ Settings are server-wide. The authenticated user controls access to the endpoint
 
 The admin environment endpoints (`GET /settings/env` and `GET /settings/env/{key}`) omit the retired `NYMERIA_API_KEY` shared-token setting. The field can still exist in old `.env` files for validation compatibility, but account tokens are authoritative and the legacy value is not part of the configuration API.
 
+`GET /settings/env/{key}` distinguishes unset from unknown: a real settings field that has no value returns `200` with `"value": null`, and only hidden or nonexistent keys return `404`. The single-key endpoint answers for any non-hidden settings field (including integration credentials outside the categorized `GET /settings/env` listing), and accepts either the field name or its env-var spelling (`nymeria_public_url` or `NYMERIA_PUBLIC_URL`, including the divergent S3 names like `AWS_ACCESS_KEY_ID`); secret-named values are masked unless `reveal=true`, which is audit-logged.
+
 ### LLM Runtime Diagnostics
 
 ```http
@@ -2271,9 +2273,17 @@ Authorization: Bearer <admin-token>
 {
   "message": "Settings updated and applied",
   "updated": ["llm_model", "llm_temperature"],
-  "restart_required": false
+  "restart_required": false,
+  "warnings": []
 }
 ```
+
+An unknown field anywhere in the request returns `400` naming the field with
+near-match suggestions, and applies nothing (all-or-nothing; unknown keys are
+never silently dropped). `warnings` carries advisory notes about values that
+were applied but look wrong, currently a `nymeria_public_url` value that is
+not an http(s) URL or matches a known email-rewriter wrapper (Outlook Safe
+Links, Proofpoint urldefense).
 
 **Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override. Credential values are accepted in the request but are not returned by `GET /settings` or the update response; the admin env listing masks secret values.
 

@@ -322,10 +322,12 @@ async def start_oauth_flow(
             status="missing_public_url",
             message=(
                 "NYMERIA_PUBLIC_URL is not configured and this provider does not "
-                "support device_code. Ask the user whether to set NYMERIA_PUBLIC_URL "
-                "(works for bots and remote browsers), or retry this tool call with "
-                "use_localhost=True (only works if the user's browser is on the same "
-                "machine as Nymeria)."
+                "support device_code. Ask the user whether to set it: an admin "
+                "can run `/env set NYMERIA_PUBLIC_URL <public https url>`, which "
+                "applies immediately with no restart and works for bots and "
+                "remote browsers. Or retry this tool call with "
+                "use_localhost=True (only works if the user's browser is on the "
+                "same machine as Nymeria)."
             ),
         )
 

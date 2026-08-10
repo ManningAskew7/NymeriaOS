@@ -1,6 +1,7 @@
 """Global settings and model-catalog routes."""
 
 import asyncio
+import difflib
 import logging
 import os
 from collections.abc import Callable
@@ -51,6 +52,7 @@ from ...core.llm_provider_utils import (
 from ...vendor.react_agent.providers import resolve_max_output_tokens
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
+    resolve_settings_field_name,
     server_settings_env_mapping,
     AvailableModelsRequest,
     DreamPromptInfo,
@@ -88,6 +90,10 @@ _CLEARABLE_NULL_SETTINGS = {
     # be able to drop the stale override.
     "embedding_base_url",
     "embedding_input_type",
+    # Public URL cleared = OAuth auth_code providers degrade to device_code /
+    # use_localhost again; without this a wrong public URL could never be
+    # unset through the API.
+    "nymeria_public_url",
     "rag_rerank_model",
     # Voice model/voice/base-URL cleared = back to the per-provider default
     # (core/voice.py); a stale explicit value breaks provider switches.
@@ -128,6 +134,13 @@ _RESTART_REQUIRED_KEYS: frozenset[str] = frozenset({
     "embedding_provider",
     "embedding_model",
     "embedding_dimensions",
+    # Captured by the Ticker at construction/start (poll_interval and the
+    # executor's max_workers) or read off the Settings instance the Ticker
+    # holds, which the applier's hot-reload never rebinds; without the flag a
+    # hot PATCH answers "applied" while the running ticker keeps the old value.
+    "ticker_poll_interval",
+    "max_concurrent_autonomous",
+    "todo_auto_archive_days",
 })
 
 
@@ -204,6 +217,10 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "watchdog_interval_minutes",
         "user_timezone",
         "nymeria_data_dir",
+        # Public browser base URL; OAuth auth_code providers cannot build a
+        # redirect URL without it (its invisibility here caused a 74-day
+        # Google Calendar outage: settable all along, advertised nowhere).
+        "nymeria_public_url",
         "tool_timeout",
         "tool_output_max_chars",
         "tool_timing_in_results",
@@ -532,6 +549,55 @@ def serialize_env_entries(settings: Any) -> dict:
     return {"entries": entries}
 
 
+def serialize_env_var(
+    settings: Any, key: str, *, reveal: bool, actor: str = "?"
+) -> dict:
+    """Single source of truth for the single-env-var read model.
+
+    Shared by ``GET /settings/env/{key}`` and
+    ``CommandBackendClient.get_env_var`` (the two-shape invariant, mirroring
+    ``serialize_env_entries``; the prior in-process copy skipped masking and
+    mislabeled with a naive ``key.upper()``). Unset and unknown are DIFFERENT
+    answers: a real settings field that is unset returns ``value: None``, and
+    only hidden or nonexistent keys 404. Conflating them made /env get report
+    "Unknown variable" for the unset NYMERIA_PUBLIC_URL the 2026-08 OAuth
+    outage turned on. Known-ness is judged against the ``Settings`` model
+    fields ONLY, never an attribute probe: ``hasattr`` also answers True for
+    BaseModel methods, and ``GET /settings/env/model_dump`` would then return
+    the full Settings repr, every secret unmasked and unaudited, labeled
+    ``is_secret: false``. Env-var spellings (``NYMERIA_PUBLIC_URL``, the
+    divergent S3 names) resolve through the same mapping ``/env set`` uses.
+    """
+    resolved = resolve_settings_field_name(key)
+    if resolved in HIDDEN_CONFIG_SETTINGS:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    if resolved not in Settings.model_fields:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    val = getattr(settings, resolved, None)
+
+    is_secret = _is_secret_setting_key(resolved)
+    if val is None:
+        display_val = None
+    elif is_secret and not reveal:
+        display_val = _mask_value(str(val))
+    else:
+        display_val = str(val)
+
+    if is_secret and reveal and val is not None:
+        logger.warning(
+            "Admin %s revealed plaintext value of secret setting %s",
+            actor,
+            resolved,
+        )
+
+    return {
+        "name": resolved,
+        "env_var": server_settings_env_mapping().get(resolved, resolved.upper()),
+        "value": display_val,
+        "is_secret": is_secret,
+    }
+
+
 def _sync_process_env(new_lines: list[str], mapped_env_vars: set[str]) -> None:
     """Sync mapped dotenv values into os.environ after a settings update.
 
@@ -644,6 +710,33 @@ def apply_server_settings_update(
     credential field changed, and report whether a restart is still required. Returns
     the response dict both callers send back.
     """
+    # Unknown keys land in model_extra (the schema's extra="allow" exists for
+    # exactly this) and reject the WHOLE update: a partial apply would report
+    # success while dropping the caller's real intent, the same lie the
+    # extra="ignore" default told for 74 days about NYMERIA_PUBLIC_URL.
+    unknown = sorted((updates.model_extra or {}).keys())
+    if unknown:
+        env_names = server_settings_env_mapping()
+        suggestions: list[str] = []
+        for key in unknown:
+            for match in difflib.get_close_matches(
+                key.lower(), list(ServerSettingsUpdate.model_fields), n=2, cutoff=0.6
+            ):
+                label = (
+                    f"{match} ({env_names[match]})" if match in env_names else match
+                )
+                if label not in suggestions:
+                    suggestions.append(label)
+        plural = "s" if len(unknown) > 1 else ""
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown setting{plural}: {', '.join(unknown)}.{hint}"
+                " No changes were applied."
+            ),
+        )
+
     env_path = get_env_write_path(settings.project_root)
     env_mapping = _env_mapping()
     dumped_updates = updates.model_dump()
@@ -678,7 +771,21 @@ def apply_server_settings_update(
         extra_env_pairs.append((key_env_var, format_env_value(llm_api_key)))
 
     if not updates_dict:
-        return {"message": "No updates provided", "updated": [], "restart_required": False}
+        return {
+            "message": "No updates provided",
+            "updated": [],
+            "restart_required": False,
+            "warnings": [],
+        }
+
+    # Validate every value against the REAL Settings field (range, length, and
+    # type constraints) BEFORE anything is written. ServerSettingsUpdate fields
+    # do not mirror the Settings constraints, and the env write precedes the
+    # hot-reload, so without this gate an out-of-range value (e.g.
+    # twitch_buffer_size=10 against ge=50) persists to the env file and then
+    # EVERY get_settings() raises, bricking the API across restarts until the
+    # file is hand-edited. Reject at the choke point instead.
+    _validate_against_settings_fields(updates_dict)
 
     # Overlay only the changed keys onto the existing file, preserving untouched
     # lines, comments, and the secrets key, via the shared atomic 0600 writer the
@@ -713,6 +820,10 @@ def apply_server_settings_update(
         logger.info("Hot-reloaded graph settings: %s", rebuild)
 
     needs_restart = bool(_restart_required_keys() & set(updates_dict.keys()))
+    warnings: list[str] = []
+    public_url = updates_dict.get("nymeria_public_url")
+    if isinstance(public_url, str) and public_url.strip():
+        warnings.extend(_public_url_warnings(public_url.strip()))
     return {
         "message": "Settings updated and applied" + (
             " (some changes require /restart api to take effect)"
@@ -721,7 +832,88 @@ def apply_server_settings_update(
         ),
         "updated": list(updates_dict.keys()),
         "restart_required": needs_restart,
+        "warnings": warnings,
     }
+
+
+def _validate_against_settings_fields(updates_dict: dict) -> None:
+    """400 when a value violates the Settings model's own field constraints.
+
+    The applier's counterpart to the unknown-key rejection: unknown keys and
+    invalid values both fail loudly BEFORE the env write. Virtual fields
+    (llm_api_key) and any key without a Settings twin are skipped; None values
+    only reach here for _CLEARABLE_NULL_SETTINGS entries, whose Settings
+    fields are Optional by construction.
+    """
+    from typing import Annotated
+
+    from pydantic import TypeAdapter, ValidationError
+
+    problems: list[str] = []
+    for key, value in updates_dict.items():
+        field = Settings.model_fields.get(key)
+        if field is None:
+            continue
+        try:
+            TypeAdapter(Annotated[field.annotation, field]).validate_python(value)
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            problems.append(f"{key}: {first.get('msg', 'invalid value')}")
+    if problems:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid value{'s' if len(problems) > 1 else ''}: "
+                f"{'; '.join(problems)}. No changes were applied."
+            ),
+        )
+
+
+def _public_url_warnings(value: str) -> list[str]:
+    """Advisory checks for a freshly set public base URL (warn, never block).
+
+    OAuth auth_code redirect URLs are built from this value, so a mangled one
+    breaks every provider that needs it. The concrete failure this guards:
+    pasting a URL out of an email client whose rewriter (Outlook Safe Links,
+    Proofpoint urldefense) wrapped the real site in a tracking redirector.
+    """
+    from urllib.parse import parse_qs, urlsplit
+
+    unparseable = [
+        f"'{value}' does not look like an http(s) URL; OAuth redirect URLs"
+        " built from it will not work."
+    ]
+    try:
+        # urlsplit raises on some malformed inputs (e.g. an unclosed IPv6
+        # bracket); a helper whose job is judging pasted junk must never
+        # crash on it, especially since it runs after the value is applied.
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return unparseable
+    if parts.scheme not in ("http", "https") or not host:
+        return unparseable
+    if host == "safelinks.protection.outlook.com" or host.endswith(
+        ".safelinks.protection.outlook.com"
+    ):
+        message = (
+            "This looks like an Outlook Safe Links wrapper, not the real site URL."
+        )
+        candidate = (parse_qs(parts.query).get("url") or [""])[0]
+        if candidate:
+            message += (
+                f" The wrapped destination is {candidate}; you probably want"
+                " that value instead."
+            )
+        return [message]
+    if host in ("urldefense.com", "urldefense.proofpoint.com") or host.endswith(
+        (".urldefense.com", ".urldefense.proofpoint.com")
+    ):
+        return [
+            "This looks like a Proofpoint urldefense wrapper, not the real site"
+            " URL; unwrap it before relying on OAuth redirects."
+        ]
+    return []
 
 
 
@@ -1652,41 +1844,9 @@ def create_settings_router(
         explicit admin reveal and is audit-logged. Non-secret values always
         return raw.
         """
-        key_lower = key.lower()
-        if key_lower in HIDDEN_CONFIG_SETTINGS:
-            raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
-
-        val = getattr(settings, key, None)
-        if val is None:
-            val = getattr(settings, key_lower, None)
-            if val is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Unknown setting: {key}",
-                )
-            key = key_lower
-
-        is_secret = _is_secret_setting_key(key)
-        if val is None:
-            display_val = None
-        elif is_secret and not reveal:
-            display_val = _mask_value(str(val))
-        else:
-            display_val = str(val)
-
-        if is_secret and reveal and val is not None:
-            logger.warning(
-                "Admin %s revealed plaintext value of secret setting %s",
-                getattr(user, "id", "?"),
-                key,
-            )
-
-        return {
-            "name": key,
-            "env_var": server_settings_env_mapping().get(key, key.upper()),
-            "value": display_val,
-            "is_secret": is_secret,
-        }
+        return serialize_env_var(
+            settings, key, reveal=reveal, actor=str(getattr(user, "id", "?"))
+        )
 
     @router.get("/models")
     async def get_cached_models(
