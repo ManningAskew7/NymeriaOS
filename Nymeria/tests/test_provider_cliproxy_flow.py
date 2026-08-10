@@ -1015,7 +1015,7 @@ def test_use_existing_login_lists_models_and_caches() -> None:
     api = FakeCliproxyApi()
     api.auth_files = [dict(LOGGED_IN_CLAUDE)]
     api.models = [
-        {"id": "claude-opus-4-7", "owned_by": "anthropic"},
+        {"id": "claude-opus-5", "owned_by": "anthropic"},
         {"id": "gpt-5.5", "owned_by": "openai"},
     ]
     _run(api, "/provider cliproxy claude")
@@ -1027,10 +1027,10 @@ def test_use_existing_login_lists_models_and_caches() -> None:
     assert "1 Claude (Max/Pro subscription) model listed first" in result.markdown
     tab = _active_tab(_form(result))
     option_ids = [o["id"] for o in tab["fields"][1]["options"]]
-    assert option_ids == ["claude-opus-4-7", "gpt-5.5", "custom"]
+    assert option_ids == ["claude-opus-5", "gpt-5.5", "custom"]
     # The spec default is preselected.
     current = [o["id"] for o in tab["fields"][1]["options"] if o.get("current")]
-    assert current == ["claude-opus-4-7"]
+    assert current == ["claude-opus-5"]
 
     # Revisiting the model step never refetches (cached on the record).
     _run(api, "/provider cliproxy model gpt-5.5")
@@ -1051,7 +1051,7 @@ def test_model_list_failure_degrades_to_spec_default() -> None:
     assert "Model list unavailable" in result.markdown
     tab = _active_tab(_form(result))
     option_ids = [o["id"] for o in tab["fields"][1]["options"]]
-    assert option_ids == ["claude-opus-4-7", "custom"]
+    assert option_ids == ["claude-opus-5", "custom"]
 
 
 def test_model_custom_switches_to_text_entry() -> None:
@@ -1375,3 +1375,127 @@ def test_stores_are_independent() -> None:
     provider_setup.start_cliproxy_login("alice", "claude")
     assert provider_setup.clear_setup("alice") is True
     assert provider_setup.get_cliproxy_login("alice") is not None
+
+
+# ── formless surfaces: the model list rides the markdown ────────────────────
+
+
+def _run_formless(api: FakeCliproxyApi, command: str, *, is_admin: bool = True):
+    return run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="api",
+                is_admin=is_admin,
+                supports_forms=False,
+            ),
+            command,
+            api=api,
+        )
+    )
+
+
+def test_formless_use_inlines_model_ids_in_markdown() -> None:
+    """A formless caller (MCP, api) receives no form payload, so the model
+    ids must ride the markdown (live 2026-08-10: the note counted 12 models
+    while the body named none). Target's models lead, matching the form."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [
+        {"id": "claude-opus-5", "owned_by": "anthropic"},
+        {"id": "gpt-5.5", "owned_by": "openai"},
+    ]
+    _run_formless(api, "/provider cliproxy claude")
+
+    result = _run_formless(api, "/provider cliproxy use")
+
+    assert (result.data or {}).get("form") is None
+    assert "- claude-opus-5 (anthropic) (selected)" in result.markdown
+    assert "- gpt-5.5 (openai)" in result.markdown
+    assert result.markdown.index("claude-opus-5") < result.markdown.index("gpt-5.5")
+
+
+def test_form_surface_keeps_picker_without_duplicate_markdown_list() -> None:
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [
+        {"id": "claude-opus-5", "owned_by": "anthropic"},
+        {"id": "gpt-5.5", "owned_by": "openai"},
+    ]
+    _run(api, "/provider cliproxy claude")
+
+    result = _run(api, "/provider cliproxy use")
+
+    assert _form(result) is not None
+    assert "- claude-opus-5" not in result.markdown
+    assert "- gpt-5.5" not in result.markdown
+
+
+def test_formless_model_list_caps_with_honest_remainder() -> None:
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [
+        {"id": f"claude-model-{i:02d}", "owned_by": "anthropic"} for i in range(30)
+    ]
+    _run_formless(api, "/provider cliproxy claude")
+
+    result = _run_formless(api, "/provider cliproxy use")
+
+    assert "- claude-model-24" in result.markdown
+    assert "- claude-model-25" not in result.markdown
+    assert "and 5 more" in result.markdown
+
+
+def test_bare_model_rerenders_list_instead_of_usage_error() -> None:
+    """Mid-session `/provider cliproxy model` re-renders the model step (the
+    id list is exactly what the caller is missing), not a usage error."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [{"id": "claude-opus-5", "owned_by": "anthropic"}]
+    _run_formless(api, "/provider cliproxy claude")
+    _run_formless(api, "/provider cliproxy use")
+
+    result = _run_formless(api, "/provider cliproxy model")
+
+    assert result.success is True
+    assert "Usage:" not in result.markdown
+    assert "- claude-opus-5 (anthropic)" in result.markdown
+
+
+def test_formless_degraded_list_names_spec_default_row() -> None:
+    class _BrokenModelsApi(FakeCliproxyApi):
+        async def cliproxy_models(self, *, user_id: str | None = None):
+            raise _http_error(502, "proxy offline")
+
+    api = _BrokenModelsApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    _run_formless(api, "/provider cliproxy claude")
+
+    result = _run_formless(api, "/provider cliproxy use")
+
+    assert "Model list unavailable" in result.markdown
+    assert "- claude-opus-5 (spec default) (selected)" in result.markdown
+
+
+def test_bare_model_forces_model_step_after_a_model_is_picked() -> None:
+    """The decided state is the one that matters: a caller who typed a wrong
+    id has a model set, and the chain would otherwise answer with the Apply
+    review, which names no ids (review finding 2026-08-10)."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [
+        {"id": "claude-opus-5", "owned_by": "anthropic"},
+        {"id": "gpt-5.5", "owned_by": "openai"},
+    ]
+    _run_formless(api, "/provider cliproxy claude")
+    _run_formless(api, "/provider cliproxy use")
+    _run_formless(api, "/provider cliproxy model gpt-5.5")
+
+    result = _run_formless(api, "/provider cliproxy model")
+
+    assert result.success is True
+    assert "- claude-opus-5 (anthropic)" in result.markdown
+    assert "- gpt-5.5 (openai) (selected)" in result.markdown
+    assert "Choose: /provider cliproxy model" in result.markdown

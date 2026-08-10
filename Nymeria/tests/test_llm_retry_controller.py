@@ -232,3 +232,234 @@ def test_cache_control_ephemeral_single_source():
         providers_module._CACHE_CONTROL_EPHEMERAL
         is cliproxy_module.CACHE_CONTROL_EPHEMERAL
     )
+
+
+# --- Error-class fallback policy: 401/403/400 switch cross-provider only ---
+
+
+class _AuthError(RuntimeError):
+    """Non-retryable auth failure (HTTP 401): credential-scoped."""
+
+    status_code = 401
+
+
+class _GoogleShapedClientError(RuntimeError):
+    """google-genai APIError shape: int ``code``, string ``status``."""
+
+    code = 400
+    status = "INVALID_ARGUMENT"
+
+
+def _cross_provider_config(**kwargs) -> LLMConfig:
+    base = dict(
+        stream_max_retries=2,
+        fallbacks=[
+            LLMFallbackConfig(provider="custom", model="same-provider-model"),
+            LLMFallbackConfig(provider="other", model="cross-provider-model"),
+        ],
+    )
+    base.update(kwargs)
+    return _config(**base)
+
+
+def test_controller_400_switches_cross_provider_skipping_same_provider():
+    controller = _RetryFallbackController(_cross_provider_config())
+    decision = controller.classify(_BadRequest("boom"))
+    assert decision.action == "fallback"
+    # Index 1 (same provider) is skipped: a sibling model shares the wire.
+    assert decision.next_index == 2
+    assert decision.payload["to_provider"] == "other"
+    assert decision.payload["to_model"] == "cross-provider-model"
+    assert decision.payload["reason"] == "invalid_request"
+    assert decision.payload["http_status"] == 400
+    # The retry ladder is never consumed for a deterministic 4xx.
+    assert controller.retry_attempt == 0
+
+
+def test_controller_401_switches_cross_provider_with_auth_reason():
+    controller = _RetryFallbackController(_cross_provider_config())
+    decision = controller.classify(_AuthError("boom"))
+    assert decision.action == "fallback"
+    assert decision.next_index == 2
+    assert decision.payload["reason"] == "auth_error"
+    assert decision.payload["http_status"] == 401
+
+
+def test_controller_400_raises_when_chain_is_same_provider_only():
+    cfg = _config(
+        fallbacks=[LLMFallbackConfig(provider="custom", model="sibling-model")]
+    )
+    controller = _RetryFallbackController(cfg)
+    decision = controller.classify(_BadRequest("boom"))
+    assert decision.action == "raise"
+    assert controller.candidate_index == 0
+
+
+def test_controller_context_overflow_400_still_raises():
+    """Overflow owns its recovery (compaction rescue); never a model switch."""
+    controller = _RetryFallbackController(_cross_provider_config())
+
+    class _Overflow(RuntimeError):
+        status_code = 400
+
+    decision = controller.classify(_Overflow("prompt is too long"))
+    assert decision.action == "raise"
+
+
+def test_controller_google_code_attr_yields_cross_provider_switch():
+    """The google-genai 400 carries its status in ``code`` (int), not
+    ``status_code``; the antigravity INVALID_ARGUMENT incident shape."""
+    controller = _RetryFallbackController(_cross_provider_config())
+    decision = controller.classify(_GoogleShapedClientError("items: missing field"))
+    assert decision.action == "fallback"
+    assert decision.payload["reason"] == "invalid_request"
+    assert decision.payload["http_status"] == 400
+
+
+def test_extract_status_code_ignores_non_http_int_code():
+    class _GrpcShaped(RuntimeError):
+        code = 13  # grpc INTERNAL; not an HTTP status
+
+    assert nodes_module._extract_status_code(_GrpcShaped("boom")) is None
+
+
+def test_retry_reason_names_auth_and_invalid_request():
+    assert nodes_module._llm_retry_reason(_AuthError("x")) == "auth_error"
+
+    class _Forbidden(RuntimeError):
+        status_code = 403
+
+    assert nodes_module._llm_retry_reason(_Forbidden("x")) == "auth_error"
+    assert nodes_module._llm_retry_reason(_BadRequest("x")) == "invalid_request"
+
+
+def test_invoke_llm_with_retries_auth_error_switches_without_retrying(monkeypatch):
+    cfg = _cross_provider_config(stream_max_retries=2)
+    fallback_llm = object()
+    primary_llm = cast(BaseChatModel, object())
+
+    def fake_create_llm_with_tools(config, _tools):
+        assert config.model == "cross-provider-model"
+        return fallback_llm
+
+    monkeypatch.setattr(
+        nodes_module, "create_llm_with_tools", fake_create_llm_with_tools
+    )
+
+    seen = []
+
+    def invoke(candidate):
+        seen.append(candidate)
+        if candidate is not fallback_llm:
+            raise _AuthError("boom")
+        return AIMessage(content="from-fallback")
+
+    result = nodes_module._invoke_llm_with_retries(invoke, cfg, primary_llm, [], None)
+    assert result.content == "from-fallback"
+    # Exactly one primary attempt (no retry of a dead credential), then the
+    # cross-provider candidate.
+    assert seen == [primary_llm, fallback_llm]
+    assert cfg.active_fallback_candidate_index == 2
+
+
+def test_invoke_llm_with_retries_auth_error_decline_raises_original():
+    async def _decline(context):
+        return {"action": "fail"}
+
+    cfg = _cross_provider_config(fallback_decision_callback=_decline)
+
+    def invoke(_candidate):
+        raise _AuthError("boom")
+
+    try:
+        nodes_module._invoke_llm_with_retries(
+            invoke, cfg, cast(BaseChatModel, object()), [], None
+        )
+    except _AuthError:
+        pass
+    else:  # pragma: no cover - failure path
+        raise AssertionError("expected the original _AuthError to propagate")
+
+
+def test_fallback_note_text_drops_after_retries_for_deterministic_4xx():
+    payload = {
+        "from_model": "a",
+        "to_model": "b",
+        "reason": "auth_error",
+        "http_status": 401,
+    }
+    note = nodes_module.fallback_note_text(payload, kind="transport")
+    assert "failed (auth_error, HTTP 401)" in note
+    assert "after retries" not in note
+
+    retryable = nodes_module.fallback_note_text(
+        {**payload, "reason": "rate_limited", "http_status": 429}, kind="transport"
+    )
+    assert "failed after retries" in retryable
+
+
+def test_invoke_llm_with_retries_decline_consults_callback_and_keeps_index():
+    """The decline path must prove a fallback was OFFERED and refused (a
+    reverted feature also raises the original error, so raising alone is
+    not evidence), and must leave no candidate activated."""
+    consulted: list[dict] = []
+
+    async def _decline(context):
+        consulted.append(dict(context))
+        return {"action": "fail"}
+
+    cfg = _cross_provider_config(fallback_decision_callback=_decline)
+
+    def invoke(_candidate):
+        raise _AuthError("boom")
+
+    try:
+        nodes_module._invoke_llm_with_retries(
+            invoke, cfg, cast(BaseChatModel, object()), [], None
+        )
+    except _AuthError:
+        pass
+    else:  # pragma: no cover - failure path
+        raise AssertionError("expected the original _AuthError to propagate")
+
+    assert len(consulted) == 1
+    # The consent context is the flat payload plus the consult metadata.
+    assert consulted[0].get("reason") == "auth_error"
+    assert consulted[0].get("kind") == "transport"
+    assert cfg.active_fallback_candidate_index == 0
+
+
+def test_controller_image_unsupported_400_still_raises():
+    """Image-capability 400s own their recovery (the strip-and-retry); a
+    model switch would abandon the attachment strip."""
+    controller = _RetryFallbackController(_cross_provider_config())
+
+    class _ImageUnsupported(RuntimeError):
+        status_code = 400
+
+    decision = controller.classify(
+        _ImageUnsupported("image_url is only supported by certain models")
+    )
+    assert decision.action == "raise"
+
+
+def test_controller_401_switches_same_provider_different_base_url():
+    """Route identity is (provider, base_url): a direct-API candidate is a
+    genuinely different route than a proxy route of the same provider for
+    credential-scoped errors."""
+    cfg = _config(
+        base_url="http://localhost:8317",
+        fallbacks=[
+            LLMFallbackConfig(model="sibling-same-route"),
+            LLMFallbackConfig(
+                provider="custom",
+                model="direct-rescue",
+                base_url="https://api.example.com",
+            ),
+        ],
+    )
+    controller = _RetryFallbackController(cfg)
+    decision = controller.classify(_AuthError("boom"))
+    assert decision.action == "fallback"
+    assert decision.next_index == 2
+    assert decision.payload["to_model"] == "direct-rescue"

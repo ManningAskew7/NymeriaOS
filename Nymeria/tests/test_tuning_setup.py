@@ -610,10 +610,11 @@ def test_cliproxy_branch_wins_over_stale_hydrated_provider():
         auth_method=ProviderAuthMethod.CLIPROXY_OAUTH,
         cliproxy_provider="claude",
     )
-    # anthropic/claude-opus-4-7 supports all six levels; the stale deepseek
-    # provider's wire ladder (off/high/max) must not shape the preview.
+    # anthropic/claude-opus-5 (the catalog default) supports all six levels;
+    # the stale deepseek provider's wire ladder (off/high/max) must not shape
+    # the preview.
     assert effort_ladder_note(state) == (
-        "claude-opus-4-7 supports Off, Low, Medium, High, Extra high, Max."
+        "claude-opus-5 supports Off, Low, Medium, High, Extra high, Max."
     )
     assert all(
         "runs at" not in c.label for c in annotated_effort_choices(state)

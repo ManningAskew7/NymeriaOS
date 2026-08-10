@@ -117,7 +117,7 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         nymeria_provider="anthropic",
         url_shape="root",
         key_setting="anthropic_api_key",
-        default_model="claude-opus-4-7",
+        default_model="claude-opus-5",
         auth_file_provider="claude",
         model_owner="anthropic",
     ),

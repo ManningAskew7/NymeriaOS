@@ -210,3 +210,41 @@ def test_facade_resolution_fault_never_masks_the_turn_error():
     )
     assert result["code"] == "agent_runtime_error"
     assert "unknown provider for model" in result["content"]
+
+
+_INVALID_KEY_401 = "Error code: 401 - {'error': 'Invalid API key'}"
+_RATE_LIMIT_429 = "Error code: 429 - {'type': 'rate_limit_error', 'message': 'Error'}"
+
+
+def test_cliproxy_401_gains_subscription_relogin_hint():
+    """The raw SDK copy says "Invalid API key", which misleads on a
+    subscription-OAuth route (live 2026-08-10: lapsed Codex sub). Both real
+    causes are named; classification is by status, not message text."""
+    result = classify_stream_exception(
+        Exception(_INVALID_KEY_401), base_url=_CLIPROXY_BASE
+    )
+    assert result["code"] == "cliproxy_model_error"
+    assert "Invalid API key" in result["content"]  # raw text retained
+    assert "subscription login" in result["content"]
+    assert "/provider cliproxy" in result["content"]
+    assert "gatekeeper" in result["content"]
+    assert result["details"]["http_status"] == 401
+
+
+def test_cliproxy_429_gains_quota_window_hint():
+    result = classify_stream_exception(
+        Exception(_RATE_LIMIT_429), base_url=_CLIPROXY_BASE
+    )
+    assert result["code"] == "cliproxy_model_error"
+    assert "usage window" in result["content"]
+    assert result["details"]["http_status"] == 429
+
+
+def test_auth_and_quota_hints_untouched_off_cliproxy_base():
+    for text in (_INVALID_KEY_401, _RATE_LIMIT_429):
+        bare = classify_stream_exception(Exception(text))
+        off_proxy = classify_stream_exception(
+            Exception(text), base_url="https://api.example.com/v1"
+        )
+        assert off_proxy == bare
+        assert bare["code"] == "agent_runtime_error"

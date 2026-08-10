@@ -70,7 +70,7 @@ def _trigger_create(
     action_config: dict,
     source_config: Optional[dict] = None,
     cooldown_seconds: int = 0,
-    conditions: Optional[list] = None,
+    conditions: Optional[list[dict]] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
@@ -264,7 +264,7 @@ def _trigger_update(
     action_type: Optional[str] = None,
     action_config: Optional[dict] = None,
     cooldown_seconds: Optional[int] = None,
-    conditions: Optional[list] = None,
+    conditions: Optional[list[dict]] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
@@ -565,7 +565,7 @@ def trigger_config(
     action_config: Optional[dict] = None,
     source_config: Optional[dict] = None,
     cooldown_seconds: Optional[int] = None,
-    conditions: Optional[list] = None,
+    conditions: Optional[list[dict]] = None,
     enabled: Optional[bool] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],

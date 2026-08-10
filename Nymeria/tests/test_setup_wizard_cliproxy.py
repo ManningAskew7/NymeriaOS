@@ -41,7 +41,7 @@ def test_finalize_cliproxy_claude_local_writes_root_url_and_gatekeeper(
     content = (root / "config.env").read_text(encoding="utf-8")
     assert _env_line(content, "LLM_PROVIDER") == "anthropic"
     assert _env_line(content, "LLM_BASE_URL") == "http://localhost:8318"
-    assert _env_line(content, "LLM_MODEL") == "claude-opus-4-7"
+    assert _env_line(content, "LLM_MODEL") == "claude-opus-5"
     assert _env_line(content, "ANTHROPIC_API_KEY") == "cpx-gate"
     assert "ANTHROPIC_DIRECT_API_KEY" not in content
     assert _env_line(content, "CLIPROXY_MANAGEMENT_URL") == "http://localhost:8318"

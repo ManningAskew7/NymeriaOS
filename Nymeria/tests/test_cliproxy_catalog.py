@@ -302,3 +302,13 @@ def test_channel_label_strips_padded_inputs():
     assert cliproxy_channel_label("  openai  ", "  GPT-5.5  ") == "Codex"
     assert cliproxy_channel_label(" Anthropic ", "") == "Claude"
     assert cliproxy_channel_label("openai", "   ") == ""
+
+
+def test_claude_default_model_is_current():
+    """claude-opus-5 is proven serving on the OAuth surface (live 2026-08-10
+    global default); claude-opus-4-7 was stale on the browse page, and
+    claude-fable-5 was observed 404 on OAuth (2026-07-01), so it is not the
+    default until observed serving."""
+    claude = get_cliproxy_provider("claude")
+    assert claude is not None
+    assert claude.default_model == "claude-opus-5"

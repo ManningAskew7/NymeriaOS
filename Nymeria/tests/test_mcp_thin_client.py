@@ -508,3 +508,71 @@ def test_nymeria_command_docstring_lists_every_command_surface():
     doc = nymeria_command.__doc__ or ""
     missing = [s for s in get_args(CommandSurface) if s not in doc]
     assert missing == []
+
+
+def _projected(transcript, mode):
+    """Mirror the shipped nymeria_chat path: as_dict(verbose) then the
+    per-mode projection (collect_chat_transcript's tail). Testing as_dict
+    alone previously passed while the shipped path recomputed the fields."""
+    from nymeria.mcp_backend_client import project_chat_payload_for_verbosity
+
+    return project_chat_payload_for_verbosity(
+        transcript.as_dict(verbosity="verbose"), mode
+    )
+
+
+def test_failed_turn_renders_failure_line_not_empty_message():
+    """A turn with zero response steps and an error surfaces the error as
+    final_response instead of the "(empty message)" placeholder (which buried
+    the real signal for MCP callers; live incident 2026-08-10), in every
+    verbosity mode of the shipped projection."""
+    transcript = ChatTranscript(thread_id="thread-1")
+    transcript.add_event(
+        {
+            "type": "error",
+            "content": "An error occurred: Error code: 401 - Invalid API key",
+            "code": "agent_runtime_error",
+            "thread_id": "thread-1",
+        }
+    )
+    transcript.add_event({"type": "done", "thread_id": "thread-1"})
+
+    for mode in ("verbose", "concise", "chat"):
+        result = _projected(transcript, mode)
+        assert result["final_response"] == (
+            "[turn failed] An error occurred: Error code: 401 - Invalid API key"
+        ), mode
+        if "full_markdown" in result:
+            assert result["full_markdown"] == result["final_response"], mode
+        assert result["errors"][0]["code"] == "agent_runtime_error", mode
+
+
+def test_failed_turn_with_tool_steps_appends_failure_to_markdown():
+    """The tool-steps case: the projection recomputes final_response from
+    steps, which previously reinstated "(empty message)" over the failure
+    line (review finding, 2026-08-10)."""
+    transcript = ChatTranscript(thread_id="thread-1")
+    transcript.add_event({"type": "tool_call", "id": "c1", "name": "search", "args": {}})
+    transcript.add_event({"type": "tool_result", "id": "c1", "name": "search", "result": "r"})
+    transcript.add_event({"type": "error", "content": "boom", "code": "agent_runtime_error"})
+
+    for mode in ("verbose", "concise"):
+        result = _projected(transcript, mode)
+        assert result["final_response"] == "[turn failed] boom", mode
+        assert result["full_markdown"].startswith("### Tool: search"), mode
+        assert result["full_markdown"].endswith("[turn failed] boom"), mode
+    # chat mode redacts tool steps entirely; the failure line still lands.
+    chat = _projected(transcript, "chat")
+    assert chat["final_response"] == "[turn failed] boom"
+
+
+def test_successful_turn_with_errors_keeps_response_text():
+    """A mid-turn recovered error must not clobber real response text."""
+    transcript = ChatTranscript(thread_id="thread-1")
+    transcript.add_event({"type": "error", "content": "transient", "code": "x"})
+    transcript.add_event({"type": "response", "content": "Recovered fine."})
+
+    for mode in ("verbose", "concise", "chat"):
+        result = _projected(transcript, mode)
+        assert result["final_response"] == "Recovered fine.", mode
+        assert "[turn failed]" not in str(result.get("full_markdown", "")), mode

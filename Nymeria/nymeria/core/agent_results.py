@@ -43,15 +43,32 @@ _REPLY_SUPPRESSING_TOOL_NAMES = frozenset({"react", "tool_invoke"})
 
 
 def extract_http_status_code(error: Exception) -> Optional[int]:
-    """Best-effort extraction of HTTP status code from provider exceptions."""
-    status_code = getattr(error, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code
+    """Best-effort extraction of HTTP status code from provider exceptions.
 
-    response = getattr(error, "response", None)
-    response_status = getattr(response, "status_code", None) if response else None
-    if isinstance(response_status, int):
-        return response_status
+    Walks a few links of the cause chain: langchain wrappers raise ``from``
+    the SDK error that carries the status. google-genai's APIError family
+    stores the HTTP status in ``code`` (int; ``status`` is a string like
+    "INVALID_ARGUMENT"), range-guarded because ``code`` on other exception
+    types can be a non-HTTP int or a string.
+    """
+    current: Optional[BaseException] = error
+    for _ in range(5):
+        if current is None:
+            break
+        status_code = getattr(current, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+
+        response = getattr(current, "response", None)
+        response_status = getattr(response, "status_code", None) if response else None
+        if isinstance(response_status, int):
+            return response_status
+
+        code = getattr(current, "code", None)
+        if isinstance(code, int) and 100 <= code <= 599:
+            return code
+
+        current = current.__cause__ or current.__context__
 
     match = re.search(r"error code:\s*(\d{3})", str(error), re.IGNORECASE)
     if match:
@@ -163,7 +180,7 @@ def classify_stream_exception(
         # helper itself lazily imports the vendored CLIProxy predicate).
         from .llm_provider_utils import cliproxy_failure_hint
 
-        hint = cliproxy_failure_hint(base_url, raw_message)
+        hint = cliproxy_failure_hint(base_url, raw_message, status_code=status_code)
         if hint:
             return {
                 "type": "error",

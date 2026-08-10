@@ -43,7 +43,7 @@ const CLAUDE_PROVIDER: CLIProxyProviderInfo = {
   url_shape: 'root',
   api_mode: '',
   key_env_var: 'ANTHROPIC_API_KEY',
-  default_model: 'claude-opus-4-7',
+  default_model: 'claude-opus-5',
   tos_warning: '',
   auth_file_provider: 'claude',
   auth_file_providers: ['claude'],

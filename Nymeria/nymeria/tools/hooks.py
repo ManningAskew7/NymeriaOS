@@ -205,7 +205,7 @@ def _merge_require_approval_params(
     return out or None
 
 
-def _coerce_fire_conditions(raw) -> Optional[list]:
+def _coerce_fire_conditions(raw) -> Optional[list[dict]]:
     """Normalize a caller-supplied fire_conditions list to condition dicts.
 
     Accepts a list of dicts (the wire shape). Returns None when nothing was
@@ -227,7 +227,7 @@ def _hook_create(
     text: Optional[str],
     params: Optional[dict],
     matcher: Optional[str],
-    fire_conditions: Optional[list],
+    fire_conditions: Optional[list[dict]],
     once: Optional[bool],
     single_use: Optional[bool],
     scope: Optional[str],
@@ -281,7 +281,7 @@ def _hook_update(
     text: Optional[str],
     params: Optional[dict],
     matcher: Optional[str],
-    fire_conditions: Optional[list],
+    fire_conditions: Optional[list[dict]],
     once: Optional[bool],
     single_use: Optional[bool],
     enabled: Optional[bool],
@@ -649,7 +649,7 @@ def hook_config(
     text: Optional[str] = None,
     params: Optional[dict] = None,
     matcher: Optional[str] = None,
-    fire_conditions: Optional[list] = None,
+    fire_conditions: Optional[list[dict]] = None,
     once: Optional[bool] = None,
     single_use: Optional[bool] = None,
     scope: Optional[str] = None,
