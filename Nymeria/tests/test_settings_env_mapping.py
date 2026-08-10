@@ -244,3 +244,19 @@ def test_new_settings_fields_must_be_reachable_or_exempted():
     )
     stale = _UNREACHABLE_SETTINGS_EXEMPT - unreachable
     assert not stale, f"stale exemption entries (delete them): {sorted(stale)}"
+
+
+def test_agent_write_policy_lists_are_patchable_fields():
+    """#157 list ratchet: a rename cannot silently orphan a policy entry."""
+    from nymeria.api.schemas.settings import (
+        AGENT_WRITE_ALERT_SETTINGS,
+        AGENT_WRITE_BLOCKED_SETTINGS,
+    )
+
+    patchable = set(ServerSettingsUpdate.model_fields)
+    assert AGENT_WRITE_ALERT_SETTINGS <= patchable, sorted(
+        AGENT_WRITE_ALERT_SETTINGS - patchable
+    )
+    assert AGENT_WRITE_BLOCKED_SETTINGS <= patchable, sorted(
+        AGENT_WRITE_BLOCKED_SETTINGS - patchable
+    )

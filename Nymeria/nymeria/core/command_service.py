@@ -5775,8 +5775,17 @@ class _CommandExecutor(
 
     async def _cmd_background_set_url(self, bound: BoundArgs) -> str | CommandOutput:
         base_url = str(bound.get("base_url") or "").strip()
+        old_value = self._current_setting_value("llm_background_base_url")
         result = await self.api.update_settings(
             user_id=self.user_id, llm_background_base_url=base_url
+        )
+        # The owner alert keys on WHICH SETTING changed, never on which
+        # command spelling changed it: this write is the same egress move as
+        # `/env set LLM_BACKGROUND_BASE_URL` and must alert identically.
+        self._alert_applied_agent_settings(
+            result,
+            {"llm_background_base_url": base_url},
+            {"llm_background_base_url": old_value},
         )
         msg = f"Background base URL set to {base_url}."
         if result.get("restart_required"):
@@ -5786,10 +5795,18 @@ class _CommandExecutor(
     async def _cmd_background_clear(self, bound: BoundArgs) -> str | CommandOutput:
         # Empty strings clear both keys in the env file (mirrors how the
         # frontend clears a tier field); None would be filtered out.
-        await self.api.update_settings(
+        old_value = self._current_setting_value("llm_background_base_url")
+        result = await self.api.update_settings(
             user_id=self.user_id,
             llm_background_model="",
             llm_background_base_url="",
+        )
+        # Clearing the base URL is a settings change too: an agent silently
+        # reverting an owner-set URL must be as loud as setting one.
+        self._alert_applied_agent_settings(
+            result,
+            {"llm_background_base_url": ""},
+            {"llm_background_base_url": old_value},
         )
         return command_success("Background model cleared (falls back to the main model).")
 
@@ -5857,12 +5874,134 @@ class _CommandExecutor(
         # One spelling rule with /env set: field names and env-var names both
         # resolve; the applier rejects genuinely unknown keys.
         key = resolve_settings_field_name(str(bound.get("key") or ""))
+        blocked = self._agent_settings_write_block(key)
+        if blocked is not None:
+            return blocked
         parsed = coerce_value(str(bound.get("value") or ""))
+        old_value = self._current_setting_value(key)
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
-        return self._render_settings_write(key, parsed, result)
+        return self._render_settings_write(key, parsed, result, old_value)
+
+    def _agent_settings_write_block(self, key: str) -> CommandOutput | None:
+        """Gate-integrity carve-out (#157) for the GLOBAL master switches.
+
+        Non-human actors cannot write `AGENT_WRITE_BLOCKED_SETTINGS` through
+        the command surface, the way auth_write cannot touch system
+        credentials. Scope honesty: this covers the global `hooks_enabled`
+        only; the per-thread override remains a designed agent capability
+        (thread config is agent-writable by design). Everything else stays
+        agent-writable (vault posture: containment is loudness and
+        reversibility, not blocking). Keyed on actor != "user" rather than
+        == "agent" so a future "system" actor fails conservatively closed.
+        """
+        if self.actor == "user":
+            return None
+        from ..api.schemas.settings import AGENT_WRITE_BLOCKED_SETTINGS
+
+        if key not in AGENT_WRITE_BLOCKED_SETTINGS:
+            return None
+        return command_error(
+            f"{key} controls the gating machinery and cannot be changed from an "
+            "agent turn. Ask the user to run this command themselves."
+        )
+
+    def _current_setting_value(self, key: str) -> Any:
+        """Best-effort pre-write read so the owner alert can name the value
+        being replaced (a "revert if unexpected" alert is not actionable
+        without it). None on any failure; the alert then omits the clause."""
+        try:
+            from ..config import get_settings
+
+            return getattr(get_settings(), key, None)
+        except Exception:  # noqa: BLE001 - advisory read only
+            return None
+
+    def _alert_applied_agent_settings(
+        self, result: dict, new_values: dict, old_values: dict | None = None
+    ) -> None:
+        """Owner alerts for agent-issued writes that APPLIED to sensitive keys.
+
+        Called by EVERY handler that writes settings (the shared
+        `_render_settings_write` tail plus the /background family, which
+        renders its own copy): the alert must key on which setting changed,
+        never on which command spelling changed it. Alerts only for
+        actor="agent" (a future "system" actor is a deliberate platform
+        write, not an injectable turn).
+        """
+        if self.actor != "agent":
+            return
+        from ..api.schemas.settings import AGENT_WRITE_ALERT_SETTINGS
+
+        applied = set(result.get("updated") or []) & AGENT_WRITE_ALERT_SETTINGS
+        for key in applied:
+            self._alert_agent_settings_write(
+                key, new_values.get(key), (old_values or {}).get(key)
+            )
+
+    def _alert_agent_settings_write(self, key: str, value: Any, old_value: Any) -> None:
+        """One owner alert for one agent-issued sensitive-settings write (#157).
+
+        send_owner_alert is deliberately not silenceable by thread
+        notification levels and never raises, but it does SYNCHRONOUS
+        network I/O (per-destination 30s timeouts), and this seam runs on
+        the API event loop, so dispatch is fire-and-forget on the default
+        executor (asyncio.run and the API lifespan both drain it on
+        shutdown). The inner closure carries its own try/except: an alert is
+        containment, not a gate, and must never fail the write it reports
+        on. Secret-named values (old and new) are withheld from the message;
+        non-secret URL values are echoed as pasted, so a URL embedding
+        userinfo reaches the owner's external channels verbatim.
+        """
+        try:
+            from ..api.routers.settings import _is_secret_setting_key
+
+            secret = _is_secret_setting_key(key)
+            shown = "(value withheld: secret)" if secret else str(value)
+            was = ""
+            if old_value is not None and str(old_value) != "":
+                was = (
+                    " (replacing a previous value)"
+                    if secret
+                    else f" (was {old_value})"
+                )
+            surface = self.surface or "unknown surface"
+            message = (
+                f"An agent changed server setting {key} to {shown}{was} "
+                f"via {surface} on thread {self.thread_id or 'unknown'}. "
+                "Review with /env show and revert with /env set if this was "
+                "not expected."
+            )
+            user_id = self.user_id
+            thread_id = self.thread_id
+
+            def _dispatch() -> None:
+                try:
+                    from ..config import get_settings
+                    from .notification_dispatch import send_owner_alert
+
+                    send_owner_alert(
+                        message,
+                        get_settings(),
+                        user_id=user_id,
+                        thread_id=thread_id,
+                    )
+                except Exception as e:  # noqa: BLE001 - never fail the write
+                    logger.error(
+                        "Agent settings-write alert failed for %s: %s", key, e
+                    )
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # Sync context: the established worker-side calling shape.
+                _dispatch()
+            else:
+                loop.run_in_executor(None, _dispatch)
+        except Exception as e:  # noqa: BLE001 - never fail the write
+            logger.error("Agent settings-write alert failed for %s: %s", key, e)
 
     def _render_settings_write(
-        self, key: str, parsed: Any, result: dict
+        self, key: str, parsed: Any, result: dict, old_value: Any = None
     ) -> str | CommandOutput:
         """Honest outcome for a settings write, shared by /settings set and /env set.
 
@@ -5879,6 +6018,7 @@ class _CommandExecutor(
                     "clearing. Set a real value instead."
                 )
             return command_error(f"{key} was not applied.")
+        self._alert_applied_agent_settings(result, {key: parsed}, {key: old_value})
         msg = f"{key} set to {parsed}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
@@ -5943,9 +6083,13 @@ class _CommandExecutor(
         # the model. Mirror telegram: env set uses update_settings; the
         # applier rejects unknown keys with a 400 the dispatcher renders.
         key = resolve_settings_field_name(str(bound.get("key") or ""))
+        blocked = self._agent_settings_write_block(key)
+        if blocked is not None:
+            return blocked
         parsed = coerce_value(str(bound.get("value") or ""))
+        old_value = self._current_setting_value(key)
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
-        return self._render_settings_write(key, parsed, result)
+        return self._render_settings_write(key, parsed, result, old_value)
 
     # ── Tools ─────────────────────────────────────────────────────────────
 

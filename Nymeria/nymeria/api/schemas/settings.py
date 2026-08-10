@@ -953,6 +953,34 @@ def server_settings_env_mapping() -> dict[str, str]:
     }
 
 
+# Agent-actor write policy for settings (#157, vault posture). Consumed by the
+# command layer, the in-turn agent path to settings writes (the MCP and REST
+# settings surfaces are human-client trust by scope, not mechanism: they carry
+# no actor concept, and SECURITY.md 2.2 owns everything past the process
+# boundary). Both lists are ratcheted as subsets of the patchable fields in
+# tests/test_settings_env_mapping.py.
+#
+# ALERT: agent-issued writes to these platform-level, URL/egress-shaped keys
+# succeed but fire a send_owner_alert (loud + reversible, never blocking).
+# Integration-level base_urls are deliberately excluded: their egress is
+# policy-controlled at consumption (the service-integration egress gates).
+AGENT_WRITE_ALERT_SETTINGS = frozenset({
+    "nymeria_public_url",
+    "llm_base_url",
+    "llm_background_base_url",
+    "embedding_base_url",
+    "cliproxy_management_url",
+    "cliproxy_management_key",
+})
+
+# BLOCKED: the gating machinery must not be removable by the thing it gates
+# (the analogue of system credentials staying off the agent's auth_write
+# surface). Human admins are unaffected on every surface.
+AGENT_WRITE_BLOCKED_SETTINGS = frozenset({
+    "hooks_enabled",
+})
+
+
 def resolve_settings_field_name(key: str) -> str:
     """Resolve a user-typed settings key to its field name, best effort.
 

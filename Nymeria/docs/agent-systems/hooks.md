@@ -492,7 +492,11 @@ A hook is active on a turn only if every layer says so, resolved by
 
 Both thread fields are set/cleared through `PATCH /threads/{id}/config`
 (`hooks_enabled`, `hook_overrides`, and their `clear_*` twins); the master switch is a
-`PATCH /settings` field. In the GUI, the per-thread **Hooks** tab (Thread Settings) surfaces
+`PATCH /settings` field. The master switch is agent-blocked on the command
+surface (`/env set` / `/settings set` refuse it for agent actors: the gating
+machinery must not be removable by the thing it gates); the per-thread
+overrides remain a designed agent capability and are the intended way an
+agent adjusts hook behavior for its own thread. In the GUI, the per-thread **Hooks** tab (Thread Settings) surfaces
 this as a tri-state master (Inherit / On / Off, where Inherit sends `clear_hooks_enabled`)
 plus per-hook Default / On / Off overrides, folded into the panel's Save batch.
 

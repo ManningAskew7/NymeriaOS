@@ -7016,3 +7016,213 @@ def test_injected_tools_aliases_restore_the_filtered_views() -> None:
     assert "Enabled Tools on this thread" in bridged.markdown
     core_explicit = run(service.execute(_ctx(), "/tools list core", api=api))
     assert "Core Tools" in core_explicit.markdown
+
+
+# ── #157 vault-consistent posture: agent-issued sensitive settings writes ───
+# These reuse the module's existing _agent_ctx helper (surface="agent"), the
+# faithful shape of the real slash_command tool path.
+
+
+def test_agent_sensitive_settings_write_fires_owner_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An agent-actor write to a sensitive key succeeds AND alerts the owner.
+
+    Vault posture (#157): containment is loudness and reversibility, not
+    blocking. The alert rides send_owner_alert (not silenceable by thread
+    notification levels).
+    """
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[dict] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            {"message": message, "user_id": user_id, "thread_id": thread_id}
+        ),
+    )
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            _agent_ctx(), "/env set NYMERIA_PUBLIC_URL https://x.example", api=api
+        )
+    )
+    assert result.success is True
+    assert len(alerts) == 1
+    assert "nymeria_public_url" in alerts[0]["message"]
+    assert alerts[0]["user_id"] == "alice"
+    assert alerts[0]["thread_id"] == "thread-1"
+
+    # The same write by a human actor alerts nobody.
+    alerts.clear()
+    result = run(
+        CommandService().execute(
+            _ctx(), "/env set NYMERIA_PUBLIC_URL https://x.example", api=api
+        )
+    )
+    assert result.success is True
+    assert alerts == []
+
+
+def test_agent_secret_settings_alert_withholds_the_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The alert names a secret key but never carries its value."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    result = run(
+        CommandService().execute(
+            _agent_ctx(),
+            "/env set CLIPROXY_MANAGEMENT_KEY sk-super-secret-xyz",
+            api=FakeCommandApi(),
+        )
+    )
+    assert result.success is True
+    assert len(alerts) == 1
+    assert "cliproxy_management_key" in alerts[0]
+    assert "sk-super-secret-xyz" not in alerts[0]
+
+
+def test_agent_cannot_write_gate_disabling_settings() -> None:
+    """hooks_enabled is agent-blocked: the gate is not removable by the thing
+    it gates (the system-credentials carve-out analogue). Human admins are
+    unaffected."""
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(_agent_ctx(), "/env set HOOKS_ENABLED false", api=api)
+    )
+    assert result.success is False
+    assert "hooks_enabled" in result.markdown
+    assert not [c for c in api.calls if c[0] == "update_settings"]
+
+    human = run(
+        CommandService().execute(_ctx(), "/env set HOOKS_ENABLED false", api=api)
+    )
+    assert human.success is True
+    assert [c for c in api.calls if c[0] == "update_settings"]
+
+
+def test_agent_settings_alert_failure_never_blocks_the_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Alert dispatch is containment, not a gate: a raising dispatcher must
+    not fail the command."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("push channel down")
+
+    monkeypatch.setattr(dispatch_mod, "send_owner_alert", _boom)
+    result = run(
+        CommandService().execute(
+            _agent_ctx(), "/env set LLM_BASE_URL https://proxy.example", api=FakeCommandApi()
+        )
+    )
+    assert result.success is True
+    assert "llm_base_url set to" in result.markdown
+
+
+def test_settings_set_gate_block_and_alias_spellings() -> None:
+    """The block holds on /settings set too: the invariant is per-KEY, not
+    per-command-spelling."""
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            _agent_ctx(), "/settings set hooks_enabled false", api=api
+        )
+    )
+    assert result.success is False
+    assert "hooks_enabled" in result.markdown
+    assert not [c for c in api.calls if c[0] == "update_settings"]
+
+
+def test_agent_nonsensitive_write_is_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Alerting on every agent settings write would destroy the signal: a
+    non-listed key must not alert."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    result = run(
+        CommandService().execute(
+            _agent_ctx(), "/env set LLM_MODEL gpt-test", api=FakeCommandApi()
+        )
+    )
+    assert result.success is True
+    assert alerts == []
+
+
+def test_agent_unapplied_sensitive_write_does_not_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No alert for a write the applier dropped: the alert reports changes,
+    not attempts."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    result = run(
+        CommandService().execute(
+            _agent_ctx(),
+            "/env set NYMERIA_PUBLIC_URL none",
+            api=_UnappliedCommandApi(),
+        )
+    )
+    assert result.success is False
+    assert alerts == []
+
+
+def test_background_url_commands_alert_like_env_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/background set-url and /background clear write an alert-listed key
+    and must be exactly as loud as /env set LLM_BACKGROUND_BASE_URL: the
+    control keys on which SETTING changed, never on the spelling."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(
+            _agent_ctx(), "/background set-url https://proxy.example/v1", api=api
+        )
+    )
+    assert result.success is True
+    assert len(alerts) == 1
+    assert "llm_background_base_url" in alerts[0]
+
+    alerts.clear()
+    result = run(CommandService().execute(_agent_ctx(), "/background clear", api=api))
+    assert result.success is True
+    assert len(alerts) == 1
+    assert "llm_background_base_url" in alerts[0]
