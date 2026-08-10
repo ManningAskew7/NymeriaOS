@@ -685,8 +685,9 @@ def _default_message(status: str, last_error: Optional[str]) -> str:
     if status == "missing_public_url":
         return (
             "OAuth cannot start: NYMERIA_PUBLIC_URL is unset and this provider doesn't "
-            "support device_code. Ask the user whether to configure NYMERIA_PUBLIC_URL or "
-            "retry this tool with use_localhost=True."
+            "support device_code. Ask the user whether to set it (an admin can run "
+            "`/env set NYMERIA_PUBLIC_URL <public https url>`, applied immediately, "
+            "no restart) or retry this tool with use_localhost=True."
         )
     if status == "unknown_provider":
         return "Provider is not registered for OAuth. Use kind='api_key' instead."

@@ -329,6 +329,10 @@ def test_leading_single_token_aliases_snapshot() -> None:
         "provider.setup": "provider_setup",
         "provider.switch": "provider_switch",
         "provider.test": "provider_test",
+        # Deliberate 2026-08-10 addition, not a Wave A preservation: the flat
+        # spelling was never registered, so /restart_api dead-ended in a
+        # did-you-mean pointing at bare /restart.
+        "restart.api": "restart_api",
         "settings": "settings_show",
         "settings.get": "settings_get",
         "settings.set": "settings_set",

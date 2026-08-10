@@ -2168,9 +2168,9 @@ def test_provider_set_maps_credential_fields_to_settings() -> None:
     assert "Unknown provider for /provider set" in unknown.markdown
 
     # A registered provider without credential settings fields is refused by
-    # set (which stays trio-only), pointing at the virtual llm_api_key slot
-    # (a bare /env set GROQ_API_KEY would be silently dropped by the
-    # settings model).
+    # set (which stays trio-only), pointing at the virtual llm_api_key slot,
+    # which routes the key to the provider's declared env var (a bare
+    # /env set GROQ_API_KEY writes the var but configures no provider trio).
     unmanaged = _run_command(api, "/provider set groq api_key=x")
     assert unmanaged.success is False
     assert "/env set llm_api_key" in unmanaged.markdown
@@ -2932,6 +2932,146 @@ def test_restart_api_requires_admin(
     assert result.success is True
     assert "restarting" in result.markdown.lower()
     assert restarted == [True]
+
+
+def test_restart_api_flat_alias_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/restart_api dispatches like /restart api (family flat-alias convention).
+
+    Before the alias existed, the dispatcher answered /restart_api with a
+    did-you-mean pointing at bare /restart, which bot-local handlers
+    intercept on bot surfaces (restarting the BOT, not the API) and which
+    elsewhere needs a second hop through the subcommand listing (2026-08-10
+    outage, bug 3).
+    """
+    import nymeria.api.routers.system as system_mod
+    import nymeria.core.agent as agent_module
+
+    restarted: list[bool] = []
+    monkeypatch.setattr(
+        system_mod, "restart_api_process", lambda agent, settings: restarted.append(True)
+    )
+    admin_agent = _FakeAgent()
+    admin_agent.accounts_repo = _FakeAccountsRepo(default_role="admin")
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: admin_agent)
+
+    admin_ctx = CommandContext(
+        user_id="alice",
+        thread_id=None,
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+    result = run(CommandService().execute(admin_ctx, "/restart_api"))
+    assert result.success is True
+    assert restarted == [True]
+
+
+def test_env_set_resolves_env_var_spellings() -> None:
+    """/env set speaks env-var names: exact divergent names reverse-map to
+    their field (the S3 family), everything else case-folds."""
+    api = FakeCommandApi()
+    result = run(
+        CommandService().execute(_ctx(), "/env set AWS_ACCESS_KEY_ID AKIA-x", api=api)
+    )
+    assert result.success is True
+    sent = [c for c in api.calls if c[0] == "update_settings"][-1][2]
+    assert sent.get("s3_access_key_id") == "AKIA-x"
+
+    result = run(
+        CommandService().execute(
+            _ctx(), "/env set NYMERIA_PUBLIC_URL https://x.example", api=api
+        )
+    )
+    assert result.success is True
+    sent = [c for c in api.calls if c[0] == "update_settings"][-1][2]
+    assert sent.get("nymeria_public_url") == "https://x.example"
+
+
+class _UnappliedCommandApi(FakeCommandApi):
+    """Backend answering like the applier when it filters the whole update."""
+
+    async def update_settings(self, *, user_id=None, **kwargs):
+        await super().update_settings(user_id=user_id, **kwargs)
+        return {"updated": [], "restart_required": False, "warnings": []}
+
+
+def test_env_set_unapplied_key_reports_error() -> None:
+    """A write the applier dropped must not be reported as set.
+
+    The applier filters an explicit None outside _CLEARABLE_NULL_SETTINGS
+    ("No updates provided"); echoing "set to None" would be the silent-drop
+    lie one layer up.
+    """
+    result = run(
+        CommandService().execute(
+            _ctx(), "/env set REDIS_URL none", api=_UnappliedCommandApi()
+        )
+    )
+    assert result.success is False
+    assert "was not applied" in result.markdown
+    assert "does not support clearing" in result.markdown
+
+
+class _WarningCommandApi(FakeCommandApi):
+    """Backend echoing an applier warning alongside a successful write."""
+
+    async def update_settings(self, *, user_id=None, **kwargs):
+        result = await super().update_settings(user_id=user_id, **kwargs)
+        result["warnings"] = [
+            "This looks like an Outlook Safe Links wrapper, not the real site URL."
+        ]
+        return result
+
+
+def test_env_set_renders_server_warnings_as_warning_level() -> None:
+    """Applier warnings ride the typed warning level, not a success body."""
+    result = run(
+        CommandService().execute(
+            _ctx(),
+            "/env set NYMERIA_PUBLIC_URL https://wrapped.example",
+            api=_WarningCommandApi(),
+        )
+    )
+    assert result.success is True
+    assert result.level == "warning"
+    assert "Safe Links" in result.markdown
+    assert "nymeria_public_url set to" in result.markdown
+
+
+class _RejectingCommandApi(FakeCommandApi):
+    """Backend raising the applier's 400 in the httpx shape both shapes use."""
+
+    async def update_settings(self, *, user_id=None, **kwargs):
+        from nymeria.core.command_service import _raise_http_status
+
+        _raise_http_status(
+            400, "Unknown setting: bogus_key. Did you mean bog_key (BOG_KEY)?"
+        )
+
+
+def test_env_set_unknown_key_renders_applier_error() -> None:
+    """The applier's 400 detail reaches the user through the dispatcher."""
+    result = run(
+        CommandService().execute(
+            _ctx(), "/env set BOGUS_KEY x", api=_RejectingCommandApi()
+        )
+    )
+    assert result.success is False
+    assert "Unknown setting: bogus_key" in result.markdown
+
+
+def test_unknown_root_suggestion_expands_subcommand_only_family() -> None:
+    """A suggested subcommand-only root expands to its full path when unique.
+
+    Suggesting bare `/restart` costs the user another hop (and on bot
+    surfaces a bot-local handler intercepts it); the hint should name the
+    spelling that dispatches directly.
+    """
+    result = run(CommandService().execute(_ctx(), "/restartapi", api=FakeCommandApi()))
+    assert result.success is False
+    assert "Did you mean `/restart api`?" in result.markdown
 
 
 def _client(

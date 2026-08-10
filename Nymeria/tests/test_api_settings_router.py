@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from nymeria.config.model_capabilities import get_context_limit, get_model_defaults
@@ -2452,3 +2453,324 @@ def test_get_cached_models_includes_reasoning_effort_ladder(
         "off", "low", "medium", "high", "xhigh", "max",
     ]
     assert body["claude-opus-4-8"]["max_reasoning_effort"] == "max"
+
+
+# ── Config-surface honesty (2026-08-10 outage pass) ─────────────────────────
+# Three ways the surface lied about itself: unknown PATCH keys silently
+# dropped with a success response, /env show advertising keys the update
+# model could not write, and known-but-unset settings 404ing as "Unknown".
+
+
+def test_patch_settings_unknown_key_is_rejected_not_ignored(
+    tmp_path: Path, monkeypatch
+):
+    """An unknown field 400s with a near-match hint and applies NOTHING.
+
+    Pydantic's extra="ignore" default silently dropped unknown keys, so the
+    applier saw an empty update and every caller reported success for a write
+    that never happened (the NYMERIA_PUBLIC_URL 74-day outage). All-or-nothing:
+    the known sibling in the same request must not land either.
+    """
+    monkeypatch.setenv("LLM_MODEL", "old-model")
+    env_path = tmp_path / ".env"
+    env_path.write_text("LLM_MODEL=old-model\n", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_model": "new-model", "nymeria_public_urll": "https://x.example"},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "nymeria_public_urll" in detail
+    assert "Did you mean" in detail
+    assert "nymeria_public_url (NYMERIA_PUBLIC_URL)" in detail
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "LLM_MODEL=old-model" in env_text
+    assert "new-model" not in env_text
+
+
+def test_patch_settings_env_show_advertised_key_is_settable(
+    tmp_path: Path, monkeypatch
+):
+    """redis_url is advertised in /env show and listed restart-required, so a
+    PATCH must actually persist it. It was one of 30 advertised keys missing
+    from the update model, whose writes false-succeeded."""
+    monkeypatch.setenv("REDIS_URL", "redis://old:6379/0")
+    env_path = tmp_path / ".env"
+    env_path.write_text("REDIS_URL=redis://old:6379/0\n", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"redis_url": "redis://elsewhere:6379/0"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["updated"] == ["redis_url"]
+    assert body["restart_required"] is True
+    assert "REDIS_URL=redis://elsewhere:6379/0" in env_path.read_text(encoding="utf-8")
+
+
+def test_get_env_var_known_but_unset_is_not_unknown(tmp_path: Path, monkeypatch):
+    """A real settings field that is unset returns value null, not 404.
+
+    Unset and unknown are different answers; conflating them made /env get
+    report "Unknown variable" for NYMERIA_PUBLIC_URL, hiding the one variable
+    the outage turned on.
+    """
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/settings/env/NYMERIA_PUBLIC_URL", headers=_auth(token)
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "nymeria_public_url"
+    assert body["value"] is None
+
+    unknown = client.get(
+        "/settings/env/definitely_not_a_setting", headers=_auth(token)
+    )
+    assert unknown.status_code == 404
+
+
+def test_get_env_var_hidden_setting_stays_unknown(tmp_path: Path, monkeypatch):
+    """The unset-vs-unknown fix must not resurrect hidden settings."""
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get("/settings/env/nymeria_api_key", headers=_auth(token))
+
+    assert response.status_code == 404
+
+
+def test_env_listing_includes_nymeria_public_url(tmp_path: Path, monkeypatch):
+    """/env show lists the field OAuth auth_code flows depend on."""
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get("/settings/env", headers=_auth(token))
+
+    assert response.status_code == 200
+    names = {e["name"] for e in response.json()["entries"]}
+    assert "nymeria_public_url" in names
+
+
+def test_patch_settings_public_url_warns_on_safelinks_wrapper(
+    tmp_path: Path, monkeypatch
+):
+    """A Safe Links wrapper value persists but warns with the unwrapped URL.
+
+    The outage fix itself nearly stored an Outlook Safe Links redirector as
+    the public base URL; the write succeeds (warn, not block) but the response
+    names the wrapper and the wrapped destination.
+    """
+    monkeypatch.setenv("NYMERIA_PUBLIC_URL", "")
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    wrapped = (
+        "https://aus01.safelinks.protection.outlook.com/?url="
+        "https%3A%2F%2Fnymeria.example.com%2F&data=05%7C02"
+    )
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"nymeria_public_url": wrapped}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["updated"] == ["nymeria_public_url"]
+    assert body["warnings"], "expected a Safe Links warning"
+    assert "Safe Links" in body["warnings"][0]
+    assert "https://nymeria.example.com/" in body["warnings"][0]
+    assert "NYMERIA_PUBLIC_URL=" in env_path.read_text(encoding="utf-8")
+
+    clean = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"nymeria_public_url": "https://nymeria.example.com"},
+    )
+    assert clean.status_code == 200
+    assert clean.json()["warnings"] == []
+
+
+def test_command_backend_update_settings_rejects_unknown_key(
+    tmp_path: Path, monkeypatch
+):
+    """The in-process slash-command path surfaces the same 400, converted to
+    the httpx error shape the dispatcher renders (two-shape invariant)."""
+    monkeypatch.setenv("LLM_MODEL", "old")
+    env_path = tmp_path / ".env"
+    env_path.write_text("LLM_MODEL=old\n", encoding="utf-8")
+    backend, _agent = _backend_client(tmp_path)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        asyncio.run(
+            backend.update_settings(
+                llm_model="new-model", nymeria_public_urll="https://x.example"
+            )
+        )
+
+    assert excinfo.value.response.status_code == 400
+    assert "nymeria_public_urll" in str(excinfo.value)
+    # All-or-nothing on the in-process path too: the known sibling in the
+    # same call must not land.
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "LLM_MODEL=old" in env_text
+    assert "new-model" not in env_text
+
+
+def test_command_backend_get_env_var_known_but_unset(tmp_path: Path):
+    """The in-process env reveal distinguishes unset from unknown too."""
+    backend, _agent = _backend_client(tmp_path)
+
+    result = asyncio.run(backend.get_env_var("NYMERIA_PUBLIC_URL"))
+
+    assert result["name"] == "nymeria_public_url"
+    assert result["value"] is None
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        asyncio.run(backend.get_env_var("definitely_not_a_setting"))
+    assert excinfo.value.response.status_code == 404
+
+
+# ── Review fix round (same pass): value validation, warning robustness ──────
+
+
+def test_patch_settings_out_of_range_value_rejected_before_write(
+    tmp_path: Path, monkeypatch
+):
+    """Values violating the REAL Settings constraints 400 before the env write.
+
+    The env write precedes the hot-reload; without the applier's
+    Settings-field validation an out-of-range value persists and every
+    subsequent get_settings() raises, bricking the API across restarts.
+    llm_temperature (ge=0, le=2 on Settings, unconstrained on the update
+    model) exercises the applier gate; twitch_buffer_size (constraint
+    mirrored onto the update model) exercises the request-layer 422.
+    """
+    monkeypatch.setenv("LLM_TEMPERATURE", "1.0")
+    env_path = tmp_path / ".env"
+    env_path.write_text("LLM_TEMPERATURE=1.0\n", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"llm_temperature": 99}
+    )
+
+    assert response.status_code == 400
+    assert "llm_temperature" in response.json()["detail"]
+    assert "LLM_TEMPERATURE=1.0" in env_path.read_text(encoding="utf-8")
+
+    mirrored = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_buffer_size": 10}
+    )
+    assert mirrored.status_code == 422
+    assert "TWITCH_BUFFER_SIZE" not in env_path.read_text(encoding="utf-8")
+
+    # The surface still works afterwards: nothing was persisted or bricked.
+    follow_up = client.get("/settings/env", headers=_auth(token))
+    assert follow_up.status_code == 200
+
+
+def test_public_url_warning_survives_malformed_value(tmp_path: Path, monkeypatch):
+    """The advisory helper never crashes on pasted junk (urlsplit ValueError)."""
+    monkeypatch.setenv("NYMERIA_PUBLIC_URL", "")
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"nymeria_public_url": "https://[::1"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["warnings"], "expected an unparseable-URL warning"
+    assert "does not look like" in response.json()["warnings"][0]
+
+
+def test_public_url_warning_branches():
+    """Direct unit sweep of the wrapper heuristics, dot-boundary included."""
+    from nymeria.api.routers.settings import _public_url_warnings
+
+    assert _public_url_warnings("nymeria.example.com")  # no scheme
+    assert _public_url_warnings("ftp://nymeria.example.com")  # wrong scheme
+    urldefense = _public_url_warnings(
+        "https://urldefense.com/v3/__https://nymeria.example.com__;!!x"
+    )
+    assert urldefense and "urldefense" in urldefense[0]
+    assert _public_url_warnings("https://sub.urldefense.proofpoint.com/v2/x")
+    # Dot boundary: lookalike hosts must not trip the vendor patterns.
+    assert _public_url_warnings("https://mysafelinks.protection.outlook.com/") == []
+    # Userinfo trick: the wrapper host in the userinfo position is not the host.
+    assert (
+        _public_url_warnings("https://safelinks.protection.outlook.com@example.com/")
+        == []
+    )
+    assert _public_url_warnings("https://nymeria.example.com/") == []
+
+
+def test_get_env_var_rejects_model_methods(tmp_path: Path, monkeypatch):
+    """Attribute probing is out: /env get model_dump must not dump Settings.
+
+    hasattr answers True for BaseModel methods, and the bound-method repr
+    embeds the full Settings state, every secret unmasked, labeled
+    is_secret false. Only real model fields resolve.
+    """
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    for probe in ("model_dump", "dict", "json", "copy", "model_copy"):
+        response = client.get(f"/settings/env/{probe}", headers=_auth(token))
+        assert response.status_code == 404, probe
+
+
+def test_get_env_var_accepts_divergent_env_var_spelling(
+    tmp_path: Path, monkeypatch
+):
+    """/env get speaks env-var names too: AWS_ACCESS_KEY_ID resolves to the
+    s3_access_key_id field instead of answering Unknown (read/write symmetry
+    with /env set)."""
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get("/settings/env/AWS_ACCESS_KEY_ID", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "s3_access_key_id"
+    assert body["env_var"] == "AWS_ACCESS_KEY_ID"
+
+
+def test_command_backend_update_settings_rejects_bad_typed_value(
+    tmp_path: Path, monkeypatch
+):
+    """A wrong-typed value on the in-process path is a 400, not a stack trace."""
+    backend, _agent = _backend_client(tmp_path)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        asyncio.run(backend.update_settings(twitch_pulse_enabled="maybe"))
+
+    assert excinfo.value.response.status_code == 400
+    assert "twitch_pulse_enabled" in str(excinfo.value)
+
+
+def test_command_backend_clearing_public_url(tmp_path: Path, monkeypatch):
+    """nymeria_public_url is clearable: an explicit None writes an empty var.
+
+    Pins the _CLEARABLE_NULL_SETTINGS entry; without it a wrong public URL
+    could never be unset through the API.
+    """
+    monkeypatch.setenv("NYMERIA_PUBLIC_URL", "https://old.example.com")
+    env_path = tmp_path / ".env"
+    env_path.write_text("NYMERIA_PUBLIC_URL=https://old.example.com\n", encoding="utf-8")
+    backend, _agent = _backend_client(tmp_path)
+
+    result = asyncio.run(backend.update_settings(nymeria_public_url=None))
+
+    assert result["updated"] == ["nymeria_public_url"]
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "NYMERIA_PUBLIC_URL=https://old.example.com" not in env_text
