@@ -268,16 +268,26 @@ mcp:
     - "127.0.0.1:${MCP_PORT:-8001}:8001"
 ```
 
-Configure Claude Code to use Nymeria:
+Configure Claude Code to use Nymeria. In HTTP mode the MCP endpoint requires
+a bearer account token (mint one with
+`python run.py users issue-token <user> --label claude-code-mcp` and export
+it as `NYMERIA_MCP_TOKEN` in the client's environment):
 ```json
 {
   "mcpServers": {
     "nymeria": {
-      "url": "http://localhost:8001"
+      "type": "http",
+      "url": "http://localhost:8001/mcp",
+      "headers": {
+        "Authorization": "Bearer ${NYMERIA_MCP_TOKEN}"
+      }
     }
   }
 }
 ```
+The token's account is the identity every tool call acts as (admins keep
+per-call Act-As via `user_id`), so mint it for the account whose authority
+the client should hold.
 
 ## Scaling
 
