@@ -468,10 +468,8 @@ class ProviderSetupCommandsMixin:
             if server_envs
             else []
         )
-        lines.append(
-            "Choose: /provider setup "
-            + " | ".join(str(option["id"]) for option in options)
-        )
+        # Choose line derived centrally from the submit template (#158);
+        # the option rows carry the ids for formless callers.
         return tab, decided, lines
 
     def _setup_mode_tab(
@@ -508,10 +506,10 @@ class ProviderSetupCommandsMixin:
         return (
             tab,
             pending.api_mode is not None,
-            [
-                "Choose the OpenAI-compatible API mode.",
-                "Type: /provider setup mode responses|chat_completions",
-            ],
+            # No id-enumerating dispatch line: the central renderer derives
+            # "Choose: /provider setup mode <api_mode>" beside the option
+            # rows for formless callers (#158).
+            ["Choose the OpenAI-compatible API mode."],
         )
 
     def _setup_base_url_tab(
@@ -754,7 +752,7 @@ class ProviderSetupCommandsMixin:
                 " mean the provider will work afterwards."
             )
         lines.append("Nothing is saved until you apply.")
-        lines.append("Choose: /provider setup apply | notest | cancel")
+        # Choose line derived centrally from the submit template (#158).
         options = [
             form_option("apply", label="Test and apply", current=True),
             form_option("notest", label="Apply without testing"),

@@ -443,8 +443,9 @@ async def nymeria_command(
     and the per-surface output budget (long results truncate to the emulated
     surface's cap). One of: desktop, mobile, cli, discord, telegram, slack,
     whatsapp, teams, twitch, api, agent. Default api, the surface whose real
-    callers are formless (the Rich CLI and desktop render forms). Unknown
-    values return the backend's validation error.
+    callers are formless (only the Rich CLI renders forms today; the
+    dispatcher inlines the active picker's option rows for everyone else).
+    Unknown values return the backend's validation error.
     """
     if not command or not command.strip():
         return {"error": "command is required"}

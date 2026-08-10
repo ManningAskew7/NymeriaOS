@@ -1443,9 +1443,14 @@ def test_formless_model_list_caps_with_honest_remainder() -> None:
 
     result = _run_formless(api, "/provider cliproxy use")
 
-    assert "- claude-model-24" in result.markdown
-    assert "- claude-model-25" not in result.markdown
-    assert "and 5 more" in result.markdown
+    # The rows are the PICKER's options verbatim (#158 central renderer):
+    # the hoisted spec-default preselect takes the first visible slot, then
+    # models 00..23 fill the 25-row cap, and the remainder counts the six
+    # overflow models plus the custom entry the picker also offers.
+    assert "- claude-opus-5 (spec default) (selected)" in result.markdown
+    assert "- claude-model-23" in result.markdown
+    assert "- claude-model-24" not in result.markdown
+    assert "and 7 more" in result.markdown
 
 
 def test_bare_model_rerenders_list_instead_of_usage_error() -> None:
@@ -1462,6 +1467,26 @@ def test_bare_model_rerenders_list_instead_of_usage_error() -> None:
     assert result.success is True
     assert "Usage:" not in result.markdown
     assert "- claude-opus-5 (anthropic)" in result.markdown
+
+
+def test_formless_target_and_apply_steps_list_action_rows() -> None:
+    """The target and apply tabs ride the central renderer too: rows plus
+    the derived Choose line (their hand-written copies are gone)."""
+    api = FakeCliproxyApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [{"id": "claude-opus-5", "owned_by": "anthropic"}]
+
+    target = _run_formless(api, "/provider cliproxy claude")
+    assert "- use" in target.markdown
+    assert "- relogin" in target.markdown
+    assert "- cancel" in target.markdown
+    assert "Choose: /provider cliproxy <action>" in target.markdown
+
+    _run_formless(api, "/provider cliproxy use")
+    apply_step = _run_formless(api, "/provider cliproxy model claude-opus-5")
+    assert "- apply" in apply_step.markdown
+    assert "- cancel" in apply_step.markdown
+    assert "Choose: /provider cliproxy <action>" in apply_step.markdown
 
 
 def test_formless_degraded_list_names_spec_default_row() -> None:

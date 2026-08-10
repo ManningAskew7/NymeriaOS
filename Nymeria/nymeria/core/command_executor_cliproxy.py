@@ -49,40 +49,6 @@ from .command_forms import (
 
 logger = logging.getLogger(__name__)
 
-# Formless markdown cap, mirroring /model list's 25-row cap: past that the
-# list stops being a picker and starts being noise, and the "+N more" line
-# keeps the truncation honest.
-_MODEL_ROWS_CAP = 25
-
-
-def _render_model_rows(
-    model_options: list[dict[str, Any]],
-    preselect: str,
-    default_model: str | None,
-) -> list[str]:
-    """Markdown rows for the model step on formless surfaces.
-
-    The same partitioned order the form options use (target's models first),
-    one `- id (owner)` row each, the preselected id marked, capped with an
-    honest remainder line. Degrades to the spec default row when the proxy
-    list is unavailable, mirroring the form's degraded option.
-    """
-    entries = list(model_options)
-    if not entries and default_model:
-        entries = [{"id": default_model, "meta": "spec default"}]
-    rows: list[str] = []
-    for entry in entries[:_MODEL_ROWS_CAP]:
-        model_id = str(entry.get("id") or "")
-        if not model_id:
-            continue
-        meta = str(entry.get("meta") or "")
-        marker = " (selected)" if model_id == preselect else ""
-        rows.append(f"- {model_id}{f' ({meta})' if meta else ''}{marker}")
-    remainder = len(entries) - _MODEL_ROWS_CAP
-    if remainder > 0:
-        rows.append(f"- ... and {remainder} more (the note above has the count)")
-    return rows
-
 
 class CliproxyCommandsMixin:
     """CLIProxy command bodies mixed into ``_CommandExecutor``.
@@ -93,7 +59,6 @@ class CliproxyCommandsMixin:
 
     api: Any
     user_id: str
-    supports_forms: bool
 
     # ── CLIProxy subscription OAuth chain (backlog #110 phase 2) ──────────
     #
@@ -357,12 +322,10 @@ class CliproxyCommandsMixin:
             pending = updated
 
         tab = self._cliproxy_target_tab(pending, spec)
-        lines.append(
-            "Choose: /provider cliproxy "
-            + " | ".join(
-                str(option["id"]) for option in tab["fields"][0]["options"]
-            )
-        )
+        # No hand-written Choose line: for formless callers the dispatcher
+        # derives "Choose: /provider cliproxy <action>" from this tab's own
+        # submit template next to the option rows (#158), and form-capable
+        # callers act through the picker itself.
         return chain_form_output(
             f"CLIProxy: {spec.label}",
             [tab],
@@ -1015,19 +978,14 @@ class CliproxyCommandsMixin:
         tab = model_pick_tab(
             options, preselect, insert_meta, "provider cliproxy model {model}"
         )
-        guidance = [str(pending.models_note or "")]
-        if not self.supports_forms:
-            # Formless callers (MCP, api, bots) never receive the form
-            # payload, so the ids must ride the markdown or the caller is
-            # left guessing (live 2026-08-10: the note counted 12 models
-            # while the body named none). Form-capable clients keep the
-            # picker without a duplicate list.
-            guidance.extend(
-                _render_model_rows(
-                    pending.model_options or [], preselect, spec.default_model
-                )
-            )
-        guidance.append("Choose: /provider cliproxy model <model-id>|custom")
+        # Formless callers get the ids from the dispatcher's central option
+        # renderer (#158, form_options_markdown at the form-strip site),
+        # which reads this tab's real options: no handler-side list. The
+        # placeholder-shaped Choose line stays: it advertises |custom.
+        guidance = [
+            str(pending.models_note or ""),
+            "Choose: /provider cliproxy model <model-id>|custom",
+        ]
         return tab, pending.model is not None, guidance
 
     def _cliproxy_apply_tab(
@@ -1087,7 +1045,7 @@ class CliproxyCommandsMixin:
                 " route applies now but may not serve until the backoff"
                 " clears (it does so on its own)."
             )
-        lines.append("Choose: /provider cliproxy apply | cancel")
+        # Choose line derived centrally from the submit template (#158).
         options = [
             form_option("apply", label="Apply the route", current=True),
             form_option("cancel", label="Cancel"),

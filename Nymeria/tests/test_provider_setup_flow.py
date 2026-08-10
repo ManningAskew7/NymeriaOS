@@ -225,7 +225,10 @@ def test_setup_full_chain_applies_one_atomic_patch() -> None:
     step = _run(api, "/provider setup model gpt-5.5")
     form = _form(step)
     assert "Review the pending provider change" in step.markdown
-    assert "Choose: /provider setup apply | notest | cancel" in step.markdown
+    # The hand-written "Choose: apply | notest | cancel" line is gone: the
+    # dispatcher derives it for formless callers (#158), and form-capable
+    # callers act through the picker.
+    assert "Nothing is saved until you apply." in step.markdown
     assert form["footer_hint"] == "←→ step · Enter apply · Esc close"
     assert [t["label"] for t in form["tabs"]] == [
         "API key",
@@ -368,6 +371,56 @@ def test_setup_apply_test_failure_writes_nothing_and_offers_retry() -> None:
     final = _run(api, "/provider setup apply notest")
     assert final.success is True
     assert len(_updates(api)) == 1
+
+
+def _run_formless(api: FakeSetupApi, command: str, *, is_admin: bool = True):
+    """The same chain driven by a formless caller (MCP, bots, plain API)."""
+    return run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="api",
+                is_admin=is_admin,
+            ),
+            command,
+            api=api,
+        )
+    )
+
+
+def test_formless_failed_test_lists_next_actions() -> None:
+    """A formless caller sees the four retry actions the picker offers plus
+    the dispatch syntax; the tokens used to be reachable only by knowing
+    them (the #158 gap)."""
+    api = FakeSetupApi()
+    api.provider_test_result = {"ok": False, "message": "401 unauthorized"}
+    _run_formless(api, "/provider setup anthropic")
+    _run_formless(api, "/provider setup key sk-ant-bad")
+    _run_formless(api, "/provider setup model claude-fable-5")
+
+    result = _run_formless(api, "/provider setup apply")
+
+    assert "FAILED" in result.markdown
+    assert (result.data or {}).get("form") is None
+    for row in ("- apply", "- notest", "- replace", "- cancel"):
+        assert row in result.markdown
+    assert "Choose: /provider setup <action>" in result.markdown
+
+
+def test_formless_setup_model_step_inlines_ids() -> None:
+    """The setup rail's model step had the same gap the cliproxy model step
+    had: the note counted models while the body named none."""
+    api = FakeSetupApi()
+    api.models = [{"id": "claude-fable-5"}, {"id": "claude-opus-4-8"}]
+    _run_formless(api, "/provider setup anthropic")
+
+    result = _run_formless(api, "/provider setup key sk-ant-secret-1")
+
+    assert (result.data or {}).get("form") is None
+    assert "- claude-fable-5" in result.markdown
+    assert "- claude-opus-4-8" in result.markdown
 
 
 def test_setup_clear_key_patches_concrete_settings_fields() -> None:
