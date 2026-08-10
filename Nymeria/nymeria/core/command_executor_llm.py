@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -48,6 +49,24 @@ from .command_forms import (
 from .command_params import BoundArgs
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_hold_expiry(value: Any) -> datetime | None:
+    """Aware-UTC expiry from a thread-config payload, or None if unreadable.
+
+    Both command client shapes serialize through ``model_dump(mode="json")``,
+    so the reachable input is an ISO-8601 string with an offset (the model's
+    own validator guarantees awareness); the tz guard is one line of
+    defence against an unvalidated payload, read as UTC to match that
+    validator.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 # ── Provider catalog (ported from the retired CLI provider command) ──────────
@@ -209,6 +228,100 @@ class LLMCommandsMixin:
             for t in threads
         )
 
+    # ── Active fallback hold (shared display path, #159) ──────────────────
+
+    @staticmethod
+    def _hold_from_thread_config(thread_config: Any) -> dict[str, Any] | None:
+        """The active, unexpired fallback hold from a thread-config payload.
+
+        Reads the ``GET /threads/{id}/config`` dict shape. Eviction of an
+        expired hold is lazy (LLM-build time, idle threads only), so the
+        expiry is re-checked here rather than trusted: a stale record must
+        not claim an active hold. An unreadable expiry reads as expired for
+        the same reason.
+        """
+        hold = (
+            thread_config.get("active_llm_fallback")
+            if isinstance(thread_config, dict)
+            else None
+        )
+        if not isinstance(hold, dict):
+            return None
+        expires = hold.get("expires_at")
+        if expires is None:
+            return hold  # Permanent hold: only /fallback revert ends it.
+        expiry = _parse_hold_expiry(expires)
+        if expiry is None or expiry <= datetime.now(timezone.utc):
+            return None
+        return hold
+
+    def _hold_summary(
+        self, hold: Mapping[str, Any], *, include_origin: bool = False
+    ) -> str:
+        """The one hold line every command text surface shares (#159).
+
+        ``/status``, bare ``/fallback``, and ``/fallback status`` all render
+        the hold through this helper (differing only in the label in front),
+        so the copy cannot drift between surfaces. The revert pointer is
+        actor-aware: ``/fallback revert`` is ``agent_allowed=False`` (the
+        agent must not resolve its own model-swap consent), so the agent
+        actor is told the revert is the user's, not nudged into a command
+        it is hard-refused from.
+        """
+        provider = str(hold.get("provider") or "?")
+        model = str(hold.get("model") or "?")
+        origin = ""
+        if include_origin:
+            origin = (
+                f" (from {hold.get('source_model') or '?'}; "
+                f"reason: {hold.get('reason') or '?'})"
+            )
+        expires = hold.get("expires_at")
+        if expires is None:
+            when = "permanent"
+        else:
+            expiry = _parse_hold_expiry(expires)
+            # Callers filter through _hold_from_thread_config, which drops
+            # unparseable expiries; the fallback arm is defence for a
+            # future unfiltered caller, not a reachable state.
+            when = (
+                "until "
+                + expiry.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                + " UTC"
+                if expiry is not None
+                else "expiry unknown"
+            )
+        revert = (
+            "(user can revert with /fallback revert)"
+            if getattr(self, "actor", "user") == "agent"
+            else "(revert: /fallback revert)"
+        )
+        return f"{provider}/{model}{origin} {when} {revert}"
+
+    async def _thread_config_for_display(self) -> dict[str, Any] | None:
+        """The active thread's config payload for read-only rendering.
+
+        ``get_thread_config`` is the same source the GUI chip reads and is
+        implemented on BOTH command client shapes; the in-process
+        thread-config manager is absent in the HTTP shape, which used to
+        silently drop the hold section. Access enforcement lives in the
+        client (404/refusal for a foreign thread), so any failure renders
+        as "nothing to show" rather than an error or a cross-thread leak.
+        """
+        if not self.thread_id:
+            return None
+        try:
+            thread_config = await self.api.get_thread_config(self.thread_id)
+        except Exception:  # noqa: BLE001 - any refusal means nothing to show.
+            return None
+        return thread_config if isinstance(thread_config, dict) else None
+
+    async def _active_hold_for_display(self) -> dict[str, Any] | None:
+        """Access-checked active hold for command rendering, or None."""
+        return self._hold_from_thread_config(
+            await self._thread_config_for_display()
+        )
+
     async def _cmd_fallback(self, bound: BoundArgs) -> str:
         """Bare ``/fallback``: the chain listing, as it has always been.
 
@@ -225,6 +338,14 @@ class LLMCommandsMixin:
         primary = str(settings.get("llm_model", "") or "").strip() or "Unknown"
         provider = str(settings.get("llm_provider", "") or "").strip()
         lines = [f"Primary: {primary}" + (f" ({provider})" if provider else "")]
+        hold = await self._active_hold_for_display()
+        if hold is not None:
+            # Above the chain: while a hold runs, the chain listing alone
+            # reads as "you are on the primary", which is exactly the
+            # dishonesty #159 was filed about.
+            lines.append(
+                "Active hold (this thread): " + self._hold_summary(hold)
+            )
         if chain:
             lines += [f"  {i}. {model}" for i, model in enumerate(chain, start=1)]
         else:
@@ -284,28 +405,25 @@ class LLMCommandsMixin:
             f"{int(settings.get('llm_fallback_prompt_timeout_seconds') or 0)}s",
         ]
         if self.thread_id and await self._fallback_thread_allowed():
-            tc = self._thread_config_manager_or_none()
-            config = tc.get_config(self.thread_id) if tc else None
-            active = getattr(config, "active_llm_fallback", None)
-            llm = getattr(config, "llm_config", None) if config else None
+            # Read via get_thread_config (both command client shapes), not
+            # the in-process manager: the HTTP shape has no manager and used
+            # to silently drop this whole section.
+            thread_config = await self._thread_config_for_display()
+            llm = (thread_config or {}).get("llm_config") or {}
             overrides = []
-            if getattr(llm, "fallback_switch_mode", None):
-                overrides.append(f"switch mode={llm.fallback_switch_mode}")
-            if getattr(llm, "refusal_swap_mode", None):
-                overrides.append(f"refusal swap={llm.refusal_swap_mode}")
+            if llm.get("fallback_switch_mode"):
+                overrides.append(f"switch mode={llm['fallback_switch_mode']}")
+            if llm.get("refusal_swap_mode"):
+                overrides.append(f"refusal swap={llm['refusal_swap_mode']}")
             if overrides:
                 lines.append("Thread overrides: " + ", ".join(overrides))
-            if active is None:
+            hold = self._hold_from_thread_config(thread_config)
+            if hold is None:
                 lines.append("This thread: no fallback hold active.")
             else:
-                if active.expires_at is None:
-                    until = "PERMANENT (until /fallback revert)"
-                else:
-                    until = f"until {active.expires_at.isoformat()}"
                 lines.append(
-                    f"This thread: on {active.provider}/{active.model} "
-                    f"(from {active.source_model or '?'}; "
-                    f"reason: {active.reason or '?'}) {until}."
+                    "This thread: on "
+                    + self._hold_summary(hold, include_origin=True)
                 )
         return "Fallback status\n" + "\n".join(lines)
 

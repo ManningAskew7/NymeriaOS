@@ -43,9 +43,10 @@ template, which wins over the form-level one; the form-level template stays
 required as the default for tabs without their own (and the action an older
 client that predates tab submits will apply). Cancel is a no-op. The
 markdown fallback is ALWAYS present on the result, and form payloads ship
-only to callers that declared ``supports_forms`` on the request (the
-dispatcher strips them for everyone else), so form-less frontends need
-zero changes.
+only to callers that declared ``supports_forms`` on the request: the
+dispatcher strips them for everyone else, first projecting the ACTIVE
+tab's choices into the markdown via :func:`form_options_markdown` (#158),
+so form-less frontends need zero changes and still see every option.
 
 A ``text`` field is a free-typed value substituted like any other field
 (``secret: true`` asks the client to mask the display and keep the value
@@ -280,6 +281,139 @@ def command_data(
     if state:
         data["state"] = state
     return data or None
+
+
+# -- formless option-list rendering (#158) ---------------------------------
+
+# Mirrors /model list's 25-row cap: past that the list stops being a picker
+# and starts being noise, and the honest remainder line keeps the truncation
+# visible. Rows are also character-bounded (`_META_CLAMP`), so bot-sized
+# output budgets stay safe by construction.
+OPTION_ROWS_CAP = 25
+_META_CLAMP = 60
+
+
+def _template_display(template: str) -> str:
+    """A submit template rendered for humans: ``{key}`` becomes ``<key>``."""
+
+    return "/" + template.replace("{", "<").replace("}", ">")
+
+
+def _template_root(template: str) -> str:
+    """The literal dispatch root of a submit template (placeholders cut)."""
+
+    root = template.split("{", 1)[0].strip()
+    return f"/{root}" if root else ""
+
+
+def form_options_markdown(form: Any, body: str) -> list[str]:
+    """Markdown lines carrying the ACTIVE tab's choices to formless callers.
+
+    The dispatcher appends these once, at the form-strip site, making option
+    lists a dispatch-level guarantee instead of a per-handler duty: a
+    picker's choices exist only in the form payload, and every surface
+    except the rich CLI is formless today. Scope is deliberately the active
+    tab only (chained rails re-render with the next tab active, so each
+    step's choices arrive when its step does).
+
+    Radio/checkbox options render as ``- id (label) (meta) (selected)`` rows
+    (label only when it differs from the id; meta clamped so a prose meta
+    cannot balloon a row), capped with an honest remainder. A fieldless
+    ACTION tab (#139) renders its description (when present) plus dispatch
+    command. Text and search fields render nothing: values must never be
+    echoed (secrets) and the handler's own guidance carries the typing
+    syntax. The derived ``Choose:``/``Run:`` line is suppressed only when
+    ``body`` already shows the dispatch root in ARGUMENT shape (the root
+    followed by a ``<`` placeholder, e.g. "set with: /model <name>"); a
+    body that merely mentions the root as a verb list ("Manage with:
+    /provider [setup|...]") does not count, because it never tells the
+    caller how to act on the ids (measured live on bare /provider).
+    """
+
+    if not isinstance(form, dict):
+        return []
+    tabs = [tab for tab in (form.get("tabs") or []) if isinstance(tab, dict)]
+    if not tabs:
+        return []
+    active = next((tab for tab in tabs if tab.get("active")), tabs[0])
+    fields = [
+        field_def
+        for field_def in (active.get("fields") or [])
+        if isinstance(field_def, dict)
+    ]
+
+    rows: list[str] = []
+    for field_def in fields:
+        if field_def.get("kind") not in ("radio", "checkbox"):
+            continue
+        options = [
+            option
+            for option in (field_def.get("options") or [])
+            if isinstance(option, dict) and str(option.get("id") or "")
+        ]
+        for option in options[:OPTION_ROWS_CAP]:
+            option_id = str(option.get("id") or "")
+            label = str(option.get("label") or "")
+            meta = str(option.get("meta") or "")
+            if len(meta) > _META_CLAMP:
+                # Provider metas are full sentences (notes_for_user); rows
+                # are an index, not a card, and unclamped metas measured a
+                # 10x blowup on bare /provider (12k bot budgets).
+                meta = meta[: _META_CLAMP - 3].rstrip() + "..."
+            parts = [f"- {option_id}"]
+            if label and label != option_id:
+                parts.append(f"({label})")
+            if meta:
+                parts.append(f"({meta})")
+            if option.get("current"):
+                parts.append("(selected)")
+            rows.append(" ".join(parts))
+        remainder = len(options) - OPTION_ROWS_CAP
+        if remainder > 0:
+            rows.append(f"- ... and {remainder} more")
+
+    action_line = ""
+    if not fields:
+        # Fieldless ACTION tab (#139): the description is the renderable
+        # body and the placeholder-free submit dispatches as-is.
+        action_line = str(active.get("description") or "")
+
+    tab_submit = active.get("submit") if isinstance(active.get("submit"), dict) else {}
+    form_submit = form.get("submit") if isinstance(form.get("submit"), dict) else {}
+    template = str(
+        (tab_submit or {}).get("command") or (form_submit or {}).get("command") or ""
+    )
+    if fields and not rows:
+        # A text/search-only step (or an option field with nothing to list)
+        # renders nothing here: the handler's own guidance carries the
+        # typing syntax, and a bare dispatch line without a value list
+        # would only mislead. A FIELDLESS action tab falls through: its
+        # Run line must survive even without a description.
+        return []
+    dispatch_line = ""
+    root = _template_root(template)
+    if template and root:
+        # Suppressed only when the body shows the root in ARGUMENT shape
+        # (root followed by a placeholder), not on a bare mention: bare
+        # /provider's "Manage with: /provider [setup|...]" names the verb
+        # list, never how to act on the ids below it.
+        named_with_args = f"{root} <" in (body or "") or f"{root}<" in (body or "")
+        if not named_with_args:
+            verb = "Run" if not fields else "Choose"
+            dispatch_line = f"{verb}: {_template_display(template)}"
+    if not rows and not action_line and not dispatch_line:
+        return []
+
+    lines: list[str] = []
+    if rows:
+        label = str(active.get("label") or "").strip()
+        lines.append(f"Options ({label}):" if label else "Options:")
+        lines.extend(rows)
+    elif action_line:
+        lines.append(action_line)
+    if dispatch_line:
+        lines.append(dispatch_line)
+    return lines
 
 
 # -- the chained-command step rail (shared by /provider setup + cliproxy) --

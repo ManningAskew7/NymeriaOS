@@ -16,16 +16,20 @@ from nymeria.api.routers.commands import create_commands_router
 from nymeria.core.accounts import AuthenticatedUser
 from nymeria.core.command_forms import (
     CommandOutput,
+    checkbox_field,
     command_data,
     command_error,
     command_info,
     command_success,
     command_warning,
     form_option,
+    form_options_markdown,
     form_payload,
     form_tab,
     radio_field,
     render_outcome,
+    search_field,
+    text_field,
 )
 from nymeria.core.command_service import (
     CommandBackendClient,
@@ -670,6 +674,237 @@ def test_status_degrades_when_parallel_fetch_returns_base_exception() -> None:
     assert result.success is True
     assert "### Nymeria Status" in result.markdown
     assert "1 pending / 1 in progress" in result.markdown
+
+
+def _hold_payload(
+    *,
+    expires_in: timedelta | None = timedelta(hours=2),
+    reason: str = "auth_error",
+) -> dict[str, Any]:
+    """An active_llm_fallback dict in the GET /threads/{id}/config shape."""
+    expires_at = (
+        (datetime.now(timezone.utc) + expires_in).isoformat()
+        if expires_in is not None
+        else None
+    )
+    return {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5-20251001",
+        "source_provider": "anthropic",
+        "source_model": "claude-opus-5",
+        "expires_at": expires_at,
+        "reason": reason,
+    }
+
+
+def _status_ctx() -> CommandContext:
+    return CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+
+def test_status_shows_fallback_hold_and_marks_it_active() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {"active_llm_fallback": _hold_payload()}
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    assert result.success is True
+    assert "global: gpt-test | openai | thinking: off" in result.markdown
+    assert (
+        "fallback hold (active): anthropic/claude-haiku-4-5-20251001 until"
+        in result.markdown
+    )
+    assert "(revert: /fallback revert)" in result.markdown
+
+
+def test_status_marks_thread_override_active_without_hold() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {"llm_config": {"model": "kimi-k2", "provider": "moonshotai"}}
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    assert "global: gpt-test | openai" in result.markdown
+    assert "thread override (active): kimi-k2 (moonshotai)" in result.markdown
+    assert "fallback hold" not in result.markdown
+
+
+def test_status_shows_provider_only_thread_override() -> None:
+    """/provider switch <p> thread writes provider with NO model; /status
+    must not read that as "no override"."""
+    api = FakeCommandApi()
+    api.thread_config = {"llm_config": {"provider": "anthropic"}}
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    assert "global: gpt-test | openai" in result.markdown
+    assert "thread override (active): provider anthropic" in result.markdown
+
+
+def test_status_hides_override_equal_to_global() -> None:
+    """A pin equal to the global value changes nothing: single-line block,
+    matching /context's precedent."""
+    api = FakeCommandApi()
+    api.thread_config = {"llm_config": {"model": "gpt-test", "provider": "openai"}}
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    assert "  gpt-test | openai | thinking: off" in result.markdown
+    assert "thread override" not in result.markdown
+    assert "global:" not in result.markdown
+    assert "(active)" not in result.markdown
+
+
+def test_hold_line_gives_agent_actor_no_refused_command() -> None:
+    """/fallback revert is agent_allowed=False, so the agent's hold line
+    must not nudge it into a guaranteed refusal."""
+    api = FakeCommandApi()
+    api.thread_config = {"active_llm_fallback": _hold_payload()}
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="agent",
+                surface="agent",
+            ),
+            "/status",
+            api=api,
+        )
+    )
+
+    assert "fallback hold (active):" in result.markdown
+    assert "(user can revert with /fallback revert)" in result.markdown
+    assert "(revert: /fallback revert)" not in result.markdown
+
+
+class _RaisingThreadConfigApi(FakeCommandApi):
+    async def get_thread_config(
+        self, thread_id: str, user_id: str | None = None
+    ) -> dict[str, Any]:
+        raise RuntimeError("thread config unavailable")
+
+
+def test_status_and_fallback_degrade_when_thread_config_unreachable() -> None:
+    """An unreachable (or refused: foreign thread) config read renders as
+    "no hold", never an error and never leaked data."""
+    api = _RaisingThreadConfigApi()
+
+    status = run(CommandService().execute(_status_ctx(), "/status", api=api))
+    fallback = run(CommandService().execute(_status_ctx(), "/fallback", api=api))
+
+    assert status.success is True
+    assert "fallback hold" not in status.markdown
+    assert fallback.success is True
+    assert "Active hold" not in fallback.markdown
+
+
+def test_status_hold_outranks_thread_override() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {
+        "llm_config": {"model": "kimi-k2", "provider": "moonshotai"},
+        "active_llm_fallback": _hold_payload(),
+    }
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    assert "global: gpt-test | openai" in result.markdown
+    assert "thread override: kimi-k2 (moonshotai)" in result.markdown
+    assert "fallback hold (active):" in result.markdown
+    # Exactly one line carries the marker: hold > override > global.
+    assert result.markdown.count("(active)") == 1
+
+
+def test_status_without_override_or_hold_keeps_single_model_line() -> None:
+    result = run(
+        CommandService().execute(_status_ctx(), "/status", api=FakeCommandApi())
+    )
+
+    assert "  gpt-test | openai | thinking: off" in result.markdown
+    assert "global:" not in result.markdown
+    assert "(active)" not in result.markdown
+    assert "fallback hold" not in result.markdown
+
+
+def test_status_ignores_expired_hold() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {
+        "active_llm_fallback": _hold_payload(expires_in=-timedelta(minutes=5))
+    }
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    assert "fallback hold" not in result.markdown
+    assert "(active)" not in result.markdown
+
+
+def test_status_permanent_hold_renders_permanent() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {"active_llm_fallback": _hold_payload(expires_in=None)}
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    assert (
+        "fallback hold (active): anthropic/claude-haiku-4-5-20251001 "
+        "permanent (revert: /fallback revert)" in result.markdown
+    )
+    assert "until" not in result.markdown
+
+
+def test_fallback_list_shows_active_hold_line() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {"active_llm_fallback": _hold_payload()}
+
+    result = run(CommandService().execute(_status_ctx(), "/fallback", api=api))
+
+    assert result.success is True
+    assert (
+        "Active hold (this thread): anthropic/claude-haiku-4-5-20251001 until"
+        in result.markdown
+    )
+    assert "(revert: /fallback revert)" in result.markdown
+
+
+def test_fallback_list_without_thread_has_no_hold_line() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {"active_llm_fallback": _hold_payload()}
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice", thread_id=None, actor="user", surface="cli"
+            ),
+            "/fallback",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    assert "Active hold" not in result.markdown
+
+
+def test_fallback_status_renders_hold_without_inprocess_manager() -> None:
+    """The HTTP command shape has no thread-config manager; the hold section
+    must come from get_thread_config (the same source the GUI chip reads)
+    instead of silently vanishing."""
+    api = FakeCommandApi()
+    api.thread_config = {"active_llm_fallback": _hold_payload()}
+
+    result = run(
+        CommandService().execute(_status_ctx(), "/fallback status", api=api)
+    )
+
+    assert result.success is True
+    assert (
+        "This thread: on anthropic/claude-haiku-4-5-20251001 "
+        "(from claude-opus-5; reason: auth_error) until" in result.markdown
+    )
+    assert "(revert: /fallback revert)" in result.markdown
 
 
 def test_context_degrades_when_parallel_fetch_returns_base_exception() -> None:
@@ -4334,6 +4569,236 @@ def test_form_payload_stripped_without_supports_forms() -> None:
     assert result.success is True
     assert "gpt-test" in result.markdown  # fallback intact
     assert result.data is None
+
+
+def test_formless_model_command_inlines_option_rows() -> None:
+    """Bare /model for a formless caller lists the picker's models in the
+    markdown (#158): the choices used to exist only in the stripped form."""
+    result = run(
+        CommandService().execute(
+            _no_forms_ctx(), "/model", api=_ModelCatalogCommandApi()
+        )
+    )
+
+    assert result.data is None
+    assert "Options (" in result.markdown
+    assert "- gpt-test" in result.markdown
+    assert "(selected)" in result.markdown
+    assert "- gpt-next" in result.markdown
+    # "set with: /model ..." already names the dispatch root, so the
+    # renderer's own Choose line is suppressed.
+    assert "Choose: /model" not in result.markdown
+
+
+def test_form_surface_model_command_keeps_markdown_row_free() -> None:
+    """Form-capable callers keep the picker and never get a duplicate
+    inline list: the renderer keys on the exact strip condition."""
+    result = run(
+        CommandService().execute(_cli_ctx(), "/model", api=_ModelCatalogCommandApi())
+    )
+
+    assert (result.data or {}).get("form") is not None
+    assert "Options (" not in result.markdown
+    assert "- gpt-next" not in result.markdown
+
+
+# ── form_options_markdown unit coverage (#158) ─────────────────────────────
+
+
+def _picker_form(
+    options: list[dict[str, Any]],
+    *,
+    tab_submit: str = "",
+    form_submit: str = "pick {value}",
+    label: str = "Pick",
+) -> dict[str, Any]:
+    return form_payload(
+        "Synthetic",
+        [form_tab(label, [radio_field("value", options)], submit_command=tab_submit)],
+        submit_command=form_submit,
+    )
+
+
+def test_form_options_markdown_renders_rows_and_dispatch_line() -> None:
+    form = _picker_form(
+        [
+            form_option("a", "Alpha", meta="fast", current=True),
+            form_option("b"),
+        ]
+    )
+
+    lines = form_options_markdown(form, "body without the root")
+
+    assert lines[0] == "Options (Pick):"
+    assert "- a (Alpha) (fast) (selected)" in lines
+    assert "- b" in lines
+    assert lines[-1] == "Choose: /pick <value>"
+
+
+def test_form_options_markdown_suppresses_dispatch_line_named_in_body() -> None:
+    form = _picker_form([form_option("a")])
+
+    lines = form_options_markdown(form, "set with: /pick <value>")
+
+    assert lines == ["Options (Pick):", "- a"]
+
+
+def test_form_options_markdown_tab_submit_wins_over_form_submit() -> None:
+    form = _picker_form(
+        [form_option("a")], tab_submit="pick special {value}"
+    )
+
+    lines = form_options_markdown(form, "")
+
+    assert lines[-1] == "Choose: /pick special <value>"
+
+
+def test_form_options_markdown_caps_with_honest_remainder() -> None:
+    form = _picker_form([form_option(f"m{i:02d}") for i in range(30)])
+
+    lines = form_options_markdown(form, "/pick already named")
+
+    rows = [line for line in lines if line.startswith("- ")]
+    assert len(rows) == 26  # 25 capped rows plus the remainder line
+    assert "- m24" in rows
+    assert "- m25" not in rows
+    assert rows[-1] == "- ... and 5 more"
+
+
+def test_form_options_markdown_renders_only_the_active_tab() -> None:
+    form = form_payload(
+        "Synthetic",
+        [
+            form_tab("First", [radio_field("value", [form_option("first-a")])]),
+            form_tab(
+                "Second",
+                [radio_field("value", [form_option("second-a")])],
+                active=True,
+            ),
+        ],
+        submit_command="pick {value}",
+    )
+
+    lines = form_options_markdown(form, "/pick already named")
+
+    assert lines[0] == "Options (Second):"
+    assert "- second-a" in lines
+    assert all("first-a" not in line for line in lines)
+
+
+def test_form_options_markdown_action_tab_renders_description_and_run() -> None:
+    form = form_payload(
+        "Synthetic",
+        [
+            form_tab(
+                "Go",
+                [],
+                submit_command="pick go",
+                description="Runs the thing.",
+            )
+        ],
+        submit_command="pick go",
+    )
+
+    lines = form_options_markdown(form, "no root here")
+
+    assert lines == ["Runs the thing.", "Run: /pick go"]
+
+
+def test_form_options_markdown_ignores_text_and_search_fields() -> None:
+    form = form_payload(
+        "Synthetic",
+        [
+            form_tab(
+                "Key",
+                [
+                    search_field("filter", placeholder="type to filter"),
+                    text_field("key", label="API key", secret=True),
+                ],
+                submit_command="setup key {key}",
+            )
+        ],
+        submit_command="setup key {key}",
+    )
+
+    assert form_options_markdown(form, "") == []
+
+
+def test_form_options_markdown_renders_checkbox_options() -> None:
+    form = form_payload(
+        "Synthetic",
+        [form_tab("Multi", [checkbox_field("items", [form_option("x")])])],
+        submit_command="pick {items}",
+    )
+
+    lines = form_options_markdown(form, "")
+
+    assert "- x" in lines
+    assert lines[-1] == "Choose: /pick <items>"
+
+
+def test_form_options_markdown_tolerates_malformed_payloads() -> None:
+    assert form_options_markdown(None, "body") == []
+    assert form_options_markdown({"tabs": []}, "body") == []
+    assert form_options_markdown({"tabs": [{"fields": "bogus"}]}, "body") == []
+
+
+def test_form_options_markdown_verb_list_body_keeps_dispatch_line() -> None:
+    """A body that mentions the root as a VERB LIST is not "already named":
+    suppression requires the root in argument shape (root + placeholder)."""
+    form = _picker_form([form_option("a")])
+
+    lines = form_options_markdown(
+        form, "Manage with: /pick [list|set|switch|test]"
+    )
+
+    assert lines[-1] == "Choose: /pick <value>"
+
+
+def test_form_options_markdown_clamps_prose_meta() -> None:
+    """A sentence-length meta (provider notes) cannot balloon a row."""
+    form = _picker_form([form_option("a", meta="x" * 200)])
+
+    lines = form_options_markdown(form, "set with: /pick <value>")
+
+    (row,) = [line for line in lines if line.startswith("- a")]
+    assert len(row) < 80
+    assert row.endswith("...)")
+
+
+def test_form_options_markdown_fieldless_tab_without_description() -> None:
+    """An action tab with no description still gets its Run line."""
+    form = form_payload(
+        "Synthetic",
+        [form_tab("Go", [], submit_command="do it")],
+        submit_command="do it",
+    )
+
+    assert form_options_markdown(form, "no root here") == ["Run: /do it"]
+
+
+def test_formless_provider_root_lists_ids_and_dispatch_line() -> None:
+    """Bare /provider's "Manage with:" line names subcommands, not the
+    picker's dispatch, so the derived Choose line must survive it."""
+    result = run(
+        CommandService().execute(_no_forms_ctx(), "/provider", api=FakeCommandApi())
+    )
+
+    assert result.success is True
+    assert "Options (Providers):" in result.markdown
+    assert "- openai" in result.markdown
+    assert "Choose: /provider <provider>" in result.markdown
+
+
+def test_formless_think_lists_levels_without_duplicate_dispatch() -> None:
+    result = run(
+        CommandService().execute(_status_ctx(), "/think", api=FakeCommandApi())
+    )
+
+    assert result.success is True
+    assert "- xhigh" in result.markdown
+    # "Set with: /think <...>" is argument-shaped, so no derived line.
+    assert "Choose: /think" not in result.markdown
 
 
 def _register_formstate_synthetic(

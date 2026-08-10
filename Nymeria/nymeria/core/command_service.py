@@ -39,6 +39,7 @@ from .command_forms import (
     command_info,
     command_success,
     command_warning,
+    form_options_markdown,
     render_outcome,
 )
 from .command_form_generation import generate_param_form
@@ -596,6 +597,30 @@ def _dict_result(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     return {str(key): item for key, item in value.items()}
+
+
+def _thread_override_text(
+    llm_cfg: dict[str, Any], settings: dict[str, Any]
+) -> str | None:
+    """The one spelling of a thread LLM override for /status and /context.
+
+    Renders only the axes that DIFFER from the global settings (a pin equal
+    to the global value changes nothing; /context set that precedent), and
+    covers the provider-only override /provider switch <p> thread writes
+    (model stays None): a thread can run a different provider with the
+    same model id.
+    """
+    model = str(llm_cfg.get("model") or "").strip()
+    provider = str(llm_cfg.get("provider") or "").strip()
+    if model and model == str(settings.get("llm_model") or ""):
+        model = ""
+    if provider and provider == str(settings.get("llm_provider") or ""):
+        provider = ""
+    if model:
+        return f"thread override: {model}" + (f" ({provider})" if provider else "")
+    if provider:
+        return f"thread override: provider {provider}"
+    return None
 
 
 def _optional_dict_result(value: Any) -> dict[str, Any] | None:
@@ -3257,7 +3282,6 @@ class CommandService:
             is_admin=ctx.is_admin,
             service=self,
             surface=ctx.effective_surface,
-            supports_forms=ctx.supports_forms,
         )
 
         method_name = "_cmd_" + "_".join(definition.path)
@@ -3358,16 +3382,22 @@ class CommandService:
             if data and "form" in data and not ctx.supports_forms:
                 # Form payloads ship only to clients that declared they can
                 # render them (the measured bare-/provider form is ~20KB, and
-                # every other surface discards it unread). Safe by contract:
-                # the markdown fallback must carry everything the form does.
-                # chain_form_output composes notes into markdown by
-                # construction, and OPTION LISTS are the handler's duty: a
-                # picker's choices exist only in the form payload, so a
-                # handler that renders one must inline the list for formless
-                # callers (executor.supports_forms; the cliproxy model step
-                # is the precedent after the 2026-08-10 gap). State hints
-                # stay: the CLI applies them even where forms are off, and
-                # they are small.
+                # every other surface discards it unread). Safe by
+                # construction: chain_form_output composes notes into
+                # markdown, and OPTION LISTS are GUARANTEED here (#158): the
+                # active tab's choices are appended to the body before the
+                # payload is stripped, so a picker's choices reach every
+                # formless caller without any handler inlining its own list
+                # (the per-handler duty this replaces went unmet everywhere
+                # but the cliproxy model step). Appending BEFORE the
+                # per-surface _truncate keeps bot budgets authoritative.
+                # State hints stay: the CLI applies them even where forms
+                # are off, and they are small.
+                body = str(raw_output or "")
+                option_lines = form_options_markdown(data.get("form"), body)
+                if option_lines:
+                    joined = "\n".join(option_lines)
+                    raw_output = f"{body.rstrip()}\n\n{joined}" if body.strip() else joined
                 data = {k: v for k, v in data.items() if k != "form"} or None
             success, level, markdown = _render_result_markdown(raw_output, level)
             return _with_hook_notes(CommandResult(
@@ -3836,19 +3866,16 @@ class _CommandExecutor(
         is_admin: bool | None = None,
         service: "CommandService | None" = None,
         surface: str | None = None,
-        supports_forms: bool = False,
     ):
         self.api = api
         self.thread_id = thread_id or ""
         self.user_id = user_id
         self.actor = actor
-        # Whether the caller declared it renders form payloads. Handlers use
-        # it to keep the markdown self-sufficient for formless callers (e.g.
-        # the cliproxy model step inlines its option list); the dispatch
-        # strip below stays the wire-level enforcement. Defaults False to
-        # match CommandContext.supports_forms: a construction site that
-        # forgets the kwarg fails toward more markdown, never less.
-        self.supports_forms = supports_forms
+        # Handlers never need the caller's supports_forms flag: option lists
+        # for formless callers are the dispatcher's duty (#158,
+        # form_options_markdown at the form-strip site), so an executor-level
+        # copy of the flag would only invite a second, driftable rendering
+        # path.
         # The context's admin verdict (None = unknown). Handlers use it only
         # for cosmetic gating (e.g. not attaching a form whose submit targets
         # are admin-only); authorization stays at the dispatch gate. The one
@@ -5319,17 +5346,19 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        settings, ctx, tools_data, todos = await asyncio.gather(
+        settings, ctx, tools_data, todos, thread_cfg = await asyncio.gather(
             self.api.get_settings(),
             self.api.get_context_stats(self.thread_id),
             self.api.get_default_tools(self.user_id),
             self.api.list_todos(self.user_id),
+            self.api.get_thread_config(self.thread_id),
             return_exceptions=True,
         )
         settings = _dict_result(settings)
         ctx = _dict_result(ctx)
         tools_data = _dict_result(tools_data)
         todos = _dict_list_result(todos)
+        thread_cfg = _dict_result(thread_cfg)
 
         model = settings.get("llm_model", "?")
         provider = settings.get("llm_provider", "?")
@@ -5368,11 +5397,32 @@ class _CommandExecutor(
                 task_parts.append(f"{t_in_prog} in progress")
         tasks_str = " / ".join(task_parts) if task_parts else "none"
 
+        # Model block honesty (#159): the single global line is the common
+        # case and stays byte-identical. A thread override (model OR
+        # provider axis: /provider switch <p> thread writes provider-only)
+        # or an active fallback hold adds its own line, and with more than
+        # one line shown exactly one carries the (active) marker, resolving
+        # the precedence the LLM-build path actually applies: hold > thread
+        # override > global.
+        override = _thread_override_text(
+            _dict_result(thread_cfg.get("llm_config")), settings
+        )
+        hold = self._hold_from_thread_config(thread_cfg)
+        model_lines = [f"{model} | {provider} | thinking: {think_str}"]
+        if override:
+            model_lines.append(override)
+        if hold is not None:
+            model_lines.append(f"fallback hold: {self._hold_summary(hold)}")
+        if len(model_lines) > 1:
+            model_lines[0] = f"global: {model_lines[0]}"
+            label, _sep, rest = model_lines[-1].partition(": ")
+            model_lines[-1] = f"{label} (active): {rest}"
+
         lines = [
             "Nymeria Status",
             "",
             "Model",
-            f"  {model} | {provider} | thinking: {think_str}",
+            *[f"  {line}" for line in model_lines],
             "",
             "Context",
             f"  {fmt_tokens(total)} / {fmt_tokens(limit)} tokens ({pct}%)",
@@ -5439,10 +5489,11 @@ class _CommandExecutor(
 
         lines = ["Context Breakdown", "", "Model", f"  {effective_model} | {provider}"]
         if thread_cfg:
-            llm_cfg = _dict_result(thread_cfg.get("llm_config"))
-            tm = llm_cfg.get("model")
-            if tm and tm != settings.get("llm_model"):
-                lines.append(f"  thread override: model={tm}")
+            override = _thread_override_text(
+                _dict_result(thread_cfg.get("llm_config")), settings
+            )
+            if override:
+                lines.append(f"  {override}")
 
         total = ctx.get("total_tokens", 0)
         limit = ctx.get("context_limit", 0)

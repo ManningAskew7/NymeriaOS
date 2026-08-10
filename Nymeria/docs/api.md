@@ -1556,12 +1556,18 @@ POST /commands/execute
 `supports_forms` (default false) is the form-capability flag: set it ONLY
 when this caller renders `data.form` payloads (today: the Rich CLI). It
 gates two behaviors. Without it, form payloads are STRIPPED from the
-response at the dispatcher (the markdown fallback carries everything a form
-does by construction; `data.state` hints and the `execution_kind` refusal
-payload survive). With it, a schema'd command invoked WITHOUT its required
-argument is rescued into a generated picker (below) instead of the usage
-error; agents never rescue regardless of the flag, and extras, typos, and
-invalid values stay errors for every caller.
+response at the dispatcher, and the dispatcher appends the ACTIVE tab's
+choices to the markdown first (#158): radio/checkbox options render as
+`- id (label) (meta) (selected)` rows under an `Options (<tab>):` header,
+capped at 25 with an honest `... and N more` remainder and clamped metas,
+plus a derived `Choose:`/`Run:` dispatch line unless the body already
+shows that command in argument shape (root followed by a `<` placeholder)
+(so the markdown fallback carries everything a form does by construction;
+`data.state` hints and the `execution_kind` refusal payload survive the
+strip). With it, a schema'd command invoked WITHOUT its required argument
+is rescued into a generated picker (below) instead of the usage error;
+agents never rescue regardless of the flag, and extras, typos, and invalid
+values stay errors for every caller.
 
 **Response:**
 
