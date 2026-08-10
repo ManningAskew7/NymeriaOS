@@ -45,7 +45,7 @@
       id: 'claude', label: 'Claude (Max/Pro subscription)', description: '',
       flow: 'browser', nymeria_provider: 'anthropic', url_shape: 'root',
       api_mode: '', key_env_var: 'ANTHROPIC_API_KEY',
-      default_model: 'claude-opus-4-7', tos_warning: '', auth_file_provider: 'claude',
+      default_model: 'claude-opus-5', tos_warning: '', auth_file_provider: 'claude',
       supported: null, logged_in: null
     },
     {

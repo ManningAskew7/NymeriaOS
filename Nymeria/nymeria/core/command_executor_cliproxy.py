@@ -49,6 +49,40 @@ from .command_forms import (
 
 logger = logging.getLogger(__name__)
 
+# Formless markdown cap, mirroring /model list's 25-row cap: past that the
+# list stops being a picker and starts being noise, and the "+N more" line
+# keeps the truncation honest.
+_MODEL_ROWS_CAP = 25
+
+
+def _render_model_rows(
+    model_options: list[dict[str, Any]],
+    preselect: str,
+    default_model: str | None,
+) -> list[str]:
+    """Markdown rows for the model step on formless surfaces.
+
+    The same partitioned order the form options use (target's models first),
+    one `- id (owner)` row each, the preselected id marked, capped with an
+    honest remainder line. Degrades to the spec default row when the proxy
+    list is unavailable, mirroring the form's degraded option.
+    """
+    entries = list(model_options)
+    if not entries and default_model:
+        entries = [{"id": default_model, "meta": "spec default"}]
+    rows: list[str] = []
+    for entry in entries[:_MODEL_ROWS_CAP]:
+        model_id = str(entry.get("id") or "")
+        if not model_id:
+            continue
+        meta = str(entry.get("meta") or "")
+        marker = " (selected)" if model_id == preselect else ""
+        rows.append(f"- {model_id}{f' ({meta})' if meta else ''}{marker}")
+    remainder = len(entries) - _MODEL_ROWS_CAP
+    if remainder > 0:
+        rows.append(f"- ... and {remainder} more (the note above has the count)")
+    return rows
+
 
 class CliproxyCommandsMixin:
     """CLIProxy command bodies mixed into ``_CommandExecutor``.
@@ -59,6 +93,7 @@ class CliproxyCommandsMixin:
 
     api: Any
     user_id: str
+    supports_forms: bool
 
     # ── CLIProxy subscription OAuth chain (backlog #110 phase 2) ──────────
     #
@@ -427,8 +462,12 @@ class CliproxyCommandsMixin:
         if token == "model":
             value = rest_value(rest)
             if not value:
-                return command_error(
-                    "Usage: /provider cliproxy model <model-id|custom>"
+                # Bare "model" mid-session re-renders the model step (with
+                # the inline list on formless surfaces) instead of a usage
+                # error: the id list is exactly what the caller is missing,
+                # so force the model step even when a model is already set.
+                return await self._cliproxy_model_chain(
+                    pending, spec, force_step="model"
                 )
             if value.lower() == "custom":
                 updated = setup_store.update_cliproxy_login(
@@ -849,13 +888,23 @@ class CliproxyCommandsMixin:
         spec: "CLIProxyProviderSpec",
         *,
         note_lines: list[str] | None = None,
+        force_step: str | None = None,
     ) -> CommandOutput:
         """The post-login rail: Target, Model, then Apply once a model is
-        set (Target persists so relogin/cancel stay one arrow-left away)."""
+        set (Target persists so relogin/cancel stay one arrow-left away).
+
+        ``force_step="model"`` keeps the MODEL step active even when a model
+        is already picked: bare ``/provider cliproxy model`` means "show me
+        the ids", and answering it with the Apply review (which names no
+        ids) re-created the formless dead-end for exactly the caller who
+        mistyped a model and needs the list (review finding 2026-08-10).
+        """
         chain = [await self._cliproxy_model_tab(pending, spec)]
         if chain[-1][1]:
             chain.append(self._cliproxy_apply_tab(pending, spec))
-        active_tab, _decided, guidance = chain[-1]
+        active_tab, _decided, guidance = (
+            chain[0] if force_step == "model" else chain[-1]
+        )
         tabs = [self._cliproxy_target_tab(pending, spec)]
         tabs.extend(tab for tab, _d, _l in chain)
         # No notes here, deliberately: this chain's guidance is load-bearing
@@ -966,10 +1015,20 @@ class CliproxyCommandsMixin:
         tab = model_pick_tab(
             options, preselect, insert_meta, "provider cliproxy model {model}"
         )
-        return tab, pending.model is not None, [
-            str(pending.models_note or ""),
-            "Choose: /provider cliproxy model <model-id>|custom",
-        ]
+        guidance = [str(pending.models_note or "")]
+        if not self.supports_forms:
+            # Formless callers (MCP, api, bots) never receive the form
+            # payload, so the ids must ride the markdown or the caller is
+            # left guessing (live 2026-08-10: the note counted 12 models
+            # while the body named none). Form-capable clients keep the
+            # picker without a duplicate list.
+            guidance.extend(
+                _render_model_rows(
+                    pending.model_options or [], preselect, spec.default_model
+                )
+            )
+        guidance.append("Choose: /provider cliproxy model <model-id>|custom")
+        return tab, pending.model is not None, guidance
 
     def _cliproxy_apply_tab(
         self, pending: "PendingCliproxyLogin", spec: "CLIProxyProviderSpec"

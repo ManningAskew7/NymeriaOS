@@ -3257,6 +3257,7 @@ class CommandService:
             is_admin=ctx.is_admin,
             service=self,
             surface=ctx.effective_surface,
+            supports_forms=ctx.supports_forms,
         )
 
         method_name = "_cmd_" + "_".join(definition.path)
@@ -3358,10 +3359,15 @@ class CommandService:
                 # Form payloads ship only to clients that declared they can
                 # render them (the measured bare-/provider form is ~20KB, and
                 # every other surface discards it unread). Safe by contract:
-                # the markdown fallback always carries everything the form
-                # does (chain_form_output composes notes into markdown by
-                # construction). State hints stay: the CLI applies them even
-                # where forms are off, and they are small.
+                # the markdown fallback must carry everything the form does.
+                # chain_form_output composes notes into markdown by
+                # construction, and OPTION LISTS are the handler's duty: a
+                # picker's choices exist only in the form payload, so a
+                # handler that renders one must inline the list for formless
+                # callers (executor.supports_forms; the cliproxy model step
+                # is the precedent after the 2026-08-10 gap). State hints
+                # stay: the CLI applies them even where forms are off, and
+                # they are small.
                 data = {k: v for k, v in data.items() if k != "form"} or None
             success, level, markdown = _render_result_markdown(raw_output, level)
             return _with_hook_notes(CommandResult(
@@ -3830,11 +3836,19 @@ class _CommandExecutor(
         is_admin: bool | None = None,
         service: "CommandService | None" = None,
         surface: str | None = None,
+        supports_forms: bool = False,
     ):
         self.api = api
         self.thread_id = thread_id or ""
         self.user_id = user_id
         self.actor = actor
+        # Whether the caller declared it renders form payloads. Handlers use
+        # it to keep the markdown self-sufficient for formless callers (e.g.
+        # the cliproxy model step inlines its option list); the dispatch
+        # strip below stays the wire-level enforcement. Defaults False to
+        # match CommandContext.supports_forms: a construction site that
+        # forgets the kwarg fails toward more markdown, never less.
+        self.supports_forms = supports_forms
         # The context's admin verdict (None = unknown). Handlers use it only
         # for cosmetic gating (e.g. not attaching a form whose submit targets
         # are admin-only); authorization stays at the dispatch gate. The one

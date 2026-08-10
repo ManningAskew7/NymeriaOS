@@ -369,7 +369,7 @@
           type="text"
           bind:value={llmModel}
           placeholder={availableModelsState.loading
-            ? 'Loading models… or type one (e.g. claude-opus-4-7)'
+            ? 'Loading models… or type one (e.g. claude-opus-5)'
             : (globalModel ? `Default: ${globalModel}` : 'Leave empty for global default')}
         />
         {#if availableModelsState.loading}

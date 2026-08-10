@@ -11,6 +11,7 @@ Together, Fireworks, Perplexity, Ollama, LM Studio, llama.cpp, etc.), CLIProxy
 
 import asyncio
 import atexit
+import copy
 import hashlib
 import inspect
 import json
@@ -3494,6 +3495,71 @@ def _strip_foreign_reasoning_for_google(messages: List[Any]) -> List[Any]:
     return sanitized
 
 
+_SCHEMA_TYPE_HINT_KEYS = (
+    "type",
+    "$ref",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "enum",
+    "properties",
+    "items",
+)
+
+
+def _fill_untyped_array_items(schema: Any) -> None:
+    """Give every array schema in ``schema`` typed ``items``, in place.
+
+    Gemini hard-rejects an ARRAY schema without typed ``items``
+    (INVALID_ARGUMENT "...properties[x].items: missing field"). Pydantic
+    emits ``items: {}`` for a bare ``list`` type hint, and
+    langchain-google-genai's converter DROPS a typeless ``items`` on the way
+    to the wire, so the repair must key on missing OR typeless, never on
+    missing alone (a missing-only predicate is a no-op against the real
+    failure). Live incident 2026-08-10: `trigger_config.conditions` 400'd
+    every turn on the antigravity route. Source annotations are fixed too;
+    this net exists for arbitrary schemas (hot-loaded MCP tools).
+    """
+    if not isinstance(schema, dict):
+        return
+    if schema.get("type") == "array":
+        items = schema.get("items")
+        if not isinstance(items, dict) or not any(
+            key in items for key in _SCHEMA_TYPE_HINT_KEYS
+        ):
+            schema["items"] = {"type": "string"}
+    for prop in (schema.get("properties") or {}).values():
+        _fill_untyped_array_items(prop)
+    for defs_key in ("$defs", "definitions"):
+        for definition in (schema.get(defs_key) or {}).values():
+            _fill_untyped_array_items(definition)
+    for union_key in ("anyOf", "oneOf", "allOf"):
+        for variant in schema.get(union_key) or []:
+            _fill_untyped_array_items(variant)
+    for nested_key in ("items", "additionalProperties"):
+        nested = schema.get(nested_key)
+        if isinstance(nested, dict):
+            _fill_untyped_array_items(nested)
+    for prefix_item in schema.get("prefixItems") or []:
+        _fill_untyped_array_items(prefix_item)
+
+
+def _repair_tool_schemas_for_google(formatted_tools: List[dict]) -> List[dict]:
+    """Copy-on-write repair of ``convert_to_openai_tool`` output for Gemini.
+
+    Deep-copies each tool dict before repair: the source dicts can be shared
+    with concurrently-bound non-google providers and must not be mutated.
+    """
+    repaired: List[dict] = []
+    for tool in formatted_tools:
+        tool = copy.deepcopy(tool)
+        parameters = (tool.get("function") or {}).get("parameters")
+        if isinstance(parameters, dict):
+            _fill_untyped_array_items(parameters)
+        repaired.append(tool)
+    return repaired
+
+
 def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
     """Create a Google Gemini LLM using the dedicated partner package.
 
@@ -3531,6 +3597,31 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
         def _prepare_request(self, messages: List[Any], **kwargs: Any) -> Any:
             return super()._prepare_request(
                 _strip_foreign_reasoning_for_google(messages), **kwargs
+            )
+
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            """Repair untyped array schemas before the upstream bind.
+
+            Upstream ``bind_tools`` runs ``convert_to_openai_tool`` on every
+            tool and binds the dicts; this override performs the identical
+            conversion first (the converter is idempotent on its own
+            output), repairs untyped arrays, and hands the dicts to
+            ``super()``. See ``_fill_untyped_array_items`` for why. A tool
+            the converter cannot handle (upstream guards this with its own
+            try/except for Google built-ins and proto declarations) binds
+            unrepaired rather than erroring: the net must never reject what
+            upstream would have accepted.
+            """
+            from langchain_core.utils.function_calling import (
+                convert_to_openai_tool,
+            )
+
+            try:
+                formatted = [convert_to_openai_tool(tool) for tool in tools]
+            except Exception:  # noqa: BLE001 - mirror upstream's fallback.
+                return super().bind_tools(tools, **kwargs)
+            return super().bind_tools(
+                _repair_tool_schemas_for_google(formatted), **kwargs
             )
 
     api_key = (

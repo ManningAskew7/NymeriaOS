@@ -7226,3 +7226,53 @@ def test_background_url_commands_alert_like_env_set(
     assert result.success is True
     assert len(alerts) == 1
     assert "llm_background_base_url" in alerts[0]
+
+
+def test_provider_test_translates_cliproxy_401_by_status_field() -> None:
+    """Auth failures classify on the response's status_code FIELD, never on
+    message text (the taxonomy trap: a request id embedding '401' inside a
+    transient 500 must not read as a rejected credential)."""
+    api = FakeCommandApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+    api.provider_test_result = {
+        "ok": False,
+        "message": "Provider returned HTTP 401: Unauthorized",
+        "status_code": 401,
+    }
+
+    result = _run_command(api, "/provider test openai")
+
+    assert result.success is False
+    assert "subscription login" in result.markdown
+    assert "/provider cliproxy" in result.markdown
+
+
+def test_provider_test_429_names_quota_window_not_bare_failure() -> None:
+    api = FakeCommandApi()
+    api.llm_provider = "anthropic"
+    api.llm_base_url = "http://localhost:8318/v1"
+    api.provider_test_result = {
+        "ok": False,
+        "message": "Provider returned HTTP 429: Error",
+        "status_code": 429,
+    }
+
+    result = _run_command(api, "/provider test anthropic")
+
+    assert result.success is False
+    assert "usage window" in result.markdown
+
+
+def test_provider_test_ignores_status_shaped_message_without_field() -> None:
+    """No status_code field -> no auth editorializing off the message."""
+    api = FakeCommandApi()
+    api.llm_base_url = "http://localhost:8318/v1"
+    api.provider_test_result = {
+        "ok": False,
+        "message": "Provider returned HTTP 500: request-id-401-abc failed",
+    }
+
+    result = _run_command(api, "/provider test openai")
+
+    assert result.success is False
+    assert "subscription login" not in result.markdown

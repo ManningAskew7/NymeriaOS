@@ -1688,8 +1688,11 @@ class LLMCommandsMixin:
         # surfaces must not drift. Function-local import per module pattern.
         from .llm_provider_utils import cliproxy_failure_hint
 
+        status = result.get("status_code")
         hint = cliproxy_failure_hint(
-            str(request.get("llm_base_url") or ""), message
+            str(request.get("llm_base_url") or ""),
+            message,
+            status_code=status if isinstance(status, int) else None,
         )
         if hint:
             message += f" {hint}"

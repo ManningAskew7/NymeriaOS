@@ -651,7 +651,7 @@ def test_apply_route_global_claude_writes_anthropic_root_key():
     assert updates.anthropic_api_key == "cpx-gate"
     assert updates.anthropic_direct_api_key is None
     assert payload["base_url"] == "http://proxy.test:8317"
-    assert payload["model"] == "claude-opus-4-7"
+    assert payload["model"] == "claude-opus-5"
 
 
 def test_apply_route_global_codex_writes_openai_v1_responses():
@@ -1278,7 +1278,7 @@ def test_verify_credential_ok_reports_the_probed_model():
     )
 
     assert verdict == "ok"
-    assert detail == "claude-opus-4-7"
+    assert detail == "claude-opus-5"
     request = captured["request"]
     # Probes the data plane, as the native provider, with the server-resolved
     # gatekeeper. Claude uses the proxy ROOT (the SDK appends /v1/messages).
@@ -1384,7 +1384,7 @@ def test_verify_credential_classifies_a_structured_429_as_reach():
     )
 
     assert verdict == "ok"
-    assert detail == "claude-opus-4-7"
+    assert detail == "claude-opus-5"
 
 
 def test_verify_credential_probes_unauthenticated_when_no_gatekeeper():

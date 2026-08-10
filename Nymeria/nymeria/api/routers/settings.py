@@ -1015,14 +1015,36 @@ async def _test_llm_provider_config(
     if provider == "anthropic":
         clean_base = base_url or "https://api.anthropic.com"
         url = f"{clean_base}/v1/messages"
+        # base_url adds the safe Anthropic-Beta override on CLIProxy-shaped
+        # routes inside the helper (single owner of probe header identity).
         headers = provider_probe_headers(
-            provider, api_key, has_custom_base_url=bool(base_url)
+            provider,
+            api_key,
+            has_custom_base_url=bool(base_url),
+            base_url=base_url,
         )
         payload = {
             "model": model,
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "Reply with ok."}],
         }
+        if base_url:
+            # Function-local vendored import, matching provider_probe_headers.
+            from ...vendor.react_agent.cliproxy import (
+                CLIPROXY_BILLING_SYSTEM_BLOCK,
+                looks_like_cliproxy_url,
+            )
+
+            if looks_like_cliproxy_url(base_url):
+                # Standalone callers that skip the node layer send no OAuth
+                # billing fingerprint, so premium Claude models 429 through
+                # CLIProxy with a perfectly valid token (the documented
+                # standalone-script gotcha, docs/private/cliproxy.md). The
+                # probe mirrors the production path so a test verdict on a
+                # premium model is truthful and a residual 429 really means
+                # quota-window exhaustion. The block stays at the payload
+                # site: no helper owns request bodies.
+                payload["system"] = [dict(CLIPROXY_BILLING_SYSTEM_BLOCK)]
         response_api_mode = None
     elif google_native:
         # Native Gemini wire (google-genai REST shape). The configured base
@@ -1312,7 +1334,10 @@ async def _available_models(
         api_key = "not-needed"
 
     headers = provider_probe_headers(
-        effective_provider, api_key, has_custom_base_url=had_custom_base
+        effective_provider,
+        api_key,
+        has_custom_base_url=had_custom_base,
+        base_url=effective_base_url,
     )
 
     try:

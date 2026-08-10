@@ -58,6 +58,14 @@ SEQUENTIAL_ORDER_TOOL_NAME = "run_tools_in_order"
 TURN_SAFETY_REASON_MAX_ITERATIONS = "max_iterations"
 TURN_SAFETY_REASON_REPEATED_TOOL_RESULT = "repeated_tool_result"
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
+# Error classes that warrant a CROSS-PROVIDER fallback switch without any
+# same-candidate retry: auth failures are credential-scoped (every model on
+# the provider shares the dead credential) and invalid-request failures are
+# wire-scoped (a sibling model on the same provider gets the same 400, while
+# a different provider's translator often accepts the turn). 429/5xx keep
+# the full chain including same-provider candidates: quota and capacity are
+# per-model, so opus->haiku on one subscription is a correct fallback there.
+_MODEL_SWITCH_STATUS_CODES = {400, 401, 403}
 _RETRYABLE_EXCEPTION_NAMES = {
     "APIConnectionError",
     "APITimeoutError",
@@ -311,6 +319,14 @@ def _extract_status_code(exc: BaseException) -> Optional[int]:
             status = getattr(response, "status_code", None)
             if isinstance(status, int):
                 return status
+        # google-genai's APIError family carries the HTTP status in ``code``
+        # (int; its ``status`` is a string like "INVALID_ARGUMENT", skipped
+        # above). Range-guarded because ``code`` on other exception types can
+        # be a non-HTTP int (exit codes, errno) or a string (openai's
+        # ``code='invalid_api_key'``).
+        code = getattr(current, "code", None)
+        if isinstance(code, int) and 100 <= code <= 599:
+            return code
     return None
 
 
@@ -387,6 +403,23 @@ def is_image_unsupported_error(exc: BaseException) -> bool:
     ):
         return True
     return False
+
+
+def _is_model_switchable_llm_error(exc: BaseException) -> bool:
+    """True when a non-retryable error still warrants a cross-provider switch.
+
+    Status-driven (never marker-driven) so it cannot swallow the neighbours
+    that own their own recovery paths: context overflow (agent-level
+    compaction rescue) and image-unsupported (the strip-and-retry) are
+    excluded explicitly, both being 400-shaped. See
+    ``_MODEL_SWITCH_STATUS_CODES`` for the policy rationale.
+    """
+    status = _extract_status_code(exc)
+    if status not in _MODEL_SWITCH_STATUS_CODES:
+        return False
+    if is_context_overflow_error(exc) or is_image_unsupported_error(exc):
+        return False
+    return True
 
 
 # Only ``image_url`` blocks are what the outbound image window actually strips
@@ -550,6 +583,18 @@ def _llm_candidate_descriptor(
     }
 
 
+def _fallback_failure_phrase(payload: dict[str, Any]) -> str:
+    """Log-copy qualifier for a fallback switch: honest about retry burn.
+
+    The cliproxy error taxonomy is diagnosed from these logs, so a
+    zero-retry deterministic 4xx switch must not read "after retries".
+    """
+    reason = str(payload.get("reason") or "")
+    if reason in ("auth_error", "invalid_request"):
+        return f"non-retryable {reason}"
+    return "transient (after retries)"
+
+
 def _llm_retry_reason(exc: BaseException) -> str:
     status_code = _extract_status_code(exc)
     if status_code is not None:
@@ -557,6 +602,10 @@ def _llm_retry_reason(exc: BaseException) -> str:
             return "provider_server_error"
         if status_code == 429:
             return "rate_limited"
+        if status_code in (401, 403):
+            return "auth_error"
+        if status_code == 400:
+            return "invalid_request"
         return "retryable_http_error"
 
     if any(
@@ -881,9 +930,16 @@ def fallback_note_text(payload: dict[str, Any], *, kind: str, phase: str = "swap
     reason = str(payload.get("reason") or "provider error")
     status = payload.get("http_status")
     detail = f"{reason}, HTTP {status}" if status else reason
+    # auth_error/invalid_request switch without consuming the retry ladder
+    # (deterministic 4xx), so "after retries" would be untrue for them.
+    failed = (
+        "failed"
+        if reason in ("auth_error", "invalid_request")
+        else "failed after retries"
+    )
     return (
-        f"[System info]: The previous model ({from_model}) failed after "
-        f"retries ({detail}). You are now {to_model}, the configured "
+        f"[System info]: The previous model ({from_model}) {failed} "
+        f"({detail}). You are now {to_model}, the configured "
         "fallback model, continuing this conversation. Mention the switch "
         "to the user if it is relevant."
     )
@@ -1641,9 +1697,29 @@ class _RetryFallbackController:
         or mark the active fallback for a "fallback" decision: the caller does
         that via `commit_fallback` after it has logged and dispatched, so the
         dispatch-before-mark ordering is preserved.
+
+        Non-retryable auth (401/403) and invalid-request (400) errors skip the
+        retry ladder entirely (a deterministic 4xx is not re-hammered) and
+        fall back straight to the next candidate on a DIFFERENT provider,
+        skipping same-provider candidates; with no cross-provider candidate
+        left they raise.
         """
         if not _is_retryable_llm_error(exc):
-            return _RetryDecision(action="raise")
+            next_index = self._cross_provider_switch_target(exc)
+            if next_index is None:
+                return _RetryDecision(action="raise")
+            payload = _llm_fallback_payload(
+                self.llm_config,
+                self.candidate_index,
+                next_index,
+                exc=exc,
+            )
+            return _RetryDecision(
+                action="fallback",
+                candidate_index=self.candidate_index,
+                next_index=next_index,
+                payload=payload,
+            )
 
         if self.retry_attempt < self.max_retries:
             self.retry_attempt += 1
@@ -1681,6 +1757,47 @@ class _RetryFallbackController:
             next_index=next_index,
             payload=payload,
         )
+
+    def _candidate_route_identity(self, index: int) -> tuple[str, str]:
+        """(provider, base_url) route identity for a candidate.
+
+        Auth and invalid-request failures are scoped to the ROUTE, not the
+        model: candidates sharing both provider and base URL share the
+        failing credential/wire and are skipped together, while a
+        same-provider candidate on a different base URL (a direct-API
+        rescue of a proxy route) is a genuinely different route. Resolved
+        via ``_config_for_candidate`` (the real per-candidate config, which
+        inherits the primary's base URL for same-provider entries and
+        carries explicit overrides).
+        """
+        config = _config_for_candidate(self.llm_config, index)
+        if config is None:
+            descriptor = _llm_candidate_descriptor(self.llm_config, index)
+            return (
+                str(descriptor.get("provider") or "").strip().casefold(),
+                "",
+            )
+        return (
+            str(config.provider or "").strip().casefold(),
+            str(getattr(config, "base_url", None) or "").strip().casefold(),
+        )
+
+    def _cross_provider_switch_target(self, exc: BaseException) -> Optional[int]:
+        """Next candidate index on a different route, or None.
+
+        One residual ambiguity is accepted: two different providers behind
+        one proxy share its gatekeeper key, so a wrong gatekeeper 401
+        switches once and fails again on the sibling route (bounded, and
+        the improved error copy then names that cause).
+        """
+        if not _is_model_switchable_llm_error(exc):
+            return None
+        current = self._candidate_route_identity(self.candidate_index)
+        for index in range(self.candidate_index + 1, self.candidate_count):
+            identity = self._candidate_route_identity(index)
+            if identity[0] and identity != current:
+                return index
+        return None
 
     def commit_fallback(self, next_index: int) -> None:
         """Activate the next candidate after a fallback has been dispatched."""
@@ -1754,8 +1871,8 @@ def _invoke_llm_with_retries(
                 )
                 raise
             logger.warning(
-                "[LLM FALLBACK] transient sync call failure on %s after retries; "
-                "switching to %s: %s",
+                "[LLM FALLBACK] %s sync call failure on %s; switching to %s: %s",
+                _fallback_failure_phrase(decision.payload),
                 _llm_candidate_label(llm_config, decision.candidate_index),
                 _llm_candidate_label(llm_config, decision.next_index),
                 exc,
@@ -3005,8 +3122,9 @@ def create_agent_node(
                     )
                     raise
                 logger.warning(
-                    "[LLM FALLBACK] transient stream failure before chunks on %s "
-                    "after retries; switching to %s: %s",
+                    "[LLM FALLBACK] %s stream failure before chunks on %s; "
+                    "switching to %s: %s",
+                    _fallback_failure_phrase(decision.payload),
                     _llm_candidate_label(llm_config, decision.candidate_index),
                     _llm_candidate_label(llm_config, decision.next_index),
                     exc,

@@ -493,18 +493,59 @@ async def collect_chat_transcript(
     return project_chat_payload_for_verbosity(payload, mode)
 
 
+def _with_failure_line(
+    result: Dict[str, Any], steps: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Render a failed turn's error as the response text, in place.
+
+    A turn with zero response steps and recorded errors surfaces
+    ``[turn failed] <error>`` instead of the "(empty message)" placeholder,
+    which buried the real signal (``errors[]``) for MCP callers (live
+    2026-08-10). Applied at the END of ``project_chat_payload_for_verbosity``,
+    the one stage every verbosity mode and call order passes through last:
+    earlier stages (``as_dict``, the persisted-steps overlay, the per-mode
+    recompute above) all rebuild ``final_response``/``full_markdown`` from
+    steps and would silently undo an earlier synthesis.
+    """
+    errors = result.get("errors") or []
+    if not errors:
+        return result
+    if any(
+        step.get("type") == "response" and step.get("content") for step in steps
+    ):
+        return result
+    first = errors[0] if isinstance(errors[0], dict) else {}
+    failure = f"[turn failed] {first.get('message') or 'Unknown error'}"
+    if "final_response" in result:
+        result["final_response"] = failure
+    if "full_markdown" in result:
+        # Per-field idempotent: the projection runs twice on the shipped
+        # path (as_dict's own tail plus collect_chat_transcript's), and a
+        # second application must repair a still-placeholder markdown
+        # without appending a duplicate failure section.
+        markdown = str(result["full_markdown"] or "")
+        if markdown in ("", "(empty message)"):
+            result["full_markdown"] = failure
+        elif not markdown.endswith(failure):
+            result["full_markdown"] = f"{markdown}\n\n---\n\n{failure}"
+    return result
+
+
 def project_chat_payload_for_verbosity(
     payload: Dict[str, Any],
     verbosity: str = "verbose",
 ) -> Dict[str, Any]:
     """Shape a single chat tool response for a caller's token budget."""
     mode = normalize_transcript_verbosity(verbosity)
+    source_steps = (
+        payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    )
     if mode == "verbose":
         projected = copy.deepcopy(payload)
         projected["verbosity"] = mode
-        return projected
+        return _with_failure_line(projected, source_steps)
 
-    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    steps = source_steps
     final_response = message_steps_to_response_text(steps) if steps else str(payload.get("final_response") or "")
 
     if mode == "chat":
@@ -515,7 +556,9 @@ def project_chat_payload_for_verbosity(
             "done": payload.get("done"),
             "verbosity": mode,
         }
-        return {k: v for k, v in result.items() if v is not None}
+        return _with_failure_line(
+            {k: v for k, v in result.items() if v is not None}, steps
+        )
 
     projected_steps = project_steps_for_verbosity(steps, mode)
     result = {
@@ -532,7 +575,9 @@ def project_chat_payload_for_verbosity(
     for key in ("title", "title_source", "history_message_id"):
         if payload.get(key) is not None:
             result[key] = payload[key]
-    return {k: v for k, v in result.items() if v is not None}
+    return _with_failure_line(
+        {k: v for k, v in result.items() if v is not None}, steps
+    )
 
 
 def project_history_message_for_verbosity(

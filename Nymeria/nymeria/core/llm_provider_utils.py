@@ -331,14 +331,22 @@ def destination_redirects_away_from_config(
 
 
 def provider_probe_headers(
-    provider: str, api_key: str, *, has_custom_base_url: bool = False
+    provider: str,
+    api_key: str,
+    *,
+    has_custom_base_url: bool = False,
+    base_url: str | None = None,
 ) -> dict[str, str]:
     """Auth + identity headers for a direct provider HTTP probe (test or models).
 
     ``has_custom_base_url`` signals the request targets a non-default base URL
     (e.g. CLIProxy); for anthropic that adds the cloak-skip ``User-Agent``, so
     the provider-test probe and the model listing send the same identity to a
-    custom endpoint. The value is irrelevant for OpenAI-compatible providers.
+    custom endpoint. When ``base_url`` is CLIProxy-shaped, anthropic probes
+    also carry the safe ``Anthropic-Beta`` override, matching the production
+    header set (``providers.py::_create_anthropic_llm``); this helper owns
+    the probe's header identity so the test probe and the model listing
+    cannot drift. The values are irrelevant for OpenAI-compatible providers.
     """
     if provider == "anthropic":
         headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_API_VERSION}
@@ -347,6 +355,14 @@ def provider_probe_headers(
             from ..vendor.react_agent.cliproxy import CLIPROXY_CLAUDE_USER_AGENT
 
             headers["User-Agent"] = CLIPROXY_CLAUDE_USER_AGENT
+        if base_url:
+            from ..vendor.react_agent.cliproxy import (
+                CLIPROXY_ANTHROPIC_BETA_HEADER,
+                looks_like_cliproxy_url,
+            )
+
+            if looks_like_cliproxy_url(base_url):
+                headers["Anthropic-Beta"] = CLIPROXY_ANTHROPIC_BETA_HEADER
         return headers
     if is_google_native_provider(provider):
         # Native Gemini wire: the key rides x-goog-api-key (a Bearer header
@@ -358,7 +374,9 @@ def provider_probe_headers(
     return headers
 
 
-def cliproxy_failure_hint(base_url: str | None, message: str) -> str:
+def cliproxy_failure_hint(
+    base_url: str | None, message: str, *, status_code: int | None = None
+) -> str:
     """Plain-language hint for the CLIProxy model/auth failure shapes, or "".
 
     The raw messages are misread in practice (dogfood 2026-08-05): the
@@ -372,7 +390,10 @@ def cliproxy_failure_hint(base_url: str | None, message: str) -> str:
     error path (backlog #148): the two surfaces must not drift. This
     appends copy to an already-failed request; it never classifies behavior
     off message text (the trap `docs/private/cliproxy.md` documents for the
-    verify endpoint). Taxonomy: that doc's "Interpreting proxy auth errors".
+    verify endpoint): the auth/quota branches key on ``status_code``
+    (callers pass the response's status field or the extracted exception
+    status), and only the proxy-generated shapes whose TEXT is the signal
+    match on message. Taxonomy: that doc's "Interpreting proxy auth errors".
     """
     if not base_url:
         return ""
@@ -381,6 +402,30 @@ def cliproxy_failure_hint(base_url: str | None, message: str) -> str:
 
     if not looks_like_cliproxy_url(base_url):
         return ""
+    if status_code in (401, 403):
+        # Raw SDK copy here says "Invalid API key", which misleads on a
+        # subscription route. Two causes share the status (taxonomy): the
+        # routed subscription's OAuth is lapsed or revoked (a fresh login
+        # IS the fix), or the gatekeeper key Nymeria sends no longer
+        # matches the proxy's api-keys list.
+        return (
+            "On a CLIProxy route this usually means the subscription login"
+            " for this provider is expired or revoked: re-login with"
+            " /provider cliproxy <target>. Less commonly the proxy"
+            " gatekeeper key is wrong (the proxy rejects the request"
+            " before dispatching upstream): check the api-keys list in the"
+            " proxy config against the configured key."
+        )
+    if status_code == 429:
+        # Requests through Nymeria carry the OAuth billing fingerprint, so
+        # a 429 on this route is not the missing-block artifact.
+        return (
+            "The subscription's usage window for this model is exhausted"
+            " (it is shared with any other use of the same account, e.g."
+            " Claude Code on a Max subscription). It clears on its own"
+            " within hours; a fallback model or a different route works"
+            " immediately."
+        )
     lowered = message.casefold()
     if "unknown provider for model" in lowered:
         return (

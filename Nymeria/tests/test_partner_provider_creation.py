@@ -922,3 +922,194 @@ def test_google_factory_returns_sanitizing_subclass(monkeypatch):
 
     assert llm.prepared[0][0].content == [{"type": "text", "text": "a"}]
     assert result == {"messages": llm.prepared[0]}
+
+
+# ---------------------------------------------------------------------------
+# Google tool-schema repair (untyped arrays; Gemini INVALID_ARGUMENT guard)
+# ---------------------------------------------------------------------------
+
+from nymeria.vendor.react_agent.providers import (  # noqa: E402
+    _fill_untyped_array_items,
+    _repair_tool_schemas_for_google,
+)
+
+
+def _tool_dict(parameters: dict) -> dict:
+    return {
+        "type": "function",
+        "function": {"name": "t", "description": "d", "parameters": parameters},
+    }
+
+
+def test_fill_repairs_typeless_items_not_only_missing():
+    """The real pydantic output for a bare list hint is items: {} (typeless).
+
+    A missing-only predicate is a no-op against it; this is the exact shape
+    of the 2026-08-10 antigravity incident.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "conditions": {
+                "anyOf": [
+                    {"items": {}, "type": "array"},
+                    {"type": "null"},
+                ],
+                "default": None,
+            }
+        },
+    }
+    _fill_untyped_array_items(schema)
+    variant = schema["properties"]["conditions"]["anyOf"][0]
+    assert variant["items"] == {"type": "string"}
+
+
+def test_fill_repairs_missing_items_and_nested_containers():
+    schema = {
+        "type": "object",
+        "properties": {
+            "bare": {"type": "array"},
+            "nested": {
+                "type": "object",
+                "properties": {"inner": {"type": "array", "items": {}}},
+            },
+            "matrix": {"type": "array", "items": {"type": "array"}},
+        },
+        "$defs": {"Row": {"type": "array", "items": {}}},
+        "additionalProperties": {"type": "array"},
+    }
+    _fill_untyped_array_items(schema)
+    props = schema["properties"]
+    assert props["bare"]["items"] == {"type": "string"}
+    assert props["nested"]["properties"]["inner"]["items"] == {"type": "string"}
+    assert props["matrix"]["items"]["items"] == {"type": "string"}
+    assert schema["$defs"]["Row"]["items"] == {"type": "string"}
+    assert schema["additionalProperties"]["items"] == {"type": "string"}
+
+
+def test_fill_leaves_typed_items_untouched():
+    schema = {
+        "type": "object",
+        "properties": {
+            "objs": {"type": "array", "items": {"type": "object"}},
+            "refs": {"type": "array", "items": {"$ref": "#/$defs/Row"}},
+            "union": {"type": "array", "items": {"anyOf": [{"type": "string"}]}},
+        },
+    }
+    before = {k: dict(v["items"]) for k, v in schema["properties"].items()}
+    _fill_untyped_array_items(schema)
+    for key, items in before.items():
+        assert schema["properties"][key]["items"] == items
+
+
+def test_repair_is_copy_on_write():
+    """Source dicts can be shared with non-google binds; never mutate them."""
+    original = _tool_dict(
+        {"type": "object", "properties": {"xs": {"type": "array", "items": {}}}}
+    )
+    repaired = _repair_tool_schemas_for_google([original])
+    assert original["function"]["parameters"]["properties"]["xs"]["items"] == {}
+    assert repaired[0]["function"]["parameters"]["properties"]["xs"]["items"] == {
+        "type": "string"
+    }
+
+
+def test_google_bind_tools_repairs_bare_list_tool_end_to_end(monkeypatch):
+    """A @tool with a bare list param binds with typed items on google."""
+    import sys
+    import types
+
+    from langchain_core.tools import tool as lc_tool
+
+    class _BindCapture:
+        def __init__(self, **kwargs):
+            self.bound: list = []
+
+        def bind_tools(self, tools, **kw):
+            self.bound.append(tools)
+            return self
+
+    fake_module = types.ModuleType("langchain_google_genai")
+    fake_module.ChatGoogleGenerativeAI = _BindCapture
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
+
+    @lc_tool
+    def degenerate(values: list = []) -> str:  # noqa: B006
+        """Degenerate tool.
+
+        Args:
+            values: A bare list, like a hot-loaded MCP schema might declare.
+        """
+        return "ok"
+
+    llm = create_llm(_google_config())
+    llm.bind_tools([degenerate])
+
+    (bound,) = llm.bound
+    params = bound[0]["function"]["parameters"]
+    values_schema = params["properties"]["values"]
+    assert values_schema["items"].get("type"), values_schema
+
+
+def test_trigger_and_hook_config_schemas_carry_typed_items():
+    """The two live-catalog offenders now advertise list-of-object shapes."""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    from nymeria.tools.hooks import hook_config
+    from nymeria.tools.triggers import trigger_config
+
+    for tool_obj, param in ((trigger_config, "conditions"), (hook_config, "fire_conditions")):
+        schema = convert_to_openai_tool(tool_obj)["function"]["parameters"]
+        prop = schema["properties"][param]
+        variants = prop.get("anyOf", [prop])
+        array_variants = [v for v in variants if v.get("type") == "array"]
+        assert array_variants, prop
+        for variant in array_variants:
+            assert variant["items"].get("type") == "object", prop
+
+
+def test_no_catalog_tool_ships_an_untyped_array_schema():
+    """Catalog-wide ratchet: a bare `list` type hint on any @tool param
+    generates an array schema Gemini rejects (the runtime bind-seam net
+    would repair it with a GENERIC items type, hiding the author's intent).
+    Catch the next offender at authoring time; fix by typing the parameter
+    (e.g. Optional[list[dict]]), never by relying on the net."""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    from nymeria.tools import static_tool_catalog
+    from nymeria.vendor.react_agent.providers import _SCHEMA_TYPE_HINT_KEYS
+
+    def untyped_arrays(schema, path):
+        if not isinstance(schema, dict):
+            return
+        if schema.get("type") == "array":
+            items = schema.get("items")
+            if not isinstance(items, dict) or not any(
+                key in items for key in _SCHEMA_TYPE_HINT_KEYS
+            ):
+                yield path
+        for name, prop in (schema.get("properties") or {}).items():
+            yield from untyped_arrays(prop, f"{path}.{name}")
+        for defs_key in ("$defs", "definitions"):
+            for name, definition in (schema.get(defs_key) or {}).items():
+                yield from untyped_arrays(definition, f"{path}.{defs_key}.{name}")
+        for union_key in ("anyOf", "oneOf", "allOf"):
+            for i, variant in enumerate(schema.get(union_key) or []):
+                yield from untyped_arrays(variant, f"{path}.{union_key}[{i}]")
+        for nested_key in ("items", "additionalProperties"):
+            nested = schema.get(nested_key)
+            if isinstance(nested, dict):
+                yield from untyped_arrays(nested, f"{path}.{nested_key}")
+
+    offenders = []
+    for name, tool_obj in static_tool_catalog().items():
+        try:
+            parameters = convert_to_openai_tool(tool_obj)["function"]["parameters"]
+        except Exception:  # noqa: BLE001 - unconvertible tools bind unrepaired.
+            continue
+        offenders.extend(untyped_arrays(parameters, name))
+
+    assert not offenders, (
+        "Untyped array schemas in the tool catalog (Gemini rejects these; "
+        f"type the parameter at source): {offenders}"
+    )

@@ -2774,3 +2774,101 @@ def test_command_backend_clearing_public_url(tmp_path: Path, monkeypatch):
     assert result["updated"] == ["nymeria_public_url"]
     env_text = env_path.read_text(encoding="utf-8")
     assert "NYMERIA_PUBLIC_URL=https://old.example.com" not in env_text
+
+
+def test_llm_provider_test_sends_billing_block_and_beta_on_cliproxy(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The anthropic probe mirrors the production CLIProxy path: safe
+    Anthropic-Beta override plus the OAuth billing fingerprint. Without the
+    block, premium Claude models 429 through CLIProxy on a valid token (the
+    documented standalone-script gotcha), so /provider test reported a
+    healthy route as failed (live 2026-08-10)."""
+    from nymeria.vendor.react_agent.cliproxy import (
+        CLIPROXY_ANTHROPIC_BETA_HEADER,
+        CLIPROXY_BILLING_SYSTEM_BLOCK,
+    )
+
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"ok": True}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "anthropic",
+            "llm_model": "claude-opus-5",
+            "api_key": "cpx-secret-key",
+            "llm_base_url": "http://localhost:8318",
+        },
+    )
+
+    assert response.status_code == 200
+    call = FakeAsyncClient.calls[0]
+    assert call["headers"]["Anthropic-Beta"] == CLIPROXY_ANTHROPIC_BETA_HEADER
+    assert call["json"]["system"] == [dict(CLIPROXY_BILLING_SYSTEM_BLOCK)]
+
+
+def test_llm_provider_test_direct_anthropic_keeps_sdk_default_headers(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Direct api.anthropic.com probes stay on default headers: no beta
+    override, no billing block (the CLIProxy treatment is proxy-scoped)."""
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"ok": True}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "anthropic",
+            "llm_model": "claude-opus-5",
+            "api_key": "sk-ant-real",
+        },
+    )
+
+    assert response.status_code == 200
+    call = FakeAsyncClient.calls[0]
+    assert "Anthropic-Beta" not in call["headers"]
+    assert "system" not in call["json"]
+    assert "User-Agent" not in call["headers"]
+
+
+def test_llm_provider_test_custom_non_cliproxy_base_gets_no_cliproxy_treatment(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The CLIProxy scoping guard: a custom base that is NOT CLIProxy-shaped
+    keeps the cloak UA (any-custom-base contract) but must NOT gain the
+    Anthropic-Beta override or the billing block (review finding: the
+    guard was previously untested; deleting it passed the suite)."""
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"ok": True}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "anthropic",
+            "llm_model": "claude-opus-5",
+            "api_key": "sk-ant-real",
+            "llm_base_url": "https://gateway.example.com",
+        },
+    )
+
+    assert response.status_code == 200
+    call = FakeAsyncClient.calls[0]
+    assert call["headers"]["User-Agent"] == "claude-cli/2.1.113"
+    assert "Anthropic-Beta" not in call["headers"]
+    assert "system" not in call["json"]

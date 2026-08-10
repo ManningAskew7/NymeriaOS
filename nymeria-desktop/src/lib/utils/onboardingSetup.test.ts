@@ -23,7 +23,7 @@ function cliproxyEntry(overrides: Partial<CLIProxyProviderInfo>): CLIProxyProvid
     url_shape: 'root',
     api_mode: '',
     key_env_var: 'ANTHROPIC_API_KEY',
-    default_model: 'claude-opus-4-7',
+    default_model: 'claude-opus-5',
     tos_warning: '',
     auth_file_provider: 'claude',
     supported: null,
@@ -68,7 +68,7 @@ describe('buildProviderSaveUpdate', () => {
     const claude = buildProviderSaveUpdate({
       authPath: 'cliproxy',
       provider: 'anthropic',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-5',
       apiKey: 'cpx-key',
       baseUrl: 'http://localhost:8318',
       apiMode: null,
@@ -330,7 +330,7 @@ describe('auth path detection', () => {
     expect(
       detectCliproxyEntry(catalog, {
         llm_provider: 'anthropic',
-        llm_model: 'claude-opus-4-7',
+        llm_model: 'claude-opus-5',
         openai_api_mode: null,
       })
     ).toBe('claude');
