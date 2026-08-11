@@ -90,21 +90,40 @@ fast, explicit failure: the call fails and says `input_delivered: "no"`.
 
 **A page dialog** (`alert`, `confirm`, `prompt`, or a "Leave site?" raised on
 navigation) suspends the page's own JavaScript, so nothing reaches the tab at
-all. These calls do not fail, they HANG: every command against that tab runs to
-its timeout, 30 seconds for `chrome_act`, and comes back as a bare timeout with
-no payload and no `input_delivered` field. Whole-command timeouts on one tab
-while other tabs are fine is the signature.
+all. `chrome_act` refuses these rather than sending: it checks that the page can
+still run a script before it dispatches, and tells you the page did not run one.
+A long-running script looks the same from outside, so if a retry a few seconds
+later says it again, it is a dialog.
 
-The recovery for both is **open a fresh tab and redo the work there.** Reloading
-does not help and neither does switching tabs: a browser dialog's suppression
-belongs to the tab and survives navigation within it, and a page dialog is still
-sitting there afterwards. Closing the tab clears either one.
+**The suppression can OUTLIVE the dialog.** Measured: after an `alert` was
+cleared, the page ran scripts again while input stayed undelivered. So there may
+be nothing on screen to find, and "I looked and there was no dialog" does not
+mean the tab is healthy. Trust `input_delivered`, not the absence of a visible
+cause.
 
-**`chrome_dialog` does not currently clear a page dialog**, whatever its name
-suggests: it times out like every other command against that tab and leaves the
-dialog standing. Do not spend calls on it, and never try to dismiss browser
-security UI yourself. If a fresh tab is not viable, tell the user what is on
-their screen and ask them to clear it.
+Recovery, cheapest first:
+
+1. **Navigate the tab somewhere else.** This fully recovers a browser dialog:
+   measured, an HTTP auth prompt went from `input_delivered: "no"` to `"yes"`
+   after navigating away. Reloading does not work, because it re-triggers
+   whatever raised the dialog.
+2. **If input is still not delivered after that, close the tab** and redo the
+   work in a fresh one. That always clears it. Navigation is NOT enough after an
+   `alert`: measured, it unfroze the page but left input dead.
+3. A tab whose page has a "Leave site?" handler can refuse its own close, since
+   closing raises the dialog again. If the close times out, try once more.
+
+**`chrome_dialog` does not clear a page dialog**, whatever its name suggests: it
+times out like every other command against that tab and leaves the dialog
+standing. Do not spend calls on it, and never try to dismiss browser security UI
+yourself. If none of the above works, tell the user what is on their screen and
+ask them to clear it.
+
+**`chrome_navigate` still lies about this one.** A "Leave site?" confirmation
+holds the tab on its old page, and the call reports success anyway. The payload
+is honest even though the status is not: `url` is still the OLD page and
+`complete` is `false`. So after any navigation, check the `url` you got back
+before assuming the tab moved.
 
 ## Batching
 
