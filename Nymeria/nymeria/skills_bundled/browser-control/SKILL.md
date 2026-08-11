@@ -50,19 +50,50 @@ It is also why the rules below are not optional.
 
 Every `chrome_act` tells you what actually happened. Look at it before moving on:
 
-- `url_changed` -> you are on a different page; your other refs are stale.
+- `input_delivered: "no"` -> the page received NOTHING. The call fails when this
+  happens; see "When your input vanishes" below. `"unknown"` just means it could
+  not be checked, which is not a problem on its own.
 - `console_errors` / `failed_requests` -> the click "worked" and the site broke.
   A 500 here means the thing you tried did NOT happen, whatever the page shows.
 - `previous_value` -> confirms you edited the field you meant to.
 - `input: "synthetic"` -> the event was page-synthesized, not browser-level.
   Some sites ignore those. If the outcome is ambiguous, verify before trusting.
+- `input: "synthetic"` with `synthetic_reason: "the real click did not change
+  the control state"` -> a real click was tried and had no effect. On a checkbox
+  that is a fixup; as a pattern across actions it means this tab is dropping
+  input, so read the next section.
 - `settled: {reason: "deadline"}` -> the page never went quiet. It may still be
   working. Consider `chrome_act(action="wait", wait_for_text=...)`.
 - An error naming an element that covers your target -> dismiss the overlay
   (cookie banner, modal) and retry. Do not try to click through it.
 
+Do NOT trust `url_changed`: it is computed from the last committed URL, so a
+click that navigates usually still reports `false`. Confirm a navigation by
+reading the page or checking `chrome_tabs`.
+
 Stale refs are normal, not a failure. When you get "re-read the page", read it
 again and continue; do not retry the same ref.
+
+## When your input vanishes
+
+A tab-modal dialog makes Chrome discard every input event sent to that tab,
+*after* accepting it. Chrome's "your password was found in a data breach"
+warning, an HTTP Basic auth prompt, and a page's own "Leave site?" confirmation
+all do it. None of them is visible to you: they are browser UI, absent from the
+accessibility tree, from `chrome_console`, from `chrome_network`, and from
+`chrome_screenshot`, which captures the page and not the browser frame. Nothing
+reports them, so you infer them from the symptom.
+
+The signature: `click`, `key`, `type`, `hover`, `drag` and `scroll` all stop
+having any effect, while `fill` keeps working. That split is diagnostic, because
+`fill` is delivered by a different mechanism that the block does not touch.
+
+The recovery is **open a fresh tab and redo the work there.** Reloading does not
+help, and neither does switching tabs; the block belongs to the tab and survives
+navigation within it. A page dialog you raised yourself (`alert`, `confirm`,
+`prompt`) is the one case you can clear in place, with `chrome_dialog`. Never
+try to dismiss browser security UI yourself. If a fresh tab is not viable, tell
+the user what is on their screen and ask them to clear it.
 
 ## Batching
 
@@ -130,7 +161,9 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   as their own labelled section in `chrome_read_page`; read the whole output.
 - Something is silently failing -> the advanced tools `chrome_console` and
   `chrome_network` show what the page is doing. They are not bound by this kit;
-  enable them, or run them once with `tool_invoke`.
+  enable them, or run them once with `tool_invoke`. Neither can see a browser
+  dialog: a blocked tab produces no console output and no requests, so read
+  "When your input vanishes" before spending calls there.
 
 `chrome_cdp` is a raw protocol escape hatch that bypasses every safeguard here.
 It is deliberately not part of this kit. If you genuinely need it, say why.
