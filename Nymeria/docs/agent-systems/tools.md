@@ -2562,6 +2562,12 @@ strings the page chose. Oversized text is capped for the model at a line
 boundary and spilled to the thread's command dir, with the `file_read` pointer
 emitted OUTSIDE the fence so a page cannot forge one.
 
+**Validated live** (2026-08-11, headless): the full rendezvous, trusted input
+on real forms, cross-origin iframe reads, the fence holding against forged
+closing markers, and the kit's contract stopping an agent at a payment button
+even when the user's own wording pushed it forward. Notes and the reusable rig
+are in `private/plans/shipped/02-tools-skills-and-search.md`.
+
 **Security posture:** this surface composes the agent's untrusted-content
 exposure with authenticated access to every site the user is signed in to,
 which is a materially larger blast radius than the session-free `browser_*`
