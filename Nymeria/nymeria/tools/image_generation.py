@@ -403,6 +403,7 @@ def finalize_screenshot(
     config: Optional[RunnableConfig],
     page_url: str = "",
     native_context_enabled: bool = True,
+    model: str = "playwright",
 ) -> tuple[str, dict[str, Any]]:
     """Write screenshot PNG bytes to the workspace and build the (content, artifact) return.
 
@@ -440,7 +441,7 @@ def finalize_screenshot(
         source="browser_screenshot",
         prompt=label,
         provider="browser",
-        model="playwright",
+        model=model,
         native_context_enabled=native_context_enabled,
     )
     return content, artifact
