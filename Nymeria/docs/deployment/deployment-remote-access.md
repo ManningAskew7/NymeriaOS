@@ -14,6 +14,7 @@ This page covers four paths, ordered roughly from simplest to most powerful. **Y
 | Access the web/desktop UI from my personal devices, with no public exposure | [Tailscale](#tailscale) |
 | Public URL on a free tier, no VPS or custom domain needed | [Cloudflare Tunnel](#cloudflare-tunnel) |
 | Production deployment with a custom domain | [Domain + Caddy](#domain--caddy) |
+| Let the assistant drive my own browser | any path below that gives you **HTTPS** (see [Browser extension](#browser-extension)) |
 
 ---
 
@@ -227,6 +228,34 @@ NYMERIA_PUBLIC_URL=https://nymeria.yourdomain.com
 - You want full control without third-party services in the request path
 
 For multi-user production, prefer the [Docker stack](PRODUCTION_DEPLOYMENT.md). It bundles Caddy plus the hardening you want.
+
+---
+
+## Browser extension
+
+The Nymeria browser extension is the one client with a hard requirement on how
+you expose the backend: **it must reach an `https://` URL, or `localhost`.**
+
+This is not a Nymeria policy, it is Chrome's. An extension may only request
+permission for origins its manifest declares, and the shipped manifest declares
+`https://*/*` plus loopback. A backend at `http://<your-public-ip>:8000` matches
+neither, so the extension's Connect button fails before it ever reaches Nymeria.
+
+The requirement is deliberate rather than incidental. The extension
+authenticates with a personal account token and then acts in your logged-in
+browser, so a token intercepted in transit is worth considerably more than most.
+Any of the paths on this page satisfies it:
+
+| Your situation | What to use |
+|---|---|
+| Backend on the same machine as Chrome | `http://localhost:8000`, nothing to set up |
+| No domain, don't want public exposure | [Tailscale](#tailscale): MagicDNS names are HTTPS |
+| No domain, want a public URL | [Cloudflare Tunnel](#cloudflare-tunnel): the `trycloudflare.com` URL is HTTPS |
+| Own a domain | [Domain + Caddy](#domain--caddy): certificates issue automatically |
+
+Whichever you pick, add the extension's ID to `CORS_ORIGINS` as
+`chrome-extension://<id>` and restart the API. Setup steps for the extension
+itself are in `nymeria-browser/README.md`.
 
 ---
 
