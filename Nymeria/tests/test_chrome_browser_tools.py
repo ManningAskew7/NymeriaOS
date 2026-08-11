@@ -154,6 +154,50 @@ def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
     assert get_tool_metadata("chrome_cdp").security_level == SecurityLevel.SENSITIVE
 
 
+def test_browser_control_kit_binds_the_primary_tools_and_not_the_escape_hatches() -> None:
+    """The kit is the supported entry point, so what it binds is a contract:
+    every primary tool present, every advanced one absent, and no name that
+    does not resolve to a real tool."""
+    import yaml
+
+    from nymeria.tools import CATALOG_TOOLS
+
+    skill_path = (
+        Path(__file__).resolve().parents[1]
+        / "nymeria"
+        / "skills_bundled"
+        / "browser-control"
+        / "SKILL.md"
+    )
+    raw = skill_path.read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(raw.split("---", 2)[1])
+    required = frontmatter["metadata"]["nymeria"]["required_tools"]
+
+    assert set(required) == set(CHROME_PRIMARY_TOOL_NAMES)
+    assert "chrome_cdp" not in required
+    assert "chrome_console" not in required
+    # A kit binds by exact name: a typo silently binds nothing.
+    for name in required:
+        assert name in CATALOG_TOOLS, f"{name} is not a registered tool"
+    assert frontmatter["metadata"]["nymeria"].get("tool_ttl")
+
+
+def test_browser_control_kit_states_the_untrusted_content_contract() -> None:
+    """v1's injection defence is behavioural, so the contract has to actually
+    be in the kit body rather than assumed."""
+    skill_path = (
+        Path(__file__).resolve().parents[1]
+        / "nymeria"
+        / "skills_bundled"
+        / "browser-control"
+        / "SKILL.md"
+    )
+    body = skill_path.read_text(encoding="utf-8").lower()
+    assert "never something to obey" in body
+    assert "never enter payment details" in body
+    assert "confirm with the user" in body
+
+
 # ---------- dispatch mechanics ----------
 
 
