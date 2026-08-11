@@ -22,6 +22,33 @@ logger = logging.getLogger(__name__)
 # callers should grep/sed huge inputs to the relevant section first.
 EXTRACTION_INPUT_CHAR_BUDGET = 120_000
 
+# Backoff before the single transient-fault retry in run_extraction. Short on
+# purpose: this runs inside a user-facing tool call.
+_EXTRACTION_RETRY_DELAY_SECONDS = 1.0
+
+
+def _is_transient_extraction_error(error: Exception) -> bool:
+    """True for faults worth one quick in-tool retry.
+
+    Inherits the chat path's ``is_retryable_llm_error`` classification (5xx,
+    timeouts, connection drops, and its 408/409/425 statuses) MINUS rate
+    limits: on a CLIProxy route a 429 means a subscription quota window
+    measured in hours, where retrying inside a tool call adds latency for
+    nothing (#161: a user turn is worth the wait; a tool sub-call is not).
+    The 429 exclusion checks status and text independently on purpose: the
+    text guard stays correct even if the upstream predicate ever grows a
+    rate-limit text marker.
+    """
+    from ..core.agent_results import extract_http_status_code
+    from ..vendor.react_agent.nodes import is_retryable_llm_error
+
+    if extract_http_status_code(error) == 429:
+        return False
+    text = str(error).casefold()
+    if "rate limit" in text or "rate_limit" in text:
+        return False
+    return is_retryable_llm_error(error)
+
 
 def build_extraction_llm_config(settings):
     """Build an LLMConfig for the extraction step.
@@ -107,11 +134,14 @@ def run_extraction(content: str, prompt: str) -> tuple[str, str]:
     ``[Error]: ...`` string and ``model_name`` is empty. Callers check
     ``text.startswith("[Error]:")`` before rendering the model attribution.
     """
+    import time
+
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from ..config import get_settings
     from ..vendor.react_agent.providers import create_llm
 
+    config = None
     try:
         config = build_extraction_llm_config(get_settings())
         if not config.model:
@@ -135,7 +165,22 @@ def run_extraction(content: str, prompt: str) -> tuple[str, str]:
         # astream_events stream, so the extraction lands ONLY in the tool result
         # and never leaks token-by-token into the live transcript (mirrors the
         # callbacks=[] isolation used for chat()-from-inside-a-tool in agent.py).
-        result = llm.invoke(messages, config={"callbacks": []})
+        # One deliberate retry on transient faults only; see
+        # _is_transient_extraction_error for why 429 is excluded.
+        result = None
+        for attempt in (0, 1):
+            try:
+                result = llm.invoke(messages, config={"callbacks": []})
+                break
+            except Exception as invoke_error:
+                if attempt == 0 and _is_transient_extraction_error(invoke_error):
+                    logger.warning(
+                        "run_extraction transient failure (%s); retrying once",
+                        type(invoke_error).__name__,
+                    )
+                    time.sleep(_EXTRACTION_RETRY_DELAY_SECONDS)
+                    continue
+                raise
         text = getattr(result, "content", "")
         if isinstance(text, list):
             # Anthropic-style content blocks: keep text parts, tolerate None/non-dicts.
@@ -151,4 +196,22 @@ def run_extraction(content: str, prompt: str) -> tuple[str, str]:
         return text, (config.model or "")
     except Exception as e:  # noqa: BLE001 - never leak provider URLs/keys from the exception text
         logger.error("run_extraction failed: %s", e, exc_info=True)
-        return f"[Error]: Extraction step failed: {type(e).__name__} (see server logs)", ""
+        detail = f"{type(e).__name__} (see server logs)"
+        hint = ""
+        try:
+            # Shared canned CLIProxy copy, no URLs or keys (#148/#161): before
+            # this, a documented quota-window condition surfaced as a bare
+            # exception class name and read as a mystery provider bug.
+            from ..core.agent_results import extract_http_status_code
+            from ..core.llm_provider_utils import cliproxy_failure_hint
+
+            hint = cliproxy_failure_hint(
+                getattr(config, "base_url", None) or "",
+                str(e),
+                status_code=extract_http_status_code(e),
+            )
+        except Exception:  # noqa: BLE001 - the hint must never break error reporting
+            hint = ""
+        if hint:
+            detail = f"{detail}. {hint}"
+        return f"[Error]: Extraction step failed: {detail}", ""

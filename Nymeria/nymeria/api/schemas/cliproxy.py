@@ -137,9 +137,11 @@ class CLIProxyVerifyRequest(BaseModel):
 class CLIProxyVerifyResponse(BaseModel):
     """``auth_failed`` is the only verdict that means the login is no good.
 
-    ``inconclusive`` covers every transient fault (proxy down, unknown model,
-    timeout) and must not be read as failure: a flaky probe cannot be allowed
-    to block a good login.
+    ``inconclusive`` covers every non-auth miss and must not be read as
+    failure: transient faults (proxy down, unknown model, timeout) and the
+    genuine 429 quota window (#161: the probe carries the billing
+    fingerprint, so a 429 means the window is exhausted, not that the login
+    is bad). Neither may block a good login.
     """
 
     verdict: CLIProxyVerifyVerdict

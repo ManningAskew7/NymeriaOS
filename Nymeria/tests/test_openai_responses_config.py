@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 import warnings
 
@@ -24,10 +25,11 @@ from langchain_core.tools import tool
 from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.cliproxy import (
     CLIPROXY_ANTHROPIC_BETA_HEADER,
+    CLIPROXY_BILLING_SYSTEM_BLOCK,
     CLIPROXY_CLAUDE_USER_AGENT,
     CLIPROXY_REDACT_THINKING_BETA,
 )
-from nymeria.vendor.react_agent.config import LLMConfig
+from nymeria.vendor.react_agent.config import LLMConfig, LLMFallbackConfig
 from nymeria.vendor.react_agent.providers import (
     ChatOpenAIWithReasoning,
     _capture_reasoning_into,
@@ -210,6 +212,10 @@ def _novita_config(**overrides) -> LLMConfig:
 
 def _anthropic_config(**overrides) -> LLMConfig:
     return llm_config({"provider": "anthropic", "model": "claude-sonnet-4-20250514"}, **overrides)
+
+
+def _cliproxy_anthropic_config(**overrides) -> LLMConfig:
+    return _anthropic_config(base_url="http://cli-proxy-api-latest:8317", **overrides)
 
 
 def _run_in_new_event_loop(async_fn):
@@ -794,6 +800,224 @@ def test_anthropic_tool_cache_breakpoint_respects_existing_annotations():
     providers._inject_tool_cache_control(payload)
 
     assert "cache_control" not in payload["tools"][1]
+
+
+def test_anthropic_cliproxy_payload_carries_billing_block_first(monkeypatch):
+    """#161: the OAuth billing fingerprint rides the request payload, so every
+    factory-built client carries it, not just graph traffic. Covered for both
+    CLIProxy class variants (with and without the context_management adapter)."""
+    for use_adapter in (False, True):
+        monkeypatch.setattr(
+            providers,
+            "_should_use_cliproxy_context_management_adapter",
+            lambda _chat_model_cls, _use=use_adapter: (_use, "test"),
+        )
+        llm = create_llm(_cliproxy_anthropic_config())
+
+        payload = llm._get_request_payload(
+            [SystemMessage(content="You are Nymeria."), HumanMessage(content="hi")]
+        )
+
+        assert payload["system"][0] == CLIPROXY_BILLING_SYSTEM_BLOCK
+        assert "You are Nymeria." in json.dumps(payload["system"][1:])
+
+
+def test_anthropic_cliproxy_payload_without_system_gets_block_alone():
+    llm = create_llm(_cliproxy_anthropic_config())
+
+    payload = llm._get_request_payload([HumanMessage(content="hi")])
+
+    assert payload["system"] == [CLIPROXY_BILLING_SYSTEM_BLOCK]
+
+
+def test_anthropic_cliproxy_billing_block_not_duplicated():
+    """Idempotence keeps callers that already prepend the block by hand (the
+    documented standalone-caller recipe) from double-billing-stamping."""
+    llm = create_llm(_cliproxy_anthropic_config())
+
+    payload = llm._get_request_payload(
+        [
+            SystemMessage(
+                content=[
+                    dict(CLIPROXY_BILLING_SYSTEM_BLOCK),
+                    {"type": "text", "text": "You are Nymeria."},
+                ]
+            ),
+            HumanMessage(content="hi"),
+        ]
+    )
+
+    billing_blocks = [
+        block
+        for block in payload["system"]
+        if isinstance(block, dict)
+        and str(block.get("text", "")).startswith("x-anthropic-billing-header:")
+    ]
+    assert len(billing_blocks) == 1
+    assert payload["system"][0] == dict(CLIPROXY_BILLING_SYSTEM_BLOCK)
+
+
+def test_anthropic_cliproxy_payload_carries_zero_cache_control(monkeypatch):
+    """CLIProxy auto-injects its own prompt-cache breakpoints ONLY when the
+    client sent zero cache_control, so a single client-side annotation
+    anywhere in the payload silently disables proxy-side caching with no
+    error. Whole-payload sweep, on both CLIProxy class variants, so no
+    future system/message/tool breakpoint can sneak onto this path."""
+
+    @tool
+    def alpha_tool(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    for use_adapter in (False, True):
+        monkeypatch.setattr(
+            providers,
+            "_should_use_cliproxy_context_management_adapter",
+            lambda _chat_model_cls, _use=use_adapter: (_use, "test"),
+        )
+        llm = create_llm(_cliproxy_anthropic_config())
+        bound = llm.bind_tools([alpha_tool])
+
+        payload = bound.bound._get_request_payload(
+            [
+                SystemMessage(content="You are Nymeria."),
+                HumanMessage(content="first"),
+                AIMessage(content="reply"),
+                HumanMessage(content="second"),
+            ],
+            **bound.kwargs,
+        )
+
+        assert payload["system"][0] == CLIPROXY_BILLING_SYSTEM_BLOCK
+        assert "cache_control" not in json.dumps(payload)
+
+
+def test_cliproxy_fallback_scrubs_inherited_direct_path_cache_control():
+    """The mirror image of the billing-block leak: nodes.py annotates system
+    and conversation breakpoints per PRIMARY config, so a CLIProxy fallback
+    candidate behind a direct-Anthropic primary receives messages already
+    carrying cache_control. The seam must scrub them (proxy-side caching
+    dies on ONE client-sent breakpoint), copy-on-write, because the direct
+    primary still needs its annotations on its own next attempt."""
+    from nymeria.vendor.react_agent.nodes import _llm_candidate
+
+    primary_config = _anthropic_config(
+        base_url="https://api.anthropic.com",
+        fallbacks=[
+            LLMFallbackConfig(
+                model="claude-opus-4-8",
+                provider="anthropic",
+                api_key="test-key",
+                base_url="http://cli-proxy-api-latest:8317",
+            )
+        ],
+    )
+    candidate = _llm_candidate(
+        object(),
+        candidate_index=1,
+        llm_config=primary_config,
+        tools=[],
+        cache={},
+    )
+
+    system_message = SystemMessage(
+        content=[
+            {
+                "type": "text",
+                "text": "You are Nymeria.",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    )
+    human_message = HumanMessage(
+        content=[
+            {
+                "type": "text",
+                "text": "first",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    )
+
+    payload = candidate._get_request_payload([system_message, human_message])
+
+    assert payload["system"][0] == CLIPROXY_BILLING_SYSTEM_BLOCK
+    assert "cache_control" not in json.dumps(payload)
+    # Copy-on-write: the shared message objects keep their annotations for
+    # the direct primary's own next attempt.
+    assert system_message.content[0]["cache_control"] == {"type": "ephemeral"}
+    assert human_message.content[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_direct_payload_has_no_billing_block():
+    llm = create_llm(_anthropic_config(base_url="https://api.anthropic.com"))
+
+    payload = llm._get_request_payload(
+        [SystemMessage(content="You are Nymeria."), HumanMessage(content="hi")]
+    )
+
+    assert "x-anthropic-billing-header" not in json.dumps(payload)
+
+
+def test_cliproxy_claude_fallback_candidate_carries_billing_block():
+    """#161 worst case: a claude-* CLIProxy fallback behind a non-Claude
+    primary shipped no fingerprint (messages are formatted once with the
+    primary config), so the rescue path 429'd exactly when needed. The seam
+    is per client instance, so the candidate built from the fallback config
+    carries the block on its own."""
+    from nymeria.vendor.react_agent.nodes import _llm_candidate
+
+    primary_config = _openai_config(
+        fallbacks=[
+            LLMFallbackConfig(
+                model="claude-opus-4-8",
+                provider="anthropic",
+                api_key="test-key",
+                base_url="http://cli-proxy-api-latest:8317",
+            )
+        ]
+    )
+    candidate = _llm_candidate(
+        object(),  # primary llm; not consulted for candidate_index >= 1
+        candidate_index=1,
+        llm_config=primary_config,
+        tools=[],
+        cache={},
+    )
+
+    payload = candidate._get_request_payload([HumanMessage(content="hi")])
+
+    assert payload["system"] == [CLIPROXY_BILLING_SYSTEM_BLOCK]
+
+
+def test_direct_anthropic_fallback_candidate_has_no_billing_block():
+    """The reverse leak: CLIProxy primary with a direct-Anthropic fallback
+    must not send the fingerprint to api.anthropic.com."""
+    from nymeria.vendor.react_agent.nodes import _llm_candidate
+
+    primary_config = _cliproxy_anthropic_config(
+        fallbacks=[
+            LLMFallbackConfig(
+                model="claude-opus-4-8",
+                provider="anthropic",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+            )
+        ]
+    )
+    candidate = _llm_candidate(
+        object(),
+        candidate_index=1,
+        llm_config=primary_config,
+        tools=[],
+        cache={},
+    )
+
+    payload = candidate._get_request_payload(
+        [SystemMessage(content="You are Nymeria."), HumanMessage(content="hi")]
+    )
+
+    assert "x-anthropic-billing-header" not in json.dumps(payload)
 
 
 def test_anthropic_cliproxy_base_url_uses_context_management_adapter(monkeypatch):

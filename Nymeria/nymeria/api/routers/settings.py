@@ -42,6 +42,7 @@ from ...core.llm_provider_test_suite import (
 from ...core.llm_provider_utils import (
     base_url_allows_no_api_key,
     cliproxy_base_url_with_v1,
+    cliproxy_probe_billing_system,
     configured_llm_destinations,
     destination_redirects_away_from_config,
     extract_model_metadata,
@@ -1028,23 +1029,14 @@ async def _test_llm_provider_config(
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "Reply with ok."}],
         }
-        if base_url:
-            # Function-local vendored import, matching provider_probe_headers.
-            from ...vendor.react_agent.cliproxy import (
-                CLIPROXY_BILLING_SYSTEM_BLOCK,
-                looks_like_cliproxy_url,
-            )
-
-            if looks_like_cliproxy_url(base_url):
-                # Standalone callers that skip the node layer send no OAuth
-                # billing fingerprint, so premium Claude models 429 through
-                # CLIProxy with a perfectly valid token (the documented
-                # standalone-script gotcha, docs/private/cliproxy.md). The
-                # probe mirrors the production path so a test verdict on a
-                # premium model is truthful and a residual 429 really means
-                # quota-window exhaustion. The block stays at the payload
-                # site: no helper owns request bodies.
-                payload["system"] = [dict(CLIPROXY_BILLING_SYSTEM_BLOCK)]
+        # The probe sends the production cloak-skip identity (headers above),
+        # which requires the OAuth billing fingerprint on a CLIProxy base or
+        # premium Claude models 429 on a perfectly valid token; with it, a
+        # residual 429 really means quota-window exhaustion. Shared helper
+        # (#161): this payload and the provider test suite's must not drift.
+        system_blocks = cliproxy_probe_billing_system(base_url)
+        if system_blocks:
+            payload["system"] = system_blocks
         response_api_mode = None
     elif google_native:
         # Native Gemini wire (google-genai REST shape). The configured base

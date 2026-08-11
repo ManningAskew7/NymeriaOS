@@ -34,7 +34,6 @@ from pydantic import BaseModel
 
 from .cliproxy import (
     CACHE_CONTROL_EPHEMERAL as _CACHE_CONTROL_EPHEMERAL,
-    CLIPROXY_BILLING_SYSTEM_BLOCK,
     looks_like_cliproxy_url,
 )
 from .state import AgentState
@@ -2151,30 +2150,24 @@ def _format_system_prompt(
 ) -> str | list[dict[str, Any]]:
     """Format system prompt with provider-specific annotations.
 
-    For CLIProxy Anthropic: prepends billing fingerprint block.
     For direct Anthropic: adds cache_control breakpoint on the last block
     so the system prompt is cached across turns.
-    """
-    is_cliproxy = _uses_cliproxy_anthropic(llm_config)
-    is_direct = _uses_direct_anthropic(llm_config)
 
-    if not is_cliproxy and not is_direct:
+    CLIProxy Anthropic deliberately passes through UNCHANGED. The OAuth
+    billing fingerprint rides the request payload now
+    (providers.py::_inject_cliproxy_billing_block), covering every caller of
+    a factory-built client rather than only the graph. And this arm must
+    never gain a cache_control: CLIProxy auto-injects its own cache
+    breakpoints only when the client sent zero cache_control, so annotating
+    here would silently disable proxy-side caching.
+    """
+    if not _uses_direct_anthropic(llm_config):
         return system_prompt
 
     if isinstance(system_prompt, list):
         blocks = list(system_prompt)
     else:
         blocks = [{"type": "text", "text": system_prompt}]
-
-    if is_cliproxy:
-        has_billing_block = any(
-            isinstance(block, dict)
-            and str(block.get("text", "")).startswith("x-anthropic-billing-header:")
-            for block in blocks
-        )
-        if has_billing_block:
-            return blocks
-        return [dict(CLIPROXY_BILLING_SYSTEM_BLOCK), *blocks]
 
     # Direct Anthropic: add cache_control to the last block
     if blocks:

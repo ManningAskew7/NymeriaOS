@@ -139,7 +139,13 @@ class TestAnthropicCacheBreakpoints:
             }
         ]
 
-    def test_cliproxy_anthropic_keeps_billing_block_without_cache_breakpoint(self):
+    def test_cliproxy_anthropic_passes_through_unchanged(self):
+        """#161: the billing fingerprint moved to the request payload
+        (providers.py::_inject_cliproxy_billing_block), so the node layer no
+        longer prepends it. The CLIProxy arm must also never gain a
+        cache_control: CLIProxy auto-injects its own cache breakpoints only
+        when the client sends zero cache_control, so falling through to the
+        direct-Anthropic arm would silently disable proxy-side caching."""
         from nymeria.vendor.react_agent.nodes import (
             _format_system_prompt,
             _uses_direct_anthropic,
@@ -150,8 +156,7 @@ class TestAnthropicCacheBreakpoints:
         assert _uses_direct_anthropic(cfg) is False
         formatted = _format_system_prompt("You are Nymeria.", cfg)
 
-        assert formatted[0] == CLIPROXY_BILLING_SYSTEM_BLOCK
-        assert formatted[1] == {"type": "text", "text": "You are Nymeria."}
+        assert formatted == "You are Nymeria."
 
     def test_conversation_cache_breakpoint_targets_second_to_last_user_message(self):
         from nymeria.vendor.react_agent.nodes import (
