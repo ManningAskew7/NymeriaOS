@@ -15,7 +15,7 @@ The flow:
 
 Differences from :class:`AuthPromptCoordinator`:
 
-* Commands resolve in seconds, not minutes. ``_ORPHAN_TTL_SECONDS`` is
+* Commands resolve in seconds, not minutes. ``ORPHAN_TTL_SECONDS`` is
   90s instead of 600s.
 * :meth:`abort_thread` lets the cancellation cascade
   (``agent_callable_lifecycle.abort_with_cascade``) resolve every pending
@@ -40,7 +40,10 @@ from .future_rendezvous import FutureRendezvous
 
 logger = logging.getLogger(__name__)
 
-_ORPHAN_TTL_SECONDS = 90
+# Public, unlike the same constant in the sibling coordinators: the chrome
+# tools must bound their own waits by it (a tool that waits past the sweep is
+# told its command was orphaned while the extension is still working).
+ORPHAN_TTL_SECONDS = 90
 _SWEEP_INTERVAL_SECONDS = 30
 
 
@@ -60,7 +63,7 @@ class BrowserCommandCoordinator(FutureRendezvous[PendingCommand]):
 
     def __init__(self) -> None:
         super().__init__(
-            ttl_seconds=_ORPHAN_TTL_SECONDS,
+            ttl_seconds=ORPHAN_TTL_SECONDS,
             sweep_interval_seconds=_SWEEP_INTERVAL_SECONDS,
             log_label="browser_command_coordinator",
         )

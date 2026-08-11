@@ -162,7 +162,7 @@ def test_pending_count_tracks_register_and_resolve() -> None:
 def test_sweep_resolves_orphaned_futures(monkeypatch) -> None:
     """Force the orphan TTL very short and verify the sweep loop fires."""
     import nymeria.core.browser_command_coordinator as mod
-    monkeypatch.setattr(mod, "_ORPHAN_TTL_SECONDS", 0.05)
+    monkeypatch.setattr(mod, "ORPHAN_TTL_SECONDS", 0.05)
     monkeypatch.setattr(mod, "_SWEEP_INTERVAL_SECONDS", 0.02)
 
     async def run() -> None:
