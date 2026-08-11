@@ -125,7 +125,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.THREAD_SPAWN, ("SPAWN_THREAD_TOOLS",)),
     (ToolCategory.TRIGGER, ("TRIGGER_TOOLS",)),
     (ToolCategory.EMAIL, ("OUTLOOK_TOOLS", "OUTLOOK_ATTACHMENT_TOOLS")),
-    (ToolCategory.BROWSER, ("BROWSER_TOOLS",)),
+    (ToolCategory.BROWSER, ("BROWSER_TOOLS", "CHROME_BROWSER_TOOLS")),
     (ToolCategory.IMAGE, ("IMAGE_GEN_INTEGRATION_TOOLS",)),
     (ToolCategory.CALENDAR, ("CALENDAR_TOOLS",)),
     (
@@ -240,6 +240,15 @@ _BROWSER_SAFE_TOOL_NAMES = frozenset(
         "browser_scroll",
         "browser_close",
         "browser_status",
+        # chrome_* read-only half. The rest (navigate, act, batch, dialog)
+        # drive the user's logged-in browser and stay MODERATE; chrome_cdp is
+        # sensitive, below.
+        "chrome_read_page",
+        "chrome_read_text",
+        "chrome_find",
+        "chrome_screenshot",
+        "chrome_console",
+        "chrome_network",
     }
 )
 
@@ -965,6 +974,11 @@ def _infer_security_level(
     if category == ToolCategory.EMAIL:
         return SecurityLevel.SAFE if tool_name in _EMAIL_SAFE_TOOL_NAMES else SecurityLevel.MODERATE
     if category == ToolCategory.BROWSER:
+        # Raw CDP against the user's logged-in Chrome can run arbitrary
+        # JavaScript on any tab, which subsumes every other browser tool and
+        # reaches every site the user is signed in to.
+        if tool_name == "chrome_cdp":
+            return SecurityLevel.SENSITIVE
         return SecurityLevel.SAFE if tool_name in _BROWSER_SAFE_TOOL_NAMES else SecurityLevel.MODERATE
     if category == ToolCategory.IMAGE:
         return SecurityLevel.MODERATE
