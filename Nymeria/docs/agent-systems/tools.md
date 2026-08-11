@@ -2571,12 +2571,31 @@ are in `private/plans/shipped/02-tools-skills-and-search.md`.
 **Security posture:** this surface composes the agent's untrusted-content
 exposure with authenticated access to every site the user is signed in to,
 which is a materially larger blast radius than the session-free `browser_*`
-tools (audit G7). Prompt injection remains out of scope per `SECURITY.md` §3.2;
-v1's controls are the fence plus the behavioural contract in the
-`browser-control` kit (report page instructions, never obey them; confirm
-before anything irreversible; never enter payment or identity data). Gated
-controls (domain pre-authorization, a `ui_prompt` confirmation gate, an origin
-allowlist) are designed but deliberately not built yet.
+tools (audit G7). Prompt injection remains out of scope per `SECURITY.md` §3.2, and
+nothing here is a control in that document's sense: §2.8 states that the system
+prompt "does not rely on in-prompt provenance framing as a control", and these
+measures are guidance that shapes the default path, not enforcement. What v1
+ships is three layers of it, deliberately carried on different rails so no
+single binding mistake removes them all:
+
+1. **The fence**, on every page-derived tool RESULT, so it arrives however the
+   tool was reached.
+2. **The action contract** (confirm before anything irreversible; never enter
+   payment card, bank, ID or password data; no account creation, unprompted
+   SSO consent, or CAPTCHA solving), on the `chrome_act` and `chrome_batch`
+   SCHEMAS. It lived only in the kit until a live test showed the ordinary
+   discovery path (`tool_search` then `tool_manage`) binds the tools
+   individually and leaves the kit behind, so an agent got the user's real
+   browser with the fence and none of the contract.
+3. **An injection detector** that names injection-shaped passages in a heads-up
+   outside the fence. It is deliberately monotone: it can add suspicion and
+   never remove it, and it never reports a page as clean. A likelihood score
+   would invert the failure mode, since the dangerous page is exactly the one
+   crafted to score low, and grading pages would hand an attacker a checkable
+   oracle plus teach the model to relax on everything that scores well.
+
+Gated controls (domain pre-authorization, a `ui_prompt` confirmation gate, an
+origin allowlist) are designed but deliberately not built yet.
 
 
 ---
