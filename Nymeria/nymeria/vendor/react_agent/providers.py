@@ -32,6 +32,7 @@ from langchain_core.tools import BaseTool
 from .cliproxy import (
     CACHE_CONTROL_EPHEMERAL as _CACHE_CONTROL_EPHEMERAL,
     CLIPROXY_ANTHROPIC_BETA_HEADER,
+    CLIPROXY_BILLING_SYSTEM_BLOCK,
     CLIPROXY_CLAUDE_USER_AGENT,
     looks_like_cliproxy_url,
 )
@@ -3089,6 +3090,96 @@ def _inject_tool_cache_control(payload: dict) -> None:
         last_tool["cache_control"] = dict(_CACHE_CONTROL_EPHEMERAL)
 
 
+def _inject_cliproxy_billing_block(payload: dict) -> None:
+    """Prepend the OAuth billing fingerprint to an Anthropic API payload.
+
+    Anthropic classifies a CLIProxy OAuth request as subscription-tier traffic
+    only when the body carries this lightweight system block; without it,
+    premium Claude models return a misleading 429 on a valid token (or, with
+    extra-usage billing enabled, silently draw metered spend). See
+    docs/private/cliproxy.md, "OAuth billing fingerprint". Injecting at the
+    request payload covers every langchain entry point (invoke/stream/batch,
+    sync and async, tool calling, structured output) per client instance, and
+    therefore per fallback candidate.
+
+    Idempotent: a system already carrying the fingerprint anywhere (a caller
+    prepending it by hand, or a replayed payload) is left untouched.
+
+    MUST NOT add cache_control anywhere: CLIProxy auto-injects its own prompt
+    cache breakpoints only when the client sent zero cache_control, so a
+    single client-side annotation would silently disable proxy-side caching
+    with no error and no symptom beyond cost and latency.
+    """
+    system = payload.get("system")
+    if isinstance(system, str):
+        blocks: list[Any] = (
+            [{"type": "text", "text": system}] if system else []
+        )
+    elif isinstance(system, list):
+        blocks = list(system)
+    elif system is None:
+        blocks = []
+    else:
+        # Unrecognized shape: do not guess at its structure. Loud, because a
+        # skipped injection is the misleading-429 trap this seam exists to
+        # prevent (unreachable through langchain-anthropic 1.4.2, which emits
+        # str/list/absent only).
+        logger.warning(
+            "[LLM] CLIProxy billing block skipped: unrecognized system payload "
+            "shape %s",
+            type(system).__name__,
+        )
+        return
+    for block in blocks:
+        if isinstance(block, dict) and str(block.get("text", "")).startswith(
+            "x-anthropic-billing-header:"
+        ):
+            return
+    payload["system"] = [dict(CLIPROXY_BILLING_SYSTEM_BLOCK), *blocks]
+
+
+def _strip_cache_control_from_payload(payload: dict) -> None:
+    """Remove client-side ``cache_control`` anywhere in an Anthropic payload.
+
+    The CLIProxy invariant is ZERO client-sent cache breakpoints (the proxy
+    auto-injects its own only when the client sent none), but upstream layers
+    annotate for the DIRECT path per primary config: a CLIProxy fallback
+    candidate behind a direct-Anthropic primary receives messages already
+    carrying system/conversation breakpoints (nodes.py formats once, with the
+    primary's config). Scrubbing here makes the invariant hold per client
+    instance, symmetric with the billing injection. Copy-on-write throughout:
+    content blocks can be shared with graph state, and the direct primary
+    still needs its breakpoints on its own next attempt.
+    """
+
+    def _without(block: Any) -> Any:
+        if isinstance(block, dict) and "cache_control" in block:
+            return {k: v for k, v in block.items() if k != "cache_control"}
+        return block
+
+    system = payload.get("system")
+    if isinstance(system, list):
+        payload["system"] = [_without(block) for block in system]
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        rebuilt = []
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list) and any(
+                isinstance(block, dict) and "cache_control" in block
+                for block in content
+            ):
+                message = {
+                    **message,
+                    "content": [_without(block) for block in content],
+                }
+            rebuilt.append(message)
+        payload["messages"] = rebuilt
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        payload["tools"] = [_without(tool) for tool in tools]
+
+
 def _anthropic_chat_model_class_for_config(
     chat_model_cls: type[Any],
     config: LLMConfig,
@@ -3159,16 +3250,28 @@ def _anthropic_chat_model_class_for_config(
 
         return NymeriaChatAnthropicWithToolCaching
 
+    class CLIProxyBillingChatAnthropic(NymeriaChatAnthropic):
+        # The symmetric case of the direct branch's tool-caching override at
+        # the same fork: scrub stray cache_control (a fallback candidate can
+        # inherit direct-path breakpoints), then inject the billing block.
+        # Rationale lives on the two helpers.
+
+        def _get_request_payload(self, *args: Any, **kwargs: Any) -> dict:
+            payload = super()._get_request_payload(*args, **kwargs)
+            _strip_cache_control_from_payload(payload)
+            _inject_cliproxy_billing_block(payload)
+            return payload
+
     use_adapter, reason = _should_use_cliproxy_context_management_adapter(
         chat_model_cls
     )
     if not use_adapter:
         logger.info("[LLM] CLIProxy context_management adapter not enabled: %s", reason)
-        return NymeriaChatAnthropic
+        return CLIProxyBillingChatAnthropic
 
     logger.info("[LLM] Enabling CLIProxy context_management adapter: %s", reason)
 
-    class CLIProxyCompatibleChatAnthropic(NymeriaChatAnthropic):
+    class CLIProxyCompatibleChatAnthropic(CLIProxyBillingChatAnthropic):
         def _make_message_chunk_from_anthropic_event(
             self,
             event: Any,

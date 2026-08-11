@@ -31,13 +31,14 @@ from ..config.local_llm import (
 from ..config.model_capabilities import register_model_metadata
 from .llm_credentials import get_llm_provider_credential
 from .llm_provider_utils import (
-    ANTHROPIC_API_VERSION,
     OPENROUTER_ATTRIBUTION_HEADERS,
     base_url_allows_no_api_key,
     cliproxy_base_url_with_v1,
+    cliproxy_probe_billing_system,
     extract_model_metadata,
     first_float,
     http_error_detail,
+    provider_probe_headers,
     redact_secrets,
 )
 
@@ -231,11 +232,27 @@ def _select_model(
     return None, None
 
 
-def _headers(provider: str, api_key: str, *, api_format: str) -> dict[str, str]:
+def _headers(
+    provider: str,
+    api_key: str,
+    *,
+    api_format: str,
+    has_custom_base_url: bool = False,
+    base_url: str | None = None,
+) -> dict[str, str]:
     if api_format == "anthropic_messages":
+        # The anthropic wire's probe identity is owned by
+        # provider_probe_headers (shared with /provider test and the models
+        # listing) so the surfaces cannot drift: same x-api-key shape, plus
+        # the cloak-skip User-Agent on custom bases and the safe
+        # Anthropic-Beta override on CLIProxy-shaped bases (#161).
         return {
-            "x-api-key": api_key,
-            "anthropic-version": ANTHROPIC_API_VERSION,
+            **provider_probe_headers(
+                "anthropic",
+                api_key,
+                has_custom_base_url=has_custom_base_url,
+                base_url=base_url,
+            ),
             "Content-Type": "application/json",
         }
     if api_format == "google_genai":
@@ -452,13 +469,27 @@ async def _timed_post(
         )
 
 
-def _chat_payload(*, api_format: str, api_mode: ApiMode, model: str) -> dict[str, Any]:
+def _chat_payload(
+    *,
+    api_format: str,
+    api_mode: ApiMode,
+    model: str,
+    base_url: str | None,
+) -> dict[str, Any]:
     if api_format == "anthropic_messages":
-        return {
+        payload: dict[str, Any] = {
             "model": model,
             "max_tokens": 16,
             "messages": [{"role": "user", "content": "Reply exactly: ok"}],
         }
+        # On a CLIProxy base the probe sends the production cloak-skip
+        # identity (see _headers), which requires the OAuth billing
+        # fingerprint or premium Claude models 429 on a valid token. Shared
+        # helper: this payload and /provider test's must not drift (#161).
+        system_blocks = cliproxy_probe_billing_system(base_url)
+        if system_blocks:
+            payload["system"] = system_blocks
+        return payload
     if api_format == "google_genai":
         # The model rides the URL on this wire, not the body. 64 output
         # tokens: thinking models spend the first tokens on thought, and a
@@ -683,6 +714,7 @@ async def _run_live_checks(
                 api_format=api_format,
                 api_mode=effective_api_mode,
                 model=selected_model,
+                base_url=clean_base_url,
             ),
             step_name="chat_completion",
             success_message="Provider returned a valid non-streaming chat response.",
@@ -849,7 +881,13 @@ async def run_provider_test_suite(
         )
     )
 
-    headers = _headers(provider, api_key, api_format=api_format)
+    headers = _headers(
+        provider,
+        api_key,
+        api_format=api_format,
+        has_custom_base_url=bool(base_url),
+        base_url=clean_base_url,
+    )
     secrets = (api_key, options.api_key, base_url, clean_base_url)
     models: list[dict[str, Any]] = []
     models_count: int | None = None

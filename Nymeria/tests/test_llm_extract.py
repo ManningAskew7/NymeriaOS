@@ -91,6 +91,169 @@ def test_run_extraction_swallows_exceptions(monkeypatch):
     assert model == ""
 
 
+def test_run_extraction_cliproxy_429_surfaces_quota_hint_without_retry(monkeypatch):
+    # #161: a 429 on a CLIProxy route is a documented quota-window condition,
+    # but the error surface flattened it to a bare class name, which read as a
+    # mystery provider bug for three sessions. The shared cliproxy_failure_hint
+    # copy must ride the tool error, the base URL must not, and a 429 must NOT
+    # be retried (the window clears in hours, not seconds).
+    from nymeria.vendor.react_agent import providers
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    calls = {"n": 0}
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            calls["n"] += 1
+            raise FakeRateLimitError("Error code: 429 rate_limit_error")
+
+    class FakeConfig:
+        model = "claude-opus-4-8"
+        base_url = "http://cli-proxy-api:8317"
+
+    monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
+    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
+
+    text, model = llm_extract.run_extraction("body", "prompt")
+
+    assert text.startswith("[Error]: Extraction step failed: FakeRateLimitError")
+    assert "usage window" in text
+    assert "cli-proxy-api" not in text
+    assert calls["n"] == 1
+    assert model == ""
+
+
+def test_run_extraction_does_not_retry_429_with_bland_text(monkeypatch):
+    # The real CLIProxy wire shape is `429 {'type':'rate_limit_error',
+    # 'message':'Error'}`: the status attribute alone must block the retry
+    # even when the text carries no rate-limit words (kills the mutant that
+    # drops the status guard and leans on the text guard).
+    from nymeria.vendor.react_agent import providers
+
+    class FakeStatusOnlyError(Exception):
+        status_code = 429
+
+    calls = {"n": 0}
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            calls["n"] += 1
+            raise FakeStatusOnlyError("Error")
+
+    class FakeConfig:
+        model = "m"
+        base_url = None
+
+    monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
+    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
+
+    text, _model = llm_extract.run_extraction("body", "prompt")
+
+    assert text.startswith("[Error]: Extraction step failed: FakeStatusOnlyError")
+    assert calls["n"] == 1
+
+
+def test_run_extraction_does_not_retry_rate_limit_text_on_retryable_status(monkeypatch):
+    # A retryable status (503) whose text names a rate limit must NOT retry:
+    # the text guard is the deliberate belt over the status check (kills the
+    # mutant that drops the text guard, which the 429-status tests cannot).
+    from nymeria.vendor.react_agent import providers
+
+    class FakeOverloadedError(Exception):
+        status_code = 503
+
+    calls = {"n": 0}
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            calls["n"] += 1
+            raise FakeOverloadedError("503 rate_limit: please slow down")
+
+    class FakeConfig:
+        model = "m"
+        base_url = None
+
+    monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
+    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
+
+    text, _model = llm_extract.run_extraction("body", "prompt")
+
+    assert text.startswith("[Error]: Extraction step failed: FakeOverloadedError")
+    assert calls["n"] == 1
+
+
+def test_run_extraction_retries_transient_fault_once(monkeypatch):
+    # One short retry on transient faults (5xx/timeout/connection) only: a
+    # blip must not kill an individual tool result, but the second failure is
+    # final (no retry storm inside a user-facing tool call).
+    import time as time_module
+
+    from nymeria.vendor.react_agent import providers
+
+    class FakeServerError(Exception):
+        status_code = 500
+
+    class FakeMessage:
+        content = "RECOVERED"
+
+    calls = {"n": 0}
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise FakeServerError("Error code: 500 upstream hiccup")
+            return FakeMessage()
+
+    class FakeConfig:
+        model = "m"
+        base_url = None
+
+    monkeypatch.setattr(time_module, "sleep", lambda seconds: None)
+    monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
+    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
+
+    text, model = llm_extract.run_extraction("body", "prompt")
+
+    assert text == "RECOVERED"
+    assert model == "m"
+    assert calls["n"] == 2
+
+
+def test_run_extraction_transient_fault_fails_after_single_retry(monkeypatch):
+    import time as time_module
+
+    from nymeria.vendor.react_agent import providers
+
+    class FakeServerError(Exception):
+        status_code = 500
+
+    calls = {"n": 0}
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            calls["n"] += 1
+            raise FakeServerError("Error code: 500 upstream down")
+
+    class FakeConfig:
+        model = "m"
+        base_url = None
+
+    monkeypatch.setattr(time_module, "sleep", lambda seconds: None)
+    monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
+    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
+
+    text, model = llm_extract.run_extraction("body", "prompt")
+
+    assert text.startswith("[Error]: Extraction step failed: FakeServerError")
+    # No base_url => no CLIProxy hint appended; the generic pointer stands.
+    assert text.endswith("(see server logs)")
+    assert calls["n"] == 2
+    assert model == ""
+
+
 def test_build_extraction_config_falls_back_to_main_model():
     # Background tier unset => resolves to the main provider + model, inheriting
     # the main base_url and key (same-provider branch).

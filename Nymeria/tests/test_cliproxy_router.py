@@ -1305,21 +1305,24 @@ def test_verify_credential_uses_v1_and_api_mode_for_openai_shaped_specs():
 # carries a status and takes that path instead.
 
 
-def test_verify_credential_message_fallback_treats_rate_limit_as_proof_of_reach():
-    """429 means the request REACHED the upstream, so the credential is good.
+def test_verify_credential_message_fallback_reports_rate_limit_as_quota_window():
+    """A 429 is genuine quota-window exhaustion, not proof of a good login.
 
-    This probe carries no OAuth billing fingerprint (that lives in
-    vendor/react_agent/nodes.py), so a subscription path can answer 429 on a
-    premium model with a perfectly valid token. Calling that a failure would
-    tell users a working login is broken.
+    The probe carries the OAuth billing fingerprint (the /provider test
+    payload site, #161), so the missing-block 429 artifact cannot happen
+    here. An exhausted window does not prove the credential SERVES traffic
+    (this check's contract), but a re-login would not help either, so the
+    verdict is inconclusive with the quota-window copy: never ok, never
+    auth_failed.
     """
 
-    verdict, _detail, _captured = _verify(
+    verdict, detail, _captured = _verify(
         "claude",
         SimpleNamespace(ok=False, message="429 rate_limit_error: quota"),
     )
 
-    assert verdict == "ok"
+    assert verdict == "inconclusive"
+    assert "usage window" in detail
 
 
 def test_verify_credential_message_fallback_flags_a_rejected_credential():
@@ -1375,7 +1378,10 @@ def test_verify_credential_classifies_a_structured_401_as_auth_failed():
     assert verdict == "auth_failed"
 
 
-def test_verify_credential_classifies_a_structured_429_as_reach():
+def test_verify_credential_classifies_a_structured_429_as_quota_window():
+    # Same rationale as the message-fallback twin above: with the billing
+    # fingerprint on the probe, a 429 is a real quota window, so the verdict
+    # is inconclusive (retry later) rather than ok or auth_failed.
     verdict, detail, _captured = _verify(
         "claude",
         SimpleNamespace(
@@ -1383,8 +1389,8 @@ def test_verify_credential_classifies_a_structured_429_as_reach():
         ),
     )
 
-    assert verdict == "ok"
-    assert detail == "claude-opus-5"
+    assert verdict == "inconclusive"
+    assert "usage window" in detail
 
 
 def test_verify_credential_probes_unauthenticated_when_no_gatekeeper():

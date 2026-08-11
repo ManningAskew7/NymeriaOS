@@ -302,6 +302,82 @@ def test_provider_suite_anthropic_base_url_falls_back_to_default(monkeypatch):
     assert SequenceAsyncClient.calls == []
 
 
+def test_provider_suite_cliproxy_anthropic_chat_carries_billing_block(monkeypatch):
+    # #161: the suite's anthropic chat probe used to send no OAuth billing
+    # fingerprint, so premium Claude models 429'd here while /provider test
+    # (which adds the block) passed: two surfaces disagreeing about the same
+    # provider. The block must ride the wire payload, exactly once and first.
+    from nymeria.vendor.react_agent.cliproxy import CLIPROXY_BILLING_SYSTEM_BLOCK
+
+    _patch_suite_client(monkeypatch)
+    SequenceAsyncClient.queue(
+        (200, {"content": [{"type": "text", "text": "ok"}]}),
+    )
+
+    import anyio
+
+    report = anyio.run(
+        _run,
+        ProviderTestSuiteOptions(
+            provider="anthropic",
+            model="claude-opus-4-8",
+            api_key="sk-ant-test",
+            base_url="http://cli-proxy-api:8317",
+            allow_billable=True,
+            run_model_list=False,
+            run_chat_completion=True,
+            run_tool_call=False,
+        ),
+    )
+
+    assert report.ok is True
+    chat_call = SequenceAsyncClient.calls[0]
+    assert chat_call["url"] == "http://cli-proxy-api:8317/v1/messages"
+    assert chat_call["json"]["system"][0] == CLIPROXY_BILLING_SYSTEM_BLOCK
+    import json as jsonlib
+
+    assert jsonlib.dumps(chat_call["json"]).count("x-anthropic-billing-header") == 1
+    # Full production identity, not just the body: the cloak-skip User-Agent
+    # and the safe Anthropic-Beta override ride the probe headers too
+    # (shared provider_probe_headers, so this surface cannot drift from
+    # /provider test).
+    assert chat_call["headers"]["User-Agent"].startswith("claude-cli/")
+    assert "Anthropic-Beta" in chat_call["headers"]
+
+
+def test_provider_suite_direct_anthropic_chat_has_no_billing_block(monkeypatch):
+    # The fingerprint is CLIProxy-only: a direct api.anthropic.com probe must
+    # not carry it.
+    _patch_suite_client(monkeypatch)
+    SequenceAsyncClient.queue(
+        (200, {"content": [{"type": "text", "text": "ok"}]}),
+    )
+
+    import anyio
+
+    report = anyio.run(
+        _run,
+        ProviderTestSuiteOptions(
+            provider="anthropic",
+            model="claude-opus-4-8",
+            api_key="sk-ant-test",
+            base_url="https://api.anthropic.com",
+            allow_billable=True,
+            run_model_list=False,
+            run_chat_completion=True,
+            run_tool_call=False,
+        ),
+    )
+
+    assert report.ok is True
+    chat_call = SequenceAsyncClient.calls[0]
+    import json as jsonlib
+
+    assert "x-anthropic-billing-header" not in jsonlib.dumps(chat_call["json"])
+    # The CLIProxy-only Anthropic-Beta override must not reach a direct base.
+    assert "Anthropic-Beta" not in chat_call["headers"]
+
+
 def test_resolve_credentials_seeds_base_url_from_vault(monkeypatch):
     # No request key: the vault credential supplies the key, the credential
     # source, and (since no request base URL) the base URL.

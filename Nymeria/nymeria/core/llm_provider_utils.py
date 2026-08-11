@@ -374,6 +374,34 @@ def provider_probe_headers(
     return headers
 
 
+def cliproxy_probe_billing_system(base_url: str | None) -> list[dict[str, str]] | None:
+    """The OAuth billing fingerprint for a raw anthropic-wire probe, or None.
+
+    Raw ``httpx`` probes bypass the factory seam that injects the block for
+    every langchain-built client (``vendor/react_agent/providers.py``, #161),
+    so they add it at their own payload site. ONE helper for the two chat
+    probes (`/provider test` in ``api/routers/settings.py`` and the provider
+    test suite), the body-side sibling of ``provider_probe_headers``: the
+    surfaces must not drift from each other or from production. Measured
+    2026-08-11: a fully cloaked probe happens to bill correctly without the
+    block, but the probes send the production cloak-skip identity, which
+    requires it. Returns a fresh list; None when ``base_url`` is not
+    CLIProxy-shaped. Never carries ``cache_control`` (CLIProxy auto-injects
+    cache breakpoints only when the client sends zero cache_control).
+    """
+    if not base_url:
+        return None
+    # Function-local vendored import, same reason as the cloak header above.
+    from ..vendor.react_agent.cliproxy import (
+        CLIPROXY_BILLING_SYSTEM_BLOCK,
+        looks_like_cliproxy_url,
+    )
+
+    if not looks_like_cliproxy_url(base_url):
+        return None
+    return [dict(CLIPROXY_BILLING_SYSTEM_BLOCK)]
+
+
 def cliproxy_failure_hint(
     base_url: str | None, message: str, *, status_code: int | None = None
 ) -> str:

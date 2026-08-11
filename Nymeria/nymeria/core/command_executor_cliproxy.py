@@ -811,10 +811,14 @@ class CliproxyCommandsMixin:
         if verdict == "ok":
             note += f" Credential verified against {detail}."
         else:
+            # The detail can be a transient-fault note or the quota-window
+            # explanation (#161), so the wrapper stays verdict-agnostic: no
+            # "probably the upstream" editorializing that would contradict a
+            # quota detail it wraps.
             note += (
-                f" Could not verify the credential yet ({detail});"
-                " usually a slow or unreachable upstream rather than a bad"
-                " login. Continuing, and /provider test will retest after apply."
+                " Could not confirm the credential serves traffic yet:"
+                f" {detail.rstrip('.')}. This does not mean the login failed."
+                " Continuing, and /provider test will retest after apply."
             )
         return await self._cliproxy_model_chain(
             updated, spec, note_lines=[note]

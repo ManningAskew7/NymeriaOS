@@ -11,6 +11,7 @@ re-derive it.
 """
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import PurePosixPath, PureWindowsPath
@@ -39,6 +40,7 @@ from ...cliproxy.management_client import (
     present_login_entry,
     resolve_or_mint_gatekeeper,
 )
+from ...core.llm_provider_utils import cliproxy_failure_hint
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
 from ..schemas.cliproxy import (
     CLIProxyApplyRouteRequest,
@@ -303,9 +305,13 @@ async def verify_cliproxy_credential(
     - ``"ok"``: the credential reached the upstream and answered.
     - ``"auth_failed"``: the upstream rejected the credential (401/403). The
       login did not really succeed, whatever the auth-file list says.
-    - ``"inconclusive"``: everything else (proxy down, model not found, 5xx,
-      timeout). NOT a failure: the caller should proceed and say so, because a
-      transient fault must not block a good login.
+    - ``"inconclusive"``: everything else, spanning two families the caller
+      must not read as failure: transient faults (proxy down, model not
+      found, 5xx, timeout) and a genuine 429 quota window (#161: the probe
+      carries the billing fingerprint, so a 429 is real exhaustion; the
+      credential authenticated but did not prove it serves traffic, and a
+      re-login would not help). Either way the caller should proceed and say
+      so.
 
     Reads the gatekeeper the same way ``list_cliproxy_models`` does and NEVER
     mints one: minting would flip an open data plane to key-required, which is
@@ -328,10 +334,11 @@ async def verify_cliproxy_credential(
             "be exercised"
         )
     keys = await configured_gatekeeper_keys(client)
+    data_plane_url = cliproxy_data_plane_url(management_url, spec)
     request = LLMProviderTestRequest(
         llm_provider=spec.nymeria_provider,
         llm_model=probe_model,
-        llm_base_url=cliproxy_data_plane_url(management_url, spec),
+        llm_base_url=data_plane_url,
         # "not-needed" is the probe's own sentinel for an open data plane, and
         # passing it is what makes this match list_cliproxy_models (which sends
         # no Authorization header when the proxy is keyless). Passing None
@@ -353,10 +360,17 @@ async def verify_cliproxy_credential(
     if bool(getattr(response, "ok", False)):
         return "ok", probe_model
     message = str(getattr(response, "message", "") or "").strip()
-    # A 429 means the request REACHED the upstream and was rate limited, so the
-    # credential is good. Treat it as proof, not failure: this probe carries no
-    # OAuth billing fingerprint (that lives in vendor/react_agent/nodes.py), so
-    # a subscription path can answer 429 on a premium model with a valid token.
+    # A 429 is genuine quota-window exhaustion, not proof of a good credential:
+    # the probe carries the OAuth billing fingerprint (the /provider test
+    # payload site in api/routers/settings.py), so the missing-block 429
+    # artifact cannot happen here (#161). An exhausted window does not prove
+    # the credential SERVES traffic, which is this check's whole contract, so
+    # it reports inconclusive with the quota copy rather than ok, and never
+    # auth_failed: a re-login would not help.
+    def _quota_detail() -> str:
+        hint = cliproxy_failure_hint(data_plane_url, message, status_code=429)
+        return hint or message or "the upstream answered 429"
+
     status = getattr(response, "status_code", None)
     if isinstance(status, int) and status > 0:
         # The probe reports the upstream status as a FIELD, so trust it and do
@@ -366,15 +380,21 @@ async def verify_cliproxy_credential(
         # credential, which is the one verdict that sends them back through a
         # browser OAuth flow they do not need.
         if status == 429:
-            return "ok", probe_model
+            return "inconclusive", _quota_detail()
         if status in (401, 403):
             return "auth_failed", message or "the upstream rejected the credential"
         return "inconclusive", message or "the probe did not complete"
     # No status field: a transport error, a timeout, or a missing key, where the
-    # message is the only signal there is.
+    # message is the only signal there is. "429" matches on a word boundary
+    # only: a request id or port containing the digits must not trigger the
+    # confident quota-window copy.
     lowered = message.casefold()
-    if "429" in lowered or "rate limit" in lowered or "rate_limit" in lowered:
-        return "ok", probe_model
+    if (
+        re.search(r"\b429\b", lowered)
+        or "rate limit" in lowered
+        or "rate_limit" in lowered
+    ):
+        return "inconclusive", _quota_detail()
     if "401" in lowered or "403" in lowered or "unauthor" in lowered:
         return "auth_failed", message or "the upstream rejected the credential"
     return "inconclusive", message or "the probe did not complete"

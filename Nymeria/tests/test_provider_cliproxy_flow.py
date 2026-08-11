@@ -702,7 +702,11 @@ def test_inconclusive_verification_does_not_block_the_login() -> None:
     result = _run(api, "/provider cliproxy paste abc-code")
 
     assert "Logged in to" in result.markdown
-    assert "Could not verify the credential yet" in result.markdown
+    # Verdict-agnostic wrapper (#161): the detail can be a transient note or
+    # the quota-window copy, so the copy never blames the upstream, and it
+    # must say the login itself is not in doubt.
+    assert "Could not confirm the credential serves traffic yet" in result.markdown
+    assert "does not mean the login failed" in result.markdown
     assert "proxy timeout" in result.markdown
     # Advanced to the route chain regardless.
     assert "CLIProxy route" in _form(result)["title"]
@@ -722,7 +726,8 @@ def test_verification_failure_degrades_to_inconclusive() -> None:
     result = _run(api, "/provider cliproxy paste abc-code")
 
     assert "Logged in to" in result.markdown
-    assert "Could not verify the credential yet" in result.markdown
+    assert "Could not confirm the credential serves traffic yet" in result.markdown
+    assert "does not mean the login failed" in result.markdown
     assert "CLIProxy route" in _form(result)["title"]
 
 
