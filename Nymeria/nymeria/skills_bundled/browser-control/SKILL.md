@@ -51,8 +51,8 @@ It is also why the rules below are not optional.
 Every `chrome_act` tells you what actually happened. Look at it before moving on:
 
 - `input_delivered: "no"` -> the page received NOTHING. The call fails when this
-  happens; see "When your input vanishes" below. `"unknown"` just means it could
-  not be checked, which is not a problem on its own.
+  happens; see "When a tab stops responding to you" below. `"unknown"` just means
+  it could not be checked, which is not a problem on its own.
 - `console_errors` / `failed_requests` -> the click "worked" and the site broke.
   A 500 here means the thing you tried did NOT happen, whatever the page shows.
 - `previous_value` -> confirms you edited the field you meant to.
@@ -74,26 +74,37 @@ reading the page or checking `chrome_tabs`.
 Stale refs are normal, not a failure. When you get "re-read the page", read it
 again and continue; do not retry the same ref.
 
-## When your input vanishes
+## When a tab stops responding to you
 
-A tab-modal dialog makes Chrome discard every input event sent to that tab,
-*after* accepting it. Chrome's "your password was found in a data breach"
-warning, an HTTP Basic auth prompt, and a page's own "Leave site?" confirmation
-all do it. None of them is visible to you: they are browser UI, absent from the
-accessibility tree, from `chrome_console`, from `chrome_network`, and from
-`chrome_screenshot`, which captures the page and not the browser frame. Nothing
-reports them, so you infer them from the symptom.
+Two kinds of dialog can wedge a tab. Neither is visible to you: both are browser
+UI, absent from the accessibility tree, from `chrome_console`, from
+`chrome_network`, and from `chrome_screenshot`, which captures the page and not
+the browser frame. They look nothing alike from where you sit, so read the
+symptom before deciding what happened.
 
-The signature: `click`, `key`, `type`, `hover`, `drag` and `scroll` all stop
-having any effect, while `fill` keeps working. That split is diagnostic, because
-`fill` is delivered by a different mechanism that the block does not touch.
+**A browser dialog** (Chrome's "your password was found in a data breach"
+warning, an HTTP Basic auth prompt) makes Chrome discard every input event sent
+to that tab, *after* accepting it. The page itself keeps running, so reads and
+`fill` still work while `click`, `key`, `type` and `drag` do nothing. You get a
+fast, explicit failure: the call fails and says `input_delivered: "no"`.
 
-The recovery is **open a fresh tab and redo the work there.** Reloading does not
-help, and neither does switching tabs; the block belongs to the tab and survives
-navigation within it. A page dialog you raised yourself (`alert`, `confirm`,
-`prompt`) is the one case you can clear in place, with `chrome_dialog`. Never
-try to dismiss browser security UI yourself. If a fresh tab is not viable, tell
-the user what is on their screen and ask them to clear it.
+**A page dialog** (`alert`, `confirm`, `prompt`, or a "Leave site?" raised on
+navigation) suspends the page's own JavaScript, so nothing reaches the tab at
+all. These calls do not fail, they HANG: every command against that tab runs to
+its timeout, 30 seconds for `chrome_act`, and comes back as a bare timeout with
+no payload and no `input_delivered` field. Whole-command timeouts on one tab
+while other tabs are fine is the signature.
+
+The recovery for both is **open a fresh tab and redo the work there.** Reloading
+does not help and neither does switching tabs: a browser dialog's suppression
+belongs to the tab and survives navigation within it, and a page dialog is still
+sitting there afterwards. Closing the tab clears either one.
+
+**`chrome_dialog` does not currently clear a page dialog**, whatever its name
+suggests: it times out like every other command against that tab and leaves the
+dialog standing. Do not spend calls on it, and never try to dismiss browser
+security UI yourself. If a fresh tab is not viable, tell the user what is on
+their screen and ask them to clear it.
 
 ## Batching
 
@@ -161,9 +172,10 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   as their own labelled section in `chrome_read_page`; read the whole output.
 - Something is silently failing -> the advanced tools `chrome_console` and
   `chrome_network` show what the page is doing. They are not bound by this kit;
-  enable them, or run them once with `tool_invoke`. Neither can see a browser
-  dialog: a blocked tab produces no console output and no requests, so read
-  "When your input vanishes" before spending calls there.
+  bind them with `tool_manage` (the `tool-management` kit), or run one once with
+  `tool_invoke` if you have it. Neither can see a dialog: a wedged tab produces
+  no console output and no requests, so read "When a tab stops responding to
+  you" before spending calls there.
 
 `chrome_cdp` is a raw protocol escape hatch that bypasses every safeguard here.
 It is deliberately not part of this kit. If you genuinely need it, say why.

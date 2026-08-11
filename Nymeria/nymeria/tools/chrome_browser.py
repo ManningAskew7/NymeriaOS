@@ -330,7 +330,11 @@ async def _run(
         coord.discard(command_id)
         return None, (
             f"[Error]: Browser command '{command_type}' timed out after {timeout_s}s. "
-            "The extension may be slow or disconnected."
+            "The usual cause is a dialog the PAGE raised (alert, confirm, prompt, or a "
+            "\"Leave site?\" on navigation). It suspends the page's own JavaScript, so "
+            "every command against that tab times out and chrome_dialog cannot clear it "
+            "either. Closing the tab does clear it: open a fresh one and redo the work "
+            "there. Otherwise the extension may be slow or disconnected."
         )
     except asyncio.CancelledError:
         coord.discard(command_id)
