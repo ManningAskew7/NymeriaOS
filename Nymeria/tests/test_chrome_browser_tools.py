@@ -262,6 +262,15 @@ def test_timeout_returns_error_and_discards(monkeypatch) -> None:
     assert "[Error]" in out
     assert "timed out" in out
     assert get_browser_command_coordinator().pending_count() == 0
+    # Measured 2026-08-11 on the live extension: a page dialog (alert/confirm/
+    # prompt/beforeunload) suspends the renderer, so EVERY command against that
+    # tab times out, and chrome_dialog times out too rather than clearing it.
+    # The message used to blame the extension alone, which sent the agent
+    # chasing a connection problem instead of closing the tab.
+    lowered = out.lower()
+    assert "alert" in lowered, "the page-dialog cause must be named"
+    assert "chrome_dialog" in out, "must say chrome_dialog cannot clear it"
+    assert "clos" in lowered and "tab" in lowered, "must give the tab-close recovery"
 
 
 def test_abort_thread_releases_pending_command() -> None:
