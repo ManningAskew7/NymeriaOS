@@ -330,11 +330,14 @@ async def _run(
         coord.discard(command_id)
         return None, (
             f"[Error]: Browser command '{command_type}' timed out after {timeout_s}s. "
-            "The usual cause is a dialog the PAGE raised (alert, confirm, prompt, or a "
-            "\"Leave site?\" on navigation). It suspends the page's own JavaScript, so "
-            "every command against that tab times out and chrome_dialog cannot clear it "
-            "either. Closing the tab does clear it: open a fresh one and redo the work "
-            "there. Otherwise the extension may be slow or disconnected."
+            "Three things do this and it does not say which. A dialog the PAGE raised "
+            '(alert, confirm, prompt, or a "Leave site?" on navigation) suspends the '
+            "page until answered, and chrome_dialog cannot clear it: close the tab and "
+            "redo the work in a fresh one. A long-running script suspends it "
+            "temporarily, so a retry a few seconds later succeeds. Or the extension is "
+            "slow or disconnected, in which case every tab is affected, not just this "
+            "one. chrome_act distinguishes the first two for you; the readers do not "
+            "yet."
         )
     except asyncio.CancelledError:
         coord.discard(command_id)
@@ -433,6 +436,17 @@ async def chrome_navigate(
     Waits for the page to finish loading. Returns the final URL and title,
     which may differ from what you asked for after a redirect or a login wall,
     so check them before assuming you are where you meant to be.
+
+    KNOWN GAP: a "Leave site?" confirmation holds the tab on its old page and
+    this still reports success. The payload stays honest, so check it: `url` is
+    the OLD page and `complete` is false. That dialog is invisible to every
+    page-level tool and cannot be dismissed from here, so close the tab and work
+    in a fresh one.
+
+    Also the recovery for a tab that has stopped accepting input: navigating
+    away clears the suppression a browser dialog leaves behind (see the
+    browser-control skill). Reloading does not, because it re-triggers whatever
+    raised the dialog.
     """
     target = (url or "").strip()
     if target.lower() in {"back", "forward"}:
@@ -676,10 +690,18 @@ async def chrome_act(
     the page actually received anything.
 
     If nothing arrived, this call FAILS rather than reporting a success you
-    would have to inspect. Believe the failure: the fix is a fresh tab, not a
-    retry and not a reload. "unknown" is not a failure, it means the check could
-    not be made (the target sits inside an iframe, for one), so judge those by
-    the rest of the payload.
+    would have to inspect. Believe the failure and do not reload: the recovery
+    is to navigate the tab elsewhere, and to close it if input is still not
+    delivered after that. Note the suppression can OUTLIVE the dialog that
+    caused it, so seeing a clean page is not evidence the tab is healthy.
+    "unknown" is not a failure, it means the check could not be made (the target
+    sits inside an iframe, for one), so judge those by the rest of the payload.
+
+    A separate failure says the page did not run a script at all. Nothing was
+    sent in that case: the page is suspended, which a dialog it raised itself
+    does (alert/confirm/prompt/"Leave site?"), and so does a long-running
+    script. Retry once after a few seconds; if it says the same thing, it is a
+    dialog and the tab needs closing.
 
     The result is a verification payload, not just an acknowledgement: the URL,
     whether the target survived, what has focus, the field's previous value,
