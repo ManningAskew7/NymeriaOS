@@ -2507,10 +2507,10 @@ above, and a thread may enable either or both:
 | `chrome_navigate` | `(tab_id, url)` | Go to a URL, or `"back"`/`"forward"`. Waits for load; returns the FINAL url and title. |
 | `chrome_read_page` | `(tab_id, detail="interactive", ref?, max_chars?)` | Accessibility tree with `[ref=@eN]` tags. `ref` re-roots at one element. |
 | `chrome_read_text` | `(tab_id, selector?, max_chars?, extraction_prompt?)` | Visible text. With `extraction_prompt`, a secondary model returns only what was asked and the raw page never enters context. |
-| `chrome_find` | `(tab_id, query)` | Semantic element search returning refs. Reaches offscreen and `display:none` elements. Returns "no matches", not an error. |
-| `chrome_act` | `(tab_id, action, ref?, value?, ...)` | One action: click/double_click/right_click/hover/fill/select/check/uncheck/type/key/scroll/scroll_to/drag/upload/wait. |
-| `chrome_screenshot` | `(tab_id, full_page=False)` | `content_and_artifact` image the model can see. |
-| `chrome_batch` | `(tab_id, actions)` | Several wire commands in one round trip. |
+| `chrome_find` | `(tab_id, query)` | Semantic element search over the accessibility tree, returning refs. Reaches offscreen elements; does NOT see `display:none` ones (use a `css=` ref for those). Returns "no matches", not an error. |
+| `chrome_act` | `(tab_id, action, ref?, value?, wait_for_text?, wait_for_url?, wait_for_ref?, ...)` | One action: click/double_click/right_click/hover/fill/select/check/uncheck/type/key/scroll/scroll_to/drag/upload/wait. |
+| `chrome_screenshot` | `(tab_id, full_page=False)` | `content_and_artifact` image the model can see, plus the viewport size, device scale and scroll offset needed to turn a pixel into a `coordinate`. |
+| `chrome_batch` | `(tab_id, actions, continue_on_url_change=False)` | Several wire commands in one round trip. Steps are limited to ordinary page work by an allowlist; the diagnostic and escape-hatch tools are single calls only. |
 
 **Advanced** (registered, NOT in the kit): `chrome_console`, `chrome_network`
 (request log with status codes), `chrome_dialog`, and `chrome_cdp` (raw
@@ -2523,12 +2523,17 @@ any tab the user is signed in to).
 `/browser-commands/{id}/result`. Single-process: the future lives in the API
 process, so multi-worker would need Redis fan-out. `POST /threads/{id}/stop`
 cascades, snapping awaiting tools back with `status="aborted"` rather than
-waiting out the timeout; orphans are swept at 90s.
+waiting out the timeout; orphans are swept at `ORPHAN_TTL_SECONDS` (90s), and
+every tool's own wait is derived from that constant so no command can be
+reported orphaned while the extension is still working on it.
 
 **Interaction fidelity:** input is dispatched as trusted browser-level CDP
 events, not page-synthesized ones, because sites that matter (payment, anti-bot)
-ignore `isTrusted: false`. Before clicking, the extension hit-tests the point
-and REFUSES if an overlay covers the target, naming the blocker. Where a
+ignore `isTrusted: false`. Before clicking or toggling, the extension hit-tests
+the point and REFUSES if an overlay covers the target, naming the blocker.
+Caveat worth knowing: those probes run in the page's main world, so a hostile
+page that overrides `elementFromPoint` or `getBoundingClientRect` can mislead
+them (backlog #160). Where a
 trusted path is impossible (native `<select>` popups, file uploads, elements
 with no layout box) the result reports `input: "synthetic"` and why.
 
@@ -2546,11 +2551,16 @@ read through flattened auto-attach sessions and appear as labelled sections;
 their refs are frame-scoped because `backendNodeId` is a process-global
 counter that collides across frames.
 
-**Untrusted content:** page-derived text is returned inside an
-`<untrusted_page_content>` fence with the closing marker neutralized in the
-body, so page content cannot end the fence and continue as trusted narration.
-Oversized text is capped for the model and spilled to the thread's command dir
-with a `file_read` pointer.
+**Untrusted content:** every result derived from a page is returned inside an
+`<untrusted_page_content>` fence, with the closing marker neutralized in the
+body so page content cannot end the fence and continue as trusted narration.
+The neutralizer matches the separator variants too (`< /untrusted...`, embedded
+zero-width characters), not just the literal marker. The fence is uniform
+because the provenance rule is uniform: a tab title, a console message, a
+request URL and an `aria-label` echoed back in an act verification are all
+strings the page chose. Oversized text is capped for the model at a line
+boundary and spilled to the thread's command dir, with the `file_read` pointer
+emitted OUTSIDE the fence so a page cannot forge one.
 
 **Security posture:** this surface composes the agent's untrusted-content
 exposure with authenticated access to every site the user is signed in to,

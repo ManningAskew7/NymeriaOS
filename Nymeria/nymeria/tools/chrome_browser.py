@@ -51,6 +51,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.browser_command_coordinator import (
+    ORPHAN_TTL_SECONDS,
     get_browser_command_coordinator,
     new_command_id,
 )
@@ -63,15 +64,21 @@ logger = logging.getLogger(__name__)
 
 
 # Per-command-type timeouts (seconds), keyed by WIRE command type.
+#
+# Every value here is bounded by the coordinator's orphan sweep: waiting longer
+# than the sweep means the future is resolved with "command orphaned" while the
+# extension is still working, so the agent is told the command failed and the
+# page keeps changing underneath it. Derived rather than hardcoded so the two
+# cannot drift apart.
+_MAX_TIMEOUT_S = ORPHAN_TTL_SECONDS - 10
+
 _TIMEOUTS: dict[str, int] = {
     "tabs": 5,
     "navigate": 30,
     "history": 10,
     "snapshot": 20,
     "act": 30,
-    "batch": 120,
-    "press_key": 5,
-    "scroll": 5,
+    "batch": 80,
     "extract_text": 15,
     "screenshot": 20,
     "console": 5,
@@ -79,13 +86,26 @@ _TIMEOUTS: dict[str, int] = {
     "dialog": 5,
     "cdp": 60,
 }
+assert max(_TIMEOUTS.values()) <= _MAX_TIMEOUT_S, "a command may not outlive the orphan sweep"
+
+
+def _timeout_for(command_type: str, override: Optional[int] = None) -> int:
+    """Resolve a command's wait, never past the orphan sweep."""
+    return min(override or _TIMEOUTS.get(command_type, 15), _MAX_TIMEOUT_S)
 
 # Model-facing cap on page text. The wire carries more; the context should not.
 MAX_PAGE_CHARS = 20_000
 
 _UNTRUSTED_OPEN = "<untrusted_page_content>"
 _UNTRUSTED_CLOSE = "</untrusted_page_content>"
-_CLOSE_TAG_RE = re.compile(r"</\s*untrusted_page_content", re.IGNORECASE)
+# Matches anything a browser or a model would read as the closing marker,
+# including the separator tricks: `< /untrusted...`, `</ untrusted...`, and
+# zero-width characters wedged between the parts. Matching only the literal
+# string let a page close the fence early and continue as trusted narration.
+_SEP = r"[\s\u200b-\u200f\u2060\ufeff]*"
+_CLOSE_TAG_RE = re.compile(
+    _SEP.join([r"<", r"/", *list("untrusted_page_content")]), re.IGNORECASE
+)
 
 
 def _format_result(payload: Any) -> str:
@@ -129,6 +149,9 @@ def _spill(text: str, *, thread_id: str, prefix: str) -> Optional[str]:
         try:
             os.chmod(path, 0o600)
         except OSError:
+            # Best-effort tightening. On a filesystem that does not carry
+            # POSIX modes the spill still lands inside the per-thread command
+            # dir, which is where the access boundary actually is.
             pass
         return str(path)
     except Exception:  # noqa: BLE001 - spilling is best-effort
@@ -136,23 +159,36 @@ def _spill(text: str, *, thread_id: str, prefix: str) -> Optional[str]:
         return None
 
 
-def _cap(text: str, *, thread_id: str, prefix: str, max_chars: int = MAX_PAGE_CHARS) -> str:
-    """Cap text for the model, pointing at the full copy when there is one."""
+def _cap(
+    text: str, *, thread_id: str, prefix: str, max_chars: int = MAX_PAGE_CHARS
+) -> tuple[str, str]:
+    """Cap text for the model.
+
+    Returns ``(shown, note)``. The note is emitted OUTSIDE the untrusted fence
+    by callers: it is our instruction to the model and it names a real
+    workspace path, so a page must not be able to forge one.
+    """
     if len(text) <= max_chars:
-        return text
+        return text, ""
+    # Cut at a line boundary so the workspace pointer is an exact continuation.
+    # Slicing mid-line and then resuming at the next line number loses whatever
+    # remained of the line the model was cut off in.
     shown = text[:max_chars]
-    shown_lines = shown.count("\n") + 1
+    boundary = shown.rfind("\n")
+    if boundary > 0:
+        shown = shown[:boundary]
+    complete_lines = shown.count("\n") + 1 if shown else 0
     total_lines = text.count("\n") + 1
     path = _spill(text, thread_id=thread_id, prefix=prefix)
     note = (
-        f"\n\n[Truncated: showing {len(shown)} of {len(text)} characters "
-        f"(lines 1-{shown_lines} of {total_lines}). "
+        f"[Truncated: showing {len(shown)} of {len(text)} characters "
+        f"(lines 1-{complete_lines} of {total_lines}). "
     )
     if path:
-        note += f'Full content saved: file_read("{path}", offset={shown_lines + 1})]'
+        note += f'Full content saved: file_read("{path}", offset={complete_lines + 1})]'
     else:
         note += "Narrow the request (a selector, or a smaller detail level) to see more.]"
-    return shown + note
+    return shown, note
 
 
 async def _run(
@@ -176,7 +212,7 @@ async def _run(
             "Open the extension popup and click Connect."
         )
 
-    timeout_s = timeout_override or _TIMEOUTS.get(command_type, 15)
+    timeout_s = _timeout_for(command_type, timeout_override)
     command_id = new_command_id()
     coord = get_browser_command_coordinator()
     future = coord.register(
@@ -221,13 +257,28 @@ async def _dispatch(
     config: Optional[RunnableConfig],
     timeout_override: Optional[int] = None,
 ) -> str:
-    """``_run`` for tools that just hand the payload back as JSON."""
+    """``_run`` for tools that hand the payload back as JSON.
+
+    The payload is fenced and capped like page text, because it IS page text.
+    Every one of these results carries strings the page chose: a tab title, a
+    console message, a request URL, an ``aria-label`` echoed back in an act
+    verification, a whole snapshot nested inside a batch. Fencing only the two
+    obvious readers left the rest as an open channel into context, which is
+    precisely the injection route the fence exists to close.
+
+    Capping matters for the same reason: a page can emit megabytes of console
+    text, and the transport valve is 8MB.
+    """
     payload, error = await _run(
         command_type=command_type, args=args, config=config, timeout_override=timeout_override
     )
     if payload is None:
         return error or "[Error]: The browser command failed."
-    return _format_result(payload)
+    body, note = _cap(
+        _format_result(payload), thread_id=get_thread_id(config), prefix=f"chrome-{command_type}"
+    )
+    fenced = _fence(body)
+    return f"{fenced}\n{note}" if note else fenced
 
 
 def _data(payload: dict[str, Any]) -> dict[str, Any]:
@@ -334,7 +385,7 @@ async def chrome_read_page(
     tree = str(data.get("tree") or "")
     if not tree.strip():
         return "[Note]: The page has no readable accessibility tree yet. It may still be loading."
-    capped = _cap(
+    capped, note = _cap(
         tree,
         thread_id=get_thread_id(config),
         prefix="chrome-read-page",
@@ -342,7 +393,8 @@ async def chrome_read_page(
     )
     url = str(data.get("url") or "")
     header = f"{data.get('ref_count', 0)} actionable elements, detail={data.get('detail', detail)}"
-    return f"{header}\n{_fence(capped, url=url)}"
+    tail = f"\n{note}" if note else ""
+    return f"{header}\n{_fence(capped, url=url)}{tail}"
 
 
 @tool
@@ -383,15 +435,20 @@ async def chrome_read_text(
     if extraction_prompt.strip():
         from .llm_extract import run_extraction
 
-        extracted, model = run_extraction(text, extraction_prompt)
+        # run_extraction is sync and blocks for up to its 90s request timeout.
+        # The two pre-existing callers are sync @tools, so LangChain hands them
+        # a thread; these tools are async, so without to_thread the call would
+        # sit on the one event loop that runs every agent turn.
+        extracted, model = await asyncio.to_thread(run_extraction, text, extraction_prompt)
         if extracted.startswith("[Error]:"):
             return extracted
         return f"{_fence(extracted, url=url)}\n[Extracted by {model}]"
 
-    capped = _cap(
+    capped, note = _cap(
         text, thread_id=get_thread_id(config), prefix="chrome-read-text", max_chars=max_chars
     )
-    return _fence(capped, url=url)
+    tail = f"\n{note}" if note else ""
+    return f"{_fence(capped, url=url)}{tail}"
 
 
 _FIND_SYSTEM = (
@@ -416,11 +473,18 @@ async def chrome_find(
     Returns matching ``@eN`` refs with their role and name, best first, ready
     to hand to chrome_act. Matching is semantic, so it finds an element by what
     it DOES even when the wording differs, and it reaches elements a screenshot
-    cannot (offscreen, or display:none).
+    cannot, including ones scrolled far off the visible viewport.
 
-    Returns "no matches" rather than an error when nothing fits, so it is safe
-    inside chrome_batch. Prefer this over reading a whole large page when you
-    already know what you want to interact with.
+    It searches the accessibility tree, so it sees what a screen reader sees.
+    An element the page hides outright (``display:none``, ``hidden``) is not in
+    that tree and will not be found here. The usual case is the real
+    ``<input type="file">`` behind a styled upload button: target it directly
+    with ``chrome_act(ref="css=input[type=file]", action="upload")``, which
+    resolves through the DOM and does not care whether it is visible.
+
+    Returns "no matches" rather than an error when nothing fits, so a failed
+    search costs you a note instead of a dead turn. Prefer this over reading a
+    whole large page when you already know what you want to interact with.
     """
     if not query.strip():
         return "[Error]: query is required (describe the element you want)."
@@ -438,9 +502,10 @@ async def chrome_find(
 
     from .llm_extract import run_extraction
 
-    matched, model = run_extraction(
-        f"{_FIND_SYSTEM}\n\nACCESSIBILITY TREE:\n{tree}",
-        f"Find the elements matching this description: {query}",
+    matched, model = await asyncio.to_thread(
+        run_extraction,
+        tree,
+        f"{_FIND_SYSTEM}\n\nFind the elements matching this description: {query}",
     )
     if matched.startswith("[Error]:"):
         return matched
@@ -469,6 +534,7 @@ async def chrome_act(
     to_ref: Optional[str] = None,
     wait_for_text: Optional[str] = None,
     wait_for_url: Optional[str] = None,
+    wait_for_ref: Optional[str] = None,
     timeout_ms: Optional[int] = None,
     path: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
@@ -487,8 +553,11 @@ async def chrome_act(
     modifiers: any of ["Ctrl", "Shift", "Alt", "Meta"].
     direction / amount_px: for scroll (default down, 500px).
     to_ref: drag destination.
-    wait_for_text / wait_for_url / timeout_ms: for action="wait". With neither
-        condition, wait simply waits for the page to go quiet.
+    wait_for_text / wait_for_url / wait_for_ref / timeout_ms: for
+        action="wait". wait_for_ref waits for a specific element to appear
+        (a "@eN" ref from a read, or a "css=" selector), which is the precise
+        condition when you know what you are waiting for. With no condition at
+        all, wait simply waits for the page to go quiet.
     path: for action="upload", a file in the workspace to attach to the file
         input named by ref.
 
@@ -529,6 +598,8 @@ async def chrome_act(
         wait_for["text"] = wait_for_text
     if wait_for_url:
         wait_for["url_contains"] = wait_for_url
+    if wait_for_ref:
+        wait_for["ref"] = wait_for_ref
     if wait_for:
         args["wait_for"] = wait_for
 
@@ -629,6 +700,7 @@ async def chrome_screenshot(
 async def chrome_batch(
     tab_id: int,
     actions: list[dict],
+    continue_on_url_change: bool = False,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Run several browser commands in one round trip.
@@ -646,6 +718,11 @@ async def chrome_batch(
     action was written against a page that no longer exists. Read the results
     array: each entry carries the same verification payload chrome_act returns.
 
+    continue_on_url_change: keep going across a navigation anyway. Only for a
+        sequence you deliberately wrote across it (submit, then act on the
+        page that loads), and only with coordinate or css= targets: a "@eN"
+        ref minted before the navigation will not survive it.
+
     Do not batch steps whose targets depend on what the previous step revealed:
     refs come from the page as it was when you read it.
     """
@@ -654,7 +731,11 @@ async def chrome_batch(
     budget = min(_TIMEOUTS["batch"], 15 * len(actions) + 10)
     return await _dispatch(
         command_type="batch",
-        args={"tab_id": tab_id, "actions": actions},
+        args={
+            "tab_id": tab_id,
+            "actions": actions,
+            "continue_on_url_change": continue_on_url_change,
+        },
         config=config,
         timeout_override=budget,
     )

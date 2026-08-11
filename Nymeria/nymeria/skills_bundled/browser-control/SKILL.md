@@ -35,7 +35,10 @@ It is also why the rules below are not optional.
    redirect or a login wall means you are not where you asked to be.
 3. Find what you need:
    - `chrome_find(tab_id, "the add to cart button")` when you know what you
-     want. Cheapest, and it reaches hidden elements.
+     want. Cheapest, and it reaches elements scrolled out of view. It reads
+     the accessibility tree, so it cannot see an element the page hides with
+     `display:none`: for those (the real file input behind a styled upload
+     button, most often) pass a `css=` ref straight to `chrome_act`.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
      facts out of a long page without loading it into your context.
