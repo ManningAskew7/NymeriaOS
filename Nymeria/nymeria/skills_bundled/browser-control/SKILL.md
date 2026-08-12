@@ -30,7 +30,9 @@ It is also why the rules below are not optional.
 ## The loop
 
 1. `chrome_tabs(action="list")` to get a tab_id. Create a tab rather than
-   hijacking one the user is reading, unless they pointed you at it.
+   hijacking one the user is reading, unless they pointed you at it. `create`
+   and `reload` wait for the page and report `complete`, so what comes back is
+   something you can read straight away.
 2. `chrome_navigate(tab_id, url)`. Check the URL and title that come back: a
    redirect or a login wall means you are not where you asked to be.
 3. Find what you need:
@@ -38,7 +40,14 @@ It is also why the rules below are not optional.
      want. Cheapest, and it reaches elements scrolled out of view. It reads
      the accessibility tree, so it cannot see an element the page hides with
      `display:none`: for those (the real file input behind a styled upload
-     button, most often) pass a `css=` ref straight to `chrome_act`.
+     button, most often) pass a `css=` ref straight to `chrome_act`. To put a
+     file in one, use `action="upload"`, never `action="click"`: clicking a
+     file input opens the operating system's file chooser, which nothing here
+     can close and which blocks the user until they dismiss it. `chrome_act`
+     refuses a click that would reach a file input, including through the
+     label in front of it, but it cannot see a button whose JavaScript opens
+     one. So if a click makes the user's browser stop responding, that is
+     what happened: tell them, rather than retrying.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
      facts out of a long page without loading it into your context. It

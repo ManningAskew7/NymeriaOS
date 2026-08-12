@@ -336,8 +336,9 @@ async def _run(
             "redo the work in a fresh one. A long-running script suspends it "
             "temporarily, so a retry a few seconds later succeeds. Or the extension is "
             "slow or disconnected, in which case every tab is affected, not just this "
-            "one. chrome_act distinguishes the first two for you; the readers do not "
-            "yet."
+            "one. chrome_act and the page readers detect a suspended page themselves "
+            "and say so, so from those tools this message points at the extension; "
+            "from the others it does not narrow anything down."
         )
     except asyncio.CancelledError:
         coord.discard(command_id)
@@ -411,6 +412,10 @@ async def chrome_tabs(
     tab_id: required for switch / close / reload.
     url: required for create.
 
+    "create" and "reload" wait for the page to load and report `complete`,
+    exactly as chrome_navigate does, so the tab you get back is one you can
+    read. The others return immediately.
+
     Returns JSON: the tab list, or the affected tab. Every other chrome_* tool
     takes a tab_id from here.
     """
@@ -419,7 +424,15 @@ async def chrome_tabs(
         args["tab_id"] = tab_id
     if url is not None:
         args["url"] = url
-    return await _dispatch(command_type="tabs", args=args, config=config)
+    # Two of the five actions load a page, and a page load does not fit the
+    # 5s budget the cheap actions share: without this they would come back as
+    # a bare transport timeout, which is worse than the race the wait removes.
+    # The other three keep the short budget, so a disconnected extension is
+    # still reported in 5s rather than 30.
+    override = _TIMEOUTS["navigate"] if action in ("create", "reload") else None
+    return await _dispatch(
+        command_type="tabs", args=args, config=config, timeout_override=override
+    )
 
 
 @tool

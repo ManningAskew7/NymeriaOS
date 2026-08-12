@@ -825,3 +825,57 @@ def test_injection_heads_up_still_fires_on_a_failed_command() -> None:
 
     assert "[Error]:" in out
     assert "Heads up" in out
+
+
+@pytest.mark.parametrize(
+    ("action", "args", "expect_navigate_budget"),
+    [
+        ("create", {"url": "https://example.com"}, True),
+        ("reload", {"tab_id": 1}, True),
+        ("list", {}, False),
+        ("switch", {"tab_id": 1}, False),
+        ("close", {"tab_id": 1}, False),
+    ],
+)
+def test_only_the_page_loading_tab_actions_get_the_long_budget(
+    action: str, args: dict, expect_navigate_budget: bool
+) -> None:
+    # `create` and `reload` wait for the load extension-side (measured
+    # 2026-08-12: without it, a read straight after a create raced the commit
+    # and returned a near-empty tree). A page load does not fit the 5s the
+    # cheap actions share, so without the override the wait would surface as a
+    # bare transport timeout, which is worse than the race it removes.
+    #
+    # The converse matters just as much: leaving the long budget on list,
+    # switch and close would make a disconnected extension take 30s to report
+    # itself instead of 5.
+    import nymeria.tools.chrome_browser as mod
+
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe(f"budget-{action}")
+
+    _invoke(chrome_tabs, {"action": action, **args}, _ok({}))
+
+    seen = []
+    while not queue.empty():
+        seen.append(queue.get_nowait())
+    cmd_event = next(e for e in seen if e.event_type == "browser_command")
+    budget = cmd_event.data["timeout_seconds"]
+
+    # Asserted against the EXTENSION's load wait, not against the other budget:
+    # `budget == _TIMEOUTS["navigate"]` restates the implementation and would
+    # still pass if both entries were lowered together, which is exactly the
+    # regression that matters. The extension waits up to 25s for a load
+    # (settle.ts::TAB_LOAD_WAIT_MS), and a backend budget that does not clear
+    # it turns the honest `complete: false` into a bare transport timeout.
+    extension_load_wait_s = 25
+    if expect_navigate_budget:
+        assert budget > extension_load_wait_s, (
+            f"{action} loads a page: its budget must outlast the extension's "
+            f"{extension_load_wait_s}s wait, got {budget}s"
+        )
+    else:
+        assert budget <= extension_load_wait_s, (
+            f"{action} does not load a page and must keep the short budget, got {budget}s"
+        )
