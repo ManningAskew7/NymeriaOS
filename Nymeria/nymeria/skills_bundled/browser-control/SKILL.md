@@ -44,12 +44,15 @@ It is also why the rules below are not optional.
      file in one, use `action="upload"`, never `action="click"`: clicking a
      file input opens the operating system's file chooser, which nothing here
      can close and which blocks the user until they dismiss it. `chrome_act`
-     refuses a click that would reach a file input, including through the
-     label in front of it, but it cannot see a button whose JavaScript opens
-     one. **You get no signal when that happens** (see below), so treat an
-     upload affordance the guard did not catch as a hazard: prefer
-     `action="upload"` with a `css=` ref for the hidden input, and if you
-     genuinely must click one, tell the user first rather than after.
+     REFUSES a click it can see would reach a file input, including through
+     the label in front of it. That guard reads the page, so it cannot see the
+     other shape: a button whose JavaScript opens the picker. There the click
+     goes through, and the call comes back as a FAILURE carrying
+     `opened_file_chooser: true`, meaning the page just clicked a file input,
+     so a chooser has almost certainly opened on their screen. Tell them to
+     dismiss it, do not click again (every click stacks another one they have
+     to clear), and reach the file input behind the button (usually hidden, so
+     pass a `css=` ref) with `action="upload"`.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
      facts out of a long page without loading it into your context. It
@@ -133,17 +136,29 @@ be nothing on screen to find, and "I looked and there was no dialog" does not
 mean the tab is healthy. Trust `input_delivered`, not the absence of a visible
 cause.
 
-**A third thing blocks the USER without touching the tab: the operating
+**A third thing would block the USER without touching the tab: the operating
 system's file chooser.** It is not browser UI at all, so nothing above
 applies and nothing here can see it. The page keeps running, input keeps
 being delivered, screenshots look normal, and every check in this kit passes
-while the user's browser window sits blocked behind a dialog you cannot
+while the user's browser window sits blocked behind a dialog nothing can
 observe. Measured 2026-08-12 on another agent's browser harness: after its
 click opened a picker, its page-side checks all read healthy, an Escape sent
 to the tab did not reach the dialog, and repeated clicks stacked up more
-pickers. There is no symptom to look for, which is exactly why `chrome_act`
-refuses the clicks it can recognise, and why an upload button it cannot
-recognise is worth a word to the user BEFORE you click it.
+pickers a human had to clear by hand.
+
+There is one thin thread of detection. When a click, `key` or `double_click`
+of YOURS reaches a file input through the page's own JavaScript, the call
+FAILS with `opened_file_chooser: true`. Act on that even though every other
+check reads fine: stop clicking, and ask the user to dismiss the picker.
+
+Know how narrow that thread is. It sees only the MAIN frame, so an upload
+button inside an iframe does not register. It sees only the moment of your
+own action: nothing polls, so a chooser the user opened themselves, one a
+page opened on load, and one the page opens a second later are all invisible.
+And it reports the CLICK rather than the dialog, so occasionally it fires
+when no chooser opened. Asking costs almost nothing and is the only way to
+know. If the user ever says their browser is stuck while all your checks read
+healthy, this is the most likely reason.
 
 Recovery, cheapest first:
 
