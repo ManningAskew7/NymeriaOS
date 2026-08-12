@@ -41,7 +41,10 @@ It is also why the rules below are not optional.
      button, most often) pass a `css=` ref straight to `chrome_act`.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
-     facts out of a long page without loading it into your context.
+     facts out of a long page without loading it into your context. It
+     extracts prose, so state that lives in attributes (an aria-label,
+     an unread badge) is invisible to it: read those with `chrome_find`
+     or `chrome_read_page`.
 4. `chrome_act(...)` with a `@eN` ref from step 3.
 5. **Read the result.** It is a verification payload, not an acknowledgement.
 6. Re-read the page when refs go stale, and only then.
@@ -90,10 +93,14 @@ fast, explicit failure: the call fails and says `input_delivered: "no"`.
 
 **A page dialog** (`alert`, `confirm`, `prompt`, or a "Leave site?" raised on
 navigation) suspends the page's own JavaScript, so nothing reaches the tab at
-all. `chrome_act` refuses these rather than sending: it checks that the page can
-still run a script before it dispatches, and tells you the page did not run one.
-A long-running script looks the same from outside, so if a retry a few seconds
-later says it again, it is a dialog.
+all. `chrome_act` fails these fast, and WHICH failure it gives you matters. If
+the dialog was already up, it refuses before sending: the message says the
+page did not run a script, and a retry is safe (a long-running script looks
+identical from outside, so if a retry a few seconds later says it again, it is
+a dialog). If your own action is what RAISED the dialog (a click whose handler
+calls `alert()`, a submit into a `confirm()`), the message instead says the
+action WAS sent: do NOT retry, it may already have taken effect and repeating
+it could submit twice.
 
 **The suppression can OUTLIVE the dialog.** Measured: after an `alert` was
 cleared, the page ran scripts again while input stayed undelivered. So there may
