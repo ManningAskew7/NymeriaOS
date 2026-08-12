@@ -65,6 +65,16 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
 - `input_delivered: "no"` -> the page received NOTHING. The call fails when this
   happens; see "When a tab stops responding to you" below. `"unknown"` just means
   it could not be checked, which is not a problem on its own.
+- `hit` -> what was actually under the coordinate you clicked, named like
+  `button "Sign in"` or `input#email` (only appears when you acted on a
+  `coordinate` rather than a ref; a drag reports `hit_from`, its source). A
+  bare container with no label, `body` or `div.wrapper`, means you hit page
+  background: the input WAS delivered and reached nothing, so
+  `input_delivered: "yes"` beside it is not success. Re-screenshot before
+  re-aiming, since whatever you took those coordinates from has moved. One
+  exception: `iframe ...` is normal and usually correct, because an embedded
+  frame (payment fields, embedded checkouts) is what sits at that point; the
+  real target is inside it.
 - `console_errors` / `failed_requests` -> the click "worked" and the site broke.
   A 500 here means the thing you tried did NOT happen, whatever the page shows.
 - `previous_value` -> confirms you edited the field you meant to.
@@ -84,7 +94,9 @@ click that navigates usually still reports `false`. Confirm a navigation by
 reading the page or checking `chrome_tabs`.
 
 Stale refs are normal, not a failure. When you get "re-read the page", read it
-again and continue; do not retry the same ref.
+again and continue; do not retry the same ref. That includes a ref that "still
+resolves" but whose element left the page (a re-render, a closed modal, a list
+that reloaded): nothing is sent, and the fix is the same, read the page again.
 
 ## When a tab stops responding to you
 
