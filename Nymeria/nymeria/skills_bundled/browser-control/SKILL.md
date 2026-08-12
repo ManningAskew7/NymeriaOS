@@ -90,9 +90,9 @@ again and continue; do not retry the same ref.
 
 Two kinds of dialog can wedge a tab. Neither is visible to you: both are browser
 UI, absent from the accessibility tree, from `chrome_console`, from
-`chrome_network`, and from `chrome_screenshot`, which captures the page and not
-the browser frame. They look nothing alike from where you sit, so read the
-symptom before deciding what happened.
+`chrome_network`, and from any screenshot that comes back (an image shows the
+page, never the browser frame). They look nothing alike from where you sit, so
+read the symptom before deciding what happened.
 
 **A browser dialog** (Chrome's "your password was found in a data breach"
 warning, an HTTP Basic auth prompt) makes Chrome discard every input event sent
@@ -102,7 +102,9 @@ fast, explicit failure: the call fails and says `input_delivered: "no"`.
 
 **A page dialog** (`alert`, `confirm`, `prompt`, or a "Leave site?" raised on
 navigation) suspends the page's own JavaScript, so nothing reaches the tab at
-all. `chrome_act` fails these fast, and WHICH failure it gives you matters. If
+all. The readers and `chrome_screenshot` fail fast saying the page did not run
+a script (no screenshot can be captured from a suspended page: measured, not
+theory). `chrome_act` fails fast too, and WHICH failure it gives you matters. If
 the dialog was already up, it refuses before sending: the message says the
 page did not run a script, and a retry is safe (a long-running script looks
 identical from outside, so if a retry a few seconds later says it again, it is

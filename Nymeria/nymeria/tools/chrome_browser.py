@@ -336,9 +336,10 @@ async def _run(
             "redo the work in a fresh one. A long-running script suspends it "
             "temporarily, so a retry a few seconds later succeeds. Or the extension is "
             "slow or disconnected, in which case every tab is affected, not just this "
-            "one. chrome_act and the page readers detect a suspended page themselves "
-            "and say so, so from those tools this message points at the extension; "
-            "from the others it does not narrow anything down."
+            "one. chrome_act, the page readers and chrome_screenshot detect a "
+            "suspended page themselves and say so, so from those tools this message "
+            "points at the extension; from the others it does not narrow anything "
+            "down."
         )
     except asyncio.CancelledError:
         coord.discard(command_id)
