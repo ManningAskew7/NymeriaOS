@@ -46,8 +46,10 @@ It is also why the rules below are not optional.
      can close and which blocks the user until they dismiss it. `chrome_act`
      refuses a click that would reach a file input, including through the
      label in front of it, but it cannot see a button whose JavaScript opens
-     one. So if a click makes the user's browser stop responding, that is
-     what happened: tell them, rather than retrying.
+     one. **You get no signal when that happens** (see below), so treat an
+     upload affordance the guard did not catch as a hazard: prefer
+     `action="upload"` with a `css=` ref for the hidden input, and if you
+     genuinely must click one, tell the user first rather than after.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
      facts out of a long page without loading it into your context. It
@@ -130,6 +132,18 @@ cleared, the page ran scripts again while input stayed undelivered. So there may
 be nothing on screen to find, and "I looked and there was no dialog" does not
 mean the tab is healthy. Trust `input_delivered`, not the absence of a visible
 cause.
+
+**A third thing blocks the USER without touching the tab: the operating
+system's file chooser.** It is not browser UI at all, so nothing above
+applies and nothing here can see it. The page keeps running, input keeps
+being delivered, screenshots look normal, and every check in this kit passes
+while the user's browser window sits blocked behind a dialog you cannot
+observe. Measured 2026-08-12 on another agent's browser harness: after its
+click opened a picker, its page-side checks all read healthy, an Escape sent
+to the tab did not reach the dialog, and repeated clicks stacked up more
+pickers. There is no symptom to look for, which is exactly why `chrome_act`
+refuses the clicks it can recognise, and why an upload button it cannot
+recognise is worth a word to the user BEFORE you click it.
 
 Recovery, cheapest first:
 
