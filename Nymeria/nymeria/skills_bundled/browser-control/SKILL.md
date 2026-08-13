@@ -18,6 +18,9 @@ metadata:
       - chrome_act
       - chrome_screenshot
       - chrome_batch
+      - chrome_console
+      - chrome_network
+      - chrome_cdp
     tool_ttl: 2h
 ---
 
@@ -248,15 +251,20 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   user does. Canvas, custom widgets and CAPTCHAs are invisible to the tree.
 - Content missing entirely -> it may be in a cross-origin iframe. Those appear
   as their own labelled section in `chrome_read_page`; read the whole output.
-- Something is silently failing -> the advanced tools `chrome_console` and
-  `chrome_network` show what the page is doing. They are not bound by this kit;
-  bind them with `tool_manage` (the `tool-management` kit), or run one once with
-  `tool_invoke` if you have it. Neither can see a dialog: a wedged tab produces
-  no console output and no requests, so read "When a tab stops responding to
+- Something is silently failing -> `chrome_console` and `chrome_network` show
+  what the page is doing. Neither can see a dialog: a wedged tab produces no
+  console output and no requests, so read "When a tab stops responding to
   you" before spending calls there.
 
-`chrome_cdp` is a raw protocol escape hatch that bypasses every safeguard here.
-It is deliberately not part of this kit. If you genuinely need it, say why.
+`chrome_cdp` is the raw protocol under every tool here with the wrapper
+removed: no target checks, no settle, no verification. It is bound as a LAST
+RESORT. Whatever the user asks for, try the typed tools first, and reach for
+raw protocol only when they cannot do the job (device emulation, tracing, a
+DOM operation no tool covers). It runs inside the user's logged-in browser,
+so the methods that hand over stored credentials in one call (cookie and
+site-storage reads, page-context JavaScript) are refused, as are the domain
+enables that can only wedge the browser; everything else goes through. Say
+why, in the conversation, each time you use it.
 
 ## Telling the user what happened
 

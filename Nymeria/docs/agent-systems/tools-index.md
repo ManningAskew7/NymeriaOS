@@ -173,7 +173,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `chargebee_update_customer` | `nymeria/tools/commerce_billing_service_integrations.py` | Update a Chargebee customer. |
 | `chrome_act` | `nymeria/tools/chrome_browser.py` | Do one thing to a Chrome page: click, type, choose, scroll, drag, wait. |
 | `chrome_batch` | `nymeria/tools/chrome_browser.py` | Run several browser commands in one round trip. |
-| `chrome_cdp` | `nymeria/tools/chrome_browser.py` | Raw Chrome DevTools Protocol call. Last resort. |
+| `chrome_cdp` | `nymeria/tools/chrome_browser.py` | Raw Chrome DevTools Protocol call. LAST RESORT. |
 | `chrome_console` | `nymeria/tools/chrome_browser.py` | Read console messages and uncaught exceptions from a Chrome tab. |
 | `chrome_dialog` | `nymeria/tools/chrome_browser.py` | Accept or dismiss a native JS dialog (alert / confirm / prompt). |
 | `chrome_find` | `nymeria/tools/chrome_browser.py` | Find elements on a Chrome tab by describing them in plain language. |
