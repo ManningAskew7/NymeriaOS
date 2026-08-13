@@ -849,7 +849,6 @@ def test_only_the_page_loading_tab_actions_get_the_long_budget(
     # The converse matters just as much: leaving the long budget on list,
     # switch and close would make a disconnected extension take 30s to report
     # itself instead of 5.
-    import nymeria.tools.chrome_browser as mod
 
     bus = EventBus()
     set_event_bus(bus)
