@@ -974,9 +974,11 @@ def _infer_security_level(
     if category == ToolCategory.EMAIL:
         return SecurityLevel.SAFE if tool_name in _EMAIL_SAFE_TOOL_NAMES else SecurityLevel.MODERATE
     if category == ToolCategory.BROWSER:
-        # Raw CDP against the user's logged-in Chrome can run arbitrary
-        # JavaScript on any tab, which subsumes every other browser tool and
-        # reaches every site the user is signed in to.
+        # Raw CDP runs against the user's logged-in Chrome with none of the
+        # typed tools' guardrails, and reaches every site they are signed in
+        # to. Its method denylist (#167) closes the one-call credential and
+        # script-execution routes; what remains is still the whole protocol
+        # surface, so the rating stands.
         if tool_name == "chrome_cdp":
             return SecurityLevel.SENSITIVE
         return SecurityLevel.SAFE if tool_name in _BROWSER_SAFE_TOOL_NAMES else SecurityLevel.MODERATE

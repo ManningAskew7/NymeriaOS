@@ -2499,7 +2499,8 @@ above, and a thread may enable either or both:
 | Needs | Playwright | The extension connected |
 | Good for | Autonomous/ticker work, hostile pages | Tasks that must BE the user |
 
-**Primary tools** (what the `browser-control` kit binds):
+**Kit tools** (what the `browser-control` kit binds: the whole working
+surface, diagnostics and the escape hatch included):
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
@@ -2511,11 +2512,13 @@ above, and a thread may enable either or both:
 | `chrome_act` | `(tab_id, action, ref?, value?, wait_for_text?, wait_for_url?, wait_for_ref?, ...)` | One action: click/double_click/right_click/hover/fill/select/check/uncheck/type/key/scroll/scroll_to/drag/upload/wait. |
 | `chrome_screenshot` | `(tab_id, full_page=False)` | `content_and_artifact` image the model can see, plus the viewport size, device scale and scroll offset needed to turn a pixel into a `coordinate`. |
 | `chrome_batch` | `(tab_id, actions, continue_on_url_change=False)` | Several wire commands in one round trip. Steps are limited to ordinary page work by an allowlist; the diagnostic and escape-hatch tools are single calls only. |
+| `chrome_console` | `(tab_id, only_errors=True, limit=50, clear=False)` | Console messages and uncaught exceptions. |
+| `chrome_network` | `(tab_id, url_pattern?, only_failures=False, limit=50)` | The request log with status codes, captured from the moment the tab is first driven. |
+| `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the domain enables nothing consumes and that can only wedge the browser (`Fetch`/`Debugger`/`Page.enable`); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
 
-**Advanced** (registered, NOT in the kit): `chrome_console`, `chrome_network`
-(request log with status codes), `chrome_dialog`, and `chrome_cdp` (raw
-DevTools Protocol, classified SENSITIVE: it can run arbitrary JavaScript on
-any tab the user is signed in to).
+**Registered but NOT in the kit:** `chrome_dialog`, until backlog #169 makes
+it a working tool (today it cannot clear the dialogs it names, so the kit's
+own instructions would disown it).
 
 **Architecture:** each tool registers a future with `BrowserCommandCoordinator`
 (`bcmd_<token>`), publishes a `browser_command` autonomous event on

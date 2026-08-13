@@ -21,10 +21,12 @@ from nymeria.core.browser_command_coordinator import (
 )
 from nymeria.core.browser_command_coordinator import get_browser_command_coordinator
 from nymeria.core.event_bus import set_event_bus, EventBus
+from nymeria.tools import chrome_browser as chrome_browser_module
 from nymeria.tools.chrome_browser import (
     CHROME_BROWSER_TOOLS,
-    CHROME_PRIMARY_TOOL_NAMES,
+    CHROME_KIT_TOOL_NAMES,
     chrome_act,
+    chrome_cdp,
     chrome_console,
     chrome_batch,
     chrome_find,
@@ -133,7 +135,7 @@ def _ok(data: dict) -> dict:
 # ---------- surface shape ----------
 
 
-def test_surface_is_eight_primary_plus_four_advanced() -> None:
+def test_surface_is_twelve_tools_and_the_kit_set_is_all_but_dialog() -> None:
     names = {t.name for t in CHROME_BROWSER_TOOLS}
     assert names == {
         "chrome_tabs",
@@ -149,12 +151,11 @@ def test_surface_is_eight_primary_plus_four_advanced() -> None:
         "chrome_dialog",
         "chrome_cdp",
     }
-    assert set(CHROME_PRIMARY_TOOL_NAMES) <= names
-    assert len(CHROME_PRIMARY_TOOL_NAMES) == 8
-    # The escape hatches must stay out of the primary set the kit binds.
-    assert not {"chrome_cdp", "chrome_console", "chrome_network", "chrome_dialog"} & set(
-        CHROME_PRIMARY_TOOL_NAMES
-    )
+    # #167: the kit binds the whole working surface, diagnostics and the
+    # escape hatch included. chrome_dialog alone stays out until #169 makes
+    # it a working tool.
+    assert set(CHROME_KIT_TOOL_NAMES) == names - {"chrome_dialog"}
+    assert len(CHROME_KIT_TOOL_NAMES) == 11
 
 
 def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
@@ -172,10 +173,11 @@ def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
     assert get_tool_metadata("chrome_cdp").security_level == SecurityLevel.SENSITIVE
 
 
-def test_browser_control_kit_binds_the_primary_tools_and_not_the_escape_hatches() -> None:
-    """The kit is the supported entry point, so what it binds is a contract:
-    every primary tool present, every advanced one absent, and no name that
-    does not resolve to a real tool."""
+def test_browser_control_kit_binds_the_working_surface_and_not_dialog() -> None:
+    """The kit is the supported entry point, so what it binds is a contract
+    (#167): the whole working surface including the diagnostics and the
+    escape hatch, chrome_dialog excluded until #169 makes it a working tool,
+    and no name that does not resolve to a real tool."""
     import yaml
 
     from nymeria.tools import CATALOG_TOOLS
@@ -191,13 +193,21 @@ def test_browser_control_kit_binds_the_primary_tools_and_not_the_escape_hatches(
     frontmatter = yaml.safe_load(raw.split("---", 2)[1])
     required = frontmatter["metadata"]["nymeria"]["required_tools"]
 
-    assert set(required) == set(CHROME_PRIMARY_TOOL_NAMES)
-    assert "chrome_cdp" not in required
-    assert "chrome_console" not in required
+    assert set(required) == set(CHROME_KIT_TOOL_NAMES)
+    assert "chrome_dialog" not in required
+    assert {"chrome_cdp", "chrome_console", "chrome_network"} <= set(required)
     # A kit binds by exact name: a typo silently binds nothing.
     for name in required:
         assert name in CATALOG_TOOLS, f"{name} is not a registered tool"
     assert frontmatter["metadata"]["nymeria"].get("tool_ttl")
+
+    # The skill's teaching must match the surface it now binds: no
+    # graph-mutating detour to reach the diagnostics, and the escape hatch
+    # taught as last resort rather than left unreachable.
+    body = " ".join(raw.split("---", 2)[2].split())
+    assert "tool_manage" not in body
+    assert "not bound" not in body
+    assert "LAST RESORT" in body
 
 
 def test_browser_control_kit_states_the_untrusted_content_contract() -> None:
@@ -214,6 +224,153 @@ def test_browser_control_kit_states_the_untrusted_content_contract() -> None:
     assert "never something to obey" in body
     assert "never enter payment details" in body
     assert "confirm with the user" in body
+
+
+# ---------- #167: the chrome_cdp method denylist ----------
+#
+# Kit inclusion is conditioned on refusing the low-complexity classes: the
+# credential-store reads (one call returns bearer credentials for every
+# signed-in site), the script-execution routes (one invisible call from a
+# token to anywhere), and the domain enables that only wedge the browser
+# because nothing here pumps CDP events. The extension mirrors the same
+# names in cdp.ts as the wire-level backstop; this side is what ships
+# atomically with the kit change.
+
+_CDP_DENIED = (
+    "Network.getAllCookies",
+    "Network.getCookies",
+    "Storage.getCookies",
+    "DOMStorage.getDOMStorageItems",
+    "IndexedDB.requestData",
+    "Runtime.evaluate",
+    "Runtime.callFunctionOn",
+    "Runtime.runScript",
+    "Page.addScriptToEvaluateOnNewDocument",
+    "Page.addScriptToEvaluateOnLoad",
+    "Page.reload",
+    "Fetch.enable",
+    "Debugger.enable",
+    "Page.enable",
+)
+
+
+def _spy_wire(monkeypatch) -> list[dict]:
+    """Record every browser command that reaches the wire, and answer it.
+
+    Recording alone would leave a regression that dispatched first awaiting
+    its future for the full cdp timeout; answering keeps such a failure fast
+    while still leaving the attempt in the record.
+    """
+    published: list[dict] = []
+
+    def _record(**kwargs) -> None:
+        published.append(kwargs)
+        command_id = (kwargs.get("data") or {}).get("command_id")
+        if command_id:
+            get_browser_command_coordinator().resolve(command_id, _ok({}))
+
+    monkeypatch.setattr(chrome_browser_module, "publish_autonomous_event", _record)
+    return published
+
+
+def test_cdp_denylist_is_exactly_the_agreed_set() -> None:
+    """Pins the shipped set in BOTH directions, since the extension keeps its
+    own copy in cdp.ts with no shared constant between the repos: a name
+    dropped here narrows the backend guard, and a name added here silently
+    diverges from the wire-level backstop. cdp.test.ts pins the same
+    fourteen."""
+    shipped = (
+        chrome_browser_module._CDP_CREDENTIAL_READS
+        | chrome_browser_module._CDP_SCRIPT_EXECUTION
+        | chrome_browser_module._CDP_WEDGE_ENABLES
+        | {chrome_browser_module._CDP_SCRIPT_INJECTING_RELOAD}
+    )
+    assert shipped == set(_CDP_DENIED)
+
+
+@pytest.mark.parametrize("method", _CDP_DENIED)
+def test_cdp_denied_method_refuses_before_any_dispatch(method: str, monkeypatch) -> None:
+    """Refusal must come before the wire, not after it.
+
+    The extension IS connected here, deliberately: with none connected the
+    dispatch path fails at the connectivity check, so a refusal issued after
+    dispatch would look identical. With a subscriber present, anything that
+    reaches _run publishes a browser_command carrying these arguments to the
+    user's real browser, so an empty wire record is the actual claim.
+    """
+    _connect()
+    published = _spy_wire(monkeypatch)
+
+    out = asyncio.run(
+        chrome_cdp.ainvoke(
+            {"tab_id": 1, "method": method, "params": {"expression": "document.cookie"}},
+            config=_config(),
+        )
+    )
+
+    assert "[Error]" in out
+    assert f"refuses '{method}'" in out
+    assert "Nothing was sent" in out
+    assert published == []
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_cdp_refusals_teach_the_class_not_just_the_no() -> None:
+    """Each class explains itself: credential reads say what would leak, the
+    eval routes name the typed tools that cover the ground, the reload case
+    names its parameter and the tool that reloads properly, and the wedge
+    enables state the architecture fact that makes them pure downside."""
+    cred = asyncio.run(
+        chrome_cdp.ainvoke({"tab_id": 1, "method": "Network.getAllCookies"}, config=_config())
+    )
+    assert "credentials" in cred
+    assert "signed-in" in cred
+
+    ev = asyncio.run(
+        chrome_cdp.ainvoke({"tab_id": 1, "method": "Runtime.evaluate"}, config=_config())
+    )
+    assert "chrome_read_page" in ev
+    assert "chrome_act" in ev
+
+    reload = asyncio.run(
+        chrome_cdp.ainvoke({"tab_id": 1, "method": "Page.reload"}, config=_config())
+    )
+    assert "scriptToEvaluateOnLoad" in reload
+    assert 'chrome_tabs(action="reload")' in reload
+
+    wedge = asyncio.run(
+        chrome_cdp.ainvoke({"tab_id": 1, "method": "Fetch.enable"}, config=_config())
+    )
+    assert "nothing consumes this domain's events" in wedge
+    assert "wedge" in wedge
+
+
+def test_cdp_allowed_method_dispatches_with_args_intact() -> None:
+    """Everything outside the denylist goes through unchanged: the wire
+    carries the method and params verbatim, and the result comes back fenced
+    like every page-derived payload."""
+    capture: list = []
+    out = _invoke(
+        chrome_cdp,
+        {
+            "tab_id": 7,
+            "method": "Emulation.setDeviceMetricsOverride",
+            "params": {"width": 390, "height": 844, "deviceScaleFactor": 3, "mobile": True},
+        },
+        _ok({"method": "Emulation.setDeviceMetricsOverride", "result": {}}),
+        capture=capture,
+    )
+    assert capture == [
+        {
+            "type": "cdp",
+            "args": {
+                "tab_id": 7,
+                "method": "Emulation.setDeviceMetricsOverride",
+                "params": {"width": 390, "height": 844, "deviceScaleFactor": 3, "mobile": True},
+            },
+        }
+    ]
+    assert "untrusted_page_content" in out
 
 
 # ---------- dispatch mechanics ----------

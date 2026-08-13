@@ -17,11 +17,13 @@ or both:
   bank sessions, so it can finish tasks that need to BE the user. Requires the
   extension to be running, and the user can watch it work.
 
-Surface shape: eight primary tools carry ordinary work, and four
-(``chrome_console``, ``chrome_network``, ``chrome_dialog``, ``chrome_cdp``)
-are diagnostics and escape hatches that stay out of the default kit. Fewer
-decision points measurably raises task success; the wire underneath is
-unchanged, one command per round trip.
+Surface shape: each tool carries the schema weight its scoped purpose needs,
+no more and no less, and the ``browser-control`` kit binds the whole working
+surface (``CHROME_KIT_TOOL_NAMES``), diagnostics included. Two deliberate
+exceptions: ``chrome_dialog`` stays out of the kit until backlog #169 makes
+it a working tool, and ``chrome_cdp`` is bound but LAST RESORT, with the
+credential-grade and wedge-grade methods refused by ``_cdp_refusal``. The
+wire underneath is unchanged, one command per round trip.
 
 Three cross-cutting rules live here rather than in each tool:
 
@@ -937,7 +939,7 @@ async def chrome_batch(
     )
 
 
-# ---------- Advanced surface (diagnostics + escape hatches) ----------
+# ---------- Diagnostics and escape hatches ----------
 
 
 @tool
@@ -994,13 +996,122 @@ async def chrome_dialog(
     """Accept or dismiss a native JS dialog (alert / confirm / prompt).
 
     action: "accept" or "dismiss". prompt_text fills a prompt() before
-    accepting. A page blocked on a dialog ignores everything else, so if
-    actions stop having any effect, look here.
+    accepting.
+
+    Measured limitation, so do not spend calls here on a hunch: a page
+    already blocked on a dialog does not answer this either, and the call
+    times out with the dialog still standing (backlog #169 owns the fix).
+    When a tab stops responding, close it and redo the work in a fresh one,
+    or tell the user what is on their screen.
     """
     args: dict[str, Any] = {"tab_id": tab_id, "action": action}
     if prompt_text is not None:
         args["prompt_text"] = prompt_text
     return await _dispatch(command_type="dialog", args=args, config=config)
+
+
+# What chrome_cdp refuses, as exact method names. Three classes, derived in
+# the #167 pass record (register: #165 X-04/A-05); the extension's cdp.ts
+# mirrors the same names as a wire-level backstop for callers that do not
+# come through this tool.
+#
+# * Credential-store reads: one call returns bearer credentials for every
+#   signed-in site (session cookies via CDP, which bypasses the HttpOnly
+#   fence that keeps page JS out, or the localStorage/IndexedDB tokens SPAs
+#   keep), and those persist into thread history and the checkpoint DB.
+# * Script execution: page-context JS is one invisible call from reading a
+#   token and sending it anywhere, where typed-tool actions are at least
+#   visible to the watching user. Denying the cookie reads while allowing
+#   eval would be theater, since each trivially re-creates the other. A
+#   scoped JS tool designed for the job is backlog #171.
+# * Wedge enables: nothing consumes these domains' events. The extension
+#   enables Runtime and Network at attach and feeds their events to
+#   chrome_console and chrome_network, but Fetch, Debugger and Page have no
+#   listener, so enabling one delivers nothing while each measurably wedges
+#   the user's browser: Fetch pauses requests nothing resumes, Debugger
+#   pauses nothing continues, Page takes dialog ownership nothing answers
+#   (#169's subject).
+#
+# Exact-match only, deliberately no params inspection: a string filter over
+# JS bodies is bypassable, and pretending otherwise would be worse than
+# refusing cleanly. This removes the low-complexity credential and wedge
+# classes; it does NOT make raw protocol safe (a two-step
+# DOM.setAttributeValue handler injection remains possible), which is why
+# the docstring's last-resort rule stays.
+_CDP_CREDENTIAL_READS = frozenset(
+    {
+        "Network.getAllCookies",
+        "Network.getCookies",
+        "Storage.getCookies",
+        "DOMStorage.getDOMStorageItems",
+        "IndexedDB.requestData",
+    }
+)
+_CDP_SCRIPT_EXECUTION = frozenset(
+    {
+        "Runtime.evaluate",
+        "Runtime.callFunctionOn",
+        "Runtime.runScript",
+        "Page.addScriptToEvaluateOnNewDocument",
+        # Deprecated alias of the line above, still served by Chrome.
+        "Page.addScriptToEvaluateOnLoad",
+    }
+)
+
+# The one denial that costs a legitimate operation, so it gets its own
+# reason. Page.reload takes a scriptToEvaluateOnLoad parameter that injects
+# into every frame after the reload, which is the script-execution class
+# wearing an ordinary name; exact-match denial cannot see the parameter, so
+# the method goes as a whole. The cost is nil because chrome_tabs already
+# reloads, and better (it waits for the page and reports completion).
+_CDP_SCRIPT_INJECTING_RELOAD = "Page.reload"
+_CDP_WEDGE_ENABLES = frozenset(
+    {
+        "Fetch.enable",
+        "Debugger.enable",
+        "Page.enable",
+    }
+)
+
+
+def _cdp_refusal(method: str) -> Optional[str]:
+    """The refusal for a denied CDP method, or None when it may run."""
+    if method in _CDP_CREDENTIAL_READS:
+        return (
+            f"[Error]: chrome_cdp refuses '{method}': it returns stored "
+            "credentials (session cookies or site-storage tokens) for the "
+            "user's signed-in sites, and those persist into the conversation "
+            "once read. Nothing was sent. No tool covers this ground; that "
+            "is deliberate."
+        )
+    if method in _CDP_SCRIPT_EXECUTION:
+        return (
+            f"[Error]: chrome_cdp refuses '{method}': arbitrary page-context "
+            "JavaScript can read the user's site tokens and send them "
+            "anywhere in one invisible call. Nothing was sent. Read with "
+            "chrome_read_page, chrome_read_text or chrome_find, and act "
+            "with chrome_act; if a task genuinely needs to run JavaScript, "
+            "tell the user what and why instead of running it."
+        )
+    if method == _CDP_SCRIPT_INJECTING_RELOAD:
+        return (
+            f"[Error]: chrome_cdp refuses '{method}': it takes a "
+            "scriptToEvaluateOnLoad parameter that injects JavaScript into "
+            "every frame of the reloaded page, so the method is refused "
+            "whole. Nothing was sent. Reload with "
+            'chrome_tabs(action="reload"), which also waits for the page '
+            "and reports when it is complete."
+        )
+    if method in _CDP_WEDGE_ENABLES:
+        return (
+            f"[Error]: chrome_cdp refuses '{method}': nothing consumes this "
+            "domain's events (chrome_console and chrome_network read the "
+            "domains the extension already enables), so enabling it gains "
+            "you nothing and can wedge the user's browser with paused "
+            "requests, debugger pauses, or dialogs nothing can answer. "
+            "Nothing was sent."
+        )
+    return None
 
 
 @tool
@@ -1010,14 +1121,29 @@ async def chrome_cdp(
     params: Optional[dict] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
-    """Raw Chrome DevTools Protocol call. Last resort.
+    """Raw Chrome DevTools Protocol call. LAST RESORT.
 
-    Use only when no other chrome_* tool covers what you need (e.g.
-    Emulation.setDeviceMetricsOverride). This bypasses every safeguard the
-    typed tools provide: no target validation, no settle, no verification, and
-    no untrusted-content fencing on whatever it returns. Prefer the typed
-    tools, and say why you needed this when you use it.
+    This runs inside the user's own logged-in Chrome and reaches every site
+    they are signed in to. Whatever the user asks for, try the typed
+    chrome_* tools first and reach for raw protocol only when they cannot do
+    the job (device emulation, tracing, a DOM operation no tool covers). Say
+    why you needed it when you use it.
+
+    It bypasses the typed tools' guardrails: no target validation, no
+    settle, no verification. The result IS still fenced and capped as
+    untrusted page text, like every other JSON-returning chrome_* result. A
+    short denylist
+    refuses the methods that hand over stored credentials in one call
+    (cookie and site-storage reads, page-context script execution, including
+    the script parameter on Page.reload) and the domain enables that can
+    only wedge the browser (Fetch, Debugger, Page); everything else goes
+    through unchanged, and each refusal names the typed route where one
+    exists. The denylist removes those classes, it does not make raw
+    protocol safe, so the last-resort rule above still governs.
     """
+    refusal = _cdp_refusal(method)
+    if refusal is not None:
+        return refusal
     return await _dispatch(
         command_type="cdp",
         args={"tab_id": tab_id, "method": method, "params": params or {}},
@@ -1040,9 +1166,12 @@ CHROME_BROWSER_TOOLS = [
     chrome_cdp,
 ]
 
-#: The primary eight: what the browser-control kit binds. The rest stay
-#: reachable by explicit enable or tool_invoke.
-CHROME_PRIMARY_TOOL_NAMES = (
+#: What the browser-control kit binds: the whole working surface,
+#: diagnostics and the escape hatch included (the scoped-tools principle: a
+#: kit carries the tools its domain needs). ``chrome_dialog`` alone stays
+#: out until #169 makes it a working tool; it remains reachable by explicit
+#: enable or tool_invoke.
+CHROME_KIT_TOOL_NAMES = (
     "chrome_tabs",
     "chrome_navigate",
     "chrome_read_page",
@@ -1051,12 +1180,15 @@ CHROME_PRIMARY_TOOL_NAMES = (
     "chrome_act",
     "chrome_screenshot",
     "chrome_batch",
+    "chrome_console",
+    "chrome_network",
+    "chrome_cdp",
 )
 
 
 __all__ = [
     "CHROME_BROWSER_TOOLS",
-    "CHROME_PRIMARY_TOOL_NAMES",
+    "CHROME_KIT_TOOL_NAMES",
     "MAX_PAGE_CHARS",
     "chrome_tabs",
     "chrome_navigate",
