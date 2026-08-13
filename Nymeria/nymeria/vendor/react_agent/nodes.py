@@ -3721,7 +3721,9 @@ class SafeToolNode(ToolNode):
                     "cannot be called directly. To run it once without binding "
                     f'it, use tool_invoke(name="{name}", arguments={{...}}) '
                     "(cache-safe). To use it repeatedly, bind it first with "
-                    f'tool_manage(action="enable", tools=["{name}"], ttl="2h").'
+                    f'tool_manage(action="enable", tools=["{name}"], ttl=...), '
+                    "choosing the ttl for how long you expect to need it "
+                    '(Nm/Nh/Nd/Nw or "permanent").'
                 ),
                 name=name,
                 tool_call_id=tool_call_id,

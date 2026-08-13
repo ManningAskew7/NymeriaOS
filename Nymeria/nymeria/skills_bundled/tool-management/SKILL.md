@@ -66,7 +66,10 @@ Two ways to execute a tool that is not already on the thread:
 - BIND (first-class): `tool_manage(action="enable", ttl=...)` adds the tool to
   the thread so the model can call it directly with grammar-constrained
   arguments. Best for repeated use over a longer conversation, or when the
-  arguments are complex or fragile. Binding changes the cached tool prefix once.
+  arguments are complex or fragile. Binding changes the cached tool prefix
+  once; a bound schema sits in that prefix and is read as your tool grammar,
+  while a deferred schema is prose in history, which is why binding calls
+  more reliably.
 
 When unsure: one call now -> defer; several calls over a real task -> bind.
 

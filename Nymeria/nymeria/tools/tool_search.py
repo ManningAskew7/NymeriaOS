@@ -16,7 +16,18 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Set, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
@@ -793,6 +804,80 @@ def _credential_nudges(tool_names: List[str], user_id: str) -> List[str]:
         return []
 
 
+def _default_bound_tools_for_user(agent: Any, user_id: str) -> Set[str]:
+    """The thread's *actual* default-bound tool set for ``user_id``, unfiltered.
+
+    A user profile can override SEED_TOOLS via
+    ``profile.tool_preferences.default_thread_tools`` (a curated subset), and
+    graph-build uses that subset, not SEED_TOOLS, to decide which tools to bind
+    by default. Classifying against SEED_TOOLS silently misclassifies any tool
+    that lives in SEED_TOOLS but is absent from ``default_thread_tools`` (e.g.
+    ``rag_search``, or ``tool_invoke`` on an account whose curated list
+    predates it): the classifier thinks it is already bound, drops it into the
+    no-op bucket, and never actually adds it anywhere, so the tool vanishes.
+    Using the same source of truth as graph-build
+    (``agent.py::_build_graph_with_prompt``) keeps classification honest.
+
+    No role gates are applied: this is the classification source
+    ``bind_tools_for_thread`` and ``thread_tool_reachability`` diff against.
+    ``_default_bound_tools`` below is the role-filtered *view* of the same set.
+    """
+    from . import resolve_default_tool_names
+
+    try:
+        profile = agent.profile_manager.get_profile(user_id or "default")
+        default_tools_pref = profile.tool_preferences.default_thread_tools
+    except Exception:
+        default_tools_pref = None
+    return set(resolve_default_tool_names(default_tools_pref))
+
+
+def thread_tool_reachability(
+    name: str, thread_id: str, user_id: str
+) -> Literal["bound", "disabled", "unbound"]:
+    """Whether ``name`` is callable on this thread: 'bound', 'disabled', or 'unbound'.
+
+    Resolves from the SAME thread-config source ``bind_tools_for_thread`` diffs
+    against: (default-bound ∪ enabled_tools ∪ live temporary_tools) −
+    disabled_tools. Deliberately NOT from the built tool list: graph build
+    strips ``tool_invoke`` from the bound schema in permissive dynamic mode
+    (``agent_graph.py``), so the built list understates reachability there
+    (backlog #170, Gap 1b). Expired TTL entries count as unbound, matching the
+    lazy-eviction semantics the enable path uses.
+
+    'disabled' wins over everything (``disabled_tools`` is authoritative at
+    graph build). Strictly read-only: an expired TTL entry counts as unbound
+    WITHOUT being evicted here (graph build and the enable path own eviction,
+    and a query must not bump ``tc.updated_at``). Role gates are NOT applied
+    (graph build applies them separately); a caller resolving a role-gated
+    name must gate on top. Returns 'unbound' on any resolution failure,
+    including no active agent, so callers act conservatively.
+    """
+    from ..core.agent import get_current_agent
+
+    agent = get_current_agent()
+    if agent is None:
+        return "unbound"
+    try:
+        tc = agent.thread_config_manager.get_config(thread_id)
+    except Exception:
+        logger.debug("thread_tool_reachability: config read failed", exc_info=True)
+        return "unbound"
+
+    if tc is not None and name in (tc.disabled_tools or []):
+        return "disabled"
+    if name in _default_bound_tools_for_user(agent, user_id):
+        return "bound"
+    if tc is None:
+        return "unbound"
+    if name in (tc.enabled_tools or []):
+        return "bound"
+    entry = (tc.temporary_tools or {}).get(name)
+    if entry is not None and ensure_aware_utc(entry.expires_at) > utc_now():
+        return "bound"
+    return "unbound"
+
+
 def bind_tools_for_thread(
     tool_names: List[str],
     category: str,
@@ -814,7 +899,6 @@ def bind_tools_for_thread(
     """
     from ..core.agent import get_current_agent
     from ..core.thread_config import ThreadConfig
-    from . import SEED_TOOLS
     from .metadata import ToolCategory
 
     def _fail(
@@ -888,25 +972,9 @@ def bind_tools_for_thread(
         # no-op. Evict them before classifying requested names.
         agent._resolve_temporary_tools(tc)
 
-    # Compute the thread's *actual* default-bound tool set. A user profile
-    # can override SEED_TOOLS via profile.tool_preferences.default_thread_tools
-    # (a curated subset), and graph-build uses that subset — not SEED_TOOLS —
-    # to decide which tools to bind by default. Classifying against SEED_TOOLS
-    # silently misclassifies any tool that lives in SEED_TOOLS but is absent
-    # from default_thread_tools (e.g., `rag_search`): the classifier
-    # thinks it's already bound, drops it into the no-op bucket, and never
-    # actually adds it anywhere — the tool then vanishes. Using the same
-    # source of truth as graph-build (`agent.py::_build_graph_with_prompt`)
-    # keeps classification honest.
-    try:
-        profile = agent.profile_manager.get_profile(user_id or "default")
-        default_tools_pref = profile.tool_preferences.default_thread_tools
-    except Exception:
-        default_tools_pref = None
-    if default_tools_pref is None:
-        default_bound = {t.name for t in SEED_TOOLS}
-    else:
-        default_bound = set(default_tools_pref)
+    # The thread's *actual* default-bound tool set (see the helper's docstring
+    # for why classifying against raw SEED_TOOLS silently loses tools).
+    default_bound = _default_bound_tools_for_user(agent, user_id)
 
     delta = _classify_bindings(valid, tc, default_bound, ttl_seconds)
 
@@ -1210,15 +1278,10 @@ def _status(thread_id: str) -> str:
 
 
 def _default_bound_tools(agent: Any, user_id: str) -> set[str]:
-    from . import SEED_TOOLS, filter_admin_only_tools, filter_developer_only_tools
+    """Role-filtered view of ``_default_bound_tools_for_user`` (prune's view)."""
+    from . import filter_admin_only_tools, filter_developer_only_tools
 
-    try:
-        profile = agent.profile_manager.get_profile(user_id or "default")
-        default_tools_pref = profile.tool_preferences.default_thread_tools
-    except Exception:
-        default_tools_pref = None
-
-    names = {t.name for t in SEED_TOOLS} if default_tools_pref is None else set(default_tools_pref)
+    names = _default_bound_tools_for_user(agent, user_id)
     try:
         user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
         role = user.role if user else "user"
@@ -1511,7 +1574,8 @@ def tool_manage(
         tools: Tool names to enable or disable.
         category: Category name to enable or list/filter.
         ttl: Required for enable action. Duration format: Nm (minutes),
-            Nh (hours), Nd (days), Nw (weeks), or "never" for permanent.
+            Nh (hours), Nd (days), Nw (weeks), max one year; "never" or
+            "permanent" for no expiry.
         force: For disable only. Set True to allow disabling core tools.
         stale_after_days: For prune, remove recorded-stale permanent bindings
             whose last use is older than this many days.

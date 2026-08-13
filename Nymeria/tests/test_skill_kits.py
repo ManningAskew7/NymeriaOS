@@ -918,6 +918,371 @@ def test_skill_meta_tool_defer_plain_skill_is_noop(tmp_path: Path):
     assert "binds no Skill Kit tools" in result
 
 
+# ---------------------------------------------------------------------------
+# Deferred executor guarantee (backlog #170): defer must never point the model
+# at a tool_invoke the thread cannot call.
+# ---------------------------------------------------------------------------
+
+TEMPLATE_ONLY_KIT_MD = """---
+name: template-kit
+description: Declares a thread template and no required tools.
+metadata:
+  nymeria:
+    thread_templates:
+      - name: helper-thread
+        description: A helper thread.
+---
+
+# Template Kit
+
+Use the helper thread.
+"""
+
+
+def _defer_agent(
+    tmp_path: Path,
+    *,
+    default_tools=None,
+    dynamic=None,
+    allow_unbound: bool = False,
+) -> _FakeAgent:
+    """Agent for defer tests: curated defaults and/or a settings namespace.
+
+    ``default_tools=["bash_execute"]`` reproduces the #164 shape (a profile
+    whose curated default_thread_tools predates tool_invoke). ``dynamic=None``
+    leaves ``settings`` absent, which should_emit_reload_command treats as the
+    legacy rebuild path.
+    """
+    agent = _FakeAgent(tmp_path / "data")
+    if default_tools is not None:
+        agent.profile_manager = SimpleNamespace(
+            get_profile=lambda user_id: SimpleNamespace(
+                tool_preferences=SimpleNamespace(default_thread_tools=default_tools)
+            )
+        )
+    if dynamic is not None:
+        agent.settings = SimpleNamespace(
+            dynamic_tool_binding=dynamic, allow_unbound_tool_calls=allow_unbound
+        )
+    return agent
+
+
+def _defer_call(skill_name: str, skill, ttl=None):
+    skill_tool = create_skill_meta_tool([skill])
+    kwargs = {"defer": True}
+    if ttl is not None:
+        kwargs["ttl"] = ttl
+    return skill_tool.func(
+        skill_name,
+        tool_call_id="call-1",
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        **kwargs,
+    )
+
+
+def test_defer_autobinds_tool_invoke_when_thread_lacks_it(tmp_path: Path):
+    """#170 behavior 1: unreachable tool_invoke gets a 7-day TTL bind, announced."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "hello_test args:" in result
+    assert "tool_invoke auto-bound" in result
+    assert "7d" in result
+    assert "callable from your next step" in result
+    # The header must not contradict the auto-bind note (review F4): the
+    # universal truth is that none of the KIT's tools were bound, and the
+    # cache-safe framing is dropped because the tools prefix did change.
+    assert "None of this kit's tools were bound" in result
+    assert "cache-safe" not in result
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert "tool_invoke" in tc.temporary_tools
+    expires = tc.temporary_tools["tool_invoke"].expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    remaining = expires - datetime.now(timezone.utc)
+    assert timedelta(days=6, hours=23) < remaining <= timedelta(days=7)
+    # ONLY the executor was bound: the kit's own tools stayed deferred.
+    assert "hello_test" not in (tc.enabled_tools or [])
+    assert "hello_test" not in tc.temporary_tools
+    # Dynamic mode: no legacy reload queued.
+    assert agent._pending_tool_reload == {}
+    # The repeat-use steer is the kit-level one, not the tool_manage detour.
+    assert 'Skill(name="hello-kit", ttl=...)' in result
+    assert 'tool_manage(action="enable")' not in result
+
+
+def test_defer_no_bind_when_tool_invoke_has_live_ttl(tmp_path: Path):
+    """#170 behavior 2: a live TTL entry counts as reachable; nothing changes."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.temporary_tools = {"tool_invoke": TemporaryToolEntry(expires_at=future)}
+    agent.thread_config_manager.save_config(tc)
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "auto-bound" not in result
+    entry = agent.thread_config_manager.get_config("thread-a").temporary_tools[
+        "tool_invoke"
+    ]
+    expires = entry.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    assert abs((expires - future).total_seconds()) < 1
+
+
+def test_defer_disabled_tool_invoke_stays_disabled(tmp_path: Path):
+    """#170 behavior 3: an explicit disable is never silently reversed."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")  # seed defaults carry tool_invoke
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["tool_invoke"]
+    agent.thread_config_manager.save_config(tc)
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "tool_invoke disabled on this thread" in result
+    assert "NOT" in result
+    assert 'Skill(name="hello-kit", ttl=...)' in result
+    after = agent.thread_config_manager.get_config("thread-a")
+    assert after.disabled_tools == ["tool_invoke"]
+    assert "tool_invoke" not in (after.temporary_tools or {})
+    assert "tool_invoke" not in (after.enabled_tools or [])
+
+
+def test_defer_direct_mode_instructs_direct_calls_binds_nothing(tmp_path: Path):
+    """#170 behavior 4: permissive dynamic mode strips tool_invoke, so the
+    deferred instructions must point at direct calls and no bind may fire."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(
+        tmp_path, default_tools=["bash_execute"], dynamic=True, allow_unbound=True
+    )
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "DIRECTLY by name" in result
+    assert "tool_invoke" not in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_defer_templates_only_kit_autobinds_executor(tmp_path: Path):
+    """#170 behavior 5: thread templates dispatch through tool_invoke too."""
+    skill_dir = _write_skill(tmp_path, "template-kit", TEMPLATE_ONLY_KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    assert skill.thread_templates and not skill.required_tools
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    set_current_agent(agent)
+    try:
+        result = _defer_call("template-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "Thread templates (deferred)" in result
+    assert "tool_invoke auto-bound" in result
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None and "tool_invoke" in tc.temporary_tools
+
+
+def test_defer_plain_skill_no_autobind_without_tool_invoke(tmp_path: Path):
+    """#170 behavior 6: nothing points at tool_invoke, so nothing binds."""
+    skill_dir = _write_skill(tmp_path, "plain-skill", PLAIN_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    set_current_agent(agent)
+    try:
+        result = _defer_call("plain-skill", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "auto-bound" not in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_defer_autobind_legacy_mode_emits_reload_command(tmp_path: Path):
+    """#170 behavior 7: legacy rebuild mode wraps the body in the reload
+    Command with the STOP notice; the bind is persisted and queued."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"])  # no settings
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, Command)
+    message = result.update["messages"][0]
+    assert message.additional_kwargs.get(TOOL_RELOAD_QUEUED_KEY) is True
+    assert "tool_invoke auto-bound" in message.content
+    assert "STOP NOW" in message.content
+    assert "hello_test args:" in message.content
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None and "tool_invoke" in tc.temporary_tools
+    pending = agent._pending_tool_reload["thread-a"]
+    assert pending["new_tools"] == ["tool_invoke"]
+    assert pending["ttl"] == "7d"
+    assert pending["source"] == "skill_kit_defer"
+
+
+def test_defer_autobind_failure_keeps_activation(tmp_path: Path, monkeypatch):
+    """#170 behavior 8: a bind failure never fails the activation; the body
+    still returns with an honest steer note."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    monkeypatch.setattr(
+        tool_search_module,
+        "bind_tools_for_thread",
+        lambda *a, **k: ToolBindingResult(ok=False, text="[Error]: nope"),
+    )
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "hello_test args:" in result
+    assert "auto-binding" in result and "failed" in result
+    assert "[Error]: nope" in result
+    assert 'Skill(name="hello-kit", ttl=...)' in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_defer_no_bind_when_tool_invoke_explicitly_enabled(tmp_path: Path):
+    """#170 behavior 2, enabled arm: an enabled_tools entry counts as
+    reachable even when the curated defaults lack the tool."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.enabled_tools = ["tool_invoke"]
+    agent.thread_config_manager.save_config(tc)
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "auto-bound" not in result
+    after = agent.thread_config_manager.get_config("thread-a")
+    assert after.enabled_tools == ["tool_invoke"]
+    assert "tool_invoke" not in (after.temporary_tools or {})
+
+
+def test_defer_autobind_cap_hit_tells_the_truth(tmp_path: Path):
+    """#170 behavior 7, cap-hit arm: the bind persists but the result is plain
+    text saying the executor is callable only next user turn; no reload
+    Command is emitted and nothing is queued (the cap guarantees no rebuild
+    happens this turn)."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"])  # legacy
+    agent._turn_reload_count = {"thread-a": 1}  # cap (1) already consumed
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "tool_invoke auto-bound" in result
+    assert "next user turn" in result
+    assert "STOP NOW" not in result
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None and "tool_invoke" in tc.temporary_tools
+    assert agent._pending_tool_reload == {}
+
+
+def test_defer_direct_mode_templates_block_instructs_direct_calls(tmp_path: Path):
+    """#170 behavior 4, templates arm: in permissive dynamic mode the
+    thread-templates block also instructs direct calls, and nothing binds."""
+    skill_dir = _write_skill(tmp_path, "template-kit", TEMPLATE_ONLY_KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(
+        tmp_path, default_tools=["bash_execute"], dynamic=True, allow_unbound=True
+    )
+    set_current_agent(agent)
+    try:
+        result = _defer_call("template-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "Thread templates (deferred)" in result
+    assert "run one directly by name" in result
+    assert "tool_invoke" not in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_defer_autobind_after_expired_ttl_entry(tmp_path: Path):
+    """#170 behavior 9: an expired TTL entry counts as unreachable."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.temporary_tools = {
+        "tool_invoke": TemporaryToolEntry(
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=5)
+        )
+    }
+    agent.thread_config_manager.save_config(tc)
+    set_current_agent(agent)
+    try:
+        result = _defer_call("hello-kit", skill)
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "tool_invoke auto-bound" in result
+    entry = agent.thread_config_manager.get_config("thread-a").temporary_tools[
+        "tool_invoke"
+    ]
+    expires = entry.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    assert expires - datetime.now(timezone.utc) > timedelta(days=6)
+
+
 def test_skill_meta_tool_not_found_copy_points_to_install(tmp_path: Path):
     skill_dir = _write_skill(tmp_path, "plain-skill", PLAIN_MD)
     skill = load_skill_directory(skill_dir, scope="bundled")

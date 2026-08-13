@@ -113,8 +113,23 @@ generic dispatch idiom they are trained on and guess arguments by tool name
   itself (no self-nesting), and `install_skill` / `install_mcp_server` (their job
   is to bind and reload the tool set, so they belong on the binding surface).
 - `Skill(name=..., defer=true)` is the kit-level expression: it loads the kit's
-  instructions plus its tools' argument schemas and binds nothing, for use via
-  `tool_invoke`. `ttl` (bind) and `defer` are mutually exclusive.
+  instructions plus its tools' argument schemas and binds none of the kit's
+  tools, for use via `tool_invoke`. `ttl` (bind) and `defer` are mutually
+  exclusive. One exception to "binds nothing" (backlog #170): when the thread
+  cannot call `tool_invoke` itself (e.g. an account whose curated
+  `default_thread_tools` predates the tool, #164), the activation binds just
+  `tool_invoke` on a self-cleaning 7-day TTL and announces it in the result.
+  Under dynamic binding it is callable on the next model step; on the legacy
+  rebuild path that one bind triggers the same stop-and-rebuild round trip as
+  any enable, the one case where a deferred activation is not
+  cache-preserving.
+  A thread that explicitly disabled `tool_invoke` is never silently
+  un-disabled: the result says so and steers to `ttl` binding, which needs no
+  `tool_invoke`. Reachability is resolved from thread config
+  (`tool_search.thread_tool_reachability`), never from the built tool list,
+  which the permissive mode below deliberately strips `tool_invoke` from; in
+  that mode the deferred result instructs calling the tools directly by name
+  and no auto-bind fires.
 
 Those compact schemas are all rendered in one place, `tools/schema_render.py`.
 It reads the tool's `tool_call_schema` (so runtime-injected arguments such as

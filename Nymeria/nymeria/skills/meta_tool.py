@@ -58,30 +58,35 @@ body so you can resolve those references.
 Optional `ttl` argument (Skill Kits only): some skills are "Skill Kits" that
 bind extra tools onto this thread when you activate them. A kit can also
 declare required SKILLS (one level deep): activating it fully activates those
-too, binding any tools THEY require in the same transaction. By default the
-bound tools stay bound for the kit's own declared lifetime; pass `ttl` to set
-a one-off lifetime for THIS activation instead, e.g. ttl="30m", "2h", "24h",
-"7d", or "permanent". Important: `ttl` governs ONLY the tools this activation
-binds (the kit's own plus any nested kit's). It does NOT change how long the
-skill's instructions stay with you: the body text this tool returns remains
-in your context until the conversation is compacted, cleared, or scrolls out
-of the sliding window, no matter what `ttl` you pass. Note that
-ttl="permanent" (or "never") makes the kit's tools persist on the thread
-beyond this turn rather than expiring; use a finite value like "2h" unless
-you intend a lasting change. `ttl` has no effect on skills that bind no
-tools.
+too, binding any tools THEY require in the same transaction. Prefer choosing
+the `ttl` yourself, sized to how long you expect to need the tools (duration
+format Nm/Nh/Nd/Nw, e.g. "45m" or "3d", or "permanent"); when you omit it,
+the kit's own declared lifetime applies. Important: `ttl` governs ONLY the
+tools this activation binds (the kit's own plus any nested kit's). It does
+NOT change how long the skill's instructions stay with you: the body text
+this tool returns remains in your context until the conversation is
+compacted, cleared, or scrolls out of the sliding window, no matter what
+`ttl` you pass. Note that ttl="permanent" (or "never") makes the kit's tools
+persist on the thread beyond this turn rather than expiring; prefer the
+shortest finite lifetime that covers the task unless you intend a lasting
+change. `ttl` has no effect on skills that bind no tools.
 
-Optional `defer` argument (Skill Kits only): pass defer=true to load the kit's
-instructions AND its tools' argument schemas WITHOUT binding any tool to the
-thread. You then run those tools by name via tool_invoke(name, arguments),
-which keeps the prompt cache intact (nothing is added to your tool list).
-Prefer defer for a one-off or short-horizon use of the kit; use `ttl` (bind)
-when you will use the kit's tools repeatedly or need their arguments
-grammar-constrained. `defer` and `ttl` are mutually exclusive; if you pass
-both, `ttl` is ignored (defer binds nothing).
+Optional `defer` argument (Skill Kits only): decide by usage. One-off use of a
+kit's tools right now: pass defer=true. A multi-step task, or a kit you will
+use again later: bind with `ttl` instead. defer=true loads the kit's
+instructions AND its tools' argument schemas WITHOUT binding the kit's tools:
+the schemas arrive here in conversation history and you run the tools by name
+via tool_invoke(name, arguments), keeping the prompt cache intact. Binding
+(`ttl`) instead puts the tools in your tool list (the cached tools prefix at
+the head of the request), which makes calling them more reliable: a bound
+schema is read as your tool grammar and its arguments are grammar-constrained
+as you emit them; a deferred schema is read as prose. `defer` and `ttl` are
+mutually exclusive; if you pass both, `ttl` is ignored (defer binds nothing).
 
-Call this tool at most once per distinct skill per turn. If no skill applies,
-do not call it; proceed with your regular tools.
+Call this tool at most once per distinct skill per turn. One exception:
+re-activating a kit you first loaded with defer=true, passing `ttl`, to bind
+its tools once the use turns out to be repeated. If no skill applies, do not
+call it; proceed with your regular tools.
 """
 
 
@@ -388,12 +393,155 @@ def _bind_skill_kit_tools(
     )
 
 
-def _defer_kit_tools_block(skill: Skill) -> str:
-    """Body block for a deferred Skill Kit activation (binds nothing).
+# One deliberate exception to "defer binds nothing": when the thread lacks the
+# tool_invoke executor the deferred instructions rely on, it is bound with this
+# self-cleaning TTL rather than permanently (developer decision, 2026-08-13;
+# backlog #170).
+_DEFER_EXECUTOR_TTL = "7d"
 
-    Loads each required tool's compact argument schema so the model can call it
-    by name via ``tool_invoke`` without the kit mutating the thread's tool list
-    (cache-safe). Skills that bind no tools get a short no-op note instead.
+
+def _unbound_direct_calls_active() -> bool:
+    """True when deferred tools are called DIRECTLY by name on this thread.
+
+    Delegates to the graph-build strip predicate
+    (``agent_graph.unbound_direct_calls_active``) so the two surfaces cannot
+    drift: under it, ``tool_invoke`` is deliberately dropped from the bound
+    schema (direct unbound calls make it redundant) and an explicit call to
+    it is refused by the by-name gate. Deferred instructions must therefore
+    point at direct calls there, and an auto-bind of ``tool_invoke`` would
+    only be stripped again at the next build (backlog #170, Gap 1b).
+    """
+    from ..core.agent import get_current_agent
+    from ..core.agent_graph import unbound_direct_calls_active
+
+    agent = get_current_agent()
+    return unbound_direct_calls_active(getattr(agent, "settings", None))
+
+
+def _ensure_deferred_executor(
+    skill: Skill, config: RunnableConfig, use_direct: bool
+) -> tuple[str, bool, bool]:
+    """Guarantee the executor a deferred activation tells the model to use.
+
+    A deferred kit's tool schemas and thread templates are run via
+    ``tool_invoke``, which the thread may not actually have (#164: seeding is
+    first-time-only, so an account whose ``default_thread_tools`` predates the
+    tool silently lacks it). Defer promising an unreachable executor reads to
+    the model as its own failure. Resolution, in order:
+
+    - Direct-call mode, or nothing in this activation points at
+      ``tool_invoke``: nothing to ensure.
+    - Reachable (``thread_tool_reachability``, which resolves from thread
+      config, never the built tool list): nothing to ensure.
+    - Disabled on the thread: honest note, NO un-disable. Calling the bind
+      path would silently reverse an explicit per-thread decision
+      (``bind_tools_for_thread`` un-disables first), so steer to ``ttl``
+      binding instead, which needs no ``tool_invoke``.
+    - Unreachable: bind ``tool_invoke`` with a self-cleaning 7-day TTL and say
+      so. A bind failure never fails the activation: the instructions still
+      return, with a steer note.
+
+    Returns ``(note_block, emit_reload_command, executor_bound)``.
+    ``emit_reload_command`` is True only when the auto-bind was persisted on
+    the legacy rebuild path, so the caller must wrap the accumulated body in
+    ``tool_reload_command``. ``executor_bound`` is True whenever the auto-bind
+    persisted, so the deferred blocks can drop their cache-safe framing (the
+    tools prefix DID change in that case).
+    """
+    if use_direct or not (skill.required_tools or skill.thread_templates):
+        return "", False, False
+
+    from ..tools.tool_search import bind_tools_for_thread, thread_tool_reachability
+    from ..tools.utils import get_thread_id, get_user_id
+
+    # Bare accessor calls, matching _bind_skill_kit_tools: both coerce a
+    # missing value to "default" and never raise.
+    thread_id = get_thread_id(config)
+    user_id = get_user_id(config)
+
+    state = thread_tool_reachability("tool_invoke", thread_id, user_id)
+    if state == "bound":
+        return "", False, False
+    if state == "disabled":
+        return (
+            "\n\n---\n"
+            "[tool_invoke disabled on this thread] The deferred instructions "
+            "above rely on tool_invoke, which this thread has explicitly "
+            "disabled (disabled_tools is authoritative; it was NOT "
+            "overridden). To use this kit's tools, activate the kit again "
+            f'with Skill(name="{skill.name}", ttl=...) to bind them '
+            "first-class (no tool_invoke needed), choosing the ttl for how "
+            'long you expect to need them (Nm/Nh/Nd/Nw or "permanent"), or '
+            "ask the user to re-enable tool_invoke.",
+            False,
+            False,
+        )
+
+    binding = bind_tools_for_thread(
+        ["tool_invoke"],
+        "",
+        thread_id,
+        user_id,
+        ttl=_DEFER_EXECUTOR_TTL,
+        strict=True,
+        source="skill_kit_defer",
+        skill_name=skill.name,
+        reason="deferred activation requires the tool_invoke executor",
+    )
+    if not binding.ok:
+        return (
+            "\n\n---\n"
+            "[note] tool_invoke is not bound on this thread and auto-binding "
+            f"it failed:\n{binding.text}\n"
+            "The deferred instructions above cannot run as written. Activate "
+            f'the kit again with Skill(name="{skill.name}", ttl=...) to bind '
+            "its tools first-class instead, choosing the ttl for how long "
+            'you expect to need them (Nm/Nh/Nd/Nw or "permanent").',
+            False,
+            False,
+        )
+
+    note = (
+        "\n\n---\n"
+        "[tool_invoke auto-bound] Deferred activation binds none of the "
+        "kit's tools, with one exception made here: tool_invoke (the "
+        "executor the instructions above rely on) was not bound on this "
+        f"thread, so it was bound with a {_DEFER_EXECUTOR_TTL} TTL."
+    )
+    if binding.cap_hit:
+        note += (
+            " However, this turn already hit the in-turn reload cap, so "
+            "tool_invoke becomes callable only on the next user turn; the "
+            "deferred tools cannot run in this turn."
+        )
+        return note, False, True
+    if binding.reload_tools:
+        if should_emit_reload_command(binding.reload_tools, thread_id=thread_id):
+            note += (
+                "\n\n[Tool reload queued - STOP NOW]\n"
+                "tool_invoke was persisted but is not callable in the current "
+                "graph invocation. Stop after this tool result. The system "
+                "will rebuild the tool list and resume you automatically; run "
+                "the deferred tools via tool_invoke only after that resume."
+            )
+            return note, True, True
+        note += " It is callable from your next step."
+    return note, False, True
+
+
+def _defer_kit_tools_block(
+    skill: Skill, use_direct: bool, executor_bound: bool = False
+) -> str:
+    """Body block for a deferred Skill Kit activation (binds no kit tools).
+
+    Loads each required tool's compact argument schema so the model can call
+    it by name (via ``tool_invoke``, or directly in permissive dynamic mode)
+    without the kit mutating the thread's tool list. Skills that bind no
+    tools get a short no-op note instead. The repeat-use steer is the
+    kit-level one, a second ``Skill()`` call with a ``ttl``, never a
+    ``tool_manage`` detour (backlog #170). When ``executor_bound`` (the
+    activation auto-bound ``tool_invoke``), the cache-safe framing is dropped:
+    the tools prefix DID change, and the auto-bound note explains why.
     """
     if not skill.required_tools:
         return (
@@ -407,11 +555,26 @@ def _defer_kit_tools_block(skill: Skill) -> str:
     from ..tools.tool_search import _resolve_tool_object
 
     agent = get_current_agent()
+    if use_direct:
+        instruction = (
+            "Call these tools DIRECTLY by name (this thread allows direct "
+            "unbound calls, gated the same as any other tool call)."
+        )
+    elif executor_bound:
+        instruction = "Run these tools by name with tool_invoke(name, arguments)."
+    else:
+        instruction = (
+            "Run these tools by name with tool_invoke(name, arguments) "
+            "(cache-safe)."
+        )
     lines = [
         "\n\n---\n"
-        "[Skill Kit deferred] Nothing was bound to this thread. Run these tools "
-        "by name with tool_invoke(name, arguments) (cache-safe); if you will use "
-        'one repeatedly, bind it instead with tool_manage(action="enable").',
+        "[Skill Kit deferred] None of this kit's tools were bound to this "
+        f"thread. {instruction} "
+        "If this becomes a multi-step task or you will use the kit again "
+        'later, activate it again with Skill(name="' + skill.name + '", '
+        "ttl=...) to bind its tools first-class instead, choosing the ttl "
+        'for how long you expect to need them (Nm/Nh/Nd/Nw or "permanent").',
     ]
     for name in skill.required_tools:
         tool_obj = _resolve_tool_object(name, agent)
@@ -490,12 +653,12 @@ def _defer_required_skills_block(
     return "\n".join(lines)
 
 
-def _defer_thread_templates_block(skill: Skill) -> str:
+def _defer_thread_templates_block(skill: Skill, use_direct: bool) -> str:
     """Deferred listing of a kit's thread templates: name + description + schema.
 
-    Nothing is registered on the thread; each template is runnable via
-    ``tool_invoke`` (the dispatch superset carries templates from every
-    installed skill), and its thread materializes on the first call.
+    Nothing is registered on the thread; each template is runnable by name
+    (the dispatch superset carries templates from every installed skill), and
+    its thread materializes on the first call.
     """
     templates = skill.thread_templates
     if not templates:
@@ -503,12 +666,17 @@ def _defer_thread_templates_block(skill: Skill) -> str:
     from ..agents.tool_factory import create_template_thread_tool
     from ..tools.schema_render import render_tool_args_schema
 
+    run_how = (
+        "run one directly by name (this thread allows direct unbound calls)"
+        if use_direct
+        else "run one via tool_invoke(name, arguments)"
+    )
     lines = [
         "\n\n---\n"
         "[Thread templates (deferred)] This kit declares callable-thread "
-        "templates. Nothing was registered on this thread; run one via "
-        "tool_invoke(name, arguments). Its thread is created on the first "
-        "call (with that call's task) and reused afterwards.",
+        f"templates. Nothing was registered on this thread; {run_how}. Its "
+        "thread is created on the first call (with that call's task) and "
+        "reused afterwards.",
     ]
     for template in templates:
         desc = template.description.strip().replace("\n", " ")
@@ -706,21 +874,26 @@ def create_skill_meta_tool(
         name: str,
         ttl: Annotated[
             Optional[str],
-            "Optional one-off lifetime for a Skill Kit's bound tools, e.g. "
-            "'30m', '2h', '7d', or 'permanent'. Overrides the kit's declared "
-            "tool_ttl for this activation only. Applies ONLY to the bound "
-            "tools, never to the skill's instruction text (which persists "
-            "until compaction/clear/sliding-window). 'permanent'/'never' make "
-            "the tools persist beyond this turn. Ignored for skills that bind "
-            "no tools, and ignored when defer=true.",
+            "Optional one-off lifetime for a Skill Kit's bound tools; choose "
+            "it for how long you expect to need them (duration format "
+            "Nm/Nh/Nd/Nw, e.g. '45m' or '3d', max one year, or 'permanent'). "
+            "Overrides the "
+            "kit's declared tool_ttl for this activation only. Applies ONLY "
+            "to the bound tools, never to the skill's instruction text (which "
+            "persists until compaction/clear/sliding-window). "
+            "'permanent'/'never' make the tools persist beyond this turn. "
+            "Ignored for skills that bind no tools, and ignored when "
+            "defer=true.",
         ] = None,
         defer: Annotated[
             Optional[bool],
-            "Skill Kits only. When true, load the kit's instructions and its "
-            "tools' argument schemas WITHOUT binding any tool to the thread; "
-            "call those tools by name via tool_invoke (cache-safe). Prefer this "
-            "for one-off use; use ttl (bind) for repeated use. Mutually "
-            "exclusive with ttl.",
+            "Skill Kits only. Decide by usage: one-off use of the kit's tools "
+            "= defer=true; multi-step or future use = bind with ttl instead. "
+            "When true, load the kit's instructions and its tools' argument "
+            "schemas WITHOUT binding the kit's tools; call them by name via "
+            "tool_invoke (cache-safe). A bound schema sits in your tool list "
+            "and is called more reliably (grammar-constrained); a deferred "
+            "one is prose in history. Mutually exclusive with ttl.",
         ] = False,
         *,
         tool_call_id: Annotated[str, InjectedToolCallId],
@@ -732,15 +905,17 @@ def create_skill_meta_tool(
             name: The exact name of an installed skill (one listed in
                 <available_skills>, or any other installed skill by exact name).
             ttl: Optional. For Skill Kits only, a one-off lifetime for the
-                tools the kit binds (e.g. "30m", "2h", "7d", "permanent"),
-                overriding the kit's declared tool_ttl for this activation.
+                tools the kit binds, sized to how long you expect to need
+                them (e.g. "45m", "3d", "permanent"), overriding the kit's
+                declared tool_ttl for this activation.
                 Governs the bound tools only, not the returned instructions,
                 which stay in context until compaction/clear/sliding-window.
                 No effect for skills that bind no tools, or when defer=true.
             defer: Optional. For Skill Kits only. When true, load the kit's
-                instructions plus its tools' schemas without binding anything;
-                call the tools via tool_invoke. Cache-safe, best for one-off
-                use. Mutually exclusive with ttl.
+                instructions plus its tools' schemas without binding the
+                kit's tools; call them via tool_invoke. Cache-safe, best for
+                one-off use; a multi-step task or future use binds with ttl
+                instead. Mutually exclusive with ttl.
         """
         # Re-fetch from disk when possible so SKILL.md edits are live.
         skill = _resolve_active_skill(
@@ -759,20 +934,33 @@ def create_skill_meta_tool(
         body = _render_skill_body(skill)
 
         # Deferred activation: load the kit's tool schemas and list its nested
-        # skills but bind nothing, so the model runs the tools via tool_invoke
-        # (and loads nested skills on demand) with the prompt cache preserved.
+        # skills but bind nothing, so the model runs the tools by name (via
+        # tool_invoke, or directly in permissive dynamic mode) with the prompt
+        # cache preserved. One exception: when the thread lacks the
+        # tool_invoke executor those instructions rely on,
+        # _ensure_deferred_executor binds it on a self-cleaning TTL (or says
+        # honestly why it will not, when the thread disabled it).
         if defer:
-            body += _defer_kit_tools_block(skill)
+            use_direct = _unbound_direct_calls_active()
+            executor_note, emit_reload, executor_bound = _ensure_deferred_executor(
+                skill, config, use_direct
+            )
+            body += _defer_kit_tools_block(
+                skill, use_direct, executor_bound=executor_bound
+            )
             body += _defer_required_skills_block(
                 skill, skill_manager, user_id, snapshot_by_name
             )
-            body += _defer_thread_templates_block(skill)
+            body += _defer_thread_templates_block(skill, use_direct)
+            body += executor_note
             if ttl is not None and str(ttl).strip() and skill.required_tools:
                 body += (
                     "\n\n---\n[note] ttl was ignored because defer=true binds no "
                     "tools; ttl governs a bound kit's tool lifetime."
                 )
             body += _allowed_tools_advisory(skill, thread_tools_set)
+            if emit_reload:
+                return tool_reload_command(body, tool_call_id)
             return body
 
         # Nested required skills resolve first (one level deep) and are
