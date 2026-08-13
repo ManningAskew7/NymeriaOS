@@ -296,13 +296,27 @@ at all (e.g. a marketplace result) must be `install_skill`'d first;
 ### Deferred Skill Kits (`defer=true`)
 
 For a Skill Kit, `Skill(name=..., defer=true)` loads the kit's instructions plus
-its tools' argument schemas but binds NOTHING to the thread; the agent then runs
-those tools by name via `tool_invoke` (cache-safe). Nested `required_skills`
-are listed as name + description (loadable on demand via `Skill()`), and any
-declared thread templates are listed with their compact schemas. This is the
-kit-level expression of defer-vs-bind: use `defer` for a one-off, use `ttl`
-(bind) for repeated use. `defer` and `ttl` are mutually exclusive (passing both
-ignores `ttl`). See [tool-hot-loading.md](./tool-hot-loading.md#deferred-execution-tool_invoke-cache-safe-alternative-to-binding).
+its tools' argument schemas but binds none of the kit's tools; the agent then
+runs those tools by name via `tool_invoke` (cache-safe). Nested
+`required_skills` are listed as name + description (loadable on demand via
+`Skill()`), and any declared thread templates are listed with their compact
+schemas. This is the kit-level expression of defer-vs-bind, decided by usage:
+one-off use of the kit's tools defers; a multi-step task or future use binds
+with `ttl`, because a bound schema sits in the cached tools prefix the model
+reads as its tool grammar while a deferred one is prose in history, so binding
+calls more reliably. `defer` and `ttl` are mutually exclusive (passing both
+ignores `ttl`).
+
+One exception to "binds nothing" (backlog #170): when the thread cannot call
+`tool_invoke` itself, the activation binds just `tool_invoke` on a
+self-cleaning 7-day TTL and announces it in the result, so defer never points
+the model at an executor it lacks. A thread that explicitly disabled
+`tool_invoke` is never silently un-disabled: the result says so and steers to
+`ttl` binding instead. On threads running permissive dynamic binding
+(`allow_unbound_tool_calls` together with `dynamic_tool_binding`), the
+deferred result instead instructs calling the tools directly by name and
+nothing binds. See
+[tool-hot-loading.md](./tool-hot-loading.md#deferred-execution-tool_invoke-cache-safe-alternative-to-binding).
 
 ## Where skills live on disk
 

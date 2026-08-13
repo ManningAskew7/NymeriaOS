@@ -587,10 +587,7 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
     # call unbound tools directly, so drop it from the BOUND schema to save its
     # tokens every request. It stays in the dispatch superset, so an explicit
     # tool_invoke call is still gated (excluded) rather than silently running.
-    _settings = getattr(agent, "settings", None)
-    if bool(getattr(_settings, "allow_unbound_tool_calls", False)) and bool(
-        getattr(_settings, "dynamic_tool_binding", False)
-    ):
+    if unbound_direct_calls_active(getattr(agent, "settings", None)):
         tools = [t for t in tools if getattr(t, "name", None) != "tool_invoke"]
 
     skill_tool = agent._build_skill_meta_tool(user_id, tc, tools)
@@ -799,6 +796,23 @@ def is_dynamic_tool_binding(agent: "NymeriaAgent") -> bool:
     for a full process restart.
     """
     return bool(getattr(agent.settings, "dynamic_tool_binding", False))
+
+
+def unbound_direct_calls_active(settings: Any) -> bool:
+    """True when direct unbound tool calls replace ``tool_invoke``.
+
+    The ONE spelling of the permissive-mode condition
+    (``allow_unbound_tool_calls`` AND ``dynamic_tool_binding``, both live).
+    Graph build strips the resident ``tool_invoke`` from the bound schema
+    under it (select_tools_for_graph), and deferred Skill Kit activation
+    instructs direct-by-name calls under it (skills/meta_tool.py); a shared
+    predicate keeps those two surfaces from drifting (backlog #170). Takes
+    the settings object, not the agent, so tool-layer callers can pass
+    ``getattr(agent, "settings", None)`` without an agent in hand.
+    """
+    return bool(getattr(settings, "allow_unbound_tool_calls", False)) and bool(
+        getattr(settings, "dynamic_tool_binding", False)
+    )
 
 
 def build_graph_with_prompt(

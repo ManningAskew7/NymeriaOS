@@ -14,15 +14,20 @@ up" -- the whole point of this file is to detect any change to that output.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from nymeria.core.agent import NymeriaAgent, set_current_agent
-from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
+from nymeria.core.thread_config import (
+    TemporaryToolEntry,
+    ThreadConfig,
+    ThreadConfigManager,
+)
 from nymeria.tools import SEED_TOOLS
-from nymeria.tools.tool_search import bind_tools_for_thread
+from nymeria.tools.tool_search import bind_tools_for_thread, thread_tool_reachability
 
 # The package re-exports a ``tool_search`` StructuredTool that shadows the
 # module attribute; only ``sys.modules`` resolves the real module for patching.
@@ -468,3 +473,99 @@ def test_sensitive_tool_emits_warning(tmp_path):
     r = bind_tools_for_thread([sensitive], "", "thread-a", "u", ttl="2h")
     assert r.ok is True
     assert f"[Warning]: '{sensitive}' is SENSITIVE" in r.text
+
+
+# ---------------------------------------------------------------------------
+# thread_tool_reachability (backlog #170): resolves from the thread-config
+# source, never the built tool list, so the defer path can trust it.
+# ---------------------------------------------------------------------------
+
+
+def _agent_with_defaults(tmp_path: Path, default_tools) -> _FakeAgent:
+    """Agent whose profile carries a curated default_thread_tools list."""
+    agent = _agent(tmp_path)
+    agent.profile_manager = SimpleNamespace(
+        get_profile=lambda user_id: SimpleNamespace(
+            tool_preferences=SimpleNamespace(default_thread_tools=default_tools)
+        )
+    )
+    return agent
+
+
+def test_reachability_no_agent_is_unbound():
+    set_current_agent(None)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "unbound"
+
+
+def test_reachability_seed_defaults_are_bound(tmp_path):
+    # default_thread_tools=None resolves to the seed set, which carries
+    # tool_invoke on a fresh profile.
+    _agent(tmp_path)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "bound"
+
+
+def test_reachability_curated_defaults_without_tool_are_unbound(tmp_path):
+    # The #164 shape: an account whose curated default_thread_tools predates
+    # tool_invoke. SEED_TOOLS membership must NOT make it count as bound.
+    _agent_with_defaults(tmp_path, ["bash_execute"])
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "unbound"
+
+
+def test_reachability_enabled_tools_are_bound(tmp_path):
+    agent = _agent_with_defaults(tmp_path, ["bash_execute"])
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.enabled_tools = ["tool_invoke"]
+    agent.thread_config_manager.save_config(tc)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "bound"
+
+
+def test_reachability_live_ttl_bound_expired_unbound(tmp_path):
+    agent = _agent_with_defaults(tmp_path, ["bash_execute"])
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.temporary_tools = {
+        "tool_invoke": TemporaryToolEntry(
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+        )
+    }
+    agent.thread_config_manager.save_config(tc)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "bound"
+
+    tc.temporary_tools = {
+        "tool_invoke": TemporaryToolEntry(
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1)
+        )
+    }
+    agent.thread_config_manager.save_config(tc)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "unbound"
+
+
+def test_reachability_disabled_wins_over_default_bound(tmp_path):
+    # disabled_tools is authoritative at graph build, so it must win here too,
+    # even when the seed defaults would otherwise carry the tool.
+    agent = _agent(tmp_path)
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["tool_invoke"]
+    agent.thread_config_manager.save_config(tc)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "disabled"
+
+
+def test_reachability_disabled_wins_over_preserved_entries(tmp_path):
+    # Disable is non-destructive: it leaves enabled_tools/temporary_tools
+    # entries in place as preserved state. Reachability must still report
+    # 'disabled' over both preserved shapes, or the defer path would treat a
+    # disabled executor as callable (review F11).
+    agent = _agent(tmp_path)
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["tool_invoke"]
+    tc.enabled_tools = ["tool_invoke"]
+    agent.thread_config_manager.save_config(tc)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "disabled"
+
+    tc.enabled_tools = []
+    tc.temporary_tools = {
+        "tool_invoke": TemporaryToolEntry(
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+        )
+    }
+    agent.thread_config_manager.save_config(tc)
+    assert thread_tool_reachability("tool_invoke", "thread-a", "u") == "disabled"
