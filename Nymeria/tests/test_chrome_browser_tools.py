@@ -882,6 +882,101 @@ def test_screenshot_reports_undecodable_data_instead_of_crashing(workspace) -> N
     assert artifact == {}
 
 
+# ---------- the page_loading stamp reaches the model ----------
+#
+# The extension stamps a read captured while the tab was still loading
+# (runSingle samples tab.status before the reader executes). Each backend
+# tool renders specific payload fields, so the stamp is only useful if every
+# reader SURFACES it: a sparse mid-load tree with no explanation is
+# indistinguishable from a sparse page, which is the #160 residue this
+# closes.
+
+
+def test_read_page_surfaces_the_page_loading_stamp() -> None:
+    stamped = _invoke(
+        chrome_read_page,
+        {"tab_id": 1},
+        _ok({"tree": '- button "Buy" [ref=@e1]', "ref_count": 1, "page_loading": True}),
+    )
+    assert "still loading" in stamped
+    assert "re-read" in stamped
+
+    unstamped = _invoke(
+        chrome_read_page,
+        {"tab_id": 1},
+        _ok({"tree": '- button "Buy" [ref=@e1]', "ref_count": 1}),
+    )
+    assert "still loading" not in unstamped
+
+
+def test_read_text_surfaces_the_page_loading_stamp() -> None:
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1},
+        _ok({"text": "partial content", "url": "https://x.test", "page_loading": True}),
+    )
+    # Outside the fence: it is our note about capture timing, not page text.
+    before_fence = out.split("<untrusted_page_content>", 1)[0]
+    assert "still loading" in before_fence
+
+
+def test_read_text_empty_result_still_says_loading(monkeypatch) -> None:
+    """"No visible text" and "not loaded yet" are different conclusions; a
+    mid-load empty page must not read as a genuinely empty page."""
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1},
+        _ok({"text": "", "url": "https://x.test", "page_loading": True}),
+    )
+    assert "No visible text" in out
+    assert "still loading" in out
+
+
+def test_find_match_list_warns_when_the_page_was_loading(monkeypatch) -> None:
+    """Refs minted against a half-built tree are the dangerous half: they can
+    go stale the moment the load finishes, so a match list must say so."""
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(
+        llm_extract,
+        "run_extraction",
+        lambda c, p: ("@e1 | link | Home | matches", "test-model"),
+    )
+    out = _invoke(
+        chrome_find,
+        {"tab_id": 1, "query": "the home link"},
+        _ok({"tree": '- link "Home" [ref=@e1]', "page_loading": True}),
+    )
+    assert "@e1" in out
+    assert "still loading" in out
+
+
+def test_find_no_match_hints_when_the_page_was_loading(monkeypatch) -> None:
+    """"Not on this page" and "not loaded yet" are different conclusions, and
+    only the payload knows which one the agent should draw."""
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    out = _invoke(
+        chrome_find,
+        {"tab_id": 1, "query": "a checkout button"},
+        _ok({"tree": '- link "Home" [ref=@e1]', "page_loading": True}),
+    )
+    assert "No elements matching" in out
+    assert "still loading" in out
+
+
+def test_screenshot_surfaces_the_page_loading_stamp(workspace) -> None:
+    encoded = base64.b64encode(_PNG_1PX).decode("ascii")
+    content, artifact = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1},
+        _ok({"base64": encoded, "url": "https://x.test", "page_loading": True}),
+    )
+    assert artifact
+    assert "still loading" in content
+
+
 def test_screenshot_reports_a_missing_image(workspace) -> None:
     content, _ = _invoke_raw(chrome_screenshot, {"tab_id": 1}, _ok({}))
     assert content.startswith("[Error]")
