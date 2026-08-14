@@ -95,8 +95,12 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   acknowledged, with its message; a confirm or prompt arrives STANDING, with
   the message, a deadline, and the `chrome_dialog` call that answers it. Read
   "Dialogs" below, and do not repeat the action: it was delivered.
-- An error naming an element that covers your target -> dismiss the overlay
-  (cookie banner, modal) and retry. Do not try to click through it.
+- An error naming an element that covers your target -> read it fully. A real
+  overlay (cookie banner, modal): dismiss it and retry. The target's own
+  widget fronting for it (a styled control): the error hands you the exact
+  coordinate to click it deliberately. Text-entry targets are clicked
+  through automatically instead: a clean result carries `clicked_through`,
+  and a failure says the click was delivered and what covered it.
 
 Do NOT trust `url_changed`: it is computed from the last committed URL, so a
 click that navigates usually still reports `false`. Confirm a navigation by
@@ -228,8 +232,9 @@ need. A half-finished task the user can complete beats a rule quietly broken.
 
 ## When the obvious approach is not working
 
-- Element there but not clickable -> something is covering it. Read the page,
-  find the overlay, dismiss it.
+- Element there but not clickable -> something is covering it. The refusal
+  names it and includes the coordinate; a real overlay wants dismissing, the
+  target's own widget wants that coordinate clicked.
 - Page looks right but nothing happens -> `chrome_screenshot` to see it as the
   user does. Canvas, custom widgets and CAPTCHAs are invisible to the tree.
 - Content missing entirely -> it may be in a cross-origin iframe. Those appear

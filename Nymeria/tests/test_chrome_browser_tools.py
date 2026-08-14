@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -392,6 +393,146 @@ def test_fails_fast_when_no_chrome_connected() -> None:
     # Nothing was published: a disconnected extension must not leave a command
     # pending for the sweeper.
     assert get_browser_command_coordinator().pending_count() == 0
+
+
+# ---------- MV3 recycle grace (#172) ----------
+#
+# Chrome idle-kills the extension's service worker ~30s after its last
+# activity and a heartbeat alarm re-establishes the SSE stream within a
+# minute. A dispatch landing inside that gap used to fail with "not
+# connected", which is false in the way that matters: the extension is
+# healthy and seconds from back. These tests shrink the grace constants to
+# keep the suite fast; the shape under test is the banding, not the numbers.
+
+
+def _shrink_grace(monkeypatch, grace: float, poll: float = 0.05) -> None:
+    monkeypatch.setattr(chrome_browser_module, "_RECONNECT_GRACE_S", grace)
+    monkeypatch.setattr(chrome_browser_module, "_RECONNECT_POLL_S", poll)
+
+
+def _disconnect(user_id: str = "u1") -> None:
+    chrome_subscribers.remove_chrome_subscriber(f"nymeria-browser-{user_id}")
+
+
+def test_recent_disconnect_holds_the_command_until_the_reconnect(monkeypatch) -> None:
+    """A command landing mid-recycle succeeds once the subscriber returns,
+    with a payload indistinguishable from the always-connected case."""
+    _shrink_grace(monkeypatch, grace=5.0)
+    _connect()
+    _disconnect()
+
+    async def run() -> tuple[str, float]:
+        async def reconnect_later() -> None:
+            await asyncio.sleep(0.3)
+            _connect()
+
+        started = time.monotonic()
+        reconnector = asyncio.create_task(reconnect_later())
+        resolver = asyncio.create_task(
+            _resolve_next(_ok({"url": "https://example.com/", "complete": True}))
+        )
+        out = await chrome_navigate.ainvoke(
+            {"tab_id": 1, "url": "https://example.com"}, config=_config()
+        )
+        await reconnector
+        await resolver
+        return out, time.monotonic() - started
+
+    out, elapsed = asyncio.run(run())
+    assert "untrusted_page_content" in out
+    assert "[Error]" not in out
+    assert elapsed >= 0.3, "the dispatch must have actually waited for the reconnect"
+
+
+def test_recent_disconnect_expiry_names_the_recycle_and_the_wait(monkeypatch) -> None:
+    """No reconnect inside the grace: the error owns the wait instead of
+    claiming the extension was never there."""
+    _shrink_grace(monkeypatch, grace=0.6)
+    _connect()
+    _disconnect()
+
+    async def run() -> tuple[str, float]:
+        started = time.monotonic()
+        out = await chrome_navigate.ainvoke(
+            {"tab_id": 1, "url": "https://example.com"}, config=_config()
+        )
+        return out, time.monotonic() - started
+
+    out, elapsed = asyncio.run(run())
+    assert "[Error]" in out
+    assert "service-worker recycle" in out
+    assert "did not reconnect" in out
+    assert "No Nymeria browser extension connected" not in out
+    assert elapsed >= 0.4, "the grace must be a real wait, not an instant fail"
+    assert get_browser_command_coordinator().pending_count() == 0
+    # The two numbers must tell one coherent story: the age is measured at
+    # EXPIRY, so it can never read as less than the wait it just finished
+    # ("dropped 0s ago ... waited 75s" was the reviewed defect).
+    dropped = int(re.search(r"dropped its connection (\d+)s ago", out).group(1))
+    waited = int(re.search(r"within the (\d+)s this", out).group(1))
+    assert dropped >= waited >= 1, (dropped, waited)
+
+
+def test_stale_disconnect_fails_fast_with_its_own_copy(monkeypatch) -> None:
+    """Past the grace window a self-reconnect is provably not coming: fail
+    instantly, and say gone-quiet rather than never-connected."""
+    _shrink_grace(monkeypatch, grace=5.0)
+    _connect()
+    _disconnect()
+    with chrome_subscribers._lock:
+        chrome_subscribers._last_disconnect_by_user["u1"] = time.monotonic() - 400
+
+    async def run() -> tuple[str, float]:
+        started = time.monotonic()
+        out = await chrome_navigate.ainvoke(
+            {"tab_id": 1, "url": "https://example.com"}, config=_config()
+        )
+        return out, time.monotonic() - started
+
+    out, elapsed = asyncio.run(run())
+    assert "[Error]" in out
+    assert "has not returned" in out
+    assert "No Nymeria browser extension connected" not in out
+    assert elapsed < 0.4, "a stale disconnect must not hold the command"
+
+
+def test_disconnect_grace_is_per_user(monkeypatch) -> None:
+    """u1's recycle window must not hold or relabel u2's commands: u2 has no
+    history and gets the instant never-connected copy."""
+    _shrink_grace(monkeypatch, grace=5.0)
+    _connect("u1")
+    _disconnect("u1")
+
+    async def run() -> tuple[str, float]:
+        started = time.monotonic()
+        out = await chrome_navigate.ainvoke(
+            {"tab_id": 1, "url": "https://example.com"},
+            config=_config(user_id="u2"),
+        )
+        return out, time.monotonic() - started
+
+    out, elapsed = asyncio.run(run())
+    assert "No Nymeria browser extension connected" in out
+    assert elapsed < 0.4
+
+
+def test_disconnect_is_stamped_only_when_the_last_stream_drops() -> None:
+    """Two streams, one drops: the user is still connected, so no stamp. The
+    second drop stamps; a reconnect clears it."""
+    chrome_subscribers.add_chrome_subscriber(user_id="u1", subscriber_id="nymeria-browser-a")
+    chrome_subscribers.add_chrome_subscriber(user_id="u1", subscriber_id="nymeria-browser-b")
+
+    chrome_subscribers.remove_chrome_subscriber("nymeria-browser-a")
+    assert chrome_subscribers.is_chrome_connected("u1")
+    assert chrome_subscribers.chrome_disconnect_age("u1") is None
+
+    chrome_subscribers.remove_chrome_subscriber("nymeria-browser-b")
+    assert not chrome_subscribers.is_chrome_connected("u1")
+    age = chrome_subscribers.chrome_disconnect_age("u1")
+    assert age is not None and age < 5
+
+    chrome_subscribers.add_chrome_subscriber(user_id="u1", subscriber_id="nymeria-browser-c")
+    assert chrome_subscribers.chrome_disconnect_age("u1") is None
 
 
 def _unfence(raw: str) -> dict:
