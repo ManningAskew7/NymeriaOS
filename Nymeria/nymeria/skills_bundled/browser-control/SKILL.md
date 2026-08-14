@@ -59,6 +59,9 @@ It is also why the rules below are not optional.
      extracts prose, so state that lives in attributes (an aria-label,
      an unread badge) is invisible to it: read those with `chrome_find`
      or `chrome_read_page`.
+   - A read that says it was captured while the page was still loading means
+     a sparse result is "not finished yet", not "empty page"; if it looks
+     incomplete, re-read in a moment.
 4. `chrome_act(...)` with a `@eN` ref from step 3.
 5. **Read the result.** It is a verification payload, not an acknowledgement.
 6. Re-read the page when refs go stale, and only then.
@@ -102,9 +105,13 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   through automatically instead: a clean result carries `clicked_through`,
   and a failure says the click was delivered and what covered it.
 
-Do NOT trust `url_changed`: it is computed from the last committed URL, so a
-click that navigates usually still reports `false`. Confirm a navigation by
-reading the page or checking `chrome_tabs`.
+Navigation reporting is honest for chrome_act and chrome_navigate with a
+URL (back/forward keeps an older, weaker shape): `url_changed: true` means
+the tab's URL changed (checked after the load commits; also true for SPA
+route changes), `navigated: true` means a real page load committed (the
+field that catches a same-URL reload; an ordinary navigation carries both),
+and `navigation_pending` names a destination still in flight (give it a
+moment, then read the page).
 
 Stale refs are normal, not a failure. When you get "re-read the page", read it
 again and continue; do not retry the same ref. That includes a ref that "still
