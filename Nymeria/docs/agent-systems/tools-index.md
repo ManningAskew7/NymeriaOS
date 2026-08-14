@@ -175,7 +175,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `chrome_batch` | `nymeria/tools/chrome_browser.py` | Run several browser commands in one round trip. |
 | `chrome_cdp` | `nymeria/tools/chrome_browser.py` | Raw Chrome DevTools Protocol call. LAST RESORT. |
 | `chrome_console` | `nymeria/tools/chrome_browser.py` | Read console messages and uncaught exceptions from a Chrome tab. |
-| `chrome_dialog` | `nymeria/tools/chrome_browser.py` | Accept or dismiss a native JS dialog (alert / confirm / prompt). |
+| `chrome_dialog` | `nymeria/tools/chrome_browser.py` | Answer the JS dialog standing on a tab you are driving. |
 | `chrome_find` | `nymeria/tools/chrome_browser.py` | Find elements on a Chrome tab by describing them in plain language. |
 | `chrome_navigate` | `nymeria/tools/chrome_browser.py` | Point a Chrome tab at a URL, or move through its history. |
 | `chrome_network` | `nymeria/tools/chrome_browser.py` | Read the network requests a Chrome tab made, with status codes. |

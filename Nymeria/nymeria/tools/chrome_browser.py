@@ -19,11 +19,12 @@ or both:
 
 Surface shape: each tool carries the schema weight its scoped purpose needs,
 no more and no less, and the ``browser-control`` kit binds the whole working
-surface (``CHROME_KIT_TOOL_NAMES``), diagnostics included. Two deliberate
-exceptions: ``chrome_dialog`` stays out of the kit until backlog #169 makes
-it a working tool, and ``chrome_cdp`` is bound but LAST RESORT, with the
-credential-grade and wedge-grade methods refused by ``_cdp_refusal``. The
-wire underneath is unchanged, one command per round trip.
+surface (``CHROME_KIT_TOOL_NAMES``), all twelve tools, diagnostics included
+(``chrome_dialog`` joined in the #169 pass, which made it a working tool).
+One deliberate exception in kind: ``chrome_cdp`` is bound but LAST RESORT,
+with the credential-grade and wedge-grade methods refused by
+``_cdp_refusal``. The wire underneath is unchanged, one command per round
+trip.
 
 Three cross-cutting rules live here rather than in each tool:
 
@@ -77,7 +78,9 @@ _MAX_TIMEOUT_S = ORPHAN_TTL_SECONDS - 10
 _TIMEOUTS: dict[str, int] = {
     "tabs": 5,
     "navigate": 30,
-    "history": 10,
+    # Same shape as navigate: the extension waits TAB_LOAD_WAIT_MS (25s) for
+    # the destination to load, so a 10s budget cut honest waits short.
+    "history": 30,
     "snapshot": 20,
     "act": 30,
     "batch": 80,
@@ -332,16 +335,18 @@ async def _run(
         coord.discard(command_id)
         return None, (
             f"[Error]: Browser command '{command_type}' timed out after {timeout_s}s. "
-            "Three things do this and it does not say which. A dialog the PAGE raised "
-            '(alert, confirm, prompt, or a "Leave site?" on navigation) suspends the '
-            "page until answered, and chrome_dialog cannot clear it: close the tab and "
-            "redo the work in a fresh one. A long-running script suspends it "
-            "temporarily, so a retry a few seconds later succeeds. Or the extension is "
-            "slow or disconnected, in which case every tab is affected, not just this "
-            "one. chrome_act, the page readers and chrome_screenshot detect a "
-            "suspended page themselves and say so, so from those tools this message "
-            "points at the extension; from the others it does not narrow anything "
-            "down."
+            "Three things do this and it does not say which. A dialog raised while "
+            "you were NOT driving the tab (alert, confirm, prompt, or a \"Leave "
+            'site?" on navigation) suspends the page until answered, and '
+            "chrome_dialog cannot clear that one (it answers only dialogs raised "
+            "while a chrome_* command was driving the tab, which are named to you "
+            "when they happen): close the tab and redo the work in a fresh one. A "
+            "long-running script suspends it temporarily, so a retry a few seconds "
+            "later succeeds. Or the extension is slow or disconnected, in which case "
+            "every tab is affected, not just this one. chrome_act, the page readers "
+            "and chrome_screenshot detect a suspended page themselves and say so, so "
+            "from those tools this message points at the extension; from the others "
+            "it does not narrow anything down."
         )
     except asyncio.CancelledError:
         coord.discard(command_id)
@@ -453,11 +458,12 @@ async def chrome_navigate(
     which may differ from what you asked for after a redirect or a login wall,
     so check them before assuming you are where you meant to be.
 
-    KNOWN GAP: a "Leave site?" confirmation holds the tab on its old page and
-    this still reports success. The payload stays honest, so check it: `url` is
-    the OLD page and `complete` is false. That dialog is invisible to every
-    page-level tool and cannot be dismissed from here, so close the tab and work
-    in a fresh one.
+    A "Leave site?" confirmation no longer passes silently: the call FAILS
+    fast, names the dialog, and the navigation stays paused on it. Leaving is
+    then a deliberate step: chrome_dialog(action="accept") proceeds,
+    "dismiss" stays, and unanswered it is dismissed automatically (the tab
+    stays put). The page raised it because it thinks it has unsaved state, so
+    if that state might matter, ask the user before accepting.
 
     Also the recovery for a tab that has stopped accepting input: navigating
     away clears the suppression a browser dialog leaves behind (see the
@@ -713,11 +719,18 @@ async def chrome_act(
     "unknown" is not a failure, it means the check could not be made (the target
     sits inside an iframe, for one), so judge those by the rest of the payload.
 
+    Page dialogs your own action raises are OWNED while you drive
+    (alert/confirm/prompt/"Leave site?"). An alert is acknowledged
+    automatically and reported in the payload with its message. A confirm or
+    prompt leaves the act successful with a `dialog` object naming the
+    message and the deadline: answer it with chrome_dialog, or it is
+    dismissed automatically. Do not repeat the act; it was delivered.
+
     A separate failure says the page did not run a script at all. Nothing was
-    sent in that case: the page is suspended, which a dialog it raised itself
-    does (alert/confirm/prompt/"Leave site?"), and so does a long-running
-    script. Retry once after a few seconds; if it says the same thing, it is a
-    dialog and the tab needs closing.
+    sent in that case: a long-running script suspends a page temporarily, and
+    a dialog raised BEFORE this session touched the tab suspends it too (that
+    one is not answerable from here; close the tab). Retry once after a few
+    seconds; if it says the same thing, it is the dialog case.
 
     The result is a verification payload, not just an acknowledgement: the URL,
     whether the target survived, what has focus, the field's previous value,
@@ -993,16 +1006,23 @@ async def chrome_dialog(
     prompt_text: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
-    """Accept or dismiss a native JS dialog (alert / confirm / prompt).
+    """Answer the JS dialog standing on a tab you are driving.
 
     action: "accept" or "dismiss". prompt_text fills a prompt() before
     accepting.
 
-    Measured limitation, so do not spend calls here on a hunch: a page
-    already blocked on a dialog does not answer this either, and the call
-    times out with the dialog still standing (backlog #169 owns the fix).
-    When a tab stops responding, close it and redo the work in a fresh one,
-    or tell the user what is on their screen.
+    Dialogs raised while you drive a tab are OWNED: a confirm, prompt or
+    "Leave site?" stands for a grace window (the command that raised it tells
+    you the message and deadline), this call answers it, and an unanswered
+    one is dismissed automatically so the tab can never stay wedged. Alerts
+    never need this call; they are acknowledged automatically and reported.
+    On a "Leave site?", accept means LEAVE (the page loses its unsaved
+    state), dismiss means stay.
+
+    The one thing this cannot do: answer a dialog raised while no chrome_*
+    command had touched the tab. Ownership cannot be taken retroactively
+    (measured), so that case returns an honest explanation, and the recovery
+    is the user clearing it on screen or closing the tab.
     """
     args: dict[str, Any] = {"tab_id": tab_id, "action": action}
     if prompt_text is not None:
@@ -1024,13 +1044,13 @@ async def chrome_dialog(
 #   visible to the watching user. Denying the cookie reads while allowing
 #   eval would be theater, since each trivially re-creates the other. A
 #   scoped JS tool designed for the job is backlog #171.
-# * Wedge enables: nothing consumes these domains' events. The extension
-#   enables Runtime and Network at attach and feeds their events to
-#   chrome_console and chrome_network, but Fetch, Debugger and Page have no
-#   listener, so enabling one delivers nothing while each measurably wedges
-#   the user's browser: Fetch pauses requests nothing resumes, Debugger
-#   pauses nothing continues, Page takes dialog ownership nothing answers
-#   (#169's subject).
+# * Wedge enables: Fetch and Debugger have no listener, so enabling one
+#   delivers nothing while each measurably wedges the user's browser (Fetch
+#   pauses requests nothing resumes, Debugger pauses nothing continues).
+#   Page IS enabled and consumed now (#169: the extension owns it at attach
+#   and answers dialogs by policy), which is exactly why a raw re-enable
+#   stays refused: ownership is already taken, with an answering policy
+#   attached, and a second client state fighting it buys nothing.
 #
 # Exact-match only, deliberately no params inspection: a string filter over
 # JS bodies is bypassable, and pretending otherwise would be worse than
@@ -1104,11 +1124,12 @@ def _cdp_refusal(method: str) -> Optional[str]:
         )
     if method in _CDP_WEDGE_ENABLES:
         return (
-            f"[Error]: chrome_cdp refuses '{method}': nothing consumes this "
-            "domain's events (chrome_console and chrome_network read the "
-            "domains the extension already enables), so enabling it gains "
-            "you nothing and can wedge the user's browser with paused "
-            "requests, debugger pauses, or dialogs nothing can answer. "
+            f"[Error]: chrome_cdp refuses '{method}': the domains worth "
+            "consuming are already enabled and consumed (Runtime and Network "
+            "feed chrome_console and chrome_network; Page is owned by the "
+            "extension, which answers dialogs by policy and intercepts file "
+            "choosers), so this enable gains you nothing and can wedge the "
+            "user's browser with paused requests or debugger pauses. "
             "Nothing was sent."
         )
     return None
@@ -1166,11 +1187,11 @@ CHROME_BROWSER_TOOLS = [
     chrome_cdp,
 ]
 
-#: What the browser-control kit binds: the whole working surface,
-#: diagnostics and the escape hatch included (the scoped-tools principle: a
-#: kit carries the tools its domain needs). ``chrome_dialog`` alone stays
-#: out until #169 makes it a working tool; it remains reachable by explicit
-#: enable or tool_invoke.
+#: What the browser-control kit binds: the whole working surface, all
+#: twelve tools, diagnostics and the escape hatch included (the scoped-tools
+#: principle: a kit carries the tools its domain needs). ``chrome_dialog``
+#: joined in the #169 pass, which made it a working tool (Page ownership:
+#: dialogs raised while driving are held and answerable).
 CHROME_KIT_TOOL_NAMES = (
     "chrome_tabs",
     "chrome_navigate",
@@ -1182,6 +1203,7 @@ CHROME_KIT_TOOL_NAMES = (
     "chrome_batch",
     "chrome_console",
     "chrome_network",
+    "chrome_dialog",
     "chrome_cdp",
 )
 
