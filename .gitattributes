@@ -1,0 +1,5 @@
+# Windows batch scripts must check out with CRLF endings on every clone,
+# regardless of core.autocrlf: cmd.exe goto/call label parsing misbehaves
+# in LF-only files.
+*.cmd text eol=crlf
+*.bat text eol=crlf
