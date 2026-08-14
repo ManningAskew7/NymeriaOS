@@ -2514,11 +2514,19 @@ surface, diagnostics and the escape hatch included):
 | `chrome_batch` | `(tab_id, actions, continue_on_url_change=False)` | Several wire commands in one round trip. Steps are limited to ordinary page work by an allowlist; the diagnostic and escape-hatch tools are single calls only. |
 | `chrome_console` | `(tab_id, only_errors=True, limit=50, clear=False)` | Console messages and uncaught exceptions. |
 | `chrome_network` | `(tab_id, url_pattern?, only_failures=False, limit=50)` | The request log with status codes, captured from the moment the tab is first driven. |
-| `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the domain enables nothing consumes and that can only wedge the browser (`Fetch`/`Debugger`/`Page.enable`); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
+| `chrome_dialog` | `(tab_id, action, prompt_text?)` | Answer the JS dialog standing on a tab being driven (#169). The extension owns `Page` for the life of each attach, so dialogs raised while driving are held for the agent: alerts auto-acknowledged and reported, confirm/prompt/beforeunload standing with a named message and a grace deadline, dismissed automatically if nobody answers. Cannot answer a dialog raised while no command was driving the tab (ownership is not retroactive; measured). |
+| `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the wedge enables (`Fetch`/`Debugger`, which nothing consumes, and `Page.enable`, whose ownership the extension already holds with an answering policy); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
 
-**Registered but NOT in the kit:** `chrome_dialog`, until backlog #169 makes
-it a working tool (today it cannot clear the dialogs it names, so the kit's
-own instructions would disown it).
+**Dialogs and the file chooser (#169):** `Page` is enabled on every debugger
+attach, deliberately. Dialogs raised while the agent drives are answered by
+policy (see `chrome_dialog` above); a blocked navigation fails fast naming its
+"Leave site?" instead of reporting success; an agent-commanded tab close
+accepts its own beforeunload so close always clears the tab; and
+`Page.setInterceptFileChooserDialog` is armed per attach, so no OS file
+chooser can open in a driven tab: the act that would have opened one fails,
+pointing to `action="upload"`. Interception is page-wide while armed, so the
+user's own "Choose File" click in that tab is swallowed during a command
+burst plus the 10s linger; accepted, and taught in the kit's SKILL.md.
 
 **Architecture:** each tool registers a future with `BrowserCommandCoordinator`
 (`bcmd_<token>`), publishes a `browser_command` autonomous event on

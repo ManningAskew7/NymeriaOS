@@ -20,6 +20,7 @@ metadata:
       - chrome_batch
       - chrome_console
       - chrome_network
+      - chrome_dialog
       - chrome_cdp
     tool_ttl: 2h
 ---
@@ -44,18 +45,14 @@ It is also why the rules below are not optional.
      the accessibility tree, so it cannot see an element the page hides with
      `display:none`: for those (the real file input behind a styled upload
      button, most often) pass a `css=` ref straight to `chrome_act`. To put a
-     file in one, use `action="upload"`, never `action="click"`: clicking a
-     file input opens the operating system's file chooser, which nothing here
-     can close and which blocks the user until they dismiss it. `chrome_act`
-     REFUSES a click it can see would reach a file input, including through
-     the label in front of it. That guard reads the page, so it cannot see the
-     other shape: a button whose JavaScript opens the picker. There the click
-     goes through, and the call comes back as a FAILURE carrying
-     `opened_file_chooser: true`, meaning the page just clicked a file input,
-     so a chooser has almost certainly opened on their screen. Tell them to
-     dismiss it, do not click again (every click stacks another one they have
-     to clear), and reach the file input behind the button (usually hidden, so
-     pass a `css=` ref) with `action="upload"`.
+     file in one, use `action="upload"`, never `action="click"`: a click on a
+     file input is what opens the operating system's file chooser. A direct
+     click `chrome_act` can see would reach one (including through the label
+     in front of it) is REFUSED before it is sent. The shape the guard cannot
+     see, a button whose JavaScript opens the picker, is INTERCEPTED instead:
+     no picker opens, and the call comes back as a FAILURE telling you so.
+     Either way the route is the same: reach the file input behind the button
+     (usually hidden, so pass a `css=` ref) with `action="upload"`.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
      facts out of a long page without loading it into your context. It
@@ -94,6 +91,10 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   input, so read the next section.
 - `settled: {reason: "deadline"}` -> the page never went quiet. It may still be
   working. Consider `chrome_act(action="wait", wait_for_text=...)`.
+- `dialog` -> your action raised a page dialog. An alert arrives here already
+  acknowledged, with its message; a confirm or prompt arrives STANDING, with
+  the message, a deadline, and the `chrome_dialog` call that answers it. Read
+  "Dialogs" below, and do not repeat the action: it was delivered.
 - An error naming an element that covers your target -> dismiss the overlay
   (cookie banner, modal) and retry. Do not try to click through it.
 
@@ -106,86 +107,68 @@ again and continue; do not retry the same ref. That includes a ref that "still
 resolves" but whose element left the page (a re-render, a closed modal, a list
 that reloaded): nothing is sent, and the fix is the same, read the page again.
 
-## When a tab stops responding to you
+## Dialogs, and when a tab stops responding to you
 
-Two kinds of dialog can wedge a tab. Neither is visible to you: both are browser
-UI, absent from the accessibility tree, from `chrome_console`, from
-`chrome_network`, and from any screenshot that comes back (an image shows the
-page, never the browser frame). They look nothing alike from where you sit, so
-read the symptom before deciding what happened.
+**Page dialogs are OWNED while you drive.** From your first chrome_* command
+on a tab until shortly after your last, the extension holds Chrome's dialog
+ownership for it, so a dialog your own action raises is never a dead end:
 
-**A browser dialog** (Chrome's "your password was found in a data breach"
-warning, an HTTP Basic auth prompt) makes Chrome discard every input event sent
-to that tab, *after* accepting it. The page itself keeps running, so reads and
-`fill` still work while `click`, `key`, `type` and `drag` do nothing. You get a
-fast, explicit failure: the call fails and says `input_delivered: "no"`.
+- An `alert` is acknowledged automatically. The command that triggered it
+  succeeds and reports the alert's message under `dialog` in its payload.
+  Nothing else to do.
+- A `confirm` or `prompt` STANDS, and the command that raised it returns
+  immediately naming the message and a deadline (about a minute). Decide,
+  then `chrome_dialog(tab_id, action="accept")` or `"dismiss"`
+  (`prompt_text=...` fills a prompt). Unanswered, it is dismissed
+  automatically and the next call tells you so. Do not repeat the action
+  that raised it: it was delivered.
+- A "Leave site?" (beforeunload) holds a navigation and the call FAILS
+  naming it. Accepting means leaving and losing the page's unsaved state, so
+  if that might matter, ask the user first; `chrome_dialog(action="accept")`
+  proceeds, `"dismiss"` stays. An agent-commanded tab CLOSE accepts its own
+  beforeunload automatically, but only while the tab is attached (the same
+  window as everything above; close itself does not attach): a "Leave site?"
+  page you have not driven recently can still refuse its own close. If a
+  close times out, run any read on the tab first (that attaches it), close
+  again, and if it still will not go, ask the user.
+- Reads against a tab whose dialog stands fail fast naming the dialog and
+  its message, not with a guess.
+- The user can always answer a dialog themselves on screen; if they beat you
+  to it, `chrome_dialog` says so.
 
-**A page dialog** (`alert`, `confirm`, `prompt`, or a "Leave site?" raised on
-navigation) suspends the page's own JavaScript, so nothing reaches the tab at
-all. The readers and `chrome_screenshot` fail fast saying the page did not run
-a script (no screenshot can be captured from a suspended page: measured, not
-theory). `chrome_act` fails fast too, and WHICH failure it gives you matters. If
-the dialog was already up, it refuses before sending: the message says the
-page did not run a script, and a retry is safe (a long-running script looks
-identical from outside, so if a retry a few seconds later says it again, it is
-a dialog). If your own action is what RAISED the dialog (a click whose handler
-calls `alert()`, a submit into a `confirm()`), the message instead says the
-action WAS sent: do NOT retry, it may already have taken effect and repeating
-it could submit twice.
+What ownership cannot cover is a dialog raised while you were NOT driving:
+before your first command on the tab, or after the attach lapsed (about 10s
+past your last). `chrome_dialog` cannot answer those, because ownership
+cannot be taken retroactively (measured). If a page will not run scripts and
+no dialog was ever named to you, that is the likely cause: close the tab and
+redo the work in a fresh one, or ask the user to clear what is on their
+screen.
 
-**The suppression can OUTLIVE the dialog.** Measured: after an `alert` was
-cleared, the page ran scripts again while input stayed undelivered. So there may
-be nothing on screen to find, and "I looked and there was no dialog" does not
-mean the tab is healthy. Trust `input_delivered`, not the absence of a visible
-cause.
+**A browser dialog is different, and never ours** (Chrome's "your password
+was found in a data breach" warning, an HTTP Basic auth prompt): Chrome
+discards every input event sent to that tab, *after* accepting it. The page
+itself keeps running, so reads and `fill` still work while `click`, `key`,
+`type` and `drag` do nothing; the call fails and says
+`input_delivered: "no"`. The suppression can OUTLIVE the dialog (measured:
+after one was cleared, scripts ran while input stayed dead), so "I looked
+and there was no dialog" does not mean the tab is healthy. Trust
+`input_delivered`. Recovery, cheapest first: navigate the tab somewhere else
+(measured to clear an auth prompt; reloading re-triggers it), and close the
+tab if input is still dead after that. Never try to dismiss browser security
+UI yourself.
 
-**A third thing would block the USER without touching the tab: the operating
-system's file chooser.** It is not browser UI at all, so nothing above
-applies and nothing here can see it. The page keeps running, input keeps
-being delivered, screenshots look normal, and every check in this kit passes
-while the user's browser window sits blocked behind a dialog nothing can
-observe. Measured 2026-08-12 on another agent's browser harness: after its
-click opened a picker, its page-side checks all read healthy, an Escape sent
-to the tab did not reach the dialog, and repeated clicks stacked up more
-pickers a human had to clear by hand.
-
-There is one thin thread of detection. When a click, `key` or `double_click`
-of YOURS reaches a file input through the page's own JavaScript, the call
-FAILS with `opened_file_chooser: true`. Act on that even though every other
-check reads fine: stop clicking, and ask the user to dismiss the picker.
-
-Know how narrow that thread is. It sees only the MAIN frame, so an upload
-button inside an iframe does not register. It sees only the moment of your
-own action: nothing polls, so a chooser the user opened themselves, one a
-page opened on load, and one the page opens a second later are all invisible.
-And it reports the CLICK rather than the dialog, so occasionally it fires
-when no chooser opened. Asking costs almost nothing and is the only way to
-know. If the user ever says their browser is stuck while all your checks read
-healthy, this is the most likely reason.
-
-Recovery, cheapest first:
-
-1. **Navigate the tab somewhere else.** This fully recovers a browser dialog:
-   measured, an HTTP auth prompt went from `input_delivered: "no"` to `"yes"`
-   after navigating away. Reloading does not work, because it re-triggers
-   whatever raised the dialog.
-2. **If input is still not delivered after that, close the tab** and redo the
-   work in a fresh one. That always clears it. Navigation is NOT enough after an
-   `alert`: measured, it unfroze the page but left input dead.
-3. A tab whose page has a "Leave site?" handler can refuse its own close, since
-   closing raises the dialog again. If the close times out, try once more.
-
-**`chrome_dialog` does not clear a page dialog**, whatever its name suggests: it
-times out like every other command against that tab and leaves the dialog
-standing. Do not spend calls on it, and never try to dismiss browser security UI
-yourself. If none of the above works, tell the user what is on their screen and
-ask them to clear it.
-
-**`chrome_navigate` still lies about this one.** A "Leave site?" confirmation
-holds the tab on its old page, and the call reports success anyway. The payload
-is honest even though the status is not: `url` is still the OLD page and
-`complete` is `false`. So after any navigation, check the `url` you got back
-before assuming the tab moved.
+**The OS file chooser is PREVENTED while you drive.** Any route that would
+open it, a JS-driven upload button, one inside an iframe, `showPicker()`, a
+click the page deferred, is intercepted: NO picker opens, the user's browser
+is fine, and the act FAILS pointing you to `action="upload"`. Two edges to
+know. Interception holds only while you are driving the tab (the same
+window as dialog ownership), so a chooser opened outside it, by the user or
+by a page timer, is invisible to every check here: if the user says their
+browser is stuck while your checks read healthy, that is the likely reason.
+And while it holds, the user's OWN "Choose File" click in that tab is
+swallowed too; if they say uploading stopped working mid-task, that is you,
+and it recovers on its own moments after your last command (longer while a
+dialog stands: the detach waits for the dialog to resolve first).
 
 ## Batching
 

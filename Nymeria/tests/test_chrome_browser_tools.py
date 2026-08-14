@@ -28,6 +28,7 @@ from nymeria.tools.chrome_browser import (
     chrome_act,
     chrome_cdp,
     chrome_console,
+    chrome_dialog,
     chrome_batch,
     chrome_find,
     chrome_navigate,
@@ -135,7 +136,7 @@ def _ok(data: dict) -> dict:
 # ---------- surface shape ----------
 
 
-def test_surface_is_twelve_tools_and_the_kit_set_is_all_but_dialog() -> None:
+def test_surface_is_twelve_tools_and_the_kit_binds_all_of_them() -> None:
     names = {t.name for t in CHROME_BROWSER_TOOLS}
     assert names == {
         "chrome_tabs",
@@ -151,11 +152,10 @@ def test_surface_is_twelve_tools_and_the_kit_set_is_all_but_dialog() -> None:
         "chrome_dialog",
         "chrome_cdp",
     }
-    # #167: the kit binds the whole working surface, diagnostics and the
-    # escape hatch included. chrome_dialog alone stays out until #169 makes
-    # it a working tool.
-    assert set(CHROME_KIT_TOOL_NAMES) == names - {"chrome_dialog"}
-    assert len(CHROME_KIT_TOOL_NAMES) == 11
+    # #167 put the whole working surface in the kit; #169 completed it:
+    # chrome_dialog joined once Page ownership made it a working tool.
+    assert set(CHROME_KIT_TOOL_NAMES) == names
+    assert len(CHROME_KIT_TOOL_NAMES) == 12
 
 
 def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
@@ -173,11 +173,12 @@ def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
     assert get_tool_metadata("chrome_cdp").security_level == SecurityLevel.SENSITIVE
 
 
-def test_browser_control_kit_binds_the_working_surface_and_not_dialog() -> None:
+def test_browser_control_kit_binds_the_whole_surface_dialog_included() -> None:
     """The kit is the supported entry point, so what it binds is a contract
-    (#167): the whole working surface including the diagnostics and the
-    escape hatch, chrome_dialog excluded until #169 makes it a working tool,
-    and no name that does not resolve to a real tool."""
+    (#167, completed by #169): the whole twelve-tool surface including the
+    diagnostics, the escape hatch, and chrome_dialog (a working tool now that
+    Page ownership holds dialogs answerable), and no name that does not
+    resolve to a real tool."""
     import yaml
 
     from nymeria.tools import CATALOG_TOOLS
@@ -194,7 +195,7 @@ def test_browser_control_kit_binds_the_working_surface_and_not_dialog() -> None:
     required = frontmatter["metadata"]["nymeria"]["required_tools"]
 
     assert set(required) == set(CHROME_KIT_TOOL_NAMES)
-    assert "chrome_dialog" not in required
+    assert "chrome_dialog" in required
     assert {"chrome_cdp", "chrome_console", "chrome_network"} <= set(required)
     # A kit binds by exact name: a typo silently binds nothing.
     for name in required:
@@ -341,7 +342,10 @@ def test_cdp_refusals_teach_the_class_not_just_the_no() -> None:
     wedge = asyncio.run(
         chrome_cdp.ainvoke({"tab_id": 1, "method": "Fetch.enable"}, config=_config())
     )
-    assert "nothing consumes this domain's events" in wedge
+    # #169 flipped the architecture fact: Page IS consumed now, so the copy
+    # must claim ownership, not absence, or it teaches a stale reason.
+    assert "already enabled and consumed" in wedge
+    assert "Page is owned by the extension" in wedge
     assert "wedge" in wedge
 
 
@@ -409,6 +413,40 @@ def test_happy_path_resolves_via_coordinator() -> None:
     assert payload["data"]["url"] == "https://example.com/after-redirect"
 
 
+def test_dialog_dispatches_wire_shape_with_prompt_text() -> None:
+    """chrome_dialog rides the same coordinator as every other command: the
+    wire carries tab_id, action, and prompt_text verbatim under the "dialog"
+    command type (prompt_text only when given), and the extension's answer
+    comes back fenced like every page-derived payload."""
+    capture: list = []
+    raw = _invoke(
+        chrome_dialog,
+        {"tab_id": 7, "action": "accept", "prompt_text": "blue"},
+        _ok({"answered": True, "dialog_type": "prompt", "accept": True}),
+        capture=capture,
+    )
+    assert capture == [
+        {
+            "type": "dialog",
+            "args": {"tab_id": 7, "action": "accept", "prompt_text": "blue"},
+        }
+    ]
+    payload = _unfence(raw)
+    assert payload["ok"] is True
+    assert payload["data"]["answered"] is True
+
+    capture2: list = []
+    _invoke(
+        chrome_dialog,
+        {"tab_id": 7, "action": "dismiss"},
+        _ok({"answered": True, "dialog_type": "confirm", "accept": False}),
+        capture=capture2,
+    )
+    assert capture2 == [
+        {"type": "dialog", "args": {"tab_id": 7, "action": "dismiss"}}
+    ], "omitted prompt_text must stay off the wire, not ride along as null"
+
+
 def test_timeout_returns_error_and_discards(monkeypatch) -> None:
     import nymeria.tools.chrome_browser as mod
 
@@ -419,14 +457,20 @@ def test_timeout_returns_error_and_discards(monkeypatch) -> None:
     assert "[Error]" in out
     assert "timed out" in out
     assert get_browser_command_coordinator().pending_count() == 0
-    # Measured 2026-08-11 on the live extension: a page dialog (alert/confirm/
-    # prompt/beforeunload) suspends the renderer, so EVERY command against that
-    # tab times out, and chrome_dialog times out too rather than clearing it.
-    # The message used to blame the extension alone, which sent the agent
-    # chasing a connection problem instead of closing the tab.
+    # A transport timeout can still mean a dialog, but since #169 only an
+    # UNOWNED one (raised while nothing was driving the tab): owned dialogs
+    # are named to the agent when they open and never ride a timeout. The
+    # message must keep naming the cause AND scope chrome_dialog honestly to
+    # the dialogs it can answer, or it re-teaches the pre-#169 blind spot.
+    # The scoping phrases are pinned verbatim: "chrome_dialog" alone also
+    # matched the pre-#169 copy, so it proved nothing.
     lowered = out.lower()
     assert "alert" in lowered, "the page-dialog cause must be named"
-    assert "chrome_dialog" in out, "must say chrome_dialog cannot clear it"
+    assert "while you were NOT driving the tab" in out, "must scope the unowned case"
+    assert "chrome_dialog cannot clear that one" in out, (
+        "must scope what chrome_dialog can answer"
+    )
+    assert "named to you" in out, "must say owned dialogs announce themselves"
     assert "clos" in lowered and "tab" in lowered, "must give the tab-close recovery"
 
 
