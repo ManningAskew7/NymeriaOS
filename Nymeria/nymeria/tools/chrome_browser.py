@@ -601,10 +601,16 @@ async def chrome_read_page(
     """Read a Chrome tab's accessibility tree: the map you act on.
 
     Returns a compact indented tree where every actionable element carries a
-    ``[ref=@eN]`` tag. Those refs are what chrome_act targets, and they are
-    valid only until the page changes: after a navigation, acting on an old
-    ref fails with a "re-read the page" error rather than clicking the wrong
-    thing, so re-read when you see that.
+    ``[ref=@eN]`` tag. Those refs are what chrome_act targets. Ref numbers
+    grow monotonically per tab (a re-read mints NEW numbers, @e41.., instead
+    of renumbering from @e1) and every ref stays valid until the page
+    navigates: a re-read, including a scoped one, ADDS refs without killing
+    the ones you hold. Navigation includes pushState moves and hash ROUTES
+    (#/cart); plain #anchor jumps do not invalidate. After a navigation an
+    old ref fails with a "re-read the page" error rather than clicking the
+    wrong thing; an old ref whose ELEMENT changed meaning since you read
+    (relabeled, repurposed by a re-render) is refused with what it was and
+    what it is now. Re-read when you see either.
 
     detail: "interactive" (default: controls plus enough structure to place
         them), "full" (everything, large), or "minimal" (controls and headings).
@@ -845,7 +851,17 @@ async def chrome_act(
         | uncheck | type | key | scroll | scroll_to | drag | upload | wait
 
     ref: the target, as a "@eN" ref from chrome_read_page or chrome_find. Also
-        accepts "css=..." or "xpath=..." when you know the selector.
+        accepts "css=..." or "xpath=..." when you know the selector. Refs
+        stay valid until the page navigates (re-reads ADD refs, they do not
+        invalidate old ones), and every verb that clicks, types into,
+        toggles or activates an element re-checks its identity before
+        dispatch: a ref whose element changed meaning since you read (it was
+        button "Confirm", it is now button "Delete") or went hidden is
+        refused with nothing sent. Purely numeric label ticks pass ("Cart
+        (3)" to "Cart (4)"); for the rare label that rewords itself
+        constantly, target it with "css=". Believe those refusals and
+        re-read; they exist because acting on a repurposed element clicks
+        the wrong thing with full confidence.
     value: the text for fill/type, the option label or value for select, the
         key name for key (e.g. "Enter", "Tab", "Escape").
     coordinate: [x, y] viewport pixels, as an alternative target for click,
@@ -911,6 +927,10 @@ async def chrome_act(
     console errors and failed requests caused by the action, and whether the
     page settled. READ IT. A click that "succeeded"
     while its request came back 500 is a failure, and this is where that shows.
+    Each failed_requests entry carries "same_origin" where it can be judged,
+    and the capped list is ranked so a broken first-party POST is never
+    crowded out by third-party telemetry beacons; weigh same-origin data
+    failures heaviest.
     Navigation is reported honestly. "url_changed" means the tab's URL
     changed, computed after a pending page load commits, so a click that
     navigates reports true with the new URL (an SPA route change reports it

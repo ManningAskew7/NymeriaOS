@@ -145,10 +145,20 @@ because an auth prompt is showing and input to the tab is already being
 suppressed (the browser-dialog recovery below): navigate away, do not
 click into it.
 
-Stale refs are normal, not a failure. When you get "re-read the page", read it
-again and continue; do not retry the same ref. That includes a ref that "still
-resolves" but whose element left the page (a re-render, a closed modal, a list
-that reloaded): nothing is sent, and the fix is the same, read the page again.
+Stale refs are normal, not a failure. Refs live until the page navigates
+(pushState and hash-route moves count; plain #anchor jumps do not):
+re-reads mint NEW numbers (@e41..) and ADD to what you hold, so growing ref
+numbers are expected in a long session and an old ref never silently becomes
+a different element. When you get "re-read the page", read it again and
+continue; do not retry the same ref. Three refusals share that fix: a ref
+from before a navigation, a ref that "still resolves" but whose element left
+the page (a re-render, a closed modal, a list that reloaded), and a ref
+whose element CHANGED since you read it (the refusal quotes what it was and
+what it is now; trust it, that click would have hit the wrong meaning).
+Nothing is sent in any of these cases. Labels whose NUMBERS tick ("Cart
+(3)" to "Cart (4)") do not trip the changed-element check; a label that
+rewords itself constantly is the one case to target with "css=" instead of
+a ref.
 
 ## Dialogs, and when a tab stops responding to you
 
