@@ -1418,6 +1418,220 @@ def test_batched_act_with_malformed_wait_for_is_normalized_not_raised() -> None:
     assert sent[-1]["args"]["actions"][0]["args"]["wait_for"] == {"text": "Saved"}
 
 
+def test_batched_upload_resolves_the_path_like_the_single_call(workspace) -> None:
+    # The path -> file_base64 resolution lives in the backend, so a batched
+    # upload forwarded verbatim always failed with "upload requires file_name
+    # and file_base64": dead since v1 (backlog #166). Same seam, same rules
+    # as the wait spellings.
+    doc = workspace / "doc.txt"
+    doc.write_text("hello upload")
+    sent: list[dict] = []
+
+    out = _invoke(
+        chrome_batch,
+        {
+            "tab_id": 1,
+            "actions": [
+                {"type": "act", "args": {"action": "upload", "ref": "@e1", "path": str(doc)}},
+            ],
+        },
+        _ok({"results": []}),
+        capture=sent,
+    )
+
+    assert not out.startswith("[Error]")
+    wire = sent[-1]["args"]["actions"][0]["args"]
+    assert wire["file_name"] == "doc.txt"
+    assert base64.b64decode(wire["file_base64"]) == b"hello upload"
+    assert wire["file_mime"] == "text/plain"
+    assert "path" not in wire
+
+
+def test_batched_upload_with_a_missing_file_refuses_the_whole_batch(workspace) -> None:
+    # The step was doomed and would have aborted the batch anyway; refusing
+    # before anything dispatches is the honest shape, with the single-call
+    # error copy and the step named in the same style as the budget refusals.
+    # Deliberately NOT _connect()ed: a refusal dispatches nothing, and were
+    # the refusal broken, the not-connected path fails this fast instead of
+    # riding the transport deadline.
+    out = asyncio.run(
+        chrome_batch.ainvoke(
+            {
+                "tab_id": 1,
+                "actions": [
+                    {"type": "act", "args": {"action": "key", "value": "End"}},
+                    {"type": "act", "args": {"action": "upload", "ref": "@e1", "path": "nope.txt"}},
+                ],
+            },
+            config=_config(),
+        )
+    )
+
+    assert out.startswith("[Error]")
+    assert 'action 2 ("act")' in out
+    assert "not found" in out.lower()
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_batched_upload_explicit_bytes_win_over_path(workspace) -> None:
+    # Same wins-rule as the wait spellings: explicit wire fields pass through
+    # untouched, the path is not re-resolved over them.
+    doc = workspace / "doc.txt"
+    doc.write_text("from disk")
+    encoded = base64.b64encode(b"explicit bytes").decode("ascii")
+    sent: list[dict] = []
+
+    _invoke(
+        chrome_batch,
+        {
+            "tab_id": 1,
+            "actions": [
+                {
+                    "type": "act",
+                    "args": {
+                        "action": "upload",
+                        "ref": "@e1",
+                        "path": str(doc),
+                        "file_name": "given.bin",
+                        "file_base64": encoded,
+                    },
+                },
+            ],
+        },
+        _ok({"results": []}),
+        capture=sent,
+    )
+
+    wire = sent[-1]["args"]["actions"][0]["args"]
+    assert wire["file_base64"] == encoded
+    assert wire["file_name"] == "given.bin"
+    # The losing path must not ride to the wire as an unknown key the
+    # extension silently drops.
+    assert "path" not in wire
+
+
+def test_batched_upload_with_no_path_refuses_like_the_single_call(workspace) -> None:
+    # chrome_act refuses action="upload" without a path up front; the batched
+    # spelling used to pass it through to the wire instead, where it died as
+    # an obscure extension-side validation error.
+    out = asyncio.run(
+        chrome_batch.ainvoke(
+            {
+                "tab_id": 1,
+                "actions": [
+                    {"type": "act", "args": {"action": "upload", "ref": "@e1"}},
+                ],
+            },
+            config=_config(),
+        )
+    )
+
+    assert out.startswith("[Error]")
+    assert 'action 1 ("act")' in out
+    assert "needs path" in out
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_batched_upload_honors_the_secrets_denylist(tmp_path, monkeypatch) -> None:
+    # Same _load_upload seam as the single call, so the credential-store
+    # denylist must hold here too: a batch is not a side door into stores the
+    # file tools refuse.
+    data_dir = tmp_path / "data"
+    (data_dir / "auth_tokens" / "u1").mkdir(parents=True)
+    secret = data_dir / "auth_tokens" / "u1" / "google.json"
+    secret.write_text("{}", encoding="utf-8")
+
+    class _S:
+        pass
+
+    settings = _S()
+    settings.data_dir = data_dir
+    monkeypatch.setattr("nymeria.tools.filesystem.get_settings", lambda: settings)
+
+    out = asyncio.run(
+        chrome_batch.ainvoke(
+            {
+                "tab_id": 1,
+                "actions": [
+                    {"type": "act", "args": {"action": "upload", "ref": "@e1", "path": str(secret)}},
+                ],
+            },
+            config=_config(),
+        )
+    )
+
+    assert out.startswith("[Error]")
+    assert 'action 1 ("act")' in out
+    assert "credential" in out.lower()
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_batched_upload_over_the_size_cap_refuses_the_whole_batch(workspace) -> None:
+    big = workspace / "big.bin"
+    big.write_bytes(b"x" * (10 * 1024 * 1024 + 1))
+
+    out = asyncio.run(
+        chrome_batch.ainvoke(
+            {
+                "tab_id": 1,
+                "actions": [
+                    {"type": "act", "args": {"action": "upload", "ref": "@e1", "path": str(big)}},
+                ],
+            },
+            config=_config(),
+        )
+    )
+
+    assert out.startswith("[Error]")
+    assert 'action 1 ("act")' in out
+    assert "capped at 10MB" in out
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_batched_uploads_are_capped_in_aggregate(workspace) -> None:
+    # Each file honors the per-file cap, but a batch is ONE wire payload:
+    # letting N steps sum to N times the cap re-opens the amplification the
+    # cap closes. Two 6MB files pass individually and refuse together.
+    a = workspace / "a.bin"
+    b = workspace / "b.bin"
+    a.write_bytes(b"a" * (6 * 1024 * 1024))
+    b.write_bytes(b"b" * (6 * 1024 * 1024))
+
+    out = asyncio.run(
+        chrome_batch.ainvoke(
+            {
+                "tab_id": 1,
+                "actions": [
+                    {"type": "act", "args": {"action": "upload", "ref": "@e1", "path": str(a)}},
+                    {"type": "act", "args": {"action": "upload", "ref": "@e2", "path": str(b)}},
+                ],
+            },
+            config=_config(),
+        )
+    )
+
+    assert out.startswith("[Error]")
+    assert 'action 2 ("act")' in out, "names the step that tipped the total"
+    assert "10MB" in out
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_batch_over_the_action_count_cap_is_refused_up_front() -> None:
+    # Mirrors the extension's MAX_BATCH_ACTIONS: the extension would refuse
+    # anyway, but refusing here saves the round trip and, for uploads, the
+    # file reads that would have preceded it.
+    out = asyncio.run(
+        chrome_batch.ainvoke(
+            {"tab_id": 1, "actions": [{"type": "snapshot"} for _ in range(21)]},
+            config=_config(),
+        )
+    )
+
+    assert out.startswith("[Error]")
+    assert "limited to 20 actions (got 21)" in out
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
 # ---------- the injection detector only ever adds suspicion ----------
 
 
