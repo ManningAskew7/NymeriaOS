@@ -509,7 +509,10 @@ async def chrome_tabs(
 
     "create" and "reload" wait for the page to load and report `complete`,
     exactly as chrome_navigate does, so the tab you get back is one you can
-    read. The others return immediately.
+    read. They also carry "http_status" (and the 401/407 "http_status_hint")
+    under the same rules as chrome_navigate: the HTTP status behind the
+    loaded page when the extension's page-status permission lets it be seen,
+    absent meaning unknown, never OK. The other actions return immediately.
 
     Returns JSON: the tab list, or the affected tab. Every other chrome_* tool
     takes a tab_id from here.
@@ -554,6 +557,14 @@ async def chrome_navigate(
     fragment or in-page (hash) move succeeds with "same_document": true.
     Back/forward keeps the older shape: it waits for the load and reports
     the final URL, without these guarantees.
+
+    "http_status" is the HTTP status behind the page that loaded, when the
+    extension can see it (an error page COMMITS like any other page, so a
+    404 or 500 is otherwise indistinguishable from success here). ABSENT
+    means unknown, not OK: seeing it needs the extension's page-status
+    permission, granted once from its popup. A 401/407 additionally carries
+    "http_status_hint": an auth prompt is showing and Chrome is suppressing
+    input to the tab, so navigate away rather than clicking into it.
 
     A "Leave site?" confirmation no longer passes silently: the call FAILS
     fast, names the dialog, and the navigation stays paused on it. Leaving is
@@ -910,6 +921,20 @@ async def chrome_act(
     asserted, re-read shortly. A payload with none of these and an unchanged
     URL means the page did not move.
 
+    Slow pages can run the command out of its wall-clock budget, and the
+    result says exactly where the clock died instead of a bare timeout.
+    "budget_exhausted": true with "delivered_count"/"requested_count" means
+    the action was cut mid-delivery: the page now holds PARTIAL input (a
+    half-typed field), so re-read before continuing and send only the
+    remainder. The same flag with input "none" means nothing went out at
+    all: safe to retry as-is, with a larger timeout_ms if it persists.
+    "budget_clamped": true marks a wait or settle window that was cut short
+    by the budget (mostly inside batches, where the clock is shared): an
+    unmet condition there may just not have been watched long enough, so
+    re-check the page before concluding it never happened. A degraded drag
+    reports "drag_degraded": true (the button was pressed and released but
+    the glide between them was dropped, which some drag implementations
+    read as a plain click): verify the drag took effect.
 
     You are acting in the user's own logged-in browser, as the user. Two
     standing limits, which hold however this tool was bound (a kit, a direct
@@ -1109,37 +1134,86 @@ def _batch_action_seconds(entry: dict) -> tuple[int, int]:
     return 15, 0
 
 
-def _normalize_batch_actions(actions: list[dict]) -> list[dict]:
+def _normalize_batch_actions(actions: list[dict]) -> list[dict] | str:
     """Accept chrome_act's parameter spellings inside batched act args.
 
-    chrome_act's python surface takes flat wait_for_text / wait_for_url /
-    wait_for_ref while the wire carries a wait_for dict, so a batched act
-    written with the tool's own parameter names would reach the extension as
-    unknown keys and be silently dropped. Wire-shape wait_for passes through
-    untouched and wins over a flat duplicate.
+    Two normalizations, one seam. The flat wait_for_text / wait_for_url /
+    wait_for_ref spellings become the wire wait_for dict (chrome_act's python
+    surface takes the flat names while the wire carries the dict, so a
+    batched act written with the tool's own parameter names would otherwise
+    reach the extension as unknown keys and be silently dropped; wire-shape
+    wait_for passes through untouched and wins over a flat duplicate). And a
+    batched action="upload" gets its path resolved into file_name /
+    file_base64 exactly like the single-call path, because that resolution
+    lives HERE and the wire has no idea what a workspace path is: without
+    this, a batched upload has been dead since v1 (backlog #166). Explicit
+    file_base64 in the args wins over path, same rule as the wait spellings.
+
+    Returns the normalized list, or an "[Error]: ..." string that refuses the
+    WHOLE batch: an upload whose file cannot be loaded (missing, denylisted,
+    oversized, or no path given at all, the same refusal the single call
+    makes) was going to abort the batch at that step anyway, and refusing
+    before anything dispatches is the honest shape, with the single-call
+    error copy and the step named in the same 'action N ("act")' style the
+    budget refusals below use. Uploads are also capped in AGGREGATE at the
+    single-file limit (10MB of file bytes per batch): each file honors the
+    per-file cap, but a batch is one wire payload and one result envelope,
+    and letting N steps sum to N times the cap re-opens the amplification
+    the cap exists to close.
     """
+    upload_budget = 10 * 1024 * 1024
     out: list[dict] = []
-    for entry in actions:
+    for i, entry in enumerate(actions):
         if not isinstance(entry, dict) or entry.get("type") != "act":
             out.append(entry)
             continue
         args = entry.get("args")
-        if not isinstance(args, dict) or not any(
-            args.get(k) for k in ("wait_for_text", "wait_for_url", "wait_for_ref")
-        ):
+        if not isinstance(args, dict):
+            out.append(entry)
+            continue
+        has_wait = any(args.get(k) for k in ("wait_for_text", "wait_for_url", "wait_for_ref"))
+        is_upload = args.get("action") == "upload"
+        if is_upload and not args.get("path") and not args.get("file_base64"):
+            return (
+                f'[Error]: action {i + 1} ("act"): action="upload" needs path '
+                "(a file in the workspace)."
+            )
+        needs_upload = is_upload and bool(args.get("path")) and not args.get("file_base64")
+        if not has_wait and not is_upload:
             out.append(entry)
             continue
         args = dict(args)
-        existing = args.pop("wait_for", None)
-        flat = _wire_wait_for(
-            args.pop("wait_for_text", None),
-            args.pop("wait_for_url", None),
-            args.pop("wait_for_ref", None),
-        )
-        # The wire spelling wins over a flat duplicate; a malformed wire
-        # value (not a dict) is dropped rather than raised on.
-        wire = existing if isinstance(existing, dict) else {}
-        args["wait_for"] = {**flat, **wire}
+        if has_wait:
+            existing = args.pop("wait_for", None)
+            flat = _wire_wait_for(
+                args.pop("wait_for_text", None),
+                args.pop("wait_for_url", None),
+                args.pop("wait_for_ref", None),
+            )
+            # The wire spelling wins over a flat duplicate; a malformed wire
+            # value (not a dict) is dropped rather than raised on.
+            wire = existing if isinstance(existing, dict) else {}
+            args["wait_for"] = {**flat, **wire}
+        if needs_upload:
+            loaded = _load_upload(str(args.pop("path")))
+            if isinstance(loaded, str):
+                detail = loaded.removeprefix("[Error]: ")
+                return f'[Error]: action {i + 1} ("act"): {detail}'
+            args.update(loaded)
+        elif is_upload and args.get("path"):
+            # Explicit file_base64 wins; a leftover path must not ride to the
+            # wire as an unknown key the extension silently drops.
+            args.pop("path")
+        if is_upload:
+            encoded = args.get("file_base64")
+            if isinstance(encoded, str):
+                upload_budget -= len(encoded) * 3 // 4
+            if upload_budget < 0:
+                return (
+                    f'[Error]: action {i + 1} ("act"): this batch\'s uploads total more '
+                    "than the 10MB cap a single upload gets. Split the uploads into "
+                    "separate chrome_act calls."
+                )
         out.append({**entry, "args": args})
     return out
 
@@ -1164,7 +1238,10 @@ async def chrome_batch(
         one stops the batch at that step, because a condition on a batched
         step is a gate: the remaining actions assumed a page state that
         never arrived. A step that leaves a page dialog standing also stops
-        the batch, with the answer route named.
+        the batch, with the answer route named. A batched act may also carry
+        action="upload" with a path: the file loads exactly like the
+        single-call upload, and a path that cannot load (missing, denylisted,
+        over the size cap) refuses the whole batch up front.
 
     Use it for a known sequence, e.g. fill username, fill password, click sign
     in. On a remote connection this is the difference between one network
@@ -1216,7 +1293,19 @@ async def chrome_batch(
     """
     if not actions:
         return "[Error]: actions must be a non-empty list."
-    actions = _normalize_batch_actions(actions)
+    # Mirrors the extension's MAX_BATCH_ACTIONS: it refuses over-long batches
+    # anyway, but refusing HERE happens before upload normalization reads
+    # files into base64 and before a doomed round trip, and the copy matches.
+    if len(actions) > 20:
+        return (
+            f"[Error]: batch is limited to 20 actions (got {len(actions)}). "
+            "Split the sequence into more than one batch."
+        )
+    normalized = _normalize_batch_actions(actions)
+    if isinstance(normalized, str):
+        # A doomed upload refuses the whole batch up front (see the helper).
+        return normalized
+    actions = normalized
     # The refusal ceiling is whatever actually caps the granted budget, so
     # lowering the batch entry can never silently admit unfittable batches.
     ceiling = min(_TIMEOUTS["batch"], _MAX_TIMEOUT_S)

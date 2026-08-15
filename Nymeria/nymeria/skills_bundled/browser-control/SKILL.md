@@ -37,8 +37,12 @@ It is also why the rules below are not optional.
    hijacking one the user is reading, unless they pointed you at it. `create`
    and `reload` wait for the page and report `complete`, so what comes back is
    something you can read straight away.
-2. `chrome_navigate(tab_id, url)`. Check the URL and title that come back: a
-   redirect or a login wall means you are not where you asked to be.
+2. `chrome_navigate(tab_id, url)`. Check the URL, title and `http_status`
+   that come back: a redirect or a login wall means you are not where you
+   asked to be, and an error page COMMITS like a real page, so
+   `http_status: 404`/`500` beside a clean-looking title is the only tell.
+   `http_status` absent means unknown (it needs the extension's page-status
+   permission, granted once from its popup), never OK.
 3. Find what you need:
    - `chrome_find(tab_id, "the add to cart button")` when you know what you
      want. Cheapest, and it reaches elements scrolled out of view. It reads
@@ -105,6 +109,18 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   be working. Next time, arm the outcome on the action itself
   (`wait_for_text=...`); after the fact, `chrome_act(action="wait", ...)`
   still works as a standalone check.
+- `budget_exhausted: true` -> the command's time budget ran out on a slow
+  page and the call came back EARLY with the truth instead of a bare
+  timeout. With `delivered_count` / `requested_count` present, the clock
+  died MID-delivery: a partial `type` means the field holds a PARTIAL
+  value, so re-read it and finish the remainder; NEVER re-send the whole
+  text. Without the counts (`input: "none"`), nothing went out: retry
+  as-is. Budget spent after delivery is not this failure: the action
+  succeeded, its verification just got cheaper (`focused` /
+  `target_exists` may be absent, marked `budget_clamped: true`). A
+  `budget_clamped` wait miss may simply not have been watched long enough;
+  a `drag_degraded` drag pressed and released without the glide, so verify
+  it took effect.
 - `dialog` -> your action raised a page dialog. An alert arrives here already
   acknowledged, with its message; a confirm or prompt arrives STANDING, with
   the message, a deadline, and the `chrome_dialog` call that answers it. Read
@@ -122,7 +138,12 @@ the tab's URL changed (checked after the load commits; also true for SPA
 route changes), `navigated: true` means a real page load committed (the
 field that catches a same-URL reload; an ordinary navigation carries both),
 and `navigation_pending` names a destination still in flight (give it a
-moment, then read the page).
+moment, then read the page). chrome_navigate, `tabs create` and `reload`
+also carry `http_status`, the HTTP status behind the loaded page, when the
+page-status permission lets it be seen; a 401/407 adds `http_status_hint`,
+because an auth prompt is showing and input to the tab is already being
+suppressed (the browser-dialog recovery below): navigate away, do not
+click into it.
 
 Stale refs are normal, not a failure. When you get "re-read the page", read it
 again and continue; do not retry the same ref. That includes a ref that "still
@@ -177,7 +198,9 @@ and there was no dialog" does not mean the tab is healthy. Trust
 `input_delivered`. Recovery, cheapest first: navigate the tab somewhere else
 (measured to clear an auth prompt; reloading re-triggers it), and close the
 tab if input is still dead after that. Never try to dismiss browser security
-UI yourself.
+UI yourself. The auth-prompt case is now flagged BEFORE it costs you
+anything when the page-status permission is granted: a navigate onto one
+returns `http_status: 401`/`407` with a hint saying input is suppressed.
 
 **The OS file chooser is PREVENTED while you drive.** Any route that would
 open it, a JS-driven upload button, one inside an iframe, `showPicker()`, a
