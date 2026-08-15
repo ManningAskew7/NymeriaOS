@@ -1116,6 +1116,308 @@ def test_wait_and_batch_escape_hatches_reach_the_extension() -> None:
     assert sent[-1]["args"]["continue_on_url_change"] is True
 
 
+# ---------- fused waits (#168) and the sized batch budget (#166) ----------
+
+
+def test_wait_args_reach_the_wire_on_every_action() -> None:
+    # A RATCHET, not a change test: the backend already forwarded these args
+    # for every action (the #168 silent drop was extension-side). It pins that
+    # a future "tidy-up" filtering them to action="wait" cannot land silently,
+    # because that filter would reintroduce the drop one layer up.
+    sent: list[dict] = []
+
+    out = _invoke(
+        chrome_act,
+        {
+            "tab_id": 1,
+            "action": "click",
+            "ref": "@e1",
+            "wait_for_text": "Saved",
+            "timeout_ms": 2000,
+        },
+        _ok({"action": "click", "found": True}),
+        capture=sent,
+    )
+
+    assert not out.startswith("[Error]")
+    assert sent[-1]["args"]["wait_for"] == {"text": "Saved"}
+    assert sent[-1]["args"]["timeout_ms"] == 2000
+
+
+def _drain_budget(queue) -> int:
+    seen = []
+    while not queue.empty():
+        seen.append(queue.get_nowait())
+    cmd_event = next(e for e in seen if e.event_type == "browser_command")
+    return cmd_event.data["timeout_seconds"]
+
+
+def test_fused_act_timeout_budget_covers_preflight_and_settle() -> None:
+    # A fused wait rides behind the pre-flight liveness probes and settle
+    # (~15s worst case together) where the bare wait verb skips both. The old
+    # +5s slack turned an honest found:false at 20s into a transport timeout.
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe("budget-fused-act")
+
+    _invoke(
+        chrome_act,
+        {
+            "tab_id": 1,
+            "action": "click",
+            "ref": "@e1",
+            "wait_for_text": "x",
+            "timeout_ms": 20_000,
+        },
+        _ok({}),
+    )
+
+    budget = _drain_budget(queue)
+    # Extension-side spend, not the formula: 20s of agent-declared wait plus
+    # ~8s of liveness probes plus the 7s settle transport window.
+    assert budget >= 20 + 8 + 7, f"a 20s fused wait cannot fit its overhead in {budget}s"
+
+
+def test_batch_budget_is_sized_from_page_loading_steps() -> None:
+    # #166: create + snapshot used to get a flat 40s against a measured ~48s
+    # extension-side worst case (25s load wait + 8s reader pre-flight + 15s
+    # CDP call deadline), so an honestly slow load surfaced as a transport
+    # timeout with the batch half-done.
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe("budget-batch-sized")
+
+    _invoke(
+        chrome_batch,
+        {
+            "tab_id": 1,
+            "actions": [
+                {"type": "tabs", "args": {"action": "create", "url": "https://example.com"}},
+                {"type": "snapshot"},
+            ],
+        },
+        _ok({"results": []}),
+    )
+
+    budget = _drain_budget(queue)
+    extension_worst_case_s = 25 + 8 + 15
+    assert budget >= extension_worst_case_s, (
+        f"a create+snapshot batch can spend ~{extension_worst_case_s}s "
+        f"extension-side; a {budget}s budget cuts the honest wait short"
+    )
+
+
+def test_batch_of_plain_acts_keeps_its_budget_and_is_not_refused() -> None:
+    # The refusal floor counts DECLARED waiting only. A 20-action batch of
+    # plain acts is elastic (each is typically 1-3s), works today, and must
+    # neither be refused nor lose budget to the resize.
+    import nymeria.tools.chrome_browser as mod
+
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe("budget-batch-plain")
+
+    actions = [{"type": "act", "args": {"action": "click", "ref": f"@e{i}"}} for i in range(20)]
+    out = _invoke(chrome_batch, {"tab_id": 1, "actions": actions}, _ok({"results": []}))
+
+    assert not out.startswith("[Error]")
+    assert _drain_budget(queue) == mod._MAX_TIMEOUT_S
+
+
+def test_navigate_heavy_batches_are_not_refused() -> None:
+    # The refusal floor counts what the AGENT asked to wait for, not verb
+    # worst-cases: a navigate's 25s is elastic (most pages load in a few
+    # seconds) and a batch stops at its first unconsented navigation anyway,
+    # so refusing navigate-heavy batches would regress sequences that work
+    # today. They keep the generous budget instead.
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe("budget-batch-navs")
+
+    out = _invoke(
+        chrome_batch,
+        {
+            "tab_id": 1,
+            "actions": [{"type": "navigate", "args": {"url": "https://a.example"}}] * 4,
+            "continue_on_url_change": True,
+        },
+        _ok({"results": []}),
+    )
+
+    assert not out.startswith("[Error]")
+    assert _drain_budget(queue) >= 25, "the load wait still counts toward the granted budget"
+
+
+def test_batch_of_acts_declaring_oversized_timeouts_is_refused() -> None:
+    # The floor covers agent-DECLARED act waits: two 40s conditions cannot
+    # both be honoured under the ceiling, and granting the capped budget
+    # anyway means dying mid-flight with work half-done.
+    import nymeria.tools.chrome_browser as mod
+
+    async def run():
+        return await chrome_batch.ainvoke(
+            {
+                "tab_id": 1,
+                "actions": [
+                    {"type": "act", "args": {"action": "click", "ref": "@e1", "timeout_ms": 40_000}},
+                    {"type": "act", "args": {"action": "click", "ref": "@e2", "timeout_ms": 40_000}},
+                ],
+            },
+            config=_config(),
+        )
+
+    out = asyncio.run(run())
+
+    assert out.startswith("[Error]")
+    assert "Split the batch" in out
+    assert str(mod._MAX_TIMEOUT_S) in out
+    assert 'action 1 ("act")' in out
+
+
+def test_batch_refusal_floor_boundary_is_exact() -> None:
+    # 34s + 34s of declared waits (35 + 35 with the truncation guard) plus
+    # 10s of overhead is exactly the 80s ceiling: allowed. One second more
+    # per act tips it: refused.
+    def batch(ms: int):
+        async def run():
+            return await chrome_batch.ainvoke(
+                {
+                    "tab_id": 1,
+                    "actions": [
+                        {"type": "act", "args": {"action": "click", "ref": "@e1", "timeout_ms": ms}},
+                        {"type": "act", "args": {"action": "click", "ref": "@e2", "timeout_ms": ms}},
+                    ],
+                },
+                config=_config(),
+            )
+
+        return asyncio.run(run())
+
+    refused = batch(35_000)
+    assert refused.startswith("[Error]")
+
+    sent: list[dict] = []
+    allowed = _invoke(
+        chrome_batch,
+        {
+            "tab_id": 1,
+            "actions": [
+                {"type": "act", "args": {"action": "click", "ref": "@e1", "timeout_ms": 34_000}},
+                {"type": "act", "args": {"action": "click", "ref": "@e2", "timeout_ms": 34_000}},
+            ],
+        },
+        _ok({"results": []}),
+        capture=sent,
+    )
+    assert not allowed.startswith("[Error]")
+
+
+def test_single_act_timeout_over_the_ceiling_is_refused_up_front() -> None:
+    # Without this, an oversized ask rides to the transport deadline and the
+    # timeout copy blames the extension for the agent's own declaration
+    # (the extension keeps working and POSTs a result nobody awaits). The
+    # same cap applies to a batched act, where 65s sits past the per-wait
+    # cap while still UNDER the whole-batch floor, so only the per-act rule
+    # can catch it.
+    async def run(args: dict):
+        return await chrome_act.ainvoke(args, config=_config())
+
+    out = asyncio.run(
+        run({"tab_id": 1, "action": "click", "ref": "@e1", "timeout_ms": 65_000})
+    )
+    assert out.startswith("[Error]")
+    assert "64s" in out, "names the longest usable wait"
+
+    # One second under the cap dispatches normally.
+    sent: list[dict] = []
+    allowed = _invoke(
+        chrome_act,
+        {"tab_id": 1, "action": "click", "ref": "@e1", "timeout_ms": 64_000},
+        _ok({"action": "click"}),
+        capture=sent,
+    )
+    assert not allowed.startswith("[Error]")
+    assert sent[-1]["args"]["timeout_ms"] == 64_000
+
+    async def run_batch():
+        return await chrome_batch.ainvoke(
+            {
+                "tab_id": 1,
+                "actions": [
+                    {"type": "act", "args": {"action": "click", "ref": "@e1", "timeout_ms": 65_000}}
+                ],
+            },
+            config=_config(),
+        )
+
+    batched = asyncio.run(run_batch())
+    assert batched.startswith("[Error]")
+    assert "single command" in batched or "Shorten" in batched
+
+
+def test_batched_act_accepts_the_tools_own_wait_spellings() -> None:
+    # chrome_act's python surface says wait_for_text; the wire says
+    # wait_for.text. An agent copying the tool's own parameter names into a
+    # batch got them accepted, forwarded, and silently dropped by the
+    # extension as unknown keys.
+    sent: list[dict] = []
+
+    _invoke(
+        chrome_batch,
+        {
+            "tab_id": 1,
+            "actions": [
+                {
+                    "type": "act",
+                    "args": {
+                        "action": "click",
+                        "ref": "@e1",
+                        "wait_for_text": "Saved",
+                        "timeout_ms": 3000,
+                    },
+                },
+            ],
+        },
+        _ok({"results": []}),
+        capture=sent,
+    )
+
+    wire = sent[-1]["args"]["actions"][0]["args"]
+    assert wire["wait_for"] == {"text": "Saved"}
+    assert "wait_for_text" not in wire
+    assert wire["timeout_ms"] == 3000
+
+
+def test_batched_act_with_malformed_wait_for_is_normalized_not_raised() -> None:
+    # dict("oops") raises; the tool must return an error string or a clean
+    # wire shape, never an exception. A malformed wire value beside a flat
+    # spelling is dropped and the flat spelling wins.
+    sent: list[dict] = []
+
+    out = _invoke(
+        chrome_batch,
+        {
+            "tab_id": 1,
+            "actions": [
+                {
+                    "type": "act",
+                    "args": {
+                        "action": "click",
+                        "ref": "@e1",
+                        "wait_for": "oops",
+                        "wait_for_text": "Saved",
+                    },
+                },
+            ],
+        },
+        _ok({"results": []}),
+        capture=sent,
+    )
+
+    assert not out.startswith("[Error]")
+    assert sent[-1]["args"]["actions"][0]["args"]["wait_for"] == {"text": "Saved"}
+
+
 # ---------- the injection detector only ever adds suspicion ----------
 
 
