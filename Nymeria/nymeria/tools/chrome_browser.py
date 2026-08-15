@@ -773,6 +773,43 @@ async def chrome_find(
     return f'Matches for "{query}":\n{listed}\n[Found by {model}]{warn}'
 
 
+# An act's wait spends its timeout plus ~15s of pre-flight and settle
+# overhead extension-side; the +1 covers int() truncation. One rule sizes
+# the act override, the batch floor, and both refusals, so they cannot
+# disagree about what fits.
+_ACT_WAIT_OVERHEAD_S = 15
+
+
+def _act_wait_seconds(timeout_ms: float) -> int:
+    return int(timeout_ms / 1000) + 1
+
+
+def _act_timeout_refusal(timeout_ms: float) -> Optional[str]:
+    """Refuse a wait that cannot fit under the ceiling, or return None."""
+    if _act_wait_seconds(timeout_ms) + _ACT_WAIT_OVERHEAD_S <= _MAX_TIMEOUT_S:
+        return None
+    max_wait_s = _MAX_TIMEOUT_S - _ACT_WAIT_OVERHEAD_S - 1
+    return (
+        f"[Error]: timeout_ms={int(timeout_ms)} cannot fit under the "
+        f"{_MAX_TIMEOUT_S}s transport ceiling with the action's "
+        f"~{_ACT_WAIT_OVERHEAD_S}s of overhead; the longest usable wait is "
+        f"{max_wait_s}s. Use a shorter timeout and, for longer horizons, "
+        'follow up with a separate chrome_act(action="wait") or re-read later.'
+    )
+
+
+def _wire_wait_for(text: Any, url: Any, ref: Any) -> dict[str, Any]:
+    """The wire spelling of chrome_act's flat wait_for_* parameters."""
+    wait_for: dict[str, Any] = {}
+    if text:
+        wait_for["text"] = text
+    if url:
+        wait_for["url_contains"] = url
+    if ref:
+        wait_for["ref"] = ref
+    return wait_for
+
+
 @tool
 async def chrome_act(
     tab_id: int,
@@ -805,11 +842,24 @@ async def chrome_act(
     modifiers: any of ["Ctrl", "Shift", "Alt", "Meta"].
     direction / amount_px: for scroll (default down, 500px).
     to_ref: drag destination.
-    wait_for_text / wait_for_url / wait_for_ref / timeout_ms: for
-        action="wait". wait_for_ref waits for a specific element to appear
-        (a "@eN" ref from a read, or a "css=" selector), which is the precise
-        condition when you know what you are waiting for. With no condition at
-        all, wait simply waits for the page to go quiet.
+    wait_for_text / wait_for_url / wait_for_ref / timeout_ms: a wait
+        condition, honoured on EVERY action, not just action="wait". The
+        action is delivered first; the call then returns as soon as the
+        condition holds (text visible on the page, URL containing a
+        substring, an element present: a "@eN" ref or a "css=" selector), or
+        once timeout_ms (default 5000) elapses. A met condition is positive
+        evidence the action did what it was for. An unmet one on a delivered
+        action does NOT fail the call: the payload carries found: false and
+        the input still went in, so judge the outcome, not the wait. This
+        makes "click and confirm the row appeared" ONE call, not a click
+        then a wait. action="wait" alone (nothing dispatched) still FAILS on
+        timeout. Multiple conditions are OR'd: the first to hold ends the
+        wait and is the one named; a timeout names them all. timeout_ms with
+        no condition simply gives the page longer to go quiet (reported
+        under "settled", never as a failed condition). timeout_ms is capped:
+        an ask that cannot fit under the transport ceiling with the
+        action's overhead (roughly 64s) is refused up front; for longer
+        horizons re-read later or follow up with a separate wait.
     path: for action="upload", a file in the workspace to attach to the file
         input named by ref.
 
@@ -905,13 +955,7 @@ async def chrome_act(
         args["to_ref"] = to_ref
     if timeout_ms is not None:
         args["timeout_ms"] = timeout_ms
-    wait_for: dict[str, Any] = {}
-    if wait_for_text:
-        wait_for["text"] = wait_for_text
-    if wait_for_url:
-        wait_for["url_contains"] = wait_for_url
-    if wait_for_ref:
-        wait_for["ref"] = wait_for_ref
+    wait_for = _wire_wait_for(wait_for_text, wait_for_url, wait_for_ref)
     if wait_for:
         args["wait_for"] = wait_for
 
@@ -923,10 +967,20 @@ async def chrome_act(
             return loaded
         args.update(loaded)
 
-    # A wait may legitimately outlast the default action budget.
+    # A wait may legitimately outlast the default action budget. The slack is
+    # +15s, not +5s: a fused wait (#168) rides behind pre-flight liveness
+    # probes and settle (~15s worst case together), where a bare action="wait"
+    # skips both. One constant covers both shapes; the bare wait just keeps
+    # more headroom. An ask that cannot fit under the ceiling even so is
+    # refused up front, because the alternative is a transport timeout whose
+    # copy blames the extension for the agent's own oversized declaration
+    # (the extension keeps working and POSTs a result nobody is waiting for).
     override = None
     if timeout_ms:
-        override = max(_TIMEOUTS["act"], int(timeout_ms / 1000) + 5)
+        refusal = _act_timeout_refusal(timeout_ms)
+        if refusal:
+            return refusal
+        override = max(_TIMEOUTS["act"], int(timeout_ms / 1000) + 15)
     return await _dispatch(
         command_type="act", args=args, config=config, timeout_override=override
     )
@@ -1011,6 +1065,85 @@ async def chrome_screenshot(
     return text, artifact
 
 
+# Extension-side wait constants the batch budget must anticipate, hand-copied
+# mirrors (same pattern as the tabs-create budget): 25 is settle.ts
+# TAB_LOAD_WAIT_MS, 5 is act.ts DEFAULT_WAIT_MS.
+_BATCH_LOAD_WAIT_S = 25
+_BATCH_DEFAULT_WAIT_S = 5
+
+
+def _batch_action_seconds(entry: dict) -> tuple[int, int]:
+    """(allowance, declared) seconds for one batch action.
+
+    `allowance` feeds the granted budget: sized from what the batch actually
+    contains, because two verb families carry a deterministic extension-side
+    load wait (navigate/history and tabs create/reload) and an act can
+    declare its own wait (#168). `declared` feeds the refusal floor: the
+    seconds the AGENT explicitly asked to wait (timeout_ms, or the default
+    when a condition is armed with none). Load waits are elastic worst-cases,
+    not asks, and a batch stops at its first unconsented navigation anyway,
+    so they count toward the allowance only: putting them in the floor would
+    refuse navigate-heavy batches that work today, the same mistake the
+    plain-click case pins from the other side.
+    """
+    ctype = entry.get("type")
+    args = entry.get("args") or {}
+    if not isinstance(args, dict):
+        args = {}
+    if ctype == "act":
+        wait_s = 0
+        timeout = args.get("timeout_ms")
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            wait_s = _act_wait_seconds(timeout)
+        elif args.get("wait_for"):
+            wait_s = _BATCH_DEFAULT_WAIT_S
+        return 15 + wait_s, wait_s
+    if ctype in ("navigate", "history"):
+        return _BATCH_LOAD_WAIT_S, 0
+    if ctype == "tabs":
+        if args.get("action") in ("create", "reload"):
+            return _BATCH_LOAD_WAIT_S, 0
+        return 5, 0
+    if ctype in ("snapshot", "screenshot"):
+        return 20, 0
+    return 15, 0
+
+
+def _normalize_batch_actions(actions: list[dict]) -> list[dict]:
+    """Accept chrome_act's parameter spellings inside batched act args.
+
+    chrome_act's python surface takes flat wait_for_text / wait_for_url /
+    wait_for_ref while the wire carries a wait_for dict, so a batched act
+    written with the tool's own parameter names would reach the extension as
+    unknown keys and be silently dropped. Wire-shape wait_for passes through
+    untouched and wins over a flat duplicate.
+    """
+    out: list[dict] = []
+    for entry in actions:
+        if not isinstance(entry, dict) or entry.get("type") != "act":
+            out.append(entry)
+            continue
+        args = entry.get("args")
+        if not isinstance(args, dict) or not any(
+            args.get(k) for k in ("wait_for_text", "wait_for_url", "wait_for_ref")
+        ):
+            out.append(entry)
+            continue
+        args = dict(args)
+        existing = args.pop("wait_for", None)
+        flat = _wire_wait_for(
+            args.pop("wait_for_text", None),
+            args.pop("wait_for_url", None),
+            args.pop("wait_for_ref", None),
+        )
+        # The wire spelling wins over a flat duplicate; a malformed wire
+        # value (not a dict) is dropped rather than raised on.
+        wire = existing if isinstance(existing, dict) else {}
+        args["wait_for"] = {**flat, **wire}
+        out.append({**entry, "args": args})
+    return out
+
+
 @tool
 async def chrome_batch(
     tab_id: int,
@@ -1022,7 +1155,16 @@ async def chrome_batch(
 
     actions: a list of {"type": ..., "args": {...}} entries, run in order.
         type is a wire command: "act", "snapshot", "navigate", "extract_text",
-        "screenshot", "tabs". args match that command; tab_id is inherited.
+        "screenshot", "tabs", "history". args match that command; tab_id is
+        inherited. A batched act may carry a wait condition (the
+        wait_for_text / wait_for_url / wait_for_ref / timeout_ms spellings
+        are accepted): a met condition confirms the step's outcome and the
+        sequence continues, INCLUDING across the navigation the condition
+        implies (no continue_on_url_change needed for that step); an UNMET
+        one stops the batch at that step, because a condition on a batched
+        step is a gate: the remaining actions assumed a page state that
+        never arrived. A step that leaves a page dialog standing also stops
+        the batch, with the answer route named.
 
     Use it for a known sequence, e.g. fill username, fill password, click sign
     in. On a remote connection this is the difference between one network
@@ -1033,14 +1175,21 @@ async def chrome_batch(
     action was written against a page that no longer exists. Read the results
     array: each entry carries the same verification payload chrome_act returns.
 
+    The batch's time budget is sized from the actions it contains
+    (page-loading steps and declared waits cost more). A batch that declares
+    more waiting than fits under the transport ceiling is refused up front
+    with the arithmetic: split it rather than trimming waits to squeeze in.
+
     A step whose input never reached the page counts as a failure and stops the
     batch, which is deliberate: once a tab is dropping input, every remaining
     step would be a no-op against a page that never changed.
 
-    continue_on_url_change: keep going across a navigation anyway. Only for a
-        sequence you deliberately wrote across it (submit, then act on the
-        page that loads), and only with coordinate or css= targets: a "@eN"
-        ref minted before the navigation will not survive it.
+    continue_on_url_change: keep going across a navigation anyway (a URL
+        change, a same-URL reload, or a navigation still in flight at step
+        end). Only for a sequence you deliberately wrote across it (submit,
+        then act on the page that loads), and only with coordinate or css=
+        targets: a "@eN" ref minted before the navigation will not survive
+        it. A step whose wait condition was met does not need it.
 
     Do not batch steps whose targets depend on what the previous step revealed:
     refs come from the page as it was when you read it.
@@ -1067,7 +1216,40 @@ async def chrome_batch(
     """
     if not actions:
         return "[Error]: actions must be a non-empty list."
-    budget = min(_TIMEOUTS["batch"], 15 * len(actions) + 10)
+    actions = _normalize_batch_actions(actions)
+    # The refusal ceiling is whatever actually caps the granted budget, so
+    # lowering the batch entry can never silently admit unfittable batches.
+    ceiling = min(_TIMEOUTS["batch"], _MAX_TIMEOUT_S)
+    allowance_total = 0
+    declared_total = 0
+    declared_parts: list[str] = []
+    for index, entry in enumerate(actions, 1):
+        allowance, declared = (
+            _batch_action_seconds(entry) if isinstance(entry, dict) else (15, 0)
+        )
+        allowance_total += allowance
+        declared_total += declared
+        if declared:
+            entry_type = entry.get("type") if isinstance(entry, dict) else "?"
+            declared_parts.append(f'action {index} ("{entry_type}") up to {declared}s')
+            # The same per-wait cap chrome_act enforces for a single call.
+            if declared + _ACT_WAIT_OVERHEAD_S > ceiling:
+                return (
+                    f'[Error]: action {index} ("{entry_type}") declares a ~{declared}s wait, '
+                    f"and no single action can wait more than "
+                    f"{ceiling - _ACT_WAIT_OVERHEAD_S - 1}s (its ~{_ACT_WAIT_OVERHEAD_S}s of "
+                    f"overhead must also fit under the {ceiling}s transport ceiling). "
+                    "Shorten that timeout, or run it as a single command."
+                )
+    if 10 + declared_total > ceiling:
+        return (
+            "[Error]: this batch declares more waiting than fits under the "
+            f"{ceiling}s transport ceiling (no command may outlive the "
+            f"coordinator's orphan sweep): {', '.join(declared_parts)}, plus 10s "
+            f"of overhead, is {10 + declared_total}s. Split the batch, or "
+            "shorten the timeouts."
+        )
+    budget = min(_TIMEOUTS["batch"], 10 + allowance_total)
     return await _dispatch(
         command_type="batch",
         args={
