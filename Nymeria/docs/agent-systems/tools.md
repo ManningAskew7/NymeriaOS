@@ -2541,10 +2541,9 @@ reported orphaned while the extension is still working on it.
 **Interaction fidelity:** input is dispatched as trusted browser-level CDP
 events, not page-synthesized ones, because sites that matter (payment, anti-bot)
 ignore `isTrusted: false`. Before clicking or toggling, the extension hit-tests
-the point and REFUSES if an overlay covers the target, naming the blocker.
-Caveat worth knowing: those probes run in the page's main world, so a hostile
-page that overrides `elementFromPoint` or `getBoundingClientRect` can mislead
-them (backlog #160). Where a
+the point and REFUSES if an overlay covers the target, naming the blocker;
+those probes run in an isolated world the page cannot patch (next section).
+Where a
 trusted path is impossible (native `<select>` popups, file uploads, elements
 with no layout box) the result reports `input: "synthetic"` and why.
 
@@ -2553,14 +2552,46 @@ acknowledgement: the URL and whether it changed, whether the target survived,
 what has focus, the field's previous value, console errors and failed requests
 caused by the action, and whether the page settled. Console and network capture
 run over CDP (no host permission needed) and start at debugger attach, so the
-first question about them has a real answer.
+first question about them has a real answer. `failed_requests` entries carry
+`same_origin` and the capped list ranks data-class failures ahead of
+telemetry-shaped ones (Ping/Image/Media/Font), so a broken first-party POST
+is never crowded out by analytics beacons.
 
-**Refs and frames:** `@eN` refs carry the URL they were minted on and the
-session that owns them, and a stale ref returns a typed "re-read the page"
-error rather than resolving into a different document. Cross-origin iframes are
-read through flattened auto-attach sessions and appear as labelled sections;
-their refs are frame-scoped because `backendNodeId` is a process-global
-counter that collides across frames.
+**Probe isolation (#160):** every trust probe (geometry, hit test, frame
+offsets, the file-input and covered-click guards, focus checks, value
+read-backs, css=/xpath= resolution, the batch-gating wait condition) and the
+one element handle every act runs through execute in an ISOLATED WORLD
+(`Page.createIsolatedWorld`, one per CDP session: the page and each
+out-of-process iframe), so a hostile page overriding
+`getBoundingClientRect`/`elementFromPoint`/`querySelector` in its own world
+can no longer steer a trusted click or rubber-stamp a guard. A probe that
+cannot get a world NEVER re-runs in the main world: the load-bearing reads
+(target resolution, frame offsets for cross-frame clicks) refuse with a
+named infrastructure error, and the enrichment reads report their honest
+degraded shape (an absent field, a kept fallback). The settle probe and the
+focused-element label stay main-world by decision (a page faking those only
+fails itself).
+
+**Refs and frames:** `@eN` refs number MONOTONICALLY per tab (re-reads mint
+new numbers and MERGE into the map, so held refs stay valid until a real
+navigation; the counter rides `chrome.storage.session` across MV3 worker
+recycles). Refs die on navigation, and "navigation" includes pushState
+path/query moves and hash-ROUTE changes (`#/cart`, `#!/inbox`); plain
+`#anchor` moves do not bounce them. A stale ref returns a typed "re-read the
+page" error rather than resolving into a different document, with the honest
+split between "from before the last navigation" and "never minted". Refs
+also carry their mint-time AX role+name, re-checked before every verb that
+clicks, types into, toggles or activates an element: a live element whose
+meaning changed since the read ("Confirm" relabeled "Delete", a re-render
+reusing the node) refuses with was/now copy instead of firing. Names compare
+digit-insensitively, so a counter or price ticking ("Cart (3)" to "Cart
+(4)") does not refuse; `upload` is exempt (AX-hidden inputs are its everyday
+target), and a label that genuinely rewords itself continuously is reachable
+via `css=`. Cross-origin iframes are read through
+flattened auto-attach sessions and appear as labelled sections; their refs
+are frame-scoped because `backendNodeId` is a process-global counter that
+collides across frames, and a frame session detaching (an OOPIF navigating
+cross-process) drops just that frame's refs and cached world.
 
 **Untrusted content:** every result derived from a page is returned inside an
 `<untrusted_page_content>` fence, with the closing marker neutralized in the
