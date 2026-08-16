@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1238 tools found.**
+**1239 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -181,6 +181,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `chrome_network` | `nymeria/tools/chrome_browser.py` | Read the network requests a Chrome tab made, with status codes. |
 | `chrome_read_page` | `nymeria/tools/chrome_browser.py` | Read a Chrome tab's accessibility tree: the map you act on. |
 | `chrome_read_text` | `nymeria/tools/chrome_browser.py` | Read the visible text of a Chrome tab. Cheaper than a screenshot for prose. |
+| `chrome_reload_extension` | `nymeria/tools/chrome_browser.py` | Reload the Nymeria browser extension from disk (dev-loop helper). |
 | `chrome_screenshot` | `nymeria/tools/chrome_browser.py` | Capture what the user's Chrome tab looks like, and see it. |
 | `chrome_tabs` | `nymeria/tools/chrome_browser.py` | List or manage tabs in the user's Chrome. Start here to get a tab_id. |
 | `circleci_get_pipeline` | `nymeria/tools/build_ci_service_integrations.py` | Get one CircleCI pipeline by project and pipeline number. |

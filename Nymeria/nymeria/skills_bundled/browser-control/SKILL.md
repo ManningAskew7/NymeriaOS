@@ -22,6 +22,7 @@ metadata:
       - chrome_network
       - chrome_dialog
       - chrome_cdp
+      - chrome_reload_extension
     tool_ttl: 2h
 ---
 
@@ -306,6 +307,13 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   what the page is doing. Neither can see a dialog: a wedged tab produces no
   console output and no requests, so read "When a tab stops responding to
   you" before spending calls there.
+
+`chrome_reload_extension` is a dev-loop helper, not a page tool: it makes
+the extension reload its own code from disk (the remote version of the
+refresh click at chrome://extensions). Use it only when asked to reload the
+extension or when a just-deployed extension update needs to go live. It
+drops the connection for a few seconds, releases every driven tab, and
+loses in-flight commands, so run it alone and wait ~10 seconds after.
 
 `chrome_cdp` is the raw protocol under every tool here with the wrapper
 removed: no target checks, no settle, no verification. It is bound as a LAST
