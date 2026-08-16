@@ -2563,8 +2563,11 @@ diagnosis, not a bit (#176): `input_events` counts trusted events by type (a
 press that never composed into a `click` is visible as such), and the click
 family adds `default_prevented`, `click_target` (tag plus enclosing link URL)
 and the frame's `user_activation` state; `fill` verifies through its trusted
-`input` event. A post-dispatch peek preserves the counts even when the click
-navigates the document away. Console and network capture
+`input` event. A post-dispatch peek usually preserves the counts when the
+click navigates the document away (best effort: an instantly-committing
+navigation can still beat it). Console/network capture covers the top
+document only; a cross-origin frame's activity is invisible to both tools
+(#177). Console and network capture
 run over CDP (no host permission needed) and start at debugger attach, so the
 first question about them has a real answer. `failed_requests` entries carry
 `same_origin` and the capped list ranks data-class failures ahead of
