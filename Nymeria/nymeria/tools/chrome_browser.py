@@ -1070,7 +1070,8 @@ async def chrome_act(
     wait_for_text / wait_for_url / wait_for_ref / timeout_ms: a wait
         condition, honoured on EVERY action, not just action="wait". The
         action is delivered first; the call then returns as soon as the
-        condition holds (text visible on the page, URL containing a
+        condition holds (text visible on the page, frame content included,
+        both frame classes, the same coverage as a read; URL containing a
         substring, an element present: a "@eN" ref or a "css=" selector), or
         once timeout_ms (default 5000) elapses. A met condition is positive
         evidence the action did what it was for. An unmet one on a delivered
