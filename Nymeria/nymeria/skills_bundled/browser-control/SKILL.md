@@ -316,7 +316,11 @@ need. A half-finished task the user can complete beats a rule quietly broken.
 - Content missing entirely -> it may be in a cross-origin iframe. Those appear
   as their own labelled section in `chrome_read_page`; read the whole output.
 - Something is silently failing -> `chrome_console` and `chrome_network` show
-  what the page is doing. Neither can see a dialog: a wedged tab produces no
+  what the page is doing, cross-origin iframes included (entries from a
+  frame carry `frame: "<origin>"`). Console entries marked `browser: true`
+  are Chrome itself naming a refusal (X-Frame-Options, CSP, mixed content,
+  CORS): when a click lands but nothing happens, that entry is usually the
+  answer. Neither tool can see a dialog: a wedged tab produces no
   console output and no requests, so read "When a tab stops responding to
   you" before spending calls there.
 
