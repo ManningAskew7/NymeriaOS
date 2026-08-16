@@ -35,6 +35,7 @@ from nymeria.tools.chrome_browser import (
     chrome_navigate,
     chrome_read_page,
     chrome_read_text,
+    chrome_reload_extension,
     chrome_screenshot,
     chrome_tabs,
 )
@@ -137,7 +138,7 @@ def _ok(data: dict) -> dict:
 # ---------- surface shape ----------
 
 
-def test_surface_is_twelve_tools_and_the_kit_binds_all_of_them() -> None:
+def test_surface_is_thirteen_tools_and_the_kit_binds_all_of_them() -> None:
     names = {t.name for t in CHROME_BROWSER_TOOLS}
     assert names == {
         "chrome_tabs",
@@ -152,11 +153,13 @@ def test_surface_is_twelve_tools_and_the_kit_binds_all_of_them() -> None:
         "chrome_network",
         "chrome_dialog",
         "chrome_cdp",
+        "chrome_reload_extension",
     }
-    # #167 put the whole working surface in the kit; #169 completed it:
-    # chrome_dialog joined once Page ownership made it a working tool.
+    # #167 put the whole working surface in the kit; #169 completed it
+    # (chrome_dialog joined once Page ownership made it a working tool);
+    # chrome_reload_extension joined 2026-08-16 (remote dev-loop refresh).
     assert set(CHROME_KIT_TOOL_NAMES) == names
-    assert len(CHROME_KIT_TOOL_NAMES) == 12
+    assert len(CHROME_KIT_TOOL_NAMES) == 13
 
 
 def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
@@ -654,6 +657,28 @@ def test_navigate_publishes_event_with_expected_shape() -> None:
     assert cmd_event.data["args"]["tab_id"] == 42
     assert "command_id" in cmd_event.data
     assert "timeout_seconds" in cmd_event.data
+
+
+def test_reload_extension_publishes_the_command_and_reports_the_payload() -> None:
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe("test-subscriber")
+
+    out = _invoke(
+        chrome_reload_extension,
+        {},
+        _ok({"reloading": True, "version_before": "0.3.1", "note": "reloading in ~2.5s"}),
+    )
+
+    seen = []
+    while not queue.empty():
+        seen.append(queue.get_nowait())
+    cmd_event = next(e for e in seen if e.event_type == "browser_command")
+    assert cmd_event.data["command_type"] == "reload_extension"
+    assert cmd_event.data["args"] == {}
+    payload = _unfence(out)
+    assert payload["ok"] is True
+    assert payload["data"]["version_before"] == "0.3.1"
 
 
 @pytest.mark.parametrize("direction", ["back", "forward", "BACK"])

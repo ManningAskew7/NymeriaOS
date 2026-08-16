@@ -19,8 +19,10 @@ or both:
 
 Surface shape: each tool carries the schema weight its scoped purpose needs,
 no more and no less, and the ``browser-control`` kit binds the whole working
-surface (``CHROME_KIT_TOOL_NAMES``), all twelve tools, diagnostics included
-(``chrome_dialog`` joined in the #169 pass, which made it a working tool).
+surface (``CHROME_KIT_TOOL_NAMES``), all thirteen tools, diagnostics included
+(``chrome_dialog`` joined in the #169 pass, which made it a working tool;
+``chrome_reload_extension`` joined 2026-08-16 as the dev loop's remote
+refresh).
 One deliberate exception in kind: ``chrome_cdp`` is bound but LAST RESORT,
 with the credential-grade and wedge-grade methods refused by
 ``_cdp_refusal``. The wire underneath is unchanged, one command per round
@@ -90,6 +92,9 @@ _TIMEOUTS: dict[str, int] = {
     "console": 5,
     "network": 5,
     "dialog": 5,
+    # The extension acks in ~1s and reloads itself ~2.5s later; the budget
+    # only needs to cover the ack.
+    "reload_extension": 10,
     "cdp": 60,
 }
 assert max(_TIMEOUTS.values()) <= _MAX_TIMEOUT_S, "a command may not outlive the orphan sweep"
@@ -1591,6 +1596,31 @@ async def chrome_cdp(
     )
 
 
+@tool
+async def chrome_reload_extension(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Reload the Nymeria browser extension from disk (dev-loop helper).
+
+    After the extension's code on disk has been updated (git pull plus
+    rebuild), Chrome only picks the new code up when the extension is
+    reloaded; this does that remotely, replacing the manual refresh click at
+    chrome://extensions. Use it when asked to reload the extension, or when
+    a just-deployed extension change needs to go live before testing it.
+
+    The extension acks first and reloads itself about 2.5 seconds later, so
+    the result reports the version that WAS running, not the new one. The
+    reload drops the extension's connection for a few seconds (it
+    re-establishes itself), releases every driven tab (the debugger banner
+    clears, held dialogs are dropped), and loses any in-flight commands:
+    run it alone, never inside chrome_batch, and wait about 10 seconds
+    before the next chrome_* call. If the code on disk does not load,
+    the extension stays down until the user reloads it by hand at
+    chrome://extensions, so only use it on a build known to be good.
+    """
+    return await _dispatch(command_type="reload_extension", args={}, config=config)
+
+
 CHROME_BROWSER_TOOLS = [
     chrome_tabs,
     chrome_navigate,
@@ -1604,13 +1634,16 @@ CHROME_BROWSER_TOOLS = [
     chrome_network,
     chrome_dialog,
     chrome_cdp,
+    chrome_reload_extension,
 ]
 
 #: What the browser-control kit binds: the whole working surface, all
-#: twelve tools, diagnostics and the escape hatch included (the scoped-tools
-#: principle: a kit carries the tools its domain needs). ``chrome_dialog``
-#: joined in the #169 pass, which made it a working tool (Page ownership:
-#: dialogs raised while driving are held and answerable).
+#: thirteen tools, diagnostics and the escape hatch included (the
+#: scoped-tools principle: a kit carries the tools its domain needs).
+#: ``chrome_dialog`` joined in the #169 pass, which made it a working tool
+#: (Page ownership: dialogs raised while driving are held and answerable);
+#: ``chrome_reload_extension`` joined 2026-08-16 (the dev loop's remote
+#: refresh).
 CHROME_KIT_TOOL_NAMES = (
     "chrome_tabs",
     "chrome_navigate",
@@ -1624,6 +1657,7 @@ CHROME_KIT_TOOL_NAMES = (
     "chrome_network",
     "chrome_dialog",
     "chrome_cdp",
+    "chrome_reload_extension",
 )
 
 
@@ -1643,6 +1677,7 @@ __all__ = [
     "chrome_network",
     "chrome_dialog",
     "chrome_cdp",
+    "chrome_reload_extension",
 ]
 
 
