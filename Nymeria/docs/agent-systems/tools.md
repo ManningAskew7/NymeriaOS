@@ -2565,11 +2565,18 @@ family adds `default_prevented`, `click_target` (tag plus enclosing link URL)
 and the frame's `user_activation` state; `fill` verifies through its trusted
 `input` event. A post-dispatch peek usually preserves the counts when the
 click navigates the document away (best effort: an instantly-committing
-navigation can still beat it). Console/network capture covers the top
-document only; a cross-origin frame's activity is invisible to both tools
-(#177). Console and network capture
-run over CDP (no host permission needed) and start at debugger attach, so the
-first question about them has a real answer. `failed_requests` entries carry
+navigation can still beat it). Console and network capture run over CDP (no
+host permission needed), start at debugger attach, and cover cross-origin
+frames too (#177): frame entries carry `frame: "<origin>"`, root entries
+none, and the browser's own policy refusals (X-Frame-Options, CSP, mixed
+content, CORS) land in the console buffer marked `browser: true`, so a
+silently blocked in-frame action names its blocker in the act payload
+itself. Replayed enable backlogs are deduplicated, and a console read that
+cold-attaches the tab waits a beat for the backlog, so the first question
+about capture has a real answer. The one honest gap: a frame's load-time
+requests often precede capture reaching it and are absent from
+`chrome_network` (its failures still surface as `browser: true` console
+advisories). `failed_requests` entries carry
 `same_origin` and the capped list ranks data-class failures ahead of
 telemetry-shaped ones (Ping/Image/Media/Font), so a broken first-party POST
 is never crowded out by analytics beacons.
