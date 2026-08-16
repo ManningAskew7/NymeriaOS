@@ -48,10 +48,17 @@ _PNG_1PX = base64.b64decode(
 
 @pytest.fixture(autouse=True)
 def isolate_state(monkeypatch):
-    """Fresh coordinator + clean chrome-subscriber set between tests."""
+    """Fresh coordinator + clean chrome-subscriber set between tests.
+
+    Also ages ``_PROCESS_START`` into the past: the test process is always
+    seconds old, and without this every never-connected test would fall
+    into the young-process boot hold (#176) instead of the instant error.
+    The boot-hold tests set their own recent stamp.
+    """
     import nymeria.core.browser_command_coordinator as coord_mod
 
     monkeypatch.setattr(coord_mod, "_coordinator", None)
+    monkeypatch.setattr(chrome_browser_module, "_PROCESS_START", time.monotonic() - 10_000)
     set_event_bus(EventBus())
     chrome_subscribers.reset_for_tests()
     yield
@@ -538,6 +545,61 @@ def test_disconnect_is_stamped_only_when_the_last_stream_drops() -> None:
     assert chrome_subscribers.chrome_disconnect_age("u1") is None
 
 
+def test_young_process_holds_a_dispatch_for_the_reconnecting_extension(monkeypatch) -> None:
+    """A backend restart wipes the in-process registry, so the first dispatch
+    after a deploy bounce used to hard-fail with "click Connect" while the
+    extension's self-reconnect was already in flight (measured 2026-08-16,
+    #176). Within the first grace-window of process life the dispatch holds
+    and succeeds once the subscriber lands."""
+    _shrink_grace(monkeypatch, grace=5.0)
+    monkeypatch.setattr(chrome_browser_module, "_PROCESS_START", time.monotonic())
+
+    async def run() -> tuple[str, float]:
+        async def reconnect_later() -> None:
+            await asyncio.sleep(0.3)
+            _connect()
+
+        started = time.monotonic()
+        reconnector = asyncio.create_task(reconnect_later())
+        resolver = asyncio.create_task(
+            _resolve_next(_ok({"url": "https://example.com/", "complete": True}))
+        )
+        out = await chrome_navigate.ainvoke(
+            {"tab_id": 1, "url": "https://example.com"}, config=_config()
+        )
+        await reconnector
+        await resolver
+        return out, time.monotonic() - started
+
+    out, elapsed = asyncio.run(run())
+    assert "untrusted_page_content" in out
+    assert "[Error]" not in out
+    assert elapsed >= 0.3, "the dispatch must have actually waited for the reconnect"
+
+
+def test_young_process_expiry_blames_the_restart_not_the_extension(monkeypatch) -> None:
+    """Nobody reconnects inside the boot hold: the error names the backend
+    restart it anchored on, not a drop nobody measured and not the bare
+    first-run copy."""
+    _shrink_grace(monkeypatch, grace=0.6)
+    monkeypatch.setattr(chrome_browser_module, "_PROCESS_START", time.monotonic())
+
+    async def run() -> tuple[str, float]:
+        started = time.monotonic()
+        out = await chrome_navigate.ainvoke(
+            {"tab_id": 1, "url": "https://example.com"}, config=_config()
+        )
+        return out, time.monotonic() - started
+
+    out, elapsed = asyncio.run(run())
+    assert "[Error]" in out
+    assert "backend restarted" in out
+    assert "service-worker recycle" not in out
+    assert "No Nymeria browser extension connected" not in out
+    assert elapsed >= 0.4, "the boot grace must be a real wait, not an instant fail"
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
 def _unfence(raw: str) -> dict:
     """Parse the JSON payload out of a fenced dispatch result."""
     assert "<untrusted_page_content>" in raw, "dispatch results must be fenced"
@@ -659,10 +721,17 @@ def test_navigate_publishes_event_with_expected_shape() -> None:
     assert "timeout_seconds" in cmd_event.data
 
 
-def test_reload_extension_publishes_the_command_and_reports_the_payload() -> None:
+def _shrink_reload_wait(monkeypatch, wait: float = 0.2, poll: float = 0.05) -> None:
+    monkeypatch.setattr(chrome_browser_module, "_RELOAD_RECONNECT_S", wait)
+    monkeypatch.setattr(chrome_browser_module, "_RECONNECT_POLL_S", poll)
+
+
+def test_reload_extension_publishes_the_command_and_reports_the_payload(monkeypatch) -> None:
+    _shrink_reload_wait(monkeypatch)
     bus = EventBus()
     set_event_bus(bus)
     queue = bus.subscribe("test-subscriber")
+    _connect()
 
     out = _invoke(
         chrome_reload_extension,
@@ -679,6 +748,78 @@ def test_reload_extension_publishes_the_command_and_reports_the_payload() -> Non
     payload = _unfence(out)
     assert payload["ok"] is True
     assert payload["data"]["version_before"] == "0.3.1"
+
+
+def test_reload_reports_the_version_that_reconnected(monkeypatch) -> None:
+    """#176 rider: the deploy loop's open question was "did the new build
+    actually load". A NEW subscriber landing after the ack answers it, and
+    the announced version rides on the result."""
+    _shrink_reload_wait(monkeypatch, wait=5.0)
+    _connect()
+
+    async def run() -> str:
+        async def resubscribe_later() -> None:
+            await asyncio.sleep(0.2)
+            chrome_subscribers.add_chrome_subscriber(
+                user_id="u1", subscriber_id="nymeria-browser-new", version="9.9.9"
+            )
+
+        resub = asyncio.create_task(resubscribe_later())
+        resolver = asyncio.create_task(
+            _resolve_next(_ok({"reloading": True, "version_before": "0.3.1"}))
+        )
+        out = await chrome_reload_extension.ainvoke({}, config=_config())
+        await resub
+        await resolver
+        return out
+
+    started = time.monotonic()
+    out = asyncio.run(run())
+    elapsed = time.monotonic() - started
+    assert "version_after: 9.9.9" in out
+    assert "safe now" in out
+    assert "has NOT reconnected" not in out
+    assert elapsed < 3.0, "the wait must end at the resubscribe, not run the full window"
+
+
+def test_reload_does_not_read_the_old_stream_as_the_new_build(monkeypatch) -> None:
+    """The pre-reload stream survives the ack window, so mere connectedness
+    proves nothing: without a NEW subscriber the result must say the
+    extension did not come back, even while the old stream sits there."""
+    _shrink_reload_wait(monkeypatch, wait=0.3)
+    _connect()
+
+    out = _invoke(
+        chrome_reload_extension,
+        {},
+        _ok({"reloading": True, "version_before": "0.3.1"}),
+    )
+
+    assert chrome_subscribers.is_chrome_connected("u1"), "precondition: old stream still up"
+    assert "has NOT reconnected" in out
+    assert "chrome://extensions" in out
+    assert "version_after" not in out
+
+
+def test_subscriber_registry_tracks_version_and_connect_count() -> None:
+    assert chrome_subscribers.chrome_extension_version("u1") is None
+    assert chrome_subscribers.chrome_connect_count("u1") == 0
+
+    chrome_subscribers.add_chrome_subscriber(
+        user_id="u1", subscriber_id="nymeria-browser-a", version="0.2.0"
+    )
+    assert chrome_subscribers.chrome_extension_version("u1") == "0.2.0"
+    assert chrome_subscribers.chrome_connect_count("u1") == 1
+
+    # A version-less connect (an older build) keeps the last announcement;
+    # a new announcement overwrites it. Every connect counts.
+    chrome_subscribers.add_chrome_subscriber(user_id="u1", subscriber_id="nymeria-browser-b")
+    assert chrome_subscribers.chrome_extension_version("u1") == "0.2.0"
+    chrome_subscribers.add_chrome_subscriber(
+        user_id="u1", subscriber_id="nymeria-browser-c", version="0.2.1"
+    )
+    assert chrome_subscribers.chrome_extension_version("u1") == "0.2.1"
+    assert chrome_subscribers.chrome_connect_count("u1") == 3
 
 
 @pytest.mark.parametrize("direction", ["back", "forward", "BACK"])

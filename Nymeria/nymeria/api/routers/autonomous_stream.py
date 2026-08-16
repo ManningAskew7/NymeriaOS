@@ -276,6 +276,14 @@ def create_autonomous_stream_router(
             default=None,
             description="Client ID for origin filtering (prevents seeing own sync events)",
         ),
+        client_version: Optional[str] = Query(
+            default=None,
+            description=(
+                "The subscribing client's build version (the browser extension "
+                "announces its manifest version so chrome_reload_extension can "
+                "report which build reconnected)"
+            ),
+        ),
         authorization: Optional[str] = Header(None),
         x_nymeria_act_as: Optional[str] = Header(None),
         _settings: Settings = Depends(get_settings_fn),
@@ -310,7 +318,11 @@ def create_autonomous_stream_router(
         event_bus = get_event_bus()
         queue = event_bus.subscribe(subscriber_id)
         if is_chrome_client_id(client_id) and not firehose:
-            add_chrome_subscriber(user_id=stream_user_id, subscriber_id=subscriber_id)
+            add_chrome_subscriber(
+                user_id=stream_user_id,
+                subscriber_id=subscriber_id,
+                version=client_version,
+            )
         logger.info(
             "[AUTONOMOUS SSE] subscriber_connect subscriber=%s user=%s firehose=%s "
             "client_id=%s local_subscribers=%d chrome=%s",
