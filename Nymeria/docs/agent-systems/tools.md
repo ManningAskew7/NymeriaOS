@@ -2555,6 +2555,26 @@ the frame's own refs. Where a
 trusted path is impossible (native `<select>` popups, file uploads, elements
 with no layout box) the result reports `input: "synthetic"` and why.
 
+**Actionability (act-time):** the connectedness probe every `@ref` act
+already spent now answers five more questions from the SAME call, so a
+control the browser will not act on is named instead of misdiagnosed. A
+`:disabled` target refuses the verbs that enter input or activate it
+(`refused: "disabled"`); a read-only text field refuses fill/type
+(`refused: "readonly"`, decided after the focus, because the commonest
+read-only field unlocks in its own focus handler); a target whose computed
+`pointer-events` is `none` refuses naming that (`refused:
+"pointer_events_none"`) rather than blaming the element behind it, and hands
+back the coordinate, since that element is often the target's own label
+where a deliberate click still works. All three refuse BEFORE dispatch with
+`input: "none"`, and each renders one sentence outside the untrusted fence
+from a whitelist. An invisible target is ANNOTATED, never refused
+(`target_invisible: true` plus a caution note): a transparent element that
+still wins the hit test is usually the deliberate target, which is how
+custom pickers and checkboxes are built. Every gate refuses on an explicit
+answer only, so an unanswerable probe proceeds. Because the facts ride the
+ref-resolution call, they cover `@eN` refs; a `css=`/`xpath=` target is not
+probed and behaves as before.
+
 **Verification:** every `chrome_act` returns a verification payload, not an
 acknowledgement: the URL and whether it changed, whether the target survived,
 what has focus, the field's previous value, console errors and failed requests
