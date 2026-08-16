@@ -2611,16 +2611,27 @@ reusing the node) refuses with was/now copy instead of firing. Names compare
 digit-insensitively, so a counter or price ticking ("Cart (3)" to "Cart
 (4)") does not refuse; `upload` is exempt (AX-hidden inputs are its everyday
 target), and a label that genuinely rewords itself continuously is reachable
-via `css=`. Cross-origin iframes are read through
-flattened auto-attach sessions and appear as labelled sections; their refs
-are frame-scoped because `backendNodeId` is a process-global counter that
-collides across frames. Frame refs key on the frame's STABLE target id, not
-the ephemeral session: the debugger's 10s idle detach kills every frame
+via `css=`. Iframes of BOTH classes are read: cross-origin iframes through
+flattened auto-attach sessions, same-origin/same-process iframes through a
+per-session `Page.getFrameTree` walk read per `frameId` (document order,
+capped at 8 per document with an honest tail note), each as a labelled
+section; their refs are frame-scoped because `backendNodeId` is a
+process-global counter that collides across frames. Frame refs key on the
+frame's STABLE frame token (target id == `Page.FrameId`, one token space),
+not the ephemeral session: the debugger's 10s idle detach kills every frame
 session between an agent's commands, so session-keyed refs died mid-task
-(measured live 2026-08-16), while target-id refs survive and are resolved to
-the live session at act time. A frame that truly left the page refuses as
-`frame-gone` with re-read copy, and a scoped re-read of a frame ref reads
-that frame's own tree.
+(measured live 2026-08-16), while token refs survive and are resolved at act
+time (`locateFrame`) to a live session, or for a same-process frame to the
+shared session plus a per-frame isolated world; input then dispatches at
+browser-read page-space quads with a dispatch-space occlusion gate (a parent
+overlay over the frame refuses by name instead of clicking it). A frame that
+truly left the page refuses as `frame-gone` with re-read copy, and a scoped
+re-read of a frame ref reads that frame's own tree. Reads also carry honesty
+notes rendered outside the fence from booleans and whitelisted counts only:
+a `[View constraint]` line when a visible modal dialog, aria-modal dialog,
+or fullscreen element prunes the AX tree (a sparse read means blocked, not
+empty), a `[Frames: ...]` coverage line that hedges when the character cap
+cut the tail, and a hidden-nodes count (aria-hidden, inert, modal pruning).
 
 **Untrusted content:** every result derived from a page is returned inside an
 `<untrusted_page_content>` fence, with the closing marker neutralized in the

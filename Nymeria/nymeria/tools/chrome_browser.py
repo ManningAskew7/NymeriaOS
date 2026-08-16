@@ -257,7 +257,7 @@ def _cap(
     return shown, note
 
 
-def _outside_fence(scan: str, *, note: str = "", failure: str = "") -> str:
+def _outside_fence(scan: str, *, note: str = "", failure: str = "", extra: str = "") -> str:
     """Everything that follows the fence, and nothing the page wrote.
 
     The failure line, the injection heads-up and the truncation pointer are
@@ -269,7 +269,7 @@ def _outside_fence(scan: str, *, note: str = "", failure: str = "") -> str:
     ``scan`` is the FULL page text where one is available, not the capped
     slice, so an injection sitting past the cut still raises the flag.
     """
-    parts = [p for p in (failure, _injection_note(scan), note) if p]
+    parts = [p for p in (failure, _injection_note(scan), note, extra) if p]
     return ("\n" + "\n".join(parts)) if parts else ""
 
 
@@ -527,6 +527,126 @@ def _loading_sentence(data: dict[str, Any]) -> str:
     return "captured while the page was still loading; if it looks incomplete, re-read in a moment"
 
 
+def _view_state_sentence(data: dict[str, Any]) -> str:
+    """The view-constraint note for a read taken behind a modal context.
+
+    The extension's probe reports BOOLEANS only (nothing page-controlled),
+    which is what allows this line to sit OUTSIDE the untrusted fence. It
+    exists because Blink prunes the AX tree to the modal subtree with
+    everything else silently gone, so without the note a read behind a
+    cookie wall looks like an almost-empty page rather than a blocked one.
+    """
+    vs = data.get("view_state")
+    if not isinstance(vs, dict):
+        return ""
+    causes = []
+    if vs.get("modal_dialog"):
+        causes.append("an open modal dialog")
+    if vs.get("aria_modal"):
+        causes.append("an aria-modal widget")
+    if vs.get("fullscreen"):
+        causes.append("a fullscreen element")
+    if not causes:
+        return ""
+    return (
+        f"[View constraint: {' and '.join(causes)} is limiting this read. Content "
+        "outside it is OMITTED from the accessibility tree, so a sparse tree here "
+        "means blocked, not empty: what you see above is the modal layer. Interact "
+        "with or dismiss it to read the rest of the page.]"
+    )
+
+
+def _frames_sentence(data: dict[str, Any], *, truncated: bool = False) -> str:
+    """Name the frame coverage of a read, and any frames left unread.
+
+    The counts are the extension's RENDERED-section counts (frames read,
+    never frames merely discovered), so the sentence is a claim about what
+    the tree above actually contains. Except when the character cap cut the
+    text: frame sections render last and are what a cap eats first, so a
+    truncated read hedges instead of asserting presence (review round: the
+    unhedged sentence turned a silent amputation into a false claim).
+    """
+    oopif = data.get("frames_oopif")
+    same_process = data.get("frames_same_process")
+    parts = []
+    if isinstance(oopif, int) and oopif > 0:
+        parts.append(f"{oopif} cross-origin")
+    if isinstance(same_process, int) and same_process > 0:
+        parts.append(f"{same_process} same-process")
+    if not parts:
+        return ""
+    line = (
+        f"[Frames: {', '.join(parts)} iframe(s) read, each as its own "
+        '"- iframe" section with actable refs'
+    )
+    skipped = data.get("frames_skipped")
+    if isinstance(skipped, int) and skipped > 0:
+        line += f"; {skipped} more frame(s) were NOT read (frame cap)"
+    if truncated:
+        line += (
+            "; NOTE this read was cut at the character cap and frame sections "
+            "render last, so some or all of them may be missing above (raise "
+            "max_chars or follow the truncation pointer to see them)"
+        )
+    return line + ".]"
+
+
+# The Blink ignored-reasons this note may name. A whitelist because the
+# sentence renders OUTSIDE the untrusted fence: interpolating unvalidated
+# payload keys there would let anything that can shape the payload write in
+# the one region the page must never reach (review round). Mirrors the
+# extension's HIDING_REASONS; an unknown key is dropped silently.
+_HIDDEN_REASONS = frozenset(
+    {
+        "ariaHiddenElement",
+        "ariaHiddenSubtree",
+        "notVisible",
+        "notRendered",
+        "activeModalDialog",
+        "activeAriaModalDialog",
+        "activeFullscreenElement",
+        "inertElement",
+        "inertSubtree",
+    }
+)
+
+
+def _hidden_sentence(data: dict[str, Any]) -> str:
+    """Own up to content-hiding drops (aria-hidden, inert, modal pruning)."""
+    hidden = data.get("hidden_dropped")
+    if not isinstance(hidden, dict) or not hidden:
+        return ""
+    items = sorted(
+        (k, v)
+        for k, v in hidden.items()
+        if k in _HIDDEN_REASONS and isinstance(v, int) and not isinstance(v, bool) and v > 0
+    )
+    if not items:
+        return ""
+    counts = ", ".join(f"{k}: {v}" for k, v in items)
+    total = sum(v for _, v in items)
+    return (
+        f"[{total} node(s) the page hides were dropped from this tree ({counts}); "
+        "each may root a larger hidden subtree.]"
+    )
+
+
+def _read_honesty_lines(data: dict[str, Any], *, truncated: bool = False) -> str:
+    """The read-honesty block, most load-bearing first. All OUR text composed
+    from booleans and whitelisted counts, never page text; emitted through
+    `_outside_fence` so every fence keeps its one post-fence composer."""
+    parts = [
+        p
+        for p in (
+            _view_state_sentence(data),
+            _frames_sentence(data, truncated=truncated),
+            _hidden_sentence(data),
+        )
+        if p
+    ]
+    return "\n".join(parts)
+
+
 def _failed(payload: dict[str, Any]) -> Optional[str]:
     """Error string when the extension reported failure, else None."""
     if payload.get("ok"):
@@ -669,6 +789,23 @@ async def chrome_read_page(
     max_chars: model-facing cap. Oversized trees are truncated with a pointer
         to the full copy on disk.
 
+    Iframes are included, not blind spots: cross-origin and same-origin
+    frames alike each render as their own ``- iframe "<url>"`` section with
+    actable refs, nested frames included, and a trailing [Frames: ...] note
+    counts what was covered (a frame-farm page reads the first 8 per document
+    and says how many were skipped). A scoped read stays in its scope, so an
+    iframe element's own subtree is empty there; read the full page for the
+    frame's section.
+
+    Two honesty notes can follow the tree, both read through the browser's
+    isolated inspection context, so a page cannot suppress them or write
+    them: a [View constraint] note means a modal dialog, aria-modal widget,
+    or fullscreen element is up and content OUTSIDE it is omitted, so a
+    sparse tree means blocked, not empty (the aria-modal signal is page
+    markup, but only a visible dialog-role element counts); a hidden-nodes
+    note counts content the page hides (aria-hidden, inert) that was
+    dropped from the tree.
+
     A payload carrying "page_loading": true was captured while the tab was
     still loading: the tree is whatever had committed at that instant. If it
     looks sparse, re-read after a moment rather than concluding the page is
@@ -700,7 +837,8 @@ async def chrome_read_page(
     header = f"{data.get('ref_count', 0)} actionable elements, detail={data.get('detail', detail)}"
     if _loading_sentence(data):
         header += f" ({_loading_sentence(data)})"
-    return f"{header}\n{_fence(capped, url=url)}{_outside_fence(tree, note=note)}"
+    honesty = _read_honesty_lines(data, truncated=bool(note))
+    return f"{header}\n{_fence(capped, url=url)}{_outside_fence(tree, note=note, extra=honesty)}"
 
 
 @tool
@@ -788,7 +926,9 @@ async def chrome_find(
     Returns matching ``@eN`` refs with their role and name, best first, ready
     to hand to chrome_act. Matching is semantic, so it finds an element by what
     it DOES even when the wording differs, and it reaches elements a screenshot
-    cannot, including ones scrolled far off the visible viewport.
+    cannot, including ones scrolled far off the visible viewport and elements
+    inside iframes (cross-origin and same-origin alike: the searched tree
+    includes every frame's section).
 
     It searches the accessibility tree, so it sees what a screen reader sees.
     An element the page hides outright (``display:none``, ``hidden``) is not in
@@ -831,14 +971,21 @@ async def chrome_find(
     real = set(re.findall(r"\[ref=(@e\d+)\]", tree))
     kept = [ln for ln in lines if ln.split("|")[0].strip() in real]
     loading = _loading_sentence(_data(payload))
+    # A modal context explains BOTH outcomes: a no-match because the element
+    # is pruned out behind the modal, and a match set that is only the modal.
+    view_note = _view_state_sentence(_data(payload))
+    view_suffix = f"\n{view_note}" if view_note else ""
     if not kept:
         hint = f" ({loading})" if loading else ""
-        return f'[Note]: No elements matching "{query}" on this page. (searched by {model}){hint}'
+        return (
+            f'[Note]: No elements matching "{query}" on this page. '
+            f"(searched by {model}){hint}{view_suffix}"
+        )
     listed = "\n".join(kept[:20])
     # A match against a half-built tree is the more dangerous half: the refs
     # were minted mid-load and can go stale the moment the load finishes.
     warn = f"\n[Note]: {loading.capitalize()}; these refs may be incomplete or short-lived." if loading else ""
-    return f'Matches for "{query}":\n{listed}\n[Found by {model}]{warn}'
+    return f'Matches for "{query}":\n{listed}\n[Found by {model}]{warn}{view_suffix}'
 
 
 # An act's wait spends its timeout plus ~15s of pre-flight and settle
@@ -973,17 +1120,21 @@ async def chrome_act(
     that your input missed. A fill reports "input_delivered" through its
     trusted input event the same way.
 
-    Frames are full targets, not blind spots. A ref inside a cross-origin
-    iframe gets its input dispatched inside that frame and its delivery
-    verified there, so an in-frame silent no-op FAILS like anything else, and
-    the ref stays valid while the frame lives; if the frame navigated away or
-    was removed, the act refuses and says to re-read. Ref-less type/key follow
-    the focused element into a frame and verify there too. Two deliberate
-    refusals: a coordinate click/hover/drag landing on a cross-origin iframe
-    is refused up front (page coordinates cannot reach into another origin's
-    frame; act on that frame's own refs from the page read instead), and so is
-    a drag whose two ends do not sit in the same frame, root to frame
-    included.
+    Frames are full targets, not blind spots. A ref inside an iframe, whether
+    cross-origin or same-origin, gets its input dispatched into that frame
+    and its delivery verified there, so an in-frame silent no-op FAILS like
+    anything else, and the ref stays valid while the frame lives; if the
+    frame navigated away or was removed, the act refuses and says to
+    re-read. Ref-less type/key follow the focused element into a
+    cross-origin frame and verify there; focused inside a SAME-ORIGIN frame
+    they deliver correctly but verification reads "unknown" (the probe
+    watches the top document). Two deliberate refusals: a coordinate click/hover/drag
+    landing on a CROSS-ORIGIN iframe is refused up front (page coordinates
+    cannot reach into another origin's frame; act on that frame's own refs
+    from the page read instead; same-origin frames accept coordinates
+    normally), and so is a drag whose two ends do not sit in the same frame,
+    root to frame included. One limit: css=/xpath= targets resolve in the
+    ROOT document only; inside any frame, use the frame section's @refs.
 
     Page dialogs your own action raises are OWNED while you drive
     (alert/confirm/prompt/"Leave site?"). An alert is acknowledged

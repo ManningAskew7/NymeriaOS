@@ -81,8 +81,9 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
 
 - `input_delivered: "no"` -> the page received NOTHING. The call fails when this
   happens; see "When a tab stops responding to you" below. This is checked
-  inside cross-origin iframes too: an act on a frame's ref verifies delivery in
-  that frame, and `fill` verifies through its trusted `input` event. `"unknown"`
+  inside iframes too, cross-origin and same-origin alike: an act on a frame's
+  ref verifies delivery in that frame, and `fill` verifies through its trusted
+  `input` event. `"unknown"`
   just means it could not be checked (`input_delivered_reason` says why), which
   is not a problem on its own.
 - `input_events` -> trusted counts by type; on clicks, `default_prevented`,
@@ -103,7 +104,8 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   checkouts) is REFUSED before anything is sent: page coordinates cannot
   reach inside another origin's frame. The refusal names the fix: read the
   page and act on the refs in that frame's own labelled section, which
-  dispatch inside the frame and verify delivery there.
+  dispatch inside the frame and verify delivery there. (Same-origin iframes
+  accept coordinates normally, and their refs work like any other.)
 - `console_errors` / `failed_requests` -> the click "worked" and the site broke.
   A 500 here means the thing you tried did NOT happen, whatever the page shows.
 - `previous_value` -> confirms you edited the field you meant to.
@@ -313,8 +315,13 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   target's own widget wants that coordinate clicked.
 - Page looks right but nothing happens -> `chrome_screenshot` to see it as the
   user does. Canvas, custom widgets and CAPTCHAs are invisible to the tree.
-- Content missing entirely -> it may be in a cross-origin iframe. Those appear
-  as their own labelled section in `chrome_read_page`; read the whole output.
+- Content missing entirely -> check for a `[View constraint]` note after the
+  tree first: a modal dialog or fullscreen element prunes everything else
+  from the read, so a near-empty tree means BLOCKED, not empty. Iframe
+  content (cross-origin and same-origin) appears as its own labelled
+  `- iframe` section; read the whole output, and mind the `[Frames: ...]`
+  and hidden-nodes notes, which say what was covered and what the page
+  hides.
 - Something is silently failing -> `chrome_console` and `chrome_network` show
   what the page is doing, cross-origin iframes included (entries from a
   frame carry `frame: "<origin>"`). Console entries marked `browser: true`
