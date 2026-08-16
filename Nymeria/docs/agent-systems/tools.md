@@ -2504,7 +2504,7 @@ surface, diagnostics and the escape hatch included):
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
-| `chrome_tabs` | `(action="list", tab_id?, url?)` | List/create/switch/close/reload tabs. Start here for a `tab_id`. Create and reload wait for the load and carry `http_status` under chrome_navigate's rules. |
+| `chrome_tabs` | `(action="list", tab_id?, url?)` | List/create/switch/close/reload tabs. Start here for a `tab_id`. Create and reload wait for the load and carry `http_status` under chrome_navigate's rules. Created tabs open in a non-focused, non-minimized window when one exists: the user keeps their view and the driven tab keeps compositing. |
 | `chrome_navigate` | `(tab_id, url)` | Go to a URL, or `"back"`/`"forward"`. Waits for load; returns the FINAL url and title, plus `http_status` (the page's HTTP code, #175) when the extension's page-status grant lets it be seen: absent means unknown, never OK; 401/407 add `http_status_hint` saying input is suppressed. |
 | `chrome_read_page` | `(tab_id, detail="interactive", ref?, max_chars?)` | Accessibility tree with `[ref=@eN]` tags. `ref` re-roots at one element. |
 | `chrome_read_text` | `(tab_id, selector?, max_chars?, extraction_prompt?)` | Visible text. With `extraction_prompt`, a secondary model returns only what was asked and the raw page never enters context. |
@@ -2544,7 +2544,14 @@ events, not page-synthesized ones, because sites that matter (payment, anti-bot)
 ignore `isTrusted: false`. Before clicking or toggling, the extension hit-tests
 the point and REFUSES if an overlay covers the target, naming the blocker;
 those probes run in an isolated world the page cannot patch (next section).
-Where a
+Input targeting a cross-origin iframe dispatches on that FRAME's own CDP
+session with frame-local coordinates, and the delivery probe arms there too,
+so an in-frame silent no-op fails honestly instead of reporting a trusted
+success into the void (ref-less type/key follow focus into the frame the same
+way). Coordinate acts whose point lands on a cross-origin iframe's owner
+element refuse up front, as do drags between two frames: page coordinates
+cannot be composed into another process's frame, and the refusal points at
+the frame's own refs. Where a
 trusted path is impossible (native `<select>` popups, file uploads, elements
 with no layout box) the result reports `input: "synthetic"` and why.
 
@@ -2591,8 +2598,13 @@ target), and a label that genuinely rewords itself continuously is reachable
 via `css=`. Cross-origin iframes are read through
 flattened auto-attach sessions and appear as labelled sections; their refs
 are frame-scoped because `backendNodeId` is a process-global counter that
-collides across frames, and a frame session detaching (an OOPIF navigating
-cross-process) drops just that frame's refs and cached world.
+collides across frames. Frame refs key on the frame's STABLE target id, not
+the ephemeral session: the debugger's 10s idle detach kills every frame
+session between an agent's commands, so session-keyed refs died mid-task
+(measured live 2026-08-16), while target-id refs survive and are resolved to
+the live session at act time. A frame that truly left the page refuses as
+`frame-gone` with re-read copy, and a scoped re-read of a frame ref reads
+that frame's own tree.
 
 **Untrusted content:** every result derived from a page is returned inside an
 `<untrusted_page_content>` fence, with the closing marker neutralized in the

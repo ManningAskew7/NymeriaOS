@@ -80,18 +80,22 @@ It is also why the rules below are not optional.
 Every `chrome_act` tells you what actually happened. Look at it before moving on:
 
 - `input_delivered: "no"` -> the page received NOTHING. The call fails when this
-  happens; see "When a tab stops responding to you" below. `"unknown"` just means
-  it could not be checked, which is not a problem on its own.
+  happens; see "When a tab stops responding to you" below. This is checked
+  inside cross-origin iframes too: an act on a frame's ref verifies delivery in
+  that frame. `"unknown"` just means it could not be checked
+  (`input_delivered_reason` says why), which is not a problem on its own.
 - `hit` -> what was actually under the coordinate you clicked, named like
   `button "Sign in"` or `input#email` (only appears when you acted on a
   `coordinate` rather than a ref; a drag reports `hit_from`, its source). A
   bare container with no label, `body` or `div.wrapper`, means you hit page
   background: the input WAS delivered and reached nothing, so
   `input_delivered: "yes"` beside it is not success. Re-screenshot before
-  re-aiming, since whatever you took those coordinates from has moved. One
-  exception: `iframe ...` is normal and usually correct, because an embedded
-  frame (payment fields, embedded checkouts) is what sits at that point; the
-  real target is inside it.
+  re-aiming, since whatever you took those coordinates from has moved. A
+  coordinate that lands on a cross-origin iframe (payment fields, embedded
+  checkouts) is REFUSED before anything is sent: page coordinates cannot
+  reach inside another origin's frame. The refusal names the fix: read the
+  page and act on the refs in that frame's own labelled section, which
+  dispatch inside the frame and verify delivery there.
 - `console_errors` / `failed_requests` -> the click "worked" and the site broke.
   A 500 here means the thing you tried did NOT happen, whatever the page shows.
 - `previous_value` -> confirms you edited the field you meant to.
