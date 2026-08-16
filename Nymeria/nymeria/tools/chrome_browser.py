@@ -1463,6 +1463,11 @@ async def chrome_console(
     chrome_act already reports errors caused by an action, so reach for this
     when investigating something broader: what the page logged during load, or
     errors from a step you did not drive.
+
+    Blind spot: capture covers the tab's top document only. A cross-origin
+    iframe logs into its own process and browser-generated policy refusals
+    (X-Frame-Options, CSP) are not captured either, so SILENCE here is not
+    evidence that a frame did nothing (backlog #177).
     """
     return await _dispatch(
         command_type="console",
@@ -1487,6 +1492,11 @@ async def chrome_network(
     Capture runs from the moment the tab is first driven, so this is history,
     not a recording you have to start. Use it when a page looks fine but
     something did not take.
+
+    Blind spot: capture covers the tab's top document only. Requests a
+    cross-origin iframe makes (its navigations included) go through that
+    frame's own process and do not appear here, so an empty result is not
+    evidence that a frame made no requests (backlog #177).
     """
     args: dict[str, Any] = {"tab_id": tab_id, "only_failures": only_failures, "limit": limit}
     if url_pattern:
