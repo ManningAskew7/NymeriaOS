@@ -310,9 +310,15 @@ need. A half-finished task the user can complete beats a rule quietly broken.
 
 ## When the obvious approach is not working
 
-- Element there but not clickable -> something is covering it. The refusal
-  names it and includes the coordinate; a real overlay wants dismissing, the
-  target's own widget wants that coordinate clicked.
+- Element there but not clickable -> read WHICH refusal you got. Covered:
+  the refusal names the blocker and includes the coordinate, so a real
+  overlay wants dismissing while the target's own widget wants that
+  coordinate clicked. `disabled`, `readonly` and `pointer_events_none` are
+  states of the element itself: nothing was sent, and retrying the same ref
+  cannot help. Disabled and readonly need the page changed first (a
+  prerequisite field, a toggle, an edit button); pointer-events means that
+  element takes no clicks where it stands, so act on what the message says
+  the click would have hit instead.
 - Page looks right but nothing happens -> `chrome_screenshot` to see it as the
   user does. Canvas, custom widgets and CAPTCHAs are invisible to the tree.
 - Content missing entirely -> check for a `[View constraint]` note after the
