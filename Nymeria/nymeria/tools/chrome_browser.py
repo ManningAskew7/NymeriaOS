@@ -51,6 +51,7 @@ import logging
 import re
 import secrets
 import time
+from collections.abc import Callable
 from typing import Annotated, Any, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -478,6 +479,7 @@ async def _dispatch(
     args: dict[str, Any],
     config: Optional[RunnableConfig],
     timeout_override: Optional[int] = None,
+    notes: Optional[Callable[[dict[str, Any]], str]] = None,
 ) -> str:
     """``_run`` for tools that hand the payload back as JSON.
 
@@ -495,6 +497,12 @@ async def _dispatch(
     that reports ``ok: false`` gets an explicit failure line outside the fence
     (see :func:`_failure_line`) so a failed act, batch, navigate or tabs call
     cannot read as a successful one.
+
+    ``notes`` composes the per-tool honesty lines from the payload's data
+    (the act surface uses it), and rides the same one post-fence composer
+    every other emit site does, so a note can never be written where a page
+    could forge it. It must return OUR text built from whitelisted values
+    only, which is why it takes the same ``data`` dict the read notes do.
     """
     payload, error = await _run(
         command_type=command_type, args=args, config=config, timeout_override=timeout_override
@@ -505,7 +513,8 @@ async def _dispatch(
         _format_result(payload), thread_id=get_thread_id(config), prefix=f"chrome-{command_type}"
     )
     failure = "" if payload.get("ok") else _failure_line(command_type)
-    return f"{_fence(body)}{_outside_fence(body, note=note, failure=failure)}"
+    extra = notes(_data(payload)) if notes else ""
+    return f"{_fence(body)}{_outside_fence(body, note=note, failure=failure, extra=extra)}"
 
 
 def _data(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1013,6 +1022,82 @@ def _act_timeout_refusal(timeout_ms: float) -> Optional[str]:
     )
 
 
+# What the extension refused BEFORE dispatch, and the one sentence each
+# reason earns out here. A whitelist for the same reason `_HIDDEN_REASONS`
+# is one: these render OUTSIDE the untrusted fence, so the payload may pick
+# WHICH sentence appears and never what it says. An unknown token renders
+# nothing at all (the extension's own error text still explains it inside
+# the fence).
+#
+# Three of the extension's `refused` tokens, not all five: these name a
+# STATE OF THE ELEMENT the model has no other way to see, where
+# `file_input` and `cross_origin_frame_coordinate` describe the call the
+# model itself made and already arrive with copy that names the working
+# route. Add a token here when a new refusal turns on something invisible.
+_ACT_REFUSALS = {
+    "disabled": (
+        "the target is a disabled control, which the browser delivers no events "
+        "to at all, so nothing was sent and no retry will land. Something has to "
+        "enable it first"
+    ),
+    "readonly": (
+        "the target is a read-only field, so no text was sent. Read-only fields "
+        "are filled by the page itself; use the control that sets it"
+    ),
+    "pointer_events_none": (
+        "the target has CSS pointer-events: none, so it cannot receive a click "
+        "where it stands and nothing was sent. Whatever the payload names as "
+        "sitting in front of it is not necessarily an overlay to dismiss: this "
+        "element would not take the click even with the way clear"
+    ),
+}
+
+
+def _act_refusal_sentence(data: dict[str, Any]) -> str:
+    """Name a pre-dispatch refusal in OUR words, outside the fence.
+
+    The extension's own error says the same thing inside the fence, where it
+    is marked as reported text. This line is the un-forgeable half: a page
+    that can shape strings in the payload can neither write here nor stop a
+    real refusal appearing.
+    """
+    reason = data.get("refused")
+    sentence = _ACT_REFUSALS.get(reason) if isinstance(reason, str) else None
+    if not sentence:
+        return ""
+    return f"[Refused before dispatch: {sentence}.]"
+
+
+def _act_invisible_sentence(data: dict[str, Any]) -> str:
+    """Own up to having acted on something the user cannot see.
+
+    A transparent element that still wins the hit test is usually the
+    DELIBERATE target (an invisible real input over styled UI is how custom
+    file pickers and checkboxes are built), so the act proceeds and this
+    note carries the fact rather than a refusal. It is one boolean from the
+    extension's isolated-world probe, nothing page-controlled, which is what
+    lets it render out here.
+    """
+    if data.get("target_invisible") is not True:
+        return ""
+    return (
+        "[Invisible target: the element this act aimed at is not visible to the "
+        "eye (transparent, or hidden by CSS). That is often deliberate, since an "
+        "invisible real control over styled UI is how custom pickers and "
+        "checkboxes are built, so this is a prompt to check rather than a "
+        "failure: if you meant the thing the USER sees there, re-read the page "
+        "and aim at that element instead, and if the action reports no effect, "
+        "an element nobody can see is a likely reason.]"
+    )
+
+
+def _act_honesty_lines(data: dict[str, Any]) -> str:
+    """The act-honesty block, composed once so every line lands outside the
+    fence through `_outside_fence`, exactly as the read notes do."""
+    parts = [p for p in (_act_refusal_sentence(data), _act_invisible_sentence(data)) if p]
+    return "\n".join(parts)
+
+
 def _wire_wait_for(text: Any, url: Any, ref: Any) -> dict[str, Any]:
     """The wire spelling of chrome_act's flat wait_for_* parameters."""
     wait_for: dict[str, Any] = {}
@@ -1210,6 +1295,26 @@ async def chrome_act(
     blocker named and the exact coordinate included: dismiss a real overlay
     and retry, or, when the blocker is the target's own widget (a styled
     control), click that coordinate deliberately.
+
+    Three more refusals come BEFORE anything is dispatched, each naming the
+    state it found rather than letting it surface as a mystery. A target the
+    browser marks disabled refuses with "refused": "disabled" (a disabled
+    control receives no events at all, so a retry cannot land: something has
+    to enable it first). A read-only field refuses a fill or type with
+    "refused": "readonly". A target with CSS pointer-events: none refuses
+    with "refused": "pointer_events_none", which is NOT an overlay to
+    dismiss: the element cannot take a click where it stands, and the
+    message names what the click would have hit instead. All three sent
+    nothing, so nothing needs undoing. These three read the element itself,
+    which only a "@eN" ref allows: a "css="/"xpath=" target is not probed
+    and behaves as it did before.
+
+    Acting on something invisible is reported, not refused. A transparent
+    element that still wins the hit test is usually the deliberate target
+    (custom file pickers and checkboxes are built exactly that way), so the
+    click goes in and the result carries "target_invisible": true. Take it
+    as a prompt to check you meant that element and not the thing the user
+    can actually see there.
     """
     args: dict[str, Any] = {"tab_id": tab_id, "action": action}
     if ref:
@@ -1255,7 +1360,11 @@ async def chrome_act(
             return refusal
         override = max(_TIMEOUTS["act"], int(timeout_ms / 1000) + 15)
     return await _dispatch(
-        command_type="act", args=args, config=config, timeout_override=override
+        command_type="act",
+        args=args,
+        config=config,
+        timeout_override=override,
+        notes=_act_honesty_lines,
     )
 
 
