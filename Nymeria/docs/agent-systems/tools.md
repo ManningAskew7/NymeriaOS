@@ -2516,7 +2516,7 @@ surface, diagnostics and the escape hatch included):
 | `chrome_network` | `(tab_id, url_pattern?, only_failures=False, limit=50)` | The request log with status codes, captured from the moment the tab is first driven. |
 | `chrome_dialog` | `(tab_id, action, prompt_text?)` | Answer the JS dialog standing on a tab being driven (#169). The extension owns `Page` for the life of each attach, so dialogs raised while driving are held for the agent: alerts auto-acknowledged and reported, confirm/prompt/beforeunload standing with a named message and a grace deadline, dismissed automatically if nobody answers. Cannot answer a dialog raised while no command was driving the tab (ownership is not retroactive; measured). |
 | `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the wedge enables (`Fetch`/`Debugger`, which nothing consumes, and `Page.enable`, whose ownership the extension already holds with an answering policy); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
-| `chrome_reload_extension` | `()` | Dev-loop helper: the extension reloads its own code from disk (`chrome.runtime.reload()`), replacing the manual refresh click at chrome://extensions after a pull+rebuild. Acks first (reporting the version that WAS running), reloads ~2.5s later; the connection drops and re-establishes itself, driven tabs are released, in-flight commands are lost, so it runs alone, never in a batch. A build that fails to load strands the extension until a manual reload. |
+| `chrome_reload_extension` | `()` | Dev-loop helper: the extension reloads its own code from disk (`chrome.runtime.reload()`), replacing the manual refresh click at chrome://extensions after a pull+rebuild. Acks first (reporting `version_before`), reloads ~2.5s later, then the tool waits (bounded) for the reloaded worker's resubscribe and appends `version_after` (the extension announces its manifest version when subscribing), closing the deploy-verification loop; a missing reconnect is reported honestly instead. Driven tabs are released and in-flight commands lost, so it runs alone, never in a batch. A build that fails to load strands the extension until a manual reload. |
 
 **Dialogs and the file chooser (#169):** `Page` is enabled on every debugger
 attach, deliberately. Dialogs raised while the agent drives are answered by
@@ -2558,7 +2558,13 @@ with no layout box) the result reports `input: "synthetic"` and why.
 **Verification:** every `chrome_act` returns a verification payload, not an
 acknowledgement: the URL and whether it changed, whether the target survived,
 what has focus, the field's previous value, console errors and failed requests
-caused by the action, and whether the page settled. Console and network capture
+caused by the action, and whether the page settled. Delivery itself is a
+diagnosis, not a bit (#176): `input_events` counts trusted events by type (a
+press that never composed into a `click` is visible as such), and the click
+family adds `default_prevented`, `click_target` (tag plus enclosing link URL)
+and the frame's `user_activation` state; `fill` verifies through its trusted
+`input` event. A post-dispatch peek preserves the counts even when the click
+navigates the document away. Console and network capture
 run over CDP (no host permission needed) and start at debugger attach, so the
 first question about them has a real answer. `failed_requests` entries carry
 `same_origin` and the capped list ranks data-class failures ahead of

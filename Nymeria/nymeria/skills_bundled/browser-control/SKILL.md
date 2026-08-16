@@ -82,8 +82,16 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
 - `input_delivered: "no"` -> the page received NOTHING. The call fails when this
   happens; see "When a tab stops responding to you" below. This is checked
   inside cross-origin iframes too: an act on a frame's ref verifies delivery in
-  that frame. `"unknown"` just means it could not be checked
-  (`input_delivered_reason` says why), which is not a problem on its own.
+  that frame, and `fill` verifies through its trusted `input` event. `"unknown"`
+  just means it could not be checked (`input_delivered_reason` says why), which
+  is not a problem on its own.
+- `input_events` -> trusted counts by type; on clicks, `default_prevented`,
+  `click_target` (what the click composed on, with the enclosing link's URL)
+  and `user_activation` ride along. One read answers "the click landed, fully
+  composed, on the right element, nothing cancelled it": if the page still did
+  not react, the default action was declined downstream, so change approach
+  (a different element, keyboard activation, or report the page as hostile to
+  driven input) instead of re-clicking the same target.
 - `hit` -> what was actually under the coordinate you clicked, named like
   `button "Sign in"` or `input#email` (only appears when you acted on a
   `coordinate` rather than a ref; a drag reports `hit_from`, its source). A
@@ -316,8 +324,11 @@ need. A half-finished task the user can complete beats a rule quietly broken.
 the extension reload its own code from disk (the remote version of the
 refresh click at chrome://extensions). Use it only when asked to reload the
 extension or when a just-deployed extension update needs to go live. It
-drops the connection for a few seconds, releases every driven tab, and
-loses in-flight commands, so run it alone and wait ~10 seconds after.
+releases every driven tab and loses in-flight commands, so run it alone.
+The result waits for the reloaded worker to reconnect and names the
+version now running (`version_after`); once it does, the next call is safe
+immediately. If it instead reports no reconnect, the build may have failed
+to load: stop and ask the user to reload by hand at chrome://extensions.
 
 `chrome_cdp` is the raw protocol under every tool here with the wrapper
 removed: no target checks, no settle, no verification. It is bound as a LAST

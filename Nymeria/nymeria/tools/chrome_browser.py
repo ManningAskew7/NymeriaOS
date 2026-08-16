@@ -61,7 +61,12 @@ from ..core.browser_command_coordinator import (
     get_browser_command_coordinator,
     new_command_id,
 )
-from ..core.chrome_subscribers import chrome_disconnect_age, is_chrome_connected
+from ..core.chrome_subscribers import (
+    chrome_connect_count,
+    chrome_disconnect_age,
+    chrome_extension_version,
+    is_chrome_connected,
+)
 from ..core.event_bus import publish_autonomous_event
 from .registry import ToolGroup, register_tool_group
 from .utils import get_thread_id, get_user_id
@@ -310,29 +315,50 @@ def _failure_line(command_type: str) -> str:
 _RECONNECT_GRACE_S = 75
 _RECONNECT_POLL_S = 0.5
 
+# When THIS process started (monotonic). The subscriber registry is
+# in-process state, so a backend restart wipes every disconnect stamp: for
+# the first grace-window of a young process, "never connected" cannot be
+# told apart from "the restart severed a healthy extension that is already
+# reconnecting" (measured 2026-08-16: the extension self-resubscribes
+# within a minute of a deploy bounce, and the old instant hard-fail landed
+# exactly inside that window). ``_await_reconnect`` reads it to hold those
+# early dispatches; past the window, absence means absent and the
+# first-run error stays instant.
+_PROCESS_START = time.monotonic()
+
 
 async def _await_reconnect(user_id: str) -> Optional[str]:
     """Hold a dispatch through the extension's recycle window.
 
     Returns ``None`` when a subscriber is (or becomes) available, or the
     ``[Error]: ...`` string to hand back. Never waits for a user with no
-    disconnect history: the first-run "connect your extension" experience
-    stays instant.
+    disconnect history on a settled process: the first-run "connect your
+    extension" experience stays instant. A YOUNG process (see
+    ``_PROCESS_START``) is the one exception, because there a missing
+    stamp is as likely a wiped registry as a missing extension.
     """
     if is_chrome_connected(user_id):
         return None
     age = chrome_disconnect_age(user_id)
+    boot_hold = False
     if age is None:
-        return None if is_chrome_connected(user_id) else (
-            "[Error]: No Nymeria browser extension connected for this user. "
-            "Open the extension popup and click Connect."
-        )
+        boot_age = time.monotonic() - _PROCESS_START
+        if boot_age > _RECONNECT_GRACE_S:
+            # Re-check before failing: a subscriber can land between the
+            # entry check and the stamp read.
+            return None if is_chrome_connected(user_id) else (
+                "[Error]: No Nymeria browser extension connected for this user. "
+                "Open the extension popup and click Connect."
+            )
+        boot_hold = True
+        age = boot_age
     if age <= _RECONNECT_GRACE_S:
         # One absolute deadline, computed from the entry-time age: a fresh
         # disconnect stamped mid-wait must not extend the hold.
         logger.info(
-            "chrome dispatch holding for extension reconnect (user=%s, disconnect age %.1fs)",
+            "chrome dispatch holding for extension reconnect (user=%s, %s %.1fs)",
             user_id,
+            "process age" if boot_hold else "disconnect age",
             age,
         )
         started = time.monotonic()
@@ -346,6 +372,18 @@ async def _await_reconnect(user_id: str) -> Optional[str]:
         if is_chrome_connected(user_id):
             return None
         waited = time.monotonic() - started
+        if boot_hold:
+            # The hold was anchored on OUR restart, not on a measured drop:
+            # saying "the extension dropped" would assert a fact nobody has.
+            return (
+                "[Error]: The backend restarted "
+                f"{int(round(age + waited))}s ago and no browser extension "
+                "has connected since. If Chrome is open the extension "
+                "normally re-subscribes within a minute of a backend "
+                "restart, so retry once shortly; if this repeats, the user "
+                "may not have the extension running: ask them to open the "
+                "extension popup and click Connect."
+            )
         current_age = chrome_disconnect_age(user_id)
         dropped_s = int(round(current_age if current_age is not None else age + waited))
         return (
@@ -921,6 +959,19 @@ async def chrome_act(
     caused it, so seeing a clean page is not evidence the tab is healthy.
     "unknown" is not a failure, it means the check could not be made, and
     "input_delivered_reason" names why; judge those by the rest of the payload.
+
+    Delivery comes with a diagnosis, not just a verdict. "input_events" counts
+    the trusted events by type (for a click, a missing "click" key means the
+    press arrived but never composed into a click); on the click family,
+    "default_prevented" says whether a page handler cancelled the composed
+    click, "click_target" names the element it composed on (tag, and the
+    enclosing link's URL when there is one), and "user_activation" reports the
+    frame's activation state after dispatch. Together these turn "the click
+    did nothing" from a four-call investigation into one read: delivered plus
+    a composed, un-prevented click on the link you meant, with no navigation
+    following, means the page or browser declined the default action, not
+    that your input missed. A fill reports "input_delivered" through its
+    trusted input event the same way.
 
     Frames are full targets, not blind spots. A ref inside a cross-origin
     iframe gets its input dispatched inside that frame and its delivery
@@ -1628,17 +1679,60 @@ async def chrome_reload_extension(
     chrome://extensions. Use it when asked to reload the extension, or when
     a just-deployed extension change needs to go live before testing it.
 
-    The extension acks first and reloads itself about 2.5 seconds later, so
-    the result reports the version that WAS running, not the new one. The
-    reload drops the extension's connection for a few seconds (it
-    re-establishes itself), releases every driven tab (the debugger banner
-    clears, held dialogs are dropped), and loses any in-flight commands:
-    run it alone, never inside chrome_batch, and wait about 10 seconds
-    before the next chrome_* call. If the code on disk does not load,
-    the extension stays down until the user reloads it by hand at
-    chrome://extensions, so only use it on a build known to be good.
+    The extension acks first and reloads itself about 2.5 seconds later.
+    The payload's version_before is the build that WAS running; this tool
+    then waits (bounded) for the reloaded worker to resubscribe and appends
+    a line naming the version now running (version_after), at which point
+    the next chrome_* call is safe immediately. If that line instead says
+    the extension did not come back, the new build may have failed to load,
+    and the extension stays down until the user reloads it by hand at
+    chrome://extensions, so only use this on a build known to be good. The
+    reload releases every driven tab (the debugger banner clears, held
+    dialogs are dropped) and loses any in-flight commands: run it alone,
+    never inside chrome_batch.
     """
-    return await _dispatch(command_type="reload_extension", args={}, config=config)
+    user_id = get_user_id(config)
+    connects_before = chrome_connect_count(user_id)
+    out = await _dispatch(command_type="reload_extension", args={}, config=config)
+    if out.startswith("[Error]"):
+        return out
+    return out + await _reload_reconnect_note(user_id, connects_before)
+
+
+# How long the reload tool waits for the reloaded worker's resubscribe.
+# Measured shape: ack, reload at ~2.5s, worker restart + SSE resubscribe
+# within a few seconds; 20s is comfortably past that without stalling the
+# turn when the build genuinely failed to load.
+_RELOAD_RECONNECT_S = 20.0
+
+
+async def _reload_reconnect_note(user_id: str, connects_before: int) -> str:
+    """One appended line owning the post-reload outcome.
+
+    A NEW stream (connect count moved) is the fact worth reporting: the old
+    worker's stream survives the ack window, so mere connectedness proves
+    nothing about the reload. The version rides along; it only changes when
+    the manifest was bumped, so sameness is normal, not a failed deploy.
+    """
+    deadline = time.monotonic() + _RELOAD_RECONNECT_S
+    while time.monotonic() < deadline:
+        if chrome_connect_count(user_id) > connects_before and is_chrome_connected(user_id):
+            version = chrome_extension_version(user_id)
+            named = f" version_after: {version}." if version else (
+                " (it did not announce a version; it may predate version reporting)."
+            )
+            return (
+                "\nThe reloaded extension has reconnected;"
+                + named
+                + " Further chrome_* calls are safe now."
+            )
+        await asyncio.sleep(_RECONNECT_POLL_S)
+    return (
+        f"\nThe extension has NOT reconnected within {int(_RELOAD_RECONNECT_S)}s "
+        "of the reload ack. The new build may have failed to load; if further "
+        "chrome_* calls fail, ask the user to reload the extension by hand at "
+        "chrome://extensions."
+    )
 
 
 CHROME_BROWSER_TOOLS = [

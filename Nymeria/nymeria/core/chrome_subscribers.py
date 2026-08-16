@@ -33,19 +33,34 @@ _user_by_subscriber: dict[str, str] = {}
 # "gone". The chrome_* dispatch path reads it to ride that window out
 # (backlog #172) instead of fail-fasting with a false "not connected".
 _last_disconnect_by_user: dict[str, float] = {}
+# The manifest version the extension announced when it subscribed, and a
+# per-user connect counter. The counter lets `chrome_reload_extension` tell
+# "a NEW stream landed after the reload" apart from "the old stream is still
+# up" without tracking stream identities; the version answers "which build
+# is running now". Last-write-wins per user: a user driving two Chrome
+# profiles reads as whichever subscribed last, which is fine for a dev-loop
+# report and not worth a per-subscriber map.
+_version_by_user: dict[str, str] = {}
+_connects_by_user: dict[str, int] = {}
 
 
 def is_chrome_client_id(client_id: str | None) -> bool:
     return bool(client_id) and client_id.startswith(CHROME_CLIENT_ID_PREFIX)
 
 
-def add_chrome_subscriber(*, user_id: str, subscriber_id: str) -> None:
+def add_chrome_subscriber(
+    *, user_id: str, subscriber_id: str, version: Optional[str] = None
+) -> None:
     """Record that ``subscriber_id`` is a Chrome-extension SSE stream for
-    ``user_id``. Idempotent."""
+    ``user_id``. Idempotent for membership; every call still counts as a
+    connect and refreshes the announced version."""
     with _lock:
         _subscribers_by_user.setdefault(user_id, set()).add(subscriber_id)
         _user_by_subscriber[subscriber_id] = user_id
         _last_disconnect_by_user.pop(user_id, None)
+        _connects_by_user[user_id] = _connects_by_user.get(user_id, 0) + 1
+        if version:
+            _version_by_user[user_id] = version
 
 
 def remove_chrome_subscriber(subscriber_id: str) -> None:
@@ -94,12 +109,27 @@ def chrome_disconnect_age(user_id: str) -> Optional[float]:
         return None if stamp is None else time.monotonic() - stamp
 
 
+def chrome_extension_version(user_id: str) -> Optional[str]:
+    """The manifest version the user's extension last announced, if any."""
+    with _lock:
+        return _version_by_user.get(user_id)
+
+
+def chrome_connect_count(user_id: str) -> int:
+    """How many extension streams have subscribed for ``user_id`` this
+    process lifetime. Monotonic; compare snapshots to detect a NEW stream."""
+    with _lock:
+        return _connects_by_user.get(user_id, 0)
+
+
 def reset_for_tests() -> None:
     """Test-only: drop all tracked subscribers and disconnect stamps."""
     with _lock:
         _subscribers_by_user.clear()
         _user_by_subscriber.clear()
         _last_disconnect_by_user.clear()
+        _version_by_user.clear()
+        _connects_by_user.clear()
 
 
 __all__ = [
@@ -110,5 +140,7 @@ __all__ = [
     "is_chrome_connected",
     "chrome_subscribers_for",
     "chrome_disconnect_age",
+    "chrome_extension_version",
+    "chrome_connect_count",
     "reset_for_tests",
 ]
