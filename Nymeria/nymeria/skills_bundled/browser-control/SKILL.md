@@ -99,7 +99,10 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   bare container with no label, `body` or `div.wrapper`, means you hit page
   background: the input WAS delivered and reached nothing, so
   `input_delivered: "yes"` beside it is not success. Re-screenshot before
-  re-aiming, since whatever you took those coordinates from has moved. A
+  re-aiming, since whatever you took those coordinates from has moved, and
+  convert before you aim: every capture reports its image size beside the
+  viewport in CSS pixels, and those two differ on a HiDPI display or a zoomed
+  page (which the `[Zoom]` note names). `chrome_act` takes the CSS ones. A
   coordinate that lands on a cross-origin iframe (payment fields, embedded
   checkouts) is REFUSED before anything is sent: page coordinates cannot
   reach inside another origin's frame. The refusal names the fix: read the
@@ -321,6 +324,9 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   the click would have hit instead.
 - Page looks right but nothing happens -> `chrome_screenshot` to see it as the
   user does. Canvas, custom widgets and CAPTCHAs are invisible to the tree.
+  Too small to read in the picture -> `chrome_screenshot(region_ref="@eN")`, or
+  `region=[x, y, width, height]`: Chrome re-renders just that box magnified, so
+  it resolves detail the full capture could not.
 - Content missing entirely -> check for a `[View constraint]` note after the
   tree first: a modal dialog or fullscreen element prunes everything else
   from the read, so a near-empty tree means BLOCKED, not empty. Iframe
