@@ -604,9 +604,18 @@ def _region_lead(
     # noise the operator has to look past.
     x, y, w, h = (_num_text(round(value)) for value in box)
     trimmed = " (trimmed to the page)" if region.get("clamped") else ""
+    # Say the rounding out loud when it happened. The live operator reported
+    # re-checking width x scale against the image by hand on every region call
+    # to satisfy itself the tool did what it asked; naming the one reason those
+    # two numbers legitimately disagree is cheaper than making it do that.
+    rounded = (
+        " (Chrome rounded the clip)"
+        if image_size and abs(image_size[0] - expected) > 0.5
+        else ""
+    )
     return (
         f"region image {image}, clipped from ({x}, {y}) {w}x{h} CSS px at capture "
-        f"scale {_num_text(scale)}{trimmed}"
+        f"scale {_num_text(scale)}{trimmed}{rounded}"
     )
 
 
