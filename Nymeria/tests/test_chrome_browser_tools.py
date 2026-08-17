@@ -1194,6 +1194,23 @@ def test_screenshot_allows_chrome_its_own_rounding_of_a_clip(workspace) -> None:
     )
     assert "clipped from (31, 1408) 62x6 CSS px at capture scale 4" in rounded
     assert "is NOT the" not in rounded
+    # And it says so, because the live operator reported re-checking width x
+    # scale against the image by hand on every region call.
+    assert "(Chrome rounded the clip)" in rounded
+
+    exact, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region_ref": "e5"},
+        _shot(
+            {
+                "region": {"x": 31, "y": 150, "width": 56, "height": 6, "scale": 4},
+                "viewport": {"width": 1368, "height": 925},
+            },
+            image=_png(224, 24),
+        ),
+    )
+    assert "clipped from (31, 150) 56x6 CSS px at capture scale 4" in exact
+    assert "rounded" not in exact, "a clip Chrome took exactly must not mention rounding"
 
     # The tolerance is relative, so it does not go slack on a large region:
     # a 900px box at scale 1 tolerates 45px, and a viewport-sized image is
