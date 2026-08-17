@@ -1730,6 +1730,13 @@ async def chrome_screenshot(
     something you spotted in a picture. A region or full_page image is not a
     picture of the viewport at all, so no coordinate can be read off it
     directly.
+
+    Trust that viewport over one you measured yourself a moment earlier.
+    Driving a tab puts Chrome's "being debugged" infobar on it, which shortens
+    the viewport by about 56 CSS px, and the reflow lands a command or two
+    after the first one. So the first measurement anyone takes on a freshly
+    driven tab can be a pre-reflow number, while this line always reports what
+    was true at the shutter.
     """
     wants_region = region is not None or region_ref is not None
     if region is not None and region_ref is not None:

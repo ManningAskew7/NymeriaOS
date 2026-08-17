@@ -1312,6 +1312,20 @@ def test_screenshot_marks_a_full_page_image_as_not_the_viewport(workspace) -> No
     assert "spanning the whole document rather than the viewport" in content
 
 
+def test_screenshot_schema_warns_that_an_earlier_viewport_read_can_be_stale() -> None:
+    """Measured live 2026-08-17, after two QA rounds spent distrusting the
+    geometry line: driving a tab puts Chrome's debugging infobar on it, which
+    shortens the viewport by 56 CSS px a command or two later. One fresh tab,
+    read metrics (981), capture (925, and the image agreed), read metrics again
+    (925). The line was right and the operator's own earlier control was the
+    stale number. The fact belongs on the schema, because that is where it
+    arrives however the tool was bound."""
+    description = chrome_screenshot.description
+    assert "infobar" in description
+    assert "56" in description
+    assert "was true at the shutter" in description
+
+
 # ---------- region capture ----------
 
 
