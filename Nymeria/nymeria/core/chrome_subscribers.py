@@ -23,6 +23,15 @@ from typing import Optional, Set
 # initialises (see ``nymeria-browser/src/utils/storage.ts::ensureClientId``).
 CHROME_CLIENT_ID_PREFIX = "nymeria-browser-"
 
+# Autonomous event types only the browser extension can act on, so only it is
+# served them. ``browser_command`` carries the whole command envelope, an
+# upload's base64 file bytes included, and every other consumer (desktop,
+# mobile, both CLI transports, the bots' admin firehose) parsed it and
+# dropped it: a 10MB upload reached each of them as ~14MB of JSON to throw
+# away. Lives here, beside the "is this caller the extension" test, so the
+# stream and the in-process CLI transport cannot filter differently.
+CHROME_ONLY_EVENT_TYPES = frozenset({"browser_command"})
+
 _lock = threading.Lock()
 _subscribers_by_user: dict[str, Set[str]] = {}
 _user_by_subscriber: dict[str, str] = {}
@@ -134,6 +143,7 @@ def reset_for_tests() -> None:
 
 __all__ = [
     "CHROME_CLIENT_ID_PREFIX",
+    "CHROME_ONLY_EVENT_TYPES",
     "is_chrome_client_id",
     "add_chrome_subscriber",
     "remove_chrome_subscriber",

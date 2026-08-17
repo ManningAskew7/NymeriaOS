@@ -274,6 +274,114 @@ def test_autonomous_sse_filters_origin_client_events():
     assert bus.get_subscriber_count() == 0
 
 
+# -- browser_command is served to the extension only -----------------------
+#
+# The envelope carries the whole command, an upload's base64 file bytes
+# included. Every other subscriber class parsed a ~14MB frame and dropped it,
+# so these pin per-class delivery: the extension gets it, nobody else does,
+# and nothing else on the stream changes.
+
+
+def _upload_command() -> AutonomousEvent:
+    return AutonomousEvent(
+        event_type="browser_command",
+        thread_id="thread-1",
+        user_id="alice",
+        data={
+            "command_id": "cmd-1",
+            "command_type": "act",
+            "args": {"tab_id": 3, "action": "upload", "file_base64": "QUJD" * 10},
+        },
+    )
+
+
+def _marker() -> AutonomousEvent:
+    """A plain event queued behind the command, so a dropped command shows up
+    as the marker arriving first rather than as a generator that hangs."""
+    return AutonomousEvent(
+        event_type="response",
+        thread_id="thread-1",
+        user_id="alice",
+        data={"content": "marker"},
+    )
+
+
+def _first_frame_for(client_id: str | None, *, firehose: bool = False) -> str:
+    queue: Queue = Queue()
+    queue.put_nowait(_upload_command())
+    queue.put_nowait(_marker())
+    frame, _bus = asyncio.run(
+        _next_sse_data(
+            queue=queue,
+            event_bus=EventBus(),
+            user_id="*" if firehose else "alice",
+            firehose=firehose,
+            client_id=client_id,
+        )
+    )
+    return frame
+
+
+def test_browser_command_reaches_the_extension():
+    frame = _first_frame_for("nymeria-browser-abc123")
+
+    assert '"type": "browser_command"' in frame
+    assert "file_base64" in frame
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    [
+        pytest.param("6f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8", id="desktop_or_mobile_uuid"),
+        pytest.param("cli-9f8e7d6c5b4a", id="cli"),
+        pytest.param(None, id="legacy_client_without_an_id"),
+        pytest.param("nymeria-browser", id="prefix_lookalike"),
+    ],
+)
+def test_browser_command_does_not_reach_other_subscriber_kinds(client_id):
+    frame = _first_frame_for(client_id)
+
+    # The marker queued BEHIND the command is what arrives first.
+    assert '"content": "marker"' in frame
+    assert "browser_command" not in frame
+    assert "file_base64" not in frame
+
+
+def test_browser_command_does_not_reach_the_admin_firehose():
+    # The bots' Act-As: * stream sees every user's events and can act on none
+    # of these, so it was carrying other users' upload bytes across the
+    # container network. Narrowing it is deliberate: a firehose subscriber is
+    # not an extension even when it claims an extension client_id.
+    frame = _first_frame_for("nymeria-browser-abc123", firehose=True)
+
+    assert '"content": "marker"' in frame
+    assert "browser_command" not in frame
+
+
+def test_non_browser_events_are_untouched_by_the_kind_filter():
+    queue: Queue = Queue()
+    queue.put_nowait(
+        AutonomousEvent(
+            event_type="browser_command_result",
+            thread_id="thread-1",
+            user_id="alice",
+            data={"command_id": "cmd-1", "ok": True},
+        )
+    )
+    frame, _bus = asyncio.run(
+        _next_sse_data(
+            queue=queue,
+            event_bus=EventBus(),
+            user_id="alice",
+            client_id="6f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
+        )
+    )
+
+    # Results are how a watcher learns what the browser did; only the
+    # byte-bearing command envelope is extension-only.
+    assert '"type": "browser_command_result"' in frame
+
+
 # -- M-1: stream auth failures route through the shared rate limiter --------
 
 

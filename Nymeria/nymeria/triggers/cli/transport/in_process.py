@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from ....core.checkpoint_cleanup import delete_thread_checkpoints
 from ....core.checkpointer_config import enumerate_checkpoint_thread_ids
+from ....core.chrome_subscribers import CHROME_ONLY_EVENT_TYPES
 from ....core.event_bus import (
     AutonomousEvent,
     autonomous_event_to_payload,
@@ -172,6 +173,12 @@ class InProcessAgentClient:
                     # Mirror the API's per-user filter so a multi-user local DB
                     # never leaks another user's autonomous output to the CLI.
                     if event.user_id != selected_user_id:
+                        continue
+                    # And its kind filter: only the browser extension can act
+                    # on these, and it never rides this transport (it
+                    # subscribes over HTTP). Normalizing one copies the whole
+                    # envelope, an upload's base64 included, to drop it.
+                    if event.event_type in CHROME_ONLY_EVENT_TYPES:
                         continue
                     publish(normalize_stream_event(autonomous_event_to_payload(event)))
             except Exception:  # noqa: BLE001 - background stream is best effort.

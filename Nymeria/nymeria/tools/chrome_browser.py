@@ -94,7 +94,12 @@ _TIMEOUTS: dict[str, int] = {
     "snapshot": 20,
     "act": 30,
     "batch": 80,
-    "extract_text": 15,
+    # Matches snapshot: since 0.9.0 this read runs in the isolated world too,
+    # so a cold document can pay a frame-tree lookup and a world creation
+    # before the read itself. At 15s a wedged tab hit this budget before the
+    # extension's own honest refusal could land, and the generic three-cause
+    # timeout replaced a diagnosis we already had.
+    "extract_text": 20,
     "screenshot": 20,
     "console": 5,
     "network": 5,
@@ -941,6 +946,31 @@ def _read_honesty_lines(data: dict[str, Any], *, truncated: bool = False) -> str
     return "\n".join(parts)
 
 
+def _network_capture_note(data: dict[str, Any]) -> str:
+    """Name the two ways this read can be silent for reasons of ours.
+
+    Capture runs while a tab is being driven, so it is neither absent nor
+    continuous: a first read attaches the tab (nothing was captured before
+    it), and a read after a pause re-attaches it (the gap between commands
+    was not captured). Unqualified, both answers read as claims about the
+    PAGE. Booleans from the extension, so this renders outside the fence like
+    every other honesty line.
+    """
+    if data.get("capture_started_now") is True:
+        return (
+            "[Capture started with this read: nothing was capturing this tab "
+            "until now, so an empty list here says nothing about what the page "
+            "did. Act, then read again.]"
+        )
+    if data.get("capture_resumed") is True:
+        return (
+            "[Capture had lapsed before this read: the extension releases an "
+            "idle tab, so whatever the page did between commands was not seen. "
+            "What is listed was captured while the tab was being driven.]"
+        )
+    return ""
+
+
 def _failed(payload: dict[str, Any]) -> Optional[str]:
     """Error string when the extension reported failure, else None."""
     if payload.get("ok"):
@@ -1154,6 +1184,8 @@ async def chrome_read_text(
         the page and returns only that, which keeps a long page out of your
         context entirely. Best for big pages where you need a few facts.
 
+    Reads the ROOT document only: iframe text is chrome_read_page's job. A
+    read that FAILED says so rather than reporting a page with no text.
     Use chrome_read_page instead when you intend to ACT: this returns text, not
     the refs you need to click things. Page text is fenced as untrusted data.
     """
@@ -2214,23 +2246,29 @@ async def chrome_network(
 
     url_pattern: substring filter, e.g. "/api/".
     only_failures: just the 4xx, 5xx and transport failures.
+    limit: newest N requests; 0 returns none. At most 200 are buffered per tab.
 
-    Capture runs from the moment the tab is first driven, so this is history,
-    not a recording you have to start. Use it when a page looks fine but
-    something did not take. Cross-origin iframe requests are captured too,
-    attributed with "frame": "<origin>".
+    Capture runs whenever the tab is being driven, so this is history, not a
+    recording you have to start. Use it when a page looks fine but something
+    did not take. Cross-origin iframe requests are captured too, attributed
+    with "frame": "<origin>".
 
-    One honest gap: a frame's LOAD-TIME requests often precede capture
-    reaching that frame (its session attaches moments after the frame
-    starts loading), so an iframe's early requests being absent is not
-    evidence they never happened. A load-time failure still surfaces in
-    chrome_console as a "browser": true advisory, so check there before
-    concluding anything from absence.
+    It is not continuous, and the gaps are flagged rather than left to look
+    like silence. A first read of a tab attaches it, so nothing was captured
+    before that read; a read after a pause re-attaches it, so what the page
+    did between your commands was not seen. Separately, a frame's LOAD-TIME
+    requests often precede capture reaching that frame (its session attaches
+    moments after the frame starts loading), so an iframe's early requests
+    being absent is not evidence they never happened. A load-time failure
+    still surfaces in chrome_console as a "browser": true advisory, so check
+    there before concluding anything from absence.
     """
     args: dict[str, Any] = {"tab_id": tab_id, "only_failures": only_failures, "limit": limit}
     if url_pattern:
         args["url_pattern"] = url_pattern
-    return await _dispatch(command_type="network", args=args, config=config)
+    return await _dispatch(
+        command_type="network", args=args, config=config, notes=_network_capture_note
+    )
 
 
 @tool

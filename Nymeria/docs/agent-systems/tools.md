@@ -2507,13 +2507,13 @@ surface, diagnostics and the escape hatch included):
 | `chrome_tabs` | `(action="list", tab_id?, url?)` | List/create/switch/close/reload tabs. Start here for a `tab_id`. Create and reload wait for the load and carry `http_status` under chrome_navigate's rules. Created tabs open in a non-focused, non-minimized window when one exists: the user keeps their view and the driven tab keeps compositing. |
 | `chrome_navigate` | `(tab_id, url)` | Go to a URL, or `"back"`/`"forward"`. Waits for load; returns the FINAL url and title, plus `http_status` (the page's HTTP code, #175) when the extension's page-status grant lets it be seen: absent means unknown, never OK; 401/407 add `http_status_hint` saying input is suppressed. |
 | `chrome_read_page` | `(tab_id, detail="interactive", ref?, max_chars?)` | Accessibility tree with `[ref=@eN]` tags. `ref` re-roots at one element. |
-| `chrome_read_text` | `(tab_id, selector?, max_chars?, extraction_prompt?)` | Visible text. With `extraction_prompt`, a secondary model returns only what was asked and the raw page never enters context. |
+| `chrome_read_text` | `(tab_id, selector?, max_chars?, extraction_prompt?)` | Visible text. With `extraction_prompt`, a secondary model returns only what was asked and the raw page never enters context. Root document only, and its own DOM: iframes are `chrome_read_page`'s job, and open shadow roots are reachable by a `css=` act but not yet by this read, an asymmetry the selector-miss error names until the alignment pass closes it. Read in the isolated world, and a read that FAILED says so instead of reporting a page with no text. |
 | `chrome_find` | `(tab_id, query)` | Semantic element search over the accessibility tree, returning refs. Reaches offscreen elements; does NOT see `display:none` ones (use a `css=` ref for those). Returns "no matches", not an error. |
 | `chrome_act` | `(tab_id, action, ref?, value?, wait_for_text?, wait_for_url?, wait_for_ref?, ...)` | One action: click/double_click/right_click/hover/fill/select/check/uncheck/type/key/scroll/scroll_to/drag/upload/wait. `wait_for_*`/`timeout_ms` are honoured on EVERY action (#168): the call returns when the condition holds, or reports `found: false` without failing the delivered action. The extension also honours the wire time budget (#162): a slow page can no longer ride a multi-dispatch gesture into a payload-less transport timeout. A `type` or multi-click stops at a character/click boundary and returns early with `budget_exhausted` and exact progress; a drag never aborts mid-gesture, it drops the glide and marks `drag_degraded`; waits and settles clamp to the remaining clock and mark `budget_clamped` when the clamp mattered; overruns after delivery just cheapen verification, never fail the action. |
 | `chrome_screenshot` | `(tab_id, full_page=False)` | `content_and_artifact` image the model can see, plus the viewport size, device scale and scroll offset needed to turn a pixel into a `coordinate`. |
 | `chrome_batch` | `(tab_id, actions, continue_on_url_change=False)` | Several wire commands in one round trip. Steps are limited to ordinary page work by an allowlist; the diagnostic and escape-hatch tools are single calls only. A batched act's unmet wait condition gates the remainder; the budget is sized from the actions, and a batch declaring unfittable waits is refused up front (as is one over 20 actions). Mid-run, the steps share one clock: the batch stops between steps, naming the budget, rather than start a step it cannot run honestly. A batched `action="upload"` resolves its `path` like the single call; an unloadable or missing path refuses the whole batch, and uploads are capped at 10MB in aggregate. |
 | `chrome_console` | `(tab_id, only_errors=True, limit=50, clear=False)` | Console messages and uncaught exceptions. |
-| `chrome_network` | `(tab_id, url_pattern?, only_failures=False, limit=50)` | The request log with status codes, captured from the moment the tab is first driven. |
+| `chrome_network` | `(tab_id, url_pattern?, only_failures=False, limit=50)` | The request log with status codes, captured whenever the tab is being driven. Capture is not continuous, and both gaps are flagged rather than left as silence: a read that itself attached the tab says capture just started, and one after an idle release says capture had lapsed, so neither empty answer reads as "this page made no requests". `limit` is the newest N (0 returns none, in `chrome_console` too; 200 are buffered per tab). |
 | `chrome_dialog` | `(tab_id, action, prompt_text?)` | Answer the JS dialog standing on a tab being driven (#169). The extension owns `Page` for the life of each attach, so dialogs raised while driving are held for the agent: alerts auto-acknowledged and reported, confirm/prompt/beforeunload standing with a named message and a grace deadline, dismissed automatically if nobody answers. Cannot answer a dialog raised while no command was driving the tab (ownership is not retroactive; measured). |
 | `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the wedge enables (`Fetch`/`Debugger`, which nothing consumes, and `Page.enable`, whose ownership the extension already holds with an answering policy); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
 | `chrome_reload_extension` | `()` | Dev-loop helper: the extension reloads its own code from disk (`chrome.runtime.reload()`), replacing the manual refresh click at chrome://extensions after a pull+rebuild. Acks first (reporting `version_before`), reloads ~2.5s later, then the tool waits (bounded) for the reloaded worker's resubscribe and appends `version_after` (the extension announces its manifest version when subscribing), closing the deploy-verification loop; a missing reconnect is reported honestly instead. Driven tabs are released and in-flight commands lost, so it runs alone, never in a batch. A build that fails to load strands the extension until a manual reload. |
@@ -2593,8 +2593,13 @@ content, CORS) land in the console buffer marked `browser: true`, so a
 silently blocked in-frame action names its blocker in the act payload
 itself. Replayed enable backlogs are deduplicated, and a console read that
 cold-attaches the tab waits a beat for the backlog, so the first question
-about capture has a real answer. The one honest gap: a frame's load-time
-requests often precede capture reaching it and are absent from
+about capture has a real answer. `Network.enable` replays nothing, so the
+network read has no backlog to wait for and owns its own two gaps instead:
+capture is not continuous (the debugger is released after an idle linger),
+so a read flags either `capture_started_now` (nothing was ever captured for
+this tab) or `capture_resumed` (it lapsed since the last command and the gap
+was not seen), each rendered as a note. The remaining honest gap: a frame's
+load-time requests often precede capture reaching it and are absent from
 `chrome_network` (its failures still surface as `browser: true` console
 advisories). `failed_requests` entries carry
 `same_origin` and the capped list ranks data-class failures ahead of
@@ -2603,7 +2608,8 @@ is never crowded out by analytics beacons.
 
 **Probe isolation (#160):** every trust probe (geometry, hit test, frame
 offsets, the file-input and covered-click guards, focus checks, value
-read-backs, css=/xpath= resolution, the batch-gating wait condition) and the
+read-backs, css=/xpath= resolution, the batch-gating wait condition, the
+`chrome_read_text` page-text read) and the
 one element handle every act runs through execute in an ISOLATED WORLD
 (`Page.createIsolatedWorld`, one per CDP session: the page and each
 out-of-process iframe), so a hostile page overriding

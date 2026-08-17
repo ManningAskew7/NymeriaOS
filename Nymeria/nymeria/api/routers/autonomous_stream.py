@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from ...config import Settings
 from ...core.chrome_subscribers import (
+    CHROME_ONLY_EVENT_TYPES,
     add_chrome_subscriber,
     is_chrome_client_id,
     remove_chrome_subscriber,
@@ -52,7 +53,6 @@ _KEEPALIVE_INTERVAL_SECONDS = 10.0
 _KEEPALIVE_POLL_INTERVAL = max(
     1, round(_KEEPALIVE_INTERVAL_SECONDS / _QUEUE_POLL_INTERVAL_SECONDS)
 )
-
 
 def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
     if not authorization:
@@ -136,6 +136,13 @@ async def _generate_autonomous_sse_events(
     yielded_counts: dict[str, int] = {}
     filtered_user_counts: dict[str, int] = {}
     filtered_origin_counts: dict[str, int] = {}
+    filtered_kind_counts: dict[str, int] = {}
+    # Loop-invariant: a subscriber's kind is fixed for the life of its stream.
+    # Mirrors the registration gate below, so what gets served the extension's
+    # events and what registers AS an extension cannot drift apart. The kind
+    # signal is the prefix test that registry already trusts, so gating
+    # delivery on it adds no new trust.
+    is_extension_stream = is_chrome_client_id(client_id) and not firehose
 
     def bump(counter: dict[str, int], key: str) -> int:
         counter[key] = counter.get(key, 0) + 1
@@ -192,6 +199,21 @@ async def _generate_autonomous_sse_events(
                         )
                     continue
 
+                if event.event_type in CHROME_ONLY_EVENT_TYPES and not is_extension_stream:
+                    filtered_count = bump(filtered_kind_counts, event.event_type)
+                    if should_log_stream_event_sample(event.event_type, filtered_count):
+                        logger.info(
+                            "[AUTONOMOUS SSE] filter subscriber=%s reason=not_chrome_client "
+                            "type=%s count=%d client_id=%s firehose=%s thread=%s",
+                            subscriber_id[:8],
+                            event.event_type,
+                            filtered_count,
+                            client_id[:8] if client_id else "none",
+                            firehose,
+                            event.thread_id,
+                        )
+                    continue
+
                 origin = event.data.get("_origin_client_id")
                 if origin and client_id and origin == client_id:
                     filtered_count = bump(filtered_origin_counts, event.event_type)
@@ -240,13 +262,15 @@ async def _generate_autonomous_sse_events(
         remove_chrome_subscriber(subscriber_id)
         logger.info(
             "[AUTONOMOUS SSE] subscriber_cleanup subscriber=%s user=%s "
-            "received=%s yielded=%s filtered_user=%s filtered_origin=%s",
+            "received=%s yielded=%s filtered_user=%s filtered_origin=%s "
+            "filtered_kind=%s",
             subscriber_id[:8],
             user_id,
             received_counts,
             yielded_counts,
             filtered_user_counts,
             filtered_origin_counts,
+            filtered_kind_counts,
         )
 
 

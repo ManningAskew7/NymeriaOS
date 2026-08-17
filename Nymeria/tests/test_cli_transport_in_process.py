@@ -586,6 +586,54 @@ def test_stream_autonomous_subscribes_to_event_bus_and_filters_user(
     assert subscribers_after_close == 0
 
 
+def test_stream_autonomous_drops_browser_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The extension subscribes over HTTP, never through this transport, and
+    it is the only consumer that can act on a browser command. Normalizing one
+    here copies the whole envelope (an upload's base64 file bytes included)
+    only to drop it downstream, so this mirrors the API stream's kind filter."""
+    from collections.abc import AsyncGenerator
+    from typing import cast
+
+    import nymeria.core.event_bus as event_bus_module
+    from nymeria.core.event_bus import AutonomousEvent, EventBus
+
+    client = InProcessAgentClient(FakeAgent(), default_user_id="alice")
+    bus = EventBus()
+    monkeypatch.setattr(event_bus_module, "_event_bus", bus)
+
+    async def scenario():
+        gen = cast("AsyncGenerator[Any, None]", client.stream_autonomous("alice"))
+        first = asyncio.ensure_future(gen.__anext__())
+        await asyncio.sleep(0.1)
+        bus.publish(
+            AutonomousEvent(
+                event_type="browser_command",
+                thread_id="t-1",
+                user_id="alice",
+                data={
+                    "command_id": "cmd-1",
+                    "command_type": "act",
+                    "args": {"file_base64": "QUJD" * 10},
+                },
+            )
+        )
+        # Queued behind it, so a delivered command shows up as this arriving
+        # second rather than as a generator that hangs.
+        bus.publish(
+            AutonomousEvent(event_type="task_completed", thread_id="t-2", user_id="alice")
+        )
+        event = await asyncio.wait_for(first, timeout=2.0)
+        await gen.aclose()
+        return event
+
+    event = run(scenario())
+
+    assert event.type == "task_completed"
+    assert event.thread_id == "t-2"
+
+
 def test_supports_autonomous_stream_uses_capability_flag() -> None:
     from nymeria.triggers.cli.autonomous import supports_autonomous_stream
     from nymeria.triggers.cli.transport.api import APIAgentClient
