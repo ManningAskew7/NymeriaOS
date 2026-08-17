@@ -48,6 +48,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import re
 import secrets
 import time
@@ -534,6 +535,150 @@ def _loading_sentence(data: dict[str, Any]) -> str:
     if not data.get("page_loading"):
         return ""
     return "captured while the page was still loading; if it looks incomplete, re-read in a moment"
+
+
+def _number(value: Any) -> Optional[float]:
+    """A finite number out of the payload, or None.
+
+    The shape gate for every value that reaches a screenshot's geometry
+    lines. Those lines carry no fence (a screenshot has no page text to
+    fence), so nothing page-shaped may reach them: bools are rejected
+    despite being ints, and NaN/inf are rejected despite being floats.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _num_text(value: float) -> str:
+    """A measurement the way a person writes it: 1280, 2, 1.5, 66.67."""
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+# What a page zoom factor may be before the note refuses to name it. Chrome's
+# own zoom range is 25% to 500%; the window is wider than that because the
+# number is REPORTED, not trusted, and a value outside any plausible range is
+# a reason to say nothing rather than to print it.
+_ZOOM_MIN = 0.05
+_ZOOM_MAX = 20.0
+
+
+def _region_lead(
+    region: dict[str, Any], image: str, image_size: Optional[tuple[int, int]]
+) -> str:
+    """Describe a region image, claiming only what the bytes corroborate.
+
+    The extension echoes the clip it ASKED Chrome for, which is evidence that
+    it asked, not that Chrome obeyed. The returned PNG is the independent
+    witness: a real clip comes back at width x scale. When those disagree the
+    claim is dropped and the disagreement is stated, because "clipped from
+    (200, 400)" over a picture of the whole viewport is the confident-wrong
+    class this surface exists to remove.
+    """
+    box = [
+        value
+        for value in (_number(region.get(key)) for key in ("x", "y", "width", "height"))
+        if value is not None
+    ]
+    scale = _number(region.get("scale"))
+    if len(box) != 4 or scale is None:
+        return f"region image {image}"
+    if image_size and abs(image_size[0] - box[2] * scale) > 2:
+        return (
+            f"region image {image}, which is NOT the {_num_text(box[2])}x{_num_text(box[3])} "
+            f"CSS px region asked for at scale {_num_text(scale)}: treat it as a plain "
+            "capture, not a magnified crop"
+        )
+    x, y, w, h = (_num_text(value) for value in box)
+    trimmed = " (trimmed to the viewport)" if region.get("clamped") else ""
+    return (
+        f"region image {image}, clipped from ({x}, {y}) {w}x{h} CSS px at capture "
+        f"scale {_num_text(scale)}{trimmed}"
+    )
+
+
+def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int]]) -> str:
+    """The geometry of a screenshot, in the numbers that were measured.
+
+    Deliberately reports rather than teaches arithmetic. An image pixel
+    becomes a CSS pixel through some composition of device scale and page
+    zoom that neither number admits to on its own, so this line states both
+    sizes and lets the model divide, instead of baking in a formula that
+    would be silently wrong on the display where the fold is different. For
+    the same reason `devicePixelRatio` is printed under its own name rather
+    than as "device scale": it ALREADY has page zoom folded in, so a model
+    told "device scale 1.5" beside "zoomed to 150%" would multiply the same
+    factor twice.
+
+    Three shapes, because a full-page image and a region image are not
+    pictures of the viewport and would otherwise read as if they were. That
+    lead is unconditional for those two: a picture whose GEOMETRY could not
+    be read is exactly the one that must still say what it is a picture of.
+    """
+    viewport = data.get("viewport") if isinstance(data.get("viewport"), dict) else {}
+    width = _number(viewport.get("width"))
+    height = _number(viewport.get("height"))
+    ratio = _number(data.get("scale"))
+    scroll = data.get("scroll") if isinstance(data.get("scroll"), dict) else {}
+    scroll_x = _number(scroll.get("x"))
+    scroll_y = _number(scroll.get("y"))
+    region = data.get("region") if isinstance(data.get("region"), dict) else None
+
+    image = f"{image_size[0]}x{image_size[1]} px" if image_size else "of unknown size"
+
+    lead = ""
+    if region:
+        lead = _region_lead(region, image, image_size)
+    elif data.get("full_page"):
+        lead = f"full-page image {image}, spanning the whole document rather than the viewport"
+    elif image_size:
+        lead = f"image {image}"
+
+    page = []
+    if width is not None and height is not None:
+        page.append(f"viewport {_num_text(width)}x{_num_text(height)} CSS px")
+    if ratio is not None:
+        page.append(f"devicePixelRatio {_num_text(ratio)}")
+    if scroll_x is not None and scroll_y is not None:
+        page.append(f"scrolled to ({_num_text(scroll_x)}, {_num_text(scroll_y)})")
+    if not lead and not page:
+        return ""
+    body = "; ".join(part for part in (lead, ", ".join(page)) if part)
+    # The conversion warning is not free: it rides every capture. On a plain
+    # 1x capture image px ARE viewport CSS px, so there is nothing to convert
+    # and the clause would be pure noise. It fires when the picture is not the
+    # viewport, when the ratio is not 1, or when the ratio is unknown.
+    needs_warning = bool(region) or bool(data.get("full_page")) or ratio is None or ratio != 1
+    warning = " chrome_act coordinates are viewport CSS px, not image px." if needs_warning else ""
+    return f"[Geometry]: {body}.{warning}"
+
+
+def _zoom_sentence(data: dict[str, Any]) -> str:
+    """Name a page zoom, and only when there is one.
+
+    At 100% this line would be noise on every screenshot, and the geometry
+    line above already carries the sizes. It says nothing about HOW zoom and
+    devicePixelRatio compose, because that was not measured here: it points
+    at the two sizes that were.
+    """
+    zoom = _number(data.get("zoom"))
+    if zoom is None or not (_ZOOM_MIN <= zoom <= _ZOOM_MAX) or abs(zoom - 1.0) < 0.005:
+        return ""
+    return (
+        f"[Zoom]: this page is at {_num_text(zoom * 100)}%, so image pixels and CSS "
+        "coordinates differ. Convert with the two sizes above before aiming."
+    )
+
+
+def _screenshot_honesty_lines(data: dict[str, Any], image_size: Optional[tuple[int, int]]) -> str:
+    """The screenshot-honesty block, composed once, the way the read and act
+    surfaces compose theirs. Every value is a shape-gated number or a size we
+    measured ourselves, never page text."""
+    parts = [p for p in (_viewport_sentence(data, image_size), _zoom_sentence(data)) if p]
+    return "\n".join(parts)
 
 
 def _view_state_sentence(data: dict[str, Any]) -> str:
@@ -1149,6 +1294,10 @@ async def chrome_act(
         key name for key (e.g. "Enter", "Tab", "Escape").
     coordinate: [x, y] viewport pixels, as an alternative target for click,
         hover and drag when there is no usable ref (canvas, custom widgets).
+        Viewport CSS pixels, which are NOT the pixels of a screenshot on a
+        HiDPI display or a zoomed page: convert with the image and viewport
+        sizes chrome_screenshot reports before aiming at something you saw
+        in a picture.
     modifiers: any of ["Ctrl", "Shift", "Alt", "Meta"].
     direction / amount_px: for scroll (default down, 500px).
     to_ref: drag destination.
@@ -1395,31 +1544,114 @@ def _load_upload(path: str) -> dict[str, Any] | str:
     }
 
 
+# How far a region capture may out-resolve the screen. `clip.scale` asks
+# Chrome to RE-RENDER the region, so unlike a crop it can resolve text the
+# full capture could not. The ceiling is about the model's context rather
+# than about Chrome: pixels are tokens, and past 4x a magnified paragraph is
+# no more legible, only more expensive.
+_REGION_SCALE_MIN = 1
+_REGION_SCALE_MAX = 4
+_REGION_SCALE_DEFAULT = 2
+
+
 @tool(response_format="content_and_artifact")
 async def chrome_screenshot(
     tab_id: int,
     full_page: bool = False,
+    region: Optional[list[int]] = None,
+    region_ref: Optional[str] = None,
+    region_scale: int = _REGION_SCALE_DEFAULT,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> tuple[str, dict]:
     """Capture what the user's Chrome tab looks like, and see it.
 
     full_page: capture the whole scrollable page rather than the viewport.
+    region: [x, y, width, height] in viewport CSS pixels, to photograph just
+        that part of the page. Chrome RE-RENDERS the region rather than
+        cropping the picture, so region_scale above the display's own pixel
+        ratio (reported with every capture) resolves detail no crop of the
+        full image could. A region that runs past the edge of the viewport is
+        trimmed to it and says so.
+    region_ref: a "@eN" ref to capture instead of a rectangle; its box is
+        measured in the page. A ref inside a cross-origin iframe is refused
+        (its box is measured in that frame's own coordinates, which cannot
+        be placed in the page's): read a rectangle off a plain screenshot
+        instead.
+    region_scale: how far to magnify a region, 1 to 4 (default 2). Values
+        outside that are clamped, with a note.
 
     The image is saved to the workspace and attached for you to view. Reach for
     it when the accessibility tree is not enough: canvas, charts, custom-drawn
     widgets, CAPTCHAs, or confirming a page looks right before committing to
     something. For reading text or finding things to click, chrome_read_page
     and chrome_find are far cheaper.
+
+    Every capture reports its own geometry: the image size in pixels, the
+    viewport in CSS pixels, the device pixel ratio, the scroll position, and
+    the page zoom when it is not 100%. chrome_act(coordinate=...) takes
+    viewport CSS pixels, and those are NOT image pixels on a HiDPI display or
+    a zoomed page, so convert with the two reported sizes before aiming at
+    something you spotted in a picture. A region or full_page image is not a
+    picture of the viewport at all, so no coordinate can be read off it
+    directly.
     """
-    payload, error = await _run(
-        command_type="screenshot", args={"tab_id": tab_id, "full_page": full_page}, config=config
-    )
+    wants_region = region is not None or region_ref is not None
+    if region is not None and region_ref is not None:
+        return "[Error]: Pass either region or region_ref, not both.", {}
+    if wants_region and full_page:
+        return (
+            "[Error]: A region and full_page ask for different pictures: a region is "
+            "clipped out of the visible viewport, full_page stitches the whole "
+            "scrollable document. Pick one.",
+            {},
+        )
+    if region is not None:
+        if not isinstance(region, (list, tuple)):
+            return "[Error]: region must be [x, y, width, height] in viewport CSS pixels.", {}
+        box = [value for value in (_number(entry) for entry in region) if value is not None]
+        if len(box) != 4:
+            return "[Error]: region must be [x, y, width, height] in viewport CSS pixels.", {}
+        if box[2] <= 0 or box[3] <= 0:
+            return "[Error]: region width and height must be greater than zero.", {}
+
+    scale_note = ""
+    applied_scale = _REGION_SCALE_DEFAULT
+    if wants_region:
+        asked = _number(region_scale)
+        if asked is None:
+            return "[Error]: region_scale must be a number between 1 and 4.", {}
+        applied_scale = int(max(_REGION_SCALE_MIN, min(_REGION_SCALE_MAX, asked)))
+        if applied_scale != asked:
+            scale_note = (
+                f"[Note]: region_scale {_num_text(asked)} is outside "
+                f"{_REGION_SCALE_MIN}-{_REGION_SCALE_MAX}; captured at {applied_scale}."
+            )
+
+    args: dict[str, Any] = {"tab_id": tab_id, "full_page": full_page}
+    if region is not None:
+        args["region"] = list(region)
+    if region_ref is not None:
+        args["region_ref"] = region_ref
+    if wants_region:
+        args["region_scale"] = applied_scale
+
+    payload, error = await _run(command_type="screenshot", args=args, config=config)
     if payload is None:
         return error or "[Error]: The browser command failed.", {}
     failure = _failed(payload)
     if failure:
         return failure, {}
     data = _data(payload)
+    # The two halves deploy independently, so a region asked of an extension
+    # that predates the feature would come back as a full-viewport picture
+    # wearing a region's answer. The echo is how a build proves it clipped.
+    if wants_region and not isinstance(data.get("region"), dict):
+        return (
+            "[Error]: This Chrome extension build does not support region capture, so "
+            "the image would have been the whole viewport. Update the extension, or "
+            "take a plain screenshot and read the detail off that.",
+            {},
+        )
     encoded = str(data.get("base64") or data.get("data_url") or "")
     if encoded.startswith("data:") and "," in encoded:
         encoded = encoded.split(",", 1)[1]
@@ -1442,9 +1674,17 @@ async def chrome_screenshot(
     except Exception as exc:  # noqa: BLE001
         logger.error("chrome_screenshot finalize failed: %s", exc, exc_info=True)
         return f"[Error]: Could not save the screenshot: {exc}", {}
-    if _loading_sentence(data):
-        text += f"\n[Note]: {_loading_sentence(data).capitalize()}."
-    return text, artifact
+
+    from .image_read import read_image_dimensions
+
+    loading = _loading_sentence(data)
+    lines = [
+        text,
+        f"[Note]: {loading.capitalize()}." if loading else "",
+        _screenshot_honesty_lines(data, read_image_dimensions(raw)),
+        scale_note,
+    ]
+    return "\n".join(line for line in lines if line), artifact
 
 
 # Extension-side wait constants the batch budget must anticipate, hand-copied
