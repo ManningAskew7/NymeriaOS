@@ -971,6 +971,38 @@ def _network_capture_note(data: dict[str, Any]) -> str:
     return ""
 
 
+def _int_field(data: dict[str, Any], key: str) -> Optional[int]:
+    """A whitelisted integer from the payload, or None. ``bool`` is not an
+    int here: it is a different fact wearing the same type."""
+    value = data.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _network_limit_note(data: dict[str, Any]) -> str:
+    """Own up to rows the ``limit`` cut, rather than reporting them as absent.
+
+    ``count`` has always meant rows RETURNED, so a limit that trims the list
+    leaves an answer shaped exactly like a buffer that captured nothing. That
+    is the same false read as an unqualified empty answer, arriving by a
+    different route: measured live 2026-08-17, ``limit: 0`` reported
+    ``count: 0`` while the buffer held eight requests the agent had just seen.
+    Two whitelisted integers, so this renders outside the fence.
+    """
+    count = _int_field(data, "count")
+    total = _int_field(data, "matched_total")
+    if count is None or total is None or total <= count:
+        return ""
+    return (
+        f"[Showing the newest {count} of {total} captured requests: the rest were "
+        "cut by `limit`, not missing from capture. Raise limit to see more.]"
+    )
+
+
+def _network_notes(data: dict[str, Any]) -> str:
+    """The network read's honesty block, most load-bearing first."""
+    return "\n".join(p for p in (_network_capture_note(data), _network_limit_note(data)) if p)
+
+
 def _failed(payload: dict[str, Any]) -> Optional[str]:
     """Error string when the extension reported failure, else None."""
     if payload.get("ok"):
@@ -2246,7 +2278,8 @@ async def chrome_network(
 
     url_pattern: substring filter, e.g. "/api/".
     only_failures: just the 4xx, 5xx and transport failures.
-    limit: newest N requests; 0 returns none. At most 200 are buffered per tab.
+    limit: newest N requests; 0 returns none. At most 200 are buffered per
+        tab, and an answer the limit cut says how many it cut.
 
     Capture runs whenever the tab is being driven, so this is history, not a
     recording you have to start. Use it when a page looks fine but something
@@ -2266,9 +2299,7 @@ async def chrome_network(
     args: dict[str, Any] = {"tab_id": tab_id, "only_failures": only_failures, "limit": limit}
     if url_pattern:
         args["url_pattern"] = url_pattern
-    return await _dispatch(
-        command_type="network", args=args, config=config, notes=_network_capture_note
-    )
+    return await _dispatch(command_type="network", args=args, config=config, notes=_network_notes)
 
 
 @tool
