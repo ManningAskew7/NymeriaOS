@@ -992,8 +992,13 @@ def _network_limit_note(data: dict[str, Any]) -> str:
     total = _int_field(data, "matched_total")
     if count is None or total is None or total <= count:
         return ""
+    # The total is counted AFTER url_pattern/only_failures, so on a filtered
+    # read it is not the buffer size and must not read as one (operator note,
+    # live 2026-08-17: "of 40 captured requests" beside a filter invites the
+    # reader to think the tab made 40 requests in total).
+    of_what = "requests matching your filter" if data.get("filtered") is True else "captured requests"
     return (
-        f"[Showing the newest {count} of {total} captured requests: the rest were "
+        f"[Showing the newest {count} of {total} {of_what}: the rest were "
         "cut by `limit`, not missing from capture. Raise limit to see more.]"
     )
 
