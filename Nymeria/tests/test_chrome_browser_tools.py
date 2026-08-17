@@ -1175,6 +1175,43 @@ def test_screenshot_will_not_call_a_full_viewport_picture_a_region(workspace) ->
     assert "treat it as a plain capture" in content
 
 
+def test_screenshot_allows_chrome_its_own_rounding_of_a_clip(workspace) -> None:
+    """Measured live on 2026-08-17: a 62x6 element box at scale 4 predicts a
+    248px-wide image and Chrome returned 244, because it rounds the clip box
+    before rendering it. An absolute window called that correct capture a
+    failure, so the check is relative: it is looking for a viewport where a
+    paragraph was asked for, not for an off-by-four."""
+    rounded, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region_ref": "e5"},
+        _shot(
+            {
+                "region": {"x": 31, "y": 1408, "width": 62, "height": 6, "scale": 4},
+                "viewport": {"width": 1368, "height": 925},
+            },
+            image=_png(244, 24),
+        ),
+    )
+    assert "clipped from (31, 1408) 62x6 CSS px at capture scale 4" in rounded
+    assert "is NOT the" not in rounded
+
+    # The tolerance is relative, so it does not go slack on a large region:
+    # a 900px box at scale 1 tolerates 45px, and a viewport-sized image is
+    # still caught.
+    wrong, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 900, 400]},
+        _shot(
+            {
+                "region": {"x": 0, "y": 0, "width": 900, "height": 400, "scale": 1},
+                "viewport": {"width": 1368, "height": 925},
+            },
+            image=_png(1368, 925),
+        ),
+    )
+    assert "is NOT the 900x400 CSS px region asked for at scale 1" in wrong
+
+
 def test_screenshot_names_a_page_zoom_only_when_there_is_one(workspace) -> None:
     plain, _ = _invoke_raw(
         chrome_screenshot,

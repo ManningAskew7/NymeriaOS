@@ -586,7 +586,14 @@ def _region_lead(
     scale = _number(region.get("scale"))
     if len(box) != 4 or scale is None:
         return f"region image {image}"
-    if image_size and abs(image_size[0] - box[2] * scale) > 2:
+    # Relative, not absolute. Chrome rounds the clip box before rendering it,
+    # so a fractional element box legitimately comes back a few pixels off
+    # (measured live: a 62x6 box at scale 4 returned 244 where 248 was
+    # predicted, and the old two-pixel window called that correct capture a
+    # failure). The shape this is looking for is not off by four, it is the
+    # whole viewport where one paragraph was asked for.
+    expected = box[2] * scale
+    if image_size and abs(image_size[0] - expected) > max(4.0, expected * 0.05):
         return (
             f"region image {image}, which is NOT the {_num_text(round(box[2]))}x"
             f"{_num_text(round(box[3]))} CSS px region asked for at scale "
