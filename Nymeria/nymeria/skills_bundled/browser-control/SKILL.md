@@ -176,7 +176,11 @@ what it is now; trust it, that click would have hit the wrong meaning).
 Nothing is sent in any of these cases. Labels whose NUMBERS tick ("Cart
 (3)" to "Cart (4)") do not trip the changed-element check; a label that
 rewords itself constantly is the one case to target with "css=" instead of
-a ref.
+a ref. A "css=" selector IN chrome_act (not in a read's scope) searches OPEN
+shadow roots when the page's own DOM matches nothing, so web-component
+controls are reachable that way too, and says so in the result; a CLOSED root
+is reachable only by @ref from a page read. A selector matching several
+elements acts on one of them and tells you how many it matched.
 
 ## Dialogs, and when a tab stops responding to you
 

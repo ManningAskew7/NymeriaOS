@@ -852,22 +852,28 @@ def _frames_sentence(data: dict[str, Any], *, truncated: bool = False) -> str:
     truncated read hedges instead of asserting presence (review round: the
     unhedged sentence turned a silent amputation into a false claim).
     """
-    oopif = data.get("frames_oopif")
-    same_process = data.get("frames_same_process")
+    # `True` is an `int` in Python, so every count here excludes bool: these
+    # numbers come off the wire and a payload able to say `true` must not be
+    # able to render as "1 cross-origin iframe(s) read" (review round).
+    def _count(key: str) -> int:
+        value = data.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
     parts = []
-    if isinstance(oopif, int) and oopif > 0:
-        parts.append(f"{oopif} cross-origin")
-    if isinstance(same_process, int) and same_process > 0:
-        parts.append(f"{same_process} same-process")
+    if _count("frames_oopif") > 0:
+        parts.append(f"{_count('frames_oopif')} cross-origin")
+    if _count("frames_same_process") > 0:
+        parts.append(f"{_count('frames_same_process')} same-process")
     if not parts:
         return ""
-    line = (
-        f"[Frames: {', '.join(parts)} iframe(s) read, each as its own "
-        '"- iframe" section with actable refs'
-    )
-    skipped = data.get("frames_skipped")
-    if isinstance(skipped, int) and skipped > 0:
-        line += f"; {skipped} more frame(s) were NOT read (frame cap)"
+    line = f"[Frames: {', '.join(parts)} iframe(s) read"
+    # The tree INDENTS a frame inside a frame; a flat count beside it was the
+    # two halves of one read disagreeing about the same page.
+    if _count("frames_nested") > 0:
+        line += f" ({_count('frames_nested')} nested inside another frame)"
+    line += ', each as its own "- iframe" section with actable refs'
+    if _count("frames_skipped") > 0:
+        line += f"; {_count('frames_skipped')} more frame(s) were NOT read (frame cap)"
     if truncated:
         line += (
             "; NOTE this read was cut at the character cap and frame sections "
@@ -1077,20 +1083,22 @@ async def chrome_read_page(
 
     Iframes are included, not blind spots: cross-origin and same-origin
     frames alike each render as their own ``- iframe "<url>"`` section with
-    actable refs, nested frames included, and a trailing [Frames: ...] note
-    counts what was covered (a frame-farm page reads the first 8 per document
-    and says how many were skipped). A scoped read stays in its scope, so an
-    iframe element's own subtree is empty there; read the full page for the
-    frame's section.
+    actable refs, indented under the frame that embeds them, and a trailing
+    [Frames: ...] note counts what was covered and how much of it was nested
+    (a frame-farm page reads the first 8 per document and says how many were
+    skipped). A scoped read stays in its scope, so an iframe element's own
+    subtree is empty there; read the full page for the frame's section.
 
     Two honesty notes can follow the tree, both read through the browser's
     isolated inspection context, so a page cannot suppress them or write
     them: a [View constraint] note means a modal dialog, aria-modal widget,
     or fullscreen element is up and content OUTSIDE it is omitted, so a
     sparse tree means blocked, not empty (the aria-modal signal is page
-    markup, but only a visible dialog-role element counts); a hidden-nodes
-    note counts content the page hides (aria-hidden, inert) that was
-    dropped from the tree.
+    markup, but only a visible dialog-role element counts; the probe reads
+    the TOP document only, so a modal inside an iframe is not reported and a
+    sparse frame section is worth checking by eye); a hidden-nodes note
+    counts content the page hides (aria-hidden, inert) that was dropped from
+    the tree.
 
     A payload carrying "page_loading": true was captured while the tab was
     still loading: the tree is whatever had committed at that instant. If it
@@ -1221,7 +1229,8 @@ async def chrome_find(
     that tree and will not be found here. The usual case is the real
     ``<input type="file">`` behind a styled upload button: target it directly
     with ``chrome_act(ref="css=input[type=file]", action="upload")``, which
-    resolves through the DOM and does not care whether it is visible.
+    resolves through the DOM (open shadow roots included) and does not care
+    whether it is visible.
 
     Returns "no matches" rather than an error when nothing fits, so a failed
     search costs you a note instead of a dead turn. Prefer this over reading a
@@ -1368,10 +1377,63 @@ def _act_invisible_sentence(data: dict[str, Any]) -> str:
     )
 
 
+def _act_selector_sentence(data: dict[str, Any]) -> str:
+    """What a `css=`/`xpath=` act should own up to about its own target.
+
+    A selector names a RULE, not an element, so its failure mode is not the
+    drift a ref's fingerprint catches: it is acting confidently on the first
+    of fourteen matches, or on something the page's own DOM does not contain.
+    One validated integer and one exact string compare, nothing composed from
+    the payload, which is what lets this render outside the fence.
+    """
+    parts = []
+    matches = data.get("selector_matches")
+    shadow = data.get("matched_in") == "shadow-root"
+    # The extension says so when a search bound cut the count short, which
+    # makes the number a FLOOR. Rendering it as a total would be a
+    # measured-sounding claim about a search that stopped early.
+    partial = data.get("selector_matches_capped") is True
+    ambiguous = isinstance(matches, int) and not isinstance(matches, bool) and matches > 1
+    if ambiguous and shadow:
+        # Both facts in one sentence, because the WHERE qualifies the WHICH:
+        # a shadow match means the document matched nothing, and the roots
+        # are searched breadth-first, so "first" is document order only
+        # inside one root.
+        parts.append(
+            f"{'at least ' if partial else ''}{matches} elements matched inside the page's "
+            "open shadow roots; the first one the search reached was used, so narrow the "
+            "selector if that is not the one you meant"
+        )
+    elif ambiguous:
+        parts.append(
+            f"matched {matches} elements and acted on the FIRST in document order, so "
+            "narrow the selector if that is not the one you meant"
+        )
+    elif shadow:
+        parts.append("the match came from inside a shadow root, not the page's own DOM")
+    if partial and not ambiguous:
+        # Silence here would read as "unambiguous", which is exactly what the
+        # cut search cannot establish.
+        parts.append(
+            "the search for other matches hit its budget, so more of them may exist"
+        )
+    if not parts:
+        return ""
+    return f"[Selector target: {'; '.join(parts)}.]"
+
+
 def _act_honesty_lines(data: dict[str, Any]) -> str:
     """The act-honesty block, composed once so every line lands outside the
     fence through `_outside_fence`, exactly as the read notes do."""
-    parts = [p for p in (_act_refusal_sentence(data), _act_invisible_sentence(data)) if p]
+    parts = [
+        p
+        for p in (
+            _act_refusal_sentence(data),
+            _act_selector_sentence(data),
+            _act_invisible_sentence(data),
+        )
+        if p
+    ]
     return "\n".join(parts)
 
 
@@ -1421,7 +1483,17 @@ async def chrome_act(
         (3)" to "Cart (4)"); for the rare label that rewords itself
         constantly, target it with "css=". Believe those refusals and
         re-read; they exist because acting on a repurposed element clicks
-        the wrong thing with full confidence.
+        the wrong thing with full confidence. A "css=" selector HERE (this
+        tool only, not chrome_read_page's scope or extract_text) tries the
+        page's own DOM first and, only when that matches nothing, searches
+        OPEN shadow roots, so a control inside a web component needs no new
+        syntax; the result says "matched_in": "shadow-root" when that is
+        where it came from. Nothing reaches a CLOSED shadow root by
+        selector, but a page read does: use the element's "@eN" ref there.
+        "xpath=" never crosses a shadow boundary (XPath cannot express one),
+        so prefer "css=". A selector matching several elements acts on ONE
+        of them and reports "selector_matches": N, so narrow it if the count
+        surprises you.
     value: the text for fill/type, the option label or value for select, the
         key name for key (e.g. "Enter", "Tab", "Escape").
     coordinate: [x, y] viewport pixels, as an alternative target for click,
@@ -1440,7 +1512,13 @@ async def chrome_act(
         both frame classes, the same coverage as a read; URL containing a
         substring, an element present: a "@eN" ref or a "css=" selector), or
         once timeout_ms (default 5000) elapses. A met condition is positive
-        evidence the action did what it was for. An unmet one on a delivered
+        evidence the action did what it was for ("waited_ms" times the wait
+        itself, nothing before it). On a bare action="wait" a met condition
+        can carry "condition_met_before_wait": true, meaning it already held
+        at the first check rather than appearing while you waited; a wait
+        fused to an action never reports it, because that wait opens after
+        the action has settled, where already-true is the ordinary shape of
+        success. An unmet one on a delivered
         action does NOT fail the call: the payload carries found: false and
         the input still went in, so judge the outcome, not the wait. This
         makes "click and confirm the row appeared" ONE call, not a click
@@ -1492,10 +1570,11 @@ async def chrome_act(
     and its delivery verified there, so an in-frame silent no-op FAILS like
     anything else, and the ref stays valid while the frame lives; if the
     frame navigated away or was removed, the act refuses and says to
-    re-read. Ref-less type/key follow the focused element into a
-    cross-origin frame and verify there; focused inside a SAME-ORIGIN frame
-    they deliver correctly but verification reads "unknown" (the probe
-    watches the top document). Two deliberate refusals: a coordinate click/hover/drag
+    re-read. Ref-less type/key follow the focused element into a frame of
+    either kind and are verified inside that frame's own document, so an
+    in-frame keystroke that vanished usually FAILS rather than reporting
+    "unknown" (a frame that itself embeds another frame still reports
+    "unknown": the probe cannot rule out a deeper document). Two deliberate refusals: a coordinate click/hover/drag
     landing on a CROSS-ORIGIN iframe is refused up front (page coordinates
     cannot reach into another origin's frame; act on that frame's own refs
     from the page read instead; same-origin frames accept coordinates
@@ -1586,9 +1665,9 @@ async def chrome_act(
     with "refused": "pointer_events_none", which is NOT an overlay to
     dismiss: the element cannot take a click where it stands, and the
     message names what the click would have hit instead. All three sent
-    nothing, so nothing needs undoing. These three read the element itself,
-    which only a "@eN" ref allows: a "css="/"xpath=" target is not probed
-    and behaves as it did before.
+    nothing, so nothing needs undoing. They read the element itself, which
+    every ref and selector target gets; only a bare coordinate, having no
+    element to read, goes unchecked.
 
     Acting on something invisible is reported, not refused. A transparent
     element that still wins the hit test is usually the deliberate target
