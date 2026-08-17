@@ -143,6 +143,33 @@ def get_thread_command_dir(thread_id: str) -> Path:
     return base
 
 
+def get_thread_fitted_image_dir(thread_id: str, *, create: bool = True) -> Path:
+    """Resolve (and create) the per-thread fitted-image spill directory.
+
+    Layout: ``<workspace>/threads/<thread_id>/fitted/`` (sibling of ``fetched/``).
+    Holds ONE derived artifact: a copy of an image downscaled to the model's
+    pixel ceiling (`core/generated_image_context.py`). It exists so the resize is
+    paid once rather than on every LLM call that replays the image, so every file
+    here is disposable: delete it and the next replay simply re-fits. Cleaned up
+    with the thread by ``cleanup_thread_attachments``, like its siblings, and
+    trimmed to a byte ceiling by its writer.
+
+    ``create=False`` for the LOOKUP path, which runs far more often than the
+    write and has no business making (or re-chmodding) a directory it is only
+    reading. The siblings have no such caller and so no such flag.
+    """
+    sanitized = _sanitize_thread_id(thread_id)
+    base = _workspace_root() / "threads" / sanitized / "fitted"
+    if not create:
+        return base
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        base.chmod(0o700)
+    except (PermissionError, OSError):
+        logger.debug("Could not chmod %s; continuing", base)
+    return base
+
+
 def _sanitize_thread_id(thread_id: str) -> str:
     """Defensive: thread ids come from auth-protected code paths, but we still
     refuse traversal characters here so the path stays inside the workspace.

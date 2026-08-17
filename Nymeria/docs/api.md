@@ -1066,6 +1066,7 @@ per-thread LLM overrides are applied.
   "limits": {
     "max_images_per_request": 100,
     "max_image_bytes": null,
+    "max_image_dimension": 2000,
     "max_pdf_pages": null,
     "max_total_bytes": null
   }

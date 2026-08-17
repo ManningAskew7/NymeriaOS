@@ -14,7 +14,11 @@ from ..config import get_settings
 from ..core.exec_policy import PROC_READABLE_FILES
 from ..core.storage_paths import write_text_atomic
 from .execution_environment import resolve_tool_path
-from .image_read import prepare_image_for_native_context, sniff_image_mime
+from .image_read import (
+    prepare_image_for_native_context,
+    read_image_dimensions,
+    sniff_image_mime,
+)
 from .utils import get_thread_id, is_admin
 
 # The only errors that justify abandoning the atomic overwrite and writing in
@@ -380,6 +384,7 @@ def _read_image(path: Path, file_size: int, config: Optional[RunnableConfig]):
         build_native_image_artifact,
         explain_image_context_support,
     )
+    from ..core.image_limits import get_model_max_image_dimension
 
     if file_size > _IMAGE_READ_CEILING_BYTES:
         return (
@@ -399,7 +404,11 @@ def _read_image(path: Path, file_size: int, config: Optional[RunnableConfig]):
     cap = get_attachment_limits(llm_config.model or "").get("max_image_bytes")
     max_bytes = cap if isinstance(cap, int) and cap > 0 else _DEFAULT_IMAGE_CAP_BYTES
 
-    out_bytes, mime, error = prepare_image_for_native_context(path, max_image_bytes=max_bytes)
+    out_bytes, mime, error = prepare_image_for_native_context(
+        path,
+        max_image_bytes=max_bytes,
+        long_edge_ceiling=get_model_max_image_dimension(llm_config.model or ""),
+    )
     if error is not None:
         return f"[Error]: Cannot read image: {error}.", {}
     if mime is None:
@@ -418,7 +427,20 @@ def _read_image(path: Path, file_size: int, config: Optional[RunnableConfig]):
 
     note = f"Loaded image '{path.name}' ({mime}). It is now visible to you below."
     if downscaled:
-        note += " (Downscaled to fit this model's image size limit.)"
+        # "Prepared" covers three different jobs: a resize, a format conversion
+        # (bmp/tiff, which is not a downscale at all), or both. Only claim the
+        # downscale, with its numbers, when the pixels actually changed.
+        # EXIF applied on both sides: the delivered bytes are already transposed,
+        # so reading the source as stored would disclose a rotated pair.
+        original = read_image_dimensions(path, apply_exif=True)
+        delivered = read_image_dimensions(out_bytes)
+        if original and delivered and original != delivered:
+            note += (
+                f" (Downscaled from {original[0]}x{original[1]} to "
+                f"{delivered[0]}x{delivered[1]} to fit this model's image limits.)"
+            )
+        else:
+            note += f" (Converted to {mime} to fit this model's image limits.)"
     artifact = build_native_image_artifact(
         artifact_path, mime, source="file_read", original_path=str(path)
     )

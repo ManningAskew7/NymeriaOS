@@ -78,6 +78,49 @@ def test_oversized_image_written_to_sandbox(tmp_path, monkeypatch):
     assert "Downscaled" in content
 
 
+def test_tall_image_is_downscaled_and_the_note_names_both_sizes(tmp_path, monkeypatch):
+    # file_read had the same hole as the replay path: a tall image is small in
+    # bytes, so only the pixel ceiling catches it.
+    _supported(monkeypatch)
+    path = tmp_path / "tall.png"
+    _png(path, size=(1368, 2088), color="white")
+
+    content, artifact = file_read.func(str(path), config=_CFG)
+
+    delivered = Image.open(artifact[NATIVE_IMAGE_ARTIFACT_KEY]["path"])
+    assert max(delivered.size) == 2000
+    assert f"Downscaled from 1368x2088 to {delivered.width}x{delivered.height}" in content
+
+
+def test_file_read_ceiling_comes_from_the_model_not_the_module_default(tmp_path, monkeypatch):
+    # The module fallback and the table's answer happen to coincide today, so
+    # only a non-default model limit proves file_read actually resolves one.
+    _supported(monkeypatch)
+    monkeypatch.setattr(
+        "nymeria.core.image_limits.get_model_max_image_dimension", lambda _model: 512
+    )
+    path = tmp_path / "tall.png"
+    _png(path, size=(1368, 2088), color="white")
+
+    content, artifact = file_read.func(str(path), config=_CFG)
+
+    assert max(Image.open(artifact[NATIVE_IMAGE_ARTIFACT_KEY]["path"]).size) == 512
+    assert "to 335x512" in content
+
+
+def test_conversion_only_does_not_claim_a_downscale(tmp_path, monkeypatch):
+    # A bmp is converted, not resized. Naming sizes turned the old vague copy
+    # into a self-contradiction ("Downscaled from 64x64 to 64x64").
+    _supported(monkeypatch)
+    path = tmp_path / "tiny.bmp"
+    Image.new("RGB", (64, 64), "green").save(path, format="BMP")
+
+    content, _artifact = file_read.func(str(path), config=_CFG)
+
+    assert "Downscaled" not in content
+    assert "Converted to image/" in content
+
+
 def test_non_vision_model_warns(tmp_path, monkeypatch):
     _supported(monkeypatch)
     monkeypatch.setattr(generated_image_context, "supports_vision", lambda _m: False)

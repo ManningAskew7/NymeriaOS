@@ -1,17 +1,20 @@
-"""Per-thread image-window resolution (newest-N images kept in context).
+"""Per-model image limits: how many images fit in context, and how big each is.
 
 The sibling of ``memory_limits`` for the image sliding window: resolve the
 per-thread ``image_window_size`` override, else the model's
 ``max_images_per_request``, clamped to that model max as a hard ceiling. The
 ``thread_config_manager`` is injectable (mirroring ``memory_limits``) so the
 resolver is unit-testable without the agent singleton.
+
+Also the one place that answers "how many pixels may one image be?"
+(``get_model_max_image_dimension``), for the paths that send images.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..config.model_capabilities import get_attachment_limits
+from ..config.model_capabilities import DEFAULT_MAX_IMAGE_DIMENSION, get_attachment_limits
 
 # Fallback window when the model's max-images cap is unknown.
 DEFAULT_IMAGE_WINDOW = 16
@@ -23,6 +26,23 @@ def get_model_max_images(model: str) -> int:
     if isinstance(cap, int) and cap >= 1:
         return cap
     return DEFAULT_IMAGE_WINDOW
+
+
+def get_model_max_image_dimension(model: str) -> int:
+    """Return the model's max image long edge in pixels.
+
+    The dimension twin of ``get_model_max_images``, and the axis the byte cap
+    cannot see: a tall screenshot is tiny in bytes and still rejected outright,
+    with a 400 that kills the whole turn rather than dropping one image.
+
+    Honoured today by the two paths that surface a TOOL image: ``file_read``
+    and the hydrated replay in ``generated_image_context``. User-uploaded images
+    are inline in the checkpoint and are NOT fitted against it (backlog 03).
+    """
+    cap = get_attachment_limits(model or "").get("max_image_dimension")
+    if isinstance(cap, int) and cap >= 1:
+        return cap
+    return DEFAULT_MAX_IMAGE_DIMENSION
 
 
 def get_effective_image_window_size(

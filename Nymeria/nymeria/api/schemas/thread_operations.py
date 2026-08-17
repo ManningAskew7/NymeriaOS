@@ -26,6 +26,10 @@ class AttachmentLimits(BaseModel):
 
     max_images_per_request: Optional[int] = None
     max_image_bytes: Optional[int] = None
+    # Long edge in pixels. Unlike the others this one is never None in practice
+    # (the table always answers), and it is the cap a client cannot infer from
+    # file size: an image over it fails the whole REQUEST at the provider.
+    max_image_dimension: Optional[int] = None
     max_pdf_pages: Optional[int] = None
     max_total_bytes: Optional[int] = None
 

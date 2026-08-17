@@ -71,6 +71,7 @@ class ModelInfo:
     # report a per-model number; callers should fall back to the family table.
     max_images_per_request: Optional[int] = None
     max_image_bytes: Optional[int] = None
+    max_image_dimension: Optional[int] = None  # long edge in pixels
     max_pdf_pages: Optional[int] = None
     max_total_attachment_bytes: Optional[int] = None
 
@@ -413,11 +414,27 @@ def _safe_float(value, allow_zero: bool = False) -> Optional[float]:
 #   Gemini: ai.google.dev/gemini-api. 3000 files/request, 100 MB inline,
 #     1000 pages per PDF.
 # Family matching is substring-based against the lowercased model id; the
-# first matching family wins, so list more specific patterns first.
+# first matching family wins, so list more specific patterns first. Family rows
+# override the defaults KEY BY KEY, so a row carries only what it genuinely
+# changes (the stale-marker-list lesson below: a row repeating a default reads
+# as if it differs).
+
+# Safe long edge, in pixels, for one image sent as vision input.
+#
+# MEASURED 2026-08-17: a 1368x2088 browser screenshot, small in bytes and well
+# inside every byte cap, ended the whole turn with an Anthropic 400: "At least
+# one of the image dimensions exceed max allowed size for many-image requests:
+# 2000 pixels". The higher 8000px ceiling applies only to requests carrying few
+# images, and the image window's default IS the model's max-images cap (100 on
+# Claude), so a replayed image can never assume it is in a small request. 2000
+# is therefore the ceiling that always holds, and it is high enough to leave a
+# 1080p capture, a phone photo in portrait, or a 2K screenshot untouched.
+DEFAULT_MAX_IMAGE_DIMENSION = 2000
 
 _DEFAULT_ATTACHMENT_LIMITS: Dict[str, Optional[int]] = {
     "max_images_per_request": 16,
     "max_image_bytes": 5 * 1024 * 1024,
+    "max_image_dimension": DEFAULT_MAX_IMAGE_DIMENSION,
     "max_pdf_pages": 100,
     "max_total_bytes": 32 * 1024 * 1024,
 }
@@ -465,14 +482,21 @@ _ATTACHMENT_LIMITS_BY_FAMILY: List[tuple[tuple[str, ...], Dict[str, Optional[int
 
 
 def _resolve_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
-    """Pattern-match a model id against the per-family attachment-limit table."""
+    """Pattern-match a model id against the per-family attachment-limit table.
+
+    A family row layers over the defaults rather than replacing them, so a key
+    only a family diverges on (or a key added later) needs one entry, not one
+    per row. An explicit ``None`` in a row still wins (OpenAI's max_pdf_pages).
+    """
+    limits = dict(_DEFAULT_ATTACHMENT_LIMITS)
     if not model_id:
-        return dict(_DEFAULT_ATTACHMENT_LIMITS)
+        return limits
     lowered = model_id.lower()
-    for patterns, limits in _ATTACHMENT_LIMITS_BY_FAMILY:
+    for patterns, family in _ATTACHMENT_LIMITS_BY_FAMILY:
         if any(p in lowered for p in patterns):
-            return dict(limits)
-    return dict(_DEFAULT_ATTACHMENT_LIMITS)
+            limits.update(family)
+            break
+    return limits
 
 
 # ============================================================================
@@ -1093,6 +1117,7 @@ def _fetch_anthropic_models(
             reasoning_efforts=reasoning_efforts,
             max_images_per_request=family_limits.get("max_images_per_request"),
             max_image_bytes=family_limits.get("max_image_bytes"),
+            max_image_dimension=family_limits.get("max_image_dimension"),
             max_pdf_pages=family_limits.get("max_pdf_pages"),
             max_total_attachment_bytes=family_limits.get("max_total_bytes"),
         )
@@ -2500,7 +2525,9 @@ def get_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
     live fetcher (Anthropic, future) populates ModelInfo with explicit caps,
     those override the family default for the keys they fill.
 
-    Keys: ``max_images_per_request``, ``max_image_bytes``, ``max_pdf_pages``,
+    Keys: ``max_images_per_request``, ``max_image_bytes``,
+    ``max_image_dimension`` (long edge in pixels; resolve it through
+    ``core.image_limits.get_model_max_image_dimension``), ``max_pdf_pages``,
     ``max_total_bytes`` (request payload cap).
     """
     limits = _resolve_attachment_limits(model_id)
@@ -2510,6 +2537,8 @@ def get_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
             limits["max_images_per_request"] = info.max_images_per_request
         if info.max_image_bytes is not None:
             limits["max_image_bytes"] = info.max_image_bytes
+        if info.max_image_dimension is not None:
+            limits["max_image_dimension"] = info.max_image_dimension
         if info.max_pdf_pages is not None:
             limits["max_pdf_pages"] = info.max_pdf_pages
         if info.max_total_attachment_bytes is not None:
