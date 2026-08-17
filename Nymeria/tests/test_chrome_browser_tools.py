@@ -1122,7 +1122,35 @@ def test_screenshot_spends_the_conversion_warning_only_where_it_buys_something(w
         {"tab_id": 1},
         _shot({"viewport": {"width": 40, "height": 30}, "scale": 2}, image=_png(80, 60)),
     )
-    assert "not image px" in hidpi
+    assert "chrome_act coordinates are viewport CSS px, not image px" in hidpi
+
+
+def test_screenshot_tells_a_region_apart_from_a_mere_scale_mismatch(workspace) -> None:
+    """A region image is not a picture of the viewport at ANY pixel ratio, so
+    "convert with the sizes above" would be advice toward a wrong answer. Live
+    QA read the shared wording as if it were the ratio rule, which is exactly
+    the confusion that costs a mis-aimed click."""
+    region, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 100, 50]},
+        _shot(
+            {
+                "region": {"x": 0, "y": 0, "width": 100, "height": 50, "scale": 2},
+                "viewport": {"width": 1280, "height": 720},
+                "scale": 1,
+            },
+            image=_png(200, 100),
+        ),
+    )
+    assert "No chrome_act coordinate can be read off this image directly." in region
+    assert "not image px" not in region, "the ratio rule does not apply to a region"
+
+    full, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "full_page": True},
+        _shot({"full_page": True, "scale": 1}, image=_png(1280, 9000)),
+    )
+    assert "No chrome_act coordinate can be read off this image directly." in full
 
 
 def test_screenshot_will_not_call_a_full_viewport_picture_a_region(workspace) -> None:
@@ -1277,7 +1305,7 @@ def test_screenshot_region_says_when_it_was_trimmed(workspace) -> None:
             image=_png(160, 40),
         ),
     )
-    assert "trimmed to the viewport" in content
+    assert "trimmed to the page" in content
 
 
 def test_screenshot_region_passes_a_ref_through_to_the_extension(workspace) -> None:
@@ -1359,6 +1387,108 @@ def test_screenshot_still_calls_a_full_page_image_full_page_without_dimensions(w
     )
     assert "full-page image of unknown size" in content
     assert "spanning the whole document rather than the viewport" in content
+
+
+def test_screenshot_owns_up_to_reflowing_the_page(workspace) -> None:
+    """Reaching past the viewport drops the page's scrollbar and shifts its
+    layout, permanently, on the user's live page. Measured 2026-08-16. A
+    read-only-looking tool must not do that silently, and the agent needs to
+    know every coordinate it was holding just moved."""
+    reflowed, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "full_page": True},
+        _shot({"full_page": True, "beyond_viewport": True}, image=_png(40, 30)),
+    )
+    assert "[Reflow]" in reflowed
+    assert "Coordinates taken before this capture may be stale." in reflowed
+
+    ordinary, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1},
+        _shot({"beyond_viewport": False}, image=_png(40, 30)),
+    )
+    assert "[Reflow]" not in ordinary, "a capture that changed nothing must say nothing"
+
+
+def test_screenshot_flags_a_region_that_came_back_blank(workspace) -> None:
+    """A clip Chrome declines to render returns a perfectly successful capture
+    of one flat colour with no error anywhere. Diagnosing that from byte
+    lengths cost a whole QA round; the image itself can just say so."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 40), (255, 255, 255)).save(buf, format="PNG")
+    blank, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 30, 20]},
+        _shot(
+            {"region": {"x": 0, "y": 0, "width": 30, "height": 20, "scale": 2}},
+            image=buf.getvalue(),
+        ),
+    )
+    assert "[Blank]" in blank
+    assert "single flat colour" in blank
+
+    # A region with real content in it says nothing of the sort.
+    buf2 = io.BytesIO()
+    img = Image.new("RGB", (60, 40), (255, 255, 255))
+    img.putpixel((5, 5), (10, 20, 30))
+    img.save(buf2, format="PNG")
+    real, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 30, 20]},
+        _shot(
+            {"region": {"x": 0, "y": 0, "width": 30, "height": 20, "scale": 2}},
+            image=buf2.getvalue(),
+        ),
+    )
+    assert "[Blank]" not in real
+
+    # Scoped to regions on purpose: this one DECODES pixels, unlike the
+    # header-only dimension probe, and a plain capture of a blank page is an
+    # honest picture of a blank page rather than a suspicious clip.
+    plain, _ = _invoke_raw(chrome_screenshot, {"tab_id": 1}, _shot({}, image=buf.getvalue()))
+    assert "[Blank]" not in plain
+
+
+def test_screenshot_rounds_a_fractional_region_box_for_reading(workspace) -> None:
+    """An element's own quads are fractional ("255.88x21"), and sub-pixel
+    precision in a "which box did I get" line is noise to look past."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region_ref": "@e4"},
+        _shot(
+            {"region": {"x": 18, "y": 255.88, "width": 106.16, "height": 21, "scale": 2}},
+            image=_png(212, 42),
+        ),
+    )
+    assert "clipped from (18, 256) 106x21 CSS px" in content
+    assert "255.88" not in content
+
+
+def test_screenshot_leaves_the_region_scale_to_the_extension_unless_asked(workspace) -> None:
+    """The right magnification depends on the BOX, which only the extension has
+    measured: a label wants the ceiling, a whole panel wants none of it. A
+    default asserted here would override that with a guess."""
+    capture: list = []
+    _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 100, 50]},
+        _shot({"region": {"x": 0, "y": 0, "width": 100, "height": 50, "scale": 4}}),
+        capture=capture,
+    )
+    assert "region_scale" not in capture[0]["args"]
+
+    asked: list = []
+    _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 100, 50], "region_scale": 3},
+        _shot({"region": {"x": 0, "y": 0, "width": 100, "height": 50, "scale": 3}}),
+        capture=asked,
+    )
+    assert asked[0]["args"]["region_scale"] == 3
 
 
 def _refuse(args: dict) -> tuple[str, dict]:
