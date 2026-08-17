@@ -2977,6 +2977,43 @@ def test_network_says_how_many_rows_the_limit_cut() -> None:
     assert "cut by `limit`, not missing from capture" in after
 
 
+def test_network_truncation_note_does_not_pass_a_filtered_total_off_as_the_buffer() -> None:
+    """The total counts what matched the FILTER, so on a filtered read it is
+    not the tab's request count and must not read as one (operator note, live
+    2026-08-17)."""
+    filtered = _invoke(
+        chrome_network,
+        {"tab_id": 1, "url_pattern": "/api/", "limit": 1},
+        _ok(
+            {
+                "requests": [{"url": "https://example.com/api/a"}],
+                "count": 1,
+                "matched_total": 6,
+                "filtered": True,
+            }
+        ),
+    )
+    after = filtered.rpartition("</untrusted_page_content>")[2]
+    assert "of 6 requests matching your filter" in after
+    assert "captured requests" not in after
+
+    unfiltered = _invoke(
+        chrome_network,
+        {"tab_id": 1, "limit": 1},
+        _ok(
+            {
+                "requests": [{"url": "https://example.com/a"}],
+                "count": 1,
+                "matched_total": 6,
+                "filtered": False,
+            }
+        ),
+    )
+    after = unfiltered.rpartition("</untrusted_page_content>")[2]
+    assert "of 6 captured requests" in after
+    assert "matching your filter" not in after
+
+
 def test_network_says_nothing_about_a_limit_that_cut_nothing() -> None:
     untrimmed = _invoke(
         chrome_network,
