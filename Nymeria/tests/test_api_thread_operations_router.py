@@ -593,6 +593,9 @@ def test_attachment_limits_endpoint_returns_per_model_caps(tmp_path: Path, api_c
     assert body["effective_model"] == "openai/gpt-5.5"
     assert body["limits"]["max_images_per_request"] == 1500
     assert body["limits"]["max_total_bytes"] == 512 * 1024 * 1024
+    # The pixel ceiling has to reach the client too: it is the one cap a
+    # frontend cannot infer from the file it is about to upload.
+    assert body["limits"]["max_image_dimension"] == 2000
 
 
 def test_attachment_limits_endpoint_falls_back_to_settings_model(

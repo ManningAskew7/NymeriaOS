@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, ToolMessage
+from PIL import Image
 
 from nymeria.core import generated_image_context
 from nymeria.core.generated_image_context import (
@@ -16,6 +17,11 @@ _DATA_URL = "data:image/png;base64,QUJD"
 
 def _anthropic() -> LLMConfig:
     return LLMConfig(provider="anthropic", model="claude-sonnet-4-6")
+
+
+def _write_png(path, size=(32, 32)) -> None:
+    """A real PNG: hydration measures dimensions and refuses what it cannot."""
+    Image.new("RGB", size, "white").save(path, format="PNG")
 
 
 def _generated_tool_message(path: str, call_id: str) -> ToolMessage:
@@ -73,9 +79,9 @@ def test_window_keeps_newest_across_generated_and_user(tmp_path, monkeypatch):
     monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
     _force_window(monkeypatch, 2)
     g1 = tmp_path / "g1.png"
-    g1.write_bytes(b"png-bytes-1")
+    _write_png(g1)
     g2 = tmp_path / "g2.png"
-    g2.write_bytes(b"png-bytes-2")
+    _write_png(g2)
 
     u1 = _user_image_message("first upload", "/workspace/images/prompt-attached/u/old.png")
     tg1 = _generated_tool_message(str(g1), "call-g1")
@@ -103,7 +109,7 @@ def test_window_large_keeps_everything(tmp_path, monkeypatch):
     monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
     _force_window(monkeypatch, 100)
     g1 = tmp_path / "g1.png"
-    g1.write_bytes(b"png-bytes-1")
+    _write_png(g1)
 
     u1 = _user_image_message("upload", "/workspace/images/prompt-attached/u/a.png")
     tg1 = _generated_tool_message(str(g1), "call-g1")

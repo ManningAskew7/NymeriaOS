@@ -156,6 +156,29 @@ def test_get_attachment_limits_matches_claude_family(monkeypatch):
     assert legacy_limits["max_images_per_request"] == 100
 
 
+def test_every_family_carries_the_pixel_ceiling(monkeypatch):
+    # A family row layers over the defaults, so a key no row diverges on (the
+    # pixel ceiling) still reaches every model instead of vanishing for the
+    # three matched families.
+    _set_model_cache(monkeypatch, {})
+
+    for model in ("claude-opus-4-7", "gpt-5.5", "gemini-2.5-pro", "totally-unknown-model-x"):
+        limits = capabilities.get_attachment_limits(model)
+        assert limits["max_image_dimension"] == capabilities.DEFAULT_MAX_IMAGE_DIMENSION == 2000
+
+
+def test_family_rows_still_win_over_the_defaults(monkeypatch):
+    # The merge must not let a default shadow a row: OpenAI's explicit None
+    # page cap and Gemini's larger counts are row values, not defaults.
+    _set_model_cache(monkeypatch, {})
+
+    assert capabilities.get_attachment_limits("gpt-5.5")["max_pdf_pages"] is None
+    assert capabilities.get_attachment_limits("gemini-2.5-pro")["max_images_per_request"] == 3000
+    assert (
+        capabilities.get_attachment_limits("totally-unknown-model-x")["max_pdf_pages"] == 100
+    )
+
+
 def test_get_attachment_limits_matches_openai_family(monkeypatch):
     _set_model_cache(monkeypatch, {})
 
@@ -190,6 +213,7 @@ def test_get_attachment_limits_uses_live_modelinfo_overrides(monkeypatch):
                 id="anthropic/claude-mystery",
                 max_images_per_request=7,
                 max_image_bytes=1234,
+                max_image_dimension=8000,
                 max_pdf_pages=42,
                 max_total_attachment_bytes=999,
             )
@@ -199,6 +223,7 @@ def test_get_attachment_limits_uses_live_modelinfo_overrides(monkeypatch):
     limits = capabilities.get_attachment_limits("anthropic/claude-mystery")
     assert limits["max_images_per_request"] == 7
     assert limits["max_image_bytes"] == 1234
+    assert limits["max_image_dimension"] == 8000  # a live cap beats the table
     assert limits["max_pdf_pages"] == 42
     assert limits["max_total_bytes"] == 999
 
