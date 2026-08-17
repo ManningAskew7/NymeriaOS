@@ -588,12 +588,15 @@ def _region_lead(
         return f"region image {image}"
     if image_size and abs(image_size[0] - box[2] * scale) > 2:
         return (
-            f"region image {image}, which is NOT the {_num_text(box[2])}x{_num_text(box[3])} "
-            f"CSS px region asked for at scale {_num_text(scale)}: treat it as a plain "
-            "capture, not a magnified crop"
+            f"region image {image}, which is NOT the {_num_text(round(box[2]))}x"
+            f"{_num_text(round(box[3]))} CSS px region asked for at scale "
+            f"{_num_text(scale)}: treat it as a plain capture, not a magnified crop"
         )
-    x, y, w, h = (_num_text(value) for value in box)
-    trimmed = " (trimmed to the viewport)" if region.get("clamped") else ""
+    # Rounded for reading. A box from an element's own quads is fractional
+    # ("255.88x21"), and sub-pixel precision in a "which box did I get" line is
+    # noise the operator has to look past.
+    x, y, w, h = (_num_text(round(value)) for value in box)
+    trimmed = " (trimmed to the page)" if region.get("clamped") else ""
     return (
         f"region image {image}, clipped from ({x}, {y}) {w}x{h} CSS px at capture "
         f"scale {_num_text(scale)}{trimmed}"
@@ -647,12 +650,19 @@ def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int
     if not lead and not page:
         return ""
     body = "; ".join(part for part in (lead, ", ".join(page)) if part)
-    # The conversion warning is not free: it rides every capture. On a plain
-    # 1x capture image px ARE viewport CSS px, so there is nothing to convert
-    # and the clause would be pure noise. It fires when the picture is not the
-    # viewport, when the ratio is not 1, or when the ratio is unknown.
-    needs_warning = bool(region) or bool(data.get("full_page")) or ratio is None or ratio != 1
-    warning = " chrome_act coordinates are viewport CSS px, not image px." if needs_warning else ""
+    # The warning is not free: it rides every capture. Three cases, because
+    # they are three different mistakes. A region or full-page image is not a
+    # picture of the viewport AT ALL, so no coordinate can be read off it and
+    # saying "convert" would be advice toward a wrong answer (live QA read the
+    # shared wording as if it were the ratio rule). A viewport picture whose
+    # ratio is not 1 needs converting. A plain 1x capture needs neither, since
+    # image px ARE viewport CSS px, and the clause would be pure noise.
+    if region or data.get("full_page"):
+        warning = " No chrome_act coordinate can be read off this image directly."
+    elif ratio is None or ratio != 1:
+        warning = " chrome_act coordinates are viewport CSS px, not image px."
+    else:
+        warning = ""
     return f"[Geometry]: {body}.{warning}"
 
 
@@ -673,11 +683,74 @@ def _zoom_sentence(data: dict[str, Any]) -> str:
     )
 
 
-def _screenshot_honesty_lines(data: dict[str, Any], image_size: Optional[tuple[int, int]]) -> str:
+def _reflow_sentence(data: dict[str, Any]) -> str:
+    """Own up to having changed the page in order to photograph it.
+
+    Reaching past the viewport is the only way to capture a full page or a
+    region that is off screen, and Chrome pays for it by dropping the page's
+    scrollbar and reflowing the layout, permanently: measured 2026-08-16, the
+    layout viewport went 1353 to 1368 across one capture and stayed there
+    until the tab navigated. A read-only-looking tool that silently moves the
+    user's page is exactly the kind of thing this surface reports rather than
+    hides, and the agent needs it too, since every coordinate it holds just
+    shifted.
+    """
+    if data.get("beyond_viewport") is not True:
+        return ""
+    return (
+        "[Reflow]: reaching past the viewport for this capture drops the page's "
+        "scrollbar and shifts its layout by that width until the tab navigates. "
+        "Coordinates taken before this capture may be stale."
+    )
+
+
+def _flat_image_sentence(raw: bytes, data: dict[str, Any]) -> str:
+    """Flag a region that came back as one uniform colour.
+
+    A clip Chrome declines to render returns a perfectly successful capture of
+    pure white with no error anywhere (measured 2026-08-16, and it cost a whole
+    QA round to diagnose from byte lengths). The decode is bounded to region
+    captures and to modest images: it reads pixels, unlike the header-only
+    dimension probe, and a full-page screenshot is neither the risky case nor
+    a cheap one to scan.
+    """
+    if not isinstance(data.get("region"), dict):
+        return ""
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as img:
+            if img.width * img.height > 2_000_000:
+                return ""
+            colours = img.convert("RGB").getcolors(maxcolors=2)
+    except Exception:  # noqa: BLE001
+        return ""
+    if colours is None or len(colours) != 1:
+        return ""
+    return (
+        "[Blank]: this image is a single flat colour, so it is probably showing "
+        "nothing. Check the region against a plain screenshot."
+    )
+
+
+def _screenshot_honesty_lines(
+    data: dict[str, Any], image_size: Optional[tuple[int, int]], raw: bytes
+) -> str:
     """The screenshot-honesty block, composed once, the way the read and act
-    surfaces compose theirs. Every value is a shape-gated number or a size we
-    measured ourselves, never page text."""
-    parts = [p for p in (_viewport_sentence(data, image_size), _zoom_sentence(data)) if p]
+    surfaces compose theirs. Every value is a shape-gated number or something
+    we measured off the returned image ourselves, never page text."""
+    parts = [
+        p
+        for p in (
+            _viewport_sentence(data, image_size),
+            _zoom_sentence(data),
+            _reflow_sentence(data),
+            _flat_image_sentence(raw, data),
+        )
+        if p
+    ]
     return "\n".join(parts)
 
 
@@ -1548,10 +1621,10 @@ def _load_upload(path: str) -> dict[str, Any] | str:
 # Chrome to RE-RENDER the region, so unlike a crop it can resolve text the
 # full capture could not. The ceiling is about the model's context rather
 # than about Chrome: pixels are tokens, and past 4x a magnified paragraph is
-# no more legible, only more expensive.
+# no more legible, only more expensive. Left unset the extension picks the
+# scale from the box, so nothing is sent and no default is asserted here.
 _REGION_SCALE_MIN = 1
 _REGION_SCALE_MAX = 4
-_REGION_SCALE_DEFAULT = 2
 
 
 @tool(response_format="content_and_artifact")
@@ -1560,7 +1633,7 @@ async def chrome_screenshot(
     full_page: bool = False,
     region: Optional[list[int]] = None,
     region_ref: Optional[str] = None,
-    region_scale: int = _REGION_SCALE_DEFAULT,
+    region_scale: Optional[int] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> tuple[str, dict]:
     """Capture what the user's Chrome tab looks like, and see it.
@@ -1572,13 +1645,17 @@ async def chrome_screenshot(
         ratio (reported with every capture) resolves detail no crop of the
         full image could. A region that runs past the edge of the viewport is
         trimmed to it and says so.
-    region_ref: a "@eN" ref to capture instead of a rectangle; its box is
-        measured in the page. A ref inside a cross-origin iframe is refused
-        (its box is measured in that frame's own coordinates, which cannot
-        be placed in the page's): read a rectangle off a plain screenshot
-        instead.
-    region_scale: how far to magnify a region, 1 to 4 (default 2). Values
-        outside that are clamped, with a note.
+    region_ref: what to capture instead of a rectangle, as a "@eN" ref or a
+        "css=" / "xpath=" selector; its box is measured in the page. Selectors
+        are the route to anything the tree mints no ref for, static text and
+        table cells especially, and reach the ROOT document only. A "@eN" ref
+        inside a cross-origin iframe is refused (its box is measured in that
+        frame's own coordinates, which cannot be placed in the page's): read a
+        rectangle off a plain screenshot instead.
+    region_scale: how far to magnify a region, 1 to 4. Left unset it is chosen
+        from the box: a small one is magnified to the ceiling, a large one is
+        not, so an unreadable label comes back readable without costing a
+        wall of pixels. Values outside the range are clamped, with a note.
 
     The image is saved to the workspace and attached for you to view. Reach for
     it when the accessibility tree is not enough: canvas, charts, custom-drawn
@@ -1615,8 +1692,8 @@ async def chrome_screenshot(
             return "[Error]: region width and height must be greater than zero.", {}
 
     scale_note = ""
-    applied_scale = _REGION_SCALE_DEFAULT
-    if wants_region:
+    applied_scale: Optional[int] = None
+    if wants_region and region_scale is not None:
         asked = _number(region_scale)
         if asked is None:
             return "[Error]: region_scale must be a number between 1 and 4.", {}
@@ -1632,7 +1709,7 @@ async def chrome_screenshot(
         args["region"] = list(region)
     if region_ref is not None:
         args["region_ref"] = region_ref
-    if wants_region:
+    if wants_region and applied_scale is not None:
         args["region_scale"] = applied_scale
 
     payload, error = await _run(command_type="screenshot", args=args, config=config)
@@ -1681,7 +1758,7 @@ async def chrome_screenshot(
     lines = [
         text,
         f"[Note]: {loading.capitalize()}." if loading else "",
-        _screenshot_honesty_lines(data, read_image_dimensions(raw)),
+        _screenshot_honesty_lines(data, read_image_dimensions(raw), raw),
         scale_note,
     ]
     return "\n".join(line for line in lines if line), artifact

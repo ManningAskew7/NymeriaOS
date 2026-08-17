@@ -324,9 +324,11 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   the click would have hit instead.
 - Page looks right but nothing happens -> `chrome_screenshot` to see it as the
   user does. Canvas, custom widgets and CAPTCHAs are invisible to the tree.
-  Too small to read in the picture -> `chrome_screenshot(region_ref="@eN")`, or
+  Too small to read in the picture -> `chrome_screenshot(region_ref="@eN")`,
+  `region_ref="css=..."` (the route to static text, which mints no ref), or
   `region=[x, y, width, height]`: Chrome re-renders just that box magnified, so
-  it resolves detail the full capture could not.
+  it resolves detail the full capture could not. It reaches below the fold
+  without scrolling, and `region_scale` goes to 4 when 2 is not enough.
 - Content missing entirely -> check for a `[View constraint]` note after the
   tree first: a modal dialog or fullscreen element prunes everything else
   from the read, so a near-empty tree means BLOCKED, not empty. Iframe
