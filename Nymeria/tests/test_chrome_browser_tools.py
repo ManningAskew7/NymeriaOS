@@ -1464,47 +1464,86 @@ def test_screenshot_owns_up_to_reflowing_the_page(workspace) -> None:
     assert "[Reflow]" not in ordinary, "a capture that changed nothing must say nothing"
 
 
-def test_screenshot_flags_a_region_that_came_back_blank(workspace) -> None:
-    """A clip Chrome declines to render returns a perfectly successful capture
-    of one flat colour with no error anywhere. Diagnosing that from byte
-    lengths cost a whole QA round; the image itself can just say so."""
+def _region_shot(image: bytes) -> tuple[str, object]:
+    """A region capture of exactly these bytes, for the blank-image tests."""
+    return _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 30, 20]},
+        _shot(
+            {"region": {"x": 0, "y": 0, "width": 30, "height": 20, "scale": 2}},
+            image=image,
+        ),
+    )
+
+
+def _png_bytes(fill: tuple[int, int, int], marks: int, colour: tuple[int, int, int]) -> bytes:
+    """A 60x40 PNG of `fill` with `marks` pixels painted `colour`."""
     import io
 
     from PIL import Image
 
+    img = Image.new("RGB", (60, 40), fill)
+    for index in range(marks):
+        img.putpixel((index % 60, index // 60), colour)
     buf = io.BytesIO()
-    Image.new("RGB", (60, 40), (255, 255, 255)).save(buf, format="PNG")
-    blank, _ = _invoke_raw(
-        chrome_screenshot,
-        {"tab_id": 1, "region": [0, 0, 30, 20]},
-        _shot(
-            {"region": {"x": 0, "y": 0, "width": 30, "height": 20, "scale": 2}},
-            image=buf.getvalue(),
-        ),
-    )
-    assert "[Blank]" in blank
-    assert "single flat colour" in blank
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
-    # A region with real content in it says nothing of the sort.
-    buf2 = io.BytesIO()
-    img = Image.new("RGB", (60, 40), (255, 255, 255))
-    img.putpixel((5, 5), (10, 20, 30))
-    img.save(buf2, format="PNG")
-    real, _ = _invoke_raw(
-        chrome_screenshot,
-        {"tab_id": 1, "region": [0, 0, 30, 20]},
-        _shot(
-            {"region": {"x": 0, "y": 0, "width": 30, "height": 20, "scale": 2}},
-            image=buf2.getvalue(),
-        ),
-    )
+
+def test_screenshot_flags_a_region_that_came_back_blank(workspace) -> None:
+    """A clip Chrome declines to render returns a perfectly successful capture
+    of one flat colour with no error anywhere. Diagnosing that from byte
+    lengths cost a whole QA round; the image itself can just say so."""
+    blank, _ = _region_shot(_png_bytes((255, 255, 255), 0, (0, 0, 0)))
+    assert "[Blank]" in blank
+    assert "a single flat colour" in blank
+
+    # A region with real content in it says nothing of the sort. 240 of 2400
+    # pixels, which is roughly the ink a magnified line of text puts down.
+    real, _ = _region_shot(_png_bytes((255, 255, 255), 240, (10, 20, 30)))
     assert "[Blank]" not in real
 
     # Scoped to regions on purpose: this one DECODES pixels, unlike the
     # header-only dimension probe, and a plain capture of a blank page is an
     # honest picture of a blank page rather than a suspicious clip.
-    plain, _ = _invoke_raw(chrome_screenshot, {"tab_id": 1}, _shot({}, image=buf.getvalue()))
+    plain, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1}, _shot({}, image=_png_bytes((255, 255, 255), 0, (0, 0, 0)))
+    )
     assert "[Blank]" not in plain
+
+
+def test_screenshot_flags_a_region_that_is_blank_but_not_uniform(workspace) -> None:
+    """Measured live 2026-08-17: an image the operator called indistinguishable
+    from nothing was 94% one colour with the rest a single unit darker at a
+    band edge, and an exact-uniformity test said nothing about it. Its verdict
+    on that test was "a tripwire that only triggers on empty rooms": it fires
+    only where the agent would already have guessed."""
+    # 144 of 2400 pixels (6%) one unit off, which is the measured shape.
+    near, _ = _region_shot(_png_bytes((238, 238, 238), 144, (237, 237, 237)))
+    assert "[Blank]" in near
+    assert "% one colour" in near
+    assert "a single flat colour" not in near, "it is not uniform and must not claim to be"
+    assert "100%" not in near, "nor may it round a non-uniform image up to all of it"
+
+    # The dominance test has a floor, and content just past it is content: 72
+    # of 2400 pixels is 3%, against a threshold of 2%.
+    speck, _ = _region_shot(_png_bytes((238, 238, 238), 72, (0, 0, 0)))
+    assert "[Blank]" not in speck
+
+    # Distinct-colour COUNT is the wrong axis, which is why it is not the test:
+    # a gradient of 240 shades is nothing but background, and antialiased text
+    # would produce dozens of colours while covering a quarter of the pixels.
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (60, 40), (238, 238, 238))
+    for index in range(40):
+        img.putpixel((index, 0), (236 + index % 3, 238, 240))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    banded, _ = _region_shot(buf.getvalue())
+    assert "[Blank]" in banded, "several near-identical colours are still one colour"
 
 
 def test_screenshot_rounds_a_fractional_region_box_for_reading(workspace) -> None:

@@ -720,8 +720,19 @@ def _reflow_sentence(data: dict[str, Any]) -> str:
     )
 
 
+# How close two colours must be to count as the same one here, and how much of
+# the image the winner must own. Both come from a live measurement rather than
+# taste: an image the QA operator called indistinguishable from nothing was 94%
+# one colour with the rest a single unit darker at a band edge, and an exact
+# test stayed silent on it. Judging by DISTINCT COLOURS would have been the
+# wrong axis entirely, since antialiased text produces dozens of them while
+# covering a quarter of the pixels.
+_FLAT_DELTA = 4
+_FLAT_RATIO = 0.98
+
+
 def _flat_image_sentence(raw: bytes, data: dict[str, Any]) -> str:
-    """Flag a region that came back as one uniform colour.
+    """Flag a region that came back as nothing but background.
 
     A clip Chrome declines to render returns a perfectly successful capture of
     pure white with no error anywhere (measured 2026-08-16, and it cost a whole
@@ -729,6 +740,12 @@ def _flat_image_sentence(raw: bytes, data: dict[str, Any]) -> str:
     captures and to modest images: it reads pixels, unlike the header-only
     dimension probe, and a full-page screenshot is neither the risky case nor
     a cheap one to scan.
+
+    The test is DOMINANCE, not uniformity. An exact-uniformity test only fires
+    on a case the agent would already have guessed, which live QA said out
+    loud: "a tripwire that only triggers on empty rooms". A region aimed at
+    page background picks up a band edge or a hairline border and is then
+    literally not uniform while being just as empty.
     """
     if not isinstance(data.get("region"), dict):
         return ""
@@ -740,14 +757,40 @@ def _flat_image_sentence(raw: bytes, data: dict[str, Any]) -> str:
         with Image.open(io.BytesIO(raw)) as img:
             if img.width * img.height > 2_000_000:
                 return ""
-            colours = img.convert("RGB").getcolors(maxcolors=2)
+            # Generous cap: past it the image is emphatically not blank, and
+            # None costs nothing to fall out on.
+            colours = img.convert("RGB").getcolors(maxcolors=65_536)
     except Exception:  # noqa: BLE001
         return ""
-    if colours is None or len(colours) != 1:
+    if not colours:
         return ""
+    # RGB always tallies as a tuple, but the single-band modes tally as a bare
+    # number, so the shape is normalized once rather than assumed.
+    tallies = [
+        (count, colour if isinstance(colour, tuple) else (colour,)) for count, colour in colours
+    ]
+    total = sum(count for count, _ in tallies)
+    if total <= 0:
+        return ""
+    _, dominant = max(tallies, key=lambda item: item[0])
+    near = sum(
+        count
+        for count, colour in tallies
+        if len(colour) == len(dominant)
+        and max(abs(a - b) for a, b in zip(colour, dominant, strict=True)) <= _FLAT_DELTA
+    )
+    ratio = near / total
+    if ratio < _FLAT_RATIO:
+        return ""
+    # Never claim 100% for an image that is not actually uniform.
+    lead = (
+        "a single flat colour"
+        if len(colours) == 1
+        else f"{min(int(ratio * 100), 99)}% one colour"
+    )
     return (
-        "[Blank]: this image is a single flat colour, so it is probably showing "
-        "nothing. Check the region against a plain screenshot."
+        f"[Blank]: this image is {lead}, so it is probably showing nothing but "
+        "page background. Check the region against a plain screenshot."
     )
 
 
