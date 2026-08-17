@@ -2758,7 +2758,11 @@ def test_read_page_frames_note_counts_the_nesting_the_tree_shows() -> None:
         ),
     )
     after = out.rpartition("</untrusted_page_content>")[2]
-    assert "2 nested inside another frame" in after
+    # The count spans BOTH classes, so it has to qualify the whole list: in
+    # parentheses after the last count, live QA read it as a claim about the
+    # same-process frames alone (one of the two nested frames was the
+    # cross-origin one).
+    assert "1 cross-origin, 2 same-process iframe(s) read, 2 of them nested" in after
     # And a read with no nesting says nothing about it: the notes must not
     # become furniture that is skimmed past.
     flat = _invoke(

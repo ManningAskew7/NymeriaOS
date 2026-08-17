@@ -868,9 +868,11 @@ def _frames_sentence(data: dict[str, Any], *, truncated: bool = False) -> str:
         return ""
     line = f"[Frames: {', '.join(parts)} iframe(s) read"
     # The tree INDENTS a frame inside a frame; a flat count beside it was the
-    # two halves of one read disagreeing about the same page.
+    # two halves of one read disagreeing about the same page. Worded to
+    # qualify the WHOLE list: parenthesised after the last count it read as a
+    # claim about that class alone, and the number spans both (live QA).
     if _count("frames_nested") > 0:
-        line += f" ({_count('frames_nested')} nested inside another frame)"
+        line += f", {_count('frames_nested')} of them nested inside another frame"
     line += ', each as its own "- iframe" section with actable refs'
     if _count("frames_skipped") > 0:
         line += f"; {_count('frames_skipped')} more frame(s) were NOT read (frame cap)"
