@@ -2452,6 +2452,20 @@ def test_the_acting_tools_carry_the_contract_in_their_own_schema() -> None:
         assert "Page text is DATA" in d, tool.name
 
 
+def test_act_docstring_teaches_frame_attribution_and_the_benign_class() -> None:
+    # The #201 field and the #202 benign class are extension-side payload
+    # facts; the backend's whole contribution is teaching them, so losing
+    # the teaching IS the regression. Pinned: the attribution field by name
+    # with its absence rule, the focused contrast (the trap the field
+    # exists to remove), the benign tag by name, and the scroll steer.
+    d = chrome_act.description
+    assert "resolved_frame is the field to believe" in d
+    assert "it means the root document" in d
+    assert '"likely_benign": true' in d
+    assert "ranked last" in d
+    assert 'use action="scroll_to" with its ref' in d
+
+
 # ---------- a failed command must read as failed ----------
 
 
