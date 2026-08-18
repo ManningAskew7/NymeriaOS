@@ -2453,17 +2453,27 @@ def test_the_acting_tools_carry_the_contract_in_their_own_schema() -> None:
 
 
 def test_act_docstring_teaches_frame_attribution_and_the_benign_class() -> None:
-    # The #201 field and the #202 benign class are extension-side payload
-    # facts; the backend's whole contribution is teaching them, so losing
-    # the teaching IS the regression. Pinned: the attribution field by name
-    # with its absence rule, the focused contrast (the trap the field
-    # exists to remove), the benign tag by name, and the scroll steer.
-    d = chrome_act.description
+    # The #201/#203 fields and the #202 benign class are extension-side
+    # payload facts; the backend's whole contribution is teaching them, so
+    # losing the teaching IS the regression. Pinned: the attribution field
+    # by name with its absence rule AND its #203 null state, the focused
+    # contrast (the trap the field exists to remove), the benign tag by
+    # name, and the #203 scroll capability (ref-point wheeling plus the
+    # scroll_moved measured-zero-vs-absent asymmetry: the old steer said
+    # scroll IGNORES ref, which is now the opposite of the truth).
+    d = " ".join(chrome_act.description.split())
     assert "resolved_frame is the field to believe" in d
     assert "it means the root document" in d
+    assert "null means a frame WAS located" in d
     assert '"likely_benign": true' in d
     assert "ranked last" in d
-    assert 'use action="scroll_to" with its ref' in d
+    assert "with a ref wheels AT that element" in d
+    assert '"scroll_moved"' in d
+    assert "{0,0} is a MEASURED nothing-moved" in d
+    assert "the key ABSENT means it could not be measured" in d
+    assert "OTHER pane than the two watched reads {0,0}" in d
+    assert "CHAINS to the page" in d
+    assert "scroll_to it first" in d
 
 
 def test_act_docstring_teaches_deterministic_evidence_and_the_mutation_tally() -> None:
