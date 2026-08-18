@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1260
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1261
 
 
 def test_catalog_key_equals_tool_name():
@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1275
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1276
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -527,6 +527,7 @@ BASELINE_CATALOG_NAMES = [
     "chrome_console",
     "chrome_dialog",
     "chrome_find",
+    "chrome_health",
     "chrome_navigate",
     "chrome_network",
     "chrome_read_page",
@@ -1791,6 +1792,7 @@ BASELINE_STATIC_NAMES = [
     "chrome_console",
     "chrome_dialog",
     "chrome_find",
+    "chrome_health",
     "chrome_navigate",
     "chrome_network",
     "chrome_read_page",
