@@ -104,6 +104,16 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   page fact before retrying, never re-fire blind. Nonzero is weak (dynamic
   pages mutate constantly). Absent = unmeasured (a navigating act, hover/
   scroll, a spent budget), never zero.
+- `scroll_moved` -> did the scroll actually move anything, and WHAT: a
+  ref scroll wheels AT that element (scrolling the pane UNDER it; inner
+  panes need no coordinates any more) and reports {dx, dy, scroller}:
+  "container" is the target's own pane, "document" is the page, and a
+  bottomed pane that hands the wheel to the page says "document" honestly.
+  {0,0} is a MEASURED nothing-moved (end of scroll, or the page ignored
+  the wheel); ABSENT means unmeasured, including a coordinate wheel over
+  an embedded frame (the frame's scrolling is not watched, so no zero is
+  claimed about it). An off-screen ref refuses: scroll_to it first, or
+  wheel by coordinate.
 - `hit` -> what was actually under the coordinate you clicked, named like
   `button "Sign in"` or `input#email` (only appears when you acted on a
   `coordinate` rather than a ref; a drag reports `hit_from`, its source). A

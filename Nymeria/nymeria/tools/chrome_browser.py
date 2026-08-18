@@ -1649,7 +1649,10 @@ async def chrome_act(
         ref scroll the target's own container and the document are both
         watched and the one that moved is reported (a wheel at the end
         of a pane CHAINS to the page, and that is named "document"); a
-        coordinate or bare scroll watches the document only. {0,0} is a
+        coordinate or bare scroll watches the document only, and when
+        the wheel point sits over an embedded frame the zero is
+        withheld (the frame's own scrolling is not measured; a page
+        that really moved still reports). {0,0} is a
         MEASURED nothing-moved (end of scroll, a pane that ignored the
         wheel, or rarely a smooth animation still in flight at the
         read); the key ABSENT means it could not be measured. A wheel
