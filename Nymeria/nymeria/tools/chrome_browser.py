@@ -956,6 +956,44 @@ def _hidden_sentence(data: dict[str, Any]) -> str:
     )
 
 
+def _control_refs(data: dict[str, Any]) -> Optional[int]:
+    """How many refs in this read are CONTROLS, or None when this read does
+    not say: an extension older than #208 (the backend deploys minutes before
+    the user's browser pulls the new build), or a SCOPED read, which sees one
+    subtree and cannot speak for the page. Every reader must degrade to the
+    pre-#208 wording rather than assert a zero it cannot know."""
+    return _int_field(data, "control_ref_count")
+
+
+def _mint_rule_sentence(data: dict[str, Any]) -> str:
+    """Say the mint rule when a read looks empty of refs but full of content.
+
+    Refs mark elements that can be acted ON; static text mints none, at any
+    detail level. A page of pure prose therefore answers with a tree full of
+    rows and no refs on them, which reads as a broken read: it was filed as a
+    minting bug twice from live rounds (#205, closed invalid) before anything
+    said the rule out loud. Fires only when nothing is actable, so an
+    ordinary page never pays for it, and rides the extension's own count
+    rather than the tree text, which is page content and could forge a
+    ref-shaped line into the one region outside the fence.
+    """
+    control = _control_refs(data)
+    if control is None or control > 0:
+        return ""
+    if _loading_sentence(data):
+        # A page mid-load legitimately has no controls YET, and the header
+        # already says it was captured loading: asserting the page HAS none
+        # would be the same over-claim the frames note hedges for under
+        # truncation (review round).
+        return ""
+    return (
+        "[Nothing in this read is clickable: refs mark controls (links, "
+        "buttons, fields), and this page has none, so its text carries no ref "
+        'at any detail level. To act here: scroll with a document\'s "@e" ref, '
+        "or target by css= selector or coordinate.]"
+    )
+
+
 def _read_honesty_lines(data: dict[str, Any], *, truncated: bool = False) -> str:
     """The read-honesty block, most load-bearing first. All OUR text composed
     from booleans and whitelisted counts, never page text; emitted through
@@ -966,6 +1004,7 @@ def _read_honesty_lines(data: dict[str, Any], *, truncated: bool = False) -> str
             _view_state_sentence(data),
             _frames_sentence(data, truncated=truncated),
             _hidden_sentence(data),
+            _mint_rule_sentence(data),
         )
         if p
     ]
@@ -1206,6 +1245,16 @@ async def chrome_read_page(
     (relabeled, repurposed by a re-render) is refused with what it was and
     what it is now. Re-read when you see either.
 
+    Refs mark what can be ACTED ON, and nothing else: a link, a button, a
+    field. Static text, list rows and headings never carry one, at ANY
+    detail level, so a page of pure prose renders every row and no refs,
+    which is the read working, not failing (a note says so when it happens).
+    "full" widens what is SHOWN, never what mints. To act where there is no
+    ref, target by css= selector or coordinate. Each document root carries a
+    ref too (its "RootWebArea" line, one per frame): those SCROLL rather than
+    click, and the header's count deliberately leaves them out, so a tree can
+    hold more ref tags than the count names.
+
     detail: "interactive" (default: controls plus enough structure to place
         them), "full" (everything, large), or "minimal" (controls and headings).
     ref: re-root the read at one element, e.g. "@e12" to read just one form.
@@ -1259,7 +1308,14 @@ async def chrome_read_page(
         max_chars=max_chars,
     )
     url = str(data.get("url") or "")
-    header = f"{data.get('ref_count', 0)} actionable elements, detail={data.get('detail', detail)}"
+    # The count names what can be ACTED ON. Every document root mints a ref
+    # (Chrome marks documents focusable), so the raw ref_count called a page
+    # of pure text "2 actionable elements" and sent a live round hunting a
+    # minting bug (#205). Falls back to the raw count against a pre-#208
+    # extension, which cannot tell the two apart.
+    control = _control_refs(data)
+    counted = control if control is not None else (_int_field(data, "ref_count") or 0)
+    header = f"{counted} actionable elements, detail={data.get('detail', detail)}"
     if _loading_sentence(data):
         header += f" ({_loading_sentence(data)})"
     honesty = _read_honesty_lines(data, truncated=bool(note))
@@ -1365,6 +1421,10 @@ async def chrome_find(
     resolves through the DOM (open shadow roots included) and does not care
     whether it is visible.
 
+    It searches ACTABLE elements only (the ones a read tags ``[ref=@eN]``),
+    so a miss means "nothing to act on by that description", never "those
+    words are absent": read the page for content that is merely displayed.
+
     Returns "no matches" rather than an error when nothing fits, so a failed
     search costs you a note instead of a dead turn. Prefer this over reading a
     whole large page when you already know what you want to interact with.
@@ -1405,8 +1465,28 @@ async def chrome_find(
     view_suffix = f"\n{view_note}" if view_note else ""
     if not kept:
         hint = f" ({loading})" if loading else ""
+        # A miss has two very different causes and used to have one wording.
+        # This searches MINTED refs, so a page whose text is all static can
+        # never answer, and "No elements matching X on this page" then reads
+        # as "X is not on the page" about words plainly visible in it: the
+        # #205 round drew exactly that conclusion. When the page has no
+        # controls at all, say that instead of blaming the query.
+        # The zero check runs AFTER the extraction on purpose: a document
+        # ref is still a ref, so a query like "the frame" can legitimately
+        # match on a page with no controls, and short-circuiting would spend
+        # the branch's own capability to save a model call.
+        if _control_refs(_data(payload)) == 0:
+            return (
+                f'[Note]: No control on this page to match "{query}": it has no '
+                "clickable or typable elements, only static content, which this "
+                "search cannot cite. Read it with chrome_read_page; act near the "
+                "text by css= selector or coordinate, and scroll it with a "
+                f"document's \"@e\" ref. (searched by {model}){hint}{view_suffix}"
+            )
         return (
-            f'[Note]: No elements matching "{query}" on this page. '
+            f'[Note]: No ACTABLE element matching "{query}" on this page '
+            "(this searches controls only, so text that is merely displayed "
+            f"is never listed here: read the page for that). "
             f"(searched by {model}){hint}{view_suffix}"
         )
     listed = "\n".join(kept[:20])
@@ -1640,19 +1720,34 @@ async def chrome_act(
     direction / amount_px: for scroll (default down, 500px). action="scroll"
         with a ref wheels AT that element (at its visible point), which
         scrolls the scrollable pane UNDER it: inner panes, chat lists,
-        dropdown menus. A ref that is entirely off-screen refuses (wheel
-        input is positional): scroll_to it first, or wheel by
-        coordinate. An unknown or stale ref refuses rather than wheeling
-        the page blind. With coordinate it wheels at that point; with
+        dropdown menus. An ELEMENT ref that is entirely off-screen refuses
+        (wheel input is positional): scroll_to it first, or wheel by
+        coordinate. A document ref has no rect to judge and gets no
+        such check: inside a frame scrolled out of view, judge the
+        result by scroll_moved rather than assuming it landed. An unknown or stale ref refuses rather than wheeling
+        the page blind. A pane made of plain text mints no ref of its
+        own: target it as ref="css=..." (same selector syntax as every
+        other verb, root document only), which wheels at that element
+        exactly as an @e ref does. INSIDE a frame, where selectors do
+        not reach, use the frame's own document ref (the
+        "RootWebArea [ref=@eN]" line of its section in the page read):
+        that wheels at the middle of that frame and measures what moves
+        there. That works for CROSS-ORIGIN frames, which dispatch in
+        their own coordinate space; a same-origin frame's document ref
+        refuses and says to use an element ref inside it instead. With coordinate it wheels at that point; with
         neither it wheels the viewport centre, scrolling the page. The
-        payload answers with "scroll_moved" {dx, dy, scroller}: for a
-        ref scroll the target's own container and the document are both
+        payload answers with "scroll_moved" {dx, dy, scroller}: the
+        scrollable container under the wheel and the document are both
         watched and the one that moved is reported (a wheel at the end
-        of a pane CHAINS to the page, and that is named "document"); a
-        coordinate or bare scroll watches the document only, and when
-        the wheel point sits over an embedded frame the zero is
-        withheld (the frame's own scrolling is not measured; a page
-        that really moved still reports). {0,0} is a
+        of a pane CHAINS to the page, and that is named "document";
+        with a frame's document ref, "document" means THAT frame's
+        document, since that is the one being scrolled).
+        When the wheel lands where this cannot be measured, the zero is
+        withheld rather than reported: over an embedded frame, or with
+        the frame element itself as the ref (the frame's own scrolling
+        is not measured from outside; a page that really moved still
+        reports, and the frame's document ref measures it properly).
+        {0,0} is a
         MEASURED nothing-moved (end of scroll, a pane that ignored the
         wheel, or rarely a smooth animation still in flight at the
         read); the key ABSENT means it could not be measured. A wheel

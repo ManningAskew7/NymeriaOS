@@ -68,6 +68,12 @@ It is also why the rules below are not optional.
    - A read that says it was captured while the page was still loading means
      a sparse result is "not finished yet", not "empty page"; if it looks
      incomplete, re-read in a moment.
+   - Refs mark what you can ACT on. Static text, list rows and headings
+     never carry one, at any detail level (`detail="full"` shows more, it
+     does not mint more), so a page of pure content renders every row
+     ref-less and says so in a note: that read WORKED. Reach such content
+     by `css=` selector or coordinate, and reach it inside a frame with
+     that frame's own `RootWebArea` ref.
 4. `chrome_act(...)` with a `@eN` ref from step 3. When the action should
    produce something observable (a row appears, a toast, a URL change), say
    so in the same call: `wait_for_text` / `wait_for_url` / `wait_for_ref`
@@ -110,10 +116,13 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   "container" is the target's own pane, "document" is the page, and a
   bottomed pane that hands the wheel to the page says "document" honestly.
   {0,0} is a MEASURED nothing-moved (end of scroll, or the page ignored
-  the wheel); ABSENT means unmeasured, including a coordinate wheel over
-  an embedded frame (the frame's scrolling is not watched, so no zero is
-  claimed about it). An off-screen ref refuses: scroll_to it first, or
-  wheel by coordinate. A rare `wheel_ack: "not_received"` beside a
+  the wheel); ABSENT means unmeasured: the wheel landed over an embedded
+  frame, or the ref WAS one (no zero is claimed about a document this
+  read cannot watch). An off-screen ref refuses: scroll_to it first, or
+  wheel by coordinate. A pane of plain text mints no ref: scroll it as
+  `ref="css=..."`, or, inside a frame where selectors do not reach, with
+  that frame's own `RootWebArea` ref, which wheels at the middle of the
+  frame and measures what moves there. A rare `wheel_ack: "not_received"` beside a
   successful scroll means the browser mislaid the wheel's receipt, not
   the wheel: the scroll went in, believe scroll_moved; no key means the
   receipt arrived.
