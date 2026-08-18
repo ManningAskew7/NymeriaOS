@@ -2586,10 +2586,20 @@ caused by the action, and whether the page settled. Delivery itself is a
 diagnosis, not a bit (#176): `input_events` counts trusted events by type (a
 press that never composed into a `click` is visible as such), and the click
 family adds `default_prevented`, `click_target` (tag plus enclosing link URL)
-and the frame's `user_activation` state; `fill` verifies through its trusted
-`input` event. A post-dispatch peek usually preserves the counts when the
-click navigates the document away (best effort: an instantly-committing
-navigation can still beat it). Console and network capture run over CDP (no
+and the `user_activation` state the input itself produced. Since #180 the
+diagnosis is present as the norm, not by luck: the read outwaits the
+deferred `defaultPrevented` sample in-page (deterministic on a surviving
+document), and the probe streams its facts out at EVENT time over a
+`Runtime.addBinding` channel scoped to its isolated world, so a NAVIGATING
+click keeps the whole set through document teardown (best-effort: the
+fastest teardowns can still lose `default_prevented`). The same probe's
+MutationObserver, armed before dispatch and read after settle, yields
+`dom_mutations`: how much the ACTED document (an in-frame ref's own frame
+included) changed across the act, where ZERO is the strong
+the-page-ignored-it signal (synchronous handler reactions are inside the
+window; shadow-root reactions are not) and the key is absent wherever
+nothing was measured (a navigating act, hover/scroll, an unarmable
+document, a spent budget). Console and network capture run over CDP (no
 host permission needed), start at debugger attach, and cover cross-origin
 frames too (#177): frame entries carry `frame: "<origin>"`, root entries
 none, and the browser's own policy refusals (X-Frame-Options, CSP, mixed
