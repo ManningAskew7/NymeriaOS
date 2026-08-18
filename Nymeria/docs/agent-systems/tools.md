@@ -2624,8 +2624,10 @@ fails itself).
 
 **Refs and frames:** `@eN` refs number MONOTONICALLY per tab (re-reads mint
 new numbers and MERGE into the map, so held refs stay valid until a real
-navigation; the counter rides `chrome.storage.session` across MV3 worker
-recycles). Refs die on navigation, and "navigation" includes pushState
+navigation; since v0.10.0 the MAP rides `chrome.storage.session` beside the
+counter and hydrates on worker wake, so refs genuinely survive MV3 worker
+recycles, the pause-to-talk-to-the-user gap included). Refs die on
+navigation, and "navigation" includes pushState
 path/query moves and hash-ROUTE changes (`#/cart`, `#!/inbox`); plain
 `#anchor` moves do not bounce them. A stale ref returns a typed "re-read the
 page" error rather than resolving into a different document, with the honest
