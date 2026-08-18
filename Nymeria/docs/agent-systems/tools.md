@@ -2605,7 +2605,16 @@ load-time requests often precede capture reaching it and are absent from
 advisories). `failed_requests` entries carry
 `same_origin` and the capped list ranks data-class failures ahead of
 telemetry-shaped ones (Ping/Image/Media/Font), so a broken first-party POST
-is never crowded out by analytics beacons.
+is never crowded out by analytics beacons; cross-origin cancels and
+content-blocker kills with a healthy status are tagged `likely_benign` and
+rank last of all (#202), never evicting an untagged entry. The payload also
+carries frame ATTRIBUTION (#201): `resolved_frame` is the URL of the
+subframe the target resolved into, read at dispatch time and distinct from
+`focused` (a state read that hover and scroll_to never move, so it can name
+the previous act's frame; resolved_frame is the field to believe). Absent
+on a ref/selector act it means the root document; coordinate acts stay
+unknown; ref-less type/key claim the confirmed frame the keystrokes
+entered, from CDP frame records only.
 
 **Probe isolation (#160):** every trust probe (geometry, hit test, frame
 offsets, the file-input and covered-click guards, focus checks, value
