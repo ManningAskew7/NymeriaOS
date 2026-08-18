@@ -2643,9 +2643,15 @@ registered container and document scrollers, read in the probe world so a
 page cannot script the numbers. The container's delta when it moved, else
 the document's (a wheel at the end of a pane CHAINS to the page and is
 named "document"); {0,0} is a MEASURED nothing-moved; the key absent means
-unmeasured, including a targetless wheel whose point sits over an embedded
-frame (the frame's own scrolling is not watched, so a zero there is
-withheld rather than claimed). A rare `wheel_ack: "not_received"` beside a
+unmeasured, which is any wheel that lands where this read cannot watch:
+over an embedded frame, or with the frame element itself as the ref (the
+frame's own scrolling is not watched from outside, so a zero there is
+withheld rather than claimed). Since #208 the pane under the point is
+watched on EVERY route, coordinate wheels included, and a DOCUMENT ref (a
+frame's `RootWebArea` line) scrolls: it wheels at the middle of that
+frame's own viewport and measures what moved there, which is the only
+verified way into a static in-frame pane, since such a pane mints no ref
+and selectors never leave the root document. A rare `wheel_ack: "not_received"` beside a
 successful scroll means Chrome mislaid the wheel's ack, not the wheel
 (#207: a coalesced-away wheel never acks while its delta still lands, and
 the desync is per-widget and permanent, so the ack is not load-bearing for
