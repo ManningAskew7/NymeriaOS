@@ -89,11 +89,21 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   is not a problem on its own.
 - `input_events` -> trusted counts by type; on clicks, `default_prevented`,
   `click_target` (what the click composed on, with the enclosing link's URL)
-  and `user_activation` ride along. One read answers "the click landed, fully
+  and `user_activation` ride along. Presence is the norm (#180): a delivered
+  click on a surviving page always carries them, and a click that NAVIGATES
+  usually keeps them too (the evidence is captured at event time). One read
+  answers "the click landed, fully
   composed, on the right element, nothing cancelled it": if the page still did
   not react, the default action was declined downstream, so change approach
   (a different element, keyboard activation, or report the page as hostile to
   driven input) instead of re-clicking the same target.
+- `dom_mutations` -> how much the acted document (an in-frame ref's own
+  frame included) changed between your input going in and the page
+  settling. ZERO is the strong signal: the page made nothing of your input
+  (the phantom-success shape where every other field looks fine): verify a
+  page fact before retrying, never re-fire blind. Nonzero is weak (dynamic
+  pages mutate constantly). Absent = unmeasured (a navigating act, hover/
+  scroll, a spent budget), never zero.
 - `hit` -> what was actually under the coordinate you clicked, named like
   `button "Sign in"` or `input#email` (only appears when you acted on a
   `coordinate` rather than a ref; a drag reports `hit_from`, its source). A
