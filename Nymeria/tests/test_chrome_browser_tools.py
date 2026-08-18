@@ -32,6 +32,7 @@ from nymeria.tools.chrome_browser import (
     chrome_dialog,
     chrome_batch,
     chrome_find,
+    chrome_health,
     chrome_navigate,
     chrome_network,
     chrome_read_page,
@@ -152,7 +153,7 @@ def _ok(data: dict) -> dict:
 # ---------- surface shape ----------
 
 
-def test_surface_is_thirteen_tools_and_the_kit_binds_all_of_them() -> None:
+def test_surface_is_fourteen_tools_and_the_kit_binds_all_of_them() -> None:
     names = {t.name for t in CHROME_BROWSER_TOOLS}
     assert names == {
         "chrome_tabs",
@@ -166,14 +167,16 @@ def test_surface_is_thirteen_tools_and_the_kit_binds_all_of_them() -> None:
         "chrome_console",
         "chrome_network",
         "chrome_dialog",
+        "chrome_health",
         "chrome_cdp",
         "chrome_reload_extension",
     }
     # #167 put the whole working surface in the kit; #169 completed it
     # (chrome_dialog joined once Page ownership made it a working tool);
-    # chrome_reload_extension joined 2026-08-16 (remote dev-loop refresh).
+    # chrome_reload_extension joined 2026-08-16 (remote dev-loop refresh);
+    # chrome_health joined in the #188 pass (one-call tab health read).
     assert set(CHROME_KIT_TOOL_NAMES) == names
-    assert len(CHROME_KIT_TOOL_NAMES) == 13
+    assert len(CHROME_KIT_TOOL_NAMES) == 14
 
 
 def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
@@ -189,6 +192,11 @@ def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
 
     # Raw CDP reaches every logged-in tab; it must not be born SAFE.
     assert get_tool_metadata("chrome_cdp").security_level == SecurityLevel.SENSITIVE
+
+    # Health is local state reads only, no attach, no side effects (#188).
+    health = get_tool_metadata("chrome_health")
+    assert health.category == ToolCategory.BROWSER
+    assert health.security_level == SecurityLevel.SAFE
 
 
 def test_browser_control_kit_binds_the_whole_surface_dialog_included() -> None:
@@ -2961,6 +2969,244 @@ def test_network_warm_read_does_not_hedge() -> None:
     )
     assert "Capture started" not in out
     assert "Capture had lapsed" not in out
+
+
+def test_network_resumed_note_says_how_long_when_the_gap_is_a_true_int() -> None:
+    """A 2-second lapse and a 35-second one read identically before #183, and
+    those are the two cases an agent needs to tell apart. The duration only
+    renders from a true int: the payload is extension-supplied, and a forged
+    gap must not buy a confident sentence."""
+    out = _invoke(
+        chrome_network,
+        {"tab_id": 1},
+        _ok(
+            {
+                "requests": [],
+                "count": 0,
+                "filtered": False,
+                "capture_resumed": True,
+                "capture_gap_ms": 30_000,
+            }
+        ),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "about 30s went unwatched" in after
+
+    # A long gap reads in minutes, not a wall of seconds.
+    out = _invoke(
+        chrome_network,
+        {"tab_id": 1},
+        _ok(
+            {
+                "requests": [],
+                "count": 0,
+                "filtered": False,
+                "capture_resumed": True,
+                "capture_gap_ms": 300_000,
+            }
+        ),
+    )
+    assert "about 5m went unwatched" in out.rpartition("</untrusted_page_content>")[2]
+
+    # Forged or senseless shapes: a string, a bool (an int in Python, but a
+    # different fact wearing the same type), zero, negative, and a figure
+    # over a day (review F7: silence over a guessed duration).
+    for forged in ("30000", True, 0, -5_000, 10**10):
+        out = _invoke(
+            chrome_network,
+            {"tab_id": 1},
+            _ok(
+                {
+                    "requests": [],
+                    "count": 0,
+                    "filtered": False,
+                    "capture_resumed": True,
+                    "capture_gap_ms": forged,
+                }
+            ),
+        )
+        after = out.rpartition("</untrusted_page_content>")[2]
+        assert "[Capture had lapsed before this read:" in after
+        assert "went unwatched" not in after
+
+
+def test_console_read_carries_the_same_capture_notes_as_network() -> None:
+    """Console had the identical silence ambiguity, unflagged (#183 rider): an
+    empty cold read said nothing about the page and nothing about itself."""
+    out = _invoke(
+        chrome_console,
+        {"tab_id": 1},
+        _ok({"entries": [], "count": 0, "capture_started_now": True}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "[Capture started with this read:" in after
+
+    out = _invoke(
+        chrome_console,
+        {"tab_id": 1},
+        _ok({"entries": [], "count": 0, "capture_resumed": True, "capture_gap_ms": 12_000}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "[Capture had lapsed before this read:" in after
+    assert "about 12s went unwatched" in after
+
+    # A warm read stays clean, and forged flags stay silent.
+    out = _invoke(chrome_console, {"tab_id": 1}, _ok({"entries": [], "count": 0}))
+    assert "Capture" not in out.rpartition("</untrusted_page_content>")[2]
+    out = _invoke(
+        chrome_console,
+        {"tab_id": 1},
+        _ok({"entries": [], "count": 0, "capture_started_now": "yes"}),
+    )
+    assert "Capture" not in out.rpartition("</untrusted_page_content>")[2]
+
+
+def test_console_says_how_many_entries_the_limit_cut() -> None:
+    """Same rule and same measured confusion as the network total, with the
+    console's own nouns: its backend defaults are only_errors=True AND
+    limit=50, so a cut answer was doubly easy to read as "the page logged
+    nothing"."""
+    out = _invoke(
+        chrome_console,
+        {"tab_id": 1, "limit": 0},
+        _ok({"entries": [], "count": 0, "filtered": True, "matched_total": 5}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "Showing the newest 0 of 5 entries matching your filter (only_errors)" in after
+    assert "cut by `limit`, not missing from capture" in after
+
+    out = _invoke(
+        chrome_console,
+        {"tab_id": 1, "only_errors": False, "limit": 1},
+        _ok({"entries": [{"text": "x"}], "count": 1, "filtered": False, "matched_total": 3}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "of 3 buffered console entries" in after
+
+    # An untruncated answer stays clean.
+    out = _invoke(
+        chrome_console,
+        {"tab_id": 1},
+        _ok({"entries": [], "count": 0, "filtered": True}),
+    )
+    assert "Showing the newest" not in out.rpartition("</untrusted_page_content>")[2]
+
+
+def test_health_payload_is_fenced_and_the_notes_ride_outside() -> None:
+    """The health payload carries page-chosen strings (title, urls, dialog
+    messages), so it is fenced like every other read; the interpretive notes
+    are OUR text and ride after the fence."""
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok(
+            {
+                "tab": {"id": 1, "url": "https://example.com", "title": "Example"},
+                "attached": False,
+                "ever_attached_this_worker": False,
+                "console_entries": 0,
+                "network_entries": 0,
+                "refs": {"held": 0, "minted_total": 0},
+            }
+        ),
+    )
+    assert "<untrusted_page_content>" in out
+    inside = out.partition("<untrusted_page_content>")[2].partition("</untrusted_page_content>")[0]
+    assert '"attached": false' in inside
+    assert '"title": "Example"' in inside
+    # No flags set: no note may render.
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "worker recycled" not in after
+    assert "swallowed" not in after
+
+
+def test_health_recycle_note_renders_only_for_the_boolean_true() -> None:
+    """The #179 asymmetry note: buffers and attach state reset with the
+    worker while refs survive. Identity-gated, because the claim renders
+    outside the untrusted fence."""
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "worker_recycled_since_drive": True}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "worker recycled since this tab was last driven" in after
+    # The honest refs claim (review F1): point at the refs section, never
+    # assert held refs still work (a navigation before the recycle may have
+    # invalidated them while the counter survived).
+    assert "refs section shows what is actually held" in after
+    assert "navigation still invalidates" in after
+    assert "survived and still work" not in after
+
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "worker_recycled_since_drive": "true"}),
+    )
+    assert "worker recycled" not in out.rpartition("</untrusted_page_content>")[2]
+
+
+def test_health_suppression_note_needs_the_evidence_shape() -> None:
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "input_swallowed": {"action": "click", "age_ms": 5_000}}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "observed swallowed" in after
+    # Evidence, not live state (review F2): the note must hedge on recovery
+    # having happened since, because nothing ages the evidence out.
+    assert "a navigation since may have cleared it" in after
+    assert "navigate" in after.lower()
+
+    # Wrong shapes stay silent: a bare string, a non-int age, and a bool age
+    # (bool is an int in Python and a different fact wearing the same type).
+    for forged in ("click", {"action": "click", "age_ms": "5000"}, {"action": "click", "age_ms": True}):
+        out = _invoke(
+            chrome_health,
+            {"tab_id": 1},
+            _ok({"tab": {"id": 1}, "input_swallowed": forged}),
+        )
+        assert "swallowed" not in out.rpartition("</untrusted_page_content>")[2]
+
+
+def test_health_standing_dialog_note_points_at_chrome_dialog() -> None:
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok(
+            {
+                "tab": {"id": 1},
+                "dialog": {"type": "confirm", "message": "Sure?", "age_ms": 900, "auto_answer_in_ms": 50_000},
+            }
+        ),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "chrome_dialog" in after
+
+    for forged_age in ("900", True):
+        out = _invoke(
+            chrome_health, {"tab_id": 1}, _ok({"tab": {"id": 1}, "dialog": {"age_ms": forged_age}})
+        )
+        assert "chrome_dialog" not in out.rpartition("</untrusted_page_content>")[2]
+
+
+def test_health_auth_note_renders_only_for_the_boolean_true() -> None:
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "http_status": {"status": 401}, "auth_prompt_likely": True}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "authentication prompt" in after
+    assert "never click or type through it" in after
+
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "auth_prompt_likely": "yes"}),
+    )
+    assert "authentication prompt" not in out.rpartition("</untrusted_page_content>")[2]
 
 
 def test_network_says_how_many_rows_the_limit_cut() -> None:

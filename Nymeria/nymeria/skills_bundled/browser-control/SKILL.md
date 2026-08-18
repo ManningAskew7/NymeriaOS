@@ -21,6 +21,7 @@ metadata:
       - chrome_console
       - chrome_network
       - chrome_dialog
+      - chrome_health
       - chrome_cdp
       - chrome_reload_extension
     tool_ttl: 2h
@@ -184,6 +185,12 @@ elements acts on one of them and tells you how many it matched.
 
 ## Dialogs, and when a tab stops responding to you
 
+When a tab stops answering, start with `chrome_health(tab_id)`: it names a
+standing dialog, proven input suppression, a navigation still in flight, and
+whether the extension's worker recycled since you last drove the tab, in one
+read with no side effects. The sections below are the recovery playbook for
+what it finds.
+
 **Page dialogs are OWNED while you drive.** From your first chrome_* command
 on a tab until shortly after your last, the extension holds Chrome's dialog
 ownership for it, so a dialog your own action raises is never a dead end:
@@ -340,14 +347,19 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   `- iframe` section; read the whole output, and mind the `[Frames: ...]`
   and hidden-nodes notes, which say what was covered and what the page
   hides.
+- Tab acting weird, or resuming after a pause -> `chrome_health(tab_id)`
+  FIRST: one side-effect-free read with the whole state (standing dialog,
+  swallowed-input evidence, in-flight navigation, last HTTP status, capture
+  and ref state, when you last drove it). It replaces scattering probes
+  across the other diagnostics and a throwaway action.
 - Something is silently failing -> `chrome_console` and `chrome_network` show
   what the page is doing, cross-origin iframes included (entries from a
   frame carry `frame: "<origin>"`). Console entries marked `browser: true`
   are Chrome itself naming a refusal (X-Frame-Options, CSP, mixed content,
   CORS): when a click lands but nothing happens, that entry is usually the
   answer. Neither tool can see a dialog: a wedged tab produces no
-  console output and no requests, so read "When a tab stops responding to
-  you" before spending calls there.
+  console output and no requests, so `chrome_health` and "When a tab stops
+  responding to you" come before spending calls there.
 
 `chrome_reload_extension` is a dev-loop helper, not a page tool: it makes
 the extension reload its own code from disk (the remote version of the

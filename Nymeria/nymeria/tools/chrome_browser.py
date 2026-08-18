@@ -104,6 +104,9 @@ _TIMEOUTS: dict[str, int] = {
     "console": 5,
     "network": 5,
     "dialog": 5,
+    # Local reads only (no CDP attach), so it answers in milliseconds; the
+    # budget covers the wire, not any work.
+    "health": 5,
     # The extension acks in ~1s and reloads itself ~2.5s later; the budget
     # only needs to cover the ack.
     "reload_extension": 10,
@@ -946,15 +949,19 @@ def _read_honesty_lines(data: dict[str, Any], *, truncated: bool = False) -> str
     return "\n".join(parts)
 
 
-def _network_capture_note(data: dict[str, Any]) -> str:
-    """Name the two ways this read can be silent for reasons of ours.
+def _capture_note(data: dict[str, Any]) -> str:
+    """Name the two ways a buffer read can be silent for reasons of ours.
 
     Capture runs while a tab is being driven, so it is neither absent nor
     continuous: a first read attaches the tab (nothing was captured before
     it), and a read after a pause re-attaches it (the gap between commands
     was not captured). Unqualified, both answers read as claims about the
-    PAGE. Booleans from the extension, so this renders outside the fence like
-    every other honesty line.
+    PAGE. Shared by the console and network reads (#183 gave console the
+    same flags: its silence had the identical ambiguity, unflagged).
+    Booleans from the extension, so this renders outside the fence like
+    every other honesty line; the gap is a whitelisted int (`_int_field`),
+    and when the extension cannot say how long (a worker recycle wiped the
+    stamp), the sentence says nothing rather than guessing.
     """
     if data.get("capture_started_now") is True:
         return (
@@ -963,9 +970,21 @@ def _network_capture_note(data: dict[str, Any]) -> str:
             "did. Act, then read again.]"
         )
     if data.get("capture_resumed") is True:
+        gap_ms = _int_field(data, "capture_gap_ms")
+        # Positive and under a day, or say nothing: zero, negative, or an
+        # absurd figure is a payload we do not understand, and the policy is
+        # silence over a guessed duration.
+        gap = ""
+        if gap_ms is not None and 0 < gap_ms <= 86_400_000:
+            phrase = (
+                f"{max(1, round(gap_ms / 1000))}s"
+                if gap_ms < 120_000
+                else f"{round(gap_ms / 60_000)}m"
+            )
+            gap = f" (about {phrase} went unwatched)"
         return (
             "[Capture had lapsed before this read: the extension releases an "
-            "idle tab, so whatever the page did between commands was not seen. "
+            f"idle tab, so whatever the page did between commands was not seen{gap}. "
             "What is listed was captured while the tab was being driven.]"
         )
     return ""
@@ -978,7 +997,7 @@ def _int_field(data: dict[str, Any], key: str) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _network_limit_note(data: dict[str, Any]) -> str:
+def _limit_note(data: dict[str, Any], *, filtered_noun: str, plain_noun: str) -> str:
     """Own up to rows the ``limit`` cut, rather than reporting them as absent.
 
     ``count`` has always meant rows RETURNED, so a limit that trims the list
@@ -986,17 +1005,20 @@ def _network_limit_note(data: dict[str, Any]) -> str:
     is the same false read as an unqualified empty answer, arriving by a
     different route: measured live 2026-08-17, ``limit: 0`` reported
     ``count: 0`` while the buffer held eight requests the agent had just seen.
-    Two whitelisted integers, so this renders outside the fence.
+    Shared by the network and console reads (the console default is
+    only_errors=True AND limit=50, so its cuts were doubly easy to read as
+    "the page logged nothing"). Two whitelisted integers, so this renders
+    outside the fence.
     """
     count = _int_field(data, "count")
     total = _int_field(data, "matched_total")
     if count is None or total is None or total <= count:
         return ""
-    # The total is counted AFTER url_pattern/only_failures, so on a filtered
-    # read it is not the buffer size and must not read as one (operator note,
-    # live 2026-08-17: "of 40 captured requests" beside a filter invites the
+    # The total is counted AFTER the filters, so on a filtered read it is not
+    # the buffer size and must not read as one (operator note, live
+    # 2026-08-17: "of 40 captured requests" beside a filter invites the
     # reader to think the tab made 40 requests in total).
-    of_what = "requests matching your filter" if data.get("filtered") is True else "captured requests"
+    of_what = filtered_noun if data.get("filtered") is True else plain_noun
     return (
         f"[Showing the newest {count} of {total} {of_what}: the rest were "
         "cut by `limit`, not missing from capture. Raise limit to see more.]"
@@ -1005,7 +1027,20 @@ def _network_limit_note(data: dict[str, Any]) -> str:
 
 def _network_notes(data: dict[str, Any]) -> str:
     """The network read's honesty block, most load-bearing first."""
-    return "\n".join(p for p in (_network_capture_note(data), _network_limit_note(data)) if p)
+    limit = _limit_note(
+        data, filtered_noun="requests matching your filter", plain_noun="captured requests"
+    )
+    return "\n".join(p for p in (_capture_note(data), limit) if p)
+
+
+def _console_notes(data: dict[str, Any]) -> str:
+    """The console read's honesty block: same rules, console nouns."""
+    limit = _limit_note(
+        data,
+        filtered_noun="entries matching your filter (only_errors)",
+        plain_noun="buffered console entries",
+    )
+    return "\n".join(p for p in (_capture_note(data), limit) if p)
 
 
 def _failed(payload: dict[str, Any]) -> Optional[str]:
@@ -2263,11 +2298,18 @@ async def chrome_console(
     The browser's OWN refusals (X-Frame-Options, CSP, mixed content, CORS)
     appear as entries marked "browser": true, so a silently blocked action
     usually names its blocker here in one read.
+
+    Capture runs while the tab is being driven, not continuously, and the
+    gaps are flagged the same way chrome_network flags them: a first read
+    starts capture (nothing before it was seen), a read after a pause says
+    the lapse and how long it went unwatched. An answer the limit cut says
+    how many entries it cut (200 are buffered per tab).
     """
     return await _dispatch(
         command_type="console",
         args={"tab_id": tab_id, "only_errors": only_errors, "limit": limit, "clear": clear},
         config=config,
+        notes=_console_notes,
     )
 
 
@@ -2294,7 +2336,8 @@ async def chrome_network(
     It is not continuous, and the gaps are flagged rather than left to look
     like silence. A first read of a tab attaches it, so nothing was captured
     before that read; a read after a pause re-attaches it, so what the page
-    did between your commands was not seen. Separately, a frame's LOAD-TIME
+    did between your commands was not seen (the note says how long the lapse
+    lasted when that is known). Separately, a frame's LOAD-TIME
     requests often precede capture reaching that frame (its session attaches
     moments after the frame starts loading), so an iframe's early requests
     being absent is not evidence they never happened. A load-time failure
@@ -2336,6 +2379,91 @@ async def chrome_dialog(
     if prompt_text is not None:
         args["prompt_text"] = prompt_text
     return await _dispatch(command_type="dialog", args=args, config=config)
+
+
+def _health_notes(data: dict[str, Any]) -> str:
+    """The health read's interpretive traps, rendered outside the fence.
+
+    Every gate reads whitelisted extension-set shapes (``is True`` booleans,
+    dict presence with a TRUE int ``age_ms``, bool excluded like
+    ``_int_field``), never page strings: page-chosen text (dialog messages,
+    URLs, titles) stays inside the fence with the rest of the payload. The
+    claims hedge where the fact does (review F1/F2): the recycle note points
+    at the refs section rather than asserting held refs work (a navigation
+    before the recycle still invalidated them), and the swallowed-input note
+    is evidence, not a live-state assertion.
+    """
+    lines: list[str] = []
+    if data.get("worker_recycled_since_drive") is True:
+        lines.append(
+            "[The extension's worker recycled since this tab was last driven: "
+            "attach state and the console/network buffers reset with it, so "
+            "their zeros describe the recycle, not the page. Refs are "
+            "unaffected by recycles; the refs section shows what is actually "
+            "held (a navigation still invalidates them).]"
+        )
+    dialog = data.get("dialog")
+    if isinstance(dialog, dict) and _int_field(dialog, "age_ms") is not None:
+        lines.append(
+            "[A dialog is standing on this tab and input is held until it is "
+            "answered: answer it with chrome_dialog.]"
+        )
+    swallowed = data.get("input_swallowed")
+    if isinstance(swallowed, dict) and _int_field(swallowed, "age_ms") is not None:
+        lines.append(
+            "[An earlier action's trusted input was observed swallowed on "
+            "this tab (input_swallowed says how long ago). A browser dialog "
+            "causes that, the state can outlive the dialog, and a navigation "
+            "since may have cleared it. If input still fails: navigate the "
+            "tab elsewhere, and close it for a fresh tab if that is not "
+            "enough.]"
+        )
+    if data.get("auth_prompt_likely") is True:
+        lines.append(
+            "[The last response was a 401/407, so an authentication prompt is "
+            "likely showing and Chrome discards input sent under one. Navigate "
+            "the tab somewhere else; never click or type through it.]"
+        )
+    return "\n".join(lines)
+
+
+@tool
+async def chrome_health(
+    tab_id: int,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """One read that says whether a Chrome tab is healthy and what state it is in.
+
+    Reach for it when a tab has gone quiet, after a pause, or before retrying
+    something that failed: it replaces scattering probes across chrome_console,
+    chrome_network and a throwaway action. It has NO side effects: it does not
+    attach the tab, start capture, or touch the page.
+
+    The payload carries: the tab itself (url, title, load status); whether the
+    debugger is attached and whether capture ever ran this worker life;
+    console/network buffer sizes (unfiltered, up to 200 per tab; a filtered
+    read like chrome_console's errors-only default may return fewer) and,
+    when capture lapsed, how long the tab went unwatched; any standing dialog
+    (answer it with chrome_dialog), recently auto-resolved dialog, or
+    intercepted file chooser; a navigation still in flight or the last one
+    that died; the last main-frame HTTP status when the page-status grant is
+    on (absent means unknown, never OK); how many refs are held and minted
+    (refs survive worker recycles; a navigation invalidates them); when the
+    tab was last driven and by which command; and input_swallowed, evidence
+    from the last action whose trusted input was observed to be discarded
+    (Chrome exposes no readable flag, so this is evidence with an age, not
+    live state: a navigation since may have cleared the condition, and it is
+    cleared here once input is seen flowing again).
+
+    Absent keys mean unknown or none, never fine. Ages are age_ms
+    (milliseconds ago).
+    """
+    return await _dispatch(
+        command_type="health",
+        args={"tab_id": tab_id},
+        config=config,
+        notes=_health_notes,
+    )
 
 
 # What chrome_cdp refuses, as exact method names. Three classes, derived in
@@ -2560,17 +2688,19 @@ CHROME_BROWSER_TOOLS = [
     chrome_console,
     chrome_network,
     chrome_dialog,
+    chrome_health,
     chrome_cdp,
     chrome_reload_extension,
 ]
 
 #: What the browser-control kit binds: the whole working surface, all
-#: thirteen tools, diagnostics and the escape hatch included (the
+#: fourteen tools, diagnostics and the escape hatch included (the
 #: scoped-tools principle: a kit carries the tools its domain needs).
 #: ``chrome_dialog`` joined in the #169 pass, which made it a working tool
 #: (Page ownership: dialogs raised while driving are held and answerable);
 #: ``chrome_reload_extension`` joined 2026-08-16 (the dev loop's remote
-#: refresh).
+#: refresh); ``chrome_health`` joined in the #188 pass (the one-call tab
+#: health read).
 CHROME_KIT_TOOL_NAMES = (
     "chrome_tabs",
     "chrome_navigate",
@@ -2583,6 +2713,7 @@ CHROME_KIT_TOOL_NAMES = (
     "chrome_console",
     "chrome_network",
     "chrome_dialog",
+    "chrome_health",
     "chrome_cdp",
     "chrome_reload_extension",
 )
@@ -2603,6 +2734,7 @@ __all__ = [
     "chrome_console",
     "chrome_network",
     "chrome_dialog",
+    "chrome_health",
     "chrome_cdp",
     "chrome_reload_extension",
 ]

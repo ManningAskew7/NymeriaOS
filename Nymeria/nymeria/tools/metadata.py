@@ -249,6 +249,8 @@ _BROWSER_SAFE_TOOL_NAMES = frozenset(
         "chrome_screenshot",
         "chrome_console",
         "chrome_network",
+        # Local state reads only, no attach, no side effects (#188).
+        "chrome_health",
     }
 )
 
