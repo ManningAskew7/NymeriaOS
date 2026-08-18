@@ -114,6 +114,29 @@ _TIMEOUTS: dict[str, int] = {
 }
 assert max(_TIMEOUTS.values()) <= _MAX_TIMEOUT_S, "a command may not outlive the orphan sweep"
 
+# The wire-command -> tool-name map (#202). The extension speaks wire names
+# (health's last_driven.command reports them) and only the backend owns the
+# tool names, so the translation lives HERE, in our own text, rendered as a
+# note outside the fence: the fenced payload is never rewritten. Keyed to
+# _TIMEOUTS so a new wire command cannot ship without a mapping.
+_WIRE_TO_TOOL: dict[str, str] = {
+    "tabs": "chrome_tabs",
+    "navigate": "chrome_navigate",
+    "history": "chrome_navigate",
+    "snapshot": "chrome_read_page or chrome_find (one wire command serves both)",
+    "act": "chrome_act",
+    "batch": "chrome_batch",
+    "extract_text": "chrome_read_text",
+    "screenshot": "chrome_screenshot",
+    "console": "chrome_console",
+    "network": "chrome_network",
+    "dialog": "chrome_dialog",
+    "health": "chrome_health",
+    "reload_extension": "chrome_reload_extension",
+    "cdp": "chrome_cdp",
+}
+assert _WIRE_TO_TOOL.keys() == _TIMEOUTS.keys(), "every wire command needs a tool-name mapping"
+
 
 def _timeout_for(command_type: str, override: Optional[int] = None) -> int:
     """Resolve a command's wait, never past the orphan sweep."""
@@ -1648,7 +1671,11 @@ async def chrome_act(
     Input goes in as real browser-level events, which is what sites that ignore
     script-synthesized clicks (checkout and payment flows especially) require.
     Where that is impossible the result says input was "synthetic" and why, so
-    you can judge whether a site is likely to have honoured it.
+    you can judge whether a site is likely to have honoured it. One shape to
+    know: a ref that names the page itself rather than a control (a
+    document-level container) degrades to a synthetic click whose reason says
+    nothing specific was clicked; when you meant a link or button, act on
+    that element's own ref instead.
 
     Going in at browser level is not the same as arriving: the browser can
     discard the event after accepting it, which is what happens on a tab held by
@@ -2320,8 +2347,11 @@ async def chrome_console(
     Capture runs while the tab is being driven, not continuously, and the
     gaps are flagged the same way chrome_network flags them: a first read
     starts capture (nothing before it was seen), a read after a pause says
-    the lapse and how long it went unwatched. An answer the limit cut says
-    how many entries it cut (200 are buffered per tab).
+    the lapse and how long it went unwatched, and a read that found capture
+    already live says so positively with "capture_active": true (live when
+    THIS read arrived; a lapse that an earlier command already ended was
+    that command's, so this is not a continuity claim). An answer the limit
+    cut says how many entries it cut (200 are buffered per tab).
     """
     return await _dispatch(
         command_type="console",
@@ -2355,7 +2385,8 @@ async def chrome_network(
     like silence. A first read of a tab attaches it, so nothing was captured
     before that read; a read after a pause re-attaches it, so what the page
     did between your commands was not seen (the note says how long the lapse
-    lasted when that is known). Separately, a frame's LOAD-TIME
+    lasted when that is known); and a read that found capture already live
+    says so positively with "capture_active": true. Separately, a frame's LOAD-TIME
     requests often precede capture reaching that frame (its session attaches
     moments after the frame starts loading), so an iframe's early requests
     being absent is not evidence they never happened. A load-time failure
@@ -2458,6 +2489,23 @@ def _health_notes(data: dict[str, Any]) -> str:
             "likely showing and Chrome discards input sent under one. Navigate "
             "the tab somewhere else; never click or type through it.]"
         )
+    # Wire-name translation (#202): last_driven.command speaks the wire, and
+    # three wire names do not guess to their tool. Only the command string is
+    # consulted, only against OUR whitelist, and only a whitelist value is
+    # rendered: an unknown or forged command renders nothing. The obvious
+    # 1:1 names (act, tabs...) stay silent; a note repeating "act is
+    # chrome_act" on every read would be noise, not translation.
+    driven = data.get("last_driven")
+    if isinstance(driven, dict):
+        command = driven.get("command")
+        if isinstance(command, str) and command in _WIRE_TO_TOOL:
+            tool_text = _WIRE_TO_TOOL[command]
+            if tool_text != f"chrome_{command}":
+                lines.append(
+                    f"[last_driven.command {command!r} is the wire name for "
+                    f"{tool_text}. After a chrome_batch, the last sub-action's "
+                    "wire name is what appears here.]"
+                )
     return "\n".join(lines)
 
 
@@ -2486,13 +2534,25 @@ async def chrome_health(
     that died; the last main-frame HTTP status when the page-status grant is
     on (absent means unknown, never OK); how many refs are held and minted
     (refs survive worker recycles; a navigation invalidates them); when the
-    tab was last driven and by which command (the wire command name:
-    "snapshot" is chrome_read_page's, "extract_text" is chrome_read_text's,
-    the rest match their chrome_* tool); and input_swallowed, evidence
-    from the last action whose trusted input was observed to be discarded
+    tab was last driven and by which command (the WIRE name, and a note
+    translates the ones that do not guess to their tool: "snapshot" serves
+    chrome_read_page and chrome_find, "extract_text" is chrome_read_text,
+    "history" is chrome_navigate's back/forward; after a chrome_batch the
+    last sub-action's wire name appears); input_swallowed, evidence from
+    the last action whose trusted input was observed to be discarded
     (Chrome exposes no readable flag, so this is evidence with an age, not
     live state: a navigation since may have cleared the condition, and it is
-    cleared here once input is seen flowing again).
+    cleared here once input is seen flowing again); and input_ok, the
+    positive twin: the last action whose trusted input was COUNTED arriving
+    in the page, with the tab URL it was proven under and on_current_url
+    saying whether that is still the URL the tab shows. false is common and
+    usually GOOD news: a click that navigates is proven on the page it was
+    sent from, so a fresh stamp with on_current_url false next to a
+    navigation is the input working; only an OLD stamp on a different URL
+    is mere history. Each verdict spends the other store, so normally at
+    most one of input_ok / input_swallowed appears; a verdict landing
+    exactly as health reads can briefly show both, and the smaller age_ms
+    is the newer one.
 
     Absent keys mean unknown or none, never fine. Ages are age_ms
     (milliseconds ago).

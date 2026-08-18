@@ -3189,6 +3189,74 @@ def test_health_suppression_note_needs_the_evidence_shape() -> None:
         assert "swallowed" not in out.rpartition("</untrusted_page_content>")[2]
 
 
+def test_health_wire_name_note_translates_only_the_non_obvious() -> None:
+    """#202: last_driven.command speaks wire names, and three do not guess
+    to their tool. Whitelist-gated: only OUR text renders, an unknown or
+    forged command renders nothing, and the obvious 1:1 names stay silent
+    (a note repeating "act is chrome_act" would be noise)."""
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "last_driven": {"command": "snapshot", "age_ms": 900}}),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "wire name for chrome_read_page or chrome_find" in after
+    assert "chrome_batch" in after  # the last-sub-action caveat rides the note
+
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "last_driven": {"command": "history", "age_ms": 900}}),
+    )
+    assert "wire name for chrome_navigate" in out.rpartition("</untrusted_page_content>")[2]
+
+    # Obvious 1:1: silent.
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "last_driven": {"command": "act", "age_ms": 900}}),
+    )
+    assert "wire name" not in out.rpartition("</untrusted_page_content>")[2]
+
+    # Forged or unknown commands render nothing (the note is a whitelist).
+    for forged in (7, True, "evil_command", "chrome_read_page"):
+        out = _invoke(
+            chrome_health,
+            {"tab_id": 1},
+            _ok({"tab": {"id": 1}, "last_driven": {"command": forged, "age_ms": 900}}),
+        )
+        assert "wire name" not in out.rpartition("</untrusted_page_content>")[2]
+
+
+def test_wire_to_tool_map_values_are_real_tool_text() -> None:
+    """The RATCHET itself is the import-time assert beside the map (keys ==
+    _TIMEOUTS keys): it fires before any test could, so re-asserting it here
+    would be a line that can never fail independently. What CAN drift
+    silently is the values, so they are pinned as real tool text."""
+    from nymeria.tools.chrome_browser import _WIRE_TO_TOOL
+
+    for text in _WIRE_TO_TOOL.values():
+        assert "chrome_" in text
+
+
+def test_positive_signal_docstrings_teach_the_new_facts() -> None:
+    """#202: input_ok on health, capture_active on both buffer reads, the
+    document-level synthetic clause on act, and the CORRECTED wire-name
+    sentence (the shipped one claimed "the rest match their chrome_* tool",
+    false for history). Docstring-only facts, so losing the teaching is the
+    regression."""
+    h = chrome_health.description
+    assert "input_ok" in h
+    assert "on_current_url" in h
+    assert '"history" is chrome_navigate' in h
+    assert "the rest match their chrome_* tool" not in h
+    # Whitespace-normalized: the phrase wraps across docstring lines.
+    assert "normally at most one of input_ok / input_swallowed appears" in " ".join(h.split())
+    assert '"capture_active": true' in chrome_console.description
+    assert '"capture_active": true' in chrome_network.description
+    assert "document-level container" in chrome_act.description
+
+
 def test_health_standing_dialog_note_points_at_chrome_dialog() -> None:
     out = _invoke(
         chrome_health,
