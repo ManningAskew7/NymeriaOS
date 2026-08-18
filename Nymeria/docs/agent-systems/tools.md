@@ -2645,7 +2645,13 @@ the document's (a wheel at the end of a pane CHAINS to the page and is
 named "document"); {0,0} is a MEASURED nothing-moved; the key absent means
 unmeasured, including a targetless wheel whose point sits over an embedded
 frame (the frame's own scrolling is not watched, so a zero there is
-withheld rather than claimed). One measured asymmetry worth knowing:
+withheld rather than claimed). A rare `wheel_ack: "not_received"` beside a
+successful scroll means Chrome mislaid the wheel's ack, not the wheel
+(#207: a coalesced-away wheel never acks while its delta still lands, and
+the desync is per-widget and permanent, so the ack is not load-bearing for
+scroll; the extension latches the widget so later wheels cost milliseconds,
+and the latch dies with the widget on navigation or close). Absence of the
+key means the ack arrived. One measured asymmetry worth knowing:
 root-session coordinate wheels DO route into cross-origin frames by
 position (the browser composes wheels), the opposite of clicks, which only
 the frame's own session can deliver.

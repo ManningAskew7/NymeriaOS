@@ -1657,10 +1657,11 @@ async def chrome_act(
         wheel, or rarely a smooth animation still in flight at the
         read); the key ABSENT means it could not be measured. A wheel
         that moved some OTHER pane than the two watched reads {0,0}. A
-        rare "wheel_ack": "timeout" beside a successful scroll says the
-        browser mislaid the wheel's RECEIPT, not the wheel (a Chrome
+        rare "wheel_ack": "not_received" beside a successful scroll says
+        the browser mislaid the wheel's RECEIPT, not the wheel (a Chrome
         quirk on wheel-heavy tabs): the scroll went in, the extension
-        self-heals the cost, and scroll_moved is the field to believe.
+        self-heals the cost, and scroll_moved is the field to believe;
+        no "wheel_ack" key means the receipt arrived normally.
         To bring a specific element into view, action="scroll_to" with
         its ref is still the direct verb.
     to_ref: drag destination.
