@@ -2515,7 +2515,7 @@ surface, diagnostics and the escape hatch included):
 | `chrome_console` | `(tab_id, only_errors=True, limit=50, clear=False)` | Console messages and uncaught exceptions. Carries the same capture-gap flags as `chrome_network` since the #183 rider (its silence had the identical ambiguity, unflagged). |
 | `chrome_network` | `(tab_id, url_pattern?, only_failures=False, limit=50)` | The request log with status codes, captured whenever the tab is being driven. Capture is not continuous, and both gaps are flagged rather than left as silence: a read that itself attached the tab says capture just started, and one after an idle release says capture had lapsed, with `capture_gap_ms` saying how long went unwatched (#183; absent when unknown, e.g. after a worker recycle), so neither empty answer reads as "this page made no requests". `limit` is the newest N (0 returns none, in `chrome_console` too; 200 are buffered per tab). |
 | `chrome_dialog` | `(tab_id, action, prompt_text?)` | Answer the JS dialog standing on a tab being driven (#169). The extension owns `Page` for the life of each attach, so dialogs raised while driving are held for the agent: alerts auto-acknowledged and reported, confirm/prompt/beforeunload standing with a named message and a grace deadline, dismissed automatically if nobody answers. Cannot answer a dialog raised while no command was driving the tab (ownership is not retroactive; measured). |
-| `chrome_health` | `(tab_id)` | One side-effect-free read answering "is this tab healthy" (#188, the QA operator's top ask): the tab itself, attach/capture state and buffer counts with the lapse duration, standing/recently-resolved dialogs and intercepted file choosers, in-flight or failed navigation, last main-frame HTTP status (grant-gated; absent means unknown), held/minted refs, when the tab was last driven, and `input_swallowed`, the last action whose trusted input was provably discarded (suppression has no readable flag, so this is observed evidence, cleared when input provably flows again). Local reads only: it never attaches, and it answers under a standing dialog or a hung renderer. `worker_recycled_since_drive` discloses when an MV3 recycle reset the worker-scoped facts (refs survive, #179). |
+| `chrome_health` | `(tab_id)` | One side-effect-free read answering "is this tab healthy" (#188, the QA operator's top ask): the tab itself, attach/capture state and buffer counts with the lapse duration, standing/recently-resolved dialogs and intercepted file choosers, in-flight or failed navigation, last main-frame HTTP status (grant-gated; absent means unknown), held/minted refs, when the tab was last driven, and the delivery-evidence pair: `input_swallowed`, the last action whose trusted input was provably discarded (suppression has no readable flag, so this is observed evidence, cleared when input provably flows again), and its positive twin `input_ok` (#202), the last PROVEN delivery with age, action, the URL it was proven under, and `on_current_url` judging DOCUMENT identity (true = same URL and no page load committed since the proof; false is common and usually good news, a navigating click proven on the page it was sent from; omitted across a worker recycle, where identity is unknowable). Normally at most one of the pair appears. Local reads only: it never attaches, and it answers under a standing dialog or a hung renderer. `worker_recycled_since_drive` discloses when an MV3 recycle reset the worker-scoped facts (refs survive, #179). |
 | `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the wedge enables (`Fetch`/`Debugger`, which nothing consumes, and `Page.enable`, whose ownership the extension already holds with an answering policy); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
 | `chrome_reload_extension` | `()` | Dev-loop helper: the extension reloads its own code from disk (`chrome.runtime.reload()`), replacing the manual refresh click at chrome://extensions after a pull+rebuild. Acks first (reporting `version_before`), reloads ~2.5s later, then the tool waits (bounded) for the reloaded worker's resubscribe and appends `version_after` (the extension announces its manifest version when subscribing), closing the deploy-verification loop; a missing reconnect is reported honestly instead. Driven tabs are released and in-flight commands lost, so it runs alone, never in a batch. A build that fails to load strands the extension until a manual reload. |
 
@@ -2554,7 +2554,10 @@ element refuse up front, as do drags between two frames: page coordinates
 cannot be composed into another process's frame, and the refusal points at
 the frame's own refs. Where a
 trusted path is impossible (native `<select>` popups, file uploads, elements
-with no layout box) the result reports `input: "synthetic"` and why.
+with no layout box) the result reports `input: "synthetic"` and why; a ref
+whose mint role is a document-level container says the real thing outright
+("nothing specific was clicked", #202) instead of the generic
+hidden-or-zero-size text. Synthetic fallbacks never write delivery proof.
 
 **Actionability (act-time):** the connectedness probe every `@ref` act
 already spent now answers five more questions from the SAME call, so a
@@ -2599,7 +2602,10 @@ network read has no backlog to wait for and owns its own two gaps instead:
 capture is not continuous (the debugger is released after an idle linger),
 so a read flags either `capture_started_now` (nothing was ever captured for
 this tab) or `capture_resumed` (it lapsed since the last command and the gap
-was not seen), each rendered as a note. The remaining honest gap: a frame's
+was not seen), each rendered as a note; a warm read (session already
+attached when the read arrived) claims the good state positively instead of
+by omission, `capture_active: true`, which is live-at-that-read, not a
+continuity claim (#202, console and network both). The remaining honest gap: a frame's
 load-time requests often precede capture reaching it and are absent from
 `chrome_network` (its failures still surface as `browser: true` console
 advisories). `failed_requests` entries carry
