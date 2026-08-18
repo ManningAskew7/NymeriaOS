@@ -113,7 +113,10 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   the wheel); ABSENT means unmeasured, including a coordinate wheel over
   an embedded frame (the frame's scrolling is not watched, so no zero is
   claimed about it). An off-screen ref refuses: scroll_to it first, or
-  wheel by coordinate.
+  wheel by coordinate. A rare `wheel_ack: "not_received"` beside a
+  successful scroll means the browser mislaid the wheel's receipt, not
+  the wheel: the scroll went in, believe scroll_moved; no key means the
+  receipt arrived.
 - `hit` -> what was actually under the coordinate you clicked, named like
   `button "Sign in"` or `input#email` (only appears when you acted on a
   `coordinate` rather than a ref; a drag reports `hit_from`, its source). A
