@@ -2466,6 +2466,27 @@ def test_act_docstring_teaches_frame_attribution_and_the_benign_class() -> None:
     assert 'use action="scroll_to" with its ref' in d
 
 
+def test_act_docstring_teaches_deterministic_evidence_and_the_mutation_tally() -> None:
+    # The #180 facts are extension-side behavior; the backend's whole
+    # contribution is teaching them. Pinned: the determinism promise (the
+    # old text described best-effort fields the QA operator measured as
+    # present-sometimes), the navigating-click survival (the case the
+    # fields used to vanish on), and the mutation tally's asymmetric
+    # reading (zero strong, nonzero weak), which is the phantom-success
+    # teaching the Amazon add-to-cart episode showed was missing.
+    d = " ".join(chrome_act.description.split())
+    assert "Presence is the norm" in d
+    assert "a click that NAVIGATES usually keeps them too" in d
+    assert 'absence there means unmeasured, never "no click composed"' in d
+    assert '"settled" carries "mutations"' in d
+    assert "ZERO is the strong signal" in d
+    assert "nonzero count is weak evidence" in d
+    # The review round's H1: zero must never be taught about a document the
+    # observer cannot see, so the absence rules are load-bearing teaching.
+    assert "resolved into a subframe" in d
+    assert "verify a page fact before retrying" in d
+
+
 # ---------- a failed command must read as failed ----------
 
 
