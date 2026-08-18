@@ -2543,14 +2543,17 @@ async def chrome_health(
     (Chrome exposes no readable flag, so this is evidence with an age, not
     live state: a navigation since may have cleared the condition, and it is
     cleared here once input is seen flowing again); and input_ok, the
-    positive twin: the last action whose trusted input was COUNTED arriving
-    in the page, with the tab URL it was proven under and on_current_url
-    saying whether that is still the URL the tab shows. false is common and
-    usually GOOD news: a click that navigates is proven on the page it was
-    sent from, so a fresh stamp with on_current_url false next to a
-    navigation is the input working; only an OLD stamp on a different URL
-    is mere history. Each verdict spends the other store, so normally at
-    most one of input_ok / input_swallowed appears; a verdict landing
+    positive twin: the last action whose trusted input was proven
+    delivered, with the tab URL it was proven under. on_current_url judges
+    DOCUMENT identity, not URL text: true means the same URL AND no page
+    load since the proof, so a later navigation BACK to that URL still
+    reads false (different document), and the key is omitted when identity
+    cannot be judged (the proof predates the extension worker). false is
+    common and usually GOOD news: a click that navigates is proven on the
+    page it was sent from, so a fresh stamp with on_current_url false next
+    to a navigation is the input working; only an OLD stamp on a different
+    page is mere history. Each verdict spends the other store, so normally
+    at most one of input_ok / input_swallowed appears; a verdict landing
     exactly as health reads can briefly show both, and the smaller age_ms
     is the newer one.
 
