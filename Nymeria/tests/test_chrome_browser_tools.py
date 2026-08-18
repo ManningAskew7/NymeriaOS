@@ -2478,12 +2478,14 @@ def test_act_docstring_teaches_deterministic_evidence_and_the_mutation_tally() -
     assert "Presence is the norm" in d
     assert "a click that NAVIGATES usually keeps them too" in d
     assert 'absence there means unmeasured, never "no click composed"' in d
-    assert '"settled" carries "mutations"' in d
+    assert '"dom_mutations" counts DOM changes to the ACTED document' in d
     assert "ZERO is the strong signal" in d
     assert "nonzero count is weak evidence" in d
-    # The review round's H1: zero must never be taught about a document the
-    # observer cannot see, so the absence rules are load-bearing teaching.
-    assert "resolved into a subframe" in d
+    # QA round 2's two live catches: synchronous reactions must be inside
+    # the window, and a navigating act must not leak the new document's
+    # count. The absence rules are load-bearing teaching.
+    assert "Synchronous handler reactions ARE counted" in d
+    assert "the watch died with the document" in d
     assert "verify a page fact before retrying" in d
 
 

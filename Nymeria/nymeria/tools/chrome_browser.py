@@ -1757,20 +1757,19 @@ async def chrome_act(
     console errors and failed requests caused by the action, and whether the
     page settled. READ IT. A click that "succeeded"
     while its request came back 500 is a failure, and this is where that shows.
-    "settled" carries "mutations", a count of DOM changes to the TOP
-    document while the page settled after your action, and it reads
-    asymmetrically: for an act in the top document, ZERO is the strong
-    signal, the page made nothing observable of your input (the
-    phantom-success shape where every delivery field is truthful and
+    "dom_mutations" counts DOM changes to the ACTED document (an in-frame
+    act counts the frame's own document) from just before the input went
+    in until after the page settled, and it reads asymmetrically: ZERO is
+    the strong signal, the document made nothing observable of your input
+    (the phantom-success shape where every delivery field is truthful and
     nothing happened): verify a page fact before retrying rather than
     re-firing blind. A nonzero count is weak evidence, since dynamic pages
-    mutate constantly. Two honest limits: reactions inside shadow roots are
-    not counted, and a reaction already finished in the instant before the
-    watch began can read as zero, so zero steers you to verify, never to
-    conclude alone. The key is ABSENT wherever it would mislead: an act
-    that resolved into a subframe (the tally cannot see the frame's
-    document), a navigating act (the new document is the reaction), a
-    probe that never ran, or a budget-clamped window.
+    mutate constantly. Synchronous handler reactions ARE counted (the
+    watch starts before dispatch); reactions inside shadow roots are not.
+    The key is ABSENT wherever nothing can be measured: a navigating act
+    (the watch died with the document; the navigation is the reaction),
+    hover and scroll (no delivery probe), a document the probe could not
+    arm in, or a budget that died before the read.
     Each failed_requests entry carries "same_origin" where it can be judged,
     and the capped list is ranked so a broken first-party POST is never
     crowded out by third-party telemetry beacons; weigh same-origin data
