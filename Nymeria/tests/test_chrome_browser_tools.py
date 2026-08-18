@@ -2991,6 +2991,11 @@ def test_network_resumed_note_says_how_long_when_the_gap_is_a_true_int() -> None
     )
     after = out.rpartition("</untrusted_page_content>")[2]
     assert "about 30s went unwatched" in after
+    # The note teaches the mechanism (QA round 2, 2026-08-18): a capable
+    # operator read per-read lapses as a growing/latching bug because nothing
+    # named the ~10s idle release or the per-read semantics.
+    assert "about 10s after the last command" in after
+    assert "Each read reports its own lapse" in after
 
     # A long gap reads in minutes, not a wall of seconds.
     out = _invoke(
@@ -3207,6 +3212,33 @@ def test_health_auth_note_renders_only_for_the_boolean_true() -> None:
         _ok({"tab": {"id": 1}, "auth_prompt_likely": "yes"}),
     )
     assert "authentication prompt" not in out.rpartition("</untrusted_page_content>")[2]
+
+
+def test_health_combined_auth_and_swallowed_note_skips_to_the_fresh_tab() -> None:
+    """Measured live (QA round 4, 2026-08-18): a Basic-auth challenge Chrome
+    auto-cancelled leaves suppression that SURVIVES navigating away, so when
+    both signals are present the two solo notes would tell the agent to try
+    a recovery measured not to work. One combined note replaces them and
+    goes straight to the fresh tab."""
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok(
+            {
+                "tab": {"id": 1},
+                "http_status": {"status": 401},
+                "auth_prompt_likely": True,
+                "input_swallowed": {"action": "click", "age_ms": 3_000},
+            }
+        ),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "measured to survive navigating" in after
+    assert "Close this tab" in after
+    # The solo notes must NOT also render: their navigate-first advice is
+    # exactly what the combined case exists to override.
+    assert "navigation since may have cleared it" not in after
+    assert "Navigate the tab somewhere else" not in after
 
 
 def test_network_says_how_many_rows_the_limit_cut() -> None:

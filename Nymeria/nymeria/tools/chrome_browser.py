@@ -984,8 +984,12 @@ def _capture_note(data: dict[str, Any]) -> str:
             gap = f" (about {phrase} went unwatched)"
         return (
             "[Capture had lapsed before this read: the extension releases an "
-            f"idle tab, so whatever the page did between commands was not seen{gap}. "
-            "What is listed was captured while the tab was being driven.]"
+            "idle tab about 10s after the last command that touched it, so "
+            f"whatever the page did between commands was not seen{gap}. Each "
+            "read reports its own lapse, so a fresh pause yields a fresh "
+            "number, and a read within ~10s of the last command truthfully "
+            "carries no lapse at all. What is listed was captured while the "
+            "tab was being driven.]"
         )
     return ""
 
@@ -2409,7 +2413,23 @@ def _health_notes(data: dict[str, Any]) -> str:
             "answered: answer it with chrome_dialog.]"
         )
     swallowed = data.get("input_swallowed")
-    if isinstance(swallowed, dict) and _int_field(swallowed, "age_ms") is not None:
+    has_evidence = isinstance(swallowed, dict) and _int_field(swallowed, "age_ms") is not None
+    auth_likely = data.get("auth_prompt_likely") is True
+    if has_evidence and auth_likely:
+        # The combined case gets ONE note that skips ahead (measured live,
+        # QA 2026-08-18): a Basic-auth challenge Chrome auto-cancelled (its
+        # window hidden) leaves suppression that SURVIVES navigating away,
+        # so telling the agent to navigate-and-retry here burns acts on a
+        # recovery that was measured not to work for this cause.
+        lines.append(
+            "[Input to this tab was observed swallowed AND the last response "
+            "was a 401/407: an authentication challenge is suppressing input, "
+            "and when Chrome auto-cancelled the challenge (its window hidden "
+            "or covered), that suppression is measured to survive navigating "
+            "away. Close this tab and redo the work in a fresh one; never "
+            "click or type through an auth prompt.]"
+        )
+    elif has_evidence:
         lines.append(
             "[An earlier action's trusted input was observed swallowed on "
             "this tab (input_swallowed says how long ago). A browser dialog "
@@ -2418,7 +2438,7 @@ def _health_notes(data: dict[str, Any]) -> str:
             "tab elsewhere, and close it for a fresh tab if that is not "
             "enough.]"
         )
-    if data.get("auth_prompt_likely") is True:
+    elif auth_likely:
         lines.append(
             "[The last response was a 401/407, so an authentication prompt is "
             "likely showing and Chrome discards input sent under one. Navigate "
@@ -2443,13 +2463,18 @@ async def chrome_health(
     debugger is attached and whether capture ever ran this worker life;
     console/network buffer sizes (unfiltered, up to 200 per tab; a filtered
     read like chrome_console's errors-only default may return fewer) and,
-    when capture lapsed, how long the tab went unwatched; any standing dialog
+    when capture lapsed, how long the tab has gone unwatched AS OF THIS
+    READ (health does not re-attach, so that number keeps growing until
+    something drives the tab; the same field on a console/network read
+    measures the lapse that read just ended); any standing dialog
     (answer it with chrome_dialog), recently auto-resolved dialog, or
     intercepted file chooser; a navigation still in flight or the last one
     that died; the last main-frame HTTP status when the page-status grant is
     on (absent means unknown, never OK); how many refs are held and minted
     (refs survive worker recycles; a navigation invalidates them); when the
-    tab was last driven and by which command; and input_swallowed, evidence
+    tab was last driven and by which command (the wire command name:
+    "snapshot" is chrome_read_page's, "extract_text" is chrome_read_text's,
+    the rest match their chrome_* tool); and input_swallowed, evidence
     from the last action whose trusted input was observed to be discarded
     (Chrome exposes no readable flag, so this is evidence with an age, not
     live state: a navigation since may have cleared the condition, and it is
