@@ -2474,6 +2474,7 @@ def test_act_docstring_teaches_frame_attribution_and_the_benign_class() -> None:
     assert "OTHER pane than the two watched reads {0,0}" in d
     assert "CHAINS to the page" in d
     assert "scroll_to it first" in d
+    assert "over an embedded frame the zero is withheld" in d
 
 
 def test_act_docstring_teaches_deterministic_evidence_and_the_mutation_tally() -> None:

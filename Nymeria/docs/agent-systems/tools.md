@@ -2628,9 +2628,27 @@ carries frame ATTRIBUTION (#201): `resolved_frame` is the URL of the
 subframe the target resolved into, read at dispatch time and distinct from
 `focused` (a state read that hover and scroll_to never move, so it can name
 the previous act's frame; resolved_frame is the field to believe). Absent
-on a ref/selector act it means the root document; coordinate acts stay
+on a ref/selector act it means the root document; null (#203) means a
+frame WAS located but its recorded URL is empty; coordinate acts stay
 unknown; ref-less type/key claim the confirmed frame the keystrokes
 entered, from CDP frame records only.
+
+Scroll resolves its target too (#203): `action="scroll"` with a ref wheels
+AT the element's visible point on the element's own session, scrolling the
+pane UNDER it (inner panes, chat lists; unknown/stale refs refuse instead
+of silently wheeling the root, and an entirely off-viewport ref refuses
+because wheel input is positional), and the payload verifies the verb with
+`scroll_moved` {dx, dy, scroller}: before/after offsets of the SAME
+registered container and document scrollers, read in the probe world so a
+page cannot script the numbers. The container's delta when it moved, else
+the document's (a wheel at the end of a pane CHAINS to the page and is
+named "document"); {0,0} is a MEASURED nothing-moved; the key absent means
+unmeasured, including a targetless wheel whose point sits over an embedded
+frame (the frame's own scrolling is not watched, so a zero there is
+withheld rather than claimed). One measured asymmetry worth knowing:
+root-session coordinate wheels DO route into cross-origin frames by
+position (the browser composes wheels), the opposite of clicks, which only
+the frame's own session can deliver.
 
 **Probe isolation (#160):** every trust probe (geometry, hit test, frame
 offsets, the file-input and covered-click guards, focus checks, value
