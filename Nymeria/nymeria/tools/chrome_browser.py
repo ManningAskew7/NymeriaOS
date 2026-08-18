@@ -1696,13 +1696,22 @@ async def chrome_act(
     press arrived but never composed into a click); on the click family,
     "default_prevented" says whether a page handler cancelled the composed
     click, "click_target" names the element it composed on (tag, and the
-    enclosing link's URL when there is one), and "user_activation" reports the
-    frame's activation state after dispatch. Together these turn "the click
-    did nothing" from a four-call investigation into one read: delivered plus
-    a composed, un-prevented click on the link you meant, with no navigation
-    following, means the page or browser declined the default action, not
-    that your input missed. A fill reports "input_delivered" through its
-    trusted input event the same way.
+    enclosing link's URL when there is one), and "user_activation" reports
+    the activation state the input itself produced. Presence is the norm,
+    not luck: a delivered click on a page that survived it always carries
+    these fields (the read waits out the sampling), and a click that
+    NAVIGATES usually keeps them too, because the evidence is streamed out
+    at event time and survives the document being torn down; the fastest
+    teardowns can still lose "default_prevented", rarely the rest. A click
+    whose delivery reads "unknown" (a nested frame below the target, an
+    unarmable document) carries none of them: absence there means
+    unmeasured, never "no click composed". Together these turn "the click
+    did nothing" from a
+    four-call investigation into one read: delivered plus a composed,
+    un-prevented click on the link you meant, with no navigation following,
+    means the page or browser declined the default action, not that your
+    input missed. A fill reports "input_delivered" through its trusted input
+    event the same way.
 
     Frames are full targets, not blind spots. A ref inside an iframe, whether
     cross-origin or same-origin, gets its input dispatched into that frame
@@ -1748,6 +1757,20 @@ async def chrome_act(
     console errors and failed requests caused by the action, and whether the
     page settled. READ IT. A click that "succeeded"
     while its request came back 500 is a failure, and this is where that shows.
+    "settled" carries "mutations", a count of DOM changes to the TOP
+    document while the page settled after your action, and it reads
+    asymmetrically: for an act in the top document, ZERO is the strong
+    signal, the page made nothing observable of your input (the
+    phantom-success shape where every delivery field is truthful and
+    nothing happened): verify a page fact before retrying rather than
+    re-firing blind. A nonzero count is weak evidence, since dynamic pages
+    mutate constantly. Two honest limits: reactions inside shadow roots are
+    not counted, and a reaction already finished in the instant before the
+    watch began can read as zero, so zero steers you to verify, never to
+    conclude alone. The key is ABSENT wherever it would mislead: an act
+    that resolved into a subframe (the tally cannot see the frame's
+    document), a navigating act (the new document is the reaction), a
+    probe that never ran, or a budget-clamped window.
     Each failed_requests entry carries "same_origin" where it can be judged,
     and the capped list is ranked so a broken first-party POST is never
     crowded out by third-party telemetry beacons; weigh same-origin data
