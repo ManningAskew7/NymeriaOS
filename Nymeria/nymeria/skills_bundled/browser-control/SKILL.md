@@ -116,15 +116,26 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   "container" is the target's own pane, "document" is the page, and a
   bottomed pane that hands the wheel to the page says "document" honestly.
   {0,0} is a MEASURED nothing-moved (end of scroll, or the page ignored
-  the wheel); ABSENT means unmeasured: the wheel landed over an embedded
-  frame, or the ref WAS one (no zero is claimed about a document this
-  read cannot watch). An off-screen ref refuses: scroll_to it first, or
-  wheel by coordinate. A pane of plain text mints no ref: scroll it as
-  `ref="css=..."`, or, inside a frame where selectors do not reach, with
-  that frame's own `RootWebArea` ref, which wheels at the middle of the
-  frame and measures what moves there. A rare `wheel_ack: "not_received"` beside a
-  successful scroll means the browser mislaid the wheel's receipt, not
-  the wheel: the scroll went in, believe scroll_moved; no key means the
+  the wheel), and it is only claimed after the page has rendered AND held
+  still through a second look: a backgrounded tab HOLDS wheels and applies
+  them when it is shown again (measured), so an instant zero would be
+  answering about a scroll that has not happened yet. A delta read off a
+  page that never rendered still reports, tagged `scroll_stale`: something
+  moved, treat the amount as a floor. When nothing can be measured at all,
+  `scroll_unmeasured` names which way it failed:
+  `over_frame` (the wheel went into an embedded frame; use that frame's
+  own document ref to measure it), `not_rendering` (the tab is minimised,
+  covered or backgrounded, so it stopped painting and its offsets lag),
+  `no_frame` (visible but too busy to paint in time), `read_failed`, and
+  `budget_spent`. The wheel was dispatched in all of them, so re-scrolling
+  to compensate scrolls TWICE: re-read the page instead. An off-screen ref
+  refuses: scroll_to it first, or wheel by coordinate. A pane of plain
+  text mints no ref: scroll it as `ref="css=..."`, or, inside a frame
+  where selectors do not reach, with that frame's own `RootWebArea` ref,
+  which wheels at the middle of the frame and measures what moves there.
+  A `wheel_ack: "not_received"` beside a successful scroll means the
+  browser mislaid the wheel's receipt, not the wheel: the scroll went in,
+  and it says nothing about the measurement either way; no key means the
   receipt arrived.
 - `hit` -> what was actually under the coordinate you clicked, named like
   `button "Sign in"` or `input#email` (only appears when you acted on a
