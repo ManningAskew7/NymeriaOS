@@ -71,7 +71,9 @@ It is also why the rules below are not optional.
      not cover; read both classes with `chrome_read_page` or `chrome_find`.
    - A read whose document was served 4xx or 5xx says so in a note, so a
      soft error page cannot arrive as ordinary content. No note means
-     unknown, not "the load was fine".
+     unknown, not "the load was fine". A read that finds NO text still
+     carries its notes, so "no visible text" with nothing beside it really
+     is an empty page rather than a silent 401.
    - A read that says it was captured while the page was still loading means
      a sparse result is "not finished yet", not "empty page"; if it looks
      incomplete, re-read in a moment.
