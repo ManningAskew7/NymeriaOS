@@ -1399,7 +1399,11 @@ async def chrome_read_page(
     data = _data(payload)
     tree = str(data.get("tree") or "")
     if not tree.strip():
-        return "[Note]: The page has no readable accessibility tree yet. It may still be loading."
+        # Same rule as the text read's empty branch: an empty answer is exactly
+        # when the status explains itself, so the notes come with it.
+        empty = "[Note]: The page has no readable accessibility tree yet. It may still be loading."
+        notes = _read_honesty_lines(data)
+        return f"{empty}\n{notes}" if notes else empty
     capped, note = _cap(
         tree,
         thread_id=get_thread_id(config),
@@ -1460,7 +1464,9 @@ async def chrome_read_text(
     error page cannot arrive as ordinary content. The status is the document's
     own, so it needs no extra permission and survives however long ago the page
     loaded; ABSENT means unknown (a page with no navigation entry, an older
-    extension), never that the load was fine.
+    extension), never that the load was fine. A read that finds NO text still
+    carries its notes, so a bare "no visible text" is real evidence the empty
+    page loaded cleanly rather than a silence hiding a 401.
     """
     args: dict[str, Any] = {"tab_id": tab_id, "max_chars": 200_000}
     if selector:
@@ -1477,9 +1483,16 @@ async def chrome_read_text(
     loading = _loading_sentence(data)
     loading_note = f"[Note]: {loading.capitalize()}.\n" if loading else ""
     if not text.strip():
-        return "[Note]: No visible text found on that page or in that selector." + (
+        # The notes ride this branch too. They used to hang off the fenced
+        # answer, so a document with a STATUS but no body (a bare 401, an empty
+        # 500, a stripped 403) reported "no visible text" and nothing else,
+        # which is the feature's own failure mode surviving in the one shape
+        # where the agent has least other evidence to go on (QA round).
+        empty = "[Note]: No visible text found on that page or in that selector." + (
             f" ({loading})" if loading else ""
         )
+        notes = _read_honesty_lines(data)
+        return f"{empty}\n{notes}" if notes else empty
 
     if extraction_prompt.strip():
         from .llm_extract import run_extraction

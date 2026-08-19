@@ -3287,6 +3287,50 @@ def test_the_status_note_leads_the_read_honesty_block() -> None:
     assert after.index("HTTP 404") < after.index("node(s) the page hides")
 
 
+def test_a_read_with_no_text_still_names_the_status() -> None:
+    # The hole QA found in this pass's own first cut: the notes hung off the
+    # fenced answer, so a document with a status but NO body (a bare 401, an
+    # empty 500, a stripped 403) reported "no visible text" and nothing else.
+    # That is the feature's own failure mode surviving in the one shape where
+    # the agent has least other evidence: an empty error page and an empty
+    # working page read identically.
+    out = _invoke(chrome_read_text, {"tab_id": 1}, _ok({"text": "", "http_status": 401}))
+    assert "No visible text found" in out
+    assert "HTTP 401" in out, "an empty body is exactly when the status is the whole answer"
+
+
+def test_a_page_read_with_no_tree_still_names_the_status() -> None:
+    out = _invoke(chrome_read_page, {"tab_id": 1}, _ok({"tree": "  ", "http_status": 500}))
+    assert "no readable accessibility tree" in out
+    assert "HTTP 500" in out
+
+
+def test_an_empty_read_says_only_the_empty_note_when_there_is_nothing_to_add() -> None:
+    # The silence rule holds on this branch too: an ordinary empty page must
+    # not grow a second line, and must not gain a trailing blank one.
+    out = _invoke(chrome_read_text, {"tab_id": 1}, _ok({"text": "", "http_status": 200}))
+    assert out == "[Note]: No visible text found on that page or in that selector."
+
+
+def test_an_empty_read_keeps_its_loading_hedge_alongside_the_status() -> None:
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1},
+        _ok({"text": "", "http_status": 404, "page_loading": True}),
+    )
+    assert "still loading" in out, "the pre-existing hedge must survive"
+    assert "HTTP 404" in out
+
+
+def test_an_empty_read_of_a_wholly_css_drawn_page_says_where_the_text_went() -> None:
+    # The one case where the loss count IS the explanation: the page renders
+    # fine to a human and reads as blank, and without the count the agent's
+    # only conclusion is "this page is empty".
+    out = _invoke(chrome_read_text, {"tab_id": 1}, _ok({"text": "", "text_dropped_generated": 12}))
+    assert "No visible text found" in out
+    assert "12" in out
+
+
 # ---------- #190: what a text read could not carry ----------
 
 
