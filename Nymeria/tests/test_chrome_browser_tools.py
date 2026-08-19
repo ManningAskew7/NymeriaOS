@@ -2544,6 +2544,11 @@ def test_act_docstring_teaches_frame_attribution_and_the_benign_class() -> None:
     # #210 QA: a backgrounded tab HOLDS the wheel and applies it on show,
     # so the second look is what makes a zero mean at-rest.
     assert "held still through a second look" in d
+    # #210 QA operator: the hazard the reasons must warn about is not the
+    # missing number, it is that a backgrounded tab QUEUES the wheel, so an
+    # agent that resends a scroll it thinks failed lands both at once.
+    assert "HOLDS the wheel and applies it when it is" in d
+    assert "never resend one of these" in d
     assert "OTHER pane than the two watched reads {0,0}" in d
     assert "CHAINS to the page" in d
     assert "scroll_to it first" in d
