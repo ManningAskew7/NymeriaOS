@@ -1756,10 +1756,13 @@ async def chrome_act(
         "over_frame" (the wheel went into an embedded frame, which
         scrolls in its own space: target that frame's document ref to
         measure it), "not_rendering" (the tab is minimised, covered or
-        backgrounded, so it is not painting and its offsets lag: switch
-        to it with chrome_tabs if it matters, though a window the user
-        has covered is theirs to raise, or just re-read the page to see
-        where it sits), "no_frame" (a visible page too busy to paint in
+        backgrounded, so it is not painting and its offsets lag; a
+        backgrounded tab also HOLDS the wheel and applies it when it is
+        next shown, measured, so repeats ACCUMULATE and land together:
+        never resend one of these. Switch to the tab with chrome_tabs if
+        it matters, though a window the user has covered is theirs to
+        raise, or just re-read the page later to see where it sits),
+        "no_frame" (a visible page too busy to paint in
         time: re-read), "read_failed" (the read could not complete: the
         page navigated under the probe, the watched pane detached, or
         the act's clock cut it short) and "budget_spent" (no time left

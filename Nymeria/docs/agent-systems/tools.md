@@ -2648,7 +2648,9 @@ is minimised, covered or backgrounded stops painting and answers with its
 PRE-wheel offsets (QA measured three confident {0,0} payloads on a page
 that had moved 500px), and a backgrounded tab HOLDS its wheels and flushes
 them when it is shown again (QA measured 1500px landing at once, after the
-three acts that sent it had answered). So the after-read waits for two
+three acts that sent it had answered; that is also why the copy tells the
+agent never to resend a scroll reported `not_rendering`, since repeats
+accumulate rather than replace). So the after-read waits for two
 animation frames, and a page that has rendered but shows nothing gets a
 second look 150ms later; only a zero pays that cost. A zero therefore
 means at-rest, an unrendered page's zero is withheld with

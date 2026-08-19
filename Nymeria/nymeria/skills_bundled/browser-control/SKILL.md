@@ -125,7 +125,9 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   `scroll_unmeasured` names which way it failed:
   `over_frame` (the wheel went into an embedded frame; use that frame's
   own document ref to measure it), `not_rendering` (the tab is minimised,
-  covered or backgrounded, so it stopped painting and its offsets lag),
+  covered or backgrounded, so it stopped painting and its offsets lag; a
+  backgrounded tab also HOLDS the wheel and applies it when shown, so
+  resending accumulates and they all land at once: never resend one),
   `no_frame` (visible but too busy to paint in time), `read_failed`, and
   `budget_spent`. The wheel was dispatched in all of them, so re-scrolling
   to compensate scrolls TWICE: re-read the page instead. An off-screen ref
