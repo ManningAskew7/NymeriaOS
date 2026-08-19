@@ -60,6 +60,12 @@ It is also why the rules below are not optional.
      Either way the route is the same: reach the file input behind the button
      (usually hidden, so pass a `css=` ref) with `action="upload"`.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
+     Scope it with `selector="#movelist"` (or the same `css=` form an act
+     takes) to read one region: refs are minted for CONTROLS, so a list, a
+     table or an article body has no ref to aim at, and the whole page at
+     `detail="full"` can be tens of thousands of characters to reach one. A
+     selector that matches several roots at the first and says how many; the
+     scope stays in the top document, so scope to a frame by its `@e` ref.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
      facts out of a long page without loading it into your context. It
      extracts TEXT NODES, so two classes of meaning are invisible to it:
