@@ -3331,6 +3331,210 @@ def test_an_empty_read_of_a_wholly_css_drawn_page_says_where_the_text_went() -> 
     assert "12" in out
 
 
+# ---------- #212: a tree read can be scoped to a region with no ref ----------
+
+
+def _read_page_unconnected(args: dict) -> str:
+    """Drive chrome_read_page with NO extension connected: anything but the
+    not-connected error proves the refusal happened before dispatch."""
+    return asyncio.run(chrome_read_page.coroutine(**args, config=_config()))
+
+
+def test_a_tree_read_can_be_scoped_by_selector() -> None:
+    # Refs are minted for CONTROLS only, so a <div id="movelist">, a table or
+    # an article body could never be scoped to. The QA round's alternative was
+    # detail="full" on the whole page: 38k characters to read one 83-move list.
+    asked: list = []
+    _invoke(
+        chrome_read_page,
+        {"tab_id": 1, "selector": "#movelist"},
+        _ok({"tree": "- list", "ref_count": 0}),
+        capture=asked,
+    )
+    assert asked[0]["args"]["scope_selector"] == "#movelist"
+    assert "scope_ref" not in asked[0]["args"], "a selector is not a ref"
+
+
+def test_the_css_ref_grammar_scopes_a_read_too() -> None:
+    # chrome_act teaches `css=`, so an agent reaches for it here: the QA round
+    # tried ref="css=#movelist" and got "unknown ref @css=#movelist" with no
+    # route left. It means what the selector means, so it goes to the same place.
+    asked: list = []
+    _invoke(
+        chrome_read_page,
+        {"tab_id": 1, "ref": "css=#movelist"},
+        _ok({"tree": "- list", "ref_count": 0}),
+        capture=asked,
+    )
+    assert asked[0]["args"]["scope_selector"] == "#movelist"
+    assert "scope_ref" not in asked[0]["args"], "the prefix must not survive as a ref"
+
+
+def test_an_ordinary_ref_still_scopes_by_ref() -> None:
+    asked: list = []
+    _invoke(
+        chrome_read_page,
+        {"tab_id": 1, "ref": "@e12"},
+        _ok({"tree": "- form", "ref_count": 1}),
+        capture=asked,
+    )
+    assert asked[0]["args"]["scope_ref"] == "@e12"
+    assert "scope_selector" not in asked[0]["args"]
+
+
+def test_a_read_refuses_a_ref_and_a_selector_together() -> None:
+    # Silent precedence is the shape that sends an agent debugging the page
+    # instead of the call.
+    out = _read_page_unconnected({"tab_id": 1, "ref": "@e1", "selector": "#x"})
+    assert "not both" in out
+    assert "@e1" in out and "#x" in out, "name what it was given"
+
+
+def test_a_read_refuses_an_xpath_scope_by_naming_css() -> None:
+    # Forwarding it would resolve nothing and come back "matched no element",
+    # which misnames why: the scope resolves through querySelector.
+    out = _read_page_unconnected({"tab_id": 1, "ref": "xpath=//div[@id]"})
+    assert "CSS only" in out
+    assert "selector=" in out
+
+
+def test_a_read_refuses_a_css_prefix_with_nothing_after_it() -> None:
+    out = _read_page_unconnected({"tab_id": 1, "ref": "css="})
+    assert "carries no selector" in out
+
+
+def test_a_blank_selector_reads_the_whole_page_rather_than_erroring() -> None:
+    asked: list = []
+    _invoke(
+        chrome_read_page,
+        {"tab_id": 1, "selector": "   "},
+        _ok({"tree": "- page", "ref_count": 1}),
+        capture=asked,
+    )
+    assert "scope_selector" not in asked[0]["args"]
+    assert "scope_ref" not in asked[0]["args"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "scope selector matched no element: #x (a scope resolves in the TOP document)",
+        "not a valid CSS selector: div:::broken",
+        "the scope selector could not run in this tab's isolated inspection context",
+        "the scope element went away mid-read: #gone (re-read the page)",
+    ],
+)
+def test_a_scope_failure_carries_the_extension_diagnosis_and_nothing_else(error: str) -> None:
+    # A first cut appended the shadow-root asymmetry here, keyed on "we sent a
+    # selector": a typo then got a shadow-DOM lecture, and a mid-navigation
+    # miss got its correct advice contradicted by a second wrong cause. The
+    # extension knows WHICH failure it had, so it owns the copy.
+    out = _invoke(chrome_read_page, {"tab_id": 1, "selector": "#x"}, {"ok": False, "error": error})
+    assert out == f"[Error]: {error}"
+
+
+def test_a_scoped_read_carries_the_scope_to_the_wire_and_keeps_its_shape() -> None:
+    asked: list = []
+    out = _invoke(
+        chrome_read_page,
+        {"tab_id": 1, "selector": "#movelist"},
+        _ok({"tree": "- list \"moves\"", "ref_count": 0, "http_status": 404}),
+        capture=asked,
+    )
+    assert asked[0]["args"]["scope_selector"] == "#movelist", "the scope really was sent"
+    assert "0 actionable elements" in out
+    assert "<untrusted_page_content" in out
+    assert "HTTP 404" in _after_fence(out), "the honesty block still rides a scoped read"
+
+
+def test_a_scope_selector_that_matched_several_says_which_one_it_read() -> None:
+    # A selector is a RULE, not an element. `.comment` on a 40-comment thread
+    # roots at ONE comment, and a read's answer looks like the whole of what
+    # was asked for, so without this the model reports the page has one
+    # comment. chrome_act already owns up to the same thing.
+    after = _after_fence(
+        _invoke(
+            chrome_read_page,
+            {"tab_id": 1, "selector": ".comment"},
+            _ok({"tree": "- comment", "ref_count": 0, "scope_match_count": 40}),
+        )
+    )
+    assert "matched 40 elements" in after
+    assert "FIRST in document order" in after
+
+
+def test_a_scope_selector_that_matched_one_says_nothing_about_it() -> None:
+    # The silence rule: an unambiguous scope must not pay for the ambiguous
+    # case, or the note becomes wallpaper.
+    for payload in (
+        {"tree": "- x", "ref_count": 1, "scope_match_count": 1},
+        {"tree": "- x", "ref_count": 1},
+        {"tree": "- x", "ref_count": 1, "scope_match_count": "40"},
+    ):
+        after = _after_fence(_invoke(chrome_read_page, {"tab_id": 1, "selector": "#x"}, _ok(payload)))
+        assert "matched" not in after, f"{payload} must render no scope note"
+
+
+def test_a_scoped_read_of_a_ref_less_region_says_the_REGION_has_no_controls() -> None:
+    # The flagship route: scope to a static list and every read answers "0
+    # actionable elements". The page-level copy would be false here (the rest
+    # of the page may be full of buttons), and saying nothing at all is the
+    # #205 loop that copy exists to close.
+    after = _after_fence(
+        _invoke(
+            chrome_read_page,
+            {"tab_id": 1, "selector": "#movelist"},
+            _ok({"tree": "- list", "ref_count": 0, "control_ref_count": 0}),
+        )
+    )
+    assert "THIS REGION" in after
+    assert "rest of the page may" in after
+    assert "this page has none" not in after, "a subtree cannot make the page claim"
+
+
+def test_an_unscoped_read_keeps_the_page_level_mint_copy() -> None:
+    after = _after_fence(
+        _invoke(
+            chrome_read_page,
+            {"tab_id": 1},
+            _ok({"tree": "- article", "ref_count": 0, "control_ref_count": 0}),
+        )
+    )
+    assert "this page has none" in after
+    assert "THIS REGION" not in after
+
+
+def test_a_ref_scope_gets_the_region_copy_too() -> None:
+    # A ref scope is still a scope: a frame's root ref reads one document out
+    # of several, so the page claim is no safer there.
+    after = _after_fence(
+        _invoke(
+            chrome_read_page,
+            {"tab_id": 1, "ref": "@e4"},
+            _ok({"tree": "- section", "ref_count": 0, "control_ref_count": 0}),
+        )
+    )
+    assert "THIS REGION" in after
+
+
+def test_the_css_prefix_is_accepted_on_the_selector_parameter_too() -> None:
+    # The docstring teaches that the two spellings mean one thing, so the
+    # prefix must not reach the page as part of the selector.
+    asked: list = []
+    _invoke(
+        chrome_read_page,
+        {"tab_id": 1, "selector": "css=#movelist"},
+        _ok({"tree": "- list", "ref_count": 0}),
+        capture=asked,
+    )
+    assert asked[0]["args"]["scope_selector"] == "#movelist"
+
+
+def test_a_selector_that_is_only_the_css_prefix_is_refused() -> None:
+    out = _read_page_unconnected({"tab_id": 1, "selector": "css="})
+    assert "carries no selector" in out
+
+
 # ---------- #190: what a text read could not carry ----------
 
 
