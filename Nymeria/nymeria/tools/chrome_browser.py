@@ -994,17 +994,107 @@ def _mint_rule_sentence(data: dict[str, Any]) -> str:
     )
 
 
+# The auth-challenge pair, mirroring the extension's `isAuthChallenge`. Same
+# rule as `_HIDDEN_REASONS` mirrors `HIDING_REASONS`: the number crosses the
+# wire, the sentence is composed here, so nothing page-shaped renders outside
+# the fence.
+_AUTH_CHALLENGE_STATUSES = frozenset({401, 407})
+
+
+def _http_status_sentence(data: dict[str, Any]) -> str:
+    """Say when the document a read just read was served as an ERROR.
+
+    An error PAGE commits like any other page, so its status is invisible to a
+    read: measured live, `chrome_read_text` on a real 404 returned the error
+    page's ordinary prose with nothing to say the load had failed, which on any
+    site with a soft error page is a confidently WRONG answer rather than a
+    missing one (#187).
+
+    The number is the document's OWN (`PerformanceNavigationTiming
+    .responseStatus`, read in the extension's isolated world), so it needs no
+    join back to the read and cannot describe some other load. Absent means
+    unknown, never OK. Only >= 400 renders; the key rides at any status so a
+    later rule can widen without an extension change.
+    """
+    status = _int_field(data, "http_status")
+    # Range-checked HERE as well as at each producer: two extension modules
+    # emit this key (the navigation watcher and the document probe) and only
+    # one of them bounds it, and this sentence renders OUTSIDE the fence.
+    if status is None or status < 400 or status > 599:
+        return ""
+    if status in _AUTH_CHALLENGE_STATUSES:
+        # Hedged, deliberately. A 401 WITHOUT a `WWW-Authenticate` header
+        # raises no browser prompt and suppresses nothing, and an HTML login
+        # page served with 401 is a common shape, so asserting the prompt from
+        # the number alone would talk an agent out of a tab it can drive. The
+        # navigation path can assert it (it fires once, at the moment of the
+        # load); a READ can fire on every read of a page that is working fine.
+        return (
+            f"[HTTP {status}: this tab's main document is an authentication "
+            "challenge. If a browser auth prompt is showing, Chrome suppresses "
+            "input sent to the tab under it, and navigating elsewhere clears it; "
+            "if the page is an ordinary login form, drive it normally.]"
+        )
+    return (
+        f"[HTTP {status}: this tab's main document was served with that status, "
+        "so this read may be of an error page wearing ordinary prose. Confirm it "
+        "says what you needed before acting on it or reporting it. A single-page "
+        "app that answered 4xx and then routed to real content shows this too.]"
+    )
+
+
+def _text_loss_sentence(data: dict[str, Any]) -> str:
+    """Own up to meaning a TEXT read could not carry (#190).
+
+    `innerText` returns rendered text nodes, so content drawn by CSS leaves
+    NOTHING behind, not even a gap. Measured live: a chess move list read as
+    "1. f6 / 2. e4 / 3. c5" where the moves were 1...Nf6, 2...Ne4, 3...Nc5, and
+    a block of rating stars, status pills and icon buttons read as two order
+    numbers and nothing else. The output is clean, plausible and wrong, which
+    the QA operator put best: an error triggers a retry, this triggers a
+    conclusion.
+
+    Generated content only, and that is a measurement: counting images too
+    scored 267 on one Wikipedia article, while this count scored 0 on
+    example.com, Hacker News and BBC News and 11 on the glyph fixture. So the
+    note stays silent on ordinary prose and fires where the loss lives; images
+    and `alt` text are named in the read's guidance instead.
+    """
+    count = _int_field(data, "text_dropped_generated")
+    if count is None or count <= 0:
+        return ""
+    # Identity, not truthiness: the flag is extension-supplied and this renders
+    # outside the untrusted fence.
+    floor = "At least " if data.get("text_dropped_capped") is True else ""
+    return (
+        f"[{floor}{count} node(s) here draw their content with CSS rather than text "
+        "(icon glyphs, rating stars, status pills), so they are missing from the "
+        "text with no gap left behind. chrome_read_page keeps them.]"
+    )
+
+
 def _read_honesty_lines(data: dict[str, Any], *, truncated: bool = False) -> str:
     """The read-honesty block, most load-bearing first. All OUR text composed
     from booleans and whitelisted counts, never page text; emitted through
-    `_outside_fence` so every fence keeps its one post-fence composer."""
+    `_outside_fence` so every fence keeps its one post-fence composer.
+
+    Shared by BOTH readers rather than twinned (#187). `chrome_read_text`'s
+    payload simply carries none of the tree keys, so every read_page sentence
+    degrades to "" on its own, which is the same absence rule each of them
+    already applies. One composer means a note added for one reader lands on
+    the other the day its payload can answer it.
+    """
     parts = [
         p
         for p in (
+            # First: it can invalidate everything below it, and it is the one
+            # note that says the whole read may be about the wrong page.
+            _http_status_sentence(data),
             _view_state_sentence(data),
             _frames_sentence(data, truncated=truncated),
             _hidden_sentence(data),
             _mint_rule_sentence(data),
+            _text_loss_sentence(data),
         )
         if p
     ]
@@ -1280,6 +1370,15 @@ async def chrome_read_page(
     counts content the page hides (aria-hidden, inert) that was dropped from
     the tree.
 
+    Another note names the document's HTTP status when it was 4xx or 5xx: an
+    error page commits like any other, so without it a soft error page reads as
+    content. It is the document's own status, so it costs no extra permission
+    and does not expire. It always describes the tab's MAIN document, so on a
+    read scoped into a frame it is a fact about the page around that frame, not
+    about what you read. ABSENT means unknown, never that the load was fine,
+    and a read that straddled a navigation says nothing rather than guessing
+    which document it measured.
+
     A payload carrying "page_loading": true was captured while the tab was
     still loading: the tree is whatever had committed at that instant. If it
     looks sparse, re-read after a moment rather than concluding the page is
@@ -1343,6 +1442,25 @@ async def chrome_read_text(
     read that FAILED says so rather than reporting a page with no text.
     Use chrome_read_page instead when you intend to ACT: this returns text, not
     the refs you need to click things. Page text is fenced as untrusted data.
+
+    IT READS TEXT NODES, and meaning drawn any other way is simply absent, with
+    no gap to show for it. A piece letter drawn as a chess figurine, a star
+    rating, a status pill and an icon-only button are all CSS, not text, so a
+    move list can come back as "1. f6, 2. e4" when the moves played were 1...Nf6
+    and 2...Ne4: not a degraded answer, a wrong one. A note counts the glyphs
+    when it finds any, and chrome_read_page recovers them (the accessibility
+    tree keeps generated content, image alt text and aria-labels). Treat that
+    count as a FLOOR: it covers CSS-drawn content only, images and alt text are
+    not in it, and the scan stops after 5,000 elements on a huge page. So no
+    note is weak evidence of no loss, while a note is strong evidence of it.
+    State that lives in attributes rather than prose is the same story: read it
+    with chrome_read_page or chrome_find.
+
+    A note also names the document's HTTP status when it was 4xx or 5xx, so an
+    error page cannot arrive as ordinary content. The status is the document's
+    own, so it needs no extra permission and survives however long ago the page
+    loaded; ABSENT means unknown (a page with no navigation entry, an older
+    extension), never that the load was fine.
     """
     args: dict[str, Any] = {"tab_id": tab_id, "max_chars": 200_000}
     if selector:
@@ -1376,15 +1494,22 @@ async def chrome_read_text(
         # Scan the RAW page, not just what the extractor returned: a summary
         # can drop the injected text while the extraction step was still
         # exposed to it, and the user should hear about that either way.
+        # The honesty block rides the EXTRACTION branch too, and this is where
+        # it matters most: the raw text never reaches the agent here, so an
+        # unflagged error page or a move list missing its pieces arrives as a
+        # confident summary with nothing left to notice it by.
         return (
             f"{loading_note}{_fence(extracted, url=url)}"
-            f"{_outside_fence(text, note=f'[Extracted by {model}]')}"
+            f"{_outside_fence(text, note=f'[Extracted by {model}]', extra=_read_honesty_lines(data))}"
         )
 
     capped, note = _cap(
         text, thread_id=get_thread_id(config), prefix="chrome-read-text", max_chars=max_chars
     )
-    return f"{loading_note}{_fence(capped, url=url)}{_outside_fence(text, note=note)}"
+    return (
+        f"{loading_note}{_fence(capped, url=url)}"
+        f"{_outside_fence(text, note=note, extra=_read_honesty_lines(data, truncated=bool(note)))}"
+    )
 
 
 _FIND_SYSTEM = (
@@ -1461,8 +1586,14 @@ async def chrome_find(
     loading = _loading_sentence(_data(payload))
     # A modal context explains BOTH outcomes: a no-match because the element
     # is pruned out behind the modal, and a match set that is only the modal.
-    view_note = _view_state_sentence(_data(payload))
-    view_suffix = f"\n{view_note}" if view_note else ""
+    # The document status explains a third: this rides the same `snapshot`
+    # command as chrome_read_page, so the status is already in hand, and "No
+    # ACTABLE element matching X" is exactly what a 404 error page looks like
+    # through this tool (review round).
+    notes = [
+        n for n in (_http_status_sentence(_data(payload)), _view_state_sentence(_data(payload))) if n
+    ]
+    view_suffix = ("\n" + "\n".join(notes)) if notes else ""
     if not kept:
         hint = f" ({loading})" if loading else ""
         # A miss has two very different causes and used to have one wording.

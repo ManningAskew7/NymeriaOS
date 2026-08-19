@@ -3174,6 +3174,203 @@ def test_read_page_hidden_dropped_note_totals_and_names_reasons() -> None:
     assert "ariaHiddenSubtree: 2" in after
 
 
+def _after_fence(out: str) -> str:
+    """Everything the page could not have written."""
+    return out.rpartition("</untrusted_page_content>")[2]
+
+
+# ---------- #187: the document's HTTP status reaches a READ ----------
+
+
+def test_read_of_a_4xx_document_says_so_where_the_page_cannot_forge_it() -> None:
+    # An error PAGE commits like any other, so a read of a 404 returned the
+    # error page's prose with nothing to say the load had failed. Measured live
+    # on a real 404, and graded a confidently-wrong-answer risk.
+    out = _invoke(
+        chrome_read_page, {"tab_id": 1}, _ok({"tree": "- x", "ref_count": 1, "http_status": 404})
+    )
+    after = _after_fence(out)
+    assert "HTTP 404" in after
+    assert "main document" in after
+
+
+def test_read_text_carries_the_status_note_too() -> None:
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1},
+        _ok({"text": "We could not find that order.", "http_status": 500}),
+    )
+    assert "HTTP 500" in _after_fence(out)
+
+
+def test_the_status_note_stays_silent_on_a_healthy_document() -> None:
+    for status in (200, 204, 304, 399):
+        out = _invoke(chrome_read_text, {"tab_id": 1}, _ok({"text": "fine", "http_status": status}))
+        assert "HTTP" not in _after_fence(out), f"{status} must render nothing"
+
+
+def test_an_unknown_status_never_becomes_a_claim() -> None:
+    # Absent means unknown: no navigation entry, an extension older than this
+    # pass, or a value that is not a status. None of them may render, and none
+    # of them may imply the load was fine.
+    for payload in (
+        {"text": "page"},
+        {"text": "page", "http_status": None},
+        {"text": "page", "http_status": "404"},
+        {"text": "page", "http_status": True},
+        {"text": "page", "http_status": 404.0},
+    ):
+        out = _invoke(chrome_read_text, {"tab_id": 1}, _ok(payload))
+        assert "HTTP" not in _after_fence(out), f"{payload} must not render a status"
+
+
+def test_an_auth_challenge_names_the_input_suppression_without_asserting_it() -> None:
+    # 401/407 is the one class that needs more than the number: Chrome discards
+    # input sent to a tab under an auth prompt. But a 401 with no
+    # `WWW-Authenticate` header raises no prompt at all, and an HTML login form
+    # served with 401 is ordinary, so a READ (which can fire on every read of a
+    # working page) offers the recovery CONDITIONALLY rather than telling the
+    # agent to abandon a tab it can drive (review round).
+    for status in (401, 407):
+        after = _after_fence(
+            _invoke(chrome_read_text, {"tab_id": 1}, _ok({"text": "sign in", "http_status": status}))
+        )
+        assert f"HTTP {status}" in after
+        assert "suppresses input" in after
+        assert "If a browser auth prompt is showing" in after
+        assert "drive it normally" in after, "an ordinary login form is still drivable"
+        assert "error page wearing ordinary prose" not in after, "the generic copy must not double up"
+
+
+def test_a_status_outside_the_real_range_renders_nothing() -> None:
+    # Two extension modules produce this key and only one bounds it, so the
+    # sentence, which renders outside the fence, whitelists the range itself.
+    for status in (99, 600, 99999, -404):
+        after = _after_fence(
+            _invoke(chrome_read_text, {"tab_id": 1}, _ok({"text": "x", "http_status": status}))
+        )
+        assert "HTTP" not in after, f"{status} is not a status"
+
+
+def test_find_names_the_document_status_on_a_miss(monkeypatch) -> None:
+    # chrome_find rides the same snapshot command, so the status is already in
+    # hand. "No ACTABLE element matching X" is exactly what a 404 error page
+    # looks like through this tool, and the miss is where the agent decides
+    # whether to keep hunting or re-navigate.
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    out = _invoke(
+        chrome_find,
+        {"tab_id": 1, "query": "the add to cart button"},
+        _ok({"tree": "- RootWebArea \"Not found\"", "ref_count": 1, "http_status": 404}),
+    )
+    assert "HTTP 404" in out
+
+
+def test_the_status_note_leads_the_read_honesty_block() -> None:
+    # It can invalidate every other note under it: a sparse tree on a 500 is
+    # not a modal or a frame problem, it is the wrong page.
+    out = _invoke(
+        chrome_read_page,
+        {"tab_id": 1},
+        _ok(
+            {
+                "tree": "- x",
+                "ref_count": 0,
+                "http_status": 404,
+                "hidden_dropped": {"notVisible": 1},
+            }
+        ),
+    )
+    after = _after_fence(out)
+    assert after.index("HTTP 404") < after.index("node(s) the page hides")
+
+
+# ---------- #190: what a text read could not carry ----------
+
+
+def test_read_text_counts_the_meaning_it_could_not_carry() -> None:
+    # Measured live: a chess move list read as "1. f6 / 2. e4 / 3. c5" where
+    # the moves played were 1...Nf6, 2...Ne4, 3...Nc5. Clean, plausible, wrong,
+    # and nothing about its shape said so.
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1},
+        _ok({"text": "1.\nf6\n2.\ne4\n3.\nc5", "text_dropped_generated": 3}),
+    )
+    after = _after_fence(out)
+    assert "3 node(s)" in after
+    assert "chrome_read_page" in after, "the note must route to what does work"
+    assert "At least" not in after
+
+
+def test_a_capped_scan_reads_as_a_floor_rather_than_a_total() -> None:
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1},
+        _ok({"text": "huge", "text_dropped_generated": 12, "text_dropped_capped": True}),
+    )
+    assert "At least 12 node(s)" in _after_fence(out)
+
+
+def test_the_loss_note_is_silent_when_nothing_was_lost() -> None:
+    # An ordinary prose page pays nothing: measured 0 on example.com, Hacker
+    # News and BBC News, which is what keeps the note worth reading.
+    for payload in (
+        {"text": "just prose"},
+        {"text": "just prose", "text_dropped_generated": 0},
+        {"text": "just prose", "text_dropped_generated": True},
+        {"text": "just prose", "text_dropped_generated": "3"},
+        {"text": "just prose", "text_dropped_capped": True},
+    ):
+        after = _after_fence(_invoke(chrome_read_text, {"tab_id": 1}, _ok(payload)))
+        assert "draw their content with CSS" not in after, f"{payload} must render nothing"
+
+
+def test_the_cap_flag_is_read_as_an_identity_not_for_truthiness() -> None:
+    # The flag is extension-supplied and this sentence renders OUTSIDE the
+    # untrusted fence, so a stray truthy string must not switch a claim on.
+    after = _after_fence(
+        _invoke(
+            chrome_read_text,
+            {"tab_id": 1},
+            _ok({"text": "x", "text_dropped_generated": 3, "text_dropped_capped": "yes"}),
+        )
+    )
+    assert "3 node(s)" in after
+    assert "At least" not in after
+
+
+def test_a_capped_flag_alone_never_hedges_about_nothing() -> None:
+    after = _after_fence(
+        _invoke(
+            chrome_read_text,
+            {"tab_id": 1},
+            _ok({"text": "prose", "text_dropped_generated": 0, "text_dropped_capped": True}),
+        )
+    )
+    assert "At least" not in after
+
+
+def test_the_extraction_branch_carries_both_notes(monkeypatch) -> None:
+    # The branch that hides the raw text is where an unflagged error page or a
+    # move list missing its pieces is most dangerous: the agent never sees the
+    # text, only a confident summary of it.
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("six pawn moves", "test-model"))
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1, "extraction_prompt": "list the moves"},
+        _ok({"text": "1.\nf6", "http_status": 404, "text_dropped_generated": 3}),
+    )
+    after = _after_fence(out)
+    assert "[Extracted by test-model]" in after
+    assert "HTTP 404" in after
+    assert "3 node(s)" in after
+
+
 def test_find_appends_the_view_constraint_note(monkeypatch) -> None:
     """A modal context explains a no-match: the element is pruned, not absent."""
     import nymeria.tools.llm_extract as llm_extract

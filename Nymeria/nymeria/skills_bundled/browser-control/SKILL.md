@@ -62,9 +62,16 @@ It is also why the rules below are not optional.
    - `chrome_read_page(tab_id)` when you need the layout, or after a change.
    - `chrome_read_text(tab_id, extraction_prompt="the order total")` to pull
      facts out of a long page without loading it into your context. It
-     extracts prose, so state that lives in attributes (an aria-label,
-     an unread badge) is invisible to it: read those with `chrome_find`
-     or `chrome_read_page`.
+     extracts TEXT NODES, so two classes of meaning are invisible to it:
+     state that lives in attributes (an aria-label, an unread badge, an
+     `<img alt>`), and content DRAWN rather than written (an icon glyph, a
+     rating in stars, a status pill). The second leaves no gap behind, so
+     the answer looks complete while being wrong. The tool's own
+     description carries the worked case and what the note does and does
+     not cover; read both classes with `chrome_read_page` or `chrome_find`.
+   - A read whose document was served 4xx or 5xx says so in a note, so a
+     soft error page cannot arrive as ordinary content. No note means
+     unknown, not "the load was fine".
    - A read that says it was captured while the page was still loading means
      a sparse result is "not finished yet", not "empty page"; if it looks
      incomplete, re-read in a moment.
