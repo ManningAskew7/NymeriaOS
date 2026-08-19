@@ -1598,6 +1598,13 @@ async def chrome_read_text(
     State that lives in attributes rather than prose is the same story: read it
     with chrome_read_page or chrome_find.
 
+    The count describes THIS read, so a selector localises it: re-read the one
+    region and the number is that region's, which is how you tell a loss in
+    the part you care about from one in the page furniture. A zero there is the
+    strongest evidence available that the region really carries nothing beyond
+    its text (measured: the nearest-id'd-ancestor alternative names a useful
+    place on document-shaped pages and nothing usable on app-shaped ones, #215).
+
     A note also names the document's HTTP status when it was 4xx or 5xx, so an
     error page cannot arrive as ordinary content. The status is the document's
     own, so it needs no extra permission and survives however long ago the page
