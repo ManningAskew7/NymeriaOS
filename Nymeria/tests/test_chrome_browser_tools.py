@@ -2540,13 +2540,33 @@ def test_act_docstring_teaches_frame_attribution_and_the_benign_class() -> None:
     assert "with a ref wheels AT that element" in d
     assert '"scroll_moved"' in d
     assert "{0,0} is a MEASURED nothing-moved" in d
-    assert "the key ABSENT means it could not be measured" in d
+    assert "A ZERO is only ever reported off a page that has RENDERED" in d
+    # #210 QA: a backgrounded tab HOLDS the wheel and applies it on show,
+    # so the second look is what makes a zero mean at-rest.
+    assert "held still through a second look" in d
     assert "OTHER pane than the two watched reads {0,0}" in d
     assert "CHAINS to the page" in d
     assert "scroll_to it first" in d
-    assert "the zero is withheld rather than reported: over an embedded frame" in d
     assert '"wheel_ack": "not_received"' in d
     assert "mislaid the wheel's RECEIPT, not the wheel" in d
+    # #210. Absence used to be bare, which reads the same as a payload that
+    # forgot the key; every withhold now names itself, the five names are
+    # taught with what to DO about each, and the one that protects the page
+    # is stated outright: the wheel went in, so a compensating re-scroll
+    # scrolls twice. The ack reverts to saying nothing about measurement
+    # (gating the zero on it re-broke #207 for one unreleased version).
+    assert '"scroll_unmeasured" says which way' in d
+    for reason in ("over_frame", "not_rendering", "no_frame", "read_failed", "budget_spent"):
+        assert f'"{reason}"' in d
+    assert "minimised, covered or backgrounded" in d
+    assert "re-read the page instead" in d
+    assert "says nothing either way about the measurement" in d
+    # The zero is the half that is gated, and the difference is the half
+    # that is kept: withholding a real delta would leave an agent driving a
+    # background tab with no scroll feedback at all (both review rounds).
+    assert "A ZERO is only ever reported off a page that has RENDERED" in d
+    assert '"scroll_stale"' in d
+    assert "treat the amount as a floor rather than a total" in d
 
 
 def test_act_docstring_teaches_the_two_routes_to_a_pane_that_mints_no_ref() -> None:
@@ -2556,13 +2576,15 @@ def test_act_docstring_teaches_the_two_routes_to_a_pane_that_mints_no_ref() -> N
     # selectors do not reach) the frame's own document ref is the handle
     # that now wheels and MEASURES. Both routes pinned, plus the honest
     # residual that a frame element as the ref cannot be measured from
-    # outside, so the copy never implies a false zero is a real one.
+    # outside, so the copy never implies a false zero is a real one (since
+    # #210 that residual is carried by the "over_frame" withhold reason,
+    # which also names the route that DOES measure it).
     d = " ".join(chrome_act.description.split())
     assert "mints no ref of its own" in d
     assert 'target it as ref="css=..."' in d
     assert "use the frame's own document ref" in d
     assert '"RootWebArea [ref=@eN]" line' in d
-    assert "with the frame element itself as the ref" in d
+    assert "which scrolls in its own space: target that frame's document ref" in d
 
 
 def test_read_tools_teach_that_refs_mark_only_what_can_be_acted_on() -> None:

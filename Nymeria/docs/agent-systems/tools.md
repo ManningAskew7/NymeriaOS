@@ -2642,11 +2642,23 @@ because wheel input is positional), and the payload verifies the verb with
 registered container and document scrollers, read in the probe world so a
 page cannot script the numbers. The container's delta when it moved, else
 the document's (a wheel at the end of a pane CHAINS to the page and is
-named "document"); {0,0} is a MEASURED nothing-moved; the key absent means
-unmeasured, which is any wheel that lands where this read cannot watch:
-over an embedded frame, or with the frame element itself as the ref (the
-frame's own scrolling is not watched from outside, so a zero there is
-withheld rather than claimed). Since #208 the pane under the point is
+named "document"); {0,0} is a MEASURED nothing-moved. Since #210 that
+zero is WATCHED rather than sampled, on two live findings: a window that
+is minimised, covered or backgrounded stops painting and answers with its
+PRE-wheel offsets (QA measured three confident {0,0} payloads on a page
+that had moved 500px), and a backgrounded tab HOLDS its wheels and flushes
+them when it is shown again (QA measured 1500px landing at once, after the
+three acts that sent it had answered). So the after-read waits for two
+animation frames, and a page that has rendered but shows nothing gets a
+second look 150ms later; only a zero pays that cost. A zero therefore
+means at-rest, an unrendered page's zero is withheld with
+`scroll_unmeasured` naming the reason (`over_frame` for any wheel that
+lands where this read cannot watch, `not_rendering`, `no_frame`,
+`read_failed`, `budget_spent`), and an unrendered page's DELTA still
+reports, tagged `scroll_stale`, since offsets can only differ if something
+scrolled. The wheel is dispatched in every one of those states, so the
+copy tells the agent to re-READ rather than re-scroll.
+Since #208 the pane under the point is
 watched on EVERY route, coordinate wheels included, and a DOCUMENT ref (a
 frame's `RootWebArea` line) scrolls: it wheels at the middle of that
 frame's own viewport and measures what moved there, which is the only
@@ -2656,8 +2668,11 @@ successful scroll means Chrome mislaid the wheel's ack, not the wheel
 (#207: a coalesced-away wheel never acks while its delta still lands, and
 the desync is per-widget and permanent, so the ack is not load-bearing for
 scroll; the extension latches the widget so later wheels cost milliseconds,
-and the latch dies with the widget on navigation or close). Absence of the
-key means the ack arrived. One measured asymmetry worth knowing:
+and the latch dies with the widget on navigation or close). It is not a
+measurement signal either: gating the zero on it was tried for one
+unreleased version and re-broke #207, since a latched widget loses acks
+routinely while its offsets read perfectly well. Absence of the key means
+the ack arrived. One measured asymmetry worth knowing:
 root-session coordinate wheels DO route into cross-origin frames by
 position (the browser composes wheels), the opposite of clicks, which only
 the frame's own session can deliver.
