@@ -965,8 +965,53 @@ def _control_refs(data: dict[str, Any]) -> Optional[int]:
     return _int_field(data, "control_ref_count")
 
 
+# A matched selector renders OUTSIDE the fence and past `_cap`, so its length
+# is bounded here. Generous enough that a real selector list is never clipped
+# (the motivating case was three candidates, ~60 chars) and small enough that
+# a pathological one cannot spend a context window.
+_MATCHED_SELECTOR_CHARS = 300
+
+
+def _selector_identity_sentence(data: dict[str, Any]) -> str:
+    """Say WHICH of several candidate selectors actually answered.
+
+    A defensive comma-separated read (`.moveList, wc-simple-move-list,
+    .move-list`) is the ordinary shape against an SPA whose class names move
+    between releases, and the first real-world drive wrote exactly that and
+    could not tell which candidate produced the text (#193). It matters most
+    when the candidates differ in FIDELITY: with #190's loss count in play,
+    "which container did I sample" decides whether the missing meaning could
+    ever have been there. The extension ships this only for a selector LIST,
+    so a single selector never pays for a note that restates its argument.
+
+    The ONE line in this block carrying a free-form payload string, and the
+    two reasons that is safe are worth stating because the neighbours cannot
+    make the same claim. It is a selector the CALLER wrote, echoed back after
+    the extension filtered it to the parts the read root satisfies, so the
+    page cannot reach it. And it renders as an exact repr, so a selector
+    carrying prose or a newline cannot blur into the sentence around it or
+    forge a line of its own.
+
+    Length is ours to bound, not the extension's: `_outside_fence` appends
+    past `_cap`, so a caller who passes a 600KB selector list would otherwise
+    echo all of it back outside the fence (review round). Truncated with the
+    full length named, since a clipped selector must not read as the whole one.
+    """
+    matched = data.get("selector_matched")
+    if not isinstance(matched, str) or not matched.strip():
+        return ""
+    value = matched.strip()
+    if len(value) > _MATCHED_SELECTOR_CHARS:
+        value = value[:_MATCHED_SELECTOR_CHARS]
+        return (
+            f"[Of the selectors you passed, this read matched: {value!r} "
+            f"(clipped from {len(matched.strip())} characters).]"
+        )
+    return f"[Of the selectors you passed, this read matched: {value!r}.]"
+
+
 def _scope_match_sentence(data: dict[str, Any]) -> str:
-    """Say when a read's SCOPE selector named more than it could root at.
+    """Say when a read's selector named more than it could root at.
 
     A selector is a RULE, not an element, and `document.querySelector` answers
     with the first match. `chrome_act` already owns up to this
@@ -980,7 +1025,7 @@ def _scope_match_sentence(data: dict[str, Any]) -> str:
     if matches is None or matches < 2:
         return ""
     return (
-        f"[The scope selector matched {matches} elements; this read is rooted at the "
+        f"[The selector matched {matches} elements; this read is rooted at the "
         "FIRST in document order. Narrow the selector if that is not the region "
         "you meant.]"
     )
@@ -1107,9 +1152,12 @@ def _text_loss_sentence(data: dict[str, Any]) -> str:
 def _read_honesty_lines(
     data: dict[str, Any], *, truncated: bool = False, scoped: bool = False
 ) -> str:
-    """The read-honesty block, most load-bearing first. All OUR text composed
-    from booleans and whitelisted counts, never page text; emitted through
-    `_outside_fence` so every fence keeps its one post-fence composer.
+    """The read-honesty block, most load-bearing first. OUR text composed from
+    booleans and whitelisted counts, never page text, with ONE exception that
+    says so at its own site: `_selector_identity_sentence` echoes back the
+    caller's own selector (never a page string), repr'd and length-bounded.
+    Emitted through `_outside_fence` so every fence keeps its one post-fence
+    composer.
 
     Shared by BOTH readers rather than twinned (#187). `chrome_read_text`'s
     payload simply carries none of the tree keys, so every read_page sentence
@@ -1126,8 +1174,11 @@ def _read_honesty_lines(
             _view_state_sentence(data),
             _frames_sentence(data, truncated=truncated),
             _hidden_sentence(data),
-            # Before the mint rule: "your selector matched 40" explains a
-            # sparse region, while the mint rule explains a ref-less one.
+            # Identity before count: "which container did I get" is the
+            # first question, "how many were there" the second. Both sit
+            # before the mint rule, which explains a ref-less region rather
+            # than a sparse one.
+            _selector_identity_sentence(data),
             _scope_match_sentence(data),
             _mint_rule_sentence(data, scoped=scoped),
             _text_loss_sentence(data),
@@ -2824,7 +2875,33 @@ async def chrome_dialog(
     return await _dispatch(command_type="dialog", args=args, config=config)
 
 
-def _health_notes(data: dict[str, Any]) -> str:
+def _announced_version_note(data: dict[str, Any], announced: Optional[str]) -> str:
+    """Name the build when the payload could not.
+
+    #216 was filed, and shipped, on the premise that nothing but a reload knew
+    the extension version. That was WRONG: `chrome_subscribers` records the
+    version the extension announces on every SSE subscribe, and the MV3 worker
+    resubscribes on every recycle, so the backend has held a fresh answer all
+    along (`chrome_reload_extension` reads it for `version_after`).
+
+    Which makes the payload field alone the wrong shape, in exactly the case
+    the row exists for: an extension too old to report its own version is
+    precisely the stale build an agent is trying to detect, and there the
+    payload key is simply absent. So the payload answers "which build EXECUTED
+    this command" and this answers "which build last connected", and the note
+    fires only when the first is missing, saying which claim it is making
+    (review round).
+    """
+    if data.get("extension_version") or not announced:
+        return ""
+    return (
+        f"[Extension build {announced!r}, as announced when it last connected: this "
+        "build is too old to report its own version on a health read, which itself "
+        "dates it.]"
+    )
+
+
+def _health_notes(data: dict[str, Any], *, announced: Optional[str] = None) -> str:
     """The health read's interpretive traps, rendered outside the fence.
 
     Every gate reads whitelisted extension-set shapes (``is True`` booleans,
@@ -2837,6 +2914,9 @@ def _health_notes(data: dict[str, Any]) -> str:
     is evidence, not a live-state assertion.
     """
     lines: list[str] = []
+    version_note = _announced_version_note(data, announced)
+    if version_note:
+        lines.append(version_note)
     if data.get("worker_recycled_since_drive") is True:
         lines.append(
             "[The extension's worker recycled since this tab was last driven: "
@@ -2915,7 +2995,12 @@ async def chrome_health(
     chrome_network and a throwaway action. It has NO side effects: it does not
     attach the tab, start capture, or touch the page.
 
-    The payload carries: the tab itself (url, title, load status); whether the
+    The payload carries: extension_version, the build that EXECUTED this
+    command, so a round verifying a just-shipped capability can tell "broken"
+    from "not deployed yet" (a build too old to report it gets a note naming
+    the version it announced when it last connected, which is a weaker claim
+    and says so); the tab itself (url,
+    title, load status); whether the
     debugger is attached and whether capture ever ran this worker life;
     console/network buffer sizes (unfiltered, up to 200 per tab; a filtered
     read like chrome_console's errors-only default may return fewer) and,
@@ -2954,11 +3039,12 @@ async def chrome_health(
     Absent keys mean unknown or none, never fine. Ages are age_ms
     (milliseconds ago).
     """
+    announced = chrome_extension_version(get_user_id(config))
     return await _dispatch(
         command_type="health",
         args={"tab_id": tab_id},
         config=config,
-        notes=_health_notes,
+        notes=lambda data: _health_notes(data, announced=announced),
     )
 
 
