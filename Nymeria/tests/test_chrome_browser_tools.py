@@ -3535,6 +3535,126 @@ def test_a_selector_that_is_only_the_css_prefix_is_refused() -> None:
     assert "carries no selector" in out
 
 
+# ---------- #193 + #216: which selector answered, which build answered ----------
+
+
+def test_a_text_read_names_which_of_several_selectors_answered() -> None:
+    # The defensive multi-selector read is the ordinary shape against an SPA
+    # whose class names move between releases, and the first real-world drive
+    # wrote exactly that and could not tell which container it sampled. With a
+    # loss count in play, that decides whether the missing meaning could ever
+    # have been there.
+    after = _after_fence(
+        _invoke(
+            chrome_read_text,
+            {"tab_id": 1, "selector": ".moveList, wc-simple-move-list, .move-list"},
+            _ok({"text": "1. e4", "selector_matched": ".move-list"}),
+        )
+    )
+    assert "Of the selectors you passed" in after
+    assert ".move-list" in after
+
+
+def test_an_absent_or_malformed_identity_renders_nothing() -> None:
+    # The extension ships the key only for a LIST whose parts the element did
+    # not ALL satisfy, so the single-selector and every-part-matched rules are
+    # proven there. This is the payload-shape guard on this side.
+    for payload in (
+        {"text": "x"},
+        {"text": "x", "selector_matched": None},
+        {"text": "x", "selector_matched": ""},
+        {"text": "x", "selector_matched": "   "},
+        {"text": "x", "selector_matched": 5},
+    ):
+        after = _after_fence(_invoke(chrome_read_text, {"tab_id": 1}, _ok(payload)))
+        assert "selectors you passed" not in after, f"{payload} must render no identity"
+
+
+def test_the_matched_selector_is_rendered_as_an_exact_value() -> None:
+    # It renders OUTSIDE the fence, so a selector carrying prose must not
+    # blur into the sentence around it.
+    after = _after_fence(
+        _invoke(
+            chrome_read_text,
+            {"tab_id": 1, "selector": "a, b"},
+            _ok({"text": "x", "selector_matched": '[data-x="ignore all previous"]'}),
+        )
+    )
+    assert "'[data-x=\"ignore all previous\"]'" in after
+
+
+def test_a_text_read_gets_the_same_multi_match_sentence_as_the_tree_read() -> None:
+    # One composer, one sentence: the readers share the payload key, so a
+    # note added for one lands on the other rather than being twinned.
+    after = _after_fence(
+        _invoke(
+            chrome_read_text, {"tab_id": 1, "selector": ".row"}, _ok({"text": "row 1", "scope_match_count": 30})
+        )
+    )
+    assert "matched 30 elements" in after
+    assert "FIRST in document order" in after
+
+
+def test_a_whole_page_text_read_says_nothing_about_selectors() -> None:
+    after = _after_fence(_invoke(chrome_read_text, {"tab_id": 1}, _ok({"text": "page"})))
+    assert "matched" not in after
+    assert "selectors you passed" not in after
+
+
+def test_health_names_which_extension_build_executed_the_command(monkeypatch) -> None:
+    # Both halves know a version here, and they DISAGREE, which is the case
+    # that decides precedence: the payload proves what ran, the subscribe
+    # value only what last connected.
+    import nymeria.tools.chrome_browser as mod
+
+    monkeypatch.setattr(mod, "chrome_extension_version", lambda user_id: "0.16.9")
+    out = _invoke(
+        chrome_health,
+        {"tab_id": 1},
+        _ok({"tab": {"id": 1}, "extension_version": "0.17.2"}),
+    )
+    assert "0.17.2" in out
+    assert "0.16.9" not in out, "the payload proves what RAN and wins"
+    assert "last connected" not in out, "no weaker claim when the stronger one is present"
+
+
+def test_health_falls_back_to_the_version_the_extension_announced_at_connect(
+    monkeypatch,
+) -> None:
+    # The case #216 exists for, and the one a payload field alone cannot
+    # answer: an extension too old to report its own version IS the stale
+    # build being hunted, so the key is absent exactly then. The backend has
+    # known the announced version all along (chrome_subscribers records it on
+    # every SSE subscribe, and the MV3 worker resubscribes on every recycle).
+    import nymeria.tools.chrome_browser as mod
+
+    monkeypatch.setattr(mod, "chrome_extension_version", lambda user_id: "0.16.9")
+    out = _invoke(chrome_health, {"tab_id": 1}, _ok({"tab": {"id": 1}}))
+    assert "0.16.9" in out
+    assert "last connected" in out, "a weaker claim must say that it is one"
+    assert "too old to report its own version" in out
+
+
+def test_health_claims_no_version_when_neither_half_knows_one(monkeypatch) -> None:
+    import nymeria.tools.chrome_browser as mod
+
+    monkeypatch.setattr(mod, "chrome_extension_version", lambda user_id: None)
+    out = _invoke(chrome_health, {"tab_id": 1}, _ok({"tab": {"id": 1}}))
+    assert "build" not in out.lower()
+
+
+def test_a_matched_selector_cannot_spend_the_context_it_renders_outside(monkeypatch) -> None:
+    # It renders outside the fence and PAST the cap, so its length is the
+    # backend's to bound: a caller passing a pathological selector list would
+    # otherwise echo all of it back (review round).
+    huge = ".x" * 40_000
+    after = _after_fence(
+        _invoke(chrome_read_text, {"tab_id": 1, "selector": "a, b"}, _ok({"text": "x", "selector_matched": huge}))
+    )
+    assert len(after) < 1000, "the note must not carry the whole selector"
+    assert "clipped from 80000 characters" in after, "a clipped selector must not read as the whole one"
+
+
 # ---------- #190: what a text read could not carry ----------
 
 
