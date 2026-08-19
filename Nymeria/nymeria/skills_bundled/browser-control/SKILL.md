@@ -76,7 +76,10 @@ It is also why the rules below are not optional.
      description carries the worked case and what the note does and does
      not cover; read both classes with `chrome_read_page` or `chrome_find`.
      Pass several candidate selectors as one comma-separated list against an
-     SPA whose class names move, and a note says which one answered.
+     SPA whose class names move, and a note says which one answered. The loss
+     count describes THAT read, so scoping localises it: re-read the one
+     region to learn whether the loss was in the part you care about, and
+     `chrome_read_page` on the same region recovers what went missing.
    - A read whose document was served 4xx or 5xx says so in a note, so a
      soft error page cannot arrive as ordinary content. No note means
      unknown, not "the load was fine". A read that finds NO text still
