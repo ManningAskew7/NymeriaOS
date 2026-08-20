@@ -7,9 +7,10 @@ from typing import cast
 
 from nymeria.mcp_backend_client import (
     ChatTranscript,
+    NymeriaAPIError,
     NymeriaBackendClient,
-    collect_chat_transcript,
     message_steps_to_response_text,
+    transcript_from_events,
     project_history_message_for_verbosity,
 )
 from nymeria.mcp_server import _collection_result
@@ -188,21 +189,24 @@ def test_history_message_projection_redacts_concise_and_trims_chat():
 
 
 class FakeChatClient:
-    async def stream_chat(self, **_kwargs):
-        yield {"type": "thinking", "content": "Think", "thread_id": "thread-2"}
-        yield {"type": "response", "content": "Answer", "thread_id": "thread-2"}
-        yield {"type": "done", "thread_id": "thread-2"}
+    EVENTS = [
+        {"type": "thinking", "content": "Think", "thread_id": "thread-2"},
+        {"type": "response", "content": "Answer", "thread_id": "thread-2"},
+        {"type": "done", "thread_id": "thread-2"},
+    ]
 
     async def get(self, *_args, **_kwargs):
         return {"messages": []}
 
 
-def test_collect_chat_transcript_can_include_raw_events():
+def test_rendered_transcript_can_include_raw_events():
     async def _run():
-        return await collect_chat_transcript(
+        return await transcript_from_events(
             cast(NymeriaBackendClient, FakeChatClient()),
-            message="hello",
+            FakeChatClient.EVENTS,
+            thread_id="thread-2",
             user_id="default",
+            message="hello",
             include_events=True,
         )
 
@@ -214,11 +218,12 @@ def test_collect_chat_transcript_can_include_raw_events():
 
 
 class FakeChatClientWithHistory:
-    async def stream_chat(self, **_kwargs):
-        yield {"type": "tool_call", "id": "call-b", "name": "second_tool", "args": {}, "thread_id": "thread-3"}
-        yield {"type": "tool_call", "id": "call-a", "name": "first_tool", "args": {}, "thread_id": "thread-3"}
-        yield {"type": "response", "content": "persisted final", "thread_id": "thread-3"}
-        yield {"type": "done", "thread_id": "thread-3"}
+    EVENTS = [
+        {"type": "tool_call", "id": "call-b", "name": "second_tool", "args": {}, "thread_id": "thread-3"},
+        {"type": "tool_call", "id": "call-a", "name": "first_tool", "args": {}, "thread_id": "thread-3"},
+        {"type": "response", "content": "persisted final", "thread_id": "thread-3"},
+        {"type": "done", "thread_id": "thread-3"},
+    ]
 
     async def get(self, *_args, **_kwargs):
         return {
@@ -237,12 +242,14 @@ class FakeChatClientWithHistory:
         }
 
 
-def test_collect_chat_transcript_prefers_persisted_step_order_for_copy_output():
+def test_finished_transcript_prefers_persisted_step_order_for_copy_output():
     async def _run():
-        return await collect_chat_transcript(
+        return await transcript_from_events(
             cast(NymeriaBackendClient, FakeChatClientWithHistory()),
-            message="hello",
+            FakeChatClientWithHistory.EVENTS,
+            thread_id="thread-3",
             user_id="default",
+            message="hello",
             include_events=True,
         )
 
@@ -255,9 +262,10 @@ def test_collect_chat_transcript_prefers_persisted_step_order_for_copy_output():
 
 
 class FakeChatClientWithStaleHistory:
-    async def stream_chat(self, **_kwargs):
-        yield {"type": "response", "content": "fresh final", "thread_id": "thread-4"}
-        yield {"type": "done", "thread_id": "thread-4"}
+    EVENTS = [
+        {"type": "response", "content": "fresh final", "thread_id": "thread-4"},
+        {"type": "done", "thread_id": "thread-4"},
+    ]
 
     async def get(self, *_args, **_kwargs):
         return {
@@ -272,12 +280,14 @@ class FakeChatClientWithStaleHistory:
         }
 
 
-def test_collect_chat_transcript_ignores_stale_persisted_history():
+def test_rendered_transcript_ignores_stale_persisted_history():
     async def _run():
-        return await collect_chat_transcript(
+        return await transcript_from_events(
             cast(NymeriaBackendClient, FakeChatClientWithStaleHistory()),
-            message="new prompt",
+            FakeChatClientWithStaleHistory.EVENTS,
+            thread_id="thread-4",
             user_id="default",
+            message="new prompt",
         )
 
     result = asyncio.run(_run())
@@ -512,7 +522,7 @@ def test_nymeria_command_docstring_lists_every_command_surface():
 
 def _projected(transcript, mode):
     """Mirror the shipped nymeria_chat path: as_dict(verbose) then the
-    per-mode projection (collect_chat_transcript's tail). Testing as_dict
+    per-mode projection (the renderer's tail). Testing as_dict
     alone previously passed while the shipped path recomputed the fields."""
     from nymeria.mcp_backend_client import project_chat_payload_for_verbosity
 
@@ -576,3 +586,1070 @@ def test_successful_turn_with_errors_keeps_response_text():
         result = _projected(transcript, mode)
         assert result["final_response"] == "Recovered fine.", mode
         assert "[turn failed]" not in str(result.get("full_markdown", "")), mode
+
+
+# ---------------------------------------------------------------------------
+# Collected-events rendering (background dispatch parity with blocking chat)
+# ---------------------------------------------------------------------------
+
+_DISPATCH_EVENTS = [
+    {"type": "thinking", "content": "Planning", "thread_id": "thread-9"},
+    {
+        "type": "tool_call",
+        "id": "call-1",
+        "name": "chrome_screenshot",
+        "args": {"tab_id": 7},
+        "thread_id": "thread-9",
+    },
+    {
+        "type": "tool_result",
+        "tool_call_id": "call-1",
+        "name": "chrome_screenshot",
+        "result": "captured 1280x720",
+        "thread_id": "thread-9",
+    },
+    {"type": "response", "content": "Shot taken.", "thread_id": "thread-9"},
+]
+
+
+class _CountingHistoryClient:
+    """Backend stub that records whether the persisted-steps overlay ran."""
+
+    def __init__(self):
+        self.get_calls = 0
+
+    async def stream_chat(self, **_kwargs):
+        for event in _DISPATCH_EVENTS:
+            yield event
+        yield {"type": "done", "thread_id": "thread-9"}
+
+    async def get(self, *_args, **_kwargs):
+        self.get_calls += 1
+        return {
+            "messages": [
+                {"id": "user-9", "role": "user", "content": "shoot it"},
+                {
+                    "id": "assistant-9",
+                    "role": "assistant",
+                    "steps": [
+                        {
+                            "type": "tool_call",
+                            "id": "call-1",
+                            "name": "chrome_screenshot",
+                            "arguments": {"tab_id": 7},
+                        },
+                        {"type": "response", "content": "Shot taken."},
+                    ],
+                },
+            ]
+        }
+
+
+def test_running_turn_renders_without_consulting_persisted_history():
+    """Mid-turn there is no persisted assistant message worth preferring.
+
+    Consulting history anyway is not merely wasteful: the newest assistant
+    message belongs to the PREVIOUS turn, so an overlay could graft stale steps
+    onto a live partial.
+    """
+
+    async def _run():
+        client = _CountingHistoryClient()
+        partial = await transcript_from_events(
+            cast(NymeriaBackendClient, client),
+            _DISPATCH_EVENTS,  # deliberately no "done"
+            thread_id="thread-9",
+            user_id="default",
+            message="shoot it",
+        )
+        return client, partial
+
+    client, partial = asyncio.run(_run())
+
+    assert client.get_calls == 0
+    assert "history_message_id" not in partial
+    assert partial["done"] is False
+    # The live stream order survives, rather than being replaced by history.
+    assert [step["type"] for step in partial["steps"]] == [
+        "thinking",
+        "tool_call",
+        "response",
+    ]
+
+
+def test_finished_turn_prefers_persisted_step_order():
+    """Once done, a collected transcript gets the same overlay chat does."""
+
+    async def _run():
+        client = _CountingHistoryClient()
+        final = await transcript_from_events(
+            cast(NymeriaBackendClient, client),
+            _DISPATCH_EVENTS + [{"type": "done", "thread_id": "thread-9"}],
+            thread_id="thread-9",
+            user_id="default",
+            message="shoot it",
+        )
+        return client, final
+
+    client, final = asyncio.run(_run())
+
+    assert client.get_calls == 1
+    assert final["history_message_id"] == "assistant-9"
+
+
+def test_partial_transcript_honors_verbosity_like_a_finished_one():
+    """Verbosity is a property of the rendering, not of completion state."""
+
+    async def _run():
+        return {
+            mode: await transcript_from_events(
+                None,
+                _DISPATCH_EVENTS,
+                thread_id="thread-9",
+                verbosity=mode,
+            )
+            for mode in ("verbose", "concise", "chat")
+        }
+
+    rendered = asyncio.run(_run())
+
+    verbose_call = next(
+        step for step in rendered["verbose"]["steps"] if step["type"] == "tool_call"
+    )
+    assert verbose_call["arguments"] == {"tab_id": 7}
+    assert verbose_call["result"] == "captured 1280x720"
+
+    concise_call = next(
+        step for step in rendered["concise"]["steps"] if step["type"] == "tool_call"
+    )
+    assert concise_call["name"] == "chrome_screenshot"
+    assert "arguments" not in concise_call
+    assert "result" not in concise_call
+
+    # "chat" is the callable-thread semantic: the answer, none of the working.
+    assert "steps" not in rendered["chat"]
+    assert rendered["chat"]["final_response"] == "Shot taken."
+
+
+# ---------------------------------------------------------------------------
+# The bounded-wait chat contract (mode / wait_seconds / if_busy)
+# ---------------------------------------------------------------------------
+
+
+class _SlowChatClient:
+    """Streams a couple of events, then stalls until released."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+
+    async def stream_chat(self, **_kwargs):
+        yield {"type": "thinking", "content": "Working", "thread_id": "thread-slow"}
+        yield {"type": "response", "content": "partial so far", "thread_id": "thread-slow"}
+        self.started.set()
+        await self.release.wait()
+        yield {"type": "response", "content": " and the rest", "thread_id": "thread-slow"}
+        yield {"type": "done", "thread_id": "thread-slow"}
+
+    async def get(self, *_args, **_kwargs):
+        return {"messages": []}
+
+
+def _chat(monkeypatch, client, **kwargs):
+    import nymeria.mcp_server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_get_client", lambda: client)
+    monkeypatch.setattr(mcp_server, "effective_act_as", lambda uid: uid)
+    return asyncio.run(mcp_server.nymeria_chat(**kwargs))
+
+
+def test_ask_that_outlives_its_budget_returns_a_partial_and_a_resume_token(monkeypatch):
+    """The budget expiring must not cancel the turn or lose the transcript."""
+    import nymeria.mcp_server as mcp_server
+
+    client = _SlowChatClient()
+
+    async def _run():
+        monkeypatch.setattr(mcp_server, "_get_client", lambda: client)
+        monkeypatch.setattr(mcp_server, "effective_act_as", lambda uid: uid)
+        running = await mcp_server.nymeria_chat(
+            message="drive the browser",
+            thread_id="thread-slow",
+            wait_seconds=1,
+        )
+        # The turn is still live: releasing it must still complete normally,
+        # and the resume token must reach the same turn rather than a new one.
+        client.release.set()
+        finished = await mcp_server.nymeria_chat_collect(
+            dispatch_id=running["resume"], timeout_seconds=5
+        )
+        return running, finished
+
+    running, finished = asyncio.run(_run())
+
+    assert running["status"] == "running"
+    assert running["final_response"] == "partial so far"
+    assert "[Running]" in running["running"]
+    assert running["resume"]
+
+    assert finished["status"] == "done"
+    assert finished["final_response"] == "partial so far and the rest"
+    assert finished["thread_id"] == "thread-slow"
+
+
+def test_ask_within_budget_returns_done_with_the_flat_transcript(monkeypatch):
+    """The existing flat shape is the contract; regression specs read it."""
+    result = _chat(
+        monkeypatch,
+        _CountingHistoryClient(),
+        message="shoot it",
+        thread_id="thread-9",
+        wait_seconds=5,
+    )
+
+    assert result["status"] == "done"
+    assert result["final_response"] == "Shot taken."
+    assert result["thread_id"] == "thread-9"
+    assert "resume" not in result
+    assert "running" not in result
+
+
+def test_handoff_returns_a_receipt_without_waiting(monkeypatch):
+    """A handoff must return before the turn does, and say so."""
+    client = _SlowChatClient()
+    result = _chat(
+        monkeypatch,
+        client,
+        message="go do the long thing",
+        thread_id="thread-slow",
+        mode="handoff",
+    )
+
+    assert result["status"] == "dispatched"
+    assert "[HandedOff]" in result["handoff"]
+    assert "no final response will be returned here" in result["handoff"]
+    assert result["resume"]
+    # It genuinely did not wait for the turn's own output.
+    assert "final_response" not in result
+
+
+def test_wait_seconds_with_handoff_is_refused_not_ignored(monkeypatch):
+    """A parameter that cannot apply must teach, not silently do nothing."""
+    result = _chat(
+        monkeypatch,
+        _SlowChatClient(),
+        message="hi",
+        thread_id="thread-slow",
+        mode="handoff",
+        wait_seconds=30,
+    )
+
+    assert "wait_seconds is only supported when mode='ask'" in result["error"]
+    assert "status" not in result
+
+
+def test_out_of_range_wait_names_both_numbers_and_the_alternative(monkeypatch):
+    result = _chat(
+        monkeypatch,
+        _SlowChatClient(),
+        message="hi",
+        thread_id="thread-slow",
+        wait_seconds=99_999,
+    )
+
+    assert "99999" in result["error"]
+    assert "3600" in result["error"]
+    assert "handoff" in result["error"]
+
+
+def test_if_busy_error_refuses_a_busy_thread_and_names_the_retry(monkeypatch):
+    """Refusing is only useful if it says how to proceed instead."""
+    import nymeria.mcp_server as mcp_server
+
+    async def _busy(_thread_id, _user_id):
+        return True
+
+    monkeypatch.setattr(mcp_server, "_thread_is_busy", _busy)
+    result = _chat(
+        monkeypatch,
+        _SlowChatClient(),
+        message="hi",
+        thread_id="thread-slow",
+        if_busy="error",
+    )
+
+    assert result["status"] == "busy"
+    assert "[Busy]" in result["error"]
+    assert "if_busy='queue'" in result["error"]
+
+
+def test_a_resume_pins_the_turn_not_just_the_thread(monkeypatch):
+    """A thread that has moved on to a NEW turn must 404, not silently hand
+    back a different turn wearing the same thread id."""
+    import nymeria.mcp_server as mcp_server
+
+    client = _ReplayClient()
+    token = mcp_server._encode_resume("gone", "thread-r", 0, "default", "turn-7")
+    _collect(monkeypatch, client, resume=token, timeout_seconds=5)
+
+    assert client.replay_calls[0]["turn_id"] == "turn-7"
+
+
+# ---------------------------------------------------------------------------
+# Resume durability: server replay when the in-memory dispatch is gone
+# ---------------------------------------------------------------------------
+
+
+class _ReplayClient:
+    """Backend stub whose turn/turn-replay endpoint returns a fixed turn."""
+
+    def __init__(self, events=None, raises=None):
+        self._events = events or [
+            {"type": "response", "content": "recovered answer", "thread_id": "thread-r"},
+            {"type": "done", "thread_id": "thread-r"},
+        ]
+        self._raises = raises
+        self.replay_calls = []
+
+    async def stream_turn_replay(self, *, thread_id, user_id, turn_id=None, from_seq=0):
+        self.replay_calls.append(
+            {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "from_seq": from_seq,
+                "turn_id": turn_id,
+            }
+        )
+        if self._raises:
+            raise self._raises
+        for event in self._events:
+            yield event
+
+    async def get(self, *_args, **_kwargs):
+        return {"messages": []}
+
+
+def _collect(monkeypatch, client, **kwargs):
+    import nymeria.mcp_server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_get_client", lambda: client)
+    monkeypatch.setattr(mcp_server, "effective_act_as", lambda uid: uid)
+    return asyncio.run(mcp_server.nymeria_chat_collect(**kwargs))
+
+
+def test_resume_token_round_trips_thread_and_cursor():
+    import nymeria.mcp_server as mcp_server
+
+    token = mcp_server._encode_resume("abc123", "thread-r", 41, "someone", "turn-7")
+    assert token != "abc123"  # opaque, not just the id
+
+    decoded = mcp_server._decode_resume(token)
+    assert decoded == {
+        "dispatch_id": "abc123",
+        "thread_id": "thread-r",
+        "cursor": 41,
+        "user_id": "someone",
+        "turn_id": "turn-7",
+    }
+
+
+def test_a_bare_dispatch_id_still_decodes_for_older_callers():
+    """The regression specs pass raw ids; they must keep working."""
+    import nymeria.mcp_server as mcp_server
+
+    assert mcp_server._decode_resume("deadbeef0001") == {
+        "dispatch_id": "deadbeef0001",
+        "thread_id": None,
+        "cursor": 0,
+        "user_id": None,
+        "turn_id": None,
+    }
+
+
+def test_evicted_dispatch_recovers_from_the_servers_own_copy(monkeypatch):
+    """Ten minutes of distraction must not destroy a finished turn."""
+    import nymeria.mcp_server as mcp_server
+
+    client = _ReplayClient()
+    token = mcp_server._encode_resume("gone-forever", "thread-r", 0, "default")
+    result = _collect(monkeypatch, client, resume=token, timeout_seconds=5)
+
+    assert result["status"] == "done"
+    assert result["recovered_from"] == "server_replay"
+    assert result["final_response"] == "recovered answer"
+    assert client.replay_calls[0]["thread_id"] == "thread-r"
+
+
+def test_thread_id_alone_attaches_to_the_most_recent_turn(monkeypatch):
+    """The lost-handle path: no token at all, just a thread."""
+    client = _ReplayClient()
+    result = _collect(monkeypatch, client, thread_id="thread-r", timeout_seconds=5)
+
+    assert result["status"] == "done"
+    assert result["final_response"] == "recovered answer"
+
+
+def test_expired_buffer_says_so_and_points_at_history(monkeypatch):
+    from nymeria.mcp_backend_client import NymeriaAPIError
+
+    client = _ReplayClient(raises=NymeriaAPIError(404, "turn_not_found"))
+    result = _collect(monkeypatch, client, thread_id="thread-r", timeout_seconds=5)
+
+    assert "nymeria_get_thread_history" in result["error"]
+    assert "expired" in result["error"]
+
+
+def test_replay_gap_is_reported_rather_than_passed_off_as_complete(monkeypatch):
+    """A record with a hole must never read as the whole turn."""
+    from nymeria.mcp_backend_client import NymeriaAPIError
+
+    client = _ReplayClient(raises=NymeriaAPIError(410, "turn_replay_gap"))
+    result = _collect(monkeypatch, client, thread_id="thread-r", timeout_seconds=5)
+
+    assert "gap" in result["error"]
+    assert "missing" in result["error"]
+    assert "do not treat" in result["error"].lower()
+
+
+def test_no_dispatch_and_no_thread_explains_how_to_recover(monkeypatch):
+    result = _collect(
+        monkeypatch, _ReplayClient(), dispatch_id="nope", timeout_seconds=5
+    )
+
+    assert "not found" in result["error"]
+    assert "thread_id=" in result["error"]
+
+
+def test_resuming_returns_only_new_work_but_the_whole_answer(monkeypatch):
+    """Incremental steps bound the context; the answer stays undivided."""
+    import nymeria.mcp_server as mcp_server
+
+    client = _SlowChatClient()
+
+    async def _run():
+        monkeypatch.setattr(mcp_server, "_get_client", lambda: client)
+        monkeypatch.setattr(mcp_server, "effective_act_as", lambda uid: uid)
+        first = await mcp_server.nymeria_chat(
+            message="drive", thread_id="thread-slow", wait_seconds=1
+        )
+        client.release.set()
+        second = await mcp_server.nymeria_chat_collect(
+            resume=first["resume"], timeout_seconds=5
+        )
+        return first, second
+
+    first, second = asyncio.run(_run())
+
+    # Two events (thinking + first response) landed before the stall, so the
+    # continuation starts at index 2 rather than replaying from zero.
+    assert second["continued_from"] == 2
+    # The working is only the NEW part: the early thinking step is not repeated.
+    assert all(step.get("content") != "Working" for step in second["steps"])
+    # The answer is the WHOLE answer, not the tail fragment.
+    assert second["final_response"] == "partial so far and the rest"
+
+
+# ---------------------------------------------------------------------------
+# Halt honesty: a stopped turn must never read as a finished one
+# ---------------------------------------------------------------------------
+
+
+def _halted_transcript(*, with_text: bool, resumable: bool = False):
+    transcript = ChatTranscript(thread_id="thread-h")
+    if with_text:
+        transcript.add_event(
+            {"type": "response", "content": "I got partway through.", "thread_id": "thread-h"}
+        )
+    transcript.add_event(
+        {
+            "type": "iteration_limit",
+            "content": "Agent reached the maximum number of steps.",
+            "reason": "max_iterations",
+            "max_iterations": 300,
+            "resumable": resumable,
+            "thread_id": "thread-h",
+        }
+    )
+    transcript.add_event({"type": "done", "thread_id": "thread-h"})
+    return transcript
+
+
+def test_a_halted_turn_flags_incompleteness_in_every_verbosity():
+    """The note must survive projection, or "chat" mode hides the halt."""
+    transcript = _halted_transcript(with_text=True)
+
+    for mode in ("verbose", "concise", "chat"):
+        result = transcript.as_dict(verbosity=mode)
+        assert result["final_response"].startswith("I got partway through."), mode
+        assert "may be incomplete" in result["final_response"], mode
+        assert result["halted"]["reason"] == "max_iterations", mode
+        assert result["halted"]["max_iterations"] == 300, mode
+
+
+def test_the_halt_notice_is_not_passed_off_as_the_assistants_own_words():
+    """The runtime's limit message must not become a response step."""
+    transcript = _halted_transcript(with_text=True)
+
+    contents = [
+        str(step.get("content") or "")
+        for step in transcript.steps
+        if step.get("type") == "response"
+    ]
+    assert contents == ["I got partway through."]
+    assert not any("maximum number of steps" in c for c in contents)
+
+
+def test_a_halt_with_no_output_says_so_instead_of_empty_message():
+    result = _halted_transcript(with_text=False).as_dict(verbosity="chat")
+
+    assert result["final_response"].startswith("[Halted:")
+    assert "(empty message)" not in result["final_response"]
+    assert "manual follow-up" in result["final_response"]
+
+
+def test_a_resumable_halt_names_resume_rather_than_manual_follow_up():
+    """Resumable and terminal halts need different next steps."""
+    result = _halted_transcript(with_text=True, resumable=True).as_dict()
+
+    assert "/resume" in result["final_response"]
+    assert "manual follow-up" not in result["final_response"]
+    assert result["halted"]["resumable"] is True
+
+
+def test_an_unhalted_turn_carries_no_halt_block_or_note():
+    transcript = ChatTranscript(thread_id="thread-h")
+    transcript.add_event({"type": "response", "content": "All done.", "thread_id": "thread-h"})
+    transcript.add_event({"type": "done", "thread_id": "thread-h"})
+
+    for mode in ("verbose", "concise", "chat"):
+        result = transcript.as_dict(verbosity=mode)
+        assert result["final_response"] == "All done.", mode
+        assert "incomplete" not in result["final_response"], mode
+        assert result.get("halted") is None, mode
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: shipped-path halt rendering, token states, busy source, replay
+# ---------------------------------------------------------------------------
+
+_HALT_EVENTS = [
+    {"type": "response", "content": "Partway through.", "thread_id": "thread-h"},
+    {
+        "type": "iteration_limit",
+        "content": "Agent reached the maximum number of steps.",
+        "thread_id": "thread-h",
+    },
+    {"type": "done", "thread_id": "thread-h"},
+]
+
+
+def test_halt_note_appears_exactly_once_through_the_shipped_renderer():
+    """The projection runs twice on the real path; the note must not double.
+
+    The halt tests that render via ChatTranscript.as_dict alone exercise ONE
+    projection and so cannot catch this.
+    """
+
+    async def _run():
+        return {
+            mode: await transcript_from_events(
+                None, _HALT_EVENTS, thread_id="thread-h", verbosity=mode
+            )
+            for mode in ("verbose", "concise", "chat")
+        }
+
+    rendered = asyncio.run(_run())
+
+    for mode, result in rendered.items():
+        assert result["final_response"].count("may be incomplete") == 1, mode
+        assert result["final_response"].startswith("Partway through."), mode
+
+
+def test_halt_note_reaches_full_markdown_not_only_final_response():
+    """A verbose consumer reads full_markdown; a halt must be visible there."""
+
+    async def _run():
+        return await transcript_from_events(
+            None, _HALT_EVENTS, thread_id="thread-h", verbosity="verbose"
+        )
+
+    result = asyncio.run(_run())
+
+    assert "may be incomplete" in result["full_markdown"]
+    assert result["full_markdown"].count("may be incomplete") == 1
+
+
+def test_a_thread_only_resume_token_survives_the_round_trip():
+    """The server-replay token carries no dispatch id; it must still decode.
+
+    Gating the decoder on a truthy dispatch id sent this token down the
+    bare-id branch, which lost the thread and made the recovery path
+    enterable but not continuable.
+    """
+    import nymeria.mcp_server as mcp_server
+
+    decoded = mcp_server._decode_resume(
+        mcp_server._encode_resume("", "thread-r", 0, "default")
+    )
+    assert decoded["thread_id"] == "thread-r"
+    assert decoded["dispatch_id"] == ""
+    assert decoded["user_id"] == "default"
+
+
+def test_busy_check_reads_the_per_thread_endpoint_not_the_admin_aggregate(monkeypatch):
+    """/status/turns hides busy_threads from non-admins, so it can never say
+    True for them; the per-thread status endpoint is role-independent."""
+    import nymeria.mcp_server as mcp_server
+
+    seen = {}
+
+    async def _fake(_method, path, user_id=None, **_kw):
+        seen["path"] = path
+        return {"thread_id": "thread-b", "processing": True}
+
+    monkeypatch.setattr(mcp_server, "_json_call", _fake)
+    verdict = asyncio.run(mcp_server._thread_is_busy("thread-b", "someone"))
+
+    assert verdict is True
+    assert seen["path"] == "/threads/thread-b/status"
+    assert "status/turns" not in seen["path"]
+
+
+def test_busy_check_reports_unknowable_when_the_endpoint_errors(monkeypatch):
+    import nymeria.mcp_server as mcp_server
+
+    async def _fake(_method, _path, user_id=None, **_kw):
+        return {"error": "boom"}
+
+    monkeypatch.setattr(mcp_server, "_json_call", _fake)
+    assert asyncio.run(mcp_server._thread_is_busy("thread-b", "someone")) is None
+
+
+class _AbortedReplayClient(_ReplayClient):
+    """Replays a turn whose writer died: attach state says so, no terminal."""
+
+    async def stream_turn_replay(self, *, thread_id, user_id, turn_id=None, from_seq=0):
+        self.replay_calls.append({"thread_id": thread_id, "user_id": user_id})
+        yield {"type": "turn_attach", "state": "aborted", "turn_id": "t1"}
+        yield {"type": "response", "content": "got this far", "thread_id": thread_id}
+
+
+def test_an_aborted_turn_is_reported_finished_not_still_running(monkeypatch):
+    """An aborted turn emits no terminal event. Without reading turn_attach we
+    would call it 'running' and hand back a token for a dead turn."""
+    result = _collect(
+        monkeypatch, _AbortedReplayClient(), thread_id="thread-r", timeout_seconds=5
+    )
+
+    assert result["status"] == "done"
+    assert result["turn_state"] == "aborted"
+    assert "aborted" in result["error"]
+    assert "resume" not in result
+
+
+class _MidStreamGapClient(_ReplayClient):
+    """Gap discovered mid-replay: in-band frame, then the stream just ends."""
+
+    async def stream_turn_replay(self, *, thread_id, user_id, turn_id=None, from_seq=0):
+        self.replay_calls.append({"thread_id": thread_id, "user_id": user_id})
+        yield {"type": "turn_attach", "state": "live", "turn_id": "t1"}
+        yield {"type": "response", "content": "first part", "thread_id": thread_id}
+        yield {"type": "turn_replay_gap", "thread_id": thread_id}
+
+
+def test_a_mid_stream_gap_is_reported_like_an_attach_time_one(monkeypatch):
+    """The attach-time 410 only covers gaps that already existed."""
+    result = _collect(
+        monkeypatch, _MidStreamGapClient(), thread_id="thread-r", timeout_seconds=5
+    )
+
+    assert "gap" in result["error"]
+    assert "do not treat" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Cold-review fixes: error fidelity, overlay scope, identity, retention
+# ---------------------------------------------------------------------------
+
+
+class _RefusingChatClient:
+    """Backend that refuses the turn outright (e.g. admission control 429)."""
+
+    async def stream_chat(self, **_kwargs):
+        raise NymeriaAPIError(
+            429,
+            "Too many concurrent interactive turns.",
+            {"detail": {"code": "interactive_busy", "retry_after": 12}},
+        )
+        yield  # pragma: no cover - makes this an async generator
+
+    async def get(self, *_args, **_kwargs):
+        return {"messages": []}
+
+
+def test_a_refused_turn_keeps_its_status_code_and_payload(monkeypatch):
+    """A turn that never started is a failed CALL, not a completed empty one.
+
+    Dropping to a flattened string loses retry_after on a 429 and the auth
+    detail on a 401, which is what a caller needs to decide what to do next.
+    """
+    result = _chat(
+        monkeypatch,
+        _RefusingChatClient(),
+        message="hi",
+        thread_id="thread-x",
+        wait_seconds=5,
+    )
+
+    assert result["status_code"] == 429
+    assert result["payload"]["detail"]["retry_after"] == 12
+    assert result.get("status") != "done"
+
+
+class _HistoryOverlayClient(_CountingHistoryClient):
+    """Finished turn whose persisted history covers the WHOLE turn."""
+
+    async def stream_chat(self, **_kwargs):
+        yield {"type": "thinking", "content": "Planning", "thread_id": "thread-9"}
+        yield {"type": "response", "content": "Shot taken.", "thread_id": "thread-9"}
+        yield {"type": "done", "thread_id": "thread-9"}
+
+
+def test_a_sliced_collect_does_not_get_the_whole_turn_via_the_overlay(monkeypatch):
+    """The overlay replaces steps with the full assistant message, so taking it
+    on a slice returns everything and defeats the cursor on the last poll."""
+    import nymeria.mcp_server as mcp_server
+
+    client = _HistoryOverlayClient()
+
+    async def _run():
+        monkeypatch.setattr(mcp_server, "_get_client", lambda: client)
+        monkeypatch.setattr(mcp_server, "effective_act_as", lambda uid: uid)
+        ctx = mcp_server._start_background_chat(
+            message="shoot it", thread_id="thread-9", user_id="default"
+        )
+        await mcp_server._await_dispatch(ctx, 5)
+        token = mcp_server._encode_resume(
+            ctx["dispatch_id"], "thread-9", 1, "default"
+        )
+        return await mcp_server.nymeria_chat_collect(resume=token, timeout_seconds=5)
+
+    result = asyncio.run(_run())
+
+    assert result["continued_from"] == 1
+    assert "history_message_id" not in result
+    # "Planning" was delivered before the cursor and must not come back.
+    assert all(step.get("content") != "Planning" for step in result["steps"])
+
+
+def test_a_halted_turn_still_gets_its_persisted_step_order(monkeypatch):
+    """Projecting before the overlay made the halt note fail the same-turn
+    comparison, silently costing halted turns their canonical ordering."""
+
+    class _HaltedHistoryClient:
+        async def get(self, *_args, **_kwargs):
+            return {
+                "messages": [
+                    {"id": "u", "role": "user", "content": "hi"},
+                    {
+                        "id": "msg-h",
+                        "role": "assistant",
+                        "steps": [{"type": "response", "content": "Partway through."}],
+                    },
+                ]
+            }
+
+    async def _run():
+        return await transcript_from_events(
+            cast(NymeriaBackendClient, _HaltedHistoryClient()),
+            _HALT_EVENTS,
+            thread_id="thread-h",
+            user_id="default",
+            message="hi",
+        )
+
+    result = asyncio.run(_run())
+
+    assert result["history_message_id"] == "msg-h"
+    assert "may be incomplete" in result["final_response"]
+
+
+def test_a_dispatch_is_not_readable_by_another_identity(monkeypatch):
+    """A 48-bit id alone must not surface another user's transcript."""
+    import nymeria.mcp_server as mcp_server
+
+    client = _CountingHistoryClient()
+
+    async def _run():
+        monkeypatch.setattr(mcp_server, "_get_client", lambda: client)
+        monkeypatch.setattr(mcp_server, "effective_act_as", lambda uid: uid)
+        ctx = mcp_server._start_background_chat(
+            message="alice's prompt", thread_id="alice-thread", user_id="alice"
+        )
+        await mcp_server._await_dispatch(ctx, 5)
+        return await mcp_server.nymeria_chat_collect(
+            dispatch_id=ctx["dispatch_id"], user_id="bob", timeout_seconds=1
+        )
+
+    result = asyncio.run(_run())
+
+    # Bob does not get Alice's rendered turn out of process memory. He is sent
+    # to the server path, which the backend gates on thread access.
+    assert result.get("final_response") != "Shot taken."
+    assert result.get("recovered_from") == "server_replay" or result.get("error")
+
+
+def test_collect_rejects_a_wait_beyond_the_ceiling(monkeypatch):
+    result = _collect(
+        monkeypatch, _ReplayClient(), thread_id="thread-r", timeout_seconds=99_999
+    )
+
+    assert "99999" in result["error"]
+    assert "3600" in result["error"]
+
+
+def test_an_over_long_turn_stops_retaining_and_says_so(monkeypatch):
+    """Retention is bounded; a truncated record must not read as complete."""
+    import nymeria.mcp_server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_DISPATCH_MAX_EVENTS", 2)
+
+    class _ChattyClient:
+        async def stream_chat(self, **_kwargs):
+            for i in range(6):
+                yield {"type": "response", "content": f"chunk{i}", "thread_id": "thread-c"}
+            yield {"type": "done", "thread_id": "thread-c"}
+
+        async def get(self, *_args, **_kwargs):
+            return {"messages": []}
+
+    result = _chat(
+        monkeypatch,
+        _ChattyClient(),
+        message="go",
+        thread_id="thread-c",
+        wait_seconds=5,
+        include_events=True,
+    )
+
+    assert len(result["events"]) <= 3
+    assert "[Truncated]" in result["truncated"]
+    assert "nymeria_get_thread_history" in result["truncated"]
+
+
+# ---------------------------------------------------------------------------
+# Behaviors the conformance pass found unguarded
+# ---------------------------------------------------------------------------
+
+
+def test_the_handoff_receipt_names_the_thread_and_how_to_collect(monkeypatch):
+    """A receipt that does not say where the work went, or how to get it back,
+    leaves the caller with nothing actionable."""
+    result = _chat(
+        monkeypatch,
+        _SlowChatClient(),
+        message="go",
+        thread_id="thread-slow",
+        mode="handoff",
+    )
+
+    assert "thread-slow" in result["handoff"]
+    assert "nymeria_chat_collect" in result["handoff"]
+    assert result["thread_id"] == "thread-slow"
+
+
+def test_if_busy_queue_still_joins_a_busy_thread(monkeypatch):
+    """The default must keep queueing; only if_busy='error' refuses."""
+    import nymeria.mcp_server as mcp_server
+
+    async def _busy(_thread_id, _user_id):
+        return True
+
+    monkeypatch.setattr(mcp_server, "_thread_is_busy", _busy)
+    result = _chat(
+        monkeypatch,
+        _CountingHistoryClient(),
+        message="shoot it",
+        thread_id="thread-9",
+        wait_seconds=5,
+    )
+
+    assert result["status"] == "done"
+    assert result["final_response"] == "Shot taken."
+
+
+def test_turn_status_asks_per_thread_when_given_one(monkeypatch):
+    """Per-thread status works for any identity; the aggregate hides its
+    useful half from non-admins."""
+    import nymeria.mcp_server as mcp_server
+
+    seen = []
+
+    async def _fake(_method, path, user_id=None, **_kw):
+        seen.append(path)
+        return {"processing": True, "turn": {"state": "live"}}
+
+    monkeypatch.setattr(mcp_server, "_json_call", _fake)
+    scoped = asyncio.run(mcp_server.nymeria_turn_status(thread_id="thread-q"))
+    asyncio.run(mcp_server.nymeria_turn_status())
+
+    assert scoped["turn"]["state"] == "live"
+    assert seen == ["/threads/thread-q/status", "/status/turns"]
+
+
+def test_attachments_reach_the_wire_on_a_dispatched_chat(monkeypatch):
+    """#234: the Docker agent cannot read host paths, so a brief has to be
+    pushed rather than referenced."""
+    sent = {}
+
+    class _Recorder:
+        async def stream_chat(self, **kwargs):
+            sent.update(kwargs)
+            yield {"type": "response", "content": "ok", "thread_id": "thread-a"}
+            yield {"type": "done", "thread_id": "thread-a"}
+
+        async def get(self, *_a, **_k):
+            return {"messages": []}
+
+    attachments = [{"type": "text", "name": "brief.md", "content": "do this"}]
+    _chat(
+        monkeypatch,
+        _Recorder(),
+        message="here",
+        thread_id="thread-a",
+        wait_seconds=5,
+        attachments=attachments,
+    )
+
+    assert sent["attachments"] == attachments
+
+
+def test_every_chat_tool_description_names_its_situation_and_the_alternative():
+    """F4: the reason the wrong tool got used all session is that the right
+    one did not describe itself. Keep each description self-locating."""
+    import nymeria.mcp_server as mcp_server
+
+    chat = mcp_server.nymeria_chat.__doc__ or ""
+    assert 'mode="ask"' in chat or "ask (default)" in chat
+    assert "handoff" in chat
+    assert "wait_seconds" in chat
+    assert "transport timeout" in chat
+
+    background = mcp_server.nymeria_chat_background.__doc__ or ""
+    assert "REGRESSION-TEST INSTRUMENT" in background
+    assert "nymeria_chat" in background
+
+    collect = mcp_server.nymeria_chat_collect.__doc__ or ""
+    for handle in ("resume", "dispatch_id", "thread_id"):
+        assert handle in collect
+
+    status = mcp_server.nymeria_turn_status.__doc__ or ""
+    assert "thread_id" in status and "admin" in status
+
+
+def test_projecting_a_halted_payload_twice_adds_one_note():
+    """Idempotency guard: the pipeline projects once today, but this is the
+    invariant that made a second projection safe when it did not."""
+    from nymeria.mcp_backend_client import project_chat_payload_for_verbosity
+
+    transcript = _halted_transcript(with_text=True)
+    payload = transcript.unprojected(verbosity="verbose")
+
+    once = project_chat_payload_for_verbosity(payload, "verbose")
+    twice = project_chat_payload_for_verbosity(once, "verbose")
+
+    assert twice["final_response"].count("may be incomplete") == 1
+    assert twice["full_markdown"].count("may be incomplete") == 1
+
+
+def test_a_turn_that_only_reasons_says_so_instead_of_empty_message():
+    """Not the same as inheriting the in-process thinking fallback, which
+    hands the caller raw reasoning as though it were the answer."""
+    transcript = ChatTranscript(thread_id="thread-r")
+    transcript.add_event(
+        {"type": "thinking", "content": "Long deliberation.", "thread_id": "thread-r"}
+    )
+    transcript.add_event({"type": "done", "thread_id": "thread-r"})
+
+    for mode in ("verbose", "concise", "chat"):
+        result = transcript.as_dict(verbosity=mode)
+        assert result["final_response"].startswith("[No answer:"), mode
+        assert "(empty message)" not in result["final_response"], mode
+        # The reasoning is NOT passed off as the answer.
+        assert "Long deliberation." not in result["final_response"], mode
+
+
+def test_the_default_wait_derives_from_tool_timeout(monkeypatch):
+    """"As long as an in-process callable ask" has to be derived, not merely
+    a matching hardcoded number, or raising TOOL_TIMEOUT silently desyncs it."""
+    import nymeria.config
+    import nymeria.mcp_server as mcp_server
+
+    class _Settings:
+        nymeria_mcp_chat_wait_seconds = None
+        tool_timeout = 900
+
+    monkeypatch.setattr(nymeria.config, "get_settings", lambda: _Settings())
+    assert mcp_server._resolve_chat_wait_seconds(None) == 900
+
+    _Settings.nymeria_mcp_chat_wait_seconds = 120
+    assert mcp_server._resolve_chat_wait_seconds(None) == 120
+
+    # An explicit argument still wins over both.
+    assert mcp_server._resolve_chat_wait_seconds(45) == 45
+
+
+def test_a_misconfigured_default_clamps_but_a_bad_argument_refuses(monkeypatch):
+    """An operator typo must not brick every call; a caller asking for the
+    impossible must be told rather than silently given something else."""
+    import nymeria.config
+    import nymeria.mcp_server as mcp_server
+
+    class _Settings:
+        nymeria_mcp_chat_wait_seconds = 99_999
+        tool_timeout = 300
+
+    monkeypatch.setattr(nymeria.config, "get_settings", lambda: _Settings())
+    assert mcp_server._resolve_chat_wait_seconds(None) == 3600
+
+    try:
+        mcp_server._resolve_chat_wait_seconds(99_999)
+    except ValueError as exc:
+        assert "3600" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("an out-of-range argument must raise")
+
+
+def test_a_running_turns_token_carries_the_turn_id_off_the_wire(monkeypatch):
+    """The id only ever arrives as a stream event, so it has to be learned
+    there; a token without it resumes onto whatever turn is current later."""
+    import nymeria.mcp_server as mcp_server
+
+    class _TurnIdClient:
+        def __init__(self):
+            self.release = asyncio.Event()
+
+        async def stream_chat(self, **_kwargs):
+            yield {"type": "turn_started", "turn_id": "turn-42", "thread_id": "thread-t"}
+            yield {"type": "response", "content": "working", "thread_id": "thread-t"}
+            await self.release.wait()
+            yield {"type": "done", "thread_id": "thread-t"}
+
+        async def get(self, *_a, **_k):
+            return {"messages": []}
+
+    client = _TurnIdClient()
+
+    async def _run():
+        monkeypatch.setattr(mcp_server, "_get_client", lambda: client)
+        monkeypatch.setattr(mcp_server, "effective_act_as", lambda uid: uid)
+        running = await mcp_server.nymeria_chat(
+            message="go", thread_id="thread-t", wait_seconds=1
+        )
+        client.release.set()
+        return running
+
+    running = asyncio.run(_run())
+
+    assert running["status"] == "running"
+    assert mcp_server._decode_resume(running["resume"])["turn_id"] == "turn-42"

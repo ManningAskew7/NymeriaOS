@@ -223,6 +223,7 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         # Google Calendar outage: settable all along, advertised nowhere).
         "nymeria_public_url",
         "tool_timeout",
+        "nymeria_mcp_chat_wait_seconds",
         "tool_output_max_chars",
         "tool_timing_in_results",
         "agent_max_iterations",

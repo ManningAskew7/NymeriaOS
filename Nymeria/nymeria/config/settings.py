@@ -1676,6 +1676,12 @@ class Settings(BaseSettings):
         le=900,
         description="Max seconds the claude_code tool blocks inline before detaching a long run to the background. None = derive from tool_timeout.",
     )
+    nymeria_mcp_chat_wait_seconds: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=3600,
+        description="Default seconds nymeria_chat waits on mode='ask' before returning a partial transcript plus a resume token. None = derive from tool_timeout, so an MCP ask waits as long as an in-process callable-thread ask. The MCP client's transport timeout must exceed whatever is in play.",
+    )
     nymeria_claude_code_max_concurrency: int = Field(
         default=2,
         ge=1,

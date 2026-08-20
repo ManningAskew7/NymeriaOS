@@ -858,6 +858,9 @@ class ServerSettingsUpdate(BaseModel):
     tool_output_max_chars: Optional[int] = None
     # Bounds mirror the CLI wizard's tuning catalog (setup/tuning_catalog.py).
     tool_timeout: Optional[int] = Field(default=None, ge=30, le=900)
+    nymeria_mcp_chat_wait_seconds: Optional[int] = Field(
+        default=None, ge=1, le=3600
+    )
     tool_timing_in_results: Optional[bool] = None
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
     memory_max_entries: Optional[int] = Field(default=None, ge=1, le=10_000)

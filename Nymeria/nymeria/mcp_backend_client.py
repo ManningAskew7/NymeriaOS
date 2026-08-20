@@ -11,7 +11,7 @@ import copy
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Sequence
 from urllib.parse import quote
 
 import httpx
@@ -204,19 +204,69 @@ class NymeriaBackendClient:
                     message_text, payload = _coerce_error_payload(response, raw)
                     raise NymeriaAPIError(response.status_code, message_text, payload)
 
-                async for line in response.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    raw = line[6:].strip()
-                    if not raw or raw == "[DONE]" or raw.startswith(":"):
-                        continue
-                    try:
-                        parsed = json.loads(raw)
-                    except json.JSONDecodeError:
-                        logger.debug("Ignoring malformed SSE payload from Nymeria API: %s", raw)
-                        continue
-                    if isinstance(parsed, dict):
-                        yield parsed
+                async for event in _iter_sse_events(response):
+                    yield event
+
+    async def stream_turn_replay(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        turn_id: Optional[str] = None,
+        from_seq: int = 0,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Re-attach to a thread's in-flight or just-finished turn.
+
+        Replays the turn's buffered events (byte-identical to the original
+        ``POST /chat`` stream, each stamped with ``seq``) and then tails live.
+        This is the SERVER's copy of a turn, which is what makes a resumed
+        collect survive the MCP process forgetting a dispatch.
+
+        Raises :class:`NymeriaAPIError` with 404 when there is nothing to
+        attach to (no recent turn, or the buffer expired) and 410 when
+        overflow evicted events after ``from_seq``. Both are meaningful to a
+        caller and must not be flattened into a generic failure: 404 means go
+        read history instead, 410 means the record has a hole in it.
+        """
+        params = {"from_seq": str(max(0, int(from_seq)))}
+        if turn_id:
+            params["turn_id"] = turn_id
+        async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
+            async with client.stream(
+                "GET",
+                self._url(f"/threads/{quote(str(thread_id), safe='')}/turn/stream"),
+                headers=self._headers(act_as=user_id, accept="text/event-stream"),
+                params=params,
+            ) as response:
+                if response.status_code >= 400:
+                    raw = (await response.aread()).decode("utf-8", errors="replace")
+                    message_text, payload = _coerce_error_payload(response, raw)
+                    raise NymeriaAPIError(response.status_code, message_text, payload)
+                async for event in _iter_sse_events(response):
+                    yield event
+
+
+async def _iter_sse_events(response: httpx.Response) -> AsyncGenerator[Dict[str, Any], None]:
+    """Yield decoded JSON objects from a text/event-stream response.
+
+    Shared by the chat stream and the turn-replay stream so both tolerate the
+    same wire noise: keepalive comment frames, the ``[DONE]`` sentinel, and
+    blank separator lines. A malformed frame is skipped rather than fatal,
+    because one bad payload should not discard a turn's worth of good ones.
+    """
+    async for line in response.aiter_lines():
+        if not line or not line.startswith("data: "):
+            continue
+        raw = line[6:].strip()
+        if not raw or raw == "[DONE]" or raw.startswith(":"):
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.debug("Ignoring malformed SSE payload from Nymeria API: %s", raw)
+            continue
+        if isinstance(parsed, dict):
+            yield parsed
 
 
 def _merge_or_append_text_step(steps: List[Dict[str, Any]], step_type: str, content: str) -> None:
@@ -359,6 +409,7 @@ class ChatTranscript:
     raw_events: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[Dict[str, Any]] = field(default_factory=list)
     context_stats: Optional[Dict[str, Any]] = None
+    halted: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
     title: Optional[str] = None
     title_source: Optional[str] = None
@@ -419,8 +470,21 @@ class ChatTranscript:
             if step is not None and artifact:
                 step.setdefault("artifacts", []).append(artifact)
         elif event_type == "iteration_limit":
-            content = str(event.get("content") or event.get("message") or "Agent reached the maximum number of steps.")
-            _merge_or_append_text_step(self.steps, "response", content)
+            # Deliberately NOT merged into a response step. Doing that made the
+            # runtime's halt notice indistinguishable from the model's own
+            # words: the turn read as a completed answer that happened to end
+            # by mentioning a limit. A halt is a property of the TURN, so it is
+            # recorded as one and surfaced by _with_halt_note.
+            self.halted = {
+                "message": str(
+                    event.get("content")
+                    or event.get("message")
+                    or "Agent reached the maximum number of steps."
+                ),
+                "reason": event.get("reason"),
+                "max_iterations": event.get("max_iterations"),
+                "resumable": bool(event.get("resumable")),
+            }
         elif event_type == "error":
             self.errors.append(
                 {
@@ -443,6 +507,28 @@ class ChatTranscript:
         verbosity: str = "verbose",
     ) -> Dict[str, Any]:
         mode = normalize_transcript_verbosity(verbosity)
+        return project_chat_payload_for_verbosity(
+            self.unprojected(include_events=include_events, verbosity=mode), mode
+        )
+
+    def unprojected(
+        self,
+        *,
+        include_events: bool = False,
+        verbosity: str = "verbose",
+    ) -> Dict[str, Any]:
+        """The accumulated payload BEFORE any end-of-turn projection.
+
+        A caller that has more to do to the payload (notably the
+        persisted-steps overlay) must work on this, not on ``as_dict``'s
+        output. The projection rewrites ``final_response`` to carry the failure
+        line and the halt note, and the overlay matches the streamed answer
+        against the persisted one to decide whether they are the same turn, so
+        projecting first made a halted turn fail that comparison and silently
+        lose its canonical step order. Taking this seam also means the shipped
+        path projects ONCE instead of twice.
+        """
+        mode = normalize_transcript_verbosity(verbosity)
         full_steps = copy.deepcopy(self.steps)
         payload: Dict[str, Any] = {
             "thread_id": self.thread_id,
@@ -452,6 +538,7 @@ class ChatTranscript:
             "errors": self.errors,
             "done": self.done,
             "context_stats": self.context_stats,
+            "halted": self.halted,
             "model": self.model,
             "verbosity": mode,
         }
@@ -460,36 +547,48 @@ class ChatTranscript:
             payload["title_source"] = self.title_source
         if include_events and mode == "verbose":
             payload["events"] = self.raw_events
-        return project_chat_payload_for_verbosity(payload, mode)
+        return payload
 
 
-async def collect_chat_transcript(
-    client: NymeriaBackendClient,
+async def transcript_from_events(
+    client: Optional[NymeriaBackendClient],
+    events: Sequence[Dict[str, Any]],
     *,
-    message: str,
-    user_id: str,
     thread_id: Optional[str] = None,
-    attachments: Optional[List[Dict[str, Any]]] = None,
-    force_unsupported_attachments: bool = False,
+    user_id: Optional[str] = None,
+    message: Optional[str] = None,
     include_events: bool = False,
-    is_self_invoke: bool = False,
-    trigger_override: Optional[str] = None,
     verbosity: str = "verbose",
 ) -> Dict[str, Any]:
+    """Render collected SSE events into a transcript payload.
+
+    THE renderer: accumulate -> ``as_dict`` -> persisted-steps overlay ->
+    verbosity projection. Every MCP chat path feeds it, so a caller cannot tell
+    whether a transcript arrived inline or was resumed from a background
+    dispatch. That indistinguishability is structural rather than asserted, and
+    it is what lets a resumed result be trusted like an inline one. Before it
+    existed the background pair returned the raw SSE event list while only the
+    blocking tool got a rendered transcript, so the tool that survived a long
+    turn was the one that handed back something unreadable.
+
+    The persisted-steps overlay is applied ONLY to a finished turn, and only
+    when the caller supplies the identity and prompt needed to find it. It
+    exists to prefer the checkpointer's canonical step ORDER over raw SSE
+    arrival order for parallel tool calls; mid-turn there is no persisted
+    assistant message to prefer, so on a partial it would at best be a wasted
+    round trip and at worst match the PREVIOUS turn's message. Passing a
+    ``client`` of ``None`` skips it outright for callers that have no backend
+    handle.
+    """
     mode = normalize_transcript_verbosity(verbosity)
     transcript = ChatTranscript(thread_id=thread_id)
-    async for event in client.stream_chat(
-        message=message,
-        user_id=user_id,
-        thread_id=thread_id,
-        attachments=attachments,
-        force_unsupported_attachments=force_unsupported_attachments,
-        is_self_invoke=is_self_invoke,
-        trigger_override=trigger_override,
-    ):
+    for event in events:
         transcript.add_event(event, keep_raw=include_events)
-    payload = transcript.as_dict(include_events=include_events, verbosity="verbose")
-    payload = await _apply_persisted_assistant_steps(client, payload, user_id=user_id, message=message)
+    payload = transcript.unprojected(include_events=include_events, verbosity="verbose")
+    if client is not None and user_id is not None and message is not None and transcript.done:
+        payload = await _apply_persisted_assistant_steps(
+            client, payload, user_id=user_id, message=message
+        )
     return project_chat_payload_for_verbosity(payload, mode)
 
 
@@ -520,7 +619,7 @@ def _with_failure_line(
         result["final_response"] = failure
     if "full_markdown" in result:
         # Per-field idempotent: the projection runs twice on the shipped
-        # path (as_dict's own tail plus collect_chat_transcript's), and a
+        # path (as_dict's own tail plus the renderer's), and a
         # second application must repair a still-placeholder markdown
         # without appending a duplicate failure section.
         markdown = str(result["full_markdown"] or "")
@@ -529,6 +628,94 @@ def _with_failure_line(
         elif not markdown.endswith(failure):
             result["full_markdown"] = f"{markdown}\n\n---\n\n{failure}"
     return result
+
+
+def _with_halt_note(
+    result: Dict[str, Any], halted: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Make a halted turn impossible to mistake for a completed one.
+
+    A turn stopped by a safety limit has produced SOME output, which is what
+    makes it dangerous to report plainly: it reads like a finished answer. So
+    the answer and the markdown both carry an explicit incompleteness note, and
+    the structured ``halted`` block stays on the payload for callers that
+    branch rather than read prose. Mirrors the callable-thread contract, which
+    appends "[Note: This response may be incomplete ...]" for the same reason.
+
+    Per-field idempotent, for the same reason :func:`_with_failure_line` is:
+    the projection runs TWICE on the shipped path (``as_dict``'s own tail, then
+    the renderer's), so a second application must not append a second note.
+    """
+    if not isinstance(halted, dict):
+        return result
+    result["halted"] = copy.deepcopy(halted)
+    message = str(halted.get("message") or "").strip().rstrip(".")
+    if not message:
+        message = "the turn was stopped by a safety limit"
+    follow_up = (
+        " It is resumable: /resume re-drives it from where it stopped."
+        if halted.get("resumable")
+        else " The task may require manual follow-up."
+    )
+    note = f"[Note: This response may be incomplete. {message}.{follow_up}]"
+    standalone = f"[Halted: {message}.{follow_up}]"
+
+    for key in ("final_response", "full_markdown"):
+        if key not in result:
+            continue
+        existing = str(result[key] or "").strip()
+        if existing.endswith(note) or existing == standalone:
+            continue
+        if existing and existing != "(empty message)":
+            result[key] = f"{existing}\n\n{note}"
+        else:
+            result[key] = standalone
+    return result
+
+
+def _with_reasoning_only_note(
+    result: Dict[str, Any], steps: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Say when a turn produced reasoning but never an answer.
+
+    The bare "(empty message)" placeholder is not dishonest, but it is
+    uninformative: it looks like a glitch rather than a description of what
+    happened. Note what this deliberately does NOT do, and why: the in-process
+    sibling (``core/stream_bridge.py``'s
+    ``response_text(fallback_to_thinking=True)``) hands the caller the model's
+    raw THINKING as though it were the answer, unlabelled. That is a quieter
+    failure than the placeholder it replaces, so it is named here rather than
+    copied.
+
+    Runs after the failure and halt passes, both of which describe the same
+    empty output more specifically when they apply.
+    """
+    if str(result.get("final_response") or "").strip() != "(empty message)":
+        return result
+    if not any(
+        step.get("type") == "thinking" and step.get("content") for step in steps
+    ):
+        return result
+    note = (
+        "[No answer: the turn produced reasoning but never a final message, so "
+        "nothing was said to you. The reasoning is in the transcript's thinking "
+        "steps; ask again if you need it turned into an answer.]"
+    )
+    result["final_response"] = note
+    if str(result.get("full_markdown") or "").strip() in ("", "(empty message)"):
+        result["full_markdown"] = note
+    return result
+
+
+def _turn_outcome(
+    result: Dict[str, Any],
+    steps: List[Dict[str, Any]],
+    halted: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Apply the end-of-turn honesty passes, most specific description first."""
+    return _with_reasoning_only_note(
+        _with_halt_note(_with_failure_line(result, steps), halted), steps
+    )
 
 
 def project_chat_payload_for_verbosity(
@@ -543,7 +730,7 @@ def project_chat_payload_for_verbosity(
     if mode == "verbose":
         projected = copy.deepcopy(payload)
         projected["verbosity"] = mode
-        return _with_failure_line(projected, source_steps)
+        return _turn_outcome(projected, source_steps, payload.get("halted"))
 
     steps = source_steps
     final_response = message_steps_to_response_text(steps) if steps else str(payload.get("final_response") or "")
@@ -556,8 +743,10 @@ def project_chat_payload_for_verbosity(
             "done": payload.get("done"),
             "verbosity": mode,
         }
-        return _with_failure_line(
-            {k: v for k, v in result.items() if v is not None}, steps
+        return _turn_outcome(
+            {k: v for k, v in result.items() if v is not None},
+            steps,
+            payload.get("halted"),
         )
 
     projected_steps = project_steps_for_verbosity(steps, mode)
@@ -575,8 +764,10 @@ def project_chat_payload_for_verbosity(
     for key in ("title", "title_source", "history_message_id"):
         if payload.get(key) is not None:
             result[key] = payload[key]
-    return _with_failure_line(
-        {k: v for k, v in result.items() if v is not None}, steps
+    return _turn_outcome(
+        {k: v for k, v in result.items() if v is not None},
+        steps,
+        payload.get("halted"),
     )
 
 
