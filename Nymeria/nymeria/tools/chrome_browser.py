@@ -53,7 +53,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, NamedTuple, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -597,17 +597,40 @@ _ZOOM_MIN = 0.05
 _ZOOM_MAX = 20.0
 
 
-def _region_lead(
-    region: dict[str, Any], image: str, image_size: Optional[tuple[int, int]]
-) -> str:
-    """Describe a region image, claiming only what the bytes corroborate.
+class _RegionBox(NamedTuple):
+    box: list[float]
+    scale: float
+    #: Width the PNG should have if Chrome really clipped as asked.
+    expected_width: float
+    status: str
+
+
+def _region_box(
+    region: dict[str, Any], image_size: Optional[tuple[int, int]]
+) -> _RegionBox:
+    """Decide ONCE whether a region's claimed box may be claimed at all.
 
     The extension echoes the clip it ASKED Chrome for, which is evidence that
     it asked, not that Chrome obeyed. The returned PNG is the independent
-    witness: a real clip comes back at width x scale. When those disagree the
-    claim is dropped and the disagreement is stated, because "clipped from
-    (200, 400)" over a picture of the whole viewport is the confident-wrong
-    class this surface exists to remove.
+    witness: a real clip comes back at width x scale.
+
+    Shared so the descriptive sentence and the coordinate frame cannot
+    disagree about whether the claim was earned. They are two statements
+    about one fact, and the failure mode of letting each decide for itself is
+    a frame offered over an image the sentence has just disowned.
+
+    "unparsed" means the numbers were junk, so nothing may be said.
+    "mismatch" means they parsed but the PNG is not the size a real clip
+    would have been, which is worth CONTRADICTING out loud rather than merely
+    dropping. Only "ok" earns a frame. `expected_width` rides along because
+    the rounding note downstream compares against it too, and deriving it
+    twice is a drift surface for no gain.
+
+    NOTE the corroboration is SKIPPED when the image size could not be read
+    at all, so "ok" then means "not contradicted", not "checked and passed".
+    Deliberate, and consistent with the sentence, which still says
+    "clipped from ..." over an image of unknown size: an unreadable PNG is
+    one the model cannot measure a point in either.
     """
     box = [
         value
@@ -616,15 +639,47 @@ def _region_lead(
     ]
     scale = _number(region.get("scale"))
     if len(box) != 4 or scale is None:
-        return f"region image {image}"
-    # Relative, not absolute. Chrome rounds the clip box before rendering it,
-    # so a fractional element box legitimately comes back a few pixels off
-    # (measured live: a 62x6 box at scale 4 returned 244 where 248 was
-    # predicted, and the old two-pixel window called that correct capture a
-    # failure). The shape this is looking for is not off by four, it is the
-    # whole viewport where one paragraph was asked for.
+        return _RegionBox([], 0.0, 0.0, "unparsed")
+    # Absolute, and sized to what Chrome's rounding can actually cost. Chrome
+    # rounds the clip box before rendering it, so a fractional element box
+    # legitimately comes back a few pixels off (measured live: a 62x6 box at
+    # scale 4 returned 244 where 248 was predicted, and an early two-pixel
+    # window called that correct capture a failure). That measurement is ONE
+    # CSS px of clip rounding, which costs `scale` image px per edge, so two
+    # edges plus slack bounds it.
+    #
+    # It was a relative 5% window, which was defensible while this check only
+    # decided whether to call the picture a region. Since #194 it also gates a
+    # COORDINATE FRAME, and 5% of a wide box is real mis-aim: a 1000x400 box
+    # at scale 2 returning 1920 instead of 2000 passed, and the frame then
+    # claimed 40 CSS px of width the image does not contain (review catch).
+    # Both axes now, because the bottom edge was riding entirely on the width
+    # check.
     expected = box[2] * scale
-    if image_size and abs(image_size[0] - expected) > max(4.0, expected * 0.05):
+    expected_height = box[3] * scale
+    tolerance = max(4.0, 2 * scale + 2)
+    if image_size and (
+        abs(image_size[0] - expected) > tolerance
+        or abs(image_size[1] - expected_height) > tolerance
+    ):
+        return _RegionBox(box, scale, expected, "mismatch")
+    return _RegionBox(box, scale, expected, "ok")
+
+
+def _region_lead(
+    region: dict[str, Any], image: str, image_size: Optional[tuple[int, int]]
+) -> str:
+    """Describe a region image, claiming only what the bytes corroborate.
+
+    `_region_box` owns the decision and the derivation; this only phrases it.
+    A dropped claim is stated rather than merely omitted, because "clipped
+    from (200, 400)" over a picture of the whole viewport is the
+    confident-wrong class this surface exists to remove.
+    """
+    box, scale, expected, status = _region_box(region, image_size)
+    if status == "unparsed":
+        return f"region image {image}"
+    if status == "mismatch":
         return (
             f"region image {image}, which is NOT the {_num_text(round(box[2]))}x"
             f"{_num_text(round(box[3]))} CSS px region asked for at scale "
@@ -644,9 +699,160 @@ def _region_lead(
         if image_size and abs(image_size[0] - expected) > 0.5
         else ""
     )
+    # "document" is load-bearing, not decoration. This origin is DOCUMENT
+    # space, it sits two clauses from the viewport-space "scrolled to (x, y)"
+    # and one line from [Frame]'s viewport-space edges, and unlabelled it
+    # showed two different y values for the same edge with nothing saying why
+    # (review catch).
     return (
-        f"region image {image}, clipped from ({x}, {y}) {w}x{h} CSS px at capture "
-        f"scale {_num_text(scale)}{trimmed}{rounded}"
+        f"region image {image}, clipped from document ({x}, {y}) {w}x{h} CSS px at "
+        f"capture scale {_num_text(scale)}{trimmed}{rounded}"
+    )
+
+
+def _region_frame_sentence(
+    data: dict[str, Any], image_size: Optional[tuple[int, int]]
+) -> str:
+    """Hand back the arithmetic instead of making the model redo it (#194).
+
+    A point in a region crop reaches a `chrome_act` coordinate through THREE
+    steps: divide by the capture scale, add the clip origin, then subtract the
+    scroll, because the clip is DOCUMENT space (`screenshot.ts` puts the
+    scroll on at that seam) while `chrome_act` takes VIEWPORT px. The middle
+    two are in different parts of the geometry line and the third is not
+    hinted at anywhere, so the live drive re-derived them once per move. That
+    is arithmetic no model should be asked to repeat, and getting it wrong is
+    a misclick that reports success.
+
+    The box is therefore published already composed, in the space the
+    coordinate argument actually takes: `region.x - scroll.x` recovers the
+    element's own viewport rect, since the clip was built by adding that same
+    scroll to it.
+
+    Stated as the CSS BOX this image covers, and mapped by relative position
+    across the image, rather than as an origin plus a pixel scale. That is
+    not a style choice, it is the only form that survives the trip: an image
+    over the model's pixel ceiling is DOWNSCALED before it is ever seen
+    (`core/generated_image_context.py`), and a scale factor measured against
+    the raw PNG is then wrong by exactly that ratio. Not a corner case, it is
+    the common one for magnified crops, because `autoScale`'s scale floor of
+    2 outranks its own pixel budget: measured, a 3200x2400 capture is
+    delivered at 2000x1500, and "origin + image_x/4" then misses by up to
+    285 x 210 CSS px while reporting success. A relative reading has no such
+    ratio to be wrong about, so it holds under any resize, at any ceiling,
+    on any model, including a re-fit on replay after the thread switches
+    model. Predicting the fitter here instead would put a second copy of its
+    rule in this file and bake in the model that happened to be current at
+    capture time.
+
+    Whole numbers because `chrome_act.coordinate` is `list[int]`: pydantic
+    rejects a fractional pair outright (`int_from_float`), so the line has to
+    say "round" rather than assume a dispatch that rounds. There is none.
+
+    WITHHELD when the capture reached beyond the viewport. That path pays
+    `captureBeyondViewport`, which permanently reflows the live page (measured:
+    layout viewport 1353 -> 1368, the scrollbar gone), so it moves the very
+    viewport this answer is expressed in, DURING the capture that produced it.
+    The metrics were read before the shutter, so the origin would be
+    pre-reflow and the page the agent then clicks is post-reflow. Same reason
+    `full_page` gets no frame; an off-screen region is the same hazard wearing
+    a different flag, and the payload already says so in its own [Reflow] line.
+    A frame beside that warning would be the payload contradicting itself.
+
+    Why this does not contradict `_viewport_sentence`'s refusal to bake in a
+    formula: that stance is about the image-to-CSS step, where
+    devicePixelRatio ALREADY has page zoom folded in and a formula would
+    double-count it. Nothing is folded here. `region.scale` is the explicit
+    re-render scale Chrome was asked for, and `_region_box` has weighed the
+    returned PNG against it, which is why a CONTRADICTED box gets no frame.
+    Note its check is skipped entirely when the image size could not be read,
+    so a frame can ride an unmeasured image; harmless, because an unreadable
+    PNG is one nobody can measure a point in either.
+
+    Withheld rather than guessed whenever it cannot be grounded: no scroll in
+    the payload, junk numbers, a box the bytes contradict, a zero-extent box,
+    a capture that reached past the fold, or ANY page zoom. In practice the
+    extension refuses a region capture outright when the page will not report
+    its scroll, so the scroll-less branch is a belt on top of braces.
+
+    The zoom case is the one that is not about this function's inputs being
+    untrustworthy: they are fine, the CAPTURE is aimed wrong upstream, and no
+    check downstream of it can tell. See the comment at that guard.
+    """
+    region = data.get("region") if isinstance(data.get("region"), dict) else None
+    if not region:
+        return ""
+    # Keyed on the [Reflow] line itself, not on a flag. The invariant IS "a
+    # frame never appears beside a [Reflow] line", so asking that line whether
+    # it will speak makes it true by construction, with no second condition to
+    # keep in step. Same argument the geometry warning uses to key on this
+    # function rather than re-deriving whether a frame exists (review catch:
+    # the first cut read two flags that are the same variable, so one leg was
+    # dead and neither was independently pinned by its test).
+    if _reflow_sentence(data) or region.get("beyond_viewport"):
+        return ""
+    # The second leg is NOT the dead duplicate the comment above warns about.
+    # `_reflow_sentence` reads the TOP-LEVEL `beyond_viewport`, which for a
+    # full page carries a refined full-page-specific predicate, while
+    # `region.beyond_viewport` is the field that unambiguously means "this
+    # REGION reached past the fold". They coincide today; if the top-level
+    # flag is ever narrowed to the full-page case it already carries logic
+    # for, regions would silently start publishing frames over reflowed
+    # captures. OR-ing can only ever withhold more, so it cannot weaken the
+    # "no frame beside a [Reflow] line" invariant (review catch).
+    #
+    # Also withheld at page zoom, where the CAPTURE ITSELF is aimed wrong and
+    # nothing downstream can tell. CDP's clip is documented in DEVICE
+    # INDEPENDENT px; the extension builds it from CSS px (a bounding rect plus
+    # the scroll) and never applies `cssVisualViewport.zoom`, which it reads
+    # and only reports. So at 150% Chrome clips a box a third of the way off
+    # the one echoed back, while the returned PNG still measures
+    # `clip.width * scale`, so `_region_box` corroborates happily. Measured on
+    # the numbers: a 140x60 element at viewport (700, 400) is captured at
+    # (300, 153) and the frame would claim (700, 400), 423 x 257 CSS px out.
+    # This is NOT #227 wearing a different hat: that one is devicePixelRatio,
+    # and it fails LOUDLY by blowing the width check. Zoom disturbs the width
+    # check not at all. Withheld until the extension multiplies the rect by
+    # zoom (#231), because the alternative is a confident misclick on the one
+    # axis the payload would otherwise have flagged: before this pass a zoomed
+    # region got a flat refusal AND a [Zoom] line saying the two spaces
+    # differ, and publishing a frame silences both.
+    zoom = _number(data.get("zoom"))
+    if zoom is not None and abs(zoom - 1.0) >= 0.005:
+        return ""
+    box, scale, _expected, status = _region_box(region, image_size)
+    if status != "ok" or scale <= 0:
+        return ""
+    # A zero-extent box has no "across" to read a position against, so the
+    # frame would divide a point by nothing. The extension refuses a zero-size
+    # element before it ever captures one; this is the belt on that brace.
+    if box[2] <= 0 or box[3] <= 0:
+        return ""
+    scroll = data.get("scroll") if isinstance(data.get("scroll"), dict) else {}
+    scroll_x = _number(scroll.get("x"))
+    scroll_y = _number(scroll.get("y"))
+    if scroll_x is None or scroll_y is None:
+        return ""
+    left = round(box[0] - scroll_x)
+    top = round(box[1] - scroll_y)
+    right = round(box[0] - scroll_x + box[2])
+    bottom = round(box[1] - scroll_y + box[3])
+    # Extents from the ROUNDED edges, not from box[2]/box[3], so the numbers
+    # in the sentence are arithmetically consistent with each other: a reader
+    # adding the stated width to the stated left edge must land on the stated
+    # right edge, and rounding the raw extent separately can miss by one.
+    width = right - left
+    height = bottom - top
+    return (
+        f"[Frame]: this image covers viewport CSS x {_num_text(left)} to "
+        f"{_num_text(right)}, y {_num_text(top)} to {_num_text(bottom)} "
+        f"({_num_text(width)}x{_num_text(height)} CSS px). Convert a point by its "
+        f"FRACTION across this image, never by a pixel ratio: "
+        f"x = {_num_text(left)} + {_num_text(width)} * (fraction from left), "
+        f"y = {_num_text(top)} + {_num_text(height)} * (fraction from top), rounded "
+        f"to whole numbers (chrome_act rejects fractional coordinates). Stated as "
+        f"fractions so a resize in transit cannot invalidate it. Holds until the "
+        f"page scrolls."
     )
 
 
@@ -697,14 +903,29 @@ def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int
     if not lead and not page:
         return ""
     body = "; ".join(part for part in (lead, ", ".join(page)) if part)
-    # The warning is not free: it rides every capture. Three cases, because
-    # they are three different mistakes. A region or full-page image is not a
-    # picture of the viewport AT ALL, so no coordinate can be read off it and
-    # saying "convert" would be advice toward a wrong answer (live QA read the
-    # shared wording as if it were the ratio rule). A viewport picture whose
-    # ratio is not 1 needs converting. A plain 1x capture needs neither, since
-    # image px ARE viewport CSS px, and the clause would be pure noise.
-    if region or data.get("full_page"):
+    # The warning is not free: it rides every capture. Four cases, because
+    # they are four different mistakes; the region and full-page branches
+    # carry their own reasons below. A viewport picture whose ratio is not 1
+    # needs converting. A plain 1x capture needs neither, since image px ARE
+    # viewport CSS px, and the clause would be pure noise.
+    if region:
+        # A region used to get the flat refusal too, because the only rule on
+        # offer was the shared ratio sentence and live QA misread it as
+        # applying here (#194). With an exact per-capture frame published
+        # below, "no coordinate can be read" is simply false, so it points at
+        # the frame instead. Keyed on the frame function itself rather than a
+        # parallel predicate: the two lines must never disagree about whether
+        # a frame exists, and re-deriving a handful of arithmetic ops is a
+        # cheaper guarantee than keeping two conditions in step.
+        warning = (
+            " Convert with [Frame] below, not off the image directly."
+            if _region_frame_sentence(data, image_size)
+            else " No chrome_act coordinate can be read off this image directly."
+        )
+    elif data.get("full_page"):
+        # No frame for a full page, deliberately: it pays captureBeyondViewport,
+        # which permanently reflows the page and moves the very viewport a
+        # coordinate would be expressed in (see _reflow_sentence).
         warning = " No chrome_act coordinate can be read off this image directly."
     elif ratio is None or ratio != 1:
         warning = " chrome_act coordinates are viewport CSS px, not image px."
@@ -720,6 +941,18 @@ def _zoom_sentence(data: dict[str, Any]) -> str:
     line above already carries the sizes. It says nothing about HOW zoom and
     devicePixelRatio compose, because that was not measured here: it points
     at the two sizes that were.
+
+    This line and [Frame] cannot contradict each other, and the reason is
+    worth stating because an intermediate version of #194 DID let them.
+    "Convert with the two sizes above" names the region crop and the viewport,
+    which have no conversion relationship at all, so beside a proportional
+    frame it was the ratio rule the region branch had just been rewritten to
+    stop offering, restated two lines later with equal authority. [Frame] and
+    [Geometry] were keyed to each other and this third voice was keyed to
+    neither (review catch). It needs no keying now: a frame is WITHHELD at any
+    page zoom (the capture is aimed wrong upstream, see
+    `_region_frame_sentence`), and this line is silent without one, so the two
+    are mutually exclusive by construction rather than by agreement.
     """
     zoom = _number(data.get("zoom"))
     if zoom is None or not (_ZOOM_MIN <= zoom <= _ZOOM_MAX) or abs(zoom - 1.0) < 0.005:
@@ -835,6 +1068,7 @@ def _screenshot_honesty_lines(
         p
         for p in (
             _viewport_sentence(data, image_size),
+            _region_frame_sentence(data, image_size),
             _zoom_sentence(data),
             _reflow_sentence(data),
             _flat_image_sentence(raw, data),
@@ -2004,7 +2238,10 @@ async def chrome_act(
         Viewport CSS pixels, which are NOT the pixels of a screenshot on a
         HiDPI display or a zoomed page: convert with the image and viewport
         sizes chrome_screenshot reports before aiming at something you saw
-        in a picture.
+        in a picture. A region capture is the exception: it publishes a
+        "[Frame]" line, and that box is the conversion for that image, so
+        use it instead of the two sizes. Whole numbers only, a fractional
+        pair is rejected.
     modifiers: any of ["Ctrl", "Shift", "Alt", "Meta"].
     direction / amount_px: for scroll (default down, 500px). action="scroll"
         with a ref wheels AT that element (at its visible point), which
@@ -2398,8 +2635,10 @@ async def chrome_screenshot(
         that part of the page. Chrome RE-RENDERS the region rather than
         cropping the picture, so region_scale above the display's own pixel
         ratio (reported with every capture) resolves detail no crop of the
-        full image could. A region that runs past the edge of the viewport is
-        trimmed to it and says so.
+        full image could. A region may reach BELOW the fold without scrolling:
+        it is trimmed to the DOCUMENT, not to the viewport, and says so when
+        it was. Reaching off screen reflows the page to do it (the payload's
+        [Reflow] line), which is why an off-screen region gets no [Frame].
     region_ref: what to capture instead of a rectangle, as a "@eN" ref or a
         "css=" / "xpath=" selector; its box is measured in the page. Selectors
         are the route to anything the tree mints no ref for, static text and
@@ -2423,9 +2662,21 @@ async def chrome_screenshot(
     the page zoom when it is not 100%. chrome_act(coordinate=...) takes
     viewport CSS pixels, and those are NOT image pixels on a HiDPI display or
     a zoomed page, so convert with the two reported sizes before aiming at
-    something you spotted in a picture. A region or full_page image is not a
-    picture of the viewport at all, so no coordinate can be read off it
-    directly.
+    something you spotted in a picture. A full_page image is not a picture of
+    the viewport at all, so no coordinate can be read off it directly.
+
+    A region image is not one either, but it carries its own conversion. When
+    the geometry can be trusted, the payload adds a "[Frame]" line naming the
+    viewport CSS box THAT capture covers, so a point you spotted in the crop
+    becomes a chrome_act coordinate by where it sits across the image: read
+    it as a proportion between the stated edges and round, rather than
+    working back to the full picture by eye. Proportional on purpose, so it
+    survives the image being downscaled on its way to you. It holds until the
+    page scrolls. No [Frame] means the geometry could not be trusted: most
+    often the capture reached off screen and reflowed the page it would be
+    measured against, and it is also withheld on any zoomed page, where the
+    capture itself is aimed at the wrong box. The other lines say what could
+    not be corroborated.
 
     Trust that viewport over one you measured yourself a moment earlier.
     Driving a tab puts Chrome's "being debugged" infobar on it, which shortens
@@ -2440,7 +2691,7 @@ async def chrome_screenshot(
     if wants_region and full_page:
         return (
             "[Error]: A region and full_page ask for different pictures: a region is "
-            "clipped out of the visible viewport, full_page stitches the whole "
+            "one box re-rendered at its own scale, full_page stitches the whole "
             "scrollable document. Pick one.",
             {},
         )

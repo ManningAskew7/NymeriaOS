@@ -405,6 +405,22 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   `region=[x, y, width, height]`: Chrome re-renders just that box magnified, so
   it resolves detail the full capture could not. It reaches below the fold
   without scrolling, and `region_scale` goes to 4 when 2 is not enough.
+  Reach for `region_ref` FIRST: it resolves the box from the element rather
+  than from your aim, and refuses on a stale ref, a zero-size element or a
+  cross-origin frame, where a rectangle aimed by eye returns a magnified
+  picture of the wrong thing and costs the call. It is not an identity check
+  though: unlike the acting verbs, it does not re-check what the element now
+  MEANS, so a node relabelled in place is framed and magnified without a
+  note. The idiom is two images, a full capture
+  for the coordinate frame and a region for detail. To act on something you
+  can only see in the region, do not eyeball it back onto the full picture:
+  the region payload's `[Frame]` line names the viewport CSS box that image
+  covers, so a point maps to a `chrome_act` coordinate by its relative
+  position between those edges (rounded). If there is no `[Frame]`, the
+  payload says why: an off-screen region never has one because reaching past
+  the fold reflows the page, and no region has one on a ZOOMED page, where the
+  capture is aimed at the wrong box to begin with. On a zoomed page, reset the
+  zoom to 100% before you need coordinates.
 - Content missing entirely -> check for a `[View constraint]` note after the
   tree first: a modal dialog or fullscreen element prunes everything else
   from the read, so a near-empty tree means BLOCKED, not empty. Iframe

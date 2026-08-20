@@ -1204,32 +1204,557 @@ def test_screenshot_spends_the_conversion_warning_only_where_it_buys_something(w
     assert "chrome_act coordinates are viewport CSS px, not image px" in hidpi
 
 
-def test_screenshot_tells_a_region_apart_from_a_mere_scale_mismatch(workspace) -> None:
-    """A region image is not a picture of the viewport at ANY pixel ratio, so
-    "convert with the sizes above" would be advice toward a wrong answer. Live
-    QA read the shared wording as if it were the ratio rule, which is exactly
-    the confusion that costs a mis-aimed click."""
-    region, _ = _invoke_raw(
+def test_region_frame_survives_the_image_being_downscaled_in_transit(workspace) -> None:
+    """The frame must not be expressed against the RAW png's pixel count.
+
+    An image over the model's pixel ceiling is downscaled before the model
+    ever sees it (`core/generated_image_context.py`), and this is the COMMON
+    case for magnified crops: `autoScale`'s scale floor of 2 outranks its own
+    1600px budget, so any region over 1000 CSS px, or anything over 500 at
+    `region_scale=4`, crosses the 2000px ceiling. Measured end to end, a
+    3200x2400 capture is delivered at 2000x1500, and the old
+    "origin + image_x/scale" form then missed by up to 285 x 210 CSS px while
+    reporting success: exactly the confident-wrong class the frame exists to
+    remove (review catch, and it shipped green because no fixture downscaled).
+
+    A proportional reading has no ratio to be wrong about. Pinned as the
+    property that matters: the same point resolves to the same coordinate at
+    ANY delivered size."""
+    # A real oversized capture, run through the REAL fitter, not a simulated
+    # ratio: 800x600 CSS px at scale 4 is a 3200x2400 PNG, over the 2000px
+    # ceiling. (An earlier version of this test looped over invented delivered
+    # sizes computing `(width / 2) / width`, which is 0.5 for every width, so
+    # all three cases were the same arithmetic and the loop could not fail.)
+    raw = _png(3200, 2400)
+    content, _ = _invoke_raw(
         chrome_screenshot,
-        {"tab_id": 1, "region": [0, 0, 100, 50]},
+        {"tab_id": 1, "region": [100, 60, 800, 600]},
         _shot(
             {
-                "region": {"x": 0, "y": 0, "width": 100, "height": 50, "scale": 2},
+                "region": {"x": 600, "y": 400, "width": 800, "height": 600, "scale": 4},
                 "viewport": {"width": 1280, "height": 720},
-                "scale": 1,
+                "scroll": {"x": 500, "y": 340},
             },
-            image=_png(200, 100),
+            image=raw,
         ),
     )
-    assert "No chrome_act coordinate can be read off this image directly." in region
-    assert "not image px" not in region, "the ratio rule does not apply to a region"
+    left, right, top, bottom = _frame_edges(content)
+    assert (left, right, top, bottom) == (100, 900, 60, 660)
 
+    delivered = _fit_delivered_size(raw)
+    assert delivered == (2000, 1500), "control: the ceiling really does bite here"
+
+    # Read a point off the image the model ACTUALLY receives, by the published
+    # rule, and check it against the truth. The old scale form is computed
+    # alongside to show this test can tell them apart.
+    for ix, iy, truth in ((1000, 750, (500, 360)), (1900, 1425, (860, 630))):
+        x = left + (right - left) * (ix / delivered[0])
+        y = top + (bottom - top) * (iy / delivered[1])
+        assert (round(x), round(y)) == truth, f"frame drifted at image ({ix}, {iy})"
+        by_scale = (600 - 500 + ix / 4, 400 - 340 + iy / 4)
+        assert by_scale != truth, "control: a pixel-scale reading would MISS here"
+
+    frame = next(line for line in content.splitlines() if line.startswith("[Frame]"))
+    # The regression guard: any conversion keyed to a raw pixel count is
+    # wrong the moment the fitter touches the image.
+    assert "scale=" not in frame, "a pixel scale is invalidated by a downscale"
+    assert "image_x/" not in frame, "so is dividing image px by one"
+    assert "resize in transit" in frame, "and the agent is told why it is safe"
+
+
+def test_full_page_refuses_a_coordinate_at_any_pixel_ratio(workspace) -> None:
+    """A full-page image is not a picture of the viewport, so "convert with
+    the sizes above" would be advice toward a wrong answer. Live QA read the
+    shared wording as if it were the ratio rule, which is exactly the
+    confusion that costs a mis-aimed click. Regions earned a real conversion
+    in #194; full_page did not, because it reflows the page it would be
+    measured against."""
     full, _ = _invoke_raw(
         chrome_screenshot,
         {"tab_id": 1, "full_page": True},
         _shot({"full_page": True, "scale": 1}, image=_png(1280, 9000)),
     )
     assert "No chrome_act coordinate can be read off this image directly." in full
+    assert "not image px" not in full, "the ratio rule does not apply here either"
+
+
+def _frame_shot(*, with_scroll: bool = True, **over) -> dict:
+    """A corroborated region capture: a 140x60 CSS box at scale 2 -> 280x120 px.
+
+    BOTH scroll components are non-zero on purpose. With `scroll.x = 0` the
+    horizontal half of the document-to-viewport step is a no-op, so a build
+    that never subtracted it passed every test in this file (review catch:
+    mutating `box[0] - scroll_x` to `box[0]` left 261/261 green). The
+    document-space box is offset from the viewport rect on both axes, so each
+    subtraction has to actually happen: 700 - 500 = 200, 400 - 340 = 60.
+    """
+    data: dict = {
+        "region": {"x": 700, "y": 400, "width": 140, "height": 60, "scale": 2},
+        "viewport": {"width": 1280, "height": 720},
+        "scale": 1,
+    }
+    if with_scroll:
+        data["scroll"] = {"x": 500, "y": 340}
+    data.update(over)
+    return _shot(data, image=_png(280, 120))
+
+
+def _fit_delivered_size(raw: bytes) -> tuple[int, int]:
+    """Size the model actually receives, via the REAL image pipeline."""
+    import tempfile
+
+    from nymeria.core.generated_image_context import _fit_image_payload
+    from nymeria.core.image_limits import get_model_max_image_dimension
+
+    d = Path(tempfile.mkdtemp())
+    p = d / "region.png"
+    p.write_bytes(raw)
+    out = _fit_image_payload(
+        p,
+        "image/png",
+        st=p.stat(),
+        long_edge_ceiling=get_model_max_image_dimension("claude-opus-5"),
+        max_image_bytes=10_000_000,
+        thread_id=None,
+    )
+    return out.delivered
+
+
+def _frame_edges(content: str) -> tuple[int, int, int, int]:
+    """Pull (left, right, top, bottom) out of the published [Frame] line."""
+    line = next(ln for ln in content.splitlines() if ln.startswith("[Frame]"))
+    m = re.search(
+        r"covers viewport CSS x (-?\d+) to (-?\d+), y (-?\d+) to (-?\d+)", line
+    )
+    assert m, f"no parseable box in {line!r}"
+    left, right, top, bottom = (int(g) for g in m.groups())
+    return left, right, top, bottom
+
+
+def test_screenshot_docstring_teaches_the_region_frame(workspace) -> None:
+    """The [Frame] line is only worth emitting if the agent knows to apply it
+    rather than work back to the full picture by eye, and knows that its
+    absence is a stated refusal rather than an oversight. Pinned because the
+    whole value of #194 is teaching, not the three numbers."""
+    d = " ".join(chrome_screenshot.description.split())
+    assert '"[Frame]" line' in d
+    assert "read it as a proportion between the stated edges and round" in d
+    assert "rather than working back to the full picture by eye" in d
+    assert "survives the image being downscaled on its way to you" in d
+    assert "holds until the page scrolls" in d
+    assert "No [Frame] means the geometry could not be trusted" in d
+    # The enumeration of every withhold reason was removed: two of the four are
+    # silent in the payload, so promising the agent a stated reason for each
+    # sent it hunting for text that would not be there (review catch).
+    assert "the page would not report its scroll" not in d
+    # The old blanket claim must not survive for regions, or the docstring
+    # contradicts the payload it is describing.
+    assert "A region or full_page image is not a picture of the viewport at all" not in d
+
+
+def test_act_coordinate_doc_sends_a_region_to_the_frame(workspace) -> None:
+    """The two docs have to agree about which rule applies. chrome_act's own
+    `coordinate` doc taught the ratio rule ("convert with the image and
+    viewport sizes") unconditionally, so a model holding a region crop and
+    reading the act parameter got exactly the rule the screenshot payload had
+    just told it not to use (review catch: the #194 pass updated the payload
+    and the screenshot docstring, and left this one). It also has to say the
+    argument is integers, because the frame's proportional reading lands on
+    fractions constantly and pydantic rejects those outright."""
+    d = " ".join(chrome_act.description.split())
+    assert "convert with the image and viewport sizes" in d, "the general rule stands"
+    assert "A region capture is the exception" in d
+    assert '"[Frame]" line, and that box is the conversion for that image' in d
+    assert "Whole numbers only, a fractional pair is rejected." in d
+
+
+def test_region_publishes_the_frame_in_the_space_chrome_act_takes(workspace) -> None:
+    """#194. A point in a crop reaches a coordinate by composing the
+    DOCUMENT-space clip origin with the scroll, because chrome_act takes
+    VIEWPORT px. The live drive redid that once per move and a slip is a
+    misclick that reports success. So the box is published already composed:
+    700 - 500 = 200 across, 400 - 340 = 60 down, extending by the box's own
+    140x60 CSS px."""
+    content, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1, "region": [200, 60, 140, 60]}, _frame_shot()
+    )
+
+    # Exact tuple, not four substring checks: "origin_x=200" also matches
+    # "origin_x=2000", and the earlier asserts read stronger than they were.
+    assert _frame_edges(content) == (200, 340, 60, 120), (
+        "left/right/top/bottom in viewport CSS px, both scroll axes subtracted"
+    )
+    frame = next(line for line in content.splitlines() if line.startswith("[Frame]"))
+    assert "FRACTION across this image" in frame, "proportional, not a pixel ratio"
+    assert "never by a pixel ratio" in frame
+    # The extent is stated, so the conversion is mechanical rather than
+    # leaving the model to derive right-minus-left (review catch).
+    assert "(140x60 CSS px)" in frame
+    assert "x = 200 + 140 * (fraction from left)" in frame
+    assert "y = 60 + 60 * (fraction from top)" in frame
+    assert "rounded to whole numbers" in frame, "chrome_act.coordinate is list[int]"
+    assert "Holds until the page scrolls" in frame, "a viewport box goes stale on scroll"
+
+
+def test_region_stops_claiming_no_coordinate_can_be_read_once_it_publishes_one(
+    workspace,
+) -> None:
+    """The flat refusal was protecting against an AMBIGUOUS shared rule, not
+    against conversion being impossible. With an exact per-capture frame it is
+    simply false, and a payload that both supplies a conversion and denies one
+    exists is worse than either alone."""
+    content, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1, "region": [200, 400, 140, 60]}, _frame_shot()
+    )
+
+    assert "No chrome_act coordinate can be read off this image directly" not in content
+    assert "Convert with [Frame] below" in content
+    assert "not image px" not in content, "the ratio rule still does not apply to a region"
+
+
+def test_a_frame_and_a_zoom_line_are_never_in_the_same_payload(workspace) -> None:
+    """The invariant that replaced a contradiction.
+
+    An intermediate cut published a proportional frame AND "[Zoom]: ... convert
+    with the two sizes above" two lines later, with equal authority, where
+    those two sizes are the crop and the viewport and have no conversion
+    relationship at all. [Frame] and [Geometry] were keyed to each other and
+    this third voice was keyed to neither (review catch). Rather than teach it
+    to defer, the frame is withheld at any zoom, so the two lines are mutually
+    exclusive by construction. Pinned as the invariant, not as the wording."""
+    zoomed, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _frame_shot(zoom=1.5),
+    )
+    assert "[Zoom]" in zoomed and "[Frame]" not in zoomed
+
+    unzoomed, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1, "region": [200, 60, 140, 60]}, _frame_shot()
+    )
+    assert "[Frame]" in unzoomed and "[Zoom]" not in unzoomed
+
+    # A zoomed capture with no frame keeps the original advice: there is no
+    # other conversion on offer, so suppressing it would leave nothing.
+    plain, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1},
+        _shot(
+            {"viewport": {"width": 1280, "height": 720}, "scale": 1, "zoom": 1.5},
+            image=_png(1280, 720),
+        ),
+    )
+    assert "Convert with the two sizes above before aiming." in plain
+
+
+def test_full_page_keeps_the_refusal_and_gets_no_frame(workspace) -> None:
+    """Deliberate asymmetry: a full page pays captureBeyondViewport, which
+    permanently reflows the page and moves the very viewport a coordinate
+    would be expressed in."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "full_page": True},
+        _shot(
+            {"full_page": True, "scale": 1, "scroll": {"x": 0, "y": 340}},
+            image=_png(1280, 9000),
+        ),
+    )
+
+    assert "No chrome_act coordinate can be read off this image directly." in content
+    assert "[Frame]" not in content
+
+
+def test_region_withholds_the_frame_when_the_bytes_contradict_the_box(workspace) -> None:
+    """The frame and the sentence are two statements about ONE claim. Offering
+    a conversion over an image the sentence has just disowned as "not the
+    region asked for" is the confident-wrong class this surface exists to
+    remove."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 400, 140, 60]},
+        # 140 x 2 would be 280; a whole-viewport picture came back instead.
+        _frame_shot(),
+    )
+    assert "[Frame]" in content, "control: the corroborated case DOES get one"
+
+    mismatch, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 400, 140, 60]},
+        _shot(
+            {
+                "region": {"x": 200, "y": 400, "width": 140, "height": 60, "scale": 2},
+                "viewport": {"width": 1280, "height": 720},
+                "scroll": {"x": 0, "y": 340},
+            },
+            image=_png(1280, 720),
+        ),
+    )
+    assert "is NOT the 140x60 CSS px region asked for" in mismatch
+    assert "[Frame]" not in mismatch, "an unearned box earns no frame either"
+    assert "No chrome_act coordinate can be read off this image directly" in mismatch
+
+
+def test_region_withholds_the_frame_when_the_scroll_is_unknown(workspace) -> None:
+    """Without the scroll there is no way to reach viewport space, and a
+    DOCUMENT-space origin offered in its place would be silently wrong by
+    exactly the scroll offset. Withheld, and the old refusal stands."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 400, 140, 60]},
+        _frame_shot(with_scroll=False),
+    )
+
+    assert "[Frame]" not in content
+    assert "No chrome_act coordinate can be read off this image directly" in content
+    assert "clipped from document (700, 400)" in content, "the descriptive claim still stands"
+
+
+def test_region_withholds_the_frame_when_the_capture_reflowed_the_page(workspace) -> None:
+    """A region that is not entirely on screen pays captureBeyondViewport, which
+    permanently reflows the live page (measured: layout viewport 1353 -> 1368,
+    scrollbar gone). That moves the very viewport the frame is expressed in,
+    DURING the capture that produced it: the metrics were read before the
+    shutter, so the origin is pre-reflow and the page the agent clicks is
+    post-reflow. It is the same hazard that keeps full_page frameless, and the
+    payload already warns about it in [Reflow], so a frame there would be the
+    payload contradicting itself."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 400, 140, 60]},
+        # ONLY the top-level flag, the one [Reflow] itself reads. Setting both
+        # (as the first cut did) pins neither independently.
+        _frame_shot(beyond_viewport=True),
+    )
+
+    assert "[Reflow]" in content, "control: this capture does warn about the reflow"
+    assert "[Frame]" not in content
+    assert "No chrome_act coordinate can be read off this image directly" in content
+
+
+def test_region_frame_rides_an_unmeasurable_image_deliberately(workspace) -> None:
+    """The corroboration is SKIPPED when the PNG size cannot be read at all,
+    so "ok" there means "not contradicted" rather than "checked and passed",
+    and a frame is published anyway. Deliberate and consistent with the
+    sentence, which still says "clipped from" over an image of unknown size:
+    an unreadable PNG is one nobody can measure a point in either, so the
+    frame is unusable rather than wrong. Pinned so the behaviour is a choice
+    rather than a branch nobody noticed (review catch: nothing covered it)."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 400, 140, 60]},
+        _shot(
+            {
+                "region": {"x": 700, "y": 400, "width": 140, "height": 60, "scale": 2},
+                "viewport": {"width": 1280, "height": 720},
+                "scroll": {"x": 500, "y": 340},
+            },
+            image=b"not a png at all",
+        ),
+    )
+
+    assert "region image of unknown size" in content
+    assert _frame_edges(content) == (200, 340, 60, 120)
+
+
+def test_frame_edges_and_extent_agree_on_a_fractional_box(workspace) -> None:
+    """`region_ref` is the recommended route and resolves boxes from element
+    quads, which are fractional ("255.88x21"). Every other region fixture here
+    uses whole numbers, where rounding the raw extent and subtracting the
+    rounded edges happen to give the same answer, so neither the fractional
+    case nor the choice between them was pinned (review catch).
+
+    The property is internal consistency: a reader adding the stated width to
+    the stated left edge must land on the stated right edge. Rounding the raw
+    extent separately can miss that by one, and the frame would then disagree
+    with itself about where the image ends."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [201, 60, 140, 60]},
+        _shot(
+            {
+                "region": {
+                    "x": 700.6,
+                    "y": 400.4,
+                    "width": 139.8,
+                    "height": 60.4,
+                    "scale": 2,
+                },
+                "viewport": {"width": 1280, "height": 720},
+                "scroll": {"x": 500, "y": 340},
+            },
+            image=_png(280, 121),
+        ),
+    )
+
+    left, right, top, bottom = _frame_edges(content)
+    assert (left, right, top, bottom) == (201, 340, 60, 121)
+    frame = next(line for line in content.splitlines() if line.startswith("[Frame]"))
+    # 340 - 201 = 139, NOT round(139.8) = 140. The stated extent has to be the
+    # one that reproduces the stated edges.
+    assert "(139x61 CSS px)" in frame
+    assert f"x = {left} + {right - left} * (fraction from left)" in frame
+    assert f"y = {top} + {bottom - top} * (fraction from top)" in frame
+
+
+def test_region_frame_withholds_at_page_zoom_where_the_capture_itself_is_aimed_wrong(
+    workspace,
+) -> None:
+    """The one withhold that is not about untrustworthy inputs.
+
+    CDP's clip is documented in DEVICE INDEPENDENT px; the extension builds it
+    from CSS px and never applies `cssVisualViewport.zoom`, which it reads and
+    only reports. So at 150% Chrome clips a different box than the one echoed
+    back, and NOTHING downstream can see it: the PNG still returns at
+    `clip.width * scale`, so the corroboration passes. Unlike #227's dPR case,
+    which fails loudly by blowing that same check, this is silent.
+
+    Before #194 a zoomed region got a flat refusal AND a [Zoom] line saying the
+    two spaces differ. Publishing a frame silences both, turning a conservative
+    refusal into a confident misclick on the one axis the payload had flagged
+    (review catch). So it is withheld until the extension fixes the capture."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _frame_shot(zoom=1.5),
+    )
+
+    assert "[Frame]" not in content
+    assert "No chrome_act coordinate can be read off this image directly" in content
+    # And the zoom line goes back to naming the problem rather than deferring
+    # to a frame that is not there.
+    assert "Convert with the two sizes above before aiming." in content
+    assert "do not apply the zoom yourself" not in content
+
+
+def test_region_frame_withholds_when_the_region_flag_alone_says_it_reached_past(
+    workspace,
+) -> None:
+    """The reflow withhold reads the TOP-LEVEL `beyond_viewport`, whose value
+    for a full page is a refined full-page-specific predicate, while
+    `region.beyond_viewport` is the field that unambiguously means THIS REGION
+    reached past the fold. They coincide today. If the top-level flag is ever
+    narrowed to the full-page case it already carries logic for, regions would
+    silently resume publishing frames over reflowed captures, so the region
+    field is read too (review catch). Pinned with ONLY the region flag set, or
+    the second leg is dead and the test proves nothing."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _frame_shot(
+            region={
+                "x": 700,
+                "y": 400,
+                "width": 140,
+                "height": 60,
+                "scale": 2,
+                "beyond_viewport": True,
+            }
+        ),
+    )
+
+    assert "[Frame]" not in content
+    assert "No chrome_act coordinate can be read off this image directly" in content
+
+
+def test_region_corroboration_checks_both_axes_at_a_rounding_sized_window(
+    workspace,
+) -> None:
+    """This check stopped being cosmetic when #194 made it gate a COORDINATE.
+
+    It was a relative 5% window on the width alone. 5% of a wide box is real
+    mis-aim (a 1000x400 box at scale 2 returning 1920 rather than 2000 passed,
+    and the frame then claimed 40 CSS px the image does not contain), and the
+    bottom edge rode entirely on the width check. The window is now sized to
+    what Chrome's rounding actually costs: one CSS px per edge is `scale` image
+    px, so two edges plus slack (review catch)."""
+    short_by_40 = _shot(
+        {
+            "region": {"x": 500, "y": 340, "width": 1000, "height": 400, "scale": 2},
+            "viewport": {"width": 1280, "height": 720},
+            "scroll": {"x": 500, "y": 340},
+        },
+        image=_png(1920, 800),
+    )
+    content, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1, "region": [0, 0, 1000, 400]}, short_by_40
+    )
+    assert "[Frame]" not in content, "20 CSS px of missing width is not rounding"
+    assert "is NOT the 1000x400 CSS px region asked for" in content
+
+    # The measured-live rounding case must still pass: a 62x6 box at scale 4
+    # came back 244 where 248 was predicted, and an early two-pixel window
+    # called that correct capture a failure.
+    rounded = _shot(
+        {
+            "region": {"x": 500, "y": 340, "width": 62, "height": 6, "scale": 4},
+            "viewport": {"width": 1280, "height": 720},
+            "scroll": {"x": 500, "y": 340},
+        },
+        image=_png(244, 24),
+    )
+    ok, _ = _invoke_raw(chrome_screenshot, {"tab_id": 1, "region": [0, 0, 62, 6]}, rounded)
+    assert "[Frame]" in ok, "real clip rounding must still earn a frame"
+
+    # Height alone is enough to disown the claim.
+    tall = _shot(
+        {
+            "region": {"x": 700, "y": 400, "width": 140, "height": 60, "scale": 2},
+            "viewport": {"width": 1280, "height": 720},
+            "scroll": {"x": 500, "y": 340},
+        },
+        image=_png(280, 400),
+    )
+    content, _ = _invoke_raw(chrome_screenshot, {"tab_id": 1, "region": [200, 60, 140, 60]}, tall)
+    assert "[Frame]" not in content, "the bottom edge is corroborated too now"
+
+
+def test_region_frame_withholds_on_a_zero_extent_box(workspace) -> None:
+    """A proportional frame reads a point as a position ACROSS the image, so a
+    box with no extent has nothing to read against: left would equal right and
+    every point in the crop would collapse onto one coordinate. Only reachable
+    with an unmeasurable image, since the byte corroboration otherwise calls a
+    zero-width box a mismatch first, and the extension refuses a zero-size
+    element before capturing one. Pinned because it is the one branch the
+    proportional form introduced that the scale form did not have."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _shot(
+            {
+                "region": {"x": 700, "y": 400, "width": 0, "height": 60, "scale": 2},
+                "viewport": {"width": 1280, "height": 720},
+                "scroll": {"x": 500, "y": 340},
+            },
+            image=b"not a png at all",
+        ),
+    )
+
+    assert "[Frame]" not in content
+    assert "No chrome_act coordinate can be read off this image directly" in content
+
+
+def test_region_frame_survives_a_clamped_box(workspace) -> None:
+    """A region trimmed to the document reports the TRIMMED origin, so the
+    frame stays correct; the trim is disclosed separately."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 400, 140, 60]},
+        _frame_shot(
+            region={
+                "x": 710,
+                "y": 420,
+                "width": 140,
+                "height": 60,
+                "scale": 2,
+                "clamped": True,
+            }
+        ),
+    )
+
+    assert "(trimmed to the page)" in content
+    assert _frame_edges(content) == (210, 350, 80, 140), (
+        "710 - 500 across, 420 - 340 down: the TRIMMED origin, both axes"
+    )
 
 
 def test_screenshot_will_not_call_a_full_viewport_picture_a_region(workspace) -> None:
@@ -1271,7 +1796,7 @@ def test_screenshot_allows_chrome_its_own_rounding_of_a_clip(workspace) -> None:
             image=_png(244, 24),
         ),
     )
-    assert "clipped from (31, 1408) 62x6 CSS px at capture scale 4" in rounded
+    assert "clipped from document (31, 1408) 62x6 CSS px at capture scale 4" in rounded
     assert "is NOT the" not in rounded
     # And it says so, because the live operator reported re-checking width x
     # scale against the image by hand on every region call.
@@ -1288,7 +1813,7 @@ def test_screenshot_allows_chrome_its_own_rounding_of_a_clip(workspace) -> None:
             image=_png(224, 24),
         ),
     )
-    assert "clipped from (31, 150) 56x6 CSS px at capture scale 4" in exact
+    assert "clipped from document (31, 150) 56x6 CSS px at capture scale 4" in exact
     assert "rounded" not in exact, "a clip Chrome took exactly must not mention rounding"
 
     # The tolerance is relative, so it does not go slack on a large region:
@@ -1434,7 +1959,7 @@ def test_screenshot_region_reports_the_box_it_clipped(workspace) -> None:
     assert capture[0]["args"]["region_scale"] == 2
     assert artifact, "a region rides the same artifact path as any capture"
     assert "region image 280x120 px" in content
-    assert "clipped from (200, 400) 140x60 CSS px at capture scale 2" in content
+    assert "clipped from document (200, 400) 140x60 CSS px at capture scale 2" in content
     assert "trimmed" not in content
 
 
@@ -1650,7 +2175,7 @@ def test_screenshot_rounds_a_fractional_region_box_for_reading(workspace) -> Non
             image=_png(212, 42),
         ),
     )
-    assert "clipped from (18, 256) 106x21 CSS px" in content
+    assert "clipped from document (18, 256) 106x21 CSS px" in content
     assert "255.88" not in content
 
 
