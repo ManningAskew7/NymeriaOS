@@ -2535,8 +2535,25 @@ def test_act_docstring_teaches_frame_attribution_and_the_benign_class() -> None:
     assert "resolved_frame is the field to believe" in d
     assert "it means the root document" in d
     assert "null means a frame WAS located" in d
-    assert '"likely_benign": true' in d
-    assert "ranked last" in d
+    # #220: the class is OMITTED and summarised now, not tagged and ranked
+    # last. Three pins, each for a way the teaching can rot back into a lie.
+    # The count-with-no-list reading, because that is the shape where a
+    # filtered list would otherwise be read as "nothing failed". The
+    # api-subdomain caveat, because the classifier's origin compare is exact
+    # and the agent's own canceled request can land in the summary, which is
+    # the case a review round caught the first cut losing. And the pointer at
+    # the unfiltered channel, because that is what keeps the omission from
+    # being a capability loss at all.
+    assert '"failed_requests_benign_omitted"' in d
+    assert "READ THE HOSTS AND ERRORS" in d
+    assert "subdomain is cross-origin to its www" in d
+    assert "never that nothing failed" in d
+    assert "chrome_network reads the same buffer unfiltered" in d
+    # The capped list must say when it was cut. A payload that shows five of
+    # nine and says nothing reads as the complete set, and it reads that way
+    # HARDER beside a summary that carefully counts what it dropped.
+    assert '"failed_requests_total"' in d
+    assert "four you cannot see" in d
     assert "with a ref wheels AT that element" in d
     assert '"scroll_moved"' in d
     assert "{0,0} is a MEASURED nothing-moved" in d

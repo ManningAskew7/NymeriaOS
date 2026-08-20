@@ -2622,8 +2622,20 @@ advisories). `failed_requests` entries carry
 `same_origin` and the capped list ranks data-class failures ahead of
 telemetry-shaped ones (Ping/Image/Media/Font), so a broken first-party POST
 is never crowded out by analytics beacons; cross-origin cancels and
-content-blocker kills with a healthy status are tagged `likely_benign` and
-rank last of all (#202), never evicting an untagged entry. The payload also
+content-blocker kills with a healthy status are classified as routine noise
+(#202) and, since #220, OMITTED from the list and summarised as
+`failed_requests_benign_omitted` (`count`, the `hosts` involved, the `errors`
+they failed with, and `hosts_omitted` when the host list is cut). That retires
+the measured case of a single retail click carrying ~6,000 characters of
+blocked ad pixels. The hosts and errors are load-bearing, not decoration: the
+class keys on an EXACT origin compare, so a site's own `api.*` subdomain is
+cross-origin to its `www`, and a first-party request canceled by the
+navigation that triggered it can land in the summary; QA's words on the
+count-only version were that it "says benign but never says why, so I have to
+take the extension's word for it". A summary with no `failed_requests` beside
+it means every failure in the window was that class; `chrome_network` reads
+the same buffer unfiltered. The list itself is capped, and
+`failed_requests_total` appears when the cap cut it. The payload also
 carries frame ATTRIBUTION (#201): `resolved_frame` is the URL of the
 subframe the target resolved into, read at dispatch time and distinct from
 `focused` (a state read that hover and scroll_to never move, so it can name
