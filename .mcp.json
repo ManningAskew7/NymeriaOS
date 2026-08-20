@@ -5,14 +5,16 @@
       "url": "http://localhost:8001/mcp",
       "headers": {
         "Authorization": "Bearer ${NYMERIA_MCP_TOKEN}"
-      }
+      },
+      "timeout": 1800000
     },
     "nymeria-full": {
       "type": "http",
       "url": "http://localhost:8001/mcp",
       "headers": {
         "Authorization": "Bearer ${NYMERIA_MCP_TOKEN}"
-      }
+      },
+      "timeout": 1800000
     }
   }
 }
