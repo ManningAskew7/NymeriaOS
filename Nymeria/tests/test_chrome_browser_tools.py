@@ -5159,3 +5159,53 @@ def test_other_dispatch_tools_get_no_act_notes() -> None:
     )
     assert "Invisible target" not in out
     assert "Refused before dispatch" not in out
+
+
+def _dispatched_args(tool, kwargs, label) -> dict:
+    """The args the backend actually put on the wire for one tool call."""
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe(label)
+    _invoke(tool, kwargs, _ok({}))
+    seen = []
+    while not queue.empty():
+        seen.append(queue.get_nowait())
+    cmd = next(e for e in seen if e.event_type == "browser_command")
+    return cmd.data["args"]
+
+
+def test_tabs_zoom_puts_the_factor_on_the_wire_including_zero(workspace) -> None:
+    """0 is the UNDO, not an absent value, so it must survive the arg assembly.
+
+    The ordinary `if zoom:` idiom would drop exactly one call: the one that
+    hands the tab back to the user's own zoom setting. That failure is silent
+    and looks like a read, so it is worth a test rather than a comment."""
+    assert _dispatched_args(chrome_tabs, {"action": "zoom", "tab_id": 1}, "z-read") == {
+        "action": "zoom",
+        "tab_id": 1,
+    }, "no factor is a READ, and must not invent one"
+
+    assert _dispatched_args(
+        chrome_tabs, {"action": "zoom", "tab_id": 1, "zoom": 1.5}, "z-set"
+    ) == {"action": "zoom", "tab_id": 1, "zoom": 1.5}
+
+    assert _dispatched_args(
+        chrome_tabs, {"action": "zoom", "tab_id": 1, "zoom": 0}, "z-undo"
+    ) == {"action": "zoom", "tab_id": 1, "zoom": 0}, "the undo must reach the extension"
+
+
+def test_tabs_docstring_teaches_the_zoom_contract(workspace) -> None:
+    """Three facts an agent cannot recover from the payload alone, and each one
+    costs something real when missing: that zoom is worth READING before
+    trusting a coordinate (it is sticky per site, so a tab can be at 125% from
+    weeks ago and every capture is then aimed wrong, #231); that a set is
+    temporary rather than a rewrite of the user's preference; and that it does
+    not survive a navigation, which is how it would silently lapse mid-drive."""
+    d = " ".join(chrome_tabs.description.split())
+
+    assert '"zoom"' in d and "0.25 to 5.0" in d
+    assert "Read the zoom before trusting a coordinate" in d
+    assert "no [Frame]" in d, "names the consequence, not just the setting"
+    assert "TEMPORARY and confined to the one tab" in d
+    assert "does NOT survive a navigation" in d
+    assert "0 hands the tab back to the user's own setting" in d

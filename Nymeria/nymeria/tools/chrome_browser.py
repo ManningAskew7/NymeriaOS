@@ -1535,13 +1535,31 @@ async def chrome_tabs(
     action: str = "list",
     tab_id: Optional[int] = None,
     url: Optional[str] = None,
+    zoom: Optional[float] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List or manage tabs in the user's Chrome. Start here to get a tab_id.
 
-    action: "list" (default), "create", "switch", "close", or "reload".
-    tab_id: required for switch / close / reload.
+    action: "list" (default), "create", "switch", "close", "reload", or "zoom".
+    tab_id: required for switch / close / reload / zoom.
     url: required for create.
+    zoom: for action="zoom". Omit it to READ the tab's zoom, give a factor
+        (0.25 to 5.0, so 1.5 is 150%) to set it, or 0 to undo a set.
+
+    Read the zoom before trusting a coordinate on an unfamiliar tab. Page zoom
+    is per-site and sticky in Chrome, so a tab can be sitting at 125% from
+    something the user did weeks ago, and at any zoom but 100% a region
+    capture is aimed at the wrong box and publishes no [Frame] (#231). "zoom"
+    is how you find that out, and how you fix it: set 1.0, do the work, then
+    send 0.
+
+    Setting is deliberately TEMPORARY and confined to the one tab. Chrome's
+    ordinary zoom is per-site and permanent, and quietly rewriting a user's
+    preference for a whole site (in every tab, for good) because an agent
+    wanted one accurate screenshot is not a trade this tool makes. The cost of
+    that choice is that a set does NOT survive a navigation, so re-apply it
+    after one. Sending 0 hands the tab back to the user's own setting, which
+    is why it is the undo rather than "zoom to zero".
 
     "create" and "reload" wait for the page to load and report `complete`,
     exactly as chrome_navigate does, so the tab you get back is one you can
@@ -1566,10 +1584,15 @@ async def chrome_tabs(
         args["tab_id"] = tab_id
     if url is not None:
         args["url"] = url
-    # Two of the five actions load a page, and a page load does not fit the
+    # Passed through even at 0, which is the UNDO rather than a factor, so the
+    # usual falsy check would silently drop the one call that restores the
+    # user's own setting.
+    if zoom is not None:
+        args["zoom"] = zoom
+    # Two of the actions load a page, and a page load does not fit the
     # 5s budget the cheap actions share: without this they would come back as
     # a bare transport timeout, which is worse than the race the wait removes.
-    # The other three keep the short budget, so a disconnected extension is
+    # The others keep the short budget, so a disconnected extension is
     # still reported in 5s rather than 30.
     override = _TIMEOUTS["navigate"] if action in ("create", "reload") else None
     return await _dispatch(

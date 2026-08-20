@@ -420,7 +420,13 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   payload says why: an off-screen region never has one because reaching past
   the fold reflows the page, and no region has one on a ZOOMED page, where the
   capture is aimed at the wrong box to begin with. On a zoomed page, reset the
-  zoom to 100% before you need coordinates.
+  zoom to 100% before you need coordinates:
+  `chrome_tabs(action="zoom", tab_id=N, zoom=1.0)`, then `zoom=0` when you are
+  done to hand the tab back to the user's own setting. Reading it costs
+  nothing (`action="zoom"` with no factor) and is worth doing on any tab you
+  did not open yourself, because zoom is sticky per site and a tab can be at
+  125% from something the user did weeks ago. A set is tab-scoped and does NOT
+  survive a navigation, so re-apply it after one.
 - Content missing entirely -> check for a `[View constraint]` note after the
   tree first: a modal dialog or fullscreen element prunes everything else
   from the read, so a near-empty tree means BLOCKED, not empty. Iframe
