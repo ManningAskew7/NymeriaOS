@@ -1673,7 +1673,10 @@ async def chrome_tabs(
     wanted one accurate screenshot is not a trade this tool makes. The cost of
     that choice is that a set does NOT survive a navigation, so re-apply it
     after one. Sending 0 hands the tab back to the user's own setting, which
-    is why it is the undo rather than "zoom to zero".
+    is why it is the undo rather than "zoom to zero". Undo, not
+    reset-to-100%: on a site whose saved preference is not 100%, zoom=0
+    returns THERE (a payload with scope "per-origin" is the tell); send an
+    explicit zoom=1.0 when you need a true 100%.
 
     "create" and "reload" wait for the page to load and report `complete`,
     exactly as chrome_navigate does, so the tab you get back is one you can
