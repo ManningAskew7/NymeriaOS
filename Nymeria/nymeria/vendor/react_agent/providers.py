@@ -3103,6 +3103,50 @@ def _inject_tool_cache_control(payload: dict) -> None:
         last_tool["cache_control"] = dict(_CACHE_CONTROL_EPHEMERAL)
 
 
+def _is_bare_anthropic_api_base(base_url: Optional[str]) -> bool:
+    """True when requests go to Anthropic's own API host, not a gateway.
+
+    Scope gate for the top-level cache_control injection (#240): custom
+    anthropic-compatible gateways may reject an unknown top-level body
+    param, so auto-caching is requested only against api.anthropic.com
+    (an unset base URL means the SDK default, which is the same host).
+    """
+    if not base_url:
+        return True
+    parse_target = base_url.strip()
+    if "://" not in parse_target:
+        parse_target = f"https://{parse_target}"
+    try:
+        host = (urlparse(parse_target).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "api.anthropic.com"
+
+
+def _inject_top_level_cache_control(payload: dict) -> None:
+    """Request top-level auto-caching on a bare-API Anthropic payload (#240).
+
+    The API auto-places a breakpoint on the last cacheable block, which
+    ADVANCES every call: agentic tool-loop tails cache incrementally
+    (measured live 2026-08-21 on the loop shape: 6 uncached input tokens
+    with this key vs 13,406 without), and consecutive placements stay
+    inside the API's 20-content-block cache lookback by construction.
+    Accepted alongside the manual tool/system/conversation markers, which
+    with Nymeria's at-most-3 manual placements totals 4, exactly the API
+    cap. setdefault keeps a caller-supplied value.
+
+    TOOLS-BOUND PAYLOADS ONLY: graph turns always bind tools and make the
+    repeated calls the cache entry pays for. One-shot side-channel clients
+    (llm_extract, rag_quality, workflow verbs, doctor) bind none and send
+    per-call-varying content, where an auto breakpoint is a pure 1.25x
+    write premium no later call reads: review-measured up to ~30k tokens
+    per llm_extract call, so they deliberately stay uncached.
+    """
+    if not payload.get("tools"):
+        return
+    payload.setdefault("cache_control", dict(_CACHE_CONTROL_EPHEMERAL))
+
+
 def _inject_cliproxy_billing_block(payload: dict) -> None:
     """Prepend the OAuth billing fingerprint to an Anthropic API payload.
 
@@ -3169,6 +3213,11 @@ def _strip_cache_control_from_payload(payload: dict) -> None:
         if isinstance(block, dict) and "cache_control" in block:
             return {k: v for k, v in block.items() if k != "cache_control"}
         return block
+
+    # Top-level auto-caching key (#240's bare-API injection, or a caller's
+    # model_kwargs): pop it too, the zero-cache_control invariant covers
+    # the whole payload, not only content blocks.
+    payload.pop("cache_control", None)
 
     system = payload.get("system")
     if isinstance(system, list):
@@ -3254,11 +3303,17 @@ def _anthropic_chat_model_class_for_config(
 
     if not config.base_url or not looks_like_cliproxy_url(config.base_url):
         # Direct Anthropic: inject cache_control on the last tool definition
-        # so the full tool schema prefix is cached across turns.
+        # so the full tool schema prefix is cached across turns, and (bare
+        # API host only, #240) the top-level auto-caching key so the
+        # breakpoint on the last block advances through agentic tool loops.
+        bare_api = _is_bare_anthropic_api_base(config.base_url)
+
         class NymeriaChatAnthropicWithToolCaching(NymeriaChatAnthropic):
             def _get_request_payload(self, *args: Any, **kwargs: Any) -> dict:
                 payload = super()._get_request_payload(*args, **kwargs)
                 _inject_tool_cache_control(payload)
+                if bare_api:
+                    _inject_top_level_cache_control(payload)
                 return payload
 
         return NymeriaChatAnthropicWithToolCaching

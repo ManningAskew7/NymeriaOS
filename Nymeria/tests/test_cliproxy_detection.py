@@ -217,3 +217,104 @@ class TestBillingBlock:
     def test_ports_frozen(self):
         assert isinstance(CLIPROXY_PORTS, frozenset)
         assert CLIPROXY_PORTS == {8317, 8318}
+
+
+# ---------------------------------------------------------------------------
+# #240 – top-level auto-caching on the bare-API direct Anthropic path
+# ---------------------------------------------------------------------------
+
+class TestTopLevelAutoCaching:
+    """Bare-API direct Anthropic payloads carry top-level ``cache_control``
+    (the API auto-places a breakpoint on the last cacheable block, which
+    advances every call, so agentic tool-loop tails cache incrementally:
+    measured live 2026-08-21, 6 uncached input tokens vs 13,406 without).
+    Custom anthropic-compatible gateways keep current behavior (a strict
+    gateway could 400 on the unknown top-level key), and the CLIProxy path
+    must never carry ANY cache_control, top-level included."""
+
+    def _payload(self, base_url, *, with_tools=True, messages=None):
+        from langchain_core.tools import tool
+        from nymeria.vendor.react_agent.providers import (
+            create_llm,
+            create_llm_with_tools,
+        )
+
+        cfg = LLMConfig(
+            provider="anthropic",
+            model="claude-haiku-4-5-20251001",
+            api_key="test-key",
+            base_url=base_url,
+            max_tokens=64,
+        )
+        msgs = messages or [HumanMessage(content="hi")]
+        if not with_tools:
+            return create_llm(cfg)._get_request_payload(msgs)
+
+        @tool
+        def probe_noop(query: str) -> str:
+            """No-op probe tool."""
+            return "noop"
+
+        bound = create_llm_with_tools(cfg, [probe_noop])
+        return bound.bound._get_request_payload(msgs, **bound.kwargs)
+
+    def test_default_base_gets_top_level_cache_control(self):
+        assert self._payload(None).get("cache_control") == {"type": "ephemeral"}
+
+    def test_explicit_api_anthropic_host_gets_top_level_cache_control(self):
+        payload = self._payload("https://api.anthropic.com")
+        assert payload.get("cache_control") == {"type": "ephemeral"}
+
+    def test_bare_api_without_tools_gets_no_top_level_key(self):
+        # One-shot side-channel clients (llm_extract, rag_quality, workflow
+        # verbs, doctor) bind no tools and vary per call: an auto breakpoint
+        # there is a pure 1.25x write premium nothing ever reads.
+        payload = self._payload(None, with_tools=False)
+        assert "cache_control" not in payload
+
+    def test_custom_gateway_base_gets_no_top_level_key(self):
+        payload = self._payload("https://anthropic-gw.example.com/v1")
+        assert "cache_control" not in payload
+
+    def test_cliproxy_base_gets_no_top_level_key(self):
+        payload = self._payload("http://cli-proxy-api:8317")
+        assert "cache_control" not in payload
+
+    def test_cliproxy_scrub_pops_a_top_level_key(self):
+        from nymeria.vendor.react_agent.providers import (
+            _strip_cache_control_from_payload,
+        )
+
+        payload = {"cache_control": {"type": "ephemeral"}, "messages": []}
+        _strip_cache_control_from_payload(payload)
+        assert "cache_control" not in payload
+
+    def test_full_direct_path_carries_exactly_four_markers(self):
+        # The API cap is 4 breakpoints and the design has ZERO headroom:
+        # tool + system + conversation + top-level. A fifth marker added
+        # anywhere on the direct path would push live requests over the cap.
+        import json
+
+        from langchain_core.messages import AIMessage, SystemMessage
+        from nymeria.vendor.react_agent.nodes import (
+            _format_system_prompt,
+            _inject_conversation_cache_breakpoint,
+        )
+
+        cfg = LLMConfig(
+            provider="anthropic",
+            model="claude-haiku-4-5-20251001",
+            api_key="test-key",
+            base_url=None,
+            max_tokens=64,
+        )
+        sys_msg = SystemMessage(content=_format_system_prompt("stable system", cfg))
+        msgs = _inject_conversation_cache_breakpoint(
+            [
+                HumanMessage(content="turn one"),
+                AIMessage(content="OK"),
+                HumanMessage(content="turn two"),
+            ]
+        )
+        payload = self._payload(None, messages=[sys_msg] + msgs)
+        assert json.dumps(payload).count('"cache_control"') == 4
