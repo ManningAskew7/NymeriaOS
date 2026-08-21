@@ -7,6 +7,7 @@ unbound methods. Avoids the cost of constructing a full ``NymeriaAgent``.
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -212,6 +213,66 @@ class TestRecordTurnCost:
     def test_missing_thread_is_silent(self, stub_agent):
         # Should not raise even when the thread metadata row does not exist.
         NymeriaAgent._record_turn_cost(stub_agent, "no-such-thread", "user-1", 0.01, False)
+
+
+class TestCostLogLine:
+    """The [COST] line is the only surfacing of cache metrics today, and it
+    must fire for EVERY provider class: subscription/local routes carry no
+    dollar figure but their cached/cache-write counts are the sole live
+    evidence that prompt caching works (backlog #200)."""
+
+    def test_subscription_route_logs_cache_metrics_without_cost(
+        self, stub_agent, caplog
+    ):
+        cfg = _llm_config(
+            provider="anthropic",
+            model="claude-opus-5",
+            base_url="http://cli-proxy-api:8317",
+        )
+        msgs = [
+            HumanMessage(content="hi"),
+            AIMessage(
+                content="ok",
+                usage_metadata={
+                    "input_tokens": 22827,
+                    "output_tokens": 4,
+                    "total_tokens": 22831,
+                    "input_token_details": {
+                        "cache_read": 22719,
+                        "cache_creation": 85,
+                    },
+                },
+            ),
+        ]
+        with caplog.at_level(logging.INFO, logger="nymeria.core.agent"):
+            _in, _out, cost, na = NymeriaAgent._compute_turn_usage_and_cost(
+                stub_agent, "thread-1", msgs, cfg
+            )
+        assert na is True
+        assert cost is None
+        cost_lines = [
+            r.getMessage() for r in caplog.records if "[COST]" in r.getMessage()
+        ]
+        assert len(cost_lines) == 1
+        assert "cached=22719" in cost_lines[0]
+        assert "cache_write_5m=85" in cost_lines[0]
+        assert "computed=n/a (subscription/local)" in cost_lines[0]
+
+    def test_billed_route_still_logs_dollar_cost(self, stub_agent, caplog):
+        cfg = _llm_config(provider="openai", model="gpt-4o")
+        msgs = [HumanMessage(content="hi"), _ai(100, 50)]
+        with caplog.at_level(logging.INFO, logger="nymeria.core.agent"):
+            _in, _out, cost, na = NymeriaAgent._compute_turn_usage_and_cost(
+                stub_agent, "thread-1", msgs, cfg
+            )
+        assert na is False
+        assert cost is not None
+        cost_lines = [
+            r.getMessage() for r in caplog.records if "[COST]" in r.getMessage()
+        ]
+        assert len(cost_lines) == 1
+        assert "computed=n/a" not in cost_lines[0]
+        assert f"computed={cost}" in cost_lines[0]
 
 
 class TestThreadMetadataBackwardCompat:
