@@ -1193,7 +1193,7 @@ def test_screenshot_spends_the_conversion_warning_only_where_it_buys_something(w
         {"tab_id": 1},
         _shot({"viewport": {"width": 40, "height": 30}, "scale": 1}, image=_png(40, 30)),
     )
-    assert "[Geometry]: image 40x30 px; viewport 40x30 CSS px, devicePixelRatio 1." in plain
+    assert "[Geometry]: image 40x30 px as captured; viewport 40x30 CSS px, devicePixelRatio 1." in plain
     assert "not image px" not in plain
 
     hidpi, _ = _invoke_raw(
@@ -1260,6 +1260,10 @@ def test_region_frame_survives_the_image_being_downscaled_in_transit(workspace) 
     assert "scale=" not in frame, "a pixel scale is invalidated by a downscale"
     assert "image_x/" not in frame, "so is dividing image px by one"
     assert "resize in transit" in frame, "and the agent is told why it is safe"
+    # #228's remainder: on exactly this downscale-crossing shape, the raw size
+    # [Geometry] names must be labelled as the capture's, so it cannot read as
+    # a second authority against the delivery note's delivered size.
+    assert "region image 3200x2400 px as captured" in content
 
 
 def test_full_page_refuses_a_coordinate_at_any_pixel_ratio(workspace) -> None:
@@ -1412,6 +1416,205 @@ def test_region_stops_claiming_no_coordinate_can_be_read_once_it_publishes_one(
     assert "not image px" not in content, "the ratio rule still does not apply to a region"
 
 
+def _folded_shot(
+    *, clip_zoom=1.5, zoom=1.5, image_size=(420, 180), **region_over
+) -> dict:
+    """A zoomed region capture in the ext v0.23.0 shape (#231).
+
+    Same 140x60 CSS box at scale 2 as `_frame_shot`, but the wire clip was
+    multiplied by the 1.5 page zoom, so a REAL clip's PNG measures
+    140x60 x 2 x 1.5 = 420x180 (measured live 2026-08-21: the PNG tracks the
+    SENT numbers x scale, and devicePixelRatio folds in nothing). The echo
+    stays CSS px; `clip_zoom` carries the folded factor.
+    """
+    region = {"x": 700, "y": 400, "width": 140, "height": 60, "scale": 2, "clip_zoom": clip_zoom}
+    region.update(region_over)
+    data = {
+        "region": region,
+        "viewport": {"width": 1280, "height": 720},
+        "scale": 1.5,
+        "zoom": zoom,
+        "scroll": {"x": 500, "y": 340},
+    }
+    return _shot(data, image=_png(*image_size))
+
+
+def test_a_folded_clip_earns_a_frame_at_page_zoom(workspace) -> None:
+    """#231. A clip multiplied into DIP is aimed RIGHT at any zoom, so the
+    frame that #194 withheld there is published again, in the same CSS box the
+    echo carries (the fold changes the pixels, not the box), with the fold
+    named in [Geometry] and no [Zoom] ratio advice beside the frame."""
+    content, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1, "region": [200, 60, 140, 60]}, _folded_shot()
+    )
+
+    assert _frame_edges(content) == (200, 340, 60, 120), (
+        "the frame is the CSS box: the DIP fold must not leak into it"
+    )
+    assert "with the 150% page zoom folded in" in content
+    assert "[Zoom]:" not in content, (
+        "a frame and the two-sizes ratio advice must never share a payload"
+    )
+    assert "No chrome_act coordinate can be read off this image directly" not in content
+
+
+def test_a_folded_clip_claim_is_disowned_when_the_bytes_disagree(workspace) -> None:
+    """The factor is a CLAIM, and the PNG is the witness: a payload that says
+    the clip folded 1.5 in but returns unfolded bytes is describing a capture
+    that did not happen, so the box is disowned and no frame rides it."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _folded_shot(image_size=(280, 120)),
+    )
+
+    assert "NOT the 140x60 CSS px region asked for" in content
+    assert "[Frame]" not in content
+
+
+def test_an_unreadable_zoom_at_capture_withholds_the_frame(workspace) -> None:
+    """`clip_zoom: null` means the extension could not read zoom and sent the
+    clip unmultiplied: exactly the unverified aim #231 exists to stop, so no
+    frame, WITH the cause stated (a withhold explains itself, #194's rule).
+    The fixture is the shape the extension actually emits: `clip_zoom` and
+    the top-level zoom are ONE read, so a null fold arrives with a null
+    zoom, and no [Zoom] line can speak for it (review catch: the first cut
+    of this test paired a null fold with zoom 1.5, a payload that cannot
+    occur, and asserted a [Zoom] line that would never fire live)."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _folded_shot(clip_zoom=None, zoom=None, image_size=(280, 120)),
+    )
+
+    assert "[Frame]" not in content
+    assert "No chrome_act coordinate can be read off this image directly" in content
+    assert "zoom could not be read at capture" in content
+    assert "may be aimed elsewhere" in content
+    assert "[Zoom]" not in content
+
+
+def test_the_common_new_payload_shape_is_the_old_behavior(workspace) -> None:
+    """A v0.23.0 capture of a 100% page says `clip_zoom: 1` and must behave
+    exactly like the legacy 100% capture: frame published in the same box, no
+    fold clause, no [Zoom]. The identity case is the common one, and nothing
+    else exercises the numeric branch at 1.0."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _folded_shot(clip_zoom=1.0, zoom=1.0, image_size=(280, 120)),
+    )
+
+    assert _frame_edges(content) == (200, 340, 60, 120)
+    assert "page zoom folded in" not in content
+    assert "[Zoom]" not in content
+
+
+def test_a_fold_that_disagrees_with_the_page_zoom_earns_no_frame(workspace) -> None:
+    """The PNG size can only witness the clip's DIMENSIONS, not its aim: a
+    payload claiming a 1.5 fold on a page it reports at 100% could match the
+    byte check perfectly while the capture is aimed elsewhere. The two values
+    are one read extension-side, so disagreement means the payload is lying
+    about itself, and no frame may ride it (review catch: the first cut
+    published one on byte-corroboration alone)."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _folded_shot(clip_zoom=1.5, zoom=1.0, image_size=(420, 180)),
+    )
+
+    assert "[Frame]" not in content
+    assert "No chrome_act coordinate can be read off this image directly" in content
+    assert "zoom claim could not be verified" in content, (
+        "an unverified-aim withhold explains itself"
+    )
+
+
+def test_a_junk_page_zoom_is_junk_numbers_too(workspace) -> None:
+    """A junk top-level zoom used to withhold the frame while [Zoom] stayed
+    silent (out of its own sanity window), leaving the payload frameless with
+    a confident box claim standing over it. It now lands in the unparsed
+    lead like any other junk number: still no stated cause (junk numbers
+    never get one), but nothing is CLAIMED over the image either, which is
+    the half that misled."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _frame_shot(zoom=1e9),
+    )
+
+    assert "region image 280x120 px as captured" in content
+    assert "clipped from document" not in content
+    assert "[Frame]" not in content
+    assert "NOT the" not in content
+    assert "[Zoom]" not in content
+
+
+def test_devicepixelratio_folds_into_no_clipped_capture(workspace) -> None:
+    """#227, measured 2026-08-21 at devicePixelRatio 1.5: a clipped capture
+    returns box x scale exactly, with NO dPR term. Both directions pinned: the
+    unfolded size passes the cross-check at dPR 2, and a dPR-multiplied size
+    is disowned. Whoever adds a dPR term to `_region_box` meets this test."""
+    passes, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _shot(
+            {
+                "region": {"x": 700, "y": 400, "width": 140, "height": 60, "scale": 2},
+                "viewport": {"width": 1280, "height": 720},
+                "scale": 2,
+                "scroll": {"x": 500, "y": 340},
+            },
+            image=_png(280, 120),
+        ),
+    )
+    disowned, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _shot(
+            {
+                "region": {"x": 700, "y": 400, "width": 140, "height": 60, "scale": 2},
+                "viewport": {"width": 1280, "height": 720},
+                "scale": 2,
+                "scroll": {"x": 500, "y": 340},
+            },
+            image=_png(560, 240),
+        ),
+    )
+
+    folded_passes, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _folded_shot(image_size=(420, 180)),
+    )
+
+    assert "[Frame]" in passes
+    assert "NOT the 140x60 CSS px region asked for" in disowned
+    # The folded branch as well: expected is box x scale x fold with NO dPR
+    # term (the folded fixture carries data.scale 1.5), so a dPR term added
+    # inside either branch of `_region_box` meets this test.
+    assert "[Frame]" in folded_passes
+
+
+def test_a_junk_clip_zoom_claim_earns_no_claims_at_all(workspace) -> None:
+    """An unverifiable fold factor cannot corroborate a box, so it is treated
+    as junk numbers: the bare lead, no frame, no crash. This also retires the
+    old quirk where a junk top-level zoom withheld the frame while printing no
+    [Zoom] line, leaving the payload frameless and unexplained."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _folded_shot(clip_zoom=1e9, image_size=(280, 120)),
+    )
+
+    assert "region image 280x120 px as captured" in content
+    assert "clipped from document" not in content
+    assert "[Frame]" not in content
+    # The bare unparsed lead, NOT the mismatch contradiction: junk means
+    # nothing may be claimed, including the claim that a real box was missed.
+    assert "NOT the" not in content
+
+
 def test_a_frame_and_a_zoom_line_are_never_in_the_same_payload(workspace) -> None:
     """The invariant that replaced a contradiction.
 
@@ -1419,15 +1622,29 @@ def test_a_frame_and_a_zoom_line_are_never_in_the_same_payload(workspace) -> Non
     with the two sizes above" two lines later, with equal authority, where
     those two sizes are the crop and the viewport and have no conversion
     relationship at all. [Frame] and [Geometry] were keyed to each other and
-    this third voice was keyed to neither (review catch). Rather than teach it
-    to defer, the frame is withheld at any zoom, so the two lines are mutually
-    exclusive by construction. Pinned as the invariant, not as the wording."""
+    this third voice was keyed to neither (review catch). Under #194 the two
+    were exclusive by construction (frame withheld at any zoom); since #231 a
+    folded clip DOES carry a frame at zoom, so [Zoom] keeps the exclusivity
+    the way the geometry warning always has, by asking the frame function.
+    Pinned as the invariant, not as the wording, across both build shapes."""
     zoomed, _ = _invoke_raw(
         chrome_screenshot,
         {"tab_id": 1, "region": [200, 60, 140, 60]},
         _frame_shot(zoom=1.5),
     )
     assert "[Zoom]" in zoomed and "[Frame]" not in zoomed
+    # The region form states the fact and drops the ratio advice: "the two
+    # sizes above" are the crop and the viewport, which have no conversion
+    # relationship for a region (the #194 review's catch, reachable again
+    # now that frameless-zoomed regions exist beside framed ones).
+    assert "Convert with the two sizes above" not in zoomed
+
+    folded, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 60, 140, 60]},
+        _folded_shot(),
+    )
+    assert "[Frame]" in folded and "[Zoom]" not in folded
 
     unzoomed, _ = _invoke_raw(
         chrome_screenshot, {"tab_id": 1, "region": [200, 60, 140, 60]}, _frame_shot()
@@ -1620,9 +1837,12 @@ def test_region_frame_withholds_at_page_zoom_where_the_capture_itself_is_aimed_w
 
     assert "[Frame]" not in content
     assert "No chrome_act coordinate can be read off this image directly" in content
-    # And the zoom line goes back to naming the problem rather than deferring
-    # to a frame that is not there.
-    assert "Convert with the two sizes above before aiming." in content
+    # And the zoom line names the fact WITHOUT the ratio advice: for a region
+    # "the two sizes above" are the crop and the viewport, which have no
+    # conversion relationship (the advice survives only on plain captures,
+    # where it is true).
+    assert "[Zoom]: this page is at 150%." in content
+    assert "Convert with the two sizes above" not in content
     assert "do not apply the zoom yourself" not in content
 
 
@@ -1893,7 +2113,7 @@ def test_screenshot_geometry_survives_a_junk_payload(workspace) -> None:
     view = next(line for line in content.splitlines() if line.startswith("[Geometry]"))
     # Only the size we measured ourselves survives; every payload-supplied
     # number is dropped rather than repeated.
-    assert view == "[Geometry]: image 40x30 px. chrome_act coordinates are viewport CSS px, not image px."
+    assert view == "[Geometry]: image 40x30 px as captured. chrome_act coordinates are viewport CSS px, not image px."
 
 
 def test_screenshot_marks_a_full_page_image_as_not_the_viewport(workspace) -> None:
@@ -5196,16 +5416,17 @@ def test_tabs_zoom_puts_the_factor_on_the_wire_including_zero(workspace) -> None
 
 def test_tabs_docstring_teaches_the_zoom_contract(workspace) -> None:
     """Three facts an agent cannot recover from the payload alone, and each one
-    costs something real when missing: that zoom is worth READING before
-    trusting a coordinate (it is sticky per site, so a tab can be at 125% from
-    weeks ago and every capture is then aimed wrong, #231); that a set is
-    temporary rather than a rewrite of the user's preference; and that it does
-    not survive a navigation, which is how it would silently lapse mid-drive."""
+    costs something real when missing: that zoom is sticky per site (so a tab
+    can be at 125% from weeks ago) and captures handle it THEMSELVES since
+    #231, so an agent must not burn calls resetting zoom for coordinates;
+    that a set is temporary rather than a rewrite of the user's preference;
+    and that it does not survive a navigation, which is how it would silently
+    lapse mid-drive."""
     d = " ".join(chrome_tabs.description.split())
 
     assert '"zoom"' in d and "0.25 to 5.0" in d
-    assert "Read the zoom before trusting a coordinate" in d
-    assert "no [Frame]" in d, "names the consequence, not just the setting"
+    assert "Captures handle that themselves" in d
+    assert "still carries its [Frame]" in d, "names the retired limitation as retired"
     assert "TEMPORARY and confined to the one tab" in d
     assert "does NOT survive a navigation" in d
     assert "0 hands the tab back to the user's own setting" in d

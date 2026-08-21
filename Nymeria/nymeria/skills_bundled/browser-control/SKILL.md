@@ -416,17 +416,22 @@ need. A half-finished task the user can complete beats a rule quietly broken.
   can only see in the region, do not eyeball it back onto the full picture:
   the region payload's `[Frame]` line names the viewport CSS box that image
   covers, so a point maps to a `chrome_act` coordinate by its relative
-  position between those edges (rounded). If there is no `[Frame]`, the
+  position between those edges (rounded). A ZOOMED page gets a frame like any
+  other (the capture folds the zoom in and `[Geometry]` names the fold), so
+  zoom needs no workaround for coordinates. If there is no `[Frame]`, the
   payload says why: an off-screen region never has one because reaching past
-  the fold reflows the page, and no region has one on a ZOOMED page, where the
-  capture is aimed at the wrong box to begin with. On a zoomed page, reset the
-  zoom to 100% before you need coordinates:
-  `chrome_tabs(action="zoom", tab_id=N, zoom=1.0)`, then `zoom=0` when you are
-  done to hand the tab back to the user's own setting. Reading it costs
-  nothing (`action="zoom"` with no factor) and is worth doing on any tab you
-  did not open yourself, because zoom is sticky per site and a tab can be at
-  125% from something the user did weeks ago. A set is tab-scoped and does NOT
-  survive a navigation, so re-apply it after one.
+  the fold reflows the page, and a capture that could not read the page's
+  zoom withholds it rather than guess the aim. One legacy shape: a `[Zoom]`
+  line with no `[Frame]` and no stated reason means the extension build
+  predates the zoom fold, and resetting zoom to 1.0 restores coordinates
+  there. Zoom control exists when you want it anyway (legibility, layout
+  testing):
+  `chrome_tabs(action="zoom", tab_id=N, zoom=1.5)`, `zoom=0` to hand the tab
+  back to the user's own setting, and `action="zoom"` with no factor is a
+  free read, worth doing on a tab you did not open yourself, because zoom is
+  sticky per site and a tab can be at 125% from something the user did weeks
+  ago. A set is tab-scoped and does NOT survive a navigation, so re-apply it
+  after one.
 - Content missing entirely -> check for a `[View constraint]` note after the
   tree first: a modal dialog or fullscreen element prunes everything else
   from the read, so a near-empty tree means BLOCKED, not empty. Iframe

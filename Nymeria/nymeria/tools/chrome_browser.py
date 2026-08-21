@@ -603,28 +603,52 @@ class _RegionBox(NamedTuple):
     #: Width the PNG should have if Chrome really clipped as asked.
     expected_width: float
     status: str
+    #: The CSS-to-DIP fold to trust and state, or None when the AIM is
+    #: unverified and no frame may ride the image: the capture could not read
+    #: its zoom, the claimed fold disagrees with the page zoom the same
+    #: payload reports, or a legacy build's clip on a known-zoomed page.
+    verified_fold: Optional[float]
 
 
 def _region_box(
-    region: dict[str, Any], image_size: Optional[tuple[int, int]]
+    region: dict[str, Any],
+    image_size: Optional[tuple[int, int]],
+    page_zoom: Optional[float],
 ) -> _RegionBox:
-    """Decide ONCE whether a region's claimed box may be claimed at all.
+    """Decide ONCE whether a region's claimed box may be claimed at all,
+    and whether its AIM earned a coordinate frame.
 
     The extension echoes the clip it ASKED Chrome for, which is evidence that
     it asked, not that Chrome obeyed. The returned PNG is the independent
-    witness: a real clip comes back at width x scale.
+    witness for the clip's SIZE: a real clip comes back at
+    width x scale x clip_zoom (measured 2026-08-21; devicePixelRatio folds in
+    nothing, which settled #227). The bytes cannot witness the AIM, so that
+    verdict rests on agreement instead: `clip_zoom` (ext v0.23.0, #231) is
+    the CSS-to-DIP fold the extension multiplied into the wire clip, read
+    from the same metrics call as the payload's top-level zoom, so on an
+    honest capture the two are equal. A fold that disagrees with the
+    reported page zoom describes a capture that did not happen the way it
+    claims (a buggy or hostile payload could match the PNG size while aimed
+    elsewhere), and earns no frame.
 
     Shared so the descriptive sentence and the coordinate frame cannot
     disagree about whether the claim was earned. They are two statements
     about one fact, and the failure mode of letting each decide for itself is
     a frame offered over an image the sentence has just disowned.
 
-    "unparsed" means the numbers were junk, so nothing may be said.
+    "unparsed" means the numbers were junk, so nothing may be said; a junk
+    fold claim and a junk page zoom both land here, since an unverifiable
+    number can corroborate nothing (a junk top-level zoom used to withhold
+    the frame while [Zoom] stayed silent, frameless and unexplained).
     "mismatch" means they parsed but the PNG is not the size a real clip
     would have been, which is worth CONTRADICTING out loud rather than merely
-    dropping. Only "ok" earns a frame. `expected_width` rides along because
-    the rounding note downstream compares against it too, and deriving it
-    twice is a drift surface for no gain.
+    dropping. Only "ok" WITH a `verified_fold` earns a frame: `clip_zoom:
+    null` (zoom unreadable at the shutter, clip sent unmultiplied) keeps the
+    box claim but not the aim, and a legacy payload (no `clip_zoom` key)
+    keeps its pre-#231 rule, aim trusted unless the page is known zoomed.
+    `expected_width` rides along because the rounding note downstream
+    compares against it too, and deriving it twice is a drift surface for no
+    gain.
 
     NOTE the corroboration is SKIPPED when the image size could not be read
     at all, so "ok" then means "not contradicted", not "checked and passed".
@@ -639,7 +663,29 @@ def _region_box(
     ]
     scale = _number(region.get("scale"))
     if len(box) != 4 or scale is None:
-        return _RegionBox([], 0.0, 0.0, "unparsed")
+        return _RegionBox([], 0.0, 0.0, "unparsed", None)
+    if page_zoom is not None and not (_ZOOM_MIN <= page_zoom <= _ZOOM_MAX):
+        return _RegionBox([], 0.0, 0.0, "unparsed", None)
+    legacy = "clip_zoom" not in region
+    claimed = region.get("clip_zoom", 1.0)
+    if claimed is None:
+        fold = 1.0
+        verified: Optional[float] = None
+    else:
+        parsed_fold = _number(claimed)
+        if parsed_fold is None or not (_ZOOM_MIN <= parsed_fold <= _ZOOM_MAX):
+            return _RegionBox([], 0.0, 0.0, "unparsed", None)
+        fold = parsed_fold
+        if legacy:
+            verified = (
+                fold if page_zoom is None or abs(page_zoom - 1.0) < 0.005 else None
+            )
+        else:
+            verified = (
+                fold
+                if page_zoom is not None and abs(fold - page_zoom) < 0.005
+                else None
+            )
     # Absolute, and sized to what Chrome's rounding can actually cost. Chrome
     # rounds the clip box before rendering it, so a fractional element box
     # legitimately comes back a few pixels off (measured live: a 62x6 box at
@@ -655,19 +701,29 @@ def _region_box(
     # claimed 40 CSS px of width the image does not contain (review catch).
     # Both axes now, because the bottom edge was riding entirely on the width
     # check.
-    expected = box[2] * scale
-    expected_height = box[3] * scale
-    tolerance = max(4.0, 2 * scale + 2)
+    expected = box[2] * scale * fold
+    expected_height = box[3] * scale * fold
+    # Once the clip is expressed in DIP, Chrome rounds DIP, so one rounded
+    # DIP px costs `scale` image px per edge and `2 * scale + 2` would cover
+    # it. The window is scaled by the fold anyway, DELIBERATELY: that holds
+    # the tolerance at ~2 CSS px of box error at any zoom rather than
+    # tightening as zoom rises, and no zoomed-rounding measurement exists to
+    # justify the tighter form (the anchoring measurement above was taken at
+    # zoom 1, where the two units coincide). Do not "correct" this down.
+    tolerance = max(4.0, 2 * scale * fold + 2)
     if image_size and (
         abs(image_size[0] - expected) > tolerance
         or abs(image_size[1] - expected_height) > tolerance
     ):
-        return _RegionBox(box, scale, expected, "mismatch")
-    return _RegionBox(box, scale, expected, "ok")
+        return _RegionBox(box, scale, expected, "mismatch", None)
+    return _RegionBox(box, scale, expected, "ok", verified)
 
 
 def _region_lead(
-    region: dict[str, Any], image: str, image_size: Optional[tuple[int, int]]
+    region: dict[str, Any],
+    image: str,
+    image_size: Optional[tuple[int, int]],
+    page_zoom: Optional[float],
 ) -> str:
     """Describe a region image, claiming only what the bytes corroborate.
 
@@ -676,7 +732,9 @@ def _region_lead(
     from (200, 400)" over a picture of the whole viewport is the
     confident-wrong class this surface exists to remove.
     """
-    box, scale, expected, status = _region_box(region, image_size)
+    box, scale, expected, status, verified_fold = _region_box(
+        region, image_size, page_zoom
+    )
     if status == "unparsed":
         return f"region image {image}"
     if status == "mismatch":
@@ -699,6 +757,15 @@ def _region_lead(
         if image_size and abs(image_size[0] - expected) > 0.5
         else ""
     )
+    # Say the DIP fold out loud when there is one: at 150% the image carries
+    # scale x 1.5 pixels per CSS px, and "at capture scale 4" alone would
+    # invite the same by-hand width check this rider exists to spare, off by
+    # exactly the fold.
+    folded = (
+        f" with the {_num_text(verified_fold * 100)}% page zoom folded in"
+        if verified_fold is not None and abs(verified_fold - 1.0) >= 0.005
+        else ""
+    )
     # "document" is load-bearing, not decoration. This origin is DOCUMENT
     # space, it sits two clauses from the viewport-space "scrolled to (x, y)"
     # and one line from [Frame]'s viewport-space edges, and unlabelled it
@@ -706,7 +773,7 @@ def _region_lead(
     # (review catch).
     return (
         f"region image {image}, clipped from document ({x}, {y}) {w}x{h} CSS px at "
-        f"capture scale {_num_text(scale)}{trimmed}{rounded}"
+        f"capture scale {_num_text(scale)}{folded}{trimmed}{rounded}"
     )
 
 
@@ -771,13 +838,20 @@ def _region_frame_sentence(
 
     Withheld rather than guessed whenever it cannot be grounded: no scroll in
     the payload, junk numbers, a box the bytes contradict, a zero-extent box,
-    a capture that reached past the fold, or ANY page zoom. In practice the
-    extension refuses a region capture outright when the page will not report
-    its scroll, so the scroll-less branch is a belt on top of braces.
+    a capture that reached past the fold, or a page zoom the clip did not
+    account for. In practice the extension refuses a region capture outright
+    when the page will not report its scroll, so the scroll-less branch is a
+    belt on top of braces.
 
-    The zoom case is the one that is not about this function's inputs being
-    untrustworthy: they are fine, the CAPTURE is aimed wrong upstream, and no
-    check downstream of it can tell. See the comment at that guard.
+    The zoom verdict is `_region_box`'s (#231): a frame rides only an "ok"
+    box WITH a `verified_fold`, meaning the fold the clip claims agrees with
+    the page zoom the same payload reports (they are one read
+    extension-side, so disagreement is a capture lying about itself) and the
+    bytes corroborate the folded size; for a legacy payload without the
+    echo, the pre-fix rule survives, aim trusted unless the page is known
+    zoomed. `clip_zoom: null` (zoom unreadable at the shutter, clip sent
+    unmultiplied) is the unverified aim this policy exists to stop, and the
+    geometry warning names that case out loud.
     """
     region = data.get("region") if isinstance(data.get("region"), dict) else None
     if not region:
@@ -801,27 +875,21 @@ def _region_frame_sentence(
     # captures. OR-ing can only ever withhold more, so it cannot weaken the
     # "no frame beside a [Reflow] line" invariant (review catch).
     #
-    # Also withheld at page zoom, where the CAPTURE ITSELF is aimed wrong and
-    # nothing downstream can tell. CDP's clip is documented in DEVICE
-    # INDEPENDENT px; the extension builds it from CSS px (a bounding rect plus
-    # the scroll) and never applies `cssVisualViewport.zoom`, which it reads
-    # and only reports. So at 150% Chrome clips a box a third of the way off
-    # the one echoed back, while the returned PNG still measures
-    # `clip.width * scale`, so `_region_box` corroborates happily. Measured on
-    # the numbers: a 140x60 element at viewport (700, 400) is captured at
-    # (300, 153) and the frame would claim (700, 400), 423 x 257 CSS px out.
-    # This is NOT #227 wearing a different hat: that one is devicePixelRatio,
-    # and it fails LOUDLY by blowing the width check. Zoom disturbs the width
-    # check not at all. Withheld until the extension multiplies the rect by
-    # zoom (#231), because the alternative is a confident misclick on the one
-    # axis the payload would otherwise have flagged: before this pass a zoomed
-    # region got a flat refusal AND a [Zoom] line saying the two spaces
-    # differ, and publishing a frame silences both.
-    zoom = _number(data.get("zoom"))
-    if zoom is not None and abs(zoom - 1.0) >= 0.005:
-        return ""
-    box, scale, _expected, status = _region_box(region, image_size)
-    if status != "ok" or scale <= 0:
+    # The aim verdict is `_region_box`'s (#231): a frame rides only an "ok"
+    # box WITH a verified fold. CDP's clip is DEVICE INDEPENDENT px; a clip
+    # built from CSS px without the `cssVisualViewport.zoom` multiply is
+    # aimed ~1/zoom toward the page origin, and nothing downstream can tell
+    # because the PNG still measures sent-width x scale (MEASURED live
+    # 2026-08-21: a ref-measured element at 150% came back as blank margin
+    # while the size check passed). Ext v0.23.0 multiplies the wire clip and
+    # echoes the factor as `clip_zoom`; the verdict is the AGREEMENT between
+    # that claim and the page zoom the same payload reports, plus the byte
+    # check, both decided in `_region_box` so this function and the
+    # sentences cannot disagree about them.
+    box, scale, _expected, status, verified_fold = _region_box(
+        region, image_size, _number(data.get("zoom"))
+    )
+    if status != "ok" or verified_fold is None or scale <= 0:
         return ""
     # A zero-extent box has no "across" to read a position against, so the
     # frame would divide a point by nothing. The extension refuses a zero-size
@@ -883,11 +951,18 @@ def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int
     scroll_y = _number(scroll.get("y"))
     region = data.get("region") if isinstance(data.get("region"), dict) else None
 
-    image = f"{image_size[0]}x{image_size[1]} px" if image_size else "of unknown size"
+    # "as captured" is load-bearing (#228): an image over the model's pixel
+    # ceiling is downscaled in transit (`core/generated_image_context.py`),
+    # and its note names the delivered size. Unlabelled, this line and that
+    # note state two different sizes for one image with equal authority, and
+    # the model has no way to know this one is the raw PNG's. The frame is
+    # immune (read by fraction), so the label is the honest fix that predicts
+    # nothing about the fitter.
+    image = f"{image_size[0]}x{image_size[1]} px as captured" if image_size else "of unknown size"
 
     lead = ""
     if region:
-        lead = _region_lead(region, image, image_size)
+        lead = _region_lead(region, image, image_size, _number(data.get("zoom")))
     elif data.get("full_page"):
         lead = f"full-page image {image}, spanning the whole document rather than the viewport"
     elif image_size:
@@ -917,11 +992,33 @@ def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int
         # parallel predicate: the two lines must never disagree about whether
         # a frame exists, and re-deriving a handful of arithmetic ops is a
         # cheaper guarantee than keeping two conditions in step.
-        warning = (
-            " Convert with [Frame] below, not off the image directly."
-            if _region_frame_sentence(data, image_size)
-            else " No chrome_act coordinate can be read off this image directly."
-        )
+        if _region_frame_sentence(data, image_size):
+            warning = " Convert with [Frame] below, not off the image directly."
+        else:
+            warning = " No chrome_act coordinate can be read off this image directly."
+            # A withhold explains itself (#194's rule). Two causes the
+            # payload can name: `clip_zoom: null` says the extension could
+            # not read the page's zoom at the shutter and sent the clip
+            # unmultiplied; a fold claim the page zoom does not confirm
+            # (possible only from a buggy or tampered payload, since the two
+            # are one read extension-side) gets the generic form. This reads
+            # the dict and `_region_box` rather than re-deriving the
+            # verdict; the cause split is phrasing the verdict deliberately
+            # collapses.
+            if "clip_zoom" in region and region.get("clip_zoom") is None:
+                warning += (
+                    " The page's zoom could not be read at capture, so this"
+                    " crop may be aimed elsewhere than the box above."
+                )
+            elif "clip_zoom" in region:
+                page_zoom = _number(data.get("zoom"))
+                rb = _region_box(region, image_size, page_zoom)
+                if rb.status == "ok" and rb.verified_fold is None:
+                    warning += (
+                        " The capture's zoom claim could not be verified"
+                        " against the page zoom, so this crop may be aimed"
+                        " elsewhere than the box above."
+                    )
     elif data.get("full_page"):
         # No frame for a full page, deliberately: it pays captureBeyondViewport,
         # which permanently reflows the page and moves the very viewport a
@@ -934,8 +1031,8 @@ def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int
     return f"[Geometry]: {body}.{warning}"
 
 
-def _zoom_sentence(data: dict[str, Any]) -> str:
-    """Name a page zoom, and only when there is one.
+def _zoom_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int]]) -> str:
+    """Name a page zoom, and only when there is one and no frame answers it.
 
     At 100% this line would be noise on every screenshot, and the geometry
     line above already carries the sizes. It says nothing about HOW zoom and
@@ -949,14 +1046,29 @@ def _zoom_sentence(data: dict[str, Any]) -> str:
     frame it was the ratio rule the region branch had just been rewritten to
     stop offering, restated two lines later with equal authority. [Frame] and
     [Geometry] were keyed to each other and this third voice was keyed to
-    neither (review catch). It needs no keying now: a frame is WITHHELD at any
-    page zoom (the capture is aimed wrong upstream, see
-    `_region_frame_sentence`), and this line is silent without one, so the two
-    are mutually exclusive by construction rather than by agreement.
+    neither (review catch). Under #194 the two were mutually exclusive by
+    construction (a frame was withheld at ANY zoom); since #231 a frame DOES
+    ride a zoomed capture whose clip folded the zoom in, so the exclusivity
+    is now kept the same way the geometry warning keeps agreement with the
+    frame: by asking the frame function itself. With a frame published, the
+    fold is already named in [Geometry] and conversion is by fraction, so
+    this line has nothing true left to add.
     """
     zoom = _number(data.get("zoom"))
     if zoom is None or not (_ZOOM_MIN <= zoom <= _ZOOM_MAX) or abs(zoom - 1.0) < 0.005:
         return ""
+    if _region_frame_sentence(data, image_size):
+        return ""
+    # For a frameless REGION the ratio advice would be wrong, not merely
+    # noisy: "the two sizes above" are the crop and the viewport, which have
+    # no conversion relationship (the #194 review's exact catch, previously
+    # unreachable because a zoomed region was always frameless and this line
+    # always spoke; the fix re-populated the frameless-zoomed set, so the
+    # advice is now keyed to the shapes it is true for). The fact still
+    # earns its line: a frameless zoomed region is exactly where the agent
+    # must know the page is zoomed.
+    if isinstance(data.get("region"), dict):
+        return f"[Zoom]: this page is at {_num_text(zoom * 100)}%."
     return (
         f"[Zoom]: this page is at {_num_text(zoom * 100)}%, so image pixels and CSS "
         "coordinates differ. Convert with the two sizes above before aiming."
@@ -1069,7 +1181,7 @@ def _screenshot_honesty_lines(
         for p in (
             _viewport_sentence(data, image_size),
             _region_frame_sentence(data, image_size),
-            _zoom_sentence(data),
+            _zoom_sentence(data, image_size),
             _reflow_sentence(data),
             _flat_image_sentence(raw, data),
         )
@@ -1546,12 +1658,14 @@ async def chrome_tabs(
     zoom: for action="zoom". Omit it to READ the tab's zoom, give a factor
         (0.25 to 5.0, so 1.5 is 150%) to set it, or 0 to undo a set.
 
-    Read the zoom before trusting a coordinate on an unfamiliar tab. Page zoom
-    is per-site and sticky in Chrome, so a tab can be sitting at 125% from
-    something the user did weeks ago, and at any zoom but 100% a region
-    capture is aimed at the wrong box and publishes no [Frame] (#231). "zoom"
-    is how you find that out, and how you fix it: set 1.0, do the work, then
-    send 0.
+    Page zoom is per-site and sticky in Chrome, so a tab can be sitting at
+    125% from something the user did weeks ago. Captures handle that
+    themselves (a zoomed region capture folds the zoom in and still carries
+    its [Frame]; if you instead see a [Zoom] line with no [Frame] and no
+    stated reason, the extension build predates the fold, and zoom=1.0
+    restores coordinates); "zoom" is for when you want the zoom itself: read
+    it (omit the factor, free), change it for legibility or layout testing,
+    then send 0 to hand the tab back to the user's own setting.
 
     Setting is deliberately TEMPORARY and confined to the one tab. Chrome's
     ordinary zoom is per-site and permanent, and quietly rewriting a user's
@@ -2697,9 +2811,14 @@ async def chrome_screenshot(
     survives the image being downscaled on its way to you. It holds until the
     page scrolls. No [Frame] means the geometry could not be trusted: most
     often the capture reached off screen and reflowed the page it would be
-    measured against, and it is also withheld on any zoomed page, where the
-    capture itself is aimed at the wrong box. The other lines say what could
-    not be corroborated.
+    measured against, and it is also withheld when the extension could not
+    read the page's zoom to aim the clip (the payload says so when that is
+    the case). A zoomed page is otherwise no exception: the capture folds
+    the zoom in and the frame stays valid. Exception to the exception: an
+    older extension build that does not fold the zoom gets the pre-fold
+    withhold at any zoom, recognizable as a [Zoom] line with no [Frame] and
+    no stated reason; resetting zoom to 1.0 restores coordinates there. The
+    other lines say what could not be corroborated.
 
     Trust that viewport over one you measured yourself a moment earlier.
     Driving a tab puts Chrome's "being debugged" infobar on it, which shortens
