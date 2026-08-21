@@ -1942,6 +1942,17 @@ def create_llm_with_tools(config: LLMConfig, tools: List[BaseTool]) -> BaseChatM
         # Upstream bug filed against ggml-org/llama.cpp — this sort is a
         # harmless client-side workaround (tool order does not affect model
         # behavior, only the grammar ordering llama.cpp derives from it).
+        #
+        # INDEPENDENTLY LOAD-BEARING for Anthropic prompt caching: part of
+        # the tool set (the extras beyond the ordered core list) reaches
+        # here through set iteration (select_tools_for_graph), whose order
+        # varies per interpreter under hash randomization (PYTHONHASHSEED
+        # is unset in production), and tools[] is the FIRST segment of the
+        # cache prefix (tools -> system -> messages), so an unsorted list
+        # would bust the entire prompt cache on every process restart. Keep
+        # this sort even if the llama.cpp bug above is fixed; the ratchet
+        # is tests/test_tool_bind_order.py. Verified 2026-08-21
+        # (shipped/07).
         sorted_tools = sorted(tools, key=lambda t: (-len(t.name), t.name))
 
         return llm.bind_tools(sorted_tools)
@@ -2338,7 +2349,9 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
         # api modes (plumbing verified against _get_request_payload). On the
         # CLIProxy Codex path this is what pins the upstream session across
         # turns; without it every request gets a fresh UUID and the prefix
-        # cache never hits (measured live: 0 vs 62% cached tokens). Local
+        # cache never hits (measured live: 0 vs 62% cached tokens at #150;
+        # re-measured 2026-08-21 at 0 vs 97% on a fully stable probe prefix,
+        # shipped/07). Local
         # OpenAI-compatible servers are skipped (they gain nothing from a
         # routing hint and strict ones 400 on unknown body fields), but a
         # CLIProxy base is NOT "local" for this purpose even on localhost:

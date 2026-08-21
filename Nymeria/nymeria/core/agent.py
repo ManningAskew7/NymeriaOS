@@ -1387,11 +1387,16 @@ class NymeriaAgent:
         turn_input = summed.prompt_tokens
         turn_output = summed.completion_tokens
 
-        if cost_unavailable:
-            return turn_input, turn_output, None, True
-
-        rates = pricing_table.get_rates(provider, model)
-        cost = cost_calc.compute_cost_usd(summed, rates)
+        rates = None
+        cost = None
+        if not cost_unavailable:
+            rates = pricing_table.get_rates(provider, model)
+            cost = cost_calc.compute_cost_usd(summed, rates)
+        # Log for EVERY provider class, including subscription/local routes
+        # where no dollar figure exists: the cached/cache-write counts here
+        # are the only live evidence that prompt caching works on those
+        # routes (backlog #200; before 2026-08-21 the unavailable branch
+        # returned above this line, so CLIProxy threads never logged it).
         logger.info(
             "[COST] thread=%s provider=%s model=%s tokens=%d/%d cached=%d cache_write_5m=%d cache_write_1h=%d reasoning=%d provider_reported=%s rates_source=%s computed=%s",
             thread_id,
@@ -1405,9 +1410,9 @@ class NymeriaAgent:
             summed.reasoning_tokens,
             summed.provider_reported_cost_usd,
             getattr(rates, "source", None) if rates else None,
-            cost,
+            "n/a (subscription/local)" if cost_unavailable else cost,
         )
-        return turn_input, turn_output, cost, False
+        return turn_input, turn_output, cost, cost_unavailable
 
     def _record_turn_cost(
         self,
