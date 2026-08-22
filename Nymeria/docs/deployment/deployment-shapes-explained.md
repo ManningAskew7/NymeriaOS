@@ -180,6 +180,13 @@ The trade-offs:
 - More moving parts to operate.
 - The separated processes need a bus to talk to each other (Redis).
 - The separated processes need a shared database server (Postgres).
+- The agent's filesystem is the container's, not the host's. A slim
+  instance shares the host filesystem, so "read this file" with a host
+  path works there and fails in Docker unless that path is mounted; the
+  same prompt genuinely behaves differently on the two shapes. The file
+  tools say so on a deep not-found (rather than a bare "does not
+  exist"), and the practical alternatives are pasting the content into
+  the conversation or targeting an instance that runs on that machine.
 
 These costs are worthwhile when you are serving more than yourself or
 when uptime matters.

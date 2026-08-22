@@ -356,10 +356,22 @@ async def _replay_turn_events(
             if etype in ("done", "error"):
                 break
 
+    # #199: the thread_id-only / evicted-dispatch collect is the RECOVERY
+    # path the collect docstring routes people to, so it must prove it is
+    # alive the same way the dispatch wait does, or the fix's advertised
+    # fallback keeps the very defect it exists to escape (review catch).
+    drain = asyncio.create_task(_drain())
     try:
-        await asyncio.wait_for(_drain(), timeout=budget)
-    except asyncio.TimeoutError:
-        return events, None, box["state"]
+        if not await _wait_with_progress(drain, budget):
+            drain.cancel()
+            try:
+                await drain
+            except (asyncio.CancelledError, Exception):
+                # Giving up on the wait: the cancellation (or any late drain
+                # error) carries nothing the partial `events` do not.
+                pass
+            return events, None, box["state"]
+        await drain
     except NymeriaAPIError as exc:
         if exc.status_code == 404:
             return events, (
@@ -489,7 +501,11 @@ async def nymeria_chat(
     backend's own tool_timeout). Passing it with mode="handoff" is an error
     rather than a silent no-op, because a handoff never waits. Your MCP
     client's transport timeout must EXCEED wait_seconds or the client aborts
-    first and you get a transport error instead of a partial transcript.
+    first and you get a transport error instead of a partial transcript. The
+    wait emits MCP progress notifications (they reach you only if your client
+    sent a progressToken); when in doubt, keep wait_seconds under your
+    client's idle ceiling and continue the turn with nymeria_chat_collect,
+    whose docstring carries the polling pattern.
 
     if_busy: "queue" (default) lets the prompt join a busy thread's sub-turn
     queue; "error" refuses instead, so a caller that needs a clean turn is not
@@ -622,13 +638,61 @@ def _overflow_note(ctx: Dict[str, Any]) -> Optional[str]:
     )
 
 
+# How often a blocking wait proves it is alive (#199). Cheap on the wire (a
+# 30-minute wait is ~180 tiny notifications) and far under the 300s idle
+# ceiling the pattern was measured against.
+_PROGRESS_INTERVAL_S = 10.0
+
+
+async def _wait_with_progress(task: "asyncio.Task[Any]", seconds: float) -> bool:
+    """Wait up to ``seconds`` for ``task``, proving the call is alive (#199).
+
+    Every long MCP wait used to be one silent ``wait_for``, indistinguishable
+    on the wire from a hung call, so a client's idle timeout (Claude Code:
+    300s) aborted collects over turns that were healthy and still running.
+    This waits in ``_PROGRESS_INTERVAL_S`` slices and emits an MCP progress
+    notification between them. Progress only reaches clients that sent a
+    ``progressToken`` (the SDK no-ops otherwise), which is why the tool
+    docstrings still teach the polling shape as the fallback. The channel is
+    best-effort by contract: acquisition failure downgrades to a plain wait,
+    any send failure drops it for the rest of the wait, and a heartbeat is
+    never attempted past the deadline (staying under the caller's budget is
+    the one property this exists to protect).
+
+    Returns True when the task finished (its result or exception is the
+    CALLER's to collect), False on timeout. Deliberately does NOT cancel on
+    timeout: one caller re-waits the same event, another wants the partial
+    drain kept, so cancellation policy stays at the call site.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    try:
+        reporter = mcp.get_context()
+    except Exception:
+        reporter = None
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return task.done()
+        done, _ = await asyncio.wait({task}, timeout=min(_PROGRESS_INTERVAL_S, remaining))
+        if done:
+            return True
+        if reporter is not None and deadline - loop.time() > 0:
+            elapsed = seconds - max(deadline - loop.time(), 0.0)
+            try:
+                await reporter.report_progress(round(elapsed, 1), seconds)
+            except Exception:
+                reporter = None
+
+
 async def _await_dispatch(ctx: Dict[str, Any], seconds: int) -> bool:
     """Wait up to ``seconds`` for a dispatch to finish. True if it did."""
+    waiter = asyncio.create_task(ctx["done_event"].wait())
     try:
-        await asyncio.wait_for(ctx["done_event"].wait(), timeout=seconds)
-        return True
-    except asyncio.TimeoutError:
-        return False
+        finished = await _wait_with_progress(waiter, seconds)
+    finally:
+        waiter.cancel()
+    return finished or ctx["done_event"].is_set()
 
 
 # Background chat dispatch state: lets a caller fire a chat and return before
@@ -886,6 +950,16 @@ async def nymeria_chat_collect(
     ``resume`` token when the turn is still running. On timeout the transcript
     is a PARTIAL and the turn keeps running: nothing is cancelled by giving up
     on waiting.
+
+    POLLING IS THE EXPECTED SHAPE for long turns, not a failure mode. A
+    collect emits MCP progress notifications while it waits, but they only
+    reach clients that sent a ``progressToken``, and most clients abort any
+    call that stays silent past their own idle ceiling (Claude Code: 300s
+    unless its per-server timeout was raised). So keep ``timeout_seconds``
+    comfortably under your client's ceiling and, on each "timeout" result,
+    simply call collect again with the fresh ``resume`` token: the turn keeps
+    running between calls and nothing is lost. A client-side abort mid-collect
+    loses nothing either; re-attach with ``thread_id`` alone.
 
     ``verbosity`` shapes the transcript: "verbose" (tool args and results),
     "concise" (thinking and tool names/status, no payloads), or "chat" (final

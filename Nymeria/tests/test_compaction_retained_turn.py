@@ -222,6 +222,98 @@ def test_memory_seed_marker_renders_as_compaction_notice():
     assert [e for e in history if e["role"] == "user"][0]["content"] == "next question"
 
 
+def _resume_tail(*, teamed: bool = False):
+    """The retained tail exactly as build_resume_compaction_tail shapes it."""
+    opener = HumanMessage(content="[Session resume] ... <summary> ...", id="seed-0")
+    opener.additional_kwargs = {
+        "internal": True,
+        "internal_type": "memory_seed_marker",
+        "summary": "## Active Goal\nship",
+        "messages_removed": 9,
+        "auto_resumed": True,
+    }
+    calls = [
+        {"id": "g", "name": "memory_read", "args": {"scope": "global"}, "type": "tool_call"},
+        {"id": "t", "name": "memory_read", "args": {"scope": "thread"}, "type": "tool_call"},
+    ]
+    tools = [
+        ToolMessage(content="GLOBAL", tool_call_id="g", name="memory_read", id="seed-2"),
+        ToolMessage(content="THREAD", tool_call_id="t", name="memory_read", id="seed-3"),
+    ]
+    if teamed:
+        calls.append(
+            {"id": "m", "name": "memory_read", "args": {"scope": "team"}, "type": "tool_call"}
+        )
+        tools.append(
+            ToolMessage(content="TEAM", tool_call_id="m", name="memory_read", id="seed-4")
+        )
+    return [opener, AIMessage(content="", id="seed-1", tool_calls=calls), *tools]
+
+
+def test_mid_turn_compaction_keeps_the_resumed_final_answer_visible():
+    """#206: the retained tail is terminal, so a mid-turn compaction resumes
+    the turn with NO human message after the opener. The old until-next-human
+    window swallowed the resumed turn's tool steps and its final answer, so a
+    polling client read 'Context compacted' alone and 'still running' forever."""
+    messages = _resume_tail() + [
+        AIMessage(
+            content="",
+            id="p1",
+            tool_calls=[
+                {"id": "r1", "name": "file_read", "args": {"path": "x"}, "type": "tool_call"}
+            ],
+        ),
+        ToolMessage(content="BODY", tool_call_id="r1", name="file_read", id="p2"),
+        AIMessage(content="Here is the final answer.", id="p3"),
+    ]
+
+    history = format_conversation_history(messages, thread_id="t-206")
+
+    assistants = [e for e in history if e["role"] == "assistant"]
+    assert len(assistants) == 1, "the resumed turn's answer must be visible"
+    assert assistants[0]["content"] == "Here is the final answer."
+    # The seeded read-back stays hidden: this is what fails if someone "fixes"
+    # #206 by simply clearing the window, and it pins the negative half.
+    flat = str(history)
+    assert "memory_read" not in flat
+    assert "GLOBAL" not in flat and "THREAD" not in flat
+    # The resumed turn's own tool step is projected.
+    assert "file_read" in flat
+
+
+def test_teamed_tail_resumes_visible_too():
+    messages = _resume_tail(teamed=True) + [
+        AIMessage(content="Teamed resume answer.", id="p1"),
+    ]
+    history = format_conversation_history(messages, thread_id="t-206b")
+    assistants = [e for e in history if e["role"] == "assistant"]
+    assert [a["content"] for a in assistants] == ["Teamed resume answer."]
+    assert "TEAM" not in str(history)
+
+
+def test_the_agents_own_memory_read_after_the_seed_stays_visible():
+    """The seed's read-back consumes the window, so a resumed agent whose own
+    first act is a memory_read keeps that step in the projection."""
+    messages = _resume_tail() + [
+        AIMessage(
+            content="",
+            id="p1",
+            tool_calls=[
+                {"id": "own", "name": "memory_read", "args": {"scope": "thread"}, "type": "tool_call"}
+            ],
+        ),
+        ToolMessage(content="OWN-READ", tool_call_id="own", name="memory_read", id="p2"),
+        AIMessage(content="Done.", id="p3"),
+    ]
+    history = format_conversation_history(messages, thread_id="t-206c")
+    assert [e["content"] for e in history if e["role"] == "assistant"] == ["Done."]
+    flat = str(history)
+    # The agent's own read is projected (the only memory_read that may appear,
+    # since the seed's is hidden: GLOBAL/THREAD are the seed results).
+    assert "memory_read" in flat
+    assert "GLOBAL" not in flat and "THREAD" not in flat
+
+
 # ---------------------------------------------------------------------------
 # /compact <focus instruction> steering (dev-todo #48)
 # ---------------------------------------------------------------------------

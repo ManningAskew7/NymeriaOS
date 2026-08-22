@@ -67,6 +67,7 @@ from ..core.chrome_subscribers import (
     chrome_connect_count,
     chrome_disconnect_age,
     chrome_extension_version,
+    chrome_last_connect_age,
     is_chrome_connected,
 )
 from ..core.event_bus import publish_autonomous_event
@@ -3400,9 +3401,98 @@ def _health_notes(data: dict[str, Any], *, announced: Optional[str] = None) -> s
     return "\n".join(lines)
 
 
+def _connection_probe_note(*, connected: bool, disconnect_age: Optional[float]) -> str:
+    """The tab-free probe's honesty lines, all our own text (#223).
+
+    The standing line carries the load-bearing caveat: the registry proves a
+    stream is SUBSCRIBED, and the failure this probe exists for (a rebuild
+    swapping files under a live extension) is exactly where subscription and
+    execution diverge, so the weaker claim must say it is one. The branch
+    lines interpolate only our own monotonic-clock ages, never
+    extension-supplied strings: those stay inside the fence with the payload.
+    """
+    lines = [
+        "[No tab_id: this is a CONNECTION PROBE answered from the backend's "
+        "own records, with no command sent to the extension. It proves an "
+        "event stream is subscribed and which build last announced itself, "
+        "never that commands execute: a rebuild can swap files under a live "
+        "extension and leave its stream up while every command fails. Pass a "
+        "tab_id for the health check that proves execution.]"
+    ]
+    if not connected:
+        if disconnect_age is not None and disconnect_age <= _RECONNECT_GRACE_S:
+            lines.append(
+                f"[The last extension stream dropped {disconnect_age:.0f}s ago, "
+                "inside the worker-recycle window: Chrome idle-kills the MV3 "
+                "worker and a heartbeat reconnects it within about a minute. "
+                "Retry shortly before concluding the extension is gone.]"
+            )
+        elif disconnect_age is not None:
+            lines.append(
+                f"[The last extension stream dropped {disconnect_age:.0f}s ago "
+                "and has not returned: the extension is likely gone (Chrome "
+                "closed, the extension disabled, or its backend URL changed).]"
+            )
+        else:
+            # In-process, disconnect_age None means never-connected THIS
+            # process lifetime; the process's own age decides how to read
+            # that (review catch: without it the branch could not tell a
+            # just-bounced backend from a genuinely absent extension).
+            boot_age = time.monotonic() - _PROCESS_START
+            if boot_age <= _RECONNECT_GRACE_S:
+                lines.append(
+                    f"[The backend started {boot_age:.0f}s ago and a restart "
+                    "wipes this in-process record: a connected extension "
+                    "resubscribes on its own within ~75s of the backend "
+                    "coming back, so retry shortly before concluding "
+                    "anything.]"
+                )
+            else:
+                lines.append(
+                    "[No extension stream has subscribed this backend-process "
+                    "lifetime. This record resets on a backend restart, so "
+                    "right after a deploy it reads unknown rather than "
+                    "absent: a connected extension resubscribes on its own "
+                    "within ~75s of the backend coming back.]"
+                )
+    return "\n".join(lines)
+
+
+def _connection_probe_result(user_id: str, thread_id: str) -> str:
+    """chrome_health with no tab_id: answer from registry state, dispatch nothing.
+
+    A novel shape for this file on purpose (every other path rides
+    ``_dispatch``): the point is a probe that cannot disturb driving state,
+    which means no command may cross the wire at all. The payload stays
+    fenced because ``extension_version`` is the string the extension
+    announced, not ours.
+    """
+    connected = is_chrome_connected(user_id)
+    data: dict[str, Any] = {"connected": connected}
+    version = chrome_extension_version(user_id)
+    if version:
+        data["extension_version"] = version
+    announce_age = chrome_last_connect_age(user_id)
+    if announce_age is not None:
+        data["announced_age_s"] = round(announce_age, 1)
+    connects = chrome_connect_count(user_id)
+    if connects:
+        data["connects_this_process"] = connects
+    disconnect_age = chrome_disconnect_age(user_id)
+    if not connected and disconnect_age is not None:
+        data["disconnect_age_s"] = round(disconnect_age, 1)
+    body, note = _cap(
+        _format_result({"ok": True, "data": data}),
+        thread_id=thread_id,
+        prefix="chrome-health",
+    )
+    extra = _connection_probe_note(connected=connected, disconnect_age=disconnect_age)
+    return f"{_fence(body)}{_outside_fence(body, note=note, extra=extra)}"
+
+
 @tool
 async def chrome_health(
-    tab_id: int,
+    tab_id: Optional[int] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """One read that says whether a Chrome tab is healthy and what state it is in.
@@ -3411,6 +3501,15 @@ async def chrome_health(
     something that failed: it replaces scattering probes across chrome_console,
     chrome_network and a throwaway action. It has NO side effects: it does not
     attach the tab, start capture, or touch the page.
+
+    Call it with NO tab_id for a session-start CONNECTION PROBE: answered
+    entirely from the backend's own records, nothing is sent to the extension,
+    so it works before any tab exists and cannot disturb driving state. It
+    reports whether an extension event stream is subscribed, the build it
+    announced, and how long ago; that proves subscription, NOT execution (the
+    result says so), so use it to poll for a connection or a new build after a
+    deploy without paying a reload, and pass a tab_id when you need proof that
+    commands execute.
 
     The payload carries: extension_version, the build that EXECUTED this
     command, so a round verifying a just-shipped capability can tell "broken"
@@ -3456,7 +3555,10 @@ async def chrome_health(
     Absent keys mean unknown or none, never fine. Ages are age_ms
     (milliseconds ago).
     """
-    announced = chrome_extension_version(get_user_id(config))
+    user_id = get_user_id(config)
+    if tab_id is None:
+        return _connection_probe_result(user_id, get_thread_id(config))
+    announced = chrome_extension_version(user_id)
     return await _dispatch(
         command_type="health",
         args={"tab_id": tab_id},

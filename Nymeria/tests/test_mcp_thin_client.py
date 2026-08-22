@@ -1653,3 +1653,132 @@ def test_a_running_turns_token_carries_the_turn_id_off_the_wire(monkeypatch):
 
     assert running["status"] == "running"
     assert mcp_server._decode_resume(running["resume"])["turn_id"] == "turn-42"
+
+
+# ---- #199: a blocking wait proves it is alive, and teaches polling ----
+
+
+def test_a_long_wait_reports_progress_while_it_waits(monkeypatch):
+    """The wait was one silent wait_for, so a client idle timeout aborted
+    collects over healthy turns. Losing the notifications is the regression."""
+    import nymeria.mcp_server as mcp_server
+
+    calls: list[tuple[float, float]] = []
+
+    class _Reporter:
+        async def report_progress(self, progress, total=None, message=None):
+            calls.append((progress, total))
+
+    monkeypatch.setattr(mcp_server.mcp, "get_context", lambda: _Reporter())
+    monkeypatch.setattr(mcp_server, "_PROGRESS_INTERVAL_S", 0.02)
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        ctx = {"done_event": asyncio.Event()}
+        started = loop.time()
+        done = await mcp_server._await_dispatch(ctx, 0.2)
+        return done, loop.time() - started
+
+    done, elapsed = asyncio.run(_run())
+
+    assert done is False
+    assert len(calls) >= 2, "a wait that outlives the interval must notify"
+    assert all(total == 0.2 for _, total in calls)
+    progresses = [p for p, _ in calls]
+    assert progresses == sorted(progresses), "progress must not run backwards"
+    # The slicing must not stretch the budget: a regression that recomputed
+    # the deadline per slice would wait forever and still notify happily.
+    assert elapsed < 0.2 * 1.5
+
+
+def test_the_replay_path_reports_progress_too(monkeypatch):
+    """The thread_id-only collect is the advertised recovery path, so it must
+    prove it is alive the same way the dispatch wait does (review catch)."""
+    import nymeria.mcp_server as mcp_server
+
+    calls: list[tuple[float, float]] = []
+
+    class _Reporter:
+        async def report_progress(self, progress, total=None, message=None):
+            calls.append((progress, total))
+
+    class _HangingReplayClient:
+        async def stream_turn_replay(self, **_kwargs):
+            yield {"type": "turn_attach", "state": "running"}
+            yield {"type": "response", "content": "partial"}
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(mcp_server.mcp, "get_context", lambda: _Reporter())
+    monkeypatch.setattr(mcp_server, "_PROGRESS_INTERVAL_S", 0.02)
+    monkeypatch.setattr(mcp_server, "_get_client", lambda: _HangingReplayClient())
+
+    events, error, state = asyncio.run(
+        mcp_server._replay_turn_events("thread-x", "u1", budget=0.2)
+    )
+
+    assert error is None
+    assert state == "running"
+    assert [e["type"] for e in events] == ["response"], "the partial drain is kept"
+    assert len(calls) >= 2, "the recovery path must notify while it waits"
+
+
+def test_a_broken_progress_channel_never_breaks_the_wait(monkeypatch):
+    """Progress is best-effort by contract: most clients send no
+    progressToken, and a raise from the channel must not fail the collect."""
+    import nymeria.mcp_server as mcp_server
+
+    attempts = []
+
+    class _Broken:
+        async def report_progress(self, *args, **kwargs):
+            attempts.append(args)
+            raise RuntimeError("context is not available outside of a request")
+
+    monkeypatch.setattr(mcp_server.mcp, "get_context", lambda: _Broken())
+    monkeypatch.setattr(mcp_server, "_PROGRESS_INTERVAL_S", 0.02)
+
+    async def _run():
+        ctx = {"done_event": asyncio.Event()}
+
+        async def release_soon():
+            await asyncio.sleep(0.08)
+            ctx["done_event"].set()
+
+        releaser = asyncio.create_task(release_soon())
+        done = await mcp_server._await_dispatch(ctx, 5)
+        await releaser
+        return done
+
+    assert asyncio.run(_run()) is True
+    assert len(attempts) == 1, "the channel is dropped on its first failure"
+
+
+def test_an_unavailable_context_downgrades_to_a_plain_wait(monkeypatch):
+    import nymeria.mcp_server as mcp_server
+
+    def _boom():
+        raise RuntimeError("no request context")
+
+    monkeypatch.setattr(mcp_server.mcp, "get_context", _boom)
+    monkeypatch.setattr(mcp_server, "_PROGRESS_INTERVAL_S", 0.02)
+
+    async def _run():
+        ctx = {"done_event": asyncio.Event()}
+        ctx["done_event"].set()
+        return await mcp_server._await_dispatch(ctx, 1)
+
+    assert asyncio.run(_run()) is True
+
+
+def test_collect_docstring_teaches_the_polling_shape():
+    """Docstring-only fact: the polling pattern binds every client, including
+    the ones progress notifications never reach."""
+    import nymeria.mcp_server as mcp_server
+
+    collect = " ".join((mcp_server.nymeria_chat_collect.__doc__ or "").split())
+    assert "POLLING IS THE EXPECTED SHAPE" in collect
+    assert "resume" in collect
+    assert "idle ceiling" in collect or "idle timeout" in collect
+    chat = " ".join((mcp_server.nymeria_chat.__doc__ or "").split())
+    assert "progressToken" in chat
+    assert "nymeria_chat_collect" in chat

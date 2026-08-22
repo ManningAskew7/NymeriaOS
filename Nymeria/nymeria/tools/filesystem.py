@@ -4,7 +4,7 @@ import errno
 import logging
 import os
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -13,7 +13,7 @@ from langchain_core.tools import InjectedToolArg, tool
 from ..config import get_settings
 from ..core.exec_policy import PROC_READABLE_FILES
 from ..core.storage_paths import write_text_atomic
-from .execution_environment import resolve_tool_path
+from .execution_environment import detect_execution_environment, resolve_tool_path
 from .image_read import (
     prepare_image_for_native_context,
     read_image_dimensions,
@@ -493,6 +493,50 @@ def _line_window(
     return raw, numbered, None
 
 
+def runtime_visibility_note(path: Path, raw_path: str) -> str:
+    """Say when a missing path likely lives OUTSIDE this runtime's filesystem.
+
+    #234: handed a host path, the Docker agent searched everywhere, said
+    "does not exist", and the report read as a typo when the real fact was
+    "that path is outside the filesystem this runtime can see". Only the
+    second fact tells the operator what to do instead, so the not-found
+    errors teach it, the same next-step principle the browser refusals
+    follow.
+
+    Fires only when all three hold: the runtime is containerized (the slim
+    shape shares the host filesystem, where a miss is just a miss; detection
+    is the cached ``detect_execution_environment().in_container``, the same
+    answer the tool descriptions render), the CALLER's path was absolute
+    (``raw_path``, judged before resolution: a relative path resolves inside
+    this runtime's own tree by definition, so the boundary story would be
+    false for it), and at least two trailing components of ``path`` are
+    missing (a miss whose parent directory exists is an ordinary wrong
+    filename and stays plain). Returns "" or a sentence to append after a
+    not-found error. ``path`` is the resolved location the caller failed on:
+    reads and edits pass the file, a write passes the PARENT it needs (for a
+    write, one missing directory is an ordinary "create it" case).
+    """
+    if not PurePath(raw_path).is_absolute():
+        return ""
+    if not detect_execution_environment().in_container:
+        return ""
+    ancestor = path.parent
+    missing = 1
+    while not ancestor.exists() and ancestor != ancestor.parent:
+        missing += 1
+        ancestor = ancestor.parent
+    if missing < 2:
+        return ""
+    return (
+        f" Note: only '{ancestor}' exists here. Nymeria is running inside a "
+        "container with its own filesystem, where host paths are visible only "
+        "if explicitly mounted, so a path that exists on the host machine (or "
+        "another machine) can still be not-found here. Paste the file's "
+        "content into the conversation instead, or use a Nymeria instance "
+        "that runs directly on that machine."
+    )
+
+
 @tool(response_format="content_and_artifact")
 def file_read(
     file_path: str,
@@ -557,7 +601,11 @@ def file_read(
             return f"[Error]: {secrets_error}", {}
 
         if not path.exists():
-            return f"[Error]: File not found: {file_path}", {}
+            return (
+                f"[Error]: File not found: {file_path}."
+                f"{runtime_visibility_note(path, file_path)}",
+                {},
+            )
 
         if not path.is_file():
             return f"[Error]: Not a file: {file_path}", {}
@@ -694,7 +742,10 @@ def file_write(
             path.parent.mkdir(parents=True, exist_ok=True)
 
         if not path.parent.exists():
-            return f"[Error]: Directory does not exist: {path.parent}"
+            return (
+                f"[Error]: Directory does not exist: {path.parent}."
+                f"{runtime_visibility_note(path.parent, file_path)}"
+            )
 
         if append:
             with open(path, "a", encoding=encoding) as f:

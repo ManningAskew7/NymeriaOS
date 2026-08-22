@@ -4405,6 +4405,99 @@ def test_health_claims_no_version_when_neither_half_knows_one(monkeypatch) -> No
     assert "build" not in out.lower()
 
 
+# ---------- #223: chrome_health with no tab_id is a connection probe ----------
+
+
+def test_health_without_tab_id_dispatches_nothing_and_reports_the_subscription() -> None:
+    # The probe exists BECAUSE the only alternative was a destructive reload:
+    # it must answer from backend records alone, with nothing on the wire.
+    bus = EventBus()
+    set_event_bus(bus)
+    queue = bus.subscribe("test-subscriber")
+    chrome_subscribers.add_chrome_subscriber(
+        user_id="u1", subscriber_id="nymeria-browser-u1", version="0.23.0"
+    )
+
+    out = asyncio.run(chrome_health.ainvoke({}, config=_config()))
+
+    seen = []
+    while not queue.empty():
+        seen.append(queue.get_nowait())
+    assert not [e for e in seen if e.event_type == "browser_command"], (
+        "a tab-free health must send the extension nothing"
+    )
+    payload = _unfence(out)
+    assert payload["data"]["connected"] is True
+    assert payload["data"]["extension_version"] == "0.23.0"
+    assert "announced_age_s" in payload["data"], "the announce must be dated"
+    assert payload["data"]["connects_this_process"] == 1
+
+
+def test_the_probe_states_the_weaker_claim_outside_the_fence() -> None:
+    # Subscription and execution diverge exactly in the failure this was
+    # filed from (a rebuild swapping files under a live extension), so the
+    # weaker claim must say it is one, where the page cannot forge it.
+    _connect()
+    out = asyncio.run(chrome_health.ainvoke({}, config=_config()))
+    after = _after_fence(out)
+    assert "CONNECTION PROBE" in after
+    assert "never that commands execute" in after
+    assert "tab_id" in after, "the stronger probe must be named"
+
+
+def test_probe_inside_the_recycle_window_says_retry_shortly() -> None:
+    chrome_subscribers.add_chrome_subscriber(
+        user_id="u1", subscriber_id="nymeria-browser-u1"
+    )
+    chrome_subscribers.remove_chrome_subscriber("nymeria-browser-u1")
+    out = asyncio.run(chrome_health.ainvoke({}, config=_config()))
+    payload = _unfence(out)
+    assert payload["data"]["connected"] is False
+    assert "disconnect_age_s" in payload["data"]
+    after = _after_fence(out)
+    assert "worker-recycle window" in after
+    assert "Retry shortly" in after
+
+
+def test_probe_past_the_grace_says_likely_gone(monkeypatch) -> None:
+    monkeypatch.setattr(chrome_browser_module, "_RECONNECT_GRACE_S", -1)
+    chrome_subscribers.add_chrome_subscriber(
+        user_id="u1", subscriber_id="nymeria-browser-u1"
+    )
+    chrome_subscribers.remove_chrome_subscriber("nymeria-browser-u1")
+    out = asyncio.run(chrome_health.ainvoke({}, config=_config()))
+    after = _after_fence(out)
+    assert "has not returned" in after
+    assert "worker-recycle window" not in after
+
+
+def test_probe_with_no_record_reads_unknown_not_absent() -> None:
+    # An API restart wipes the in-process registry, so right after a deploy
+    # "no record" must not be phrased as "no extension".
+    out = asyncio.run(chrome_health.ainvoke({}, config=_config()))
+    payload = _unfence(out)
+    assert payload["data"]["connected"] is False
+    after = _after_fence(out)
+    assert "resets on a backend restart" in after
+    assert "resubscribes" in after
+
+
+def test_probe_right_after_a_backend_start_says_retry(monkeypatch) -> None:
+    # The young-process case is the deploy-sync bounce itself: no record is
+    # EXPECTED there, and the actionable reading is "retry shortly".
+    monkeypatch.setattr(chrome_browser_module, "_PROCESS_START", time.monotonic() - 5)
+    out = asyncio.run(chrome_health.ainvoke({}, config=_config()))
+    after = _after_fence(out)
+    assert "The backend started" in after
+    assert "retry shortly" in after
+
+
+def test_health_docstring_teaches_the_tab_free_probe() -> None:
+    h = " ".join(chrome_health.description.split())
+    assert "NO tab_id" in h
+    assert "proves subscription, NOT execution" in h
+
+
 def test_a_matched_selector_cannot_spend_the_context_it_renders_outside(monkeypatch) -> None:
     # It renders outside the fence and PAST the cap, so its length is the
     # backend's to bound: a caller passing a pathological selector list would

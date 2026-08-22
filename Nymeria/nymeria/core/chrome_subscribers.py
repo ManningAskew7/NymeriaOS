@@ -51,6 +51,11 @@ _last_disconnect_by_user: dict[str, float] = {}
 # report and not worth a per-subscriber map.
 _version_by_user: dict[str, str] = {}
 _connects_by_user: dict[str, int] = {}
+# When the user's most recent extension stream subscribed (monotonic clock).
+# Dates the announced version: a subscribe stamped after a deploy is the
+# rebuilt extension announcing itself, one from before it is the old build
+# still up. Read by chrome_health's tab-free connection probe (#223).
+_last_connect_by_user: dict[str, float] = {}
 
 
 def is_chrome_client_id(client_id: str | None) -> bool:
@@ -68,6 +73,7 @@ def add_chrome_subscriber(
         _user_by_subscriber[subscriber_id] = user_id
         _last_disconnect_by_user.pop(user_id, None)
         _connects_by_user[user_id] = _connects_by_user.get(user_id, 0) + 1
+        _last_connect_by_user[user_id] = time.monotonic()
         if version:
             _version_by_user[user_id] = version
 
@@ -124,6 +130,18 @@ def chrome_extension_version(user_id: str) -> Optional[str]:
         return _version_by_user.get(user_id)
 
 
+def chrome_last_connect_age(user_id: str) -> Optional[float]:
+    """Seconds since ``user_id``'s most recent extension stream subscribed.
+
+    ``None`` when no stream has subscribed this process lifetime. Ages the
+    announced version (see :func:`chrome_extension_version`): the stamp is
+    written on every subscribe, whether or not a version rode on it.
+    """
+    with _lock:
+        stamp = _last_connect_by_user.get(user_id)
+        return None if stamp is None else time.monotonic() - stamp
+
+
 def chrome_connect_count(user_id: str) -> int:
     """How many extension streams have subscribed for ``user_id`` this
     process lifetime. Monotonic; compare snapshots to detect a NEW stream."""
@@ -139,6 +157,7 @@ def reset_for_tests() -> None:
         _last_disconnect_by_user.clear()
         _version_by_user.clear()
         _connects_by_user.clear()
+        _last_connect_by_user.clear()
 
 
 __all__ = [
@@ -151,6 +170,7 @@ __all__ = [
     "chrome_subscribers_for",
     "chrome_disconnect_age",
     "chrome_extension_version",
+    "chrome_last_connect_age",
     "chrome_connect_count",
     "reset_for_tests",
 ]
