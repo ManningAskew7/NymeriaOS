@@ -11,7 +11,6 @@ definition, so it never gets the note either.
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import nymeria.tools.filesystem as fs_mod
