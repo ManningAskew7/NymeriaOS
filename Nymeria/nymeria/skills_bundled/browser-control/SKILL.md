@@ -250,6 +250,14 @@ elements acts on one of them and tells you how many it matched.
 
 ## Dialogs, and when a tab stops responding to you
 
+At session start, or whenever "is the extension even there" is the
+question, call `chrome_health` with NO tab_id: it answers from backend
+records without sending the extension anything, reporting whether a stream
+is subscribed and which build last announced itself. That proves
+subscription, not execution (the result says so), so it is the cheap poll
+for a connection or a just-deployed build, never a substitute for the
+per-tab check.
+
 When a tab stops answering, start with `chrome_health(tab_id)`: it names a
 standing dialog, proven input suppression, a navigation still in flight, and
 whether the extension's worker recycled since you last drove the tab, in one
@@ -458,6 +466,9 @@ the extension reload its own code from disk (the remote version of the
 refresh click at chrome://extensions). Use it only when asked to reload the
 extension or when a just-deployed extension update needs to go live. It
 releases every driven tab and loses in-flight commands, so run it alone.
+A tab-free `chrome_health` names the build that last connected without any
+of that cost: when it already announces the version you are waiting for,
+the update is live and no reload is needed.
 The result waits for the reloaded worker to reconnect and names the
 version now running (`version_after`); once it does, the next call is safe
 immediately. If it instead reports no reconnect, the build may have failed

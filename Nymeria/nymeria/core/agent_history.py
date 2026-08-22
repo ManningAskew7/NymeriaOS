@@ -617,6 +617,24 @@ _HISTORY_MESSAGE_HANDLERS: Dict[type, MessageHistoryHandler] = {
 }
 
 
+def _memory_readback_call_ids(msg: Any) -> set:
+    """Tool-call ids of a seeded memory read-back AIMessage, else empty.
+
+    The retained compaction tail's shape is fixed
+    (``agent_memory_seed.build_memory_exchange``): the message right after
+    the ``memory_seed_marker`` opener is an AIMessage whose tool calls are
+    ALL ``memory_read``. That structural fact is the stop condition #206
+    needs, and unlike a flag stamped at construction it also holds for the
+    compacted checkpoints already in the store.
+    """
+    if not isinstance(msg, AIMessage):
+        return set()
+    calls = getattr(msg, "tool_calls", None) or []
+    if not calls or any(c.get("name") != "memory_read" for c in calls):
+        return set()
+    return {c.get("id") for c in calls if c.get("id")}
+
+
 def _filter_internal_messages(
     messages: List[Any],
     *,
@@ -626,9 +644,20 @@ def _filter_internal_messages(
     """Filter internal system prompts while preserving displayable outputs."""
     filtered_messages = []
     skip_until_next_human = False
+    # #206: the memory_seed_marker's suppression window. The seeded
+    # read-back after the opener is bounded STRUCTURALLY (the next
+    # all-memory_read AIMessage plus the ToolMessages answering it), never
+    # "until the next human": the retained tail is terminal, so a mid-turn
+    # compaction resumes the turn with no human in it, and an unbounded
+    # window swallowed the resumed turn's tool steps AND its final answer,
+    # leaving every polling client a lone "Context compacted" entry.
+    readback_expected = False
+    readback_ids: set = set()
 
     for msg in messages:
         if isinstance(msg, HumanMessage):
+            readback_expected = False
+            readback_ids = set()
             is_internal = msg.additional_kwargs.get("internal", False)
 
             if is_internal:
@@ -647,11 +676,11 @@ def _filter_internal_messages(
                     filtered_messages.append(msg)
                     continue
                 if internal_type == "memory_seed_marker":
-                    # Keep the resume opener (rendered as a compaction notice),
-                    # but suppress the read-back AI/Tool messages that follow it
-                    # from the user-facing view. They remain in LLM context.
+                    # Keep the resume opener (rendered as a compaction
+                    # notice) and arm the bounded read-back window above.
                     filtered_messages.append(msg)
-                    skip_until_next_human = True
+                    skip_until_next_human = False
+                    readback_expected = True
                     continue
                 if internal_type == "auto_resume":
                     skip_until_next_human = False
@@ -667,7 +696,22 @@ def _filter_internal_messages(
             filtered_messages.append(msg)
         elif skip_until_next_human:
             continue
+        elif readback_expected:
+            readback_expected = False
+            ids = _memory_readback_call_ids(msg)
+            if ids:
+                readback_ids = ids
+                continue
+            filtered_messages.append(msg)
+        elif (
+            readback_ids
+            and isinstance(msg, ToolMessage)
+            and getattr(msg, "tool_call_id", None) in readback_ids
+        ):
+            readback_ids.discard(msg.tool_call_id)
+            continue
         else:
+            readback_ids = set()
             filtered_messages.append(msg)
 
     return filtered_messages

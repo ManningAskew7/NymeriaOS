@@ -21,6 +21,7 @@ from .filesystem import (
     config_principal,
     protected_path_error,
     resolve_workspace_write_path,
+    runtime_visibility_note,
     secrets_path_error,
 )
 
@@ -485,7 +486,7 @@ def file_edit(
         if not path.exists():
             return _error_result(
                 "file_not_found",
-                f"File not found: {file_path}",
+                f"File not found: {file_path}.{runtime_visibility_note(path, file_path)}",
                 file_path=str(path),
                 dry_run=dry_run,
             )
