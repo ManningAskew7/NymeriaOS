@@ -1057,6 +1057,53 @@ def _local_llm_extra_body(config: LLMConfig, base_url: str | None) -> dict[str, 
     return extra_body
 
 
+def _inject_openrouter_cache_control(
+    payload: dict[str, Any], *, base_url: Any, model: Any
+) -> None:
+    """Top-level automatic prompt caching for anthropic-family models on
+    OpenRouter (#239). TOOLS-BOUND PAYLOADS ONLY.
+
+    OpenRouter's docs: the top-level ``cache_control`` body field enables
+    automatic caching, where OR advances the breakpoint as the conversation
+    grows, on every Claude-serving upstream (Anthropic, Vertex, Azure,
+    Bedrock, Claude Platform on AWS) and on BOTH api modes (the Responses
+    API accepts the top-level field; per-block anthropic markers inside
+    ``input`` items are not exposed there). Qwen/gemini families are NOT
+    covered by the automatic mode (they need per-block markers; #239 rump).
+
+    Measured live 2026-08-21 (Bedrock-served haiku-4.5 via OR, probe in the
+    registry doc): call A wrote 15,236 tokens at $0.0191; call B read all
+    15,236 and wrote only the 15 new tail tokens at $0.0016, a 92 percent
+    cut, proving the breakpoint advances. Same shape/gates as #240's direct
+    Anthropic fix:
+
+    - Host-scoped to OpenRouter base URLs via the same
+      `_looks_like_openrouter_base_url` predicate the rest of the OR
+      dispatch keys on (substring match, deliberately consistent with it
+      rather than with #240's parsed-host gate): judge by where the request
+      goes, not what the provider id claims (a foreign gateway could 400 on
+      the unknown top-level param). CLIProxy/local/direct bases through
+      this same class are untouched.
+    - Tools-bound only: one-shot toolless calls (llm_extract, rag_quality,
+      workflow verbs, doctor) send per-call-varying content whose 1.25x
+      write premium nothing ever reads back.
+
+    The key rides ``payload["extra_body"]`` (copy-merge, never mutating the
+    shared ``self.extra_body``); the openai SDK serializes extra_body into
+    the top level of the request JSON. An explicit user-supplied
+    ``cache_control`` wins via setdefault.
+    """
+    if not _looks_like_openrouter_base_url(base_url):
+        return
+    if not str(model or "").strip().lower().startswith("anthropic/"):
+        return
+    if not payload.get("tools"):
+        return
+    extra_body = dict(payload.get("extra_body") or {})
+    extra_body.setdefault("cache_control", dict(_CACHE_CONTROL_EPHEMERAL))
+    payload["extra_body"] = extra_body
+
+
 class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
     """ChatOpenAI subclass that preserves OpenAI-compatible reasoning deltas.
 
@@ -1096,9 +1143,17 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
         # empty-assistant padding, which must see the FINAL wire content
         # (inline-thinking stripping in the replay branches can itself empty
         # a message). See _pad_empty_assistant_messages for why.
-        return _pad_empty_assistant_messages(
+        payload = _pad_empty_assistant_messages(
             self._reasoning_adjusted_payload(input_, stop=stop, **kwargs)
         )
+        # After padding so it sees the final payload; both api modes keep
+        # `tools` and `extra_body` keys through their branches above.
+        _inject_openrouter_cache_control(
+            payload,
+            base_url=getattr(self, "openai_api_base", None),
+            model=getattr(self, "model_name", None),
+        )
+        return payload
 
     def _reasoning_adjusted_payload(
         self,
@@ -1273,6 +1328,27 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
                 )
         except (AttributeError, KeyError, IndexError, TypeError):
             pass  # reasoning metadata shape varies by provider
+        try:
+            # OpenRouter only (#239): its accounting opt-in puts the billed
+            # dollar cost and the cache read/write detail on the final stream
+            # chunk's `usage`, which langchain normalizes down to bare token
+            # counts (cost and cache_write_tokens are dropped). Stash the raw
+            # dict in response_metadata so the accumulated AIMessage carries
+            # it to cost_calc (which prefers usage.cost as ground truth).
+            # Deliberately NOT done for other OpenAI-compatible providers:
+            # some emit usage on EVERY chunk, and langchain-core's
+            # merge_dicts (measured on 1.4.0) silently SUMS differing ints
+            # and RAISES TypeError on differing floats, so a per-chunk-usage
+            # provider would get corrupt token counts and a mid-stream crash
+            # the first time two chunks carry a differing cost float. OR
+            # sends usage exactly once, on the final chunk.
+            raw_usage = chunk.get("usage")
+            if isinstance(raw_usage, dict) and _looks_like_openrouter_base_url(
+                getattr(self, "openai_api_base", None)
+            ):
+                generation_chunk.message.response_metadata["usage"] = raw_usage
+        except (AttributeError, KeyError, TypeError):
+            pass  # usage stash is best-effort; chunk shapes vary by provider
         return generation_chunk
 
     def _stream(
@@ -2076,6 +2152,33 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
         model_kwargs["top_k"] = config.top_k
     if model_kwargs:
         kwargs["model_kwargs"] = model_kwargs
+
+    # Merged AFTER the reasoning branches above, which ASSIGN extra_body
+    # wholesale and would clobber earlier merges (#239, evidence in
+    # docs/private/provider-caching-status.md):
+    #
+    # - session_id: OpenRouter's sticky-routing key. Pins follow-up requests
+    #   to the warm upstream endpoint under provider fan-out so prefix-cache
+    #   reads actually hit (10-minute inactivity expiry, harmless otherwise:
+    #   OR only activates stickiness when cache pricing wins). Reuses the
+    #   same stable per-conversation key the OpenAI factory sends as
+    #   prompt_cache_key; OR reads session_id as the primary field.
+    # - usage accounting: with a custom base URL langchain-openai never
+    #   defaults stream_usage on, so streaming OR turns carried NO usage at
+    #   all ([COST] was blind on the whole route). OR's own opt-in returns
+    #   usage in the final stream chunk including cache read/write detail
+    #   and OR's billed dollar cost, which cost_calc prefers as ground
+    #   truth. Chat-completions mode only: the Responses beta's tolerance
+    #   of the field is undocumented, and its response.completed usage
+    #   covers TOKEN COUNTS only (langchain rebuilds response_metadata
+    #   from a key allowlist there), so in responses mode cache READS are
+    #   visible but OR's billed cost and cache_write_tokens are not:
+    #   known, accepted observability gap on that opt-in beta mode.
+
+    if config.prompt_cache_key:
+        _merge_extra_body(kwargs, {"session_id": config.prompt_cache_key})
+    if api_mode != "responses":
+        _merge_extra_body(kwargs, {"usage": {"include": True}})
 
     _attach_loop_local_openai_async_http_client(kwargs)
     return ChatOpenAIWithReasoning(**kwargs)

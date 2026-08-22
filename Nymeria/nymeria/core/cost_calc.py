@@ -150,6 +150,26 @@ def parse_usage_from_message(msg: AIMessage, provider: str) -> NormalizedUsage:
         if ephemeral_5m or ephemeral_1h:
             cache_write_5m = ephemeral_5m
             cache_write_1h = ephemeral_1h
+    if not cache_write_5m and not cache_write_1h:
+        # OpenRouter (OpenAI shape): prompt_tokens_details.cache_write_tokens,
+        # on token_usage or the raw usage dict. Files under the 5m bucket
+        # (OR's anthropic-family default TTL). Measured 2026-08-21: OR's
+        # prompt_tokens is INCLUSIVE of cache_write_tokens (write call:
+        # prompt 15,239 = 15,236 written + 3 uncached), so the uncached
+        # subtraction in compute_cost_usd is correct for this shape. Not
+        # provider-scoped: OR-shaped gateways share the field, but the
+        # inclusive-prompt_tokens premise is measured for OR only; a
+        # provider reporting writes EXCLUSIVE of prompt_tokens would
+        # under-count uncached input here.
+        for details_holder in (token_usage, raw_usage):
+            pt_details = (
+                details_holder.get("prompt_tokens_details")
+                if isinstance(details_holder, dict)
+                else None
+            ) or {}
+            cache_write_5m = _int(_get(pt_details, "cache_write_tokens"))
+            if cache_write_5m:
+                break
 
     reasoning = _int(_get(output_details, "reasoning"))
     if not reasoning:
@@ -229,8 +249,10 @@ def compute_cost_usd(usage: NormalizedUsage, rates: Optional[ModelRates]) -> Opt
     # is the inclusive total (raw input + cache_read + cache_creation), per
     # langchain-anthropic's ``_create_usage_metadata``. Subtract all three
     # subsets here to recover the "fresh" input portion billed at the base
-    # input rate. For OpenAI-shape responses ``cache_write_*`` are always 0
-    # so this collapses to ``prompt - cached``.
+    # input rate. OpenRouter's OpenAI shape is inclusive the same way
+    # (measured 2026-08-21, see the cache_write_tokens parse above); plain
+    # OpenAI reports no write buckets so this collapses to
+    # ``prompt - cached``.
     uncached_input = max(
         0,
         usage.prompt_tokens

@@ -4,7 +4,7 @@ How Nymeria uses OpenRouter, with enough implementation detail to debug
 Responses API, Chat Completions, reasoning streams, tool calls, and replayed
 history.
 
-**Status:** current as of 2026-04-27. OpenRouter's Responses API is still beta,
+**Status:** current as of 2026-08-21. OpenRouter's Responses API is still beta,
 so verify live docs before changing provider code.
 
 Primary references:
@@ -20,9 +20,12 @@ Primary references:
 ## TL;DR
 
 - Nymeria's OpenRouter provider has two API modes:
-  - `responses` - default. Uses OpenRouter's beta `/api/v1/responses` endpoint.
-  - `chat_completions` - opt-in compatibility mode. Uses `/api/v1/chat/completions`.
-- Nymeria does not pass its thread ID as an OpenRouter session ID.
+  - `chat_completions` - default (stable; round-trips signed reasoning via
+    `reasoning_details`). Uses `/api/v1/chat/completions`.
+  - `responses` - opt-in. Uses OpenRouter's beta `/api/v1/responses` endpoint.
+- Nymeria sends a stable per-thread `session_id` (`nym-<thread_id>`) for
+  OpenRouter's sticky cache routing. It carries no conversation state; see
+  Prompt Caching below.
 - The LangGraph checkpoint is the source of truth. Each turn loads checkpointed
   messages for the Nymeria thread and sends the provider a full conversation
   payload.
@@ -60,8 +63,8 @@ Important fields:
 | `LLM_PROVIDER=openrouter` | Use OpenRouter as the LLM provider. |
 | `OPENROUTER_API_KEY` | Bearer token used for OpenRouter. |
 | `LLM_MODEL` / per-thread `model` | OpenRouter model slug, for example `anthropic/claude-haiku-4.5`. |
-| `OPENAI_API_MODE=responses` | Default OpenRouter mode. Uses `/api/v1/responses`. |
-| `OPENAI_API_MODE=chat_completions` | Opt out of Responses beta. Uses `/api/v1/chat/completions`. |
+| `OPENAI_API_MODE=chat_completions` | Default OpenRouter mode. Uses `/api/v1/chat/completions`. |
+| `OPENAI_API_MODE=responses` | Opt into the Responses beta. Uses `/api/v1/responses`. |
 | `LLM_EXTENDED_THINKING=true` | Request reasoning when the selected model supports it. |
 | `LLM_REASONING_EFFORT=off|low|medium|high|xhigh|max` | Reasoning effort sent to OpenRouter when supported. `off` sends effort `none` (Responses) or `enabled: false` plus effort `none` (Chat Completions) so thinking is actively disabled; `max` is sent as `xhigh` (OpenRouter's ceiling). Models whose catalog entry lists no `reasoning` parameter advertise only `off`. |
 | `LLM_USE_MODEL_DEFAULTS=true` | Suppress sampling parameters and let the provider/model decide defaults. |
@@ -95,15 +98,44 @@ frontend thread_id
   -> provider remembers thread history
 ```
 
+(The `session_id` Nymeria does send exists purely so OpenRouter routes
+repeat requests to the same warm upstream endpoint for prompt-cache hits;
+it never substitutes for replaying history.)
+
 This distinction matters for debugging. If a model forgets previous user-visible
 content, inspect the checkpoint and outgoing payload. If it cannot quote prior
 thinking text, that can still be expected even when the reasoning block was
 stored and replayed, because provider-native reasoning items are not normal
 assistant-visible text.
 
+## Prompt Caching and Usage Accounting
+
+Shipped 2026-08-21 (#239); the payload seam is
+`_inject_openrouter_cache_control` plus the `_create_openrouter_llm`
+`extra_body` merges in `Nymeria/nymeria/vendor/react_agent/providers.py`.
+
+- Anthropic-family slugs (`anthropic/...`) on openrouter.ai bases get
+  OpenRouter's top-level `cache_control: {"type": "ephemeral"}` automatic
+  caching on tools-bound payloads, both API modes. OpenRouter advances the
+  breakpoint as the conversation grows, so agent turns read the prefix at
+  the provider's cache-read rate (measured ~90 percent cheaper on a 15k
+  prefix). Toolless one-shot calls are deliberately excluded (write
+  premium with no reads). Qwen/gemini families need per-block markers,
+  which Nymeria does not send (their routes stay uncached).
+- Every request on a real thread carries `session_id` (`nym-<thread_id>`)
+  so OpenRouter's sticky routing pins follow-ups to the warm endpoint
+  under provider fan-out. This also helps implicitly-caching families
+  (openai and friends).
+- Chat-completions requests opt into OpenRouter usage accounting
+  (`usage: {"include": true}`), and the streaming converter preserves the
+  raw final-chunk usage (billed `cost`, `cached_tokens`,
+  `cache_write_tokens`) into `response_metadata`, so cost tracking works
+  on streaming turns and uses OpenRouter's own billed dollars as ground
+  truth.
+
 ## Responses Mode
 
-Responses mode is the default for OpenRouter.
+Responses mode is opt-in for OpenRouter (`OPENAI_API_MODE=responses`).
 
 Runtime construction is in `_create_openrouter_llm()` in
 `Nymeria/nymeria/vendor/react_agent/providers.py`.
