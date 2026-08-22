@@ -279,7 +279,8 @@ def test_prompt_cache_key_scoping_local_vs_cliproxy_vs_openrouter():
     routing benefit; strict ones 400 on unknown fields) but MUST survive a
     CLIProxy base even though localhost:8318 looks local too: the slim
     shape is the primary beneficiary. The openrouter factory never sends
-    it (different vendor semantics, deliberately unwired)."""
+    it: OR's primary sticky-routing field is session_id (#239, tested
+    below), and prompt_cache_key is only OR's legacy fallback."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -323,6 +324,244 @@ def test_prompt_cache_key_scoping_local_vs_cliproxy_vs_openrouter():
     assert "prompt_cache_key" not in openrouter._get_request_payload(
         [HumanMessage(content="Hi")]
     )
+
+
+# --- #239: OpenRouter prompt caching (top-level cache_control, session_id,
+# usage accounting). Live evidence: docs/private/provider-caching-status.md
+# (Bedrock-served haiku via OR: B read 15,236 of 15,254 at a 92% cost cut).
+
+
+def _openrouter_anthropic_config(**overrides) -> LLMConfig:
+    return llm_config(
+        {
+            "provider": "openrouter",
+            "model": "anthropic/claude-haiku-4.5",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+        **overrides,
+    )
+
+
+_FAKE_WIRE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "probe_tool",
+        "description": "Echo.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+def test_openrouter_anthropic_family_gets_toplevel_cache_control_when_tools_bound():
+    """Anthropic-family slugs on OpenRouter carry the top-level automatic
+    cache_control body field (via extra_body) on tools-bound payloads: OR
+    advances the breakpoint itself on every Claude-serving upstream.
+    Without it the whole prefix re-bills at full price every call."""
+    llm = create_llm(_openrouter_anthropic_config())
+    payload = llm._get_request_payload(
+        [HumanMessage(content="Hi")], tools=[_FAKE_WIRE_TOOL]
+    )
+    assert payload["extra_body"]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_openrouter_toplevel_cache_control_is_tools_bound_only():
+    """Toolless one-shot payloads (llm_extract and friends) must NOT get the
+    marker: per-call-varying content would pay the 1.25x write premium with
+    zero reads. Mirror of #240's gate."""
+    llm = create_llm(_openrouter_anthropic_config())
+    payload = llm._get_request_payload([HumanMessage(content="Hi")])
+    assert "cache_control" not in (payload.get("extra_body") or {})
+
+
+def test_openrouter_toplevel_cache_control_is_anthropic_family_only():
+    """Non-anthropic slugs are excluded: OR documents the top-level
+    automatic mode only for Claude-serving upstreams (qwen/gemini need
+    per-block markers, the #239 rump; openai-family caches implicitly)."""
+    llm = create_llm(
+        llm_config({"provider": "openrouter", "model": "openai/gpt-5.5"})
+    )
+    payload = llm._get_request_payload(
+        [HumanMessage(content="Hi")], tools=[_FAKE_WIRE_TOOL]
+    )
+    assert "cache_control" not in (payload.get("extra_body") or {})
+
+
+def test_toplevel_cache_control_is_host_scoped_to_openrouter():
+    """An anthropic-family slug on a NON-OpenRouter base URL through the
+    same class gets nothing: a foreign gateway could 400 on the unknown
+    top-level param (same host-scoping decision as #240)."""
+    llm = create_llm(_vercel_config())  # anthropic/claude-sonnet-4.5 slug
+    payload = llm._get_request_payload(
+        [HumanMessage(content="Hi")], tools=[_FAKE_WIRE_TOOL]
+    )
+    assert "cache_control" not in (payload.get("extra_body") or {})
+
+
+def test_openrouter_toplevel_cache_control_rides_responses_mode_too():
+    """OR's Responses API accepts the top-level field (per-block
+    anthropic-style markers inside input items are NOT exposed there), so
+    the injection must survive the responses payload normalizer."""
+    llm = create_llm(_openrouter_anthropic_config(openai_api_mode="responses"))
+    payload = llm._get_request_payload(
+        [HumanMessage(content="Hi")], tools=[_FAKE_WIRE_TOOL]
+    )
+    assert "input" in payload
+    assert payload["extra_body"]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_openrouter_explicit_cache_control_wins_and_shared_state_is_not_mutated():
+    """A user-supplied extra_body.cache_control is preserved (setdefault
+    semantics), and the injection copy-merges: the model's own extra_body
+    dict must never accumulate the injected key across calls."""
+    llm = ChatOpenAIWithReasoning(
+        model="anthropic/claude-haiku-4.5",
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        extra_body={"cache_control": {"type": "ephemeral", "ttl": "1h"}},
+    )
+    payload = llm._get_request_payload(
+        [HumanMessage(content="Hi")], tools=[_FAKE_WIRE_TOOL]
+    )
+    assert payload["extra_body"]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": "1h",
+    }
+
+    plain = ChatOpenAIWithReasoning(
+        model="anthropic/claude-haiku-4.5",
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        extra_body={"usage": {"include": True}},
+    )
+    plain._get_request_payload([HumanMessage(content="Hi")], tools=[_FAKE_WIRE_TOOL])
+    assert "cache_control" not in plain.extra_body
+
+
+def test_openrouter_binding_path_carries_cache_control_end_to_end():
+    """Through the real create_llm_with_tools binding (the graph's path),
+    the bound kwargs plus the seam produce the marker."""
+
+    @tool
+    def probe_tool(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    binding = create_llm_with_tools(_openrouter_anthropic_config(), [probe_tool])
+    payload = binding.bound._get_request_payload(
+        [HumanMessage(content="Hi")], **binding.kwargs
+    )
+    assert payload["extra_body"]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_openrouter_session_id_and_usage_accounting_wiring():
+    """The factory sends OR's sticky-routing session_id (same stable
+    per-conversation key the OpenAI factory ships as prompt_cache_key) and
+    opts into OR usage accounting; without the latter, streaming OR turns
+    carry no usage at all (langchain only defaults stream_usage on the bare
+    OpenAI URL) and [COST] is blind on the route."""
+    llm = create_llm(_openrouter_anthropic_config(prompt_cache_key="nym-t1"))
+    payload = llm._get_request_payload([HumanMessage(content="Hi")])
+    assert payload["extra_body"]["session_id"] == "nym-t1"
+    assert payload["extra_body"]["usage"] == {"include": True}
+    assert "prompt_cache_key" not in payload
+    assert "session_id" not in payload  # rides extra_body, not a typed kwarg
+
+    unkeyed = create_llm(_openrouter_anthropic_config())
+    unkeyed_payload = unkeyed._get_request_payload([HumanMessage(content="Hi")])
+    assert "session_id" not in (unkeyed_payload.get("extra_body") or {})
+    assert unkeyed_payload["extra_body"]["usage"] == {"include": True}
+
+
+def test_openrouter_stream_usage_chunk_raw_dict_survives_into_response_metadata():
+    """OR's accounting opt-in delivers billed cost and cache read/write
+    detail on the final stream chunk's usage; langchain normalizes that to
+    bare token counts. The converter must stash the raw dict in
+    response_metadata (cost_calc prefers usage.cost as ground truth and
+    parses cache_write_tokens from it), and must NOT do so for non-OR
+    bases, where some servers emit usage on every chunk: langchain-core's
+    merge_dicts silently SUMS differing ints and raises TypeError on
+    differing floats (measured on 1.4.0), so per-chunk usage would corrupt
+    counts and crash mid-stream on a differing cost float."""
+    or_usage = {
+        "prompt_tokens": 15254,
+        "completion_tokens": 4,
+        "prompt_tokens_details": {"cached_tokens": 15236, "cache_write_tokens": 15},
+        "cost": 0.00156535,
+    }
+    usage_chunk = {"choices": [], "usage": or_usage}
+
+    or_llm = ChatOpenAIWithReasoning(
+        model="anthropic/claude-haiku-4.5",
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    generation_chunk = or_llm._convert_chunk_to_generation_chunk(
+        usage_chunk, AIMessageChunk, {}
+    )
+    assert generation_chunk.message.response_metadata["usage"] == or_usage
+
+    # The payoff: the raw dict must survive langchain's chunk ACCUMULATION
+    # (merge_dicts over response_metadata) and feed cost_calc, which takes
+    # OR's billed cost as ground truth and files the write bucket.
+    from nymeria.core import cost_calc
+
+    content_chunk = AIMessageChunk(
+        content="OK", response_metadata={"model_provider": "openai"}
+    )
+    accumulated = content_chunk + generation_chunk.message
+    assert accumulated.response_metadata["usage"] == or_usage
+    parsed = cost_calc.parse_usage_from_message(accumulated, "openrouter")
+    assert parsed.cached_tokens == 15236
+    assert parsed.cache_write_5m_tokens == 15
+    assert parsed.provider_reported_cost_usd == 0.00156535
+
+    other_llm = ChatOpenAIWithReasoning(
+        model="some-model",
+        api_key="test-key",
+        base_url="http://localhost:11434/v1",
+    )
+    other_chunk = other_llm._convert_chunk_to_generation_chunk(
+        usage_chunk, AIMessageChunk, {}
+    )
+    assert "usage" not in other_chunk.message.response_metadata
+
+
+def test_openrouter_reasoning_config_coexists_with_session_and_usage():
+    """The factory's session_id/usage merges land AFTER the reasoning
+    branches, which ASSIGN extra_body wholesale: on a thinking-enabled OR
+    thread (the common config) all four keys must coexist. A reorder would
+    silently drop sticky routing and usage accounting route-wide while
+    every no-reasoning test stayed green (review finding, 2026-08-21)."""
+    llm = create_llm(
+        _openrouter_anthropic_config(
+            extended_thinking=True,
+            reasoning_effort="high",
+            prompt_cache_key="nym-t1",
+        )
+    )
+    payload = llm._get_request_payload(
+        [HumanMessage(content="Hi")], tools=[_FAKE_WIRE_TOOL]
+    )
+    extra_body = payload["extra_body"]
+    assert extra_body["reasoning"] == {"enabled": True, "effort": "high"}
+    assert extra_body["session_id"] == "nym-t1"
+    assert extra_body["usage"] == {"include": True}
+    assert extra_body["cache_control"] == {"type": "ephemeral"}
+
+
+def test_openrouter_responses_mode_skips_usage_accounting_keeps_session_id():
+    """The Responses beta delivers usage in response.completed regardless
+    and its tolerance of the usage field is undocumented, so only
+    session_id rides that mode."""
+    llm = create_llm(
+        _openrouter_anthropic_config(
+            openai_api_mode="responses", prompt_cache_key="nym-t1"
+        )
+    )
+    payload = llm._get_request_payload([HumanMessage(content="Hi")])
+    assert "input" in payload
+    assert payload["extra_body"]["session_id"] == "nym-t1"
+    assert "usage" not in (payload.get("extra_body") or {})
 
 
 def _empty_assistant_history() -> list:

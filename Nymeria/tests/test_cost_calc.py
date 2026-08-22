@@ -122,6 +122,62 @@ class TestParseUsage:
         assert usage.cached_tokens == 400
         assert usage.reasoning_tokens == 80
 
+    def test_openrouter_cache_write_tokens_token_usage_shape(self):
+        """OR reports cache writes as prompt_tokens_details.cache_write_tokens
+        (#239). Shape is the live 2026-08-21 Bedrock-served write call:
+        prompt_tokens INCLUSIVE of the write (15,239 = 15,236 + 3 uncached),
+        so the uncached-input subtraction stays correct."""
+        msg = _ai(
+            response_metadata={
+                "token_usage": {
+                    "prompt_tokens": 15239,
+                    "completion_tokens": 4,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 0,
+                        "cache_write_tokens": 15236,
+                    },
+                }
+            }
+        )
+        usage = cost_calc.parse_usage_from_message(msg, "openrouter")
+        assert usage.prompt_tokens == 15239
+        assert usage.cache_write_5m_tokens == 15236
+        assert usage.cached_tokens == 0
+
+    def test_openrouter_cache_write_tokens_raw_usage_shape(self):
+        """Same field on the raw usage dict (Responses-shaped metadata)."""
+        msg = _ai(
+            response_metadata={
+                "usage": {
+                    "prompt_tokens": 15254,
+                    "completion_tokens": 4,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 15236,
+                        "cache_write_tokens": 15,
+                    },
+                }
+            }
+        )
+        usage = cost_calc.parse_usage_from_message(msg, "openrouter")
+        assert usage.cache_write_5m_tokens == 15
+        assert usage.cached_tokens == 15236
+
+    def test_anthropic_native_write_buckets_beat_openrouter_field(self):
+        """Anthropic-native cache_creation reporting keeps precedence: the
+        OR-shape parse only fills when no native bucket reported."""
+        msg = _ai(
+            response_metadata={
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cache_creation_input_tokens": 500,
+                    "prompt_tokens_details": {"cache_write_tokens": 999},
+                }
+            }
+        )
+        usage = cost_calc.parse_usage_from_message(msg, "anthropic")
+        assert usage.cache_write_5m_tokens == 500
+
     def test_openrouter_provider_reported_cost(self):
         msg = _ai(
             usage_metadata={
