@@ -296,6 +296,27 @@ _test_brave = _make_get_tester(
 )
 
 
+# The generic openai-compatible fallback can never validate Perplexity: it
+# probes {base}/models, and the registry base URL (correct for chat) has no
+# /models at its root; the model list lives under /v1. GET /v1/models is
+# auth-gated (measured 2026-08-24: 401 in ~0.3s for a missing OR bogus key,
+# despite upstream docs suggesting no auth is needed), which makes it a free, fast,
+# model-agnostic key check. Deliberately not a chat probe: a /v1/agent or
+# sonar completion bills the key a per-request search fee on every Test
+# click and a slow search can time the 10s budget out, marking a VALID key
+# invalid. If Perplexity ever drops the auth gate on /v1/models this probe
+# false-positives: re-verify during the #243 Agent API migration.
+_test_perplexity = _make_get_tester(
+    name="_test_perplexity",
+    secret_names=("api_key", "token", "value"),
+    fixed_url="https://api.perplexity.ai/v1/models",
+    header_builder=lambda value: {
+        "Authorization": f"Bearer {value or ''}",
+        "Accept": "application/json",
+    },
+)
+
+
 async def _test_exa(
     provider: str,
     kind: str,
@@ -307,14 +328,18 @@ async def _test_exa(
     # cheapest possible call: a minimal "instant" search (numResults=1, no
     # contents) against the fixed api.exa.ai host. 401 means a bad key; a status
     # below 400 means the key works. The host is a hard-coded constant (no
-    # user-supplied URL), so a bare httpx POST off the event loop is fine here.
+    # user-supplied URL), so SSRF
+    # screening adds nothing; the POST still goes through policy_http_client
+    # so env proxy mounts are neutralized (a bare
+    # httpx.Client would silently route this key-bearing request through
+    # HTTPS_PROXY/ALL_PROXY).
     _ = provider, kind, metadata, settings
-    import httpx
+    from .http_policy import policy_http_client
 
     api_key = _first_secret(secret_fields, "api_key", "token", "value")
 
     def _probe():
-        with httpx.Client(timeout=_DEFAULT_TIMEOUT_SECONDS) as client:
+        with policy_http_client(timeout=_DEFAULT_TIMEOUT_SECONDS) as client:
             return client.post(
                 "https://api.exa.ai/search",
                 headers={
@@ -355,15 +380,18 @@ async def _test_firecrawl(
     # cheapest representative call: a minimal /v2/search (limit=1, no
     # scrapeOptions) against the fixed api.firecrawl.dev host. 401 means a bad
     # key; a status below 400 means the key works. The host is a hard-coded
-    # constant (no user-supplied URL), so a bare httpx POST off the event loop is
-    # fine here.
+    # constant (no user-supplied URL), so SSRF
+    # screening adds nothing; the POST still goes through policy_http_client
+    # so env proxy mounts are neutralized (a bare
+    # httpx.Client would silently route this key-bearing request through
+    # HTTPS_PROXY/ALL_PROXY).
     _ = provider, kind, metadata, settings
-    import httpx
+    from .http_policy import policy_http_client
 
     api_key = _first_secret(secret_fields, "api_key", "token", "value")
 
     def _probe():
-        with httpx.Client(timeout=_DEFAULT_TIMEOUT_SECONDS) as client:
+        with policy_http_client(timeout=_DEFAULT_TIMEOUT_SECONDS) as client:
             return client.post(
                 "https://api.firecrawl.dev/v2/search",
                 headers={
@@ -400,12 +428,14 @@ async def _test_searxng(
 ) -> CredentialTestResult:
     # SearXNG runs as an internal sidecar (e.g. http://searxng:8080), so its base
     # URL is intentionally a private/loopback host. The shared SSRF egress policy
-    # would block the very host we need to reach, so this probe uses a bare httpx
-    # GET against the operator-configured base URL. It also verifies that JSON
+    # (httpx_request_with_policy) would block the very host we need to reach, so
+    # address screening is skipped; the client still comes from
+    # policy_http_client (no address validation, but env proxy mounts are
+    # neutralized so the internal sidecar URL never leaks to an HTTP_PROXY). It also verifies that JSON
     # output is enabled (search.formats must include "json"); a non-JSON response
     # means JSON is off.
     _ = provider, kind
-    import httpx
+    from .http_policy import policy_http_client
 
     base_url = _first_secret(secret_fields, "base_url", "url", "value")
     if not base_url:
@@ -421,7 +451,7 @@ async def _test_searxng(
     base = str(base_url).rstrip("/")
 
     def _probe():
-        with httpx.Client(timeout=_DEFAULT_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        with policy_http_client(timeout=_DEFAULT_TIMEOUT_SECONDS, follow_redirects=True) as client:
             return client.get(
                 f"{base}/search",
                 params={"q": "ping", "format": "json"},
@@ -502,6 +532,10 @@ register_credential_tester("exa", _test_exa)
 register_credential_tester("firecrawl", _test_firecrawl)
 register_credential_tester("brave", _test_brave)
 register_credential_tester("searxng", _test_searxng)
+# Aliases mirror tools/web.py's ProviderCredentialSpec for the same provider.
+register_credential_tester("perplexity", _test_perplexity)
+register_credential_tester("perplexity_api", _test_perplexity)
+register_credential_tester("pplx", _test_perplexity)
 
 
 __all__ = [
