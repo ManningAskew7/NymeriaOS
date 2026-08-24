@@ -24,6 +24,14 @@ reasoning effort, tool set, memories, TODOs, env vars, notepad, and
 general status. Uses the same commands the Discord/Telegram bots
 expose to users.
 
+Prefer a dedicated tool when one covers the need (memories, TODOs,
+settings, tools, and the notepad all have native tools); use this when
+none does, when the native tool failed or is not bound, or when only
+the command catalog exposes the operation. It routes the user-facing
+command surface through the agent seam, which is less exercised than
+the native tools, and a few commands can error or disrupt the current
+thread, so treat it as the fallback rather than the default.
+
 ALWAYS call `/help all` first to see the full list of commands and
 their exact syntax (bare `/help` is only a compact name index). Pass
 natural command strings with or without the leading slash. Most
