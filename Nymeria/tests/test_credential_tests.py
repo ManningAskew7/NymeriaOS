@@ -351,3 +351,173 @@ def test_factory_rejects_invalid_mode_combinations():
         credential_tests._make_get_tester(
             name="x", secret_names=("api_key",), header_builder=builder, path="/probe"
         )
+
+
+# ---------------------------------------------------------------------------
+# Perplexity tester (regression: perplexity must NOT fall through to the
+# generic openai-compatible /models fallback: the registry base URL, correct
+# for chat, has no /models at its root, so that probe 404s for every key,
+# valid or not; the model list lives under /v1 and is auth-gated)
+# ---------------------------------------------------------------------------
+
+
+class _FakePerplexityResponse:
+    def __init__(self, status_code: int, text: str = "", json_valid: bool = True):
+        self.status_code = status_code
+        self.text = text
+        self.reason_phrase = "Unauthorized" if status_code == 401 else "OK"
+        self._json_valid = json_valid
+
+    def json(self):
+        if not self._json_valid:
+            raise ValueError("not json")
+        return {"error": {"message": self.text}}
+
+
+def test_perplexity_dispatch_probes_v1_models_for_all_aliases(monkeypatch):
+    # Dispatch through the public entry point per alias, so this asserts the
+    # observable outcome (the probe aimed at the real auth-gated endpoint)
+    # rather than registry internals. Red if any alias falls through to the
+    # generic /models fallback.
+    captured = _capture_probe(monkeypatch)
+    for name in ("perplexity", "perplexity_api", "pplx"):
+        result = asyncio.run(
+            run_credential_test(
+                provider=name,
+                kind="api_key",
+                metadata={},
+                secret_fields={"api_key": "pplx-test-123"},
+            )
+        )
+        assert result.ok is True, name
+        assert result.code == "verified", name
+        assert captured["url"] == "https://api.perplexity.ai/v1/models", name
+        assert captured["headers"]["Authorization"] == "Bearer pplx-test-123", name
+        assert "pplx-test-123" in captured["secrets"], name
+
+
+def test_perplexity_bad_key_is_http_error_and_redacted(monkeypatch):
+    from nymeria.core import http_policy
+
+    def fake_request(method, url, **kwargs):
+        _ = method, url, kwargs
+        return _FakePerplexityResponse(401, text="Unauthorized key pplx-test-123"), [], None
+
+    monkeypatch.setattr(http_policy, "httpx_request_with_policy", fake_request)
+    result = asyncio.run(
+        run_credential_test(
+            provider="perplexity",
+            kind="api_key",
+            metadata={},
+            secret_fields={"api_key": "pplx-test-123"},
+        )
+    )
+    assert result.ok is False
+    assert result.code == "http_error"
+    assert "401" in result.message
+    assert "pplx-test-123" not in result.message
+
+
+def test_perplexity_non_json_error_body_is_redacted(monkeypatch):
+    # A gateway/HTML error body takes http_error_detail's text branch, the
+    # one most likely to echo unredacted input.
+    from nymeria.core import http_policy
+
+    def fake_request(method, url, **kwargs):
+        _ = method, url, kwargs
+        return (
+            _FakePerplexityResponse(
+                502, text="<html>upstream error key pplx-test-123</html>", json_valid=False
+            ),
+            [],
+            None,
+        )
+
+    monkeypatch.setattr(http_policy, "httpx_request_with_policy", fake_request)
+    result = asyncio.run(
+        run_credential_test(
+            provider="perplexity",
+            kind="api_key",
+            metadata={},
+            secret_fields={"api_key": "pplx-test-123"},
+        )
+    )
+    assert result.ok is False
+    assert result.code == "http_error"
+    assert "pplx-test-123" not in result.message
+
+
+# ---------------------------------------------------------------------------
+# Proxy-mount neutralization: probes that carry a third-party key must not
+# route through HTTPS_PROXY/ALL_PROXY from the process env (policy_http_client
+# neutralizes the scheme mounts; a bare httpx.Client silently honors them).
+# ---------------------------------------------------------------------------
+
+
+def _capture_policy_client(monkeypatch):
+    import httpx
+
+    from nymeria.core import http_policy
+
+    calls: dict[str, Any] = {}
+
+    def _bare_client_forbidden(*args, **kwargs):
+        raise AssertionError("bare httpx.Client constructed; probes must use policy_http_client")
+
+    monkeypatch.setattr(httpx, "Client", _bare_client_forbidden)
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            calls["url"] = url
+            calls["headers"] = headers or {}
+            calls["json"] = json or {}
+            return _FakePerplexityResponse(200, text="ok")
+
+        def get(self, url, params=None, headers=None):
+            calls["url"] = url
+            calls["params"] = params or {}
+            calls["headers"] = headers or {}
+            return _FakePerplexityResponse(200, text="ok")
+
+    def fake_factory(**kwargs):
+        calls["factory_kwargs"] = kwargs
+        return _FakeClient()
+
+    monkeypatch.setattr(http_policy, "policy_http_client", fake_factory)
+    return calls
+
+
+def test_exa_probe_uses_policy_client(monkeypatch):
+    calls = _capture_policy_client(monkeypatch)
+    _run_tester(credential_tests._test_exa, fields={"api_key": "exa-key"})
+    assert calls["url"] == "https://api.exa.ai/search"
+    assert calls["headers"]["x-api-key"] == "exa-key"
+    assert calls["factory_kwargs"].get("timeout") == credential_tests._DEFAULT_TIMEOUT_SECONDS
+
+
+def test_firecrawl_probe_uses_policy_client(monkeypatch):
+    calls = _capture_policy_client(monkeypatch)
+    _run_tester(credential_tests._test_firecrawl, fields={"api_key": "fc-key"})
+    assert calls["url"] == "https://api.firecrawl.dev/v2/search"
+    assert calls["headers"]["Authorization"] == "Bearer fc-key"
+    assert calls["factory_kwargs"].get("timeout") == credential_tests._DEFAULT_TIMEOUT_SECONDS
+
+
+def test_searxng_probe_uses_policy_client(monkeypatch):
+    # The sidecar base URL is deliberately private, so address screening is
+    # skipped, but the client must still come from policy_http_client: a bare
+    # httpx.Client would hand the internal URL to an env HTTP_PROXY.
+    calls = _capture_policy_client(monkeypatch)
+    _run_tester(
+        credential_tests._test_searxng,
+        fields={"base_url": "http://searxng:8080"},
+    )
+    assert calls["url"] == "http://searxng:8080/search"
+    assert calls["factory_kwargs"].get("timeout") == credential_tests._DEFAULT_TIMEOUT_SECONDS
+    assert calls["factory_kwargs"].get("follow_redirects") is True

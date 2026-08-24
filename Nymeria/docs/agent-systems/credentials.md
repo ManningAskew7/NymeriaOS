@@ -546,7 +546,10 @@ fields inside the API process and return a redacted status object:
 `ok`, `message`, `code`, and `verified`.
 
 The registry includes probes for GitHub, Todoist, Anthropic, Tavily, Exa,
-Firecrawl, Brave, SearXNG, and known OpenAI-compatible LLM providers. If a
+Firecrawl, Brave, SearXNG, Perplexity (a `GET /v1/models` auth check;
+Perplexity's model list lives under `/v1`, so the generic LLM fallback
+below, which probes `/models` on the registry's chat base URL, 404s on
+every key), and known OpenAI-compatible LLM providers. If a
 provider has no tester, the test result is `ok=true`, `verified=false`,
 `code="no_tester"`, with an explicit "no verification probe yet" message
 rather than pretending the provider accepted the key. Prompt submit responses
