@@ -35,8 +35,9 @@ from .message_splitter import split_discord_message as split_message
 from .sse_consumer import (
     AutonomousTurnAttach,
     consume_autonomous_firehose,
-    consume_sse_stream,
+    consume_chat_stream_with_recovery,
     dispatch_event,
+    finish_autonomous_delivery,
     fallback_hold_phrase,
     format_fallback_prompt_message,
     format_hook_approval_message,
@@ -128,6 +129,28 @@ async def fetch_channel_context(
     except Exception as e:
         logger.warning(f"Failed to fetch channel context: {e}")
         return ""
+
+
+def describe_discord_send_error(e: Exception) -> str:
+    """Actionable copy for a failed Discord send (#247).
+
+    Forbidden / NotFound are PERMANENT until someone acts (permissions,
+    blocked bot, deleted channel), so the description says what has to
+    change instead of implying a retry could work.
+    """
+    text = f"{type(e).__name__}: {e}"
+    if discord is not None:
+        if isinstance(e, discord.Forbidden):
+            return (
+                f"{text} (the bot lacks permission to post in this channel, "
+                f"or the recipient has blocked it)"
+            )
+        if isinstance(e, discord.NotFound):
+            return (
+                f"{text} (the channel no longer exists or is not visible "
+                f"to the bot)"
+            )
+    return text
 
 
 def parse_thread_id(thread_id: str) -> Dict[str, Any]:
@@ -693,11 +716,20 @@ class NymeriaDiscordBot(_BotBase):
         """
         handler = self._InteractiveChatHandler(self, channel, first_send, thread_id)
         try:
-            await consume_sse_stream(
-                self.api.chat_stream(
-                    message,
-                    thread_id,
-                    user_id,
+            # Dropped-turn recovery (#88): a mid-turn connection drop
+            # re-attaches and delivers the tail instead of raising into the
+            # sync fallback below, which would re-POST the prompt and run
+            # the turn a SECOND time. Pre-turn failures (the prompt never
+            # became a held turn) still raise into that fallback; so do
+            # self-invoke turns (no wire turn identity), which the except
+            # below therefore guards against re-posting.
+            await consume_chat_stream_with_recovery(
+                self.api,
+                handler,
+                message=message,
+                thread_id=thread_id,
+                user_id=user_id,
+                chat_kwargs=dict(
                     is_self_invoke=is_self_invoke,
                     trigger_override=trigger_override,
                     attachments=attachments,
@@ -707,9 +739,19 @@ class NymeriaDiscordBot(_BotBase):
                     publish_autonomous_events=publish_autonomous_events,
                     platform_origin=platform_origin,
                 ),
-                handler,
             )
         except Exception as e:
+            if is_self_invoke:
+                # Self-invoke turns (reaction triggers) get no wire
+                # turn_started, so a mid-turn drop raises here WITHOUT the
+                # consumer having owned it; a sync re-POST would run the
+                # turn a second time, as a user turn. Log and stop.
+                logger.error(
+                    f"Self-invoke stream failed; not re-posting (the turn "
+                    f"may still finish server-side): {e}",
+                    exc_info=True,
+                )
+                return
             logger.error(f"Streaming failed, falling back to sync: {e}", exc_info=True)
             try:
                 data = await self.api.chat(
@@ -1174,12 +1216,38 @@ class NymeriaDiscordBot(_BotBase):
             self._response_seen = False
             self._sent_artifacts: set = set()
             self._reply_suppressed = False
+            # Delivery accounting (#247): content-bearing sends only (text
+            # flushes plus the completion error bubble), so the outcome
+            # reflects whether the turn's OUTPUT reached the channel.
+            self._sends_attempted = 0
+            self._sends_ok = 0
+            self._first_send_error: Optional[str] = None
+            # Set by on_error: the turn itself errored, so the completion
+            # must not ALSO file a delivery report (the occurrence already
+            # joined the #154 execution accounting). Covers the attach
+            # path, which has no completed event to read `error` from.
+            self._error_seen = False
 
         async def _send_text(self, content: str) -> Optional[discord.Message]:
             last_msg = None
             for chunk in split_message(content):
                 last_msg = await self._channel.send(chunk)
             return last_msg
+
+        async def send_accounted(self, content: str) -> Optional[discord.Message]:
+            """``_send_text`` that feeds the delivery accounting (#247).
+
+            Raises like ``_send_text`` so call sites keep their handling.
+            """
+            self._sends_attempted += 1
+            try:
+                msg = await self._send_text(content)
+            except Exception as e:
+                if self._first_send_error is None:
+                    self._first_send_error = describe_discord_send_error(e)
+                raise
+            self._sends_ok += 1
+            return msg
 
         async def flush_text(self, final: bool = False) -> None:
             if self._reply_suppressed:
@@ -1191,6 +1259,7 @@ class NymeriaDiscordBot(_BotBase):
                 if final:
                     self._current_msg = None
                 return
+            self._sends_attempted += 1
             try:
                 if len(self._text_buffer) > 2000:
                     self._current_msg = await self._send_text(self._text_buffer)
@@ -1199,12 +1268,22 @@ class NymeriaDiscordBot(_BotBase):
                 else:
                     await self._current_msg.edit(content=self._text_buffer)
                 self._last_edit = time.monotonic()
+                self._sends_ok += 1
             except discord.HTTPException:
                 try:
                     self._current_msg = await self._send_text(self._text_buffer)
                     self._last_edit = time.monotonic()
-                except Exception:
+                    self._sends_ok += 1
+                except Exception as e:
+                    # Swallowed (delivery must not kill the event loop) but
+                    # counted (#247), so the completion line stays honest.
+                    if self._first_send_error is None:
+                        self._first_send_error = describe_discord_send_error(e)
                     logger.warning("Failed to send fallback autonomous Discord message", exc_info=True)
+            except Exception as e:
+                if self._first_send_error is None:
+                    self._first_send_error = describe_discord_send_error(e)
+                raise
             if final:
                 self._text_buffer = ""
                 self._current_msg = None
@@ -1334,6 +1413,7 @@ class NymeriaDiscordBot(_BotBase):
             await self._send_workspace_attachment_once(path)
 
         async def on_error(self, content: str) -> None:
+            self._error_seen = True
             await self._send_text(f"Sorry, I encountered an error: {content}")
 
         async def on_iteration_limit(self, content: str) -> None:
@@ -2049,6 +2129,10 @@ class NymeriaDiscordBot(_BotBase):
                     attach = None
                 if new_task_id:
                     state["task_id"] = new_task_id
+                # TODO-driven turns carry their todo_id (#247): remember it
+                # so the delivery report can join the failure accounting.
+                if event.get("todo_id"):
+                    state["todo_id"] = event.get("todo_id")
                 api = getattr(self, "api", None)
                 if attach is None and callable(
                     getattr(api, "reattach_turn_stream", None)
@@ -2063,9 +2147,14 @@ class NymeriaDiscordBot(_BotBase):
                             if self._autonomous_state.get(thread_id) is bound
                             else None
                         ),
-                        log_delivered=lambda: logger.info(
-                            f"Streamed autonomous result to Discord channel "
-                            f"{channel_id} (turn attach)"
+                        log_delivered=lambda h=handler, bound=state: (
+                            self._finish_autonomous_delivery(
+                                channel_id,
+                                thread_id,
+                                h,
+                                via="attach",
+                                todo_id=bound.get("todo_id"),
+                            )
                         ),
                         deliver_fallback_completed=(
                             lambda evt, h=handler: (
@@ -2147,7 +2236,17 @@ class NymeriaDiscordBot(_BotBase):
                     or event.get("error_message")
                     or "Unknown error"
                 )
-                await handler._send_text(f"Autonomous task error: {err}")
+                # Content-bearing bubble: counted (#247) so a turn whose
+                # only output was its error notice still logs honestly.
+                # Caught here (matching Telegram) so a failed send still
+                # reaches the honest completion line below instead of
+                # surfacing only the generic event-handler error.
+                try:
+                    await handler.send_accounted(
+                        f"Autonomous task error: {err}"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Failed to send autonomous error: {e}")
             elif handler._reply_suppressed:
                 # The turn's react call hid the reply; drop the
                 # aggregate content and footer.
@@ -2158,6 +2257,45 @@ class NymeriaDiscordBot(_BotBase):
                     if fallback:
                         handler._text_buffer = fallback
                 await self._finalize_autonomous_delivery(handler)
-            logger.info(f"Streamed autonomous result to Discord channel {channel_id}")
+            self._finish_autonomous_delivery(
+                channel_id,
+                thread_id,
+                handler,
+                via="firehose",
+                todo_id=event.get("todo_id"),
+                # An errored turn already joined the ticker's #154 execution
+                # accounting; its send outcome is logged but not reported,
+                # so one bad occurrence cannot feed both streaks.
+                report=not bool(event.get("error")),
+            )
         finally:
             self._autonomous_state.pop(thread_id, None)
+
+    def _finish_autonomous_delivery(
+        self,
+        channel_id: int,
+        thread_id: str,
+        handler: Any,
+        *,
+        via: str,
+        todo_id: Optional[str] = None,
+        report: bool = True,
+    ) -> None:
+        """Honest completion line + delivery report (#247).
+
+        Shared body: :func:`sse_consumer.finish_autonomous_delivery`. This
+        supplies the Discord strings and this module's logger; report tasks
+        ride the shared strong-ref spawn (no bot-level task registry here).
+        """
+        finish_autonomous_delivery(
+            handler,
+            getattr(self, "api", None),
+            platform="discord",
+            label=f"Discord channel {channel_id}",
+            target=f"channel {channel_id}",
+            thread_id=thread_id,
+            via=via,
+            todo_id=todo_id,
+            report=report,
+            log=logger,
+        )

@@ -13,7 +13,7 @@ import httpx
 
 from .bot_helpers import SeenEventCache, forward_backend_command, safe_id as _safe_id
 from .message_splitter import split_whatsapp_message as split_message
-from .sse_consumer import consume_sse_stream
+from .sse_consumer import consume_chat_stream_with_recovery
 
 logger = logging.getLogger(__name__)
 
@@ -507,7 +507,18 @@ class NymeriaWhatsAppBot:
     ) -> None:
         handler = _WhatsAppStreamHandler(self, target)
         try:
-            await consume_sse_stream(self.api.chat_stream(message, thread_id, user_id), handler)
+            # Shared chat consumer (#88). NOTE: recovery is inert here
+            # today: the in-process adapter never synthesizes turn_started,
+            # so the consumer sees no turn identity and every failure
+            # re-raises into the sync fallback below (429 shed included),
+            # exactly the pre-#88 behavior. The shared call site exists so
+            # a future adapter (or an HTTP-client wiring) gains recovery
+            # for free; do not claim honest-turn-lost behavior for this bot
+            # until the adapter emits turn identity.
+            await consume_chat_stream_with_recovery(
+                self.api, handler,
+                message=message, thread_id=thread_id, user_id=user_id,
+            )
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, BotAPIError) and exc.status_code == 429:
                 # Capacity shed (backlog #83): the sync fallback re-enters

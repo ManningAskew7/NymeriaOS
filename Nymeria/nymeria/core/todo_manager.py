@@ -24,6 +24,14 @@ if TYPE_CHECKING:
 # Thread-safe locks for todo operations (keyed by user_id)
 _todo_locks = KeyedRLockMap()
 
+# The auto-pause banner prefix, a THREE-SITE contract: the ticker's #154
+# pause and delivery_accounting's #247 pause both PREPEND a note starting
+# with this to the TODO's notes, and update_item's resume-clear strips a
+# note by matching it. Rewording any writer without this constant would
+# silently stop the strip, leaving a stale pause banner in notes (which are
+# prompt input on every run).
+PAUSE_NOTE_PREFIX = "[auto-paused after"
+
 
 class TodoStatus(str, Enum):
     """Status of a TODO item."""
@@ -116,6 +124,32 @@ class TodoItem(BaseModel):
         description="Set when the failure policy auto-paused this schedule",
     )
 
+    # Delivery-failure accounting (#247), parallel to the #154 trio above and
+    # deliberately NOT sharing `consecutive_failures`: the ticker resets that
+    # streak when the turn finishes, which is BEFORE a chat bot finishes (or
+    # fails) delivering the output, so a shared field would oscillate
+    # 0 -> 1 -> 0 across occurrences and never cross a threshold. These
+    # fields are driven only by bot delivery reports
+    # (POST /todos/{id}/delivery-report -> core/delivery_accounting.py):
+    # a failed report increments, a delivered/partial report resets, and the
+    # same scheduler_failure_* thresholds drive alert and pause. The
+    # resume-clear in update_item covers both trios.
+    delivery_failures: int = Field(
+        default=0,
+        description=(
+            "Consecutive occurrences whose output a chat bot could not "
+            "deliver (bot delivery reports)"
+        ),
+    )
+    last_delivery_failure: Optional[str] = Field(
+        default=None,
+        max_length=300,
+        description="Most recent delivery failure message",
+    )
+    last_delivery_failure_at: Optional[datetime] = Field(
+        default=None, description="When delivery of the output last failed"
+    )
+
     @field_validator(
         "created_at",
         "updated_at",
@@ -124,6 +158,7 @@ class TodoItem(BaseModel):
         "recurrence_anchor",
         "last_failure_at",
         "schedule_paused_at",
+        "last_delivery_failure_at",
     )
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
@@ -290,12 +325,14 @@ class TodoList(BaseModel):
                 item.consecutive_failures = 0
                 item.last_failure = None
                 item.last_failure_at = None
+                item.delivery_failures = 0
+                item.last_delivery_failure = None
+                item.last_delivery_failure_at = None
                 # The pause PREPENDED its reason to the notes (which are
                 # prompt input and user instructions); strip that prefix so
                 # a resumed TODO does not carry a stale pause banner.
-                pause_prefix = "[auto-paused after"
                 existing_notes = item.notes or ""
-                if existing_notes.startswith(pause_prefix):
+                if existing_notes.startswith(PAUSE_NOTE_PREFIX):
                     close = existing_notes.find("]")
                     if close != -1:
                         item.notes = existing_notes[close + 1 :].strip() or None
@@ -534,6 +571,32 @@ class TodoManager:
                     if data.get("items"):
                         users.append(path.stem)
         return sorted(users)
+
+    def find_owner(self, todo_id: str) -> Optional[str]:
+        """Return the user id owning ``todo_id``, or None.
+
+        One pass over the per-user TODO files (raw JSON, no model
+        validation): callers that know only a todo id (the #247
+        delivery-report route) must resolve the owner server-side rather
+        than trust a caller-supplied identity. Ids are 8-char uuid4
+        prefixes; a cross-user collision resolves to the first sorted user
+        (negligible probability, documented rather than defended).
+        """
+        if not self.todos_dir.exists():
+            return None
+        for path in sorted(self.todos_dir.iterdir()):
+            if not (path.is_file() and path.suffix == ".json"):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as e:
+                logger.warning("Skipping unreadable TODO list %s: %s", path, e)
+                continue
+            for item in data.get("items") or []:
+                if isinstance(item, dict) and item.get("id") == todo_id:
+                    return path.stem
+        return None
 
     def delete_todos(self, user_id: str) -> bool:
         """

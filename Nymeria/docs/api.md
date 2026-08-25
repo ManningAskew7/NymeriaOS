@@ -2702,20 +2702,31 @@ Authorization: Bearer <token>
       "consecutive_failures": 0,
       "last_failure": null,
       "last_failure_at": null,
-      "schedule_paused_at": null
+      "schedule_paused_at": null,
+      "delivery_failures": 0,
+      "last_delivery_failure": null,
+      "last_delivery_failure_at": null
     }
   ],
   "total": 1
 }
 ```
 
-The last four fields carry the recurring-failure policy state: consecutive
+`consecutive_failures` / `last_failure` / `last_failure_at` /
+`schedule_paused_at` carry the recurring-failure policy state: consecutive
 failed occurrences (any success resets), the most recent failure and its
 time, and the auto-pause marker (set when the schedule was paused after
 repeated failures; recurrence is kept and setting a new `scheduled_for`
 resumes and clears the episode). Thresholds:
 `SCHEDULER_FAILURE_ALERT_AFTER` / `SCHEDULER_FAILURE_PAUSE_AFTER` in
 `configuration.md`.
+
+`delivery_failures` / `last_delivery_failure` / `last_delivery_failure_at`
+are the parallel DELIVERY streak: occurrences whose backend turn succeeded
+but whose output a chat bot could not send (fed by the delivery-report
+route below; a delivered report resets). The same thresholds drive an
+owner alert and the same auto-pause, and the same explicit reschedule
+clears the episode.
 
 ---
 
@@ -2821,6 +2832,56 @@ Authorization: Bearer <token>
 ```
 
 **Conflict:** Returns `409 Conflict` if the TODO is currently executing as a scheduled autonomous run. Retry after the run finishes.
+
+---
+
+### Report TODO Delivery Outcome
+
+```http
+POST /todos/{todo_id}/delivery-report
+Content-Type: application/json
+Authorization: Bearer <admin token>
+```
+
+Admin-only (the chat bots call it with the service token). After a chat bot
+finishes (or fails) sending a scheduled TODO turn's output, it reports the
+outcome here so a turn that succeeded backend-side but reached nobody stops
+looking like a success. The TODO's owner is resolved server-side from the
+`todo_id`; a caller-supplied user id is never trusted for the accounting.
+
+**Request Body:**
+```json
+{
+  "outcome": "failed",
+  "platform": "telegram",
+  "target": "chat 5551234567",
+  "error": "Chat not found (the recipient has never started this bot ...)",
+  "thread_id": "telegram_5551234567"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `outcome` | string | Yes | `delivered`, `partial` (some sends failed), or `failed` (nothing reached the chat) |
+| `platform` | string | Yes | e.g. `telegram`, `discord` |
+| `target` | string | No | Human-readable destination for alert copy |
+| `error` | string | No | First send error observed |
+| `thread_id` | string | No | Thread the turn executed in |
+
+`failed` increments the TODO's `delivery_failures` streak: at
+`SCHEDULER_FAILURE_ALERT_AFTER` consecutive undelivered runs the owner gets
+an alert (in-app plus external destinations), at
+`SCHEDULER_FAILURE_PAUSE_AFTER` the schedule auto-pauses exactly like the
+execution-failure policy (recurrence kept; an explicit reschedule resumes
+and clears). A one-shot TODO alerts immediately (there is no next
+occurrence to accumulate on). `delivered` / `partial` reset the streak.
+
+**Response:**
+```json
+{"outcome": "failed", "delivery_failures": 2, "alerted": true, "paused": false}
+```
+
+**Errors:** `404` unknown TODO; `403` non-admin caller.
 
 ---
 

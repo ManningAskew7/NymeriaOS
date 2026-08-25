@@ -1758,6 +1758,34 @@ class NymeriaAPIClient:
             return data
         return []
 
+    async def report_todo_delivery(
+        self,
+        todo_id: str,
+        *,
+        outcome: str,
+        platform: str,
+        target: str = "",
+        error: Optional[str] = None,
+        thread_id: str = "",
+    ) -> dict:
+        """Report a chat-app delivery outcome for a TODO turn (#247).
+
+        Admin-only route, called with the bot's service token and no Act-As:
+        the API resolves the TODO's owner itself. ``outcome`` is one of
+        ``delivered`` / ``partial`` / ``failed``.
+        """
+        body: dict = {
+            "outcome": outcome,
+            "platform": platform,
+            "target": target,
+            "thread_id": thread_id,
+        }
+        if error:
+            body["error"] = error
+        return await self._post(
+            f"/todos/{_path_param(todo_id)}/delivery-report", json=body,
+        )
+
     async def send_external_notification(
         self,
         user_id: str,

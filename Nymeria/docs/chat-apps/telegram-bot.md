@@ -502,6 +502,35 @@ The bot maintains a background SSE connection to `GET /autonomous/stream`. When 
 
 TODOs created via `/todo_add` in a Telegram chat have their results delivered back to that chat automatically.
 
+### Delivery honesty and failure accounting
+
+Send failures are counted, not just warned about (backlog #247). The
+completion log line says what actually happened: delivered, partially
+delivered (some bubbles failed), or FAILED (nothing reached the chat), with
+the first error. "Chat not found" and blocked-bot errors carry actionable
+copy: the recipient has never started the bot (or blocked it), and Telegram
+refuses bot-initiated first contact, so retrying cannot help until they act.
+
+For TODO-driven turns the bot also reports the outcome to
+`POST /todos/{todo_id}/delivery-report` (see `api.md`): consecutive
+undelivered runs alert the owner and eventually auto-pause the schedule,
+exactly like the execution-failure policy, so a scheduled message can no
+longer fail silently forever. Turns that errored backend-side are excluded
+(they already feed the execution-failure accounting).
+
+### Dropped-stream recovery (interactive)
+
+A mid-turn connection drop on the interactive chat stream no longer
+re-sends the prompt (which ran the turn a second time). The shared recovery
+consumer (`triggers/sse_consumer.py::consume_chat_stream_with_recovery`)
+re-attaches to `GET /threads/{thread_id}/turn/stream` from the last seen
+`seq` and delivers the tail exactly once; if the turn is genuinely gone it
+posts an honest "lost connection" notice instead. The legacy sync fallback
+now runs only when the failure happened before the turn started, and it
+skips self-invoke (reaction) turns entirely: those carry no wire turn
+identity, so re-sending would run the reaction twice; the bot logs and
+stops instead.
+
 Per-thread delivery is controlled from Thread Settings:
 
 | Mode | Behavior |

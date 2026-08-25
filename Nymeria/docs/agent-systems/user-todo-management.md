@@ -224,6 +224,18 @@ it WITHOUT silently resuming the schedule. The failure state is visible on
 the wire (`GET /todos`) and in the todo tool and `/todos list` renderings.
 Either threshold set to 0 disables that stage.
 
+DELIVERY failures have a parallel streak with the same policy
+(`delivery_failures` / `last_delivery_failure` / `last_delivery_failure_at`,
+`core/delivery_accounting.py`): a turn can succeed backend-side while the
+chat bot bound to its thread cannot send the output (wrong binding, peer
+never started the bot). Bots report each TODO turn's outcome to
+`POST /todos/{todo_id}/delivery-report`; consecutive `failed` reports
+alert at the same alert threshold and auto-pause at the same pause
+threshold (one-shot TODOs alert immediately), and a delivered report or
+an explicit reschedule clears the episode. The two streaks are separate
+fields because a successful execution resets `consecutive_failures`
+before the bot has finished delivering.
+
 The interval calculation lives in `core/todo_constants.py`:
 
 ```python
