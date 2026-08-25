@@ -635,10 +635,24 @@ def httpx_request_with_policy(
             http_client.close()
 
 
+# Reason-specific denial copy. Reasons absent here (the blocked-IP family:
+# metadata_target, loopback_network, private_network, ...) fall through to the
+# generic blocked-target sentence, which describes them accurately. A DNS
+# failure or allowlist miss must NOT get that sentence: describing a typo'd
+# public domain as a "blocked private target" misleads users and agents alike.
+_DENIAL_MESSAGES: dict[str, str] = {
+    "dns_resolution_failed": "The hostname could not be resolved (DNS lookup failed), so the request was not sent. Check the domain spelling.",
+    "domain_allowlist_miss": "This host is not on the configured domain allowlist, so the request was not sent.",
+    "invalid_http_url": "The URL is not a valid http(s) URL.",
+    "https_to_http_redirect": "A redirect from HTTPS down to plain HTTP was blocked.",
+}
+
+
 def blocked_network_error(decision: HTTPPolicyDecision, message: Optional[str] = None) -> dict[str, Any]:
     return {
         "type": "blocked_network_target",
         "message": message
+        or _DENIAL_MESSAGES.get(decision.reason)
         or "Private, loopback, link-local, reserved, and metadata network targets are blocked unless explicitly allowlisted.",
         "reason": decision.reason,
     }

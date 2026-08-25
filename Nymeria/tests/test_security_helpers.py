@@ -582,3 +582,45 @@ def test_validator_has_no_dead_quick_test_runner(tmp_path):
     re-introduction."""
     validator = CodeValidator(tmp_path)
     assert not hasattr(validator, "run_quick_tests")
+
+
+def test_blocked_network_error_messages_match_the_denial_reason():
+    """A DNS failure or allowlist miss must not be described as a blocked
+    private/loopback/metadata target: that message misleads users whose only
+    problem is a typo'd public domain (found live 2026-08-25)."""
+    from nymeria.core.http_policy import HTTPPolicyDecision, blocked_network_error
+
+    dns = blocked_network_error(
+        HTTPPolicyDecision(False, "dns_resolution_failed", "https://x.invalid/", "x.invalid", 443)
+    )
+    assert dns["type"] == "blocked_network_target"
+    assert dns["reason"] == "dns_resolution_failed"
+    assert "resolve" in dns["message"].lower()
+    assert "Private, loopback" not in dns["message"]
+
+    miss = blocked_network_error(
+        HTTPPolicyDecision(False, "domain_allowlist_miss", "https://example.com/", "example.com", 443)
+    )
+    assert "allowlist" in miss["message"].lower()
+    assert "Private, loopback" not in miss["message"]
+
+    bad_url = blocked_network_error(HTTPPolicyDecision(False, "invalid_http_url", "ftp://x/"))
+    assert "url" in bad_url["message"].lower()
+    assert "Private, loopback" not in bad_url["message"]
+
+    downgrade = blocked_network_error(
+        HTTPPolicyDecision(False, "https_to_http_redirect", "http://example.com/", "example.com")
+    )
+    assert "redirect" in downgrade["message"].lower()
+    assert "Private, loopback" not in downgrade["message"]
+
+    private = blocked_network_error(
+        HTTPPolicyDecision(False, "private_network", "http://10.0.0.1/", "10.0.0.1", 80)
+    )
+    assert "Private, loopback" in private["message"]
+
+    override = blocked_network_error(
+        HTTPPolicyDecision(False, "dns_resolution_failed", "https://x.invalid/", "x.invalid", 443),
+        message="custom",
+    )
+    assert override["message"] == "custom"
