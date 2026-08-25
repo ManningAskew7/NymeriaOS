@@ -369,7 +369,15 @@ Chat responses (`/ask` and @mentions) are streamed via SSE rather than waiting f
 - **Hidden (default):** Response text streams into a single progressively-edited message. Tool call boundaries are shown as horizontal rule separators (─────). Toggle with `/show-tools`.
 - **Shown:** Text segments are sent as separate messages with tool call embeds (blue → green on completion) between them. Each embed shows the tool name, arguments, and result.
 
-If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint automatically.
+A mid-turn connection drop no longer re-sends the prompt (which ran the
+turn a second time): the shared recovery consumer
+(`triggers/sse_consumer.py::consume_chat_stream_with_recovery`) re-attaches
+to `GET /threads/{thread_id}/turn/stream` from the last seen `seq` and
+delivers the tail exactly once, posting an honest "lost connection" notice
+when the turn is genuinely gone. The sync fallback now runs only when the
+failure happened before the turn started, and it skips self-invoke
+(reaction) turns entirely: those carry no wire turn identity, so
+re-sending would run the reaction twice; the bot logs and stops instead.
 
 Both interactive and autonomous SSE flows use the shared `SSEEventHandler` protocol from `triggers/sse_consumer.py`, so new SSE event types only need to be added in one place.
 
@@ -386,6 +394,14 @@ The bot maintains a background SSE connection to `GET /autonomous/stream`. When 
 - `task_completed` ends the stream and only falls back to the aggregate `content` field if no live response chunks were received.
 
 This means TODOs created via `/todos add` in a Discord channel will have their results delivered back to that channel automatically.
+
+Send failures are counted, not just warned about (backlog #247): the
+completion log says delivered / partially delivered / FAILED with the first
+error (`Forbidden` and `NotFound` carry actionable copy), and TODO-driven
+turns report their outcome to `POST /todos/{todo_id}/delivery-report` so
+consecutive undelivered runs alert the owner and eventually auto-pause the
+schedule (see `api.md`). Backend-errored turns are excluded (they already
+feed the execution-failure accounting).
 
 ## API Client
 

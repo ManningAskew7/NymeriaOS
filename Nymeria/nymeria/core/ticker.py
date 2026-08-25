@@ -31,7 +31,7 @@ from .scheduler_state import SchedulerStateManager
 from .storage_paths import safe_path_segment
 from .stream_bridge import StreamCollection, stream_and_collect
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
-from .todo_manager import TodoManager, TodoStatus
+from .todo_manager import PAUSE_NOTE_PREFIX, TodoManager, TodoStatus
 from .trigger_manager import TriggerManager
 from .turn_executor import TurnExecutor
 from .watchdog_sweep import WatchdogSweep
@@ -1617,7 +1617,7 @@ class Ticker:
             # (and the user's own instructions), so they must survive the
             # pause; update_item's resume-clear strips this prefix back off.
             pause_note = (
-                f"[auto-paused after {failure_count} consecutive failed "
+                f"{PAUSE_NOTE_PREFIX} {failure_count} consecutive failed "
                 f"runs: {str(error)[:100]}]"
             )
             with self.todo_manager.atomic_update(entry.user_id) as todo_list:

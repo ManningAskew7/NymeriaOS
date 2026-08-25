@@ -1,5 +1,6 @@
 """TODO dashboard routes."""
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -17,7 +18,14 @@ from ...core.todo_constants import (
 )
 from ...core.todo_manager import TodoItem, TodoList, TodoManager, TodoStatus
 from ...core.todo_schedule_db import TodoScheduleDB
-from ..schemas.todos import TodoCreateRequest, TodoItemResponse, TodoListResponse, TodoUpdateRequest
+from ..schemas.todos import (
+    TodoCreateRequest,
+    TodoDeliveryReportRequest,
+    TodoDeliveryReportResponse,
+    TodoItemResponse,
+    TodoListResponse,
+    TodoUpdateRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +122,9 @@ def _todo_to_response(item: TodoItem) -> TodoItemResponse:
         last_failure=item.last_failure,
         last_failure_at=item.last_failure_at,
         schedule_paused_at=item.schedule_paused_at,
+        delivery_failures=item.delivery_failures,
+        last_delivery_failure=item.last_delivery_failure,
+        last_delivery_failure_at=item.last_delivery_failure_at,
     )
 
 
@@ -490,5 +501,56 @@ def create_todos_router(
                 schedule_db.remove_scheduled(todo_id)
 
             return _todo_to_response(item)
+
+    @router.post(
+        "/todos/{todo_id}/delivery-report",
+        response_model=TodoDeliveryReportResponse,
+    )
+    async def report_todo_delivery(
+        todo_id: str,
+        request: TodoDeliveryReportRequest,
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """Record a chat bot's delivery outcome for a TODO turn (#247).
+
+        Admin-only: bots call with the service token, no Act-As. The TODO's
+        owner is resolved server-side (the bot delivering an autonomous turn
+        knows the chat, not necessarily the account), so a caller-supplied
+        user id is never trusted for the accounting.
+
+        The whole body runs off the event loop: owner resolution scans the
+        per-user TODO files, and an alert-firing report enters the
+        SYNCHRONOUS notification stack (30s httpx timeout per destination),
+        whose likeliest destination is the very channel that just failed.
+        Same treatment as ``POST /notifications/external``.
+        """
+        from ...core.delivery_accounting import record_delivery_report
+
+        todo_manager = TodoManager(settings.data_dir)
+
+        def _resolve_and_record():
+            owner_id = todo_manager.find_owner(todo_id)
+            if owner_id is None:
+                return None
+            return record_delivery_report(
+                user_id=owner_id,
+                todo_id=todo_id,
+                outcome=request.outcome,
+                platform=request.platform,
+                target=request.target,
+                error=request.error,
+                thread_id=request.thread_id or "",
+                todo_manager=todo_manager,
+                schedule_db=_get_todo_schedule_db(settings),
+                settings=settings,
+            )
+
+        result = await asyncio.to_thread(_resolve_and_record)
+        if result is None:
+            raise HTTPException(
+                status_code=404, detail=f"TODO '{todo_id}' not found"
+            )
+        return result
 
     return router

@@ -1,7 +1,7 @@
 """TODO dashboard API schemas."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,12 @@ class TodoItemResponse(BaseModel):
     last_failure: Optional[str] = None
     last_failure_at: Optional[datetime] = None
     schedule_paused_at: Optional[datetime] = None
+    # Delivery-failure state (#247): consecutive occurrences whose output a
+    # chat bot could not deliver (bot delivery reports; a delivered report
+    # resets). Parallel to the #154 trio, same pause marker.
+    delivery_failures: int = 0
+    last_delivery_failure: Optional[str] = None
+    last_delivery_failure_at: Optional[datetime] = None
 
 
 class TodoCreateRequest(BaseModel):
@@ -98,6 +104,46 @@ class TodoUpdateRequest(BaseModel):
     )
     clear_schedule: bool = Field(default=False, description="Clear the schedule")
     clear_recurrence: bool = Field(default=False, description="Clear the recurrence")
+
+
+class TodoDeliveryReportRequest(BaseModel):
+    """A chat bot's delivery outcome for one scheduled TODO turn (#247).
+
+    Filed by the Telegram/Discord bots after they finish (or fail) sending
+    an autonomous TODO turn's output; drives the delivery-failure
+    accounting in ``core/delivery_accounting.py``.
+    """
+
+    outcome: Literal["delivered", "partial", "failed"] = Field(
+        ...,
+        description=(
+            "delivered: all sends landed; partial: some sends failed; "
+            "failed: nothing reached the chat"
+        ),
+    )
+    platform: str = Field(
+        ..., min_length=1, max_length=40, description="e.g. 'telegram'"
+    )
+    target: str = Field(
+        default="",
+        max_length=120,
+        description="Human-readable destination, e.g. 'chat 5551234567'",
+    )
+    error: Optional[str] = Field(
+        default=None, max_length=500, description="First send error observed"
+    )
+    thread_id: Optional[str] = Field(
+        default=None, description="Thread the turn executed in"
+    )
+
+
+class TodoDeliveryReportResponse(BaseModel):
+    """What the delivery accounting did with one report."""
+
+    outcome: str
+    delivery_failures: int
+    alerted: bool
+    paused: bool
 
 
 class TodoListResponse(BaseModel):

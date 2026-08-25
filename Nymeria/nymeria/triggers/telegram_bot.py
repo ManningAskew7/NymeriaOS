@@ -55,8 +55,9 @@ from .voice_helpers import is_voice_message_mime, strip_markdown_for_speech
 from .sse_consumer import (
     AutonomousTurnAttach,
     consume_autonomous_firehose,
-    consume_sse_stream,
+    consume_chat_stream_with_recovery,
     dispatch_event,
+    finish_autonomous_delivery,
     fallback_hold_phrase,
     format_auth_prompt_message,
     format_fallback_prompt_message,
@@ -121,6 +122,26 @@ logger = logging.getLogger(__name__)
 def make_thread_id(chat_id: int) -> str:
     """Generate a Nymeria thread ID from a Telegram chat ID."""
     return f"telegram_{chat_id}"
+
+
+def describe_telegram_send_error(e: Exception) -> str:
+    """Actionable copy for a failed Telegram send (#247).
+
+    'Chat not found' and blocked-bot failures are PERMANENT until the peer
+    acts (Telegram refuses bot-initiated first contact), so the description
+    says what has to happen instead of implying a retry could work.
+    """
+    text = str(e)
+    lowered = text.lower()
+    if "chat not found" in lowered:
+        return (
+            f"{text} (the recipient has never started this bot, or the chat "
+            f"id is wrong; Telegram refuses sends until they message the "
+            f"bot first)"
+        )
+    if "blocked" in lowered:
+        return f"{text} (the recipient has blocked this bot)"
+    return text
 
 
 # How often to re-fetch the full per-thread chat<->thread binding map from
@@ -1806,11 +1827,20 @@ class NymeriaTelegramBot:
             )
         streamed_ok = False
         try:
-            await consume_sse_stream(
-                self.api.chat_stream(
-                    message,
-                    thread_id,
-                    user_id,
+            # Dropped-turn recovery (#88): a mid-turn connection drop
+            # re-attaches and delivers the tail instead of raising into the
+            # sync fallback below, which would re-POST the prompt and run
+            # the turn a SECOND time. Pre-turn failures (the prompt never
+            # became a held turn) still raise into that fallback; so do
+            # self-invoke turns (no wire turn identity), which the except
+            # below therefore guards against re-posting.
+            await consume_chat_stream_with_recovery(
+                self.api,
+                handler,
+                message=message,
+                thread_id=thread_id,
+                user_id=user_id,
+                chat_kwargs=dict(
                     is_self_invoke=is_self_invoke,
                     trigger_override=trigger_override,
                     attachments=attachments,
@@ -1820,10 +1850,20 @@ class NymeriaTelegramBot:
                     publish_autonomous_events=publish_autonomous_events,
                     platform_origin=platform_origin,
                 ),
-                handler,
             )
             streamed_ok = True
         except Exception as e:
+            if is_self_invoke:
+                # Self-invoke turns (reaction triggers) get no wire
+                # turn_started, so a mid-turn drop raises here WITHOUT the
+                # consumer having owned it; a sync re-POST would run the
+                # turn a second time, as a user turn. Log and stop.
+                logger.error(
+                    f"Self-invoke stream failed; not re-posting (the turn "
+                    f"may still finish server-side): {e}",
+                    exc_info=True,
+                )
+                return
             logger.error(f"Streaming failed, falling back to sync: {e}", exc_info=True)
             try:
                 data = await self.api.chat(
@@ -3344,6 +3384,33 @@ class NymeriaTelegramBot:
             self._tool_count = 0
             self._response_seen = False
             self._reply_suppressed = False
+            # Delivery accounting (#247): content-bearing sends only (text
+            # flushes plus the completion error bubble), so the outcome
+            # reflects whether the turn's OUTPUT reached the chat. Tool
+            # markers and status bubbles stay warn-only and uncounted.
+            self._sends_attempted = 0
+            self._sends_ok = 0
+            self._first_send_error: Optional[str] = None
+            # Set by on_error: the turn itself errored, so the completion
+            # must not ALSO file a delivery report (the occurrence already
+            # joined the #154 execution accounting). Covers the attach
+            # path, which has no completed event to read `error` from.
+            self._error_seen = False
+
+        async def send_accounted(self, text: str) -> None:
+            """One content-bearing bubble, feeding the delivery accounting.
+
+            Raises like ``_send_html`` so call sites keep their own warn
+            copy; the counters and the first error are recorded here.
+            """
+            self._sends_attempted += 1
+            try:
+                await self._bot._send_html(self._chat_id, text)
+            except Exception as e:
+                if self._first_send_error is None:
+                    self._first_send_error = describe_telegram_send_error(e)
+                raise
+            self._sends_ok += 1
 
         async def flush_text(self, final: bool = False) -> None:
             """Send the buffered response text as its own bubble, then reset.
@@ -3352,6 +3419,9 @@ class NymeriaTelegramBot:
             the formatted text at 4000 chars (Telegram's hard limit is 4096)
             as a safety net. ``final`` is accepted for the ``SSEEventHandler``
             protocol; the autonomous handler always fully flushes and resets.
+            Send failures are swallowed (delivery must not kill the event
+            loop) but counted, so the completion line and the delivery
+            report (#247) stay honest.
             """
             if self._reply_suppressed:
                 self._text_buffer = ""
@@ -3363,7 +3433,7 @@ class NymeriaTelegramBot:
             display = markdown_to_html(buf)
             for chunk in split_message(display, 4000):
                 try:
-                    await self._bot._send_html(self._chat_id, chunk)
+                    await self.send_accounted(chunk)
                 except Exception as e:
                     logger.warning(f"Failed to send autonomous chunk: {e}")
             self._text_buffer = ""
@@ -3486,6 +3556,7 @@ class NymeriaTelegramBot:
             )
 
         async def on_error(self, content: str) -> None:
+            self._error_seen = True
             try:
                 await self._bot._send_html(
                     self._chat_id, f"<i>{escape_html(str(content))}</i>"
@@ -4255,6 +4326,10 @@ class NymeriaTelegramBot:
                     attach = None
                 if new_task_id:
                     state["task_id"] = new_task_id
+                # TODO-driven turns carry their todo_id (#247): remember it
+                # so the delivery report can join the failure accounting.
+                if event.get("todo_id"):
+                    state["todo_id"] = event.get("todo_id")
                 if attach is None and callable(
                     getattr(self.api, "reattach_turn_stream", None)
                 ):
@@ -4268,9 +4343,14 @@ class NymeriaTelegramBot:
                             if self._autonomous_state.get(thread_id) is bound
                             else None
                         ),
-                        log_delivered=lambda: logger.info(
-                            f"Streamed autonomous result to Telegram chat "
-                            f"{chat_id} (turn attach)"
+                        log_delivered=lambda h=handler, bound=state: (
+                            self._finish_autonomous_delivery(
+                                chat_id,
+                                thread_id,
+                                h,
+                                via="attach",
+                                todo_id=bound.get("todo_id"),
+                            )
                         ),
                         deliver_fallback_completed=(
                             lambda evt, h=handler: (
@@ -4320,9 +4400,10 @@ class NymeriaTelegramBot:
         if event.get("error"):
             err = event.get("content") or "Unknown error"
             try:
-                await self._send_html(
-                    chat_id,
-                    f"<i>Autonomous task error:</i> {escape_html(str(err))}",
+                # Content-bearing bubble: counted (#247) so a turn whose
+                # only output was its error notice still reports honestly.
+                await handler.send_accounted(
+                    f"<i>Autonomous task error:</i> {escape_html(str(err))}"
                 )
             except Exception as e:
                 logger.warning(f"Failed to send autonomous error: {e}")
@@ -4350,7 +4431,47 @@ class NymeriaTelegramBot:
                 )
             await handler.flush_text(final=True)
         self._autonomous_state.pop(thread_id, None)
-        logger.info(f"Streamed autonomous result to Telegram chat {chat_id}")
+        self._finish_autonomous_delivery(
+            chat_id,
+            thread_id,
+            handler,
+            via="firehose",
+            todo_id=event.get("todo_id"),
+            # An errored turn already joined the ticker's #154 execution
+            # accounting; only its send outcome is logged here, not
+            # reported, so one bad occurrence cannot feed both streaks.
+            report=not bool(event.get("error")),
+        )
+
+    def _finish_autonomous_delivery(
+        self,
+        chat_id: int,
+        thread_id: str,
+        handler: "NymeriaTelegramBot._AutonomousSSEHandler",
+        *,
+        via: str,
+        todo_id: Optional[str] = None,
+        report: bool = True,
+    ) -> None:
+        """Honest completion line + delivery report (#247).
+
+        Shared body: :func:`sse_consumer.finish_autonomous_delivery`. This
+        supplies the Telegram strings, this module's logger, and the bot's
+        background-task machinery (strong ref + shutdown join).
+        """
+        finish_autonomous_delivery(
+            handler,
+            self.api,
+            platform="telegram",
+            label=f"Telegram chat {chat_id}",
+            target=f"chat {chat_id}",
+            thread_id=thread_id,
+            via=via,
+            todo_id=todo_id,
+            report=report,
+            spawn=self._spawn_background_task,
+            log=logger,
+        )
 
     # =========================================================================
     # Error Handler

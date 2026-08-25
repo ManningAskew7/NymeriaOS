@@ -4,10 +4,18 @@ Centralises event-type routing, field extraction, tool-call counting,
 and the "flush before status" discipline so that individual platform
 handlers only implement rendering.
 
-Usage — interactive chat stream::
+Usage — interactive chat stream (#88: always the recovery consumer, so a
+mid-turn connection drop re-attaches instead of losing the tail or letting
+the caller re-POST a running turn)::
 
     handler = MyPlatformHandler(...)
-    await consume_sse_stream(api.chat_stream(...), handler)
+    await consume_chat_stream_with_recovery(
+        api, handler, message=..., thread_id=..., user_id=..., chat_kwargs=...,
+    )
+
+(`consume_sse_stream` is the bare dispatch loop underneath: kept for tests
+and for consuming a stream that is not a recoverable chat turn; do NOT use
+it for bot chat, that is the pre-#88 behavior.)
 
 Usage — autonomous single-event dispatch::
 
@@ -610,6 +618,429 @@ async def consume_sse_stream(
     async for event in events:
         tool_call_count = await dispatch_event(event, handler, tool_call_count)
     await handler.on_stream_end(tool_call_count)
+
+
+# ── Interactive chat stream with dropped-turn recovery (backlog #88) ────────
+
+# Exception shapes that mean "the connection dropped", not "the request was
+# rejected" (mirrors the CLI transport's CONNECTION_ERRORS).
+CHAT_CONNECTION_ERRORS: tuple = (httpx.TransportError,)
+
+# Turn-recovery backoff (same posture as the CLI/GUI clients).
+CHAT_RECOVERY_BASE_DELAY_SECONDS = 2.0
+CHAT_RECOVERY_MAX_DELAY_SECONDS = 15.0
+CHAT_RECOVERY_MAX_ATTEMPTS = 20
+
+TURN_LOST_MESSAGE = (
+    "Lost connection while this reply was streaming and could not rejoin "
+    "it. The turn may still finish on the server; its result is saved to "
+    "the thread history."
+)
+
+
+def _exc_status_code(exc: Exception) -> Optional[int]:
+    return getattr(getattr(exc, "response", None), "status_code", None)
+
+
+async def _safe_stream_end(handler: SSEEventHandler, tool_call_count: int) -> None:
+    """``on_stream_end`` that cannot escape to the caller.
+
+    Used on every path where the turn HAS identity: a raise here would land
+    in the caller's except and re-POST a turn whose reply already landed.
+    """
+    try:
+        await handler.on_stream_end(tool_call_count)
+    except Exception:  # noqa: BLE001
+        logger.warning("Handler on_stream_end failed", exc_info=True)
+
+
+async def consume_chat_stream_with_recovery(
+    api: Any,
+    handler: SSEEventHandler,
+    *,
+    message: str,
+    thread_id: str,
+    user_id: str,
+    chat_kwargs: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Consume ``POST /chat`` SSE with CLI-style dropped-turn recovery.
+
+    The bot-side port of the CLI transport's recovery loop
+    (``triggers/cli/transport/api.py::stream_chat``): a connection drop
+    mid-turn does not end the turn server-side, so this re-attaches via
+    ``GET /threads/{id}/turn/stream`` and resumes dispatching from the last
+    seen ``seq`` instead of losing the tail (or worse, re-POSTing the
+    prompt and running the turn twice, the pre-#88 bot behavior).
+
+    Contract with the caller:
+
+    - Any exception raised while the turn has no identity is re-raised:
+      the caller's legacy sync-``chat`` fallback and its platform branches
+      (e.g. the 429 capacity shed) keep working. That covers real pre-turn
+      failures (the prompt never became a held turn, so a re-POST is not a
+      duplicate) but ALSO two identity-less stream shapes where a re-POST
+      WOULD duplicate, so callers must guard those themselves:
+      ``is_self_invoke`` turns (the chat route withholds the wire
+      ``turn_started`` for them) and in-process adapters (Teams/WhatsApp),
+      which never synthesize ``turn_started`` at all.
+    - After ``turn_started``, this function owns the outcome and never
+      raises (besides ``CancelledError``): it recovers, finishes, or
+      renders the honest turn-lost error through ``handler.on_error``,
+      and a raising ``on_stream_end`` is contained rather than handed to
+      the caller (which would re-POST a turn whose reply already landed).
+      A handler exception mid-dispatch also lands in recovery; the cursor
+      already advanced past the poison event, so replay skips it.
+    - The ``consume_sse_stream`` contract is preserved: every renderable
+      event goes through :func:`dispatch_event` exactly once and
+      ``on_stream_end`` fires exactly once at the true end.
+
+    Returns one of ``"completed"`` (terminal event on the primary stream),
+    ``"queued"``, ``"dispatched"``, ``"recovered"`` (finished via
+    re-attach), or ``"lost"``. No production caller branches on it today;
+    it exists for tests and observability.
+    """
+    kwargs = dict(chat_kwargs or {})
+    tool_call_count = 0
+    turn_id: Optional[str] = None
+    last_seq = 0
+    terminal_seen = False
+    prompt_queued_seen = False
+    dispatched_seen = False
+    recovery_cause: Exception
+    try:
+        async for event in api.chat_stream(message, thread_id, user_id, **kwargs):
+            etype = event.get("type")
+            if etype == "turn_started":
+                new_id = event.get("turn_id")
+                if isinstance(new_id, str) and new_id:
+                    turn_id = new_id
+            seq = event.get("seq")
+            if isinstance(seq, int) and seq > last_seq:
+                last_seq = seq
+            if etype in ("done", "error"):
+                terminal_seen = True
+            elif etype == "prompt_queued":
+                # ONLY prompt_queued proves the queued outcome; the legacy
+                # bare "queued" event also fires on paths that still become
+                # the holder (see the CLI transport's identical note).
+                prompt_queued_seen = True
+            elif etype == "dispatched":
+                dispatched_seen = True
+            tool_call_count = await dispatch_event(event, handler, tool_call_count)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - split into raise vs recover below
+        if turn_id is None:
+            raise
+        if terminal_seen:
+            # The turn already finished on the wire; a drop during the
+            # server's stream close has nothing left to recover.
+            await _safe_stream_end(handler, tool_call_count)
+            return "completed"
+        recovery_cause = exc
+    else:
+        if terminal_seen or prompt_queued_seen or dispatched_seen or turn_id is None:
+            # Ended properly, was a queued/ack shape that never held a turn,
+            # or was dispatched to another thread (whose buffer this stream
+            # cannot poll; the CLI finalizes locally for the same reason).
+            if turn_id is None:
+                # No identity: a raise here goes to the caller's legacy
+                # fallback, the pre-#88 status quo for identity-less shapes.
+                await handler.on_stream_end(tool_call_count)
+            else:
+                await _safe_stream_end(handler, tool_call_count)
+            if prompt_queued_seen:
+                return "queued"
+            if dispatched_seen:
+                return "dispatched"
+            return "completed"
+        # Clean stream end WITHOUT a terminal event on a held turn: the
+        # server withholds the wire terminal when its turn-end disconnect
+        # probe latched, but the buffered tail (including done) is
+        # replayable; drain it through the same recovery path.
+        recovery_cause = RuntimeError("chat stream ended without a terminal event")
+
+    if not (
+        callable(getattr(api, "reattach_turn_stream", None))
+        and callable(getattr(api, "get_thread_status", None))
+    ):
+        # In-process adapters (Teams/WhatsApp) and older fakes cannot
+        # re-attach; degrade to the honest message, never silent truncation.
+        logger.warning(
+            "Chat stream for thread %s dropped mid-turn and this client "
+            "cannot re-attach (%s)",
+            thread_id,
+            recovery_cause,
+        )
+        return await _finish_turn_lost(handler, tool_call_count)
+
+    logger.info(
+        "Chat stream for thread %s interrupted mid-turn (%s); recovering",
+        thread_id,
+        recovery_cause,
+    )
+    attempt = 0
+    while attempt < CHAT_RECOVERY_MAX_ATTEMPTS:
+        attempt += 1
+        status: Optional[Dict[str, Any]] = None
+        try:
+            raw_status = await api.get_thread_status(thread_id, user_id=user_id)
+            status = raw_status if isinstance(raw_status, dict) else None
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - backend unreachable; keep retrying
+            status = None
+
+        if status is not None:
+            raw_turn = status.get("turn")
+            turn = raw_turn if isinstance(raw_turn, dict) else None
+            turn_matches = turn is not None and (
+                not turn_id or turn.get("turn_id") == turn_id
+            )
+            if turn is not None and turn_matches:
+                outcome: Optional[str] = None
+                progressed = False
+                stream = None
+                try:
+                    stream = api.reattach_turn_stream(
+                        thread_id,
+                        user_id=user_id,
+                        turn_id=str(turn.get("turn_id") or "") or None,
+                        from_seq=last_seq,
+                    )
+                    while True:
+                        try:
+                            # Liveness bound (same rationale as the attach
+                            # class above): a holder that dies without a
+                            # terminal event must not park this recovery
+                            # forever on a silent stream. The client's SSE
+                            # read timeout is None, so this is the only
+                            # bound.
+                            event = await asyncio.wait_for(
+                                stream.__anext__(),
+                                timeout=ATTACH_IDLE_TIMEOUT_SECONDS,
+                            )
+                        except StopAsyncIteration:
+                            break
+                        etype = event.get("type")
+                        if etype in ("turn_attach", "turn_started"):
+                            continue
+                        if etype == "turn_replay_gap":
+                            # Overflow evicted events past our cursor
+                            # mid-stream; the remainder cannot be replayed
+                            # faithfully and the server ends the stream.
+                            outcome = "gone"
+                            continue
+                        seq = event.get("seq")
+                        if isinstance(seq, int) and seq > last_seq:
+                            last_seq = seq
+                        tool_call_count = await dispatch_event(
+                            event, handler, tool_call_count
+                        )
+                        # Only a DISPATCHED event resets the attempt budget:
+                        # counting before dispatch would hand a handler that
+                        # raises on every event one fresh re-attach per
+                        # event (unbounded for long turns) instead of the
+                        # bounded budget.
+                        progressed = True
+                        if etype in ("done", "error"):
+                            outcome = "finished"
+                except asyncio.CancelledError:
+                    raise
+                except asyncio.TimeoutError:
+                    # Silent for the whole liveness bound while status still
+                    # names this turn: presume the writer is dead.
+                    outcome = "gone"
+                except CHAT_CONNECTION_ERRORS:
+                    outcome = None  # dropped again: back off and retry
+                except Exception as exc:  # noqa: BLE001
+                    if _exc_status_code(exc) in (404, 410):
+                        # Buffer replaced/expired or replay gap: the rest of
+                        # this turn cannot be recovered here.
+                        outcome = "gone"
+                    else:
+                        outcome = None
+                else:
+                    if outcome != "finished":
+                        # Clean stream end without a terminal event: the
+                        # turn's writer died without finishing.
+                        outcome = "gone"
+                finally:
+                    if stream is not None:
+                        try:
+                            await stream.aclose()
+                        except Exception:  # noqa: BLE001 - best-effort close
+                            pass
+                if outcome == "finished":
+                    await _safe_stream_end(handler, tool_call_count)
+                    return "recovered"
+                if outcome == "gone":
+                    break
+                if progressed:
+                    attempt = 0
+            elif not status.get("processing"):
+                # Turn is gone (API restart, buffer expired, or another turn
+                # already ran).
+                break
+            # else: thread busy with an unattachable turn; keep waiting.
+
+        await asyncio.sleep(
+            min(
+                CHAT_RECOVERY_BASE_DELAY_SECONDS * attempt,
+                CHAT_RECOVERY_MAX_DELAY_SECONDS,
+            )
+        )
+
+    return await _finish_turn_lost(handler, tool_call_count)
+
+
+async def _finish_turn_lost(handler: SSEEventHandler, tool_call_count: int) -> str:
+    """Best-effort honest ending for an unrecoverable turn.
+
+    Never raises: at this point re-raising would send the caller into its
+    sync-``chat`` fallback and run the turn a second time.
+    """
+    try:
+        await handler.flush_text(final=True)
+        await handler.on_error(TURN_LOST_MESSAGE)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to render turn-lost notice", exc_info=True)
+    try:
+        await handler.on_stream_end(tool_call_count)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to finish handler after turn loss", exc_info=True)
+    return "lost"
+
+
+# ── Autonomous delivery honesty + the delivery report (backlog #247) ────────
+
+# Default strong-reference store for fire-and-forget report tasks: the event
+# loop keeps only weak references, so a bare create_task can be GC'd
+# mid-flight and the report silently lost. Bots with their own background
+# machinery (Telegram's _spawn_background_task) pass it as ``spawn`` instead.
+_REPORT_TASKS: set = set()
+
+
+def _spawn_report_task(coro: Any) -> Any:
+    task = asyncio.get_running_loop().create_task(coro)
+    _REPORT_TASKS.add(task)
+    task.add_done_callback(_REPORT_TASKS.discard)
+    return task
+
+
+def finish_autonomous_delivery(
+    handler: Any,
+    api: Any,
+    *,
+    platform: str,
+    label: str,
+    target: str,
+    thread_id: str,
+    via: str,
+    todo_id: Optional[str] = None,
+    report: bool = True,
+    spawn: Optional[Callable[[Any], Any]] = None,
+    log: Optional[logging.Logger] = None,
+) -> Optional[str]:
+    """Honest completion line + delivery report for one autonomous turn.
+
+    Shared by the Telegram and Discord bots (their pre-#247 completion
+    lines logged "Streamed autonomous result" unconditionally, where
+    "delivered" only ever meant "the stream ended"). Reads the handler's
+    content-send counters (``_sends_attempted`` / ``_sends_ok`` /
+    ``_first_send_error``), logs the honest outcome through the BOT's
+    logger (``log``), and for TODO-driven turns fires the delivery report
+    (fire-and-forget via ``spawn``; never disturbs delivery).
+
+    A turn that errored is excluded from reporting on BOTH delivery paths:
+    the firehose caller passes ``report=False`` from the completed event,
+    and the attach path (which has no completed event here) is covered by
+    the handler's ``_error_seen`` flag, set by its ``on_error`` callback.
+    An errored occurrence already joined the ticker's #154 execution
+    accounting; one bad occurrence must not feed both streaks.
+
+    Returns the outcome string it classified (None when nothing was
+    attempted), mainly for tests.
+    """
+    bot_log = log or logger
+    attempted = int(getattr(handler, "_sends_attempted", 0))
+    ok = int(getattr(handler, "_sends_ok", 0))
+    failed = attempted - ok
+    first_error = getattr(handler, "_first_send_error", None)
+    suffix = " (turn attach)" if via == "attach" else ""
+    outcome: Optional[str] = None
+    if attempted == 0:
+        bot_log.info(
+            f"Autonomous turn for {label} had no deliverable output{suffix}"
+        )
+    elif failed == 0:
+        outcome = "delivered"
+        bot_log.info(f"Streamed autonomous result to {label}{suffix}")
+    elif ok:
+        outcome = "partial"
+        bot_log.warning(
+            f"Partially delivered autonomous result to {label}{suffix}: "
+            f"{failed} of {attempted} sends failed; first error: {first_error}"
+        )
+    else:
+        outcome = "failed"
+        bot_log.error(
+            f"Autonomous delivery to {label} FAILED{suffix}: all "
+            f"{attempted} sends failed; first error: {first_error}"
+        )
+    if getattr(handler, "_error_seen", False):
+        report = False
+    if (
+        outcome
+        and report
+        and todo_id
+        and callable(getattr(api, "report_todo_delivery", None))
+    ):
+        (spawn or _spawn_report_task)(
+            _report_todo_delivery(
+                api,
+                todo_id=str(todo_id),
+                outcome=outcome,
+                platform=platform,
+                target=target,
+                error=first_error,
+                thread_id=thread_id,
+                log=bot_log,
+            )
+        )
+    return outcome
+
+
+async def _report_todo_delivery(
+    api: Any,
+    *,
+    todo_id: str,
+    outcome: str,
+    platform: str,
+    target: str,
+    error: Optional[str],
+    thread_id: str,
+    log: logging.Logger,
+) -> None:
+    """POST the delivery outcome (#247); never disturbs delivery."""
+    try:
+        await api.report_todo_delivery(
+            todo_id,
+            outcome=outcome,
+            platform=platform,
+            target=target,
+            # The schema caps error at 500 chars; an oversized description
+            # must degrade to truncation, not a 422 that drops the report.
+            error=(error or None) and str(error)[:500],
+            thread_id=thread_id,
+        )
+    except Exception as e:  # noqa: BLE001 - accounting is best-effort
+        log.warning(
+            "Failed to report TODO %s delivery outcome (%s): %s",
+            todo_id,
+            outcome,
+            e,
+        )
 
 
 async def consume_autonomous_firehose(

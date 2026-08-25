@@ -29,7 +29,7 @@ from .bot_helpers import (
     safe_id as _safe_id,
 )
 from .message_splitter import split_slack_message as split_message
-from .sse_consumer import consume_sse_stream
+from .sse_consumer import consume_chat_stream_with_recovery
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
 try:  # pragma: no cover - exercised through import-guard tests/mocks.
@@ -728,11 +728,17 @@ class NymeriaSlackBot:
     ) -> None:
         handler = _SlackStreamHandler(self, target)
         try:
-            await consume_sse_stream(
-                self.api.chat_stream(
-                    message,
-                    thread_id,
-                    user_id,
+            # Dropped-turn recovery (#88): a mid-turn drop re-attaches and
+            # delivers the tail; only pre-turn failures raise into the sync
+            # fallback below (a re-POST after the turn started would run it
+            # a second time).
+            await consume_chat_stream_with_recovery(
+                self.api,
+                handler,
+                message=message,
+                thread_id=thread_id,
+                user_id=user_id,
+                chat_kwargs=dict(
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
                     # Stamps the turn-origin registry so platform-aware
@@ -745,7 +751,6 @@ class NymeriaSlackBot:
                         "kind": "message",
                     } if origin_message_id else None,
                 ),
-                handler,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Slack streaming failed; falling back to sync")

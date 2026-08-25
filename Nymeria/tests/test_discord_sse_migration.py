@@ -77,11 +77,13 @@ def test_autonomous_handler_implements_sse_protocol():
 # ---------------------------------------------------------------------------
 
 
-def test_stream_to_channel_uses_consume_sse_stream():
-    """_stream_to_channel must delegate to consume_sse_stream, not inline dispatch."""
+def test_stream_to_channel_uses_shared_consumer():
+    """_stream_to_channel must delegate to the shared recovery consumer
+    (#88: consume_chat_stream_with_recovery wraps consume_sse_stream's
+    dispatch contract), not inline dispatch."""
     src = inspect.getsource(NymeriaDiscordBot._stream_to_channel)
-    assert "consume_sse_stream" in src, (
-        "_stream_to_channel should call consume_sse_stream()"
+    assert "consume_chat_stream_with_recovery" in src, (
+        "_stream_to_channel should call consume_chat_stream_with_recovery()"
     )
     assert 'event.get("type"' not in src, (
         "_stream_to_channel should not manually inspect event types"

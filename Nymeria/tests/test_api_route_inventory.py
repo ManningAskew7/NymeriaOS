@@ -239,6 +239,7 @@ EXPECTED_ROUTES = [
     ('/todos/{todo_id}', ('DELETE',)),
     ('/todos/{todo_id}', ('PATCH',)),
     ('/todos/{todo_id}/complete', ('POST',)),
+    ('/todos/{todo_id}/delivery-report', ('POST',)),
     ('/tools', ('GET',)),
     ('/tools/categories', ('GET',)),
     ('/tools/custom', ('GET',)),
