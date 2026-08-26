@@ -805,10 +805,31 @@ def _default_tool_names(agent: Any, user_id: str) -> set[str]:
 
 
 def _live_temporary_tool_names(agent: Any, tc: ThreadConfig) -> set[str]:
-    resolver: Any = getattr(agent, "_resolve_temporary_tools", None)
-    if callable(resolver):
-        resolved: Any = resolver(tc)
-        return set(resolved)
+    """Names of this thread's TTL'd tools that have not expired yet.
+
+    Computed here rather than delegated to
+    ``agent_tools.resolve_temporary_tools``, which answers the same question
+    but ALSO evicts and calls ``save_config``. Its docstring says it "runs at
+    graph-build time only", and it should: this module builds
+    ``GET /threads/{id}/overview``, a route whose own docstring calls it a
+    read-only call, and which the CLI status header polls on every repaint.
+
+    Delegating made that read a WRITE, and worse than a write: the overview
+    snapshots ``tc`` from disk near the top of ``build_thread_overview`` and
+    only reaches this section after five more sections of checkpoint and
+    metadata I/O, so the save rewrote the whole config file from an object
+    that was already stale. A ``/tools enable``, a skill activation or a
+    per-thread model override landing inside that window was silently
+    reverted by somebody merely LOOKING at the thread. The eviction is not
+    lost, only deferred: the next graph build performs it, which is where it
+    was designed to happen.
+
+    The liveness rule is one expiry comparison and is deliberately duplicated
+    rather than shared, because sharing it is what dragged the persistence in.
+    ``tests/test_api_thread_overview.py::test_thread_overview_never_writes_the_thread_config``
+    asserts the config file's bytes survive the request, and that the response
+    is still correct about which tools are live.
+    """
     now = utc_now()
     live = set()
     for name, entry in (tc.temporary_tools or {}).items():

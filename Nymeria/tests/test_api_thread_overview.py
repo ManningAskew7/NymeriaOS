@@ -115,12 +115,15 @@ class FakeAgent:
         )
 
     def _resolve_temporary_tools(self, tc: ThreadConfig) -> set[str]:
-        now = utc_now()
-        return {
-            name
-            for name, entry in tc.temporary_tools.items()
-            if entry.expires_at > now
-        }
+        # Delegates to the REAL resolver rather than reimplementing it. The
+        # hand-rolled copy that used to live here computed the same set
+        # without the eviction and the save_config the real one performs,
+        # so every test using this fake was asserting the fake's behavior
+        # and not the product's. That is what let a read route persist a
+        # stale config unnoticed (see the read-only overview test below).
+        from nymeria.core.agent_tools import resolve_temporary_tools
+
+        return resolve_temporary_tools(self, tc)
 
     def _get_team_scoped_callable_threads(
         self,
@@ -413,6 +416,77 @@ def test_thread_overview_returns_resolved_sections(
     assert body["chat_apps"]["in_app_notification_level"] == "all_autonomous"
     assert body["user"] == {"id": "owner", "display_name": "Owner", "role": "user"}
     assert body["section_errors"] == {}
+
+
+
+
+def test_thread_overview_never_writes_the_thread_config(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """A read-only route must not persist, and this one used to.
+
+    ``GET /threads/{id}/overview`` documents itself as a read-only call and the
+    CLI status header polls it on every repaint. Its tools section delegated to
+    ``agent_tools.resolve_temporary_tools``, which evicts expired TTL entries
+    and calls ``save_config``, so any thread holding a lapsed Skill Kit or
+    tool_search binding, the steady state once a TTL runs out, had its config
+    file rewritten by somebody merely looking at it.
+
+    Worse than a stray write: ``build_thread_overview`` reads the config near
+    the top and reaches the tools section only after five more sections of
+    checkpoint and metadata I/O, so the save wrote a stale whole-file snapshot.
+    A ``/tools enable`` landing inside that window was silently reverted.
+
+    The assertion is on the FILE, not on whether some helper was called: what
+    matters is that the bytes on disk survive the read, and that the response
+    is still correct about which tools are live.
+    """
+    client, agent, _settings, token = _client(tmp_path, api_client_builder)
+    thread_id = "overview-must-not-write"
+    live_tool = next(iter(CATALOG_TOOLS))
+    expired_tool = next(name for name in CATALOG_TOOLS if name != live_tool)
+    now = utc_now()
+
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=thread_id,
+            enabled_tools=[live_tool, expired_tool],
+            temporary_tools={
+                live_tool: TemporaryToolEntry(
+                    enabled_at=now,
+                    expires_at=now + timedelta(hours=1),
+                ),
+                expired_tool: TemporaryToolEntry(
+                    enabled_at=now - timedelta(hours=2),
+                    expires_at=now - timedelta(hours=1),
+                ),
+            },
+        )
+    )
+    config_path = agent.thread_config_manager._get_config_path(thread_id)
+    before = config_path.read_bytes()
+
+    response = client.get(
+        f"/threads/{thread_id}/overview",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert config_path.read_bytes() == before, (
+        "the overview rewrote the thread config; a read-only route must not "
+        "persist, and this one overwrites the whole file from a stale snapshot"
+    )
+    # The expired entry is still on disk, so eviction was deferred rather than
+    # lost; the next graph build performs it, which is where it belongs.
+    reloaded = agent.thread_config_manager.get_config(thread_id)
+    assert set(reloaded.temporary_tools) == {live_tool, expired_tool}
+    # And the report itself is still correct about what is live right now.
+    live_names = {
+        entry["name"] for entry in response.json()["tools"]["live_temporary_tools"]
+    }
+    assert live_names == {live_tool}
 
 
 @pytest.mark.parametrize(
