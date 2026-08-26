@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from .command_forms import form_option
+from .time_utils import format_user_time_compact
 
 if TYPE_CHECKING:
     from .command_service import _CommandExecutor
@@ -434,7 +435,7 @@ async def resolve_todos(executor: "_CommandExecutor") -> list[dict[str, Any]]:
         meta_parts = [todo_id[:8], str(item.get("status") or "")]
         scheduled = str(item.get("scheduled_for") or "")
         if scheduled:
-            meta_parts.append(f"fires {scheduled[:16]}")
+            meta_parts.append(f"fires {format_user_time_compact(scheduled)}")
         recurrence = str(item.get("recurrence") or "")
         if recurrence:
             meta_parts.append(f"repeats {recurrence}")

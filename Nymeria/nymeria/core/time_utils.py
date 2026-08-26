@@ -42,6 +42,38 @@ def format_user_time(value: "datetime | float | None" = None) -> str:
     return f"{now.strftime('%A, %B %d, %Y at %I:%M %p')} ({user_tz.key})"
 
 
+def format_user_time_compact(value: "datetime | str | None") -> str:
+    """Format a stored timestamp for a LIST ROW: ``"2099-01-01 09:00 AEDT"``.
+
+    The sibling above is the prose form and is too wide for a table of 25
+    TODOs. Both exist for the same reason: a schedule is PARSED in the user's
+    timezone, so echoing the stored UTC instant back shows a different
+    wall-clock time than the user typed, and across a day or year boundary it
+    reads as the wrong date entirely. The zone abbreviation is part of the
+    output, not decoration: without it the number is ambiguous again.
+
+    Naive strings are read as UTC, matching how they are stored. Anything
+    unparseable is returned unchanged: this is a display path, and a bad value
+    should show up as itself rather than raise inside a listing.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return str(value)
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local = parsed.astimezone(get_user_tz())
+    return f"{local.strftime('%Y-%m-%d %H:%M')} {local.strftime('%Z')}".strip()
+
+
 def utc_now() -> datetime:
     """Return the current time as a timezone-aware UTC datetime."""
     return datetime.now(timezone.utc)

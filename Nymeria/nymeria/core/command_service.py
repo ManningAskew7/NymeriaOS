@@ -54,7 +54,12 @@ from .command_params import (
     validate_params,
 )
 from .registry_defaults import register_default_commands
-from .time_utils import ensure_aware_utc, parse_tool_ttl, utc_now
+from .time_utils import (
+    ensure_aware_utc,
+    format_user_time_compact,
+    parse_tool_ttl,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -6714,7 +6719,10 @@ class _CommandExecutor(
             todo_id = item.get("id", "")[:8]
             parts = [f"id={todo_id}", f"status={st}"]
             if item.get("scheduled_for"):
-                parts.append(f"fires={item['scheduled_for'][:16]}")
+                # Local, zone named: the schedule was PARSED in the user's
+                # timezone, so slicing the stored UTC string showed a different
+                # wall clock than they typed (see format_user_time_compact).
+                parts.append(f"fires={format_user_time_compact(item['scheduled_for'])}")
             if item.get("recurrence"):
                 parts.append(f"repeat={item['recurrence']}")
             if item.get("schedule_paused_at"):
@@ -6778,7 +6786,7 @@ class _CommandExecutor(
         scheduled = result.get("scheduled_for", "")
         out = [f"Created TODO {todo_id}: {text}"]
         if scheduled:
-            out.append(f"Fires: {scheduled[:16]}")
+            out.append(f"Fires: {format_user_time_compact(scheduled)}")
         if repeat:
             out.append(f"Repeats: {repeat}")
         return command_success("\n".join(out))
@@ -6865,7 +6873,7 @@ class _CommandExecutor(
         updated = await self.api.update_todo(
             self.user_id, match["id"], scheduled_for=when
         )
-        fires = str(updated.get("scheduled_for") or "")[:16]
+        fires = format_user_time_compact(updated.get("scheduled_for"))
         return command_success(
             f"Schedule updated: {updated.get('id', '')[:8]} {task} fires {fires}"
         )
@@ -6907,7 +6915,7 @@ class _CommandExecutor(
         task = match.get("task", "")
         recurrence = result.get("recurrence")
         if recurrence and result.get("status") == "pending":
-            next_fire = result.get("scheduled_for", "")[:16]
+            next_fire = format_user_time_compact(result.get("scheduled_for"))
             return command_success(
                 f"Completed '{task}'. Rescheduled ({recurrence}): "
                 f"next fire {next_fire}."

@@ -7804,3 +7804,73 @@ def test_thread_confirmations_name_the_whole_id_not_a_mangled_prefix() -> None:
     )
     assert deleted.success is True
     assert "bugtest-p7b-delete-race" in deleted.markdown
+
+
+def test_todo_schedule_times_render_in_the_user_timezone_with_the_zone_named(monkeypatch) -> None:
+    """TODO fire times were sliced straight off the stored ISO UTC string, but
+    a schedule is PARSED in the user's timezone, so the two disagreed.
+
+    Measured live 2026-08-26 on a Sydney deployment: `/todos add ...
+    --schedule "2099-01-01 09:00"` acknowledged "Fires: 2098-12-31T22:00",
+    a different day and a different YEAR than the user asked for, with nothing
+    saying the number was UTC. The listing had the same slice, so a 9am daily
+    briefing read as 22:00 the day before.
+    """
+    import zoneinfo
+
+    from nymeria.core.time_utils import format_user_time_compact
+
+    monkeypatch.setattr(
+        "nymeria.core.time_utils.get_user_tz",
+        lambda: zoneinfo.ZoneInfo("Australia/Sydney"),
+    )
+
+    # The exact case measured live: UTC instant that is 9am the NEXT year local.
+    assert format_user_time_compact("2098-12-31T22:00:00+00:00") == "2099-01-01 09:00 AEDT"
+    # A winter instant, so the abbreviation is not hardcoded.
+    assert format_user_time_compact("2026-06-01T00:00:00+00:00") == "2026-06-01 10:00 AEST"
+    # Naive strings are stored UTC, the same reading the slice assumed.
+    assert format_user_time_compact("2098-12-31T22:00:00") == "2099-01-01 09:00 AEDT"
+    # Junk degrades to the raw value rather than raising on a display path.
+    assert format_user_time_compact("not-a-time") == "not-a-time"
+    assert format_user_time_compact("") == ""
+    assert format_user_time_compact(None) == ""
+
+
+def test_todos_add_and_list_speak_local_time(monkeypatch) -> None:
+    """End of the same defect, at the two places a user actually reads a time."""
+    import zoneinfo
+
+    monkeypatch.setattr(
+        "nymeria.core.time_utils.get_user_tz",
+        lambda: zoneinfo.ZoneInfo("Australia/Sydney"),
+    )
+    stored = "2098-12-31T22:00:00+00:00"  # what the backend persists for 9am Sydney
+
+    class _StoredUtcApi(FakeCommandApi):
+        """The backend parses the schedule and stores a UTC instant; the base
+        fake echoes the raw text back, which is the one thing this test is
+        about."""
+
+        async def add_todo(self, user_id, task, scheduled_for="1d", **kwargs):
+            result = await super().add_todo(user_id, task, scheduled_for, **kwargs)
+            result["scheduled_for"] = stored
+            return result
+
+        async def list_todos(self, user_id, **kwargs):
+            return [
+                {"id": "todo-new-12345", "task": "QA probe", "status": "pending",
+                 "scheduled_for": stored}
+            ]
+
+    api = _StoredUtcApi()
+
+    created = _run_command(api, '/todos add QA probe --schedule "2099-01-01 09:00"')
+    assert created.success is True
+    assert "2099-01-01 09:00 AEDT" in created.markdown
+    assert "2098-12-31T22:00" not in created.markdown
+
+    listed = _run_command(api, "/todos list all")
+    assert listed.success is True
+    assert "fires=2099-01-01 09:00 AEDT" in listed.markdown
+    assert "fires=2098-12-31T22:00" not in listed.markdown
