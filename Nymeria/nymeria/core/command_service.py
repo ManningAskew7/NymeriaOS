@@ -5258,9 +5258,13 @@ class _CommandExecutor(
             "|---|---|---|---|",
         ]
         for entry in entries:
-            ts = str(getattr(entry, "timestamp", "") or "")[:19]
+            # Stored aware UTC; shown in the user's zone, named. And the thread
+            # id stays WHOLE: an 8-char cut collapses every telegram_<chat> and
+            # discord_<guild>_<channel> row to the same stub, in a table whose
+            # purpose is telling rows apart.
+            ts = format_user_time_compact(getattr(entry, "timestamp", None))
             etype = getattr(entry.type, "value", str(entry.type)) if entry.type else ""
-            tid = (getattr(entry, "thread_id", "") or "")[:8]
+            tid = getattr(entry, "thread_id", "") or ""
             msg = (getattr(entry, "message", "") or "").replace("\n", " ")[:80]
             lines.append(f"| {ts} | {etype} | `{tid}` | {msg} |")
         return "\n".join(lines)

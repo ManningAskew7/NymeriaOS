@@ -472,3 +472,51 @@ def test_doctor_rejects_an_unknown_section(patched_agent) -> None:
     assert "Usage: `/doctor`." in result.markdown
     # The combined report never ran.
     assert "Auth" not in result.markdown
+
+
+def test_activity_list_speaks_local_time_and_keeps_thread_ids_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The activity table carried both display defects found on 2026-08-26.
+
+    Timestamps are stored aware UTC (``activity_log`` validates that) but were
+    sliced straight off the ISO string, so a Sydney user read UTC with nothing
+    marking it. Thread ids were cut to 8 characters, which collapses every
+    ``telegram_<chat>`` and ``discord_<guild>_<channel>`` row to the same stub
+    in a table whose whole purpose is telling rows apart.
+    """
+    import zoneinfo
+
+    from nymeria.core.activity_log import ActivityType
+
+    monkeypatch.setattr(
+        "nymeria.core.time_utils.get_user_tz",
+        lambda: zoneinfo.ZoneInfo("Australia/Sydney"),
+    )
+
+    class _FakeEntry:
+        def __init__(self, thread_id: str) -> None:
+            self.id = "entry-1"
+            self.timestamp = "2026-05-18T10:00:00+00:00"
+            self.type = ActivityType.USER_MESSAGE
+            self.message = "said hi"
+            self.thread_id = thread_id
+            self.metadata = {}
+
+    class _FakeLog:
+        def get_entries(self, user_id, limit, activity_type, thread_id):
+            return [_FakeEntry("telegram_123456789"), _FakeEntry("telegram_987654321")]
+
+    monkeypatch.setattr(
+        "nymeria.core.activity_log.get_activity_log",
+        lambda: _FakeLog(),
+    )
+
+    result = run(CommandService().execute(_ctx(), "/activity list"))
+    assert result.success is True, result.markdown
+    # 10:00 UTC is 20:00 in Sydney in May, and the zone is named.
+    assert "2026-05-18 20:00 AEST" in result.markdown
+    assert "2026-05-18T10:00" not in result.markdown
+    # Both rows stay distinguishable.
+    assert "telegram_123456789" in result.markdown
+    assert "telegram_987654321" in result.markdown
