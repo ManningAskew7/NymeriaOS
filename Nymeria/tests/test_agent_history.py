@@ -630,6 +630,62 @@ def test_history_renders_anthropic_tool_use_block_with_thinking_and_text():
     ]
 
 
+def test_history_records_a_failed_tool_call_as_error_not_success():
+    """A refused or failed tool call must not be stored as a success.
+
+    Tools here report failure as a result STRING prefixed "[Error]" rather
+    than by raising, so nothing throws and the step was stamped "success"
+    unconditionally. That makes the field a constant: the durable history
+    every surface reads back (GUI transcript, /history, the MCP
+    get_thread_history tool) shows a failed call sitting beside its own
+    error text, claiming it worked.
+    """
+    steps = _assistant_turn_steps([
+        HumanMessage(content="Hi", id="u1"),
+        AIMessage(
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "file_read",
+                    "input": {"file_path": "workspace/qa/"},
+                },
+            ],
+            tool_calls=[
+                {"id": "toolu_1", "name": "file_read", "args": {"file_path": "workspace/qa/"}}
+            ],
+            id="a1",
+        ),
+        ToolMessage(
+            content="[Error]: Not a file: workspace/qa/", tool_call_id="toolu_1"
+        ),
+        AIMessage(content="That is a directory.", id="a2"),
+    ])
+
+    tool_steps = [step for step in steps if step["type"] == "tool_call"]
+    assert len(tool_steps) == 1
+    assert tool_steps[0]["result"] == "[Error]: Not a file: workspace/qa/"
+    assert tool_steps[0]["status"] == "error"
+
+
+def test_history_records_a_successful_tool_call_as_success():
+    """The other half: an ordinary result must still read as a success."""
+    steps = _assistant_turn_steps([
+        HumanMessage(content="Hi", id="u1"),
+        AIMessage(
+            content=[
+                {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}},
+            ],
+            tool_calls=[{"id": "toolu_1", "name": "search", "args": {}}],
+            id="a1",
+        ),
+        ToolMessage(content="found it", tool_call_id="toolu_1"),
+    ])
+
+    tool_steps = [step for step in steps if step["type"] == "tool_call"]
+    assert tool_steps[0]["status"] == "success"
+
+
 def test_history_function_call_invalid_json_arguments_falls_back_to_wrapper():
     steps = _assistant_turn_steps([
         HumanMessage(content="Hi", id="u1"),

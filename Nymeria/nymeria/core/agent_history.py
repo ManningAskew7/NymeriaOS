@@ -982,6 +982,19 @@ def _tool_call_block_to_step(
     )
 
 
+def _tool_result_status(raw_result: str) -> str:
+    """"error" when a tool result carries the failure convention, else "success".
+
+    Tools in this codebase signal failure by RETURNING text rather than by
+    raising, so this prefix is the only outcome signal a history consumer has.
+    The same convention is keyed on by ``agent_prune`` (which drops failed
+    results first) and by ``mcp_backend_client._tool_result_status`` (the live
+    MCP transcript). That client is a thin client and must not import the agent
+    harness, which is why the predicate is spelled twice rather than shared.
+    """
+    return "error" if raw_result.lstrip().startswith("[Error]") else "success"
+
+
 def _tool_call_step(
     *,
     tool_call_id: str,
@@ -1004,6 +1017,12 @@ def _tool_call_step(
         raw_tool_result_text = (
             raw_tool_result if isinstance(raw_tool_result, str) else str(raw_tool_result)
         )
+        # Derived from the RAW result, not the cleaned one, so a display
+        # transform can never mask the tool's own verdict. Without this the
+        # field was a CONSTANT: nothing raises, because tools here report
+        # failure as a result string, so every refused call was stored as a
+        # success in the durable history each surface reads back.
+        step["status"] = _tool_result_status(raw_tool_result_text)
         step["result"] = clean_tool_result(raw_tool_result_text)
         artifacts = extract_workspace_artifacts(raw_tool_result_text)
         if artifacts:
