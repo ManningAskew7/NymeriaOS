@@ -5625,6 +5625,18 @@ class _CommandExecutor(
                 f"Model for this thread set to {name}.{drift_note}",
                 data=command_data(state={"model": name}),
             )
+        # A bare scope writes the GLOBAL default, which update_settings gates to
+        # admins. That gate stays where it is; this only replaces the message,
+        # because the generic "Admin only" 403 dead-ends the caller on the one
+        # command whose narrower form they ARE allowed to run. `/provider`
+        # already offers non-admins thread scope only; `/model` was the outlier
+        # (found live 2026-08-26). `is False` and not falsy: the agent context
+        # is None and keeps its access, per the sibling gates in this file.
+        if self.is_admin is False:
+            return command_error(
+                "Setting the global default model is admin only. To change the "
+                f"model for this conversation instead, use `/model {name} thread`."
+            )
         result = await self.api.update_settings(user_id=self.user_id, llm_model=name)
         msg = f"Global model set to {name}."
         if result.get("restart_required"):

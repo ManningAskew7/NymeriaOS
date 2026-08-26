@@ -7741,3 +7741,38 @@ def test_provider_test_ignores_status_shaped_message_without_field() -> None:
 
     assert result.success is False
     assert "subscription login" not in result.markdown
+
+
+def test_model_set_refuses_a_non_admin_by_naming_the_thread_scope() -> None:
+    """A bare ``/model <name>`` writes the GLOBAL default, which is admin-only,
+    and the generic "Admin only" 403 dead-ends the caller: the thing they
+    almost certainly meant, and are allowed to do, is a thread override.
+
+    ``/provider`` already offers non-admins thread scope only; ``/model`` was
+    the outlier, and a QA operator hit the dead end live (2026-08-26). The
+    global write stays gated in update_settings: this only replaces the
+    message the non-admin sees.
+    """
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/model gpt-next", is_admin=False)
+
+    assert result.success is False
+    assert "admin" in result.markdown.lower()
+    # The recoverable path is named, with the exact spelling to type.
+    assert "/model gpt-next thread" in result.markdown
+    # And the refusal really did not write the global default.
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_model_set_still_lets_a_non_admin_write_the_thread_override() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/model gpt-next thread", is_admin=False)
+
+    assert result.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "llm_config": {"model": "gpt-next"}},
+    ) in api.calls
