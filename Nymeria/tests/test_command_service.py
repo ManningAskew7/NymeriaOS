@@ -6259,6 +6259,101 @@ def test_context_refuses_a_thread_that_does_not_exist() -> None:
     assert "Thread Overrides" not in result.markdown
 
 
+class _EmptyStatsApi(FakeCommandApi):
+    """Context stats for a thread with nothing in it.
+
+    Indistinguishable from the stats of a thread that never existed, which is
+    the whole difficulty: the producer answers with zeros either way.
+    """
+
+    async def get_context_stats(self, thread_id: str) -> dict[str, Any]:
+        self.calls.append(("get_context_stats", (thread_id,), {}))
+        return {
+            "model": "gpt-test",
+            "total_tokens": 0,
+            "context_limit": 8000,
+            "usage_percentage": 0,
+            "compaction_count": 0,
+            "context_management": "auto_compact",
+        }
+
+
+def test_context_refuses_an_id_that_owns_nothing_and_raises_no_404() -> None:
+    """The half the 404 branch cannot reach, measured live after the fix shipped.
+
+    A 404 only happens when the thread belongs to SOMEONE ELSE. An id nobody
+    owns raises nothing at all, because the read-only access check stopped
+    TOFU-claiming it (claiming on a read was its own defect: it turned a
+    diagnostic into a writer and left ghost threads in the sidebar). So the
+    two fixes together removed the ghost and left the fiction: /context on a
+    typo'd id still answered with a full breakdown and echoed the id back as
+    fact, while /thread switch on that same id said "No thread matching".
+    """
+    result = run(
+        CommandService().execute(
+            _cli_ctx(thread_id="totally-bogus-thread-id-77777"),
+            "/context",
+            api=_EmptyStatsApi(),
+        )
+    )
+
+    assert result.success is False, result.markdown
+    assert "No thread matching" in result.markdown
+    assert "Context Breakdown" not in result.markdown
+
+
+def test_context_still_reports_a_real_thread_that_happens_to_be_empty() -> None:
+    """A brand-new thread has the same zeros and must still get its breakdown.
+
+    The refusal keys on the caller's thread list, not on the zeros, precisely
+    so that an empty-but-real thread keeps working.
+    """
+    result = run(
+        CommandService().execute(_cli_ctx(), "/context", api=_EmptyStatsApi())
+    )
+
+    assert result.success is True, result.markdown
+    assert "Context Breakdown" in result.markdown
+
+
+def test_context_reports_an_unlisted_thread_that_has_recorded_activity() -> None:
+    """Absence from the listing alone must not cost a working command.
+
+    A thread that exists outside the caller's listing but has real usage
+    recorded against it still has something true to report, and refusing it
+    would trade one wrong answer for a different one.
+    """
+    result = run(
+        CommandService().execute(
+            _cli_ctx(thread_id="unlisted-but-real"),
+            "/context",
+            api=FakeCommandApi(),  # its stats carry 1,200 tokens
+        )
+    )
+
+    assert result.success is True, result.markdown
+    assert "Context Breakdown" in result.markdown
+
+
+def test_context_degrades_rather_than_refusing_when_the_listing_fails() -> None:
+    """A flaky listing must not be reported to the user as a missing thread."""
+
+    class _NoListingApi(_EmptyStatsApi):
+        async def list_threads(self, user_id: str | None = None) -> list[dict[str, Any]]:
+            raise RuntimeError("thread listing unavailable")
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(thread_id="totally-bogus-thread-id-77777"),
+            "/context",
+            api=_NoListingApi(),
+        )
+    )
+
+    assert result.success is True, result.markdown
+    assert "Context Breakdown" in result.markdown
+
+
 def test_context_still_degrades_when_a_sub_call_fails_for_another_reason() -> None:
     """Only a missing thread refuses; other failures keep the resilience.
 

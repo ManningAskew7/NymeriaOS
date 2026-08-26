@@ -19,6 +19,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, NoReturn, Optional
 from urllib.parse import quote
 
@@ -30,7 +31,7 @@ from .command_executor_cliproxy import CliproxyCommandsMixin
 from .command_executor_context import ContextCommandsMixin
 from .command_executor_llm import LLMCommandsMixin, model_select_form
 from .command_executor_provider_setup import ProviderSetupCommandsMixin
-from .command_executor_threads import ThreadCommandsMixin
+from .command_executor_threads import ThreadCommandsMixin, _normalize_thread_id
 from .command_forms import (
     CommandOutput,
     CommandResultLevel,
@@ -642,6 +643,45 @@ def _is_not_found(value: Any) -> bool:
         and value.response is not None
         and value.response.status_code == 404
     )
+
+
+def _names_nothing(threads: Any, thread_id: str, stats: Mapping[str, Any]) -> bool:
+    """True when *thread_id* names nothing the caller can see.
+
+    ``get_context_stats`` answers with zeros for a thread that does not
+    exist exactly as it does for one that exists and is empty, so the
+    breakdown cannot tell them apart on its own and rendered a confident,
+    entirely fictional report for a typo'd id. The 404 branch covers only
+    a thread owned by SOMEONE ELSE; an id nobody owns raises nothing at
+    all, because the read-only access check deliberately stopped claiming
+    it (that claim was its own defect, a read that wrote).
+
+    The caller's own thread list is the authority every other thread
+    command resolves against, so absence from it is the signal. Absence
+    alone is not enough to refuse: a thread that exists outside the
+    listing would lose a working command, which is worse than the fiction
+    this fixes. What remains, unlisted AND no tokens AND never compacted,
+    has nothing to report under any reading.
+
+    A listing that failed degrades to False, matching the rest of this
+    breakdown: one flaky sub-call must not turn into a refusal.
+    """
+    if isinstance(threads, (str, bytes)) or not isinstance(threads, Iterable):
+        return False
+    known = {
+        _normalize_thread_id(thread)
+        for thread in threads
+        if isinstance(thread, Mapping)
+    }
+    if thread_id in known:
+        return False
+    for key in ("total_tokens", "context_tokens", "used_tokens", "compaction_count"):
+        try:
+            if int(stats.get(key) or 0) > 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
 
 
 def _optional_dict_result(value: Any) -> dict[str, Any] | None:
@@ -5528,12 +5568,13 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        ctx, thread_cfg, settings, categories, tools_data = await asyncio.gather(
+        ctx, thread_cfg, settings, categories, tools_data, threads = await asyncio.gather(
             self.api.get_context_stats(self.thread_id),
             self.api.get_thread_config(self.thread_id),
             self.api.get_settings(),
             self.api.get_tool_categories(),
             self.api.get_default_tools(self.user_id),
+            self._list_threads(),
             return_exceptions=True,
         )
         # Read the stats result BEFORE coercing. _dict_result turns any
@@ -5545,6 +5586,11 @@ class _CommandExecutor(
         if _is_not_found(ctx):
             return command_error(f"No thread matching '{self.thread_id}'.")
         ctx = _dict_result(ctx)
+        # The 404 above only fires for a thread owned by someone else. An id
+        # nobody owns reaches here with a full set of harmless zeros, which
+        # rendered as a real breakdown for a thread that never existed.
+        if _names_nothing(threads, self.thread_id, ctx):
+            return command_error(f"No thread matching '{self.thread_id}'.")
         thread_cfg = _optional_dict_result(thread_cfg)
         settings = _dict_result(settings)
         categories = _dict_result(categories)
