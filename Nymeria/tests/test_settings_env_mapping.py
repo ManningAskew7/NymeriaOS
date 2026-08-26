@@ -148,6 +148,26 @@ def test_restart_required_and_clearable_registries_are_patchable():
     )
 
 
+def test_watchdog_keys_are_restart_required():
+    """The watchdog sweep captures all three at construction (its own
+    __init__ for the staleness window, the Ticker for the interval and the
+    enable flag), and the applier's hot reload never rebinds them. Without
+    the flag a PATCH answers "applied, restart_required: false" while the
+    running sweep keeps the old value; in Docker the PATCH lands in the API
+    container and the sweep runs in the worker, so only a restart applies
+    it."""
+    from nymeria.api.routers.settings import _RESTART_REQUIRED_KEYS
+
+    watchdog_keys = {
+        "todo_staleness_minutes",
+        "watchdog_interval_minutes",
+        "watchdog_enabled",
+    }
+    assert watchdog_keys <= _RESTART_REQUIRED_KEYS, sorted(
+        watchdog_keys - _RESTART_REQUIRED_KEYS
+    )
+
+
 # Settings fields deliberately UNREACHABLE through the whole config surface:
 # not in an /env show category, not in ServerSettingsUpdate, not hidden. Each
 # is a boot-time/infra value, an internal knob, or an integration credential

@@ -72,6 +72,18 @@ FALLBACK_THREAD_ID = "legacy"
 # TODO (updated_at advancing) re-arms it as usual.
 MAX_NUDGE_FAILURES = 3
 
+# Repeat nudges for one TODO back off exponentially: the nth nudge for a key
+# needs staleness_minutes * 2**n of quiet, so n=0 (the first nudge) is exactly
+# the plain staleness rule. Doublings are capped here so the window stays
+# finite on a process that runs for months (and so timedelta arithmetic cannot
+# overflow). Honest limits: an UNTOUCHED todo is nudged once ever (_nudged
+# dedupes until updated_at advances), and a todo touched more often than its
+# current window never re-alerts at all. Accepted trade-off: this sweep is a
+# nag for forgotten items, not a safety control; wedged execution and failed
+# delivery have their own counters and alerts (#154 pause policy, #247
+# delivery accounting).
+MAX_BACKOFF_DOUBLINGS = 6
+
 
 class WatchdogSweep:
     """Detect stale TODOs and nudge their threads through the turn executor."""
@@ -101,6 +113,11 @@ class WatchdogSweep:
         self._nudged: Dict[Tuple[str, str], float] = {}
         self._timestamps: Dict[Tuple[str, str], datetime] = {}
         self._nudge_failures: Dict[Tuple[str, str], int] = {}
+        # Repeat-nudge backoff: how many nudges this TODO has already been
+        # sent at its current status, and the status that count belongs to
+        # (see MAX_BACKOFF_DOUBLINGS and _check_user's reset).
+        self._nudge_counts: Dict[Tuple[str, str], int] = {}
+        self._statuses: Dict[Tuple[str, str], TodoStatus] = {}
 
         # Track in-flight per-thread nudges so cycles don't pile turns onto a
         # thread that is still being nudged. Guarded by a lock because nudges
@@ -152,6 +169,18 @@ class WatchdogSweep:
         threshold = now - timedelta(minutes=self.staleness_minutes)
         return ensure_aware_utc(todo.updated_at) < threshold
 
+    def _backoff_ready(self, key: Tuple[str, str], updated_at: datetime) -> bool:
+        """Has this TODO been quiet long enough to earn its next nudge?
+
+        The nth nudge for a key needs ``staleness_minutes * 2**n`` minutes
+        since the TODO was last touched, so the first nudge (n=0) is exactly
+        the ``_is_stale`` rule and every repeat costs the agent twice the
+        silence of the one before. Callers hold ``_state_lock``.
+        """
+        doublings = min(self._nudge_counts.get(key, 0), MAX_BACKOFF_DOUBLINGS)
+        window = timedelta(minutes=self.staleness_minutes * (2**doublings))
+        return datetime.now(timezone.utc) - ensure_aware_utc(updated_at) >= window
+
     # ── Cycle ─────────────────────────────────────────────────────────────
 
     def run_cycle(self, worker_pool: Optional[ThreadPoolExecutor] = None) -> None:
@@ -188,7 +217,13 @@ class WatchdogSweep:
             # listing. Under the lock: nudge turns from a previous cycle may
             # still be mutating these dicts on the autonomous pool.
             live_keys = {(user_id, todo.id) for todo in items}
-            for state in (self._nudged, self._timestamps, self._nudge_failures):
+            for state in (
+                self._nudged,
+                self._timestamps,
+                self._nudge_failures,
+                self._nudge_counts,
+                self._statuses,
+            ):
                 dead = [
                     k for k in state if k[0] == user_id and k not in live_keys
                 ]
@@ -197,10 +232,26 @@ class WatchdogSweep:
 
             # Build the list of stale TODOs not yet nudged.
             for todo in items:
+                key = (user_id, todo.id)
+
+                # The repeat-nudge backoff resets on a STATUS change, and
+                # ONLY on a status change. Deliberately not on an updated_at
+                # advance: bumping updated_at is exactly what the old nudge
+                # message taught the agent to do. On 2026-08-26 one parent
+                # TODO that was idle by design produced five alerts in one
+                # afternoon, and every "repair" was a notes rewrite that
+                # advanced updated_at, re-armed the nudge, and bought the
+                # next alert one sweep later. Tracked for every TODO rather
+                # than only stale ones, so completing a TODO (which makes it
+                # permanently un-stale) also clears the count before it can
+                # be reopened.
+                if self._statuses.get(key) != todo.status:
+                    self._statuses[key] = todo.status
+                    self._nudge_counts.pop(key, None)
+
                 if not self._is_stale(todo):
                     continue
 
-                key = (user_id, todo.id)
                 updated_at = ensure_aware_utc(todo.updated_at)
 
                 # Clear nudge state when updated_at advances (purely
@@ -212,6 +263,12 @@ class WatchdogSweep:
                 self._timestamps[key] = updated_at
 
                 if key in self._nudged:
+                    continue
+
+                # The re-arm above says "this TODO moved"; the backoff says
+                # "it has been quiet long enough to be worth saying so
+                # again". Both must pass.
+                if not self._backoff_ready(key, updated_at):
                     continue
 
                 thread_id = todo.thread_id or FALLBACK_THREAD_ID
@@ -399,6 +456,9 @@ class WatchdogSweep:
                 key = (user_id, todo.id)
                 self._nudged[key] = now
                 self._nudge_failures.pop(key, None)
+                # Only a delivered nudge escalates the backoff (the
+                # failure cap has its own suppression path).
+                self._nudge_counts[key] = self._nudge_counts.get(key, 0) + 1
             self._nudges_sent += 1
 
         # Best-effort off-frontend alert via the user's "default"
@@ -518,11 +578,28 @@ class WatchdogSweep:
             lines.append(f"  {icon} [{todo.id}] {task} (stale for {elapsed:.0f}min)")
 
         lines.append("")
+        # Do NOT reintroduce "update its notes/status" as a repair here. A
+        # nym_todo write of any kind advances updated_at, which re-arms this
+        # very alert, so the old wording prescribed the action that
+        # guaranteed the next alert (2026-08-26: five nudges in one
+        # afternoon on one TODO that was idle by design). The schedule and
+        # recurrence exemptions below are the supported way to say "this is
+        # waiting, not wedged"; they are the same two filters _is_stale
+        # applies.
         lines.append(
             "For each TODO above, please do one of the following:\n"
-            "- If complete: mark it done using the nym_todo tool.\n"
-            "- If still in progress: continue working on it, or update its notes/status.\n"
-            "- If no longer needed: delete it with nym_todo_delete."
+            '- If it is complete: mark it done with nym_todo (status="done").\n'
+            "- If it is no longer needed: delete it with nym_todo_delete.\n"
+            "- If it is waiting rather than being worked (parked, blocked, or "
+            "due to be looked at later): give it a future scheduled_for with "
+            "nym_todo (scheduled_for=..., plus recurrence=... if it repeats). "
+            "A future scheduled_for exempts it from these staleness checks "
+            "until it fires. Do not set a recurrence without a scheduled_for: "
+            "an unscheduled recurrence never fires, it only silences these "
+            "alerts.\n"
+            "Rewriting the notes or re-setting the same status does not repair "
+            "anything: it only resets the staleness clock, and this alert "
+            "comes back."
         )
         return "\n".join(lines)
 

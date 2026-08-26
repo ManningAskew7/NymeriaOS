@@ -15,6 +15,8 @@ the fold-specific seams:
   long-lived process does not leak keys.
 - The sweep publishes its own autonomous bookends (task_started deferred
   past queue-meta chunks, task_completed with the response content).
+- Repeat nudges for one TODO back off exponentially, and only a STATUS
+  change puts it back on the 1x schedule (the 2026-08-26 incident).
 """
 
 from __future__ import annotations
@@ -146,6 +148,30 @@ def _quiet_publishing(monkeypatch, notify_results: List[str] | None = None,
         notifications=notifications,
         autonomous=autonomous,
     )
+
+
+class _Clock:
+    """Controllable stand-in for the sweep's ``datetime`` (mock the clock).
+
+    ``watchdog_sweep`` only ever calls ``datetime.now(tz)``; every other
+    datetime it handles arrives on the TODOs it is given, so patching the
+    module name is enough to make the backoff schedule deterministic.
+    """
+
+    def __init__(self, start: datetime) -> None:
+        self.value = start
+
+    def now(self, tz=None) -> datetime:
+        return self.value
+
+    def advance(self, minutes: int) -> None:
+        self.value += timedelta(minutes=minutes)
+
+
+def _frozen_clock(monkeypatch) -> _Clock:
+    clock = _Clock(datetime(2026, 8, 26, 1, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(sweep_module, "datetime", clock)
+    return clock
 
 
 # ── Nudge delivery + notification transport ───────────────────────────────
@@ -280,6 +306,26 @@ def test_repeated_failures_hit_the_cap_and_suppress(tmp_path, monkeypatch):
     assert sweep._nudges_sent == 0  # no successful nudge was counted
 
 
+def test_failed_nudges_do_not_escalate_backoff(tmp_path, monkeypatch):
+    # Only a DELIVERED nudge widens the exponential window. A nudge the
+    # agent never saw must not count against it: retries stay on the plain
+    # staleness clock, and even the failure-cap suppression (which marks
+    # the TODO nudged to stop burning errored turns) escalates nothing.
+    _quiet_publishing(monkeypatch)
+    sweep = _sweep(tmp_path, TransportFailureExecutor())
+    todo = _stale_todo()
+
+    sweep._nudge_thread("u1", "th1", [todo])
+    assert sweep._nudge_failures == {("u1", "t1"): 1}
+    assert sweep._nudge_counts == {}
+
+    for _ in range(MAX_NUDGE_FAILURES - 1):
+        sweep._nudge_thread("u1", "th1", [todo])
+
+    assert ("u1", "t1") in sweep._nudged  # cap-suppressed
+    assert sweep._nudge_counts == {}
+
+
 def test_success_clears_failure_count(tmp_path, monkeypatch):
     _quiet_publishing(monkeypatch)
     sweep = _sweep(tmp_path, FakeExecutor())
@@ -371,6 +417,9 @@ def test_check_user_prunes_state_for_vanished_todos(tmp_path, monkeypatch):
     now = datetime.now(timezone.utc)
     sweep._nudged[("u1", "dead")] = now.timestamp()
     sweep._timestamps[("u1", "dead")] = now
+    sweep._nudge_failures[("u1", "dead")] = 1
+    sweep._nudge_counts[("u1", "dead")] = 2
+    sweep._statuses[("u1", "dead")] = TodoStatus.IN_PROGRESS
     # Another user's state must survive a u1 listing untouched.
     sweep._nudged[("u2", "other")] = now.timestamp()
 
@@ -378,6 +427,9 @@ def test_check_user_prunes_state_for_vanished_todos(tmp_path, monkeypatch):
 
     assert ("u1", "dead") not in sweep._nudged
     assert ("u1", "dead") not in sweep._timestamps
+    assert ("u1", "dead") not in sweep._nudge_failures
+    assert ("u1", "dead") not in sweep._nudge_counts
+    assert ("u1", "dead") not in sweep._statuses
     assert ("u2", "other") in sweep._nudged
     # The fresh TODO is not stale, so no nudge fired.
     assert executor.calls == []
@@ -452,9 +504,170 @@ def test_updated_at_advance_rearms_the_nudge(tmp_path, monkeypatch):
     assert len(executor.calls) == 1
 
     # Activity on the TODO (still stale, but newer updated_at) re-arms it.
-    manager.todos_by_user["u1"] = [_stale_todo(minutes_old=30)]
+    # 45 minutes clears the repeat-nudge backoff's 2x window (staleness 20),
+    # which now gates this re-arm: see the backoff section below for the
+    # advance-inside-the-window case.
+    manager.todos_by_user["u1"] = [_stale_todo(minutes_old=45)]
     sweep.run_cycle(None)
     assert len(executor.calls) == 2
+
+
+# ── Repeat-nudge backoff ───────────────────────────────────────────────────
+#
+# The 2026-08-26 incident: one parent TODO that was idle by design alerted
+# five times in one afternoon, because the nudge message prescribed "update
+# its notes/status", every such rewrite advanced updated_at, and an advance
+# re-arms the nudge. Repeat nudges now need staleness * 2**n minutes of quiet
+# on top of that re-arm, and only a STATUS change resets n.
+
+
+def _touch(manager, clock, *, status=TodoStatus.PENDING, todo_id="t1"):
+    """Rewrite the TODO the way the old nudge message told the agent to."""
+    manager.todos_by_user["u1"] = [
+        _stale_todo(todo_id=todo_id, status=status, updated_at=clock.value)
+    ]
+
+
+def test_repeat_nudges_require_exponentially_more_quiet(tmp_path, monkeypatch):
+    _quiet_publishing(monkeypatch)
+    clock = _frozen_clock(monkeypatch)
+    executor = FakeExecutor()
+    manager = FakeTodoManager(
+        {"u1": [_stale_todo(updated_at=clock.value - timedelta(minutes=25))]}
+    )
+    sweep = _sweep(tmp_path, executor, todo_manager=manager)  # staleness 20
+
+    # 1x: the first nudge fires on the plain staleness rule (25 >= 20).
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 1
+
+    # The old "repair": notes rewritten, status unchanged. 25 minutes later
+    # the 1x rule calls it stale again, but the second nudge needs 2x (40).
+    _touch(manager, clock)
+    clock.advance(25)
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 1
+
+    clock.advance(14)  # 39 minutes since the touch: still inside 2x
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 1
+
+    clock.advance(2)  # 41 minutes: 2x cleared
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 2
+
+    # Third nudge needs 4x (80 minutes) of quiet after the next rewrite.
+    _touch(manager, clock)
+    clock.advance(79)
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 2
+
+    clock.advance(2)  # 81 minutes: 4x cleared
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 3
+
+
+def test_status_change_resets_the_backoff(tmp_path, monkeypatch):
+    # Real progress is a repair and puts the TODO back on the 1x schedule;
+    # a same-status rewrite does not. Keying the reset on updated_at instead
+    # would restore the incident exactly.
+    _quiet_publishing(monkeypatch)
+    clock = _frozen_clock(monkeypatch)
+    executor = FakeExecutor()
+    manager = FakeTodoManager(
+        {"u1": [_stale_todo(updated_at=clock.value - timedelta(minutes=25))]}
+    )
+    sweep = _sweep(tmp_path, executor, todo_manager=manager)  # staleness 20
+
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 1
+
+    # pending -> in_progress: the count resets, so 25 minutes is enough
+    # again even though the un-reset schedule would have demanded 40.
+    _touch(manager, clock, status=TodoStatus.IN_PROGRESS)
+    clock.advance(25)
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 2
+
+    # And the schedule restarts from there: the next repeat needs 2x again.
+    _touch(manager, clock, status=TodoStatus.IN_PROGRESS)
+    clock.advance(25)
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 2
+
+    clock.advance(16)  # 41 minutes since that touch
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 3
+
+
+def test_completion_resets_the_backoff(tmp_path, monkeypatch):
+    # A completed TODO is not stale, so the sweep would otherwise never see
+    # its status move; a TODO reopened after being marked done must start
+    # from 1x rather than inherit the old key's escalation.
+    _quiet_publishing(monkeypatch)
+    clock = _frozen_clock(monkeypatch)
+    executor = FakeExecutor()
+    manager = FakeTodoManager(
+        {"u1": [_stale_todo(updated_at=clock.value - timedelta(minutes=25))]}
+    )
+    sweep = _sweep(tmp_path, executor, todo_manager=manager)
+
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 1
+
+    _touch(manager, clock, status=TodoStatus.DONE)
+    clock.advance(5)
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 1  # done TODOs are never stale
+
+    # Reopened: back on the 1x schedule, so 25 minutes is enough.
+    _touch(manager, clock, status=TodoStatus.PENDING)
+    clock.advance(25)
+    sweep.run_cycle(None)
+    assert len(executor.calls) == 2
+
+
+def test_backoff_window_is_capped(tmp_path, monkeypatch):
+    # 2**n is unbounded arithmetic on a process that can run for months; the
+    # cap keeps the window finite (and keeps timedelta from overflowing).
+    _quiet_publishing(monkeypatch)
+    clock = _frozen_clock(monkeypatch)
+    sweep = _sweep(tmp_path, FakeExecutor())  # staleness 20
+    key = ("u1", "t1")
+
+    sweep._nudge_counts[key] = sweep_module.MAX_BACKOFF_DOUBLINGS
+    capped = sweep._backoff_ready(key, clock.value - timedelta(minutes=20 * 2**6))
+    assert capped is True
+
+    sweep._nudge_counts[key] = sweep_module.MAX_BACKOFF_DOUBLINGS + 40
+    assert sweep._backoff_ready(key, clock.value - timedelta(minutes=20 * 2**6))
+
+
+# ── Nudge message ──────────────────────────────────────────────────────────
+
+
+def test_nudge_message_offers_exemptions_not_a_notes_rewrite(tmp_path, monkeypatch):
+    # The message is the defect's engine: it taught the agent that rewriting
+    # notes was a repair, and every rewrite re-armed the next alert.
+    sweep = _sweep(tmp_path, FakeExecutor())
+
+    message = sweep._build_nudge_message([_stale_todo()])
+
+    assert "nym_todo_delete" in message
+    assert "scheduled_for" in message
+    assert "recurrence" in message
+    # The exemption is stated, so the agent can act on it without knowing
+    # the sweep's source.
+    assert "exempt" in message.lower()
+    # The schedule is the prescription; a bare recurrence (exempt but
+    # never-firing) must be warned against, not offered as a repair.
+    assert "future scheduled_for" in message
+    assert "an unscheduled recurrence never fires" in message
+    # The repair that caused the incident is gone, and named as a non-repair.
+    assert "update its notes/status" not in message
+    assert "update its notes" not in message
+    assert "notes/status" not in message
+    assert "does not repair" in message
 
 
 def test_env_kill_switch_skips_cycle(tmp_path, monkeypatch):

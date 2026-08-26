@@ -142,6 +142,12 @@ _RESTART_REQUIRED_KEYS: frozenset[str] = frozenset({
     "ticker_poll_interval",
     "max_concurrent_autonomous",
     "todo_auto_archive_days",
+    # Captured when the watchdog sweep and its ticker sub-loop are
+    # constructed, and in Docker the sweep runs in the worker while this
+    # PATCH lands in the API, so only a restart can ever apply them.
+    "todo_staleness_minutes",
+    "watchdog_interval_minutes",
+    "watchdog_enabled",
 })
 
 
