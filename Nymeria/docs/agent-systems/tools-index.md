@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1240 tools found.**
+**1261 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1132,6 +1132,27 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `twilio_list_messages` | `nymeria/tools/messaging_delivery_service_integrations.py` | List Twilio messages. |
 | `twilio_make_call` | `nymeria/tools/messaging_delivery_service_integrations.py` | Start an outbound Twilio voice call. |
 | `twilio_send_message` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS/MMS/WhatsApp message with Twilio. |
+| `twitch_announce` | `nymeria/tools/twitch.py` | Send a highlighted announcement to Twitch chat. Requires moderator permissions. |
+| `twitch_automod_review` | `nymeria/tools/twitch.py` | Approve or deny a message held by AutoMod. |
+| `twitch_ban` | `nymeria/tools/twitch.py` | Permanently ban a user from Twitch chat. Requires moderator permissions. |
+| `twitch_clip` | `nymeria/tools/twitch.py` | Create a clip of the last ~30 seconds of the live stream. |
+| `twitch_create_poll` | `nymeria/tools/twitch.py` | Create a poll in the channel. Requires broadcaster token. |
+| `twitch_create_prediction` | `nymeria/tools/twitch.py` | Create a channel points prediction. Requires broadcaster token. |
+| `twitch_delete_message` | `nymeria/tools/twitch.py` | Delete a specific chat message by ID, or clear all chat if no ID given. |
+| `twitch_end_poll` | `nymeria/tools/twitch.py` | End an active poll. Requires broadcaster token. |
+| `twitch_get_banned` | `nymeria/tools/twitch.py` | Get list of banned users in the channel with reasons. |
+| `twitch_get_channel` | `nymeria/tools/twitch.py` | Get channel info: title, game, tags, language. |
+| `twitch_get_chatters` | `nymeria/tools/twitch.py` | Get list of users currently in chat with total count. |
+| `twitch_get_schedule` | `nymeria/tools/twitch.py` | Get the channel's upcoming stream schedule. |
+| `twitch_get_stream` | `nymeria/tools/twitch.py` | Get the current live stream status: viewers, game, title, uptime. Returns 'offline' if not live. |
+| `twitch_get_subs` | `nymeria/tools/twitch.py` | Check subscriber count, or check if a specific user is subscribed. Requires broadcaster token. |
+| `twitch_resolve_prediction` | `nymeria/tools/twitch.py` | Resolve, cancel, or lock a prediction. Requires broadcaster token. |
+| `twitch_send` | `nymeria/tools/twitch.py` | Send a message to the Twitch channel chat. |
+| `twitch_set_channel_info` | `nymeria/tools/twitch.py` | Update channel title, game/category, and/or tags. Requires broadcaster token. |
+| `twitch_shoutout` | `nymeria/tools/twitch.py` | Give a shoutout to another channel. Has a 2-minute cooldown per target. |
+| `twitch_timeout` | `nymeria/tools/twitch.py` | Timeout a user in Twitch chat. Requires moderator permissions. |
+| `twitch_unban` | `nymeria/tools/twitch.py` | Unban or untimeout a user in Twitch chat. Requires moderator permissions. |
+| `twitch_warn` | `nymeria/tools/twitch.py` | Issue an official warning to a user. They see a popup in chat. |
 | `twitter_create_post` | `nymeria/tools/community_publishing_service_integrations.py` | Create an X/Twitter post, reply, or quote post. |
 | `twitter_delete_post` | `nymeria/tools/community_publishing_service_integrations.py` | Delete an X/Twitter post by ID or URL. |
 | `twitter_get_me` | `nymeria/tools/community_publishing_service_integrations.py` | Get the authenticated X/Twitter user. |

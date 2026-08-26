@@ -533,6 +533,47 @@ services:
     networks:
       - edge
 
+  twitch-bot:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
+    container_name: nymeria-twitch-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    command: ["python", "run.py", "twitch-bot", "--api-url", "http://nymeria-api:8000"]
+    profiles:
+      - twitch  # Only starts when explicitly enabled: docker compose --profile twitch up -d
+    environment:
+      <<: *thin-client-env
+      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
+      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
+      TWITCH_BOT_ACCESS_TOKEN: ${TWITCH_BOT_ACCESS_TOKEN:-}
+      TWITCH_BOT_REFRESH_TOKEN: ${TWITCH_BOT_REFRESH_TOKEN:-}
+      TWITCH_BOT_USER_ID: ${TWITCH_BOT_USER_ID:-}
+      TWITCH_BROADCASTER_TOKEN: ${TWITCH_BROADCASTER_TOKEN:-}
+      TWITCH_BROADCASTER_REFRESH_TOKEN: ${TWITCH_BROADCASTER_REFRESH_TOKEN:-}
+      TWITCH_CHANNEL: ${TWITCH_CHANNEL:-}
+      TWITCH_BUFFER_SIZE: ${TWITCH_BUFFER_SIZE:-500}
+      TWITCH_PULSE_ENABLED: ${TWITCH_PULSE_ENABLED:-true}
+      TWITCH_PULSE_INTERVAL: ${TWITCH_PULSE_INTERVAL:-300}
+      TWITCH_PULSE_MIN_MESSAGES: ${TWITCH_PULSE_MIN_MESSAGES:-10}
+      TWITCH_COMMAND_CONTEXT_COUNT: ${TWITCH_COMMAND_CONTEXT_COUNT:-50}
+    volumes:
+      - nymeria_data:/data
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "twitch-bot", "--api-url", "http://nymeria-api:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - edge
+
   # Slack Bot for two-way communication
   slack-bot:
     <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]

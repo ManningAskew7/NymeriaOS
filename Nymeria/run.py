@@ -76,6 +76,7 @@ _SERVICE_TOKEN_REQUIRED_COMMANDS = {
     "discord-bot": "the Discord bot",
     "telegram-bot": "the Telegram bot",
     "slack-bot": "the Slack bot",
+    "twitch-bot": "the Twitch bot",
     "mcp": "the MCP thin client",
 }
 
@@ -1133,6 +1134,85 @@ def run_slack_bot(args: argparse.Namespace) -> None:
     bot.run()
 
 
+def run_twitch_bot(args: argparse.Namespace) -> None:
+    """
+    Run the Twitch bot (EventSub websocket mode).
+
+    Thin client architecture: the bot owns only the TwitchIO connection, the
+    chat ring buffer with its unseen-cursor, !commands, and the pulse loop;
+    prompts relay to the backend over POST /chat. The agent replies through
+    the twitch_* tools (which call Helix directly, API-side), never through
+    this process.
+    """
+    from nymeria.config import get_settings
+    from nymeria.triggers import twitch_bot as _twitch_bot
+    _require_bot_sdk(_twitch_bot, "Twitch", "twitch")
+    from nymeria.triggers.twitch_bot import NymeriaTwitchBot
+
+    settings = get_settings()
+
+    missing = [
+        name
+        for name, value in (
+            ("TWITCH_CLIENT_ID", settings.twitch_client_id),
+            ("TWITCH_CHANNEL", settings.twitch_channel),
+            ("TWITCH_BOT_ACCESS_TOKEN", settings.twitch_bot_access_token),
+            # Required by TwitchIO at construction (bot_id) and for every
+            # EventSub chat subscription; the twitch_* TOOLS can resolve it
+            # from the token, the bot cannot.
+            ("TWITCH_BOT_USER_ID", settings.twitch_bot_user_id),
+        )
+        if not value
+    ]
+    if missing:
+        print("\n[Error] Twitch bot configuration incomplete. Missing:")
+        for name in missing:
+            print(f"    {name}")
+        print("  Create an app at https://dev.twitch.tv/console/apps, then generate")
+        print("  bot-account tokens with tools/twitch_auth.py (validate prints the")
+        print("  numeric user ID). Setup guide: docs/chat-apps/twitch-bot.md")
+        sys.exit(1)
+    if not (settings.twitch_bot_refresh_token and settings.twitch_client_secret):
+        print("\n[Warning] TWITCH_BOT_REFRESH_TOKEN or TWITCH_CLIENT_SECRET is not set.")
+        print("  Twitch access tokens expire after roughly 4 hours; without refresh")
+        print("  credentials the bot will lose its connection and need a restart.")
+
+    api_url = _resolve_api_url(args)
+    api_key = _require_service_token(settings, "the Twitch bot")
+
+    print("Starting Nymeria Twitch Bot (thin client)...")
+    print(f"  - Channel: #{settings.twitch_channel}")
+    print(f"  - API: {api_url}")
+    print(f"  - Buffer size: {settings.twitch_buffer_size}")
+    print(f"  - Pulse: {'enabled' if settings.twitch_pulse_enabled else 'disabled'}")
+    print("  - Auth: service token")
+
+    api = _service_api_client(api_url, api_key, settings)
+    # The preflight above guarantees these; the `or ""` narrows Optional[str]
+    # for the type checker without an assert.
+    bot = NymeriaTwitchBot(
+        api=api,
+        client_id=settings.twitch_client_id or "",
+        client_secret=settings.twitch_client_secret,
+        bot_user_id=settings.twitch_bot_user_id,
+        access_token=settings.twitch_bot_access_token,
+        refresh_token=settings.twitch_bot_refresh_token,
+        channel=settings.twitch_channel or "",
+        broadcaster_token=settings.twitch_broadcaster_token,
+        broadcaster_refresh_token=settings.twitch_broadcaster_refresh_token,
+        buffer_size=settings.twitch_buffer_size,
+        pulse_enabled=settings.twitch_pulse_enabled,
+        pulse_interval=settings.twitch_pulse_interval,
+        pulse_min_messages=settings.twitch_pulse_min_messages,
+        command_context_count=settings.twitch_command_context_count,
+    )
+
+    _install_exit_handlers("\nShutdown signal received, stopping Twitch bot...")
+
+    print("\nConnecting to Twitch...")
+    bot.run()
+
+
 def run_mcp(args: argparse.Namespace) -> None:
     """Run the MCP server."""
     from nymeria.mcp_server import run_stdio, run_http
@@ -1563,6 +1643,13 @@ Examples:
     )
     _add_api_url_arg(slack_parser)
 
+    # Twitch bot subcommand
+    twitch_parser = subparsers.add_parser(
+        "twitch-bot",
+        help="Start Twitch bot (EventSub websocket)",
+    )
+    _add_api_url_arg(twitch_parser)
+
     # MCP subcommand
     mcp_parser = subparsers.add_parser("mcp", help="Start MCP server for agent-to-agent communication")
     mcp_parser.add_argument(
@@ -1715,6 +1802,7 @@ COMMANDS: dict[str, _Command] = {
     "discord-bot": _Command(run_discord_bot, full_validation=True),
     "telegram-bot": _Command(run_telegram_bot, full_validation=True),
     "slack-bot": _Command(run_slack_bot, full_validation=True),
+    "twitch-bot": _Command(run_twitch_bot, full_validation=True),
     "mcp": _Command(run_mcp, full_validation=True),
     "claude-code-runner": _Command(run_claude_code_runner),
     "service": _Command(run_service),

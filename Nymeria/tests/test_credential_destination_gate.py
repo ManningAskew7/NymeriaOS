@@ -645,6 +645,7 @@ _NON_DESTINATION_PRIMARY_FIELDS = {
     "api_key_sid", "api_secret", "api_token", "api_username", "app_api_key",
     "app_id", "app_secret", "app_token", "auth_header", "auth_id",
     "auth_key", "auth_token", "authorization", "bearer_token", "bot_token",
+    "broadcaster_refresh_token", "broadcaster_token",
     "business_account_id", "client_id", "client_secret", "client_token",
     "consumer_key", "consumer_secret", "content_api_key", "content_token",
     "database", "delivery_token", "email", "force_path_style", "from_email",

@@ -29,6 +29,7 @@ HEARTBEAT_SERVICES = {
     "discord-bot",
     "slack-bot",
     "telegram-bot",
+    "twitch-bot",
 }
 
 SERVICE_CHOICES = sorted({*HEARTBEAT_SERVICES, "mcp"})
@@ -241,7 +242,7 @@ def check_service(
         _check_postgres(errors, settings)
         _check_redis(errors, settings)
 
-    if service in {"discord-bot", "slack-bot", "telegram-bot", "mcp"}:
+    if service in {"discord-bot", "slack-bot", "telegram-bot", "twitch-bot", "mcp"}:
         _check_api(api_url or "http://nymeria-api:8000", errors)
 
     if service == "mcp":

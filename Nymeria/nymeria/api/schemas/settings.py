@@ -285,8 +285,10 @@ class ServerSettingsUpdate(BaseModel):
     twitch_channel: Optional[str] = None
     twitch_client_id: Optional[str] = None
     twitch_client_secret: Optional[str] = None
+    twitch_command_context_count: Optional[int] = Field(default=None, ge=5, le=200)
     twitch_pulse_enabled: Optional[bool] = None
     twitch_pulse_interval: Optional[int] = Field(default=None, ge=60, le=3600)
+    twitch_pulse_min_messages: Optional[int] = Field(default=None, ge=1, le=100)
     twitch_respond_mode: Optional[str] = None
     twitch_system_prompt: Optional[str] = Field(default=None, max_length=50000)
 

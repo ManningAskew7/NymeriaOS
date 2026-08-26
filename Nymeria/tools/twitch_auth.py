@@ -33,9 +33,18 @@ BOT_SCOPES = [
     "moderator:manage:announcements",
     "moderator:manage:shoutouts",
     "moderator:manage:warnings",
+    "moderator:read:warnings",
     "moderator:manage:automod",
     "moderator:read:chatters",
     "moderator:read:banned_users",
+    # channel.moderate v2 (the unified mod-event subscription) requires the
+    # full moderator read set; without every one of these the subscription is
+    # rejected and the bot falls back to per-event subscriptions.
+    "moderator:read:blocked_terms",
+    "moderator:read:chat_settings",
+    "moderator:read:unban_requests",
+    "moderator:read:moderators",
+    "moderator:read:vips",
     "clips:edit",
 ]
 
@@ -46,6 +55,9 @@ BROADCASTER_SCOPES = [
     "channel:manage:predictions",
     "channel:manage:broadcast",
     "channel:read:subscriptions",
+    # Needed for the channel.ban/channel.unban EventSub fallback the bot
+    # subscribes with the broadcaster token when channel.moderate v2 fails.
+    "channel:moderate",
 ]
 
 REDIRECT_URI = "http://localhost:3000"
