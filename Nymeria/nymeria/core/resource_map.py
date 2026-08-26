@@ -268,7 +268,11 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "MCP server definitions (schema/mcp_server.schema.json)",
         "global",
         "yes",
-        "files-as-truth",
+        # Hot-load stays "yes" (a write that arrives some other way is still
+        # picked up), but the posture must not read as an invitation: the file
+        # tools refuse this path outright. See the reconcile test in
+        # tests/test_resource_layout.py.
+        "readable; the file tools refuse writes here, use manage_mcp",
         denylisted=True,
         gates=("nymeria.core.mcp_execution_gate.mcp_execution_gate",),
         drives_execution=True,
@@ -678,11 +682,24 @@ def render_resource_readme() -> str:
         "re-checks the hash and refuses until an admin re-approves",
         "(tool_create publish, or the workflow approval surfaces).",
         "",
-        "## Off limits: credentials",
+        "## Off limits: the file tools refuse these",
         "",
         "Anything holding credentials (the encrypted account vault and OAuth",
         "token caches) is not part of this interface. Use auth_write and",
         "auth_test (see the credential-management skill) instead.",
+        "",
+        # Derived, not hand-listed: a store that gains the denylist should
+        # appear here without anyone remembering to add it, which is exactly
+        # the drift the reconcile test caught (mcp_servers read as editable
+        # here while the tools refused it).
+        "The same refusal covers these stores, each with its own reason and",
+        "its own sanctioned surface:",
+        "",
+    ]
+    for row in _STORE_ROWS:
+        if row.denylisted:
+            lines.append(f"- `{row.path}`: {row.posture}")
+    lines += [
         "",
         "## Operational state (not yours to edit)",
         "",

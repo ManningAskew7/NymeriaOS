@@ -2109,3 +2109,42 @@ def test_thread_config_same_tick_same_size_edit_hot_loads(tmp_path):
     os.utime(path, ns=(before, before))
 
     assert [c.callable_name for c in manager.list_callable_threads()] == ["bbbb"]
+
+
+def test_readme_posture_prose_matches_the_refusal_columns():
+    """The README is the agent's live map of the resource root, so a row whose
+    posture reads "files-as-truth" is a standing invitation to edit that file.
+
+    The refusal columns are heavily ratcheted above, but nothing tied them to
+    the prose a reader actually sees: mcp_servers/<id>.json shipped declaring
+    denylisted=True while rendering as plainly editable, and an agent that
+    believed the table burned a turn discovering the refusal (found live
+    2026-08-25). Reconcile the two here, and name every refused store in the
+    off-limits section rather than a hand-kept subset of them.
+    """
+    from nymeria.core.resource_map import _STORE_ROWS, render_resource_readme
+
+    readme = render_resource_readme()
+    off_limits = readme.split("## Off limits", 1)
+    assert len(off_limits) == 2, "README lost its off-limits section"
+    off_limits_text = off_limits[1].split("\n## ", 1)[0]
+
+    for row in _STORE_ROWS:
+        if row.denylisted:
+            assert row.posture != "files-as-truth", (
+                f"{row.path} is refused by the file tools but its posture "
+                "reads as freely editable"
+            )
+            assert "file tools" in row.posture, (
+                f"{row.path}: posture must say the file tools refuse it"
+            )
+            store_name = row.path.split("/", 1)[0].split(",", 1)[0]
+            assert store_name in off_limits_text, (
+                f"{store_name} is refused but the README's off-limits section "
+                "does not name it"
+            )
+        if row.admin_only:
+            assert "admin" in row.posture.lower(), (
+                f"{row.path}: posture must state the admin-only write"
+            )
+            assert row.posture != "files-as-truth"
