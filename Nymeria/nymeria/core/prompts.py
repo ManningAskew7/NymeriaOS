@@ -144,7 +144,13 @@ def resolve_trigger_label(
     """
     if trigger_override:
         return trigger_override
-    if source:
+    if source and not (is_autonomous and source == "user"):
+        # source="user" on an AUTONOMOUS turn is a contradiction, not a
+        # label (chat.py's _agent_prompt_source can produce it: it returns
+        # "user" whenever request.source is falsy, even under
+        # is_self_invoke=True). "User Message" above AUTONOMOUS_MODE_RULES
+        # would tell the agent two opposite things about its own turn, so
+        # the source arm declines it and the autonomy split answers.
         label = SOURCE_TRIGGER_LABELS.get(source)
         if label:
             return label

@@ -341,7 +341,10 @@ part of that logic's semantics.
   against a per-event data dict (`bridge.fire_condition_data`):
   - Meta fields (top level): `event`, `thread_id`, `user_id`, `is_autonomous`,
     `holder_kind`, `trigger_label`, `tool_name`, `tool_status`, `prompt`,
-    `final_text`.
+    `final_text`. `trigger_label` is always populated on PROMPT_SUBMIT and
+    tool events (interactive turns carry "User Message"; before 2026-08-26 it
+    was empty there), but is still `""` on DONE events: a condition on it
+    that fires mid-turn never matches at DONE.
   - Tool args, nested under `args.` (dotted paths resolve): `args.command`.
   - Context-usage signal (raw numbers; ABSENT when unknown, so a numeric
     condition on an unknown signal is a non-match, never a compare against 0):

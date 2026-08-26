@@ -168,6 +168,24 @@ def test_unlisted_source_keeps_the_legacy_autonomy_split(frozen_time, tmp_path):
     assert "[Trigger: Scheduled TODO]" in out
 
 
+def test_autonomous_turn_never_claims_user_message(frozen_time, tmp_path):
+    """source="user" on an AUTONOMOUS turn is a contradiction, not a label.
+
+    No live caller produces this shape today, but chat.py's
+    _agent_prompt_source can (it returns "user" whenever request.source is
+    falsy, including under is_self_invoke=True). A header reading
+    "[Trigger: User Message]" above AUTONOMOUS_MODE_RULES would tell the
+    agent two opposite things about its own turn; the source arm must
+    decline it and fall back to the autonomy split.
+    """
+    agent = make_agent(tmp_path)
+    out = prefix(
+        agent, "x", is_self_invoke=True, is_autonomous=True, source="user"
+    )
+    assert "[Trigger: Scheduled TODO]" in out
+    assert "[Trigger: User Message]" not in out
+
+
 def test_trigger_override_still_beats_the_turn_source(frozen_time, tmp_path):
     agent = make_agent(tmp_path)
     golden = (
