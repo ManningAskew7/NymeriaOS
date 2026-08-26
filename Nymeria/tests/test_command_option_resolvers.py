@@ -614,7 +614,16 @@ class _TodosApi:
         ]
 
 
-def test_resolve_todos_offers_full_ids_across_every_status() -> None:
+def test_resolve_todos_offers_full_ids_across_every_status(monkeypatch) -> None:
+    # Pin the zone: the meta line renders the fire time in the USER's timezone,
+    # so leaving it to ambient settings makes this test order-dependent on
+    # whatever else touched the settings cache.
+    import zoneinfo
+
+    monkeypatch.setattr(
+        "nymeria.core.time_utils.get_user_tz",
+        lambda: zoneinfo.ZoneInfo("UTC"),
+    )
     api = _TodosApi()
     options = run(resolve_todos(_executor(api)))
 
