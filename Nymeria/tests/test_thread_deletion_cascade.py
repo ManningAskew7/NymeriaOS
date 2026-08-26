@@ -323,3 +323,47 @@ def test_cascade_delete_thread_reports_missing_thread_owner_as_zero(tmp_path: Pa
     assert result.warnings == []
     assert result.deleted["thread_owners_deleted"] == 0
     assert agent.accounts_repo.get_thread_owner(target) is None
+
+
+def test_busy_delete_says_it_aborted_the_turn_and_that_nothing_was_deleted(tmp_path: Path):
+    """A refused delete is not a no-op: it aborts the running turn first.
+
+    ``cascade_delete_thread`` calls ``abort_with_cascade`` BEFORE taking the
+    lock, so when the lock cannot be acquired the caller is told the delete
+    failed while their in-flight turn has already been killed. Measured live
+    2026-08-26: /thread delete on a thread running a 45s bash tool returned
+    "busy and could not be locked for deletion", and the turn went to
+    state=aborted anyway. The abort itself is correct (it is how the delete
+    ever wins a busy thread); the silence about it is the defect.
+    """
+    from nymeria.config import get_settings
+    from nymeria.core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
+
+    agent = FakeAgent(tmp_path)
+    thread_id = "busy-thread"
+    # Hold the lock the way a live turn does, so the acquire below fails.
+    held = agent._thread_locks.get_lock(thread_id)
+    assert held.acquire(blocking=False)
+    try:
+        with pytest.raises(ThreadDeletionBusy) as excinfo:
+            cascade_delete_thread(
+                agent,
+                get_settings(),
+                user_id="alice",
+                thread_id=thread_id,
+                lock_timeout_seconds=0.05,
+            )
+    finally:
+        held.release()
+
+    # The abort really did happen, which is what makes the silence misleading.
+    assert agent.aborted == [thread_id]
+
+    message = str(excinfo.value)
+    assert thread_id in message
+    # Says the turn was stopped...
+    assert "stopp" in message.lower() or "abort" in message.lower()
+    # ...that the thread survived...
+    assert "not deleted" in message.lower()
+    # ...and what to do about it.
+    assert "again" in message.lower()

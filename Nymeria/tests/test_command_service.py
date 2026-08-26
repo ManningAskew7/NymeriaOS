@@ -7776,3 +7776,31 @@ def test_model_set_still_lets_a_non_admin_write_the_thread_override() -> None:
         ("thread-1",),
         {"user_id": "alice", "llm_config": {"model": "gpt-next"}},
     ) in api.calls
+
+
+def test_thread_confirmations_name_the_whole_id_not_a_mangled_prefix() -> None:
+    """``_compact_id`` cut every id to 8 chars with no marker, which is a no-op
+    for the 8-hex system ids it was written for and a lie for everything else.
+
+    Measured live 2026-08-26: deleting `bugtest-p7b-delete-race` acknowledged
+    "Deleted thread bugtest-.", naming a thread that does not exist, on the one
+    operation you cannot undo. The same cut collapses every chat-platform
+    thread (`telegram_<chat>`, `discord_<guild>_<channel>`) to an identical
+    stub in `/thread list`, where the id is what the user types back into
+    `/thread switch`.
+    """
+    from nymeria.core.command_executor_threads import _compact_id
+
+    assert _compact_id("68f7b616") == "68f7b616"  # the shape it was written for
+    assert _compact_id("bugtest-p7b-delete-race") == "bugtest-p7b-delete-race"
+    assert _compact_id("telegram_123456789") == "telegram_123456789"
+    assert _compact_id(None) == ""
+
+    service = CommandService()
+    api = FakeCommandApi()
+    api.threads.append({"thread_id": "bugtest-p7b-delete-race", "title": "Race"})
+    deleted = run(
+        service.execute(_cli_ctx(), "/thread delete bugtest-p7b-delete-race --yes", api=api)
+    )
+    assert deleted.success is True
+    assert "bugtest-p7b-delete-race" in deleted.markdown

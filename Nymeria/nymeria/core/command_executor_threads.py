@@ -55,10 +55,19 @@ def _thread_title(thread: Mapping[str, Any]) -> str:
     return title or "New Chat"
 
 
-def _compact_id(value: Any, *, width: int = 8) -> str:
-    """Return a short display ID."""
-    text = str(value or "")
-    return text[:width] if len(text) > width else text
+def _compact_id(value: Any) -> str:
+    """Return a thread ID for display, which means the WHOLE id.
+
+    This used to cut at 8 characters with no marker, which is invisible for the
+    8-hex ids it was written against and a lie for every other shape: deleting
+    `bugtest-p7b-delete-race` acknowledged "Deleted thread bugtest-", naming a
+    thread that does not exist, on the one operation that cannot be undone, and
+    `/thread list` on a chat platform collapsed every `telegram_<chat>` row to
+    the same stub. An id is what the user types back into `/thread switch`, so
+    shortening it has to keep it addressable; nothing here can guarantee that,
+    so it is shown whole. Callers pad for their own columns.
+    """
+    return str(value or "")
 
 
 def _format_bool(value: Any) -> str:
