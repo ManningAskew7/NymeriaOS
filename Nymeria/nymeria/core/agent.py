@@ -1684,10 +1684,18 @@ class NymeriaAgent:
         from .agent_graph import skills_fingerprint
         return skills_fingerprint(self, user_id, thread_id)
 
-    def _select_tools_for_graph(self, user_id: str, thread_id: str):
-        """Select and filter the tool list for a graph build."""
+    def _select_tools_for_graph(
+        self, user_id: str, thread_id: str, *, persist_evictions: bool = True
+    ):
+        """Select and filter the tool list for a graph build.
+
+        ``persist_evictions=False`` is for read-only callers (the thread
+        overview) that want the same answer without the TTL eviction write.
+        """
         from .agent_graph import select_tools_for_graph
-        return select_tools_for_graph(self, user_id, thread_id)
+        return select_tools_for_graph(
+            self, user_id, thread_id, persist_evictions=persist_evictions
+        )
 
     def _tool_config_hash(self, user_id: str, thread_id: str, tc) -> str:
         """Stable hash over the tool-relevant slice of ThreadConfig."""
@@ -2004,9 +2012,9 @@ class NymeriaAgent:
         from .agent_tools import invalidate_thread_config_cache
         invalidate_thread_config_cache(self, thread_id)
 
-    def _resolve_temporary_tools(self, tc) -> set:
+    def _resolve_temporary_tools(self, tc, *, persist: bool = True) -> set:
         from .agent_tools import resolve_temporary_tools
-        return resolve_temporary_tools(self, tc)
+        return resolve_temporary_tools(self, tc, persist=persist)
 
     def _load_custom_tools(self) -> int:
         from .agent_tools import load_custom_tools

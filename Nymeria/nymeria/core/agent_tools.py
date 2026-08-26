@@ -115,12 +115,19 @@ def invalidate_thread_config_cache(agent: "NymeriaAgent", thread_id: str) -> Non
     logger.debug(f"Invalidated graph cache for thread {thread_id}")
 
 
-def resolve_temporary_tools(agent: "NymeriaAgent", tc) -> set:
+def resolve_temporary_tools(agent: "NymeriaAgent", tc, *, persist: bool = True) -> set:
     """Evict expired TTL'd tool entries, persist, and return the live set.
 
-    Runs at graph-build time only. Tools that were live when the current
-    graph was built stay callable for the whole invocation — no surprise
-    mid-turn eviction.
+    Runs at graph-build time. Tools that were live when the current graph was
+    built stay callable for the whole invocation, no surprise mid-turn
+    eviction.
+
+    ``persist=False`` computes the same live set WITHOUT the eviction write,
+    for callers that only need to report what is live. Same idiom as
+    ``_require_thread_access(claim=False)`` and ``resolve_team_ref(adopt=False)``:
+    a read must not be a write. The read-only thread overview reaches this
+    through ``select_tools_for_graph`` and was rewriting the config file from a
+    stale snapshot on every CLI header repaint.
     """
     if tc is None or not getattr(tc, "temporary_tools", None):
         return set()
@@ -136,8 +143,9 @@ def resolve_temporary_tools(agent: "NymeriaAgent", tc) -> set:
             f"Thread {tc.thread_id}: TTL evicting {len(evicted)} tool(s): "
             f"{', '.join(sorted(evicted))}"
         )
-        tc.temporary_tools = live
-        agent.thread_config_manager.save_config(tc)
+        if persist:
+            tc.temporary_tools = live
+            agent.thread_config_manager.save_config(tc)
     return set(live.keys())
 
 

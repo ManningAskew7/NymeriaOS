@@ -441,7 +441,13 @@ def _templates_digest(skill) -> str:
         return "digest-error"
 
 
-def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
+def select_tools_for_graph(
+    agent: "NymeriaAgent",
+    user_id: str,
+    thread_id: str,
+    *,
+    persist_evictions: bool = True,
+):
     """Select and filter the tool list for a graph build.
 
     Handles core tool selection, per-user callable threads, per-thread
@@ -539,7 +545,12 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
         disabled = set(tc.disabled_tools) if tc.disabled_tools else set()
         if disabled:
             tools = [t for t in tools if t.name not in disabled]
-        live_temp = agent._resolve_temporary_tools(tc)
+        # persist_evictions=False keeps this selection READ-ONLY for the
+        # thread overview, which needs the same answer graph build would
+        # give without the TTL eviction rewriting the config file.
+        live_temp = agent._resolve_temporary_tools(
+            tc, persist=persist_evictions
+        )
         extra_names = (set(tc.enabled_tools) | live_temp) - disabled
         if extra_names:
             if owner_role is None:

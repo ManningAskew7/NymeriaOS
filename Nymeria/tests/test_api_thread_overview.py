@@ -114,7 +114,7 @@ class FakeAgent:
             reasoning_effort="high",
         )
 
-    def _resolve_temporary_tools(self, tc: ThreadConfig) -> set[str]:
+    def _resolve_temporary_tools(self, tc: ThreadConfig, *, persist: bool = True) -> set[str]:
         # Delegates to the REAL resolver rather than reimplementing it. The
         # hand-rolled copy that used to live here computed the same set
         # without the eviction and the save_config the real one performs,
@@ -123,7 +123,7 @@ class FakeAgent:
         # stale config unnoticed (see the read-only overview test below).
         from nymeria.core.agent_tools import resolve_temporary_tools
 
-        return resolve_temporary_tools(self, tc)
+        return resolve_temporary_tools(self, tc, persist=persist)
 
     def _get_team_scoped_callable_threads(
         self,
@@ -465,6 +465,20 @@ def test_thread_overview_never_writes_the_thread_config(
             },
         )
     )
+    # Give this one agent the selector the real product has. The shared fake
+    # omits it, so without this the route falls to its double-free branch and
+    # never reaches the write path that actually fired in production: the
+    # overview calling the GRAPH-BUILD tool selector, which resolves temporary
+    # tools and persists the eviction. Only the persistence behavior is
+    # mirrored here; the real selector needs a full agent.
+    def _selector(sel_user_id, sel_thread_id, *, persist_evictions=True):
+        tc_now = agent.thread_config_manager.get_config(sel_thread_id)
+        if tc_now is not None:
+            agent._resolve_temporary_tools(tc_now, persist=persist_evictions)
+        return ([], {})
+
+    agent._select_tools_for_graph = _selector
+
     config_path = agent.thread_config_manager._get_config_path(thread_id)
     before = config_path.read_bytes()
 
