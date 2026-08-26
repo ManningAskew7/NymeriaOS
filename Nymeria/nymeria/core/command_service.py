@@ -5520,9 +5520,24 @@ class _CommandExecutor(
         if compactions:
             lines.append(f"  {compactions} compaction{'s' if compactions != 1 else ''}")
         mode_line = f"  mode: {ctx_mode}"
-        threshold = settings.get("compact_threshold")
-        if threshold and ctx_mode == "auto_compact":
-            mode_line += f" (threshold {int(threshold * 100)}%)"
+        if ctx_mode == "auto_compact":
+            # Report the threshold that GOVERNS. compact_threshold is the
+            # percentage knob and is inert unless compact_threshold_mode says
+            # "percentage", so printing it unconditionally told a tokens-mode
+            # deployment that compaction fires at 35% of a 1M window when it
+            # actually fires at 200k, contradicting /status and /usage. The
+            # trigger from context stats is the runtime-resolved one (already
+            # clamped to the model's context), so it is preferred over the
+            # raw setting.
+            mode = str(settings.get("compact_threshold_mode") or "tokens")
+            trigger_tokens = ctx.get("compact_trigger_tokens") or settings.get(
+                "compact_threshold_tokens"
+            )
+            threshold = settings.get("compact_threshold")
+            if mode == "tokens" and trigger_tokens:
+                mode_line += f" (threshold {fmt_tokens(trigger_tokens)} tokens)"
+            elif mode == "percentage" and threshold:
+                mode_line += f" (threshold {int(threshold * 100)}%)"
         lines.append(mode_line)
 
         default_tools = _string_set_result(tools_data.get("default_tools"))
