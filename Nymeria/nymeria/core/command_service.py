@@ -5577,8 +5577,34 @@ class _CommandExecutor(
                 override_lines.append(f"  disabled: {', '.join(sorted(disabled))}")
             if extra_enabled:
                 override_lines.append(f"  enabled: {', '.join(sorted(extra_enabled))}")
+            # An llm_config entry is nullable and null means inherit, so the
+            # non-null ones ARE the overrides. Leaving them out let a thread
+            # pinned to another model, provider or reasoning effort report
+            # "none", which is the worst answer from the section a user reads
+            # when one thread behaves unlike the rest (same family as #236).
+            llm_overrides = {
+                key: value
+                for key, value in _dict_result(thread_cfg.get("llm_config")).items()
+                if value is not None
+            }
+            if llm_overrides:
+                rendered = ", ".join(f"{k}={v}" for k, v in sorted(llm_overrides.items()))
+                override_lines.append(f"  llm: {rendered}")
+            sequential = thread_cfg.get("sequential_tool_execution")
+            if sequential is not None:
+                override_lines.append(
+                    f"  sequential tools: {'on' if sequential else 'off'}"
+                )
         if not override_lines:
-            override_lines.append("  none (using global defaults)")
+            # Backstop: the config's own verdict wins over this list. Whatever
+            # this section has not learned to name, it must not answer "none"
+            # against a config that says otherwise.
+            if thread_cfg and thread_cfg.get("has_customizations"):
+                override_lines.append(
+                    "  set, but not itemized here (see /thread config)"
+                )
+            else:
+                override_lines.append("  none (using global defaults)")
         lines.extend(override_lines)
 
         lines.append("")
