@@ -1661,7 +1661,12 @@ class CommandBackendClient:
             try:
                 status = TodoStatus(filter_status.lower())
             except ValueError:
-                _raise_http_status(400, f"Invalid status filter '{filter_status}'")
+                valid = ", ".join(member.value for member in TodoStatus)
+                _raise_http_status(
+                    400,
+                    f"Invalid status filter '{filter_status}'. "
+                    f"Valid: {valid}, or 'all'",
+                )
             items = [i for i in todo_list.items if i.status == status]
         else:
             items = todo_list.get_active_todos()
@@ -1848,10 +1853,10 @@ class CommandBackendClient:
             try:
                 status = TodoStatus(str(raw_status).lower())
             except ValueError:
-                _raise_http_status(
-                    400,
-                    f"Invalid status: '{raw_status}'. Use: pending, in_progress, done",
-                )
+                # Was hand-listed; derived now so the copy cannot drift from
+                # the enum the value is actually validated against.
+                valid = ", ".join(member.value for member in TodoStatus)
+                _raise_http_status(400, f"Invalid status: '{raw_status}'. Use: {valid}")
         clear_schedule = bool(patch.get("clear_schedule"))
         clear_recurrence = bool(patch.get("clear_recurrence"))
         recurrence = None
@@ -5288,7 +5293,12 @@ class _CommandExecutor(
             try:
                 type_filter = ActivityType(activity_type_str)
             except ValueError:
-                return command_error(f"Invalid activity type: {activity_type_str}")
+                # Derived, not hand-listed: a closed enum knows its own members,
+                # and a refusal that withholds them makes the caller guess.
+                valid = ", ".join(member.value for member in ActivityType)
+                return command_error(
+                    f"Invalid activity type: {activity_type_str}. Valid types: {valid}"
+                )
 
         log = get_activity_log()
         entries = log.get_entries(
