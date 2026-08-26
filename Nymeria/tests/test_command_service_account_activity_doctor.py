@@ -268,6 +268,39 @@ def _cell_count(row: str) -> int:
     return len(re.findall(r"(?<!\\)\|", row))
 
 
+def test_invalid_activity_type_names_the_valid_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal over a closed enum must say what the enum accepts.
+
+    The set is small, fixed and known at the moment of refusal, so making the
+    user guess is a choice. The sibling refusal one line up in the same handler
+    already names the exact usage ("Unknown option `--limit`. Usage: ..."), and
+    the TODO status refusal already lists its values, so this was the outlier.
+    Derived from the enum rather than hand-listed, so it cannot drift.
+    """
+    from nymeria.core.activity_log import ActivityType
+
+    class _FakeLog:
+        def get_entries(self, *a, **k):
+            return []
+
+    monkeypatch.setattr(
+        "nymeria.core.activity_log.get_activity_log",
+        lambda: _FakeLog(),
+    )
+
+    result = run(
+        CommandService().execute(_ctx(), "/activity list --type bogus_type")
+    )
+
+    assert result.success is False
+    assert "bogus_type" in result.markdown
+    # Every accepted value is offered, and they come from the enum itself.
+    for member in ActivityType:
+        assert member.value in result.markdown, f"{member.value} not offered"
+
+
 def test_activity_list_rejects_unknown_type(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeLog:
         def get_entries(self, *a, **k):
