@@ -356,6 +356,18 @@ services:
       SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
       SLACK_RESPOND_MODE: ${SLACK_RESPOND_MODE:-mention}
       SLACK_SHOW_TOOL_EVENTS: ${SLACK_SHOW_TOOL_EVENTS:-false}
+      # Twitch: the twitch_* tools execute API-side (direct Helix with their
+      # own OAuth mint) and read credentials + channel from settings HERE; the
+      # twitch-bot container is a thin relay and holds only its own copy.
+      # See docs/chat-apps/twitch-bot.md.
+      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
+      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
+      TWITCH_BOT_ACCESS_TOKEN: ${TWITCH_BOT_ACCESS_TOKEN:-}
+      TWITCH_BOT_REFRESH_TOKEN: ${TWITCH_BOT_REFRESH_TOKEN:-}
+      TWITCH_BOT_USER_ID: ${TWITCH_BOT_USER_ID:-}
+      TWITCH_BROADCASTER_TOKEN: ${TWITCH_BROADCASTER_TOKEN:-}
+      TWITCH_BROADCASTER_REFRESH_TOKEN: ${TWITCH_BROADCASTER_REFRESH_TOKEN:-}
+      TWITCH_CHANNEL: ${TWITCH_CHANNEL:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}

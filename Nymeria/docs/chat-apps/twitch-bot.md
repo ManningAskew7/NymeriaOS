@@ -133,6 +133,13 @@ docker compose --profile twitch --env-file .env.docker up -d
 docker logs nymeria-twitch-bot --tail 20
 ```
 
+The `TWITCH_*` credentials feed TWO services: the `twitch-bot` thin client
+(connection + !commands) and the `api` service, where the `twitch_*` tools
+actually execute. Both env blocks are wired in `docker-compose.yml`; if the
+api container predates them, recreate it (`up -d api`, not `restart`, which
+keeps old env) or `twitch_send` fails with "TWITCH_CHANNEL is not
+configured" while the bot itself looks healthy.
+
 Outside Docker: `python3 run.py twitch-bot --api-url http://localhost:8000`
 (requires `pip install 'nymeriaos[twitch]'` and `NYMERIA_SERVICE_TOKEN`).
 
