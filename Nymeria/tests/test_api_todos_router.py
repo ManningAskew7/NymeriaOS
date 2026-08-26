@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
 from nymeria.api.routers.todos import _reschedule_recurring_done
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.todo_manager import TodoList, TodoManager, TodoStatus
@@ -43,9 +44,21 @@ def _scheduled_row_count(data_dir: Path, todo_id: str) -> int:
     return row[0]
 
 
+def _scheduled_row_time(data_dir: Path, todo_id: str) -> datetime:
+    """The armed slot as the ticker's ``get_due`` sees it, not as the JSON says."""
+    with sqlite3.connect(data_dir / "todo_schedule.db") as conn:
+        row = conn.execute(
+            "SELECT scheduled_for FROM scheduled_todos WHERE todo_id = ?",
+            (todo_id,),
+        ).fetchone()
+    assert row is not None, "TODO fell out of the schedule index"
+    return datetime.fromtimestamp(row[0], timezone.utc)
+
+
 def test_reschedule_recurring_done_adopts_and_pins_month_origin(
     tmp_path: Path,
     api_client_builder,
+    monkeypatch,
 ):
     """The REST complete / PATCH-to-done reschedule path (shared with the
     slash-command completion) must derive month-end slots from a stable origin,
@@ -54,6 +67,15 @@ def test_reschedule_recurring_done_adopts_and_pins_month_origin(
     _client(tmp_path, api_client_builder)  # initialises settings/data_dir
     tm = TodoManager(tmp_path)
     jan31 = datetime(2026, 1, 31, 11, 0, tzinfo=timezone.utc)
+    # Freeze the clock mid-September: the next origin-pinned slot (Sep 30) is
+    # CLAMPED (origin day 31), so the origin-vs-creep arithmetic below stays
+    # discriminating on every date this suite runs, not only in clamped
+    # months. Unfrozen, the expected slots drift with the wall clock and in
+    # six months of the year the creep implementation gives the same answer.
+    frozen_now = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "nymeria.core.todo_constants.utc_now", lambda: frozen_now
+    )
     with tm.atomic_update("owner") as todo_list:
         created = todo_list.add_item(
             "Month-end report",
@@ -68,17 +90,39 @@ def test_reschedule_recurring_done_adopts_and_pins_month_origin(
         item = todo_list.get_item(todo_id)
         _reschedule_recurring_done(todo_list, item, todo_id)
         first_slot = item.scheduled_for
+        # Deterministic under the frozen clock: the first future slot in the
+        # jan31 monthly series is Sep 30 (origin day 31 clamped to 30).
+        assert first_slot == datetime(2026, 9, 30, 11, 0, tzinfo=timezone.utc)
         # Origin adopted from the first slot (the ship-blocker fix): before, the
         # REST path never set recurrence_anchor.
         assert item.recurrence_anchor == jan31
 
-    # Completing again advances the slot but must NOT re-adopt the origin to the
-    # clamped slot, so future slots stay pinned to the Jan-31 series.
+    # Completing again with no intervening run recomputes the SAME slot: the
+    # anchor is the occurrence just completed (last_execution), so a second
+    # "done" for one occurrence no longer consumes a second slot. Before the
+    # 2026-08-26 anchor fix this advanced again, which is the same arithmetic
+    # that ate a day whenever the ticker's re-arm got there first.
     with tm.atomic_update("owner") as todo_list:
         item = todo_list.get_item(todo_id)
         _reschedule_recurring_done(todo_list, item, todo_id)
         assert item.recurrence_anchor == jan31
-        assert item.scheduled_for != first_slot
+        assert item.scheduled_for == first_slot
+
+    # A real second occurrence (the ticker fired first_slot and stamped it as
+    # last_execution) does advance, by exactly one calendar month, and must NOT
+    # re-adopt the origin to the clamped slot: the series stays pinned to the
+    # Jan-31 origin so month-end slots cannot creep downward.
+    with tm.atomic_update("owner") as todo_list:
+        item = todo_list.get_item(todo_id)
+        item.last_execution = first_slot
+        _reschedule_recurring_done(todo_list, item, todo_id)
+        assert item.recurrence_anchor == jan31
+        # Origin-pinned: the slot after Sep 30 is Oct 31 (origin day 31).
+        # The clamp-creep this test guards (origin re-adopted from the
+        # clamped slot, or anchor plus one month) lands Oct 30 instead.
+        assert item.scheduled_for == datetime(
+            2026, 10, 31, 11, 0, tzinfo=timezone.utc
+        )
 
 
 def test_paused_todo_state_is_wire_visible_and_done_does_not_resume(
@@ -313,6 +357,54 @@ def test_patch_to_done_reschedules_recurring_todo(
     assert body["last_execution"] is not None
     # Still scheduled after the rollover.
     assert _scheduled_row_count(tmp_path, todo_id) == 1
+
+
+def test_patch_to_done_after_ticker_rearm_does_not_consume_the_armed_slot(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The REST done-path shares the late-completion defect with the tool path.
+
+    Once the ticker has re-armed a recurring TODO (``scheduled_for`` already at
+    day N+1, ``last_execution`` at the day N occurrence just run), a PATCH to
+    ``done`` anchored on ``scheduled_for`` advanced to day N+2 and silently ate
+    day N+1. The anchor is the occurrence being completed, so the armed slot
+    must survive untouched. Covers ``POST /todos/{id}/complete`` too: both call
+    ``_reschedule_recurring_done``.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+    tm = TodoManager(tmp_path)
+
+    day_n = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=3)
+    day_n_plus_1 = day_n + timedelta(days=1)
+    with tm.atomic_update("owner") as todo_list:
+        created = todo_list.add_item(
+            "Hound Alex about his meds",
+            scheduled_for=day_n_plus_1,
+            thread_id="thread-1",
+            recurrence="1d",
+        )
+        assert created is not None
+        created.last_execution = day_n
+    todo_id = created.id
+
+    patched = client.patch(
+        f"/todos/{todo_id}",
+        headers=headers,
+        json={"status": "done"},
+    )
+
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["status"] == "pending"
+    stored = tm.get_todos("owner").get_item(todo_id)
+    assert stored is not None
+    assert stored.scheduled_for == day_n_plus_1
+    assert stored.last_execution == day_n
+    assert _scheduled_row_count(tmp_path, todo_id) == 1
+    assert _scheduled_row_time(tmp_path, todo_id) == day_n_plus_1
 
 
 def test_reschedule_recurring_done_rolls_forward_and_records_anchor():

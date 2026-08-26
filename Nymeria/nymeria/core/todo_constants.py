@@ -10,8 +10,8 @@ from typing import Optional, Union
 
 from dateutil.relativedelta import relativedelta
 
-from .time_utils import parse_duration
-from .todo_manager import TodoStatus
+from .time_utils import parse_duration, utc_now
+from .todo_manager import TodoItem, TodoStatus
 
 
 # Status icons for display
@@ -226,7 +226,7 @@ def calculate_next_recurrence_time(
         return None
 
     anchor = _ensure_aware_utc(anchor_time)
-    baseline = _ensure_aware_utc(now) if now is not None else datetime.now(timezone.utc)
+    baseline = _ensure_aware_utc(now) if now is not None else utc_now()
 
     if isinstance(delta, relativedelta) and origin is not None:
         return _next_month_slot_from_origin(
@@ -248,6 +248,52 @@ def calculate_next_recurrence_time(
             while next_time <= baseline:
                 next_time = next_time + delta
     return next_time
+
+
+def resolve_done_recurrence_anchor(item: Optional[TodoItem]) -> datetime:
+    """Return the OCCURRENCE a "done" transition should advance the series from.
+
+    Every done-path (the ``nym_todo`` tool and the MCP completion, the REST
+    complete / PATCH-to-done endpoints, and the ``/todos complete`` command)
+    resolves its anchor here so the four cannot drift apart. Order:
+    ``last_execution``, then ``scheduled_for``, then now.
+
+    ``last_execution`` comes first because the schedule row and
+    ``scheduled_for`` have TWO writers for one occurrence. The ticker re-arms at
+    the end of every successful run (``Ticker._handle_recurrence``, anchored on
+    its own poll-time snapshot), and the human confirming late makes the agent
+    mark the same occurrence done afterwards. Anchoring on the row the ticker
+    just advanced turned day N+1 into day N+2 and consumed day N+1 without
+    dispatching it: five medication reminders were silently skipped in
+    production before 2026-08-26. ``last_execution`` names the slot that
+    actually ran, so it does not move under the second writer.
+
+    Both orderings then land the same slot, which is what a double-writer
+    design needs. Post-finalize: ``last_execution`` is day N, one interval is
+    day N+1, already the armed slot, so a late done is a no-op. Pre-finalize
+    (mid-turn): ``last_execution`` is still day N-1, one interval lands on day
+    N which is already past, and ``calculate_next_recurrence_time``'s
+    skip-forward normalizes it to day N+1. Idempotent by construction rather
+    than by luck.
+
+    Two anchor sources it deliberately tolerates:
+
+    - ``todo_manager.clear_todo_schedule`` writes ``last_execution=utc_now()``
+      (a completion time, not a slot), but no recurring TODO with a usable
+      recurrence can reach it. See the proof comment at that writer.
+    - A resumed TODO (#154 / #247 auto-pause, or any explicit reschedule)
+      carries a ``last_execution`` older than its new ``scheduled_for``,
+      because the resume writes only the schedule. Advancing from the stale
+      slot is then more than one interval behind, so skip-forward still lands
+      the next FUTURE slot, keeping the original cadence rather than
+      re-anchoring on the operator's new time. It never skips an occurrence.
+    """
+    if item is not None:
+        if item.last_execution is not None:
+            return _ensure_aware_utc(item.last_execution)
+        if item.scheduled_for is not None:
+            return _ensure_aware_utc(item.scheduled_for)
+    return utc_now()
 
 
 def compute_recurrence_reschedule(

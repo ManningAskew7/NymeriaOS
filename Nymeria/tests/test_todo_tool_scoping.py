@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -8,6 +8,7 @@ import pytest
 from nymeria.core.activity_log import ActivityType
 from nymeria.core.time_utils import utc_now
 from nymeria.core.todo_manager import TodoManager, TodoStatus
+from nymeria.core.todo_schedule_db import TodoScheduleDB
 from nymeria.tools import todo as todo_tools
 
 
@@ -147,6 +148,166 @@ def test_nym_todo_recurring_done_preserves_scheduled_anchor(
     assert updated.status == TodoStatus.PENDING
     assert updated.scheduled_for == scheduled_anchor + delta
     assert updated.last_execution == scheduled_anchor
+
+
+def _seed_rearmed_recurring(
+    manager: TodoManager,
+    schedule_db: TodoScheduleDB,
+    *,
+    slot: datetime,
+    last_execution: datetime | None,
+):
+    """Seed one daily recurring TODO plus its schedule-index row at ``slot``."""
+    with manager.atomic_update("owner") as todo_list:
+        recurring = todo_list.add_item(
+            "Hound Alex about his meds",
+            scheduled_for=slot,
+            thread_id="thread-a",
+            recurrence="1d",
+        )
+        assert recurring is not None
+        recurring.last_execution = last_execution
+    schedule_db.add_scheduled(
+        todo_id=recurring.id,
+        user_id="owner",
+        scheduled_for=slot,
+        task_preview="Hound Alex about his meds",
+        thread_id="thread-a",
+    )
+    return recurring.id
+
+
+def _row_time(schedule_db: TodoScheduleDB, todo_id: str) -> datetime:
+    entry = schedule_db.get_entry(todo_id)
+    assert entry is not None, "TODO fell out of the schedule index"
+    return datetime.fromtimestamp(entry.scheduled_for, timezone.utc)
+
+
+def test_nym_todo_recurring_done_after_ticker_rearm_keeps_the_armed_slot(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A late "done" must not advance a schedule the ticker already advanced.
+
+    The ticker re-arms on every successful run (``Ticker._handle_recurrence``),
+    so an agent that marks the occurrence done AFTER the turn finalized is a
+    SECOND writer for the SAME occurrence. Anchoring on the schedule row (or on
+    ``item.scheduled_for``, which the re-arm moved too) advanced day N+1 to day
+    N+2 and consumed day N+1 without ever dispatching it: five medication
+    reminders were silently skipped in production before 2026-08-26.
+    """
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: schedule_db)
+
+    day_n = utc_now().replace(microsecond=0) - timedelta(hours=3)
+    day_n_plus_1 = day_n + timedelta(days=1)
+    todo_id = _seed_rearmed_recurring(
+        manager, schedule_db, slot=day_n_plus_1, last_execution=day_n
+    )
+
+    result = todo_tools.nym_todo.func(
+        todo_id=todo_id,
+        status="done",
+        notes="confirmed taken, 50 minutes late",
+        config=_config("thread-a"),
+    )
+
+    updated = manager.get_todos("owner").get_item(todo_id)
+    assert result.startswith(f"[Updated]: TODO {todo_id}")
+    assert updated.status == TodoStatus.PENDING
+    # Day N+1 survives, in the item AND in the index the ticker actually polls.
+    assert updated.scheduled_for == day_n_plus_1
+    assert updated.last_execution == day_n
+    assert _row_time(schedule_db, todo_id) == day_n_plus_1
+
+
+def test_nym_todo_recurring_done_before_ticker_rearm_lands_the_same_slot(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The mid-turn ordering reaches the SAME slot as the late one.
+
+    Marking done during the scheduled turn leaves ``last_execution`` at day N-1
+    (the previous run stamped it) and ``scheduled_for`` at the day N slot that
+    is currently firing. Advancing from day N-1 lands on day N, which is already
+    past, so ``calculate_next_recurrence_time``'s skip-forward normalizes it to
+    day N+1: the same answer the post-finalize ordering gives, which is what
+    makes the two writers idempotent instead of additive.
+
+    Teeth: this pins the advance HAPPENING in the mid-turn ordering (red if
+    the done-path stops rescheduling). It cannot discriminate the anchor
+    choice, because here both anchors land the same slot by design; the
+    late-done test above and the frozen-clock origin test in
+    test_api_todos_router.py carry that regression.
+    """
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: schedule_db)
+
+    day_n = utc_now().replace(microsecond=0) - timedelta(minutes=3)
+    todo_id = _seed_rearmed_recurring(
+        manager,
+        schedule_db,
+        slot=day_n,
+        last_execution=day_n - timedelta(days=1),
+    )
+
+    todo_tools.nym_todo.func(
+        todo_id=todo_id,
+        status="done",
+        config=_config("thread-a"),
+    )
+
+    updated = manager.get_todos("owner").get_item(todo_id)
+    assert updated.status == TodoStatus.PENDING
+    assert updated.scheduled_for == day_n + timedelta(days=1)
+    assert updated.last_execution == day_n - timedelta(days=1)
+    assert _row_time(schedule_db, todo_id) == day_n + timedelta(days=1)
+
+
+def test_nym_todo_done_on_paused_schedule_does_not_resume(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """#154: "done" on an auto-paused recurring TODO must not re-arm it.
+
+    The reschedule would write ``scheduled_for``, and ``update_item``'s
+    resume-clear would then erase the pause marker and the failure streak:
+    completion must not be a silent resume. Mirrors the guards the REST
+    complete path and ``/todos complete`` already carry, which this tool
+    path had drifted from.
+    """
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: schedule_db)
+
+    day_n = utc_now().replace(microsecond=0) - timedelta(hours=3)
+    day_n_plus_1 = day_n + timedelta(days=1)
+    todo_id = _seed_rearmed_recurring(
+        manager, schedule_db, slot=day_n_plus_1, last_execution=day_n
+    )
+    paused_at = utc_now().replace(microsecond=0)
+    with manager.atomic_update("owner") as todo_list:
+        todo_list.get_item(todo_id).schedule_paused_at = paused_at
+
+    result = todo_tools.nym_todo.func(
+        todo_id=todo_id,
+        status="done",
+        config=_config("thread-a"),
+    )
+
+    updated = manager.get_todos("owner").get_item(todo_id)
+    assert result.startswith(f"[Updated]: TODO {todo_id}")
+    # Completed as DONE with the pause intact: no PENDING flip, no re-arm,
+    # no erased pause marker. Resume stays an explicit reschedule.
+    assert updated.status == TodoStatus.DONE
+    assert updated.schedule_paused_at == paused_at
+    assert updated.scheduled_for == day_n_plus_1
+    assert updated.last_execution == day_n
 
 
 def test_todo_complete_internal_reschedules_recurring(

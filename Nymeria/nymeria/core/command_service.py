@@ -1778,10 +1778,12 @@ class CommandBackendClient:
         from ..api.routers.todos import (
             _get_todo_schedule_db,
             _raise_if_todo_executing,
-            _recurrence_anchor,
             _todo_to_response,
         )
-        from .todo_constants import compute_recurrence_reschedule
+        from .todo_constants import (
+            compute_recurrence_reschedule,
+            resolve_done_recurrence_anchor,
+        )
         from .todo_manager import TodoManager, TodoStatus
 
         target_user_id = self._checked_user_id(user_id)
@@ -1811,7 +1813,10 @@ class CommandBackendClient:
             if not todo_list.complete_item(todo_id):
                 _raise_http_status(404, f"TODO '{todo_id}' not found")
             if has_recurrence:
-                recurrence_anchor = _recurrence_anchor(item)
+                # The occurrence being completed, not this row's current
+                # scheduled_for: the ticker's re-arm may already have moved
+                # that past it (see resolve_done_recurrence_anchor).
+                recurrence_anchor = resolve_done_recurrence_anchor(item)
                 next_execution, origin_to_persist = compute_recurrence_reschedule(
                     has_recurrence,
                     recurrence_anchor,

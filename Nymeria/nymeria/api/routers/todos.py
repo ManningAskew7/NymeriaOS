@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import Settings
 from ...core.accounts import AuthenticatedUser
-from ...core.time_utils import ensure_aware_utc, parse_future_scheduled_time, utc_now
+from ...core.time_utils import parse_future_scheduled_time
 from ...core.todo_constants import (
     STATUS_ORDER,
     compute_recurrence_reschedule,
+    resolve_done_recurrence_anchor,
     validate_recurrence,
 )
 from ...core.todo_manager import TodoItem, TodoList, TodoManager, TodoStatus
@@ -53,12 +54,6 @@ def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
     return result
 
 
-def _recurrence_anchor(item: TodoItem | None) -> datetime:
-    if item and item.scheduled_for:
-        return ensure_aware_utc(item.scheduled_for)
-    return utc_now()
-
-
 def _reschedule_recurring_done(
     todo_list: TodoList,
     item: TodoItem,
@@ -68,10 +63,14 @@ def _reschedule_recurring_done(
 
     ``item`` is the live (in-list) TODO that was marked done; when it carries a
     recurrence and a future slot exists, it is rescheduled to that slot as a
-    PENDING item and the completion anchor is recorded in ``last_execution``.
+    PENDING item and the occurrence anchor is recorded in ``last_execution``.
     No-op when there is no recurrence or no future slot. ``update_item`` mutates
     the same object ``item`` references, so the caller's reference is updated in
     place.
+
+    The anchor is the shared ``resolve_done_recurrence_anchor``: the occurrence
+    being completed, NOT this row's current ``scheduled_for``, which the
+    ticker's own re-arm may already have moved past it.
     """
     if not item.recurrence:
         return
@@ -82,7 +81,7 @@ def _reschedule_recurring_done(
         # pause marker and the failure streak). The TODO completes as done
         # with the pause intact; resume stays an explicit reschedule.
         return
-    recurrence_anchor = _recurrence_anchor(item)
+    recurrence_anchor = resolve_done_recurrence_anchor(item)
     next_execution, origin_to_persist = compute_recurrence_reschedule(
         item.recurrence, recurrence_anchor, item.recurrence_anchor
     )
