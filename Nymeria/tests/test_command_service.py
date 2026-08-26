@@ -29,6 +29,7 @@ from nymeria.core.command_forms import (
     radio_field,
     render_outcome,
     search_field,
+    table_cell,
     text_field,
 )
 from nymeria.core.command_service import (
@@ -6094,6 +6095,104 @@ def test_thread_list_columns_stay_aligned_when_ids_are_long() -> None:
         assert row[pin_col] == ("*" if pinned else " ")
         assert row[title_col:].startswith(title)
         assert row[platform_col:].startswith(platform)
+
+
+def test_thread_list_bounds_the_id_column_against_one_absurd_id() -> None:
+    """One pathological id must overflow its own row, not widen every row.
+
+    Fitting the column to the widest id is what keeps the header honest, but
+    unbounded it hands a single 200-character id a 200-character column and
+    every other row inherits it, which on a chat surface is a wall of padding
+    and can eat the per-surface output budget outright.
+    """
+    from nymeria.core.command_executor_threads import _format_thread_list
+
+    absurd = "x" * 200
+    thread_list = [
+        {
+            "thread_id": absurd,
+            "title": "Pathological",
+            "updated_at": "2026-05-10T12:00:00Z",
+            "platform": "cli",
+        },
+        {
+            "thread_id": "68f7b616",
+            "title": "Ordinary",
+            "updated_at": "2026-05-10T11:00:00Z",
+            "platform": "desktop",
+        },
+    ]
+
+    lines = _format_thread_list(thread_list, active_thread_id=None, teams=[])
+    header = next(line for line in lines if line.endswith("Platform"))
+    ordinary = next(line for line in lines if "Ordinary" in line)
+
+    # The bound holds: the table does not inherit the absurd id's width.
+    assert len(header) < 120, f"header grew to {len(header)} chars"
+    # And the ordinary row still lines up with the header it is printed under.
+    assert ordinary[header.index("Title"):].startswith("Ordinary")
+
+
+def test_thread_list_sections_share_one_column_layout() -> None:
+    """Team, pinned and recent are sections of ONE table, not three tables.
+
+    The width is computed once for the whole listing precisely so a team of
+    short ids and a recent list of UUIDs do not print two different column
+    layouts under the same heading, which reads as a rendering fault.
+    """
+    from nymeria.core.command_executor_threads import _format_thread_list
+
+    thread_list = [
+        {
+            "thread_id": "ops1",
+            "title": "Team member",
+            "updated_at": "2026-05-10T12:00:00Z",
+            "platform": "callable",
+        },
+        {
+            "thread_id": "a4c1f0e2-7b6d-4f39-9c58-2ee1d0b7a3c4",
+            "title": "Ungrouped long",
+            "updated_at": "2026-05-10T11:00:00Z",
+            "platform": "desktop",
+        },
+    ]
+
+    lines = _format_thread_list(
+        thread_list,
+        active_thread_id=None,
+        teams=[{"id": "ops", "name": "Ops", "thread_ids": ["ops1"]}],
+    )
+
+    headers = [line.strip() for line in lines if line.endswith("Platform")]
+    assert len(headers) >= 2, "expected a header per section"
+    assert len(set(headers)) == 1, f"sections disagree on layout: {set(headers)}"
+
+
+def test_table_cell_truncates_before_escaping() -> None:
+    """A cut must never land between a backslash and the pipe it escapes.
+
+    Escaping first makes the escape sequence part of the length being cut, so
+    a pipe sitting on the boundary loses its partner and the cell ends on a
+    dangling backslash.
+    """
+    value = "a" * 79 + "|"
+
+    cell = table_cell(value, limit=80)
+
+    assert cell == "a" * 79 + "\\|"
+    assert not cell.endswith("\\"), "escape was cut in half"
+
+
+def test_table_cell_renders_falsy_values_that_are_not_none() -> None:
+    """0 and False are values a cell must show, not blanks.
+
+    A count column reading empty at zero is a cell that lies, and `str(value
+    or "")` blanks every falsy value alike.
+    """
+    assert table_cell(0) == "0"
+    assert table_cell(False) == "False"
+    assert table_cell(None) == ""
+    assert table_cell("") == ""
 
 
 def test_in_process_branch_thread_refuses_while_processing() -> None:

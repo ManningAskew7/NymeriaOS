@@ -221,7 +221,11 @@ def test_activity_list_keeps_its_columns_when_a_message_holds_a_pipe(
     shell pipeline is the single most likely thing a developer pastes into a
     chat. Unescaped, `ps aux | grep nymeria` splits one row into five cells, so
     the message spills into a phantom column and every row after the pipe reads
-    against the wrong header. Newlines end the row outright.
+    against the wrong header.
+
+    The newline half was already handled before this fix and is asserted here
+    only to keep it that way; the pipe half is the defect this test was written
+    for.
     """
     from nymeria.core.activity_log import ActivityType
 
