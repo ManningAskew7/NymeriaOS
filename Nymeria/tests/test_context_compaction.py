@@ -249,6 +249,62 @@ def test_manual_compact_start_callback_waits_for_message_count_check():
     assert started == []
 
 
+def test_manual_compact_marks_a_short_thread_as_declined_not_failed():
+    """The manual path's benign no-op must carry the ``declined`` flag.
+
+    The command renderers split on that flag: declined is an informational
+    "Skipped", everything else is reported as a compaction FAILURE. ``compact_now``
+    is the function both ``/compact`` and ``POST /threads/{id}/compact`` enter, so
+    an unflagged short thread (the commonest benign outcome there is) reads to the
+    user as though compaction had broken.
+
+    This asserts the PRODUCER rather than the renderer on purpose. The renderer
+    tests in ``test_command_service.py`` hand the fake API a result dict, so they
+    pass whichever sites do or do not set the flag, and they did: the flag first
+    landed on the overflow-recovery path, which no renderer reads, while this one
+    went unmarked.
+    """
+    agent = SimpleNamespace(
+        settings=SimpleNamespace(compact_keep_messages=3),
+        _default_async_graph=_StubAsyncGraph([HumanMessage(content="one")]),
+        _flush_memories_before_trim=lambda *_args: None,
+    )
+    manager = CompactionManager(agent)  # type: ignore[bad-argument-type]
+
+    result = asyncio.run(manager.compact_now("thread-a", "user-a"))
+
+    assert result["success"] is False
+    assert result["declined"] is True
+
+
+def test_compaction_failure_is_not_marked_declined():
+    """The other half of the contract, so the flag cannot become a constant.
+
+    A summary that could not be generated is a failure, and the renderers must be
+    able to tell it apart from a thread that simply had nothing to compact.
+    """
+    agent = SimpleNamespace(
+        settings=SimpleNamespace(compact_keep_messages=2),
+        _default_async_graph=_StubAsyncGraph([
+            HumanMessage(content="one"),
+            HumanMessage(content="two"),
+            HumanMessage(content="three"),
+        ]),
+        _flush_memories_before_trim=lambda *_args: None,
+    )
+    manager = CompactionManager(agent)  # type: ignore[bad-argument-type]
+
+    async def failing_run(thread_id, user_id, *, auto_resumed, priority=None):
+        return {"success": False, "reason": "Failed to generate summary"}
+
+    manager._run_compact_turn_and_prune = failing_run  # type: ignore[method-assign]
+
+    result = asyncio.run(manager.compact_now("thread-a", "user-a"))
+
+    assert result["success"] is False
+    assert result.get("declined") is not True
+
+
 def test_manual_compact_start_callback_runs_when_compaction_starts():
     agent = SimpleNamespace(
         settings=SimpleNamespace(compact_keep_messages=3),

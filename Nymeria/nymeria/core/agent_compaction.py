@@ -729,8 +729,13 @@ class CompactionManager:
 
         min_messages = agent.settings.compact_keep_messages
         if msg_count_before < min_messages:
+            # DECLINED, not failed. This is the decline the command renderers
+            # actually see: /compact and POST /threads/{id}/compact both enter
+            # here, so a short thread is the common benign outcome and must not
+            # be dressed up as a compaction failure.
             return {
                 "success": False,
+                "declined": True,
                 "reason": f"Not enough messages ({msg_count_before}, need {min_messages})",
             }
 
@@ -864,8 +869,12 @@ class CompactionManager:
 
         min_messages = agent.settings.compact_keep_messages
         if msg_count_before < min_messages:
+            # Declined, same contract as the manual path above: the flag is what
+            # every consumer keys on, so a benign no-op carries it wherever it
+            # is produced rather than only where a renderer happens to read it.
             return {
                 "success": False,
+                "declined": True,
                 "reason": f"Not enough messages ({msg_count_before}, need {min_messages})",
             }
 
@@ -938,7 +947,12 @@ class CompactionManager:
         msg_count = len(messages)
 
         if msg_count < agent.settings.compact_keep_messages:
-            return {"success": False, "reason": f"Not enough messages ({msg_count})"}
+            # Declined, see compact_now(): benign no-op, not a failure.
+            return {
+                "success": False,
+                "declined": True,
+                "reason": f"Not enough messages ({msg_count})",
+            }
 
         _notify_compaction_started_sync(on_started)
         logger.info(f"Thread {thread_id}: Sync auto-compact starting ({msg_count} messages)")
@@ -1241,9 +1255,10 @@ class CompactionManager:
             messages = state.values.get("messages", [])
             msg_count_before = len(messages)
             if not messages:
-                # DECLINED, not failed: nothing to do is a readout, and the
-                # command surfaces render it as one. Every other success=False
-                # here is a genuine failure and must not be dressed as a skip.
+                # Declined, not failed. Overflow recovery is internal, so no
+                # renderer reads this today; it carries the flag because the
+                # flag is the contract for a benign no-op, and because this
+                # path returns compact_now()'s own result on the happy path.
                 return {
                     "success": False,
                     "declined": True,
@@ -1342,9 +1357,10 @@ class CompactionManager:
             messages = state.values.get("messages", [])
             msg_count_before = len(messages)
             if not messages:
-                # DECLINED, not failed: nothing to do is a readout, and the
-                # command surfaces render it as one. Every other success=False
-                # here is a genuine failure and must not be dressed as a skip.
+                # Declined, not failed. Overflow recovery is internal, so no
+                # renderer reads this today; it carries the flag because the
+                # flag is the contract for a benign no-op, and because this
+                # path returns compact_now()'s own result on the happy path.
                 return {
                     "success": False,
                     "declined": True,
