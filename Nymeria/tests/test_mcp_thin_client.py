@@ -1782,3 +1782,37 @@ def test_collect_docstring_teaches_the_polling_shape():
     chat = " ".join((mcp_server.nymeria_chat.__doc__ or "").split())
     assert "progressToken" in chat
     assert "nymeria_chat_collect" in chat
+
+
+def test_tool_step_status_reflects_an_error_result_rather_than_always_success():
+    """``status`` defaulted to "success" whenever the event carried none, and
+    the backend's ``tool_result`` chunk carries none at all, so the field was a
+    constant: a refused or failed tool call still read as a success to every
+    MCP caller. Found live 2026-08-26, where blocked file_read calls and an
+    unbound chrome_navigate all reported success.
+
+    Nymeria's tools report failure as a result string prefixed ``[Error]``
+    rather than by raising (the convention ``agent_prune`` already keys on),
+    so derive the status from the result and keep an explicit status winning.
+    """
+    transcript = ChatTranscript(thread_id="thread-1")
+    for event in [
+        {"type": "tool_call", "id": "c1", "name": "file_read", "args": {}},
+        {
+            "type": "tool_result",
+            "id": "c1",
+            "name": "file_read",
+            "result": "[Error]: Cannot access credential storage: auth_tokens ...",
+        },
+        {"type": "tool_call", "id": "c2", "name": "file_read", "args": {}},
+        {"type": "tool_result", "id": "c2", "name": "file_read", "result": "alpha\nbeta"},
+        {"type": "tool_call", "id": "c3", "name": "weird", "args": {}},
+        # An explicit status from the producer still wins over the derivation.
+        {"type": "tool_result", "id": "c3", "name": "weird", "result": "[Error]: x", "status": "success"},
+    ]:
+        transcript.add_event(event)
+
+    steps = {step["id"]: step for step in transcript.as_dict()["steps"] if step["type"] == "tool_call"}
+    assert steps["c1"]["status"] == "error"
+    assert steps["c2"]["status"] == "success"
+    assert steps["c3"]["status"] == "success"
