@@ -87,13 +87,16 @@ class MeUpdateRequest(BaseModel):
     display_name: Optional[str] = None
 
 
-TOKEN_HASH_PREFIX_LEN = 8
+# The prefix length and its derivation both live in core beside the record they
+# describe (TokenRecord.hash_prefix); this module had its own copy of the
+# length and its own slice, which is how the command listing came to ask for a
+# field that never existed while this path kept working.
 
 
 def token_info(record: Any) -> TokenInfoResponse:
     """Project a token record without exposing raw token material."""
     return TokenInfoResponse(
-        token_hash_prefix=record.token_hash[:TOKEN_HASH_PREFIX_LEN],
+        token_hash_prefix=record.hash_prefix,
         label=record.label,
         created_at=record.created_at,
         expires_at=record.expires_at,

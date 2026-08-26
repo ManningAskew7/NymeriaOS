@@ -109,12 +109,20 @@ def test_account_current_reports_missing_user(patched_agent) -> None:
 
 
 def test_account_tokens_lists(patched_agent) -> None:
+    # The REAL record, not a SimpleNamespace: this fake used to invent a
+    # `token_hash_prefix` attribute that TokenRecord has never had, so the test
+    # passed against a listing that rendered an empty prefix for every token in
+    # production (found live 2026-08-26).
+    from nymeria.core.accounts import TokenRecord
+
     repo = _FakeAccountsRepo()
     repo.tokens["alice"] = [
-        SimpleNamespace(
-            token_hash_prefix="abcd1234",
+        TokenRecord(
+            token_hash="abcd1234ffffffff",
+            user_id="alice",
             label="laptop",
             created_at="2026-05-01",
+            expires_at="2027-05-01",
             last_used_at="2026-05-17",
             revoked_at="",
         )
@@ -520,3 +528,44 @@ def test_activity_list_speaks_local_time_and_keeps_thread_ids_whole(
     # Both rows stay distinguishable.
     assert "telegram_123456789" in result.markdown
     assert "telegram_987654321" in result.markdown
+
+
+def test_account_tokens_lists_the_prefix_revoke_needs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``/account tokens`` rendered an empty Prefix column for every token.
+
+    It read ``token.token_hash_prefix`` off the ``TokenRecord`` dataclass,
+    which has no such field, so the getattr default won every time. The column
+    is the only place a user learns the value ``/account tokens revoke
+    <hash-prefix>`` requires (minimum four chars), so the listing could not
+    feed its own follow-up action and a leaked token could not be named.
+    Measured live 2026-08-26: 16 tokens, 16 empty prefixes. The REST schema
+    derives it correctly, so only the command path was affected.
+    """
+    from nymeria.core.accounts import TokenRecord
+
+    record = TokenRecord(
+        token_hash="a3f9b1c2deadbeef",
+        user_id="alice",
+        label="desktop",
+        created_at="2026-05-18T10:00:00+00:00",
+        expires_at="2027-05-18T10:00:00+00:00",
+        last_used_at=None,
+        revoked_at=None,
+    )
+    assert record.hash_prefix == "a3f9b1c2"
+    assert len(record.hash_prefix) >= 4  # revoke_token's minimum
+
+    class _Repo:
+        def list_tokens_for_user(self, user_id):
+            return [record]
+
+    monkeypatch.setattr(
+        "nymeria.core.command_service._CommandExecutor._accounts_repo",
+        lambda self: _Repo(),
+    )
+
+    result = run(CommandService().execute(_ctx(), "/account tokens"))
+    assert result.success is True, result.markdown
+    assert "a3f9b1c2" in result.markdown
+    # ...and never the whole hash, which is not a display value.
+    assert "a3f9b1c2deadbeef" not in result.markdown
