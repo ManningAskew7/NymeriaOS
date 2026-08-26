@@ -378,13 +378,21 @@ def _format_thread_config(config: Mapping[str, Any]) -> str:
 def _compact_result_output(
     result: Any, *, data: dict[str, Any] | None
 ) -> CommandOutput:
-    """Render a compaction result at its own level: a refusal is a readout,
-    a completed pass is a success confirmation. ``data`` (the client-state
-    hint) rides along either way."""
+    """Render a compaction result at its own level.
+
+    Three levels, not two. A DECLINE (``declined``: nothing to compact) is a
+    readout and says "Skipped". A completed pass is a success confirmation.
+    Anything else that came back ``success: False`` actually FAILED (the
+    summary could not be generated, no suitable checkpoint, the retained tail
+    failed verification) and is reported as an error: rendering those as an
+    informational skip told a caller whose compaction did not happen that it
+    had. ``data`` (the client-state hint) rides along either way."""
 
     if isinstance(result, Mapping) and result.get("success") is False:
         reason = result.get("reason", "Unknown reason")
-        return command_info(f"Skipped: {reason}", data=data)
+        if result.get("declined"):
+            return command_info(f"Skipped: {reason}", data=data)
+        return command_error(f"Compaction failed: {reason}", data=data)
     removed = _mapping_get(result, "messages_removed", None)
     before = _mapping_get(result, "messages_before", None)
     after = _mapping_get(result, "messages_after", None)

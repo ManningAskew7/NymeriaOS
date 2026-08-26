@@ -1241,7 +1241,14 @@ class CompactionManager:
             messages = state.values.get("messages", [])
             msg_count_before = len(messages)
             if not messages:
-                return {"success": False, "reason": "No messages to compact"}
+                # DECLINED, not failed: nothing to do is a readout, and the
+                # command surfaces render it as one. Every other success=False
+                # here is a genuine failure and must not be dressed as a skip.
+                return {
+                    "success": False,
+                    "declined": True,
+                    "reason": "No messages to compact",
+                }
 
             logger.warning(
                 "Thread %s: Context overflow recovery starting (%s messages)",
@@ -1335,7 +1342,14 @@ class CompactionManager:
             messages = state.values.get("messages", [])
             msg_count_before = len(messages)
             if not messages:
-                return {"success": False, "reason": "No messages to compact"}
+                # DECLINED, not failed: nothing to do is a readout, and the
+                # command surfaces render it as one. Every other success=False
+                # here is a genuine failure and must not be dressed as a skip.
+                return {
+                    "success": False,
+                    "declined": True,
+                    "reason": "No messages to compact",
+                }
 
             logger.warning(
                 "Thread %s: Sync context overflow recovery starting (%s messages)",

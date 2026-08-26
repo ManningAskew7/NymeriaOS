@@ -133,7 +133,15 @@ def _token_ratio(stats: Mapping[str, object]) -> str:
 def _format_compaction_result(result: object) -> CommandResult:
     if isinstance(result, Mapping) and result.get("success") is False:
         reason = result.get("reason", "Unknown reason")
-        return CommandResult.completed(CommandMessage(f"Skipped: {reason}", level="warning"))
+        # Same three-way split as the backend renderer
+        # (``command_executor_threads._compact_result_output``): only a
+        # ``declined`` result is a skip. The rest failed, and warning-level
+        # "Skipped" read as though the compaction had merely been unnecessary.
+        if result.get("declined"):
+            return CommandResult.completed(
+                CommandMessage(f"Skipped: {reason}", level="warning")
+            )
+        return CommandResult.failed(f"Compaction failed: {reason}")
     removed = mapping_get(result, "messages_removed", None)
     before = mapping_get(result, "messages_before", None)
     after = mapping_get(result, "messages_after", None)

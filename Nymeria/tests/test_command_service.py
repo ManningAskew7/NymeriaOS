@@ -5784,6 +5784,60 @@ def test_thread_compact_reports_result_and_context_hint() -> None:
     assert ("compact_thread", ("thread-1",), {"user_id": "alice"}) in api.calls
 
 
+def test_compaction_failure_is_reported_as_a_failure_not_a_readout() -> None:
+    """A compaction that FAILED must not render as a successful readout.
+
+    The backend returns success=False for four different reasons, and only one
+    of them ("No messages to compact") is a decline with nothing to do. The
+    other three are failures: the summary could not be generated, no suitable
+    checkpoint was found, or the rebuilt tail failed verification. All four
+    rendered as level=info with success=True, so a caller that asked to compact
+    a thread and got nothing was told it worked.
+
+    Measured live on a busy thread: "Skipped: Failed to generate summary" came
+    back as success=true, alongside a thread_context_updated hint, while the
+    sibling /thread branch refused the same precondition cleanly.
+    """
+
+    class _FailingCompactApi(FakeCommandApi):
+        async def compact_thread(self, thread_id: str, user_id: str | None = None) -> dict:
+            return {"success": False, "reason": "Failed to generate summary"}
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/thread compact", api=_FailingCompactApi()
+        )
+    )
+
+    assert result.success is False, result.markdown
+    assert "Failed to generate summary" in result.markdown
+
+
+def test_compaction_decline_stays_an_informational_readout() -> None:
+    """The other half: an empty thread genuinely has nothing to compact.
+
+    That is not a failure and must not be dressed as one, which is the reason
+    the renderer treats a refusal as a readout in the first place.
+    """
+
+    class _NothingToCompactApi(FakeCommandApi):
+        async def compact_thread(self, thread_id: str, user_id: str | None = None) -> dict:
+            return {
+                "success": False,
+                "declined": True,
+                "reason": "No messages to compact",
+            }
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(), "/thread compact", api=_NothingToCompactApi()
+        )
+    )
+
+    assert result.success is True, result.markdown
+    assert "No messages to compact" in result.markdown
+
+
 def test_thread_branch_and_top_level_branch_share_handler() -> None:
     service = CommandService()
     api = FakeCommandApi()
