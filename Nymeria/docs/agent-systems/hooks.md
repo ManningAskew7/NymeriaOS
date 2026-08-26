@@ -522,7 +522,10 @@ action can never be authored onto another hook). The template is constrained to 
 fixed two-line frame, `[Time: <interior>]` newline `[Trigger: <interior>]`, with
 non-empty interiors containing no `]` and no newlines; interiors may use
 `{time}` (the wall clock in the user's timezone), `{trigger}` (the resolved
-trigger label), and the standard hook vars. The frame guarantees the
+trigger label: an explicit caller override, else the label the turn's source
+maps to in `prompts.SOURCE_TRIGGER_LABELS`, so a trigger fire reads "Event
+Trigger" and a scheduled TODO reads "Scheduled TODO"), and the standard hook
+vars. The frame guarantees the
 history-strip regex (`agent_history.CONTEXT_PREFIX_PATTERN`) keeps matching, so customized
 metadata never leaks into compaction; the seam also re-validates the RENDERED
 block against the strip pattern and, on any mismatch, dispatch fault, or

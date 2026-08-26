@@ -233,7 +233,12 @@ Ticker finds due scheduled TODO:
 The system prompt is source- and time-invariant: it does not change based on
 whether a turn is user-driven or autonomous, and it embeds no timestamp. Time and
 source are conveyed for every turn via the `[Time:]/[Trigger:]` metadata prepended
-to the human message, which lives in the cache-stable tail. This keeps the
+to the human message, which lives in the cache-stable tail. The `[Trigger:]`
+label NAMES that source ("Scheduled TODO", "Event Trigger", "Watchdog", "User
+Message", ...) from one table, `prompts.SOURCE_TRIGGER_LABELS`, shared with the
+queued-prompt header, so a prompt reads the same whether it started a turn or
+was absorbed into a running one; a caller-supplied trigger label (a dream, a
+spawned or callable thread) overrides it. This keeps the
 system-prompt prefix identical across mixed turns on a thread so the prompt cache
 is not invalidated when the turn source changes. Callable threads with a custom
 system prompt use that prompt alone (focused context, no profile/TODO injection

@@ -44,10 +44,17 @@ _FALLBACK_STATUSES = frozenset({"error", "timeout", "saturated", "illegal"})
 _FALLBACK_NOTE = "fell back to the built-in turn metadata"
 
 
-def _builtin_block(agent, is_self_invoke: bool, trigger_override: Optional[str]) -> str:
+def _builtin_block(
+    agent,
+    is_self_invoke: bool,
+    trigger_override: Optional[str],
+    source: Optional[str] = None,
+) -> str:
     """The legacy built-in block, via the agent facade (test monkeypatch seam)."""
     return agent._get_time_context(
-        is_autonomous=is_self_invoke, trigger_override=trigger_override
+        is_autonomous=is_self_invoke,
+        trigger_override=trigger_override,
+        source=source,
     )
 
 
@@ -212,13 +219,14 @@ def _metadata_hook_context(
 ):
     """The PROMPT_SUBMIT context for the metadata dispatch.
 
-    ``trigger_label`` carries the RESOLVED label (override, else the
-    is_self_invoke-keyed default), so the action's ``{trigger}`` var and any
-    ``fire_conditions`` on ``trigger_label`` see what the block will say.
-    ``is_autonomous`` stays the SOURCE flag, matching every other hook's
-    fire-condition semantics. The context-usage signal is deliberately absent
-    (computing it costs a full LLM-config resolve; the general PROMPT_SUBMIT
-    dispatch that follows still carries it for user hooks).
+    ``trigger_label`` carries the RESOLVED label (override, else the source's
+    label, else the is_self_invoke-keyed default), so the action's
+    ``{trigger}`` var and any ``fire_conditions`` on ``trigger_label`` see what
+    the block will say. ``is_autonomous`` stays the SOURCE flag, matching every
+    other hook's fire-condition semantics. The context-usage signal is
+    deliberately absent (computing it costs a full LLM-config resolve; the
+    general PROMPT_SUBMIT dispatch that follows still carries it for user
+    hooks).
     """
     from .hooks import HookContext, HookEvent
     from .prompts import resolve_trigger_label
@@ -229,7 +237,7 @@ def _metadata_hook_context(
         user_id=user_id,
         is_autonomous=is_autonomous,
         holder_kind=source,
-        trigger_label=resolve_trigger_label(is_self_invoke, trigger_override),
+        trigger_label=resolve_trigger_label(is_self_invoke, trigger_override, source),
         prompt=message,
     )
 
@@ -245,6 +253,7 @@ def _finalize(
     user_id: str,
     is_self_invoke: bool,
     trigger_override: Optional[str],
+    source: Optional[str] = None,
 ) -> Optional[str]:
     """Turn the dispatch result into the metadata block (or a deliberate None).
 
@@ -256,7 +265,7 @@ def _finalize(
     """
     status = slot.get("status")
     if status is None or status in _FALLBACK_STATUSES:
-        return _builtin_block(agent, is_self_invoke, trigger_override)
+        return _builtin_block(agent, is_self_invoke, trigger_override, source)
     text = getattr(outcome, "inject_context", None) if outcome is not None else None
     if not text:
         return None
@@ -266,7 +275,7 @@ def _finalize(
         hm, user_id, definition, thread_id,
         f"rendered turn metadata did not match the history-strip frame; {_FALLBACK_NOTE}",
     )
-    return _builtin_block(agent, is_self_invoke, trigger_override)
+    return _builtin_block(agent, is_self_invoke, trigger_override, source)
 
 
 def prefix_turn_metadata(
@@ -289,11 +298,11 @@ def prefix_turn_metadata(
         # hook_overrides entry, which must work even when pristine).
         metadata: Optional[str] = None
     elif definition is None:
-        metadata = _builtin_block(agent, is_self_invoke, trigger_override)
+        metadata = _builtin_block(agent, is_self_invoke, trigger_override, source)
     else:
         prepared = _prepare_dispatch(agent, hm, definition, thread_id, user_id)
         if prepared is None:
-            metadata = _builtin_block(agent, is_self_invoke, trigger_override)
+            metadata = _builtin_block(agent, is_self_invoke, trigger_override, source)
         else:
             registry, slot = prepared
             ctx = _metadata_hook_context(
@@ -312,6 +321,7 @@ def prefix_turn_metadata(
                 agent, hm, definition, outcome, slot,
                 thread_id=thread_id, user_id=user_id,
                 is_self_invoke=is_self_invoke, trigger_override=trigger_override,
+                source=source,
             )
     return _assemble(metadata, get_autonomous_tail_guidance(is_autonomous), message)
 
@@ -336,11 +346,11 @@ async def aprefix_turn_metadata(
         # hook_overrides entry, which must work even when pristine).
         metadata: Optional[str] = None
     elif definition is None:
-        metadata = _builtin_block(agent, is_self_invoke, trigger_override)
+        metadata = _builtin_block(agent, is_self_invoke, trigger_override, source)
     else:
         prepared = _prepare_dispatch(agent, hm, definition, thread_id, user_id)
         if prepared is None:
-            metadata = _builtin_block(agent, is_self_invoke, trigger_override)
+            metadata = _builtin_block(agent, is_self_invoke, trigger_override, source)
         else:
             registry, slot = prepared
             ctx = _metadata_hook_context(
@@ -359,5 +369,6 @@ async def aprefix_turn_metadata(
                 agent, hm, definition, outcome, slot,
                 thread_id=thread_id, user_id=user_id,
                 is_self_invoke=is_self_invoke, trigger_override=trigger_override,
+                source=source,
             )
     return _assemble(metadata, get_autonomous_tail_guidance(is_autonomous), message)

@@ -101,11 +101,42 @@ TURN_METADATA_TEMPLATE_PATTERN = re.compile(
 )
 
 
+# A turn's logical SOURCE mapped to the human-readable label carried in its
+# `[Trigger: ...]` line. One table for both headers: the fresh-turn block built
+# by `get_time_context` below and the drained queued-prompt block built by
+# `pending_prompt_queue.queued_prompt_header`, so the same prompt reads the
+# same whether it started a turn or was absorbed into a running one. Keys are
+# the `source` values `NymeriaAgent.chat`/`astream` accept (also
+# `PendingPrompt.source`); a source missing here is not an error, each header
+# has its own documented fallback.
+SOURCE_TRIGGER_LABELS = {
+    "ticker": "Scheduled TODO",
+    "user": "User Message",
+    "trigger": "Event Trigger",
+    "callable": "Callable Thread",
+    "mcp": "MCP Client",
+    "watchdog": "Watchdog",
+    "background_bash": "Background Bash",
+    "claude_code": "Claude Code",
+    "hook_continuation": "Hook Continuation",
+    "dream": "Dream",
+}
+
+
 def resolve_trigger_label(
     is_autonomous: bool = False,
     trigger_override: str | None = None,
+    source: str | None = None,
 ) -> str:
     """The human-readable trigger label for a turn's metadata block.
+
+    Resolution order: an explicit ``trigger_override`` (a caller-supplied
+    label such as ``Dream("thread-1")`` or a callable thread's name) wins;
+    otherwise the turn's logical ``source`` maps through
+    ``SOURCE_TRIGGER_LABELS``; otherwise the legacy autonomous/interactive
+    split. The source arm is what stops every autonomous turn announcing
+    itself as "Scheduled TODO": without it a trigger fire (or a background
+    bash wake-up) told the agent it was working a TODO.
 
     Shared by ``get_time_context`` (the built-in block) and the system
     turn-metadata hook seam (which passes the resolved label to the engine as
@@ -113,12 +144,17 @@ def resolve_trigger_label(
     """
     if trigger_override:
         return trigger_override
+    if source:
+        label = SOURCE_TRIGGER_LABELS.get(source)
+        if label:
+            return label
     return "Scheduled TODO" if is_autonomous else "User Message"
 
 
 def get_time_context(
     is_autonomous: bool = False,
     trigger_override: str | None = None,
+    source: str | None = None,
 ) -> str:
     """
     Get current time context in the user's configured timezone.
@@ -126,14 +162,16 @@ def get_time_context(
     Args:
         is_autonomous: If True, this is an autonomous scheduled wake-up
         trigger_override: If provided, use this as the trigger label instead of
-                          the default "User Message" / "Scheduled TODO"
+                          the source-derived or autonomy-derived default
+        source: The turn's logical origin ("trigger", "ticker", "watchdog",
+                ...); labels the turn via ``SOURCE_TRIGGER_LABELS``
 
     Returns:
         Formatted time context string to prepend to messages
     """
     from .time_utils import format_user_time
 
-    trigger = resolve_trigger_label(is_autonomous, trigger_override)
+    trigger = resolve_trigger_label(is_autonomous, trigger_override, source)
 
     return (
         f"[Time: {format_user_time()}]\n"
@@ -145,6 +183,7 @@ def get_full_context_metadata(
     is_autonomous: bool = False,
     rag_context: list | None = None,
     trigger_override: str | None = None,
+    source: str | None = None,
 ) -> str:
     """
     Build full hidden metadata including time, trigger, and RAG context.
@@ -156,6 +195,7 @@ def get_full_context_metadata(
         is_autonomous: If True, this is an autonomous scheduled wake-up
         rag_context: Optional list of ChunkResult objects from RAG search
         trigger_override: If provided, use this as the trigger label
+        source: The turn's logical origin (see ``get_time_context``)
 
     Returns:
         Full context metadata string to prepend to messages
@@ -163,7 +203,11 @@ def get_full_context_metadata(
     parts = []
 
     # Existing time context
-    parts.append(get_time_context(is_autonomous, trigger_override=trigger_override))
+    parts.append(
+        get_time_context(
+            is_autonomous, trigger_override=trigger_override, source=source
+        )
+    )
 
     # RAG context (if enabled and results found)
     if rag_context:
