@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import io
+import logging
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -17,12 +20,18 @@ def _fake_agent(
     provider: str = "openai",
     model: str = "gpt-4o",
 ) -> Any:
-    """Build a minimal agent stub exposing only the surface the function reads."""
+    """Build a minimal agent stub exposing only the surface the function reads.
+
+    ``thread_config_manager`` is stubbed to "no config for this thread" so the
+    pending-fallback-note lookup returns quietly instead of raising into its
+    best-effort handler and logging a warning on every single turn built here.
+    """
     settings = SimpleNamespace(llm_provider=provider, llm_model=model)
     llm_cfg = SimpleNamespace(provider=None, model=None)
     return SimpleNamespace(
         _get_llm_config_for_thread=lambda _tid: llm_cfg,
         settings=settings,
+        thread_config_manager=SimpleNamespace(get_config=lambda _tid: None),
     )
 
 
@@ -334,6 +343,177 @@ def test_image_attachment_incompatible_forced_succeeds(monkeypatch: pytest.Monke
     assert state is not None
     [msg] = state["messages"]
     assert msg.content[1]["type"] == "image_url"
+
+
+def _b64_image(fmt: str, size: tuple[int, int] = (4, 4)) -> str:
+    """Real encoded image bytes, base64'd, so the sniffer sees true magic bytes."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, "white").save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _image_blocks(msg: HumanMessage) -> list[dict[str, Any]]:
+    return [part for part in msg.content if isinstance(part, dict) and part.get("type") == "image_url"]
+
+
+def test_gif_bytes_declared_png_are_relabeled_before_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """A mislabeled GIF is relabeled from its bytes, not from its header.
+
+    Microsoft Graph hands the email trigger a ``contentType`` it never
+    verifies, so a signature GIF labeled ``image/png`` reaches this function
+    verbatim. Anthropic 400s the WHOLE request on the mismatch ("the image
+    appears to be a image/gif image"), and history replays verbatim, so the
+    thread is bricked permanently: one production thread died for 16 days
+    that way. The bytes have to win here, before the block becomes state.
+    """
+    _patch_image_compatibility(monkeypatch)
+    agent = _fake_agent()
+    payload = _b64_image("GIF")
+    image_att = {
+        "file_type": "image",
+        "data_url": f"data:image/png;base64,{payload}",
+        "mime_type": "image/png",
+        "file_name": "signature.png",
+        # Rails set upstream by _sandbox_pending_attachments: a correction
+        # must carry them through, not rebuild the attachment from scratch.
+        "workspace_path": "/workspace/images/signature-abc123.png",
+        "width": 903,
+        "height": 302,
+    }
+
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_streaming_input"):
+        state, _summary, error = prepare_astream_input(
+            cast(Any, agent),
+            message_with_context="new email",
+            thread_id="t1",
+            image_attachments=[cast(Any, image_att)],
+            sandbox_records=None,
+            force_unsupported_attachments=False,
+            is_self_invoke=True,
+        )
+
+    assert error is None
+    assert state is not None
+    [msg] = state["messages"]
+    [block] = _image_blocks(msg)
+    # The declared media type now matches the bytes...
+    assert block["image_url"]["url"].startswith("data:image/gif;base64,")
+    # ...and only the label changed: the payload is byte-identical.
+    assert block["image_url"]["url"].split(",", 1)[1] == payload
+
+    metadata = msg.additional_kwargs["attachments"]
+    assert metadata[0]["mime_type"] == "image/gif"
+    assert metadata[0]["data_url"].startswith("data:image/gif;base64,")
+    # Upstream rails survive the correction.
+    assert metadata[0]["workspace_path"] == "/workspace/images/signature-abc123.png"
+    assert (metadata[0]["width"], metadata[0]["height"]) == (903, 302)
+
+    warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    text = warnings[0].getMessage()
+    assert "image/png" in text and "image/gif" in text and "signature.png" in text
+
+
+def test_correctly_declared_png_passes_through_byte_identical(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """An honest declaration is never rewritten and never warns."""
+    _patch_image_compatibility(monkeypatch)
+    agent = _fake_agent()
+    data_url = f"data:image/png;base64,{_b64_image('PNG')}"
+    image_att = {
+        "file_type": "image",
+        "data_url": data_url,
+        "mime_type": "image/png",
+        "file_name": "snap.png",
+    }
+
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_streaming_input"):
+        state, _summary, error = prepare_astream_input(
+            cast(Any, agent),
+            message_with_context="describe",
+            thread_id="t1",
+            image_attachments=[image_att],
+            sandbox_records=None,
+            force_unsupported_attachments=False,
+            is_self_invoke=False,
+        )
+
+    assert error is None
+    assert state is not None
+    [msg] = state["messages"]
+    [block] = _image_blocks(msg)
+    assert block["image_url"]["url"] == data_url
+    assert msg.additional_kwargs["attachments"][0]["mime_type"] == "image/png"
+    assert [rec for rec in caplog.records if rec.levelno == logging.WARNING] == []
+
+
+def test_unidentifiable_bytes_pass_through_unchanged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """Bytes the sniffer cannot name keep today's behavior: untouched.
+
+    Refusing or re-encoding undecodable payloads is a separate, larger gate;
+    this correction only ever swaps a label it can prove wrong.
+    """
+    _patch_image_compatibility(monkeypatch)
+    agent = _fake_agent()
+    garbage = base64.b64encode(b"\x00\x01not an image at all\xff\xfe" * 4).decode("ascii")
+    data_url = f"data:image/png;base64,{garbage}"
+
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_streaming_input"):
+        state, _summary, error = prepare_astream_input(
+            cast(Any, agent),
+            message_with_context="what is this",
+            thread_id="t1",
+            image_attachments=[{
+                "file_type": "image",
+                "data_url": data_url,
+                "mime_type": "image/png",
+                "file_name": "mystery.png",
+            }],
+            sandbox_records=None,
+            force_unsupported_attachments=False,
+            is_self_invoke=False,
+        )
+
+    assert error is None
+    assert state is not None
+    [msg] = state["messages"]
+    [block] = _image_blocks(msg)
+    assert block["image_url"]["url"] == data_url
+    assert msg.additional_kwargs["attachments"][0]["mime_type"] == "image/png"
+    assert [rec for rec in caplog.records if rec.levelno == logging.WARNING] == []
+
+
+def test_zero_byte_payload_does_not_crash_the_sniffer(monkeypatch: pytest.MonkeyPatch):
+    """An empty payload is a no-op, not a decode error on the turn's hot path."""
+    _patch_image_compatibility(monkeypatch)
+    agent = _fake_agent()
+    state, _summary, error = prepare_astream_input(
+        cast(Any, agent),
+        message_with_context="empty",
+        thread_id="t1",
+        image_attachments=[{
+            "file_type": "image",
+            "data_url": "data:image/png;base64,",
+            "mime_type": "image/png",
+            "file_name": "empty.png",
+        }],
+        sandbox_records=None,
+        force_unsupported_attachments=False,
+        is_self_invoke=False,
+    )
+
+    assert error is None
+    assert state is not None
+    [msg] = state["messages"]
+    [block] = _image_blocks(msg)
+    assert block["image_url"]["url"] == "data:image/png;base64,"
 
 
 def test_sandbox_record_self_invoke_marks_internal():
