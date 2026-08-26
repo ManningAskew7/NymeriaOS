@@ -278,6 +278,16 @@ def _merge_or_append_text_step(steps: List[Dict[str, Any]], step_type: str, cont
     steps.append({"type": step_type, "content": content})
 
 
+def _tool_result_status(result: str) -> str:
+    """"error" when a tool result carries the failure convention, else "success".
+
+    Tools in this codebase return failures as text rather than raising, so the
+    prefix is the only signal a transcript consumer has. Matched after a strip
+    because some results arrive with leading whitespace.
+    """
+    return "error" if result.lstrip().startswith("[Error]") else "success"
+
+
 def _find_tool_step(steps: List[Dict[str, Any]], tool_call_id: Optional[str], name: Optional[str]) -> Optional[Dict[str, Any]]:
     if tool_call_id:
         for step in reversed(steps):
@@ -449,7 +459,14 @@ class ChatTranscript:
                 }
                 self.steps.append(step)
             step["result"] = str(event.get("result") or "")
-            step["status"] = event.get("status") or "success"
+            # The backend's tool_result chunk carries no status (see
+            # agent_streaming's tool-end chunk), so defaulting to "success"
+            # made this field a CONSTANT: a refused or failed call read as a
+            # success to every MCP caller. Nymeria's tools report failure as a
+            # result string rather than by raising, prefixed "[Error]", which
+            # is the same convention agent_prune keys on. An explicit status
+            # from a producer that has one still wins.
+            step["status"] = event.get("status") or _tool_result_status(step["result"])
         elif event_type == "workspace_artifact":
             tool_call_id = event.get("tool_call_id") or event.get("toolCallId")
             name = event.get("tool_name") or event.get("toolName")
