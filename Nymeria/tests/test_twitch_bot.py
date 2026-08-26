@@ -349,8 +349,111 @@ async def test_agent_response_text_is_discarded(monkeypatch):
     await bot._handle_ask(ctx)
     await _drain(bot)
 
-    assert ctx.sent == []  # nothing delivered; twitch_send is the only voice
+    # The agent's text never reaches chat; the asker gets only the
+    # chose-not-to-reply acknowledgment (twitch_send is the only voice).
+    assert all("wall of agent text" not in s for s in ctx.sent)
+    assert ctx.sent and all("chose not to reply" in s for s in ctx.sent)
     assert bot.api.sync_chats == []
+
+
+# ---------------------------------------------------------------------------
+# !ask outcome notices: the asker is never left hanging. An ask turn ending
+# with no successful chat-visible send posts an acknowledgment (agent chose
+# silence) or the generic error copy (sends attempted, all failed); a
+# successful send means the reply IS the outcome and no notice is added.
+# ---------------------------------------------------------------------------
+
+
+def _ask_with(monkeypatch, bot, behavior):
+    _capture_consume(monkeypatch, behavior)
+    for i in range(12):
+        bot._buffer.append(_msg(f"m{i}"))
+    return _Ctx("!ask ping?", _Chatter(name="krussha", moderator=True))
+
+
+@pytest.mark.asyncio
+async def test_ask_without_any_send_attempt_gets_acknowledgment(monkeypatch):
+    bot = make_bot()
+
+    async def behavior(handler):
+        return "completed"  # turn succeeds, agent never tries to speak
+
+    ctx = _ask_with(monkeypatch, bot, behavior)
+    await bot._handle_ask(ctx)
+    await _drain(bot)
+
+    assert ctx.sent == [
+        "@krussha question acknowledged, the bot chose not to reply in chat this time."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ask_with_all_sends_failed_gets_error_notice(monkeypatch):
+    bot = make_bot()
+
+    async def behavior(handler):
+        await handler.on_tool_call("twitch_send", {"message": "hi"}, "c1", 1)
+        await handler.on_tool_result("c1", "[Error]: message not delivered: banned", [])
+        return "completed"
+
+    ctx = _ask_with(monkeypatch, bot, behavior)
+    await bot._handle_ask(ctx)
+    await _drain(bot)
+
+    assert ctx.sent == ["Sorry, something went wrong. Try again in a bit."]
+
+
+@pytest.mark.asyncio
+async def test_ask_with_successful_send_adds_no_notice(monkeypatch):
+    bot = make_bot()
+
+    async def behavior(handler):
+        await handler.on_tool_call("twitch_send", {"message": "hi"}, "c1", 1)
+        await handler.on_tool_result("c1", "Sent to #silk: hi", [])
+        return "completed"
+
+    ctx = _ask_with(monkeypatch, bot, behavior)
+    await bot._handle_ask(ctx)
+    await _drain(bot)
+
+    assert ctx.sent == []  # the twitch_send reply IS the outcome
+
+
+@pytest.mark.asyncio
+async def test_ask_successful_announce_counts_as_reply(monkeypatch):
+    bot = make_bot()
+
+    async def behavior(handler):
+        await handler.on_tool_call("twitch_announce", {"message": "hi"}, "c1", 1)
+        await handler.on_tool_result("c1", "Announcement sent to #silk", [])
+        return "completed"
+
+    ctx = _ask_with(monkeypatch, bot, behavior)
+    await bot._handle_ask(ctx)
+    await _drain(bot)
+
+    assert ctx.sent == []
+
+
+@pytest.mark.asyncio
+async def test_ask_via_sync_fallback_stays_silent(monkeypatch):
+    """Send outcome is unknown on the sync path; no notice can be honest."""
+    import nymeria.triggers.sse_consumer as sse_consumer
+
+    bot = make_bot()
+
+    async def failing_consume(api, handler, *, message, thread_id, user_id, chat_kwargs=None):
+        raise RuntimeError("connection refused before turn_started")
+
+    monkeypatch.setattr(sse_consumer, "consume_chat_stream_with_recovery", failing_consume)
+    for i in range(12):
+        bot._buffer.append(_msg(f"m{i}"))
+    ctx = _Ctx("!ask ping?", _Chatter(name="krussha", moderator=True))
+
+    await bot._handle_ask(ctx)
+    await _drain(bot)
+
+    assert len(bot.api.sync_chats) == 1 and ctx.sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -372,9 +475,10 @@ async def test_pre_turn_failure_falls_back_to_sync_exactly_once(monkeypatch):
     monkeypatch.setattr(sse_consumer, "consume_chat_stream_with_recovery", failing_consume)
     bot._buffer.append(_msg("m"))
 
-    error = await bot._run_agent_turn("prompt-x", label="test")
+    error, handler = await bot._run_agent_turn("prompt-x", label="test")
 
     assert error is None
+    assert handler is None  # sync path: send outcome unknown by contract
     assert len(attempts) == 1
     assert len(bot.api.sync_chats) == 1  # one sync fallback, no re-POST loop
     assert bot.api.sync_chats[0]["message"] == "prompt-x"
@@ -385,9 +489,9 @@ async def test_successful_stream_never_touches_sync_fallback(monkeypatch):
     bot = make_bot()
     _capture_consume(monkeypatch)
 
-    error = await bot._run_agent_turn("prompt-y", label="test")
+    error, handler = await bot._run_agent_turn("prompt-y", label="test")
 
-    assert error is None and bot.api.sync_chats == []
+    assert error is None and handler is not None and bot.api.sync_chats == []
 
 
 @pytest.mark.asyncio

@@ -437,6 +437,13 @@ def twitch_send(
 
     Messages over 500 characters are split into up to 3 chunks.
 
+    This is your only voice in chat: your final response text is never
+    delivered. If a turn triggered by !ask ends without a successful
+    twitch_send or twitch_announce, the bot automatically tells the asker
+    "question acknowledged, the bot chose not to reply in chat this time",
+    so prefer answering with this tool (even briefly) so the asker gets
+    real context instead of that stock acknowledgment.
+
     Args:
         message: Message to send.
     """

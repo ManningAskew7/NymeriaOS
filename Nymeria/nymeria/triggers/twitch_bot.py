@@ -12,6 +12,10 @@ Two deliberate asymmetries against the other thin clients:
 - The agent speaks ONLY through the ``twitch_send`` tool (which runs API-side
   against Helix); the bot discards the agent's final text instead of
   delivering it, so the agent controls when and whether chat hears anything.
+  One exception closes the loop for ``!ask``: when an ask turn ends without
+  a successful chat-visible send, the bot posts a short outcome notice (an
+  acknowledgment when the agent chose silence, the generic error copy when
+  sends were attempted and all failed), so an asker is never left hanging.
 - The bot never writes thread config or metadata. The ``twitch_{channel}``
   thread is configured operationally (see ``docs/chat-apps/
   twitch-bot.md`` for the recommended prompt and tool list).
@@ -232,19 +236,34 @@ def chatter_can_ask(chatter: Any) -> bool:
 # =============================================================================
 
 
+#: Tools whose success means chat visibly heard from the bot this turn.
+_CHAT_SEND_TOOLS = frozenset({"twitch_send", "twitch_announce"})
+
+#: Platform-wide tool-error convention: failed tool calls return "[Error]...".
+_TOOL_ERROR_PREFIX = "[Error]"
+
+
 class _TwitchSSEHandler:
     """Consumes a chat turn's SSE stream without delivering anything.
 
     The agent's reply channel is the ``twitch_send`` tool (executed API-side
     against Helix), so the final response text is intentionally discarded;
-    this handler exists to drive ``consume_chat_stream_with_recovery`` and to
-    surface turn errors to the caller via ``saw_error``/``error_text``.
+    this handler exists to drive ``consume_chat_stream_with_recovery``, to
+    surface turn errors via ``saw_error``/``error_text``, and to count
+    chat-visible send outcomes (``send_attempts``/``send_successes``) so the
+    ``!ask`` path can tell "the agent chose silence" from "every send
+    failed". Success is judged by the tool result NOT carrying the
+    platform-wide ``[Error]`` prefix (the graph reports failed tools as
+    successful calls whose result text is the error).
     """
 
     def __init__(self, label: str):
         self._label = label
         self.saw_error = False
         self.error_text = ""
+        self.send_attempts = 0
+        self.send_successes = 0
+        self._send_call_ids: set = set()
 
     async def flush_text(self, final: bool = False) -> None:
         return None
@@ -265,9 +284,16 @@ class _TwitchSSEHandler:
         self, name: str, args: Dict[str, Any], call_id: str, count: int
     ) -> None:
         logger.debug("[%s] tool call: %s", self._label, name)
+        if name in _CHAT_SEND_TOOLS:
+            self.send_attempts += 1
+            if call_id:
+                self._send_call_ids.add(call_id)
 
     async def on_tool_result(self, call_id: str, result: str, attachments: List[str]) -> None:
-        return None
+        if call_id in self._send_call_ids and not (result or "").lstrip().startswith(
+            _TOOL_ERROR_PREFIX
+        ):
+            self.send_successes += 1
 
     async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
         return None
@@ -796,8 +822,13 @@ class NymeriaTwitchBot(_BotBase):
 
     async def _run_agent_turn(
         self, prompt: str, *, label: str, origin_message_id: str = ""
-    ) -> Optional[str]:
-        """Relay one prompt to the backend; return an error string or None.
+    ) -> tuple[Optional[str], Optional["_TwitchSSEHandler"]]:
+        """Relay one prompt to the backend.
+
+        Returns ``(error, handler)``: ``error`` is an error string or None;
+        ``handler`` carries the turn's send-outcome counts, or is None when
+        the sync fallback served the turn (no tool events are visible on
+        that path, so the send outcome is unknown).
 
         Post-``turn_started`` drops re-attach inside the consumer and never
         re-POST (#88); a pre-turn failure falls back to exactly one sync
@@ -847,11 +878,11 @@ class NymeriaTwitchBot(_BotBase):
                 )
             except Exception as sync_error:
                 logger.error("[%s] sync fallback failed: %s", label, sync_error, exc_info=True)
-                return str(sync_error)
-            return None
+                return str(sync_error), None
+            return None, None
         if handler.saw_error:
-            return handler.error_text or "The agent turn errored."
-        return None
+            return handler.error_text or "The agent turn errored.", handler
+        return None, handler
 
     # -----------------------------------------------------------------
     # Commands
@@ -888,16 +919,37 @@ class NymeriaTwitchBot(_BotBase):
         origin_id = str(getattr(ctx.message, "id", "") or "") if ctx.message else ""
 
         async def _run() -> None:
-            error = await self._run_agent_turn(
+            error, handler = await self._run_agent_turn(
                 prompt, label=f"ask:{chatter_name}", origin_message_id=origin_id
             )
+            notice = ""
             if error:
                 # Generic copy on purpose: raw error text can leak provider or
                 # infra details into a public chat.
+                notice = "Sorry, something went wrong. Try again in a bit."
+            elif handler is not None and not handler.send_successes:
+                # The turn succeeded but chat heard nothing. Close the loop for
+                # the asker: an acknowledgment when the agent chose silence, the
+                # generic error copy when sends were attempted and all failed.
+                # (handler is None on the sync-fallback path, where the send
+                # outcome is unknown; stay silent rather than guess.)
+                if handler.send_attempts:
+                    logger.warning(
+                        "[ask:%s] %d chat send(s) attempted, none delivered",
+                        chatter_name,
+                        handler.send_attempts,
+                    )
+                    notice = "Sorry, something went wrong. Try again in a bit."
+                else:
+                    notice = (
+                        f"@{chatter_name} question acknowledged, the bot chose "
+                        "not to reply in chat this time."
+                    )
+            if notice:
                 try:
-                    await ctx.send("Sorry, something went wrong. Try again in a bit.")
+                    await ctx.send(notice)
                 except Exception:
-                    logger.warning("Could not deliver !ask error notice", exc_info=True)
+                    logger.warning("Could not deliver !ask outcome notice", exc_info=True)
 
         self._spawn_background_task(_run())
 
@@ -1075,7 +1127,7 @@ class NymeriaTwitchBot(_BotBase):
         origin_id = next(
             (m.message_id for m in reversed(messages) if m.message_id), ""
         )
-        error = await self._run_agent_turn(
+        error, _handler = await self._run_agent_turn(
             prompt, label="pulse", origin_message_id=origin_id
         )
         if error:
