@@ -17,13 +17,15 @@ calling identity (typed under TYPE_CHECKING only: at runtime
 ``command_service`` imports this module, and the reverse imports stay
 function-local to dodge the cycle, the repo's usual idiom), mirrors the
 VISIBILITY of the corresponding list command (same doors, same identity),
-degrades to ``[]`` on faults, and writes nothing ITSELF. The executor
-doors are not write-free, though: ``get_thread_config`` rides
-``_require_thread_access``, whose first touch of an unowned thread id
-records the caller as owner (the platform's TOFU thread-claim model, the
-same behavior every thread-scoped command and ``GET /threads/{id}/config``
-already carry). A review recorded rather than removed that ride-along
-(2026-08-03): it is the established ownership mechanism, not a new door.
+degrades to ``[]`` on faults, and writes nothing. The executor doors it
+uses are write-free too, but only since 2026-08-26: ``get_thread_config``
+rides ``_require_thread_access``, which used to TOFU-claim on first touch,
+so resolving options for an unowned thread id recorded the caller as its
+owner. A 2026-08-03 review recorded rather than removed that ride-along,
+reasoning that ``GET /threads/{id}/config`` carried the same behavior. That
+parity had already lapsed: the REST read routes take ``claim=False``
+precisely to stop reads registering permanent empty "ghost" threads, and
+the in-process read doors now match them. Treat these resolvers as reads.
 Optional keyword arguments let a handler that already fetched the
 underlying data pass it in instead of paying a second read; registry
 callers invoke ``resolver(executor)`` bare.

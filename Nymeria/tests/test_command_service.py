@@ -408,10 +408,20 @@ class _FakeAccountsRepo:
     def __init__(self, default_role: str = "user") -> None:
         self.claims: list[tuple[str, str]] = []
         self.default_role = default_role
+        # Mirrors the real thread_owners table: claim_thread is INSERT OR
+        # IGNORE (first writer wins) and get_thread_owner is the read that
+        # does NOT insert. Modelling both is what lets a test tell a
+        # claiming door from a read-only one.
+        self.owners: dict[str, str] = {}
+        self.owner_lookups: list[str] = []
 
     def claim_thread(self, thread_id: str, user_id: str) -> str:
         self.claims.append((thread_id, user_id))
-        return user_id
+        return self.owners.setdefault(thread_id, user_id)
+
+    def get_thread_owner(self, thread_id: str) -> str | None:
+        self.owner_lookups.append(thread_id)
+        return self.owners.get(thread_id)
 
     def get_user_by_id(self, user_id: str):
         return SimpleNamespace(
@@ -2818,7 +2828,12 @@ def test_default_execution_uses_current_agent_backend_without_http(
 
     assert result.success is True
     assert "thread id: thread-1" in result.markdown
-    assert fake_agent.accounts_repo.claims == [("thread-1", "alice")]
+    # Proof the IN-PROCESS backend answered (the point of this test) is that
+    # its access check ran against the agent's own repo. This used to assert a
+    # CLAIM, which incidentally pinned a defect: /thread is a read, and reads
+    # no longer TOFU-claim, so the ownership LOOKUP is the honest signal now.
+    assert fake_agent.accounts_repo.owner_lookups == ["thread-1"]
+    assert fake_agent.accounts_repo.claims == []
 
 
 def test_thread_required_admin_required_and_group_errors_are_metadata_driven() -> None:
@@ -6099,6 +6114,59 @@ def test_thread_list_columns_stay_aligned_when_ids_are_long() -> None:
         assert row[pin_col] == ("*" if pinned else " ")
         assert row[title_col:].startswith(title)
         assert row[platform_col:].startswith(platform)
+
+
+def test_read_only_thread_doors_do_not_claim_an_unowned_thread() -> None:
+    """Reading a thread must not create it. Measured live: /context on a thread
+    id that did not exist added a permanent empty "New Chat" to the caller's
+    thread list, because the access check itself is a write.
+
+    The REST layer already solved this and names the symptom: its
+    _require_thread_access takes claim=False so that "merely opening a new
+    thread tab ... [does not register] a permanent empty ghost thread". Ten
+    read-only REST routes pass it, including the GET twins of all three doors
+    below. The command layer's twin had no such parameter.
+    """
+    repo = _FakeAccountsRepo()
+    agent = SimpleNamespace(
+        accounts_repo=repo,
+        thread_config_manager=SimpleNamespace(get_config=lambda tid: None),
+        get_context_stats=lambda tid: {"total_tokens": 0},
+        _thread_locks=None,
+    )
+    client = CommandBackendClient(
+        agent, user=_CommandBackendUser(id="alice", role="user")
+    )
+
+    run(client.get_context_stats("ghost-thread-a"))
+    run(client.get_thread_config("ghost-thread-b"))
+
+    assert repo.claims == [], f"a read claimed ownership: {repo.claims}"
+
+
+def test_write_thread_doors_still_claim_on_first_touch() -> None:
+    """The other half: TOFU claiming is the ownership mechanism for writes.
+
+    Dropping it everywhere would leave threads ownerless until some later
+    write, which is the bug the REST helper's docstring warns about in the
+    opposite direction (the first other user to touch it would claim-jack).
+    """
+    repo = _FakeAccountsRepo()
+    agent = SimpleNamespace(
+        accounts_repo=repo,
+        _thread_locks=_FakeThreadLocks(),
+        abort_with_cascade=lambda *a, **k: None,
+    )
+    client = CommandBackendClient(
+        agent, user=_CommandBackendUser(id="alice", role="user")
+    )
+
+    try:
+        run(client.stop_thread("written-thread"))
+    except Exception:
+        pass  # the stop path may fault on this stub; the claim is the assertion
+
+    assert ("written-thread", "alice") in repo.claims
 
 
 def test_context_refuses_a_thread_that_does_not_exist() -> None:
