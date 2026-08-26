@@ -70,6 +70,13 @@ def _compact_id(value: Any) -> str:
     return str(value or "")
 
 
+# ID column bounds for the /thread list table: at least the old 8 so a list of
+# short ids keeps its familiar shape, at most a UUID plus a generous prefix so
+# one absurd id cannot widen every row (see _id_column_width).
+_ID_COLUMN_MIN = 8
+_ID_COLUMN_MAX = 48
+
+
 def _format_bool(value: Any) -> str:
     """Format booleans for compact command output."""
     if isinstance(value, bool):
@@ -172,6 +179,8 @@ def _format_thread_list(
 ) -> list[str]:
     by_id = {_normalize_thread_id(thread): thread for thread in threads}
     grouped_ids = _team_thread_ids(teams)
+    # One width for every section, so the sections read as one table.
+    id_width = _id_column_width(threads)
     lines = ["Threads"]
 
     if teams:
@@ -186,9 +195,8 @@ def _format_thread_list(
             if not team_threads:
                 continue
             lines.append(f"  Team: {_one_line(team.get('name') or team.get('id'), limit=60)}")
-            lines.append("    * ID        Pin  Title                         Platform")
             lines.extend(
-                _format_thread_rows(team_threads, active_thread_id, indent="    ")
+                _thread_table(team_threads, active_thread_id, indent="    ", id_width=id_width)
             )
 
     ungrouped = [
@@ -199,16 +207,19 @@ def _format_thread_list(
     if teams:
         if pinned:
             lines.append("  Pinned")
-            lines.append("    * ID        Pin  Title                         Platform")
-            lines.extend(_format_thread_rows(pinned, active_thread_id, indent="    "))
+            lines.extend(
+                _thread_table(pinned, active_thread_id, indent="    ", id_width=id_width)
+            )
         if recent:
             lines.append("  Recent")
-            lines.append("    * ID        Pin  Title                         Platform")
-            lines.extend(_format_thread_rows(recent, active_thread_id, indent="    "))
+            lines.extend(
+                _thread_table(recent, active_thread_id, indent="    ", id_width=id_width)
+            )
     else:
-        lines.append("  * ID        Pin  Title                         Platform")
         lines.extend(
-            _format_thread_rows([*pinned, *recent], active_thread_id, indent="  ")
+            _thread_table(
+                [*pinned, *recent], active_thread_id, indent="  ", id_width=id_width
+            )
         )
     return lines
 
@@ -219,11 +230,41 @@ def _ordered_threads(threads: Sequence[Mapping[str, Any] | None]) -> list[Mappin
     return selected
 
 
+def _id_column_width(threads: Sequence[Mapping[str, Any]]) -> int:
+    """Return the width to reserve for the ID column.
+
+    IDs are shown whole so the reader can copy one, and they are free-form: a
+    UUID is 36 characters, a named thread can be longer. So the column fits the
+    widest ID present rather than a fixed width, which is what keeps the header
+    lined up with its own rows. ``_ID_COLUMN_MAX`` bounds that: one pathological
+    ID then overflows its own row instead of widening every row in the table.
+    """
+    widest = max((len(_normalize_thread_id(thread)) for thread in threads), default=0)
+    return min(max(widest, _ID_COLUMN_MIN), _ID_COLUMN_MAX)
+
+
+def _thread_table(
+    threads: Sequence[Mapping[str, Any]],
+    active_thread_id: str | None,
+    *,
+    indent: str,
+    id_width: int,
+) -> list[str]:
+    """Return the column header followed by one row per thread."""
+    header = (
+        f"{indent}* {'ID':<{id_width}}  {'Pin':<3}  {'Title':<28}  Platform"
+    )
+    return [header, *_format_thread_rows(
+        threads, active_thread_id, indent=indent, id_width=id_width
+    )]
+
+
 def _format_thread_rows(
     threads: Sequence[Mapping[str, Any]],
     active_thread_id: str | None,
     *,
     indent: str,
+    id_width: int,
 ) -> list[str]:
     rows: list[str] = []
     for thread in threads:
@@ -233,7 +274,7 @@ def _format_thread_rows(
         title = _one_line(_thread_title(thread), limit=28)
         platform = _one_line(thread.get("platform") or "", limit=12)
         rows.append(
-            f"{indent}{active} {_compact_id(thread_id):<8}  "
+            f"{indent}{active} {_compact_id(thread_id):<{id_width}}  "
             f"{pin:<3}  {title:<28}  {platform}"
         )
     return rows
