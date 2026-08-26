@@ -7874,3 +7874,27 @@ def test_todos_add_and_list_speak_local_time(monkeypatch) -> None:
     assert listed.success is True
     assert "fires=2099-01-01 09:00 AEDT" in listed.markdown
     assert "fires=2098-12-31T22:00" not in listed.markdown
+
+
+def test_memory_search_discloses_the_row_cap_like_its_sibling_listing() -> None:
+    """``/memory search`` caps at 25 rows and said nothing about it.
+
+    Its header counts every match, so a search finding 30 announced "30
+    results" and then printed 25, which reads as the whole set. ``/memory
+    list`` twelve lines above it in the same file already appends "(showing 25
+    of N)", so the intended behavior is not in question. Every other capped
+    listing in the command layer (todos, models, marketplace skills) discloses
+    too; this was the one that did not.
+    """
+    class _ManyMemoriesApi(FakeCommandApi):
+        async def search_memories(self, user_id: str, query: str):
+            return [{"key": f"k{i}", "value": f"v{i}"} for i in range(30)]
+
+    result = _run_command(_ManyMemoriesApi(), "/memory search blue")
+
+    assert result.success is True
+    assert "30 results" in result.markdown
+    assert "showing 25 of 30" in result.markdown
+    # The cap itself is unchanged: still 25 rows.
+    assert "k24: v24" in result.markdown
+    assert "k25: v25" not in result.markdown

@@ -6441,6 +6441,11 @@ class _CommandExecutor(
             value = mem.get("value", "")
             preview = (value[:200] + "...") if len(value) > 200 else value
             lines.append(f"  {mem.get('key', '?')}: {preview}")
+        # The header counts every match, so a silent cut reads as the whole
+        # set. Matches the sibling listing above and every other capped
+        # listing in this file.
+        if len(results) > 25:
+            lines.append(f"(showing 25 of {len(results)})")
         return "\n".join(lines)
 
     async def _cmd_memory_limit(self, bound: BoundArgs) -> str | CommandOutput:
