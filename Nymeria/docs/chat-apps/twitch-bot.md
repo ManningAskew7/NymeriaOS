@@ -193,6 +193,10 @@ overwritten by the bot):
 ## Operations
 - You communicate ONLY by calling the twitch_send tool. Your final text
   output is never shown to chat. You may call twitch_send multiple times.
+- If an !ask turn ends without a successful twitch_send, the asker
+  automatically sees "question acknowledged, the bot chose not to reply in
+  chat this time". Silence stays fine for pulses, but for a direct !ask
+  prefer a real reply over leaving the asker that stock acknowledgment.
 - Use your info tools to stay aware of stream status, viewer count, current
   game, and who is in chat.
 - During periodic chat pulses you see the new messages since your last look.
@@ -205,7 +209,7 @@ overwritten by the bot):
 
 | Command | Access | Cooldown | Description |
 |---------|--------|----------|-------------|
-| `!ask <question>` | Subs, VIPs, Mods, Broadcaster | 30s/user, 10s/global | Ask the AI a question with unseen chat context |
+| `!ask <question>` | Subs, VIPs, Mods, Broadcaster | 30s/user, 10s/global | Ask the AI a question with unseen chat context. Always answered: the agent's twitch_send reply, an "acknowledged, chose not to reply" notice, or the generic error copy |
 | `!status` | Everyone | None | Uptime, buffer count, unseen count, pulse status |
 | `!clear` | Mods, Broadcaster | None | Clear the thread's conversation history (via the API) |
 | `!pulse on/off/<seconds>/min <count>` | Mods, Broadcaster | None | Control pulse (enable/disable/interval/min messages) |
