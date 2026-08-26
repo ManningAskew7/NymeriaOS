@@ -2,12 +2,12 @@
 #
 # These are NOT installed by the default/slim install. Install only the
 # platforms you run, via the matching extra:
-#   pip install "nymeriaos[discord]"      # or telegram / slack
+#   pip install "nymeriaos[discord]"      # or telegram / slack / twitch
 #   pip install "nymeriaos[bots]"          # all platforms at once
 #
 # This file is the requirements-style mirror of the bot extras in pyproject.toml.
 # The full Docker image includes it (via requirements-docker.txt). Keep it in
-# sync with the [discord]/[telegram]/[slack] extras;
+# sync with the [discord]/[telegram]/[slack]/[twitch] extras;
 # scripts/check_requirements_sync.py enforces this.
 
 # Discord bot (two-way communication)
@@ -19,3 +19,6 @@ python-telegram-bot[rate-limiter]>=22.0
 # Slack bot (two-way communication via Socket Mode)
 slack-bolt>=1.22.0
 slack-sdk>=3.35.0
+
+# Twitch bot (EventSub websocket chat)
+twitchio>=3.3.2,<4

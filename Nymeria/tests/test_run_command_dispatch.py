@@ -47,6 +47,7 @@ def test_full_validation_set_matches_server_and_bot_commands():
             "discord-bot",
             "telegram-bot",
             "slack-bot",
+            "twitch-bot",
         }
     )
     # The conditionally-validated commands are deliberately NOT in the set.

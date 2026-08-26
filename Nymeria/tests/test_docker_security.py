@@ -105,7 +105,7 @@ def test_nymeria_services_use_expected_runtime_images() -> None:
     services = _load_compose("docker-compose.yml")["services"]
 
     full_services = {"api", "worker"}
-    slim_services = {"discord-bot", "telegram-bot", "mcp"}
+    slim_services = {"discord-bot", "telegram-bot", "twitch-bot", "mcp"}
 
     for service_name in full_services:
         service = services[service_name]
@@ -135,6 +135,7 @@ def test_non_api_services_use_runtime_health_checks() -> None:
         "worker",
         "discord-bot",
         "telegram-bot",
+        "twitch-bot",
         "mcp",
     ):
         healthcheck = services[service_name]["healthcheck"]["test"]
@@ -158,6 +159,7 @@ THIN_CLIENT_SERVICES = {
     "discord-bot",
     "telegram-bot",
     "slack-bot",
+    "twitch-bot",
 }
 INFRA_SERVICES = {"postgres", "redis"}
 # Services not subject to the standard hardening contract (operator-installed

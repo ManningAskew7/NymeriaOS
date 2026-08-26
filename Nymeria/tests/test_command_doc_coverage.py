@@ -42,6 +42,7 @@ from nymeria.triggers.telegram_bot import NymeriaTelegramBot
 CHAT_APP_DOCS = Path(__file__).resolve().parents[1] / "docs" / "public" / "chat-apps"
 DISCORD_DOC = CHAT_APP_DOCS / "discord-bot.md"
 TELEGRAM_DOC = CHAT_APP_DOCS / "telegram-bot.md"
+TWITCH_DOC = CHAT_APP_DOCS / "twitch-bot.md"
 
 
 def _discord_command_names() -> set[str]:
@@ -137,6 +138,47 @@ def test_the_coverage_check_fails_on_an_undocumented_name() -> None:
     assert _undocumented({"definitely-not-a-command"}, TELEGRAM_DOC) == [
         "definitely-not-a-command"
     ]
+
+
+def _twitch_command_names() -> set[str]:
+    """The !command names the Twitch bot registers, read from its source.
+
+    TwitchIO v3 registers commands explicitly via `@commands.command(name=...)`
+    decorators inside `NymeriaTwitchBot.__init__`; parsing the AST keeps this
+    derivation faithful to the declarations without instantiating the SDK.
+    """
+    import ast
+    import inspect
+
+    import nymeria.triggers.twitch_bot as twitch_bot
+
+    tree = ast.parse(inspect.getsource(twitch_bot))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "command":
+            for kw in node.keywords:
+                if kw.arg == "name" and isinstance(kw.value, ast.Constant):
+                    names.add(str(kw.value.value))
+    return names
+
+
+def test_every_twitch_bang_command_is_documented() -> None:
+    names = _twitch_command_names()
+    # Fewer means the AST derivation broke, and an empty set passes vacuously.
+    assert len(names) >= 8
+    text = TWITCH_DOC.read_text(encoding="utf-8")
+    missing = sorted(
+        name
+        for name in names
+        if re.search(rf"!{re.escape(name)}(?![\w-])", text) is None
+    )
+    assert not missing, (
+        f"twitch-bot.md documents no {missing}; add a row or the command is "
+        "invisible to everyone who reads the docs instead of the source."
+    )
 
 
 def test_a_longer_sibling_does_not_document_a_shorter_name() -> None:

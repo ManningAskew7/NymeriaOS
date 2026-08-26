@@ -914,6 +914,19 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `SLACK_APP_TOKEN` | - | Slack app-level token for Socket Mode (`xapp-...`, requires `connections:write`) |
 | `SLACK_RESPOND_MODE` | `mention` | Slack channel behavior: `mention` (DMs and @mentions) or `all` |
 | `SLACK_SHOW_TOOL_EVENTS` | `false` | Show compact Slack tool call/result messages during streamed replies |
+| `TWITCH_CLIENT_ID` | - | Twitch application Client ID (also the Client-ID header for the twitch_* tools) |
+| `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret (enables token auto-refresh) |
+| `TWITCH_BOT_ACCESS_TOKEN` | - | Bot account OAuth access token |
+| `TWITCH_BOT_REFRESH_TOKEN` | - | Bot account refresh token; with the client secret, tools and bot mint fresh access tokens automatically (without it, access tokens die in ~4h) |
+| `TWITCH_BOT_USER_ID` | - | Bot account numeric user ID. REQUIRED by the twitch-bot service; the twitch_* tools resolve it from the token when unset |
+| `TWITCH_BROADCASTER_TOKEN` | - | Broadcaster OAuth token for polls/predictions/channel edits/subs |
+| `TWITCH_BROADCASTER_REFRESH_TOKEN` | - | Broadcaster refresh token |
+| `TWITCH_CHANNEL` | - | Channel the bot joins and the twitch_* tools operate on |
+| `TWITCH_BUFFER_SIZE` | `500` | Chat ring-buffer size in the Twitch bot |
+| `TWITCH_PULSE_ENABLED` | `true` | Enable the periodic chat pulse |
+| `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks |
+| `TWITCH_PULSE_MIN_MESSAGES` | `10` | Minimum unseen messages before a pulse fires |
+| `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Already-seen context lines added to a thin !ask prompt (hard-capped at 25) |
 | `TEAMS_BOT_APP_ID` | - | Bot Framework app ID for Teams webhook replies |
 | `TEAMS_BOT_APP_PASSWORD` | - | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | - | Optional Azure tenant ID used during setup |

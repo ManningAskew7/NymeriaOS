@@ -276,11 +276,11 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "twitch_broadcaster_token",
         "twitch_broadcaster_refresh_token",
         "twitch_channel",
-        "twitch_system_prompt",
         "twitch_buffer_size",
         "twitch_pulse_enabled",
         "twitch_pulse_interval",
-        "twitch_respond_mode",
+        "twitch_pulse_min_messages",
+        "twitch_command_context_count",
     ),
 }
 
