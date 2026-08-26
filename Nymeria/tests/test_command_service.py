@@ -7937,3 +7937,55 @@ def test_context_reports_the_compaction_threshold_that_actually_governs() -> Non
     percent = _run_command(_PercentModeApi(), "/context")
     assert percent.success is True
     assert "threshold 35%" in percent.markdown
+
+
+def test_context_thread_overrides_do_not_claim_none_when_the_thread_is_customized() -> None:
+    """The Overrides section inspected only instructions, disabled and enabled
+    tools, so it answered "none (using global defaults)" for a thread pinned to
+    another model, provider, or reasoning effort.
+
+    Measured live 2026-08-26: a thread carrying extended_thinking=true,
+    reasoning_effort=low and sequential_tool_execution=true (all set through
+    /think and /sequential-tools, both of which acked "this thread") reported
+    no overrides. That is the worst possible answer from the section a user
+    consults when a thread behaves unlike the rest, and it is the same family
+    as backlog #236, where a read command misreports what a thread is running.
+    """
+    api = FakeCommandApi()
+    api.thread_config = {
+        "llm_config": {"model": "gpt-thread", "reasoning_effort": "low", "temperature": None},
+        "sequential_tool_execution": True,
+        "has_customizations": True,
+    }
+
+    result = _run_command(api, "/context")
+
+    assert result.success is True
+    assert "none (using global defaults)" not in result.markdown
+    assert "gpt-thread" in result.markdown
+    assert "reasoning_effort" in result.markdown
+    assert "sequential" in result.markdown.lower()
+    # Nulls mean "inherit" and must not be listed as overrides.
+    assert "temperature" not in result.markdown
+
+
+def test_context_overrides_stay_honest_for_settings_it_does_not_enumerate() -> None:
+    """Backstop: the section must never answer "none" against the config's own
+    verdict, even for fields it does not know how to name."""
+    api = FakeCommandApi()
+    api.thread_config = {"has_customizations": True}
+
+    result = _run_command(api, "/context")
+
+    assert result.success is True
+    assert "none (using global defaults)" not in result.markdown
+
+
+def test_context_still_says_none_for_a_genuinely_default_thread() -> None:
+    api = FakeCommandApi()
+    api.thread_config = {"has_customizations": False}
+
+    result = _run_command(api, "/context")
+
+    assert result.success is True
+    assert "none (using global defaults)" in result.markdown
