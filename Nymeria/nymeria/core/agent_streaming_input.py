@@ -13,20 +13,33 @@ list of ``AttachmentRecord`` whose paths are already baked into the
 ``HumanMessage.additional_kwargs["attachments"]`` so thread history can
 rebuild attachment pills on reload without reading the sandbox bytes
 back.
+
+This is also the last point an inbound image block is assembled before it
+becomes checkpoint state, so it is where a declared media type gets checked
+against the payload's magic bytes (``_correct_declared_image_mimes``).
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage
+
+from .agent_text_extract import extract_mime_from_data_url
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
     from .attachment_sandbox import AttachmentRecord
 
 logger = logging.getLogger(__name__)
+
+# How much of a base64 payload to decode when sniffing. Every magic-byte
+# signature ``sniff_image_mime`` knows sits in the first 12 bytes, so 64
+# base64 characters (48 bytes) is generous, and it keeps a multi-megabyte
+# attachment off the turn's hot path.
+_SNIFF_BASE64_CHARS = 64
 
 
 def _apply_pending_fallback_note(
@@ -67,6 +80,85 @@ def _apply_pending_fallback_note(
             "pending fallback note could not be applied for thread %s",
             thread_id, exc_info=True,
         )
+
+
+def _sniff_data_url_image_mime(data_url: str) -> Optional[str]:
+    """Return the image MIME this payload's BYTES claim, or ``None``.
+
+    Magic bytes only: no filename reaches ``sniff_image_mime``, because its
+    extension fallback is the same trust-the-label mistake being corrected
+    here. ``None`` means "not a raster image this project recognizes", and
+    the caller must then leave the block exactly as it arrived.
+    """
+    if not data_url.startswith("data:"):
+        return None
+    header, _sep, payload = data_url.partition(",")
+    if ";base64" not in header:
+        # Nothing in-tree produces percent-encoded image data URLs, and
+        # without base64 there is no cheap prefix decode to sniff.
+        return None
+    prefix = "".join(payload[:_SNIFF_BASE64_CHARS].split())
+    prefix = prefix[: len(prefix) // 4 * 4]
+    if not prefix:
+        return None
+    try:
+        head = base64.b64decode(prefix, validate=False)
+    except Exception:  # noqa: BLE001 - an undecodable prefix is "unknown", never fatal
+        return None
+    from ..tools.image_read import sniff_image_mime  # Lazy: keeps nymeria.tools off import.
+
+    return sniff_image_mime(head)
+
+
+def _relabel_data_url(data_url: str, mime: str) -> str:
+    """Rebuild a data URL under ``mime``, preserving its other header params."""
+    header, sep, payload = data_url.partition(",")
+    params = header[len("data:"):].partition(";")[2]
+    return f"data:{mime}" + (f";{params}" if params else "") + sep + payload
+
+
+def _correct_declared_image_mimes(
+    image_atts: List[Dict[str, str]], thread_id: str
+) -> List[Dict[str, str]]:
+    """Relabel inbound image blocks whose declared type contradicts their bytes.
+
+    The declared media type comes from untrusted producers: a chat client's
+    upload, or an email attachment's Microsoft Graph ``contentType`` taken
+    verbatim (``triggers/sources/outlook_email_source.py``). Anthropic
+    validates the label against the payload and 400s the WHOLE request when
+    they disagree ("the image appears to be a image/gif image"). Because
+    history replays verbatim and the strip-and-retry classifier does not match
+    that wording, a single mislabeled signature GIF wedges a thread
+    permanently: one production thread died that way for 16 days, and any
+    sender can trigger it with no human in the loop.
+
+    So the bytes get the last word, here, at the last point an inbound image
+    block is assembled before it becomes checkpoint state. Sniff and correct
+    ONLY: bytes this project cannot identify pass through untouched, since
+    refusing or re-encoding them is a separate, larger gate.
+    """
+    corrected: List[Dict[str, str]] = []
+    for att in image_atts:
+        data_url = att.get("data_url") or ""
+        sniffed = _sniff_data_url_image_mime(data_url)
+        declared = extract_mime_from_data_url(data_url).strip().lower()
+        if sniffed is None or sniffed == declared:
+            corrected.append(att)
+            continue
+        logger.warning(
+            "Thread %s: image attachment %s declares %s but its bytes are %s; "
+            "relabeling it before it enters thread history",
+            thread_id,
+            att.get("file_name") or "(unnamed)",
+            declared or "(none)",
+            sniffed,
+        )
+        corrected.append({
+            **att,
+            "data_url": _relabel_data_url(data_url, sniffed),
+            "mime_type": sniffed,
+        })
+    return corrected
 
 
 def prepare_astream_input(
@@ -181,6 +273,12 @@ def prepare_astream_input(
             effective_model,
             compatibility["warnings"],
         )
+
+    # Last stop before these blocks become checkpoint state, so a media type
+    # that contradicts its own bytes is corrected here (see the helper: the
+    # mismatch is a permanent, thread-wedging 400). Rebinding the list also
+    # corrects the metadata block below, which reads the same name.
+    image_atts = _correct_declared_image_mimes(image_atts, thread_id)
 
     content: List[Dict[str, Any] | str] = [{"type": "text", "text": message_with_context}]
     for att in image_atts:
