@@ -629,6 +629,21 @@ def _thread_override_text(
     return None
 
 
+def _is_not_found(value: Any) -> bool:
+    """True when a gathered result is the 404 meaning "no such thread".
+
+    Both runtime shapes raise the same type here, which is what makes one
+    check enough: the HTTP client raises ``httpx.HTTPStatusError``, and the
+    in-process client fabricates the identical exception through
+    ``_raise_http_status``, response object and all.
+    """
+    return (
+        isinstance(value, httpx.HTTPStatusError)
+        and value.response is not None
+        and value.response.status_code == 404
+    )
+
+
 def _optional_dict_result(value: Any) -> dict[str, Any] | None:
     result = _dict_result(value)
     return result or None
@@ -5480,6 +5495,14 @@ class _CommandExecutor(
             self.api.get_default_tools(self.user_id),
             return_exceptions=True,
         )
+        # Read the stats result BEFORE coercing. _dict_result turns any
+        # exception into {}, which is the resilience this gather wants (one
+        # flaky sub-call must not take the whole breakdown down) but it also
+        # swallowed the 404 that means "there is no such thread", so an
+        # unknown or foreign id rendered a confident, entirely fictional
+        # report instead of the refusal /thread switch gives for the same id.
+        if _is_not_found(ctx):
+            return command_error(f"No thread matching '{self.thread_id}'.")
         ctx = _dict_result(ctx)
         thread_cfg = _optional_dict_result(thread_cfg)
         settings = _dict_result(settings)
@@ -5516,7 +5539,13 @@ class _CommandExecutor(
 
         lines.append("")
         lines.append("Context Window")
-        token_line = f"  {fmt_tokens(total)} / {fmt_tokens(limit)} tokens ({pct}%)"
+        if not limit:
+            # A window of zero capacity is not a reading, it is the absence of
+            # one: the stats call failed and 0 is the fallback for both halves.
+            # Say so rather than printing "0 / 0 tokens (0%)" as a measurement.
+            token_line = "  unavailable (no context stats for this thread)"
+        else:
+            token_line = f"  {fmt_tokens(total)} / {fmt_tokens(limit)} tokens ({pct}%)"
         if cumulative:
             token_line += f" (cumulative: {fmt_tokens(cumulative)})"
         lines.append(token_line)
