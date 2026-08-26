@@ -103,6 +103,123 @@ def test_default_trigger_override_output_is_byte_identical(frozen_time, tmp_path
     assert out == golden
 
 
+# --- 1b. The label names the turn's SOURCE -----------------------------------
+#
+# Before this, every autonomous turn's header read "Scheduled TODO" because the
+# label was a binary is_autonomous split. Live-observed: an email-watcher
+# trigger fire carrying autonomous_source="trigger" told the agent it was
+# working a scheduled TODO.
+
+
+def test_trigger_sourced_turn_is_labelled_event_trigger(frozen_time, tmp_path):
+    agent = make_agent(tmp_path)
+    golden = (
+        f"[Time: {FROZEN_TIME}]\n[Trigger: Event Trigger]\n\n"
+        f"{prompts.AUTONOMOUS_MODE_RULES.strip()}\n\ncheck the inbox"
+    )
+    out = prefix(
+        agent, "check the inbox",
+        is_self_invoke=True, is_autonomous=True, source="trigger",
+    )
+    assert out == golden
+
+
+def test_each_known_source_gets_its_own_label(frozen_time, tmp_path):
+    """Every autonomous entry path names itself, and no two collapse onto one label."""
+    agent = make_agent(tmp_path)
+    expected = {
+        "ticker": "Scheduled TODO",
+        "trigger": "Event Trigger",
+        "watchdog": "Watchdog",
+        "dream": "Dream",
+        "callable": "Callable Thread",
+        "mcp": "MCP Client",
+        "background_bash": "Background Bash",
+        "claude_code": "Claude Code",
+        "hook_continuation": "Hook Continuation",
+    }
+    rendered = {}
+    for source, label in expected.items():
+        out = prefix(
+            agent, "x", is_self_invoke=True, is_autonomous=True, source=source
+        )
+        assert f"[Trigger: {label}]" in out, (source, out)
+        rendered[source] = out.splitlines()[1]
+    # The whole point of the table: distinct sources read distinctly. A
+    # regression that re-collapses them (the original bug) fails here even if
+    # the strings above are edited.
+    assert len(set(rendered.values())) == len(expected), rendered
+
+
+def test_interactive_turn_still_says_user_message(frozen_time, tmp_path):
+    agent = make_agent(tmp_path)
+    golden = f"[Time: {FROZEN_TIME}]\n[Trigger: User Message]\n\nhello there"
+    assert prefix(agent, "hello there", source="user") == golden
+    # No source supplied at all still lands on the legacy interactive label.
+    assert prefix(agent, "hello there") == golden
+
+
+def test_unlisted_source_keeps_the_legacy_autonomy_split(frozen_time, tmp_path):
+    """No source key, no invented label: an unknown source is not guessed at."""
+    agent = make_agent(tmp_path)
+    out = prefix(
+        agent, "x", is_self_invoke=True, is_autonomous=True, source="brand-new-source"
+    )
+    assert "[Trigger: Scheduled TODO]" in out
+
+
+def test_trigger_override_still_beats_the_turn_source(frozen_time, tmp_path):
+    agent = make_agent(tmp_path)
+    golden = (
+        f"[Time: {FROZEN_TIME}]\n[Trigger: Email Trigger]\n\n"
+        f"{prompts.AUTONOMOUS_MODE_RULES.strip()}\n\ncheck the inbox"
+    )
+    out = prefix(
+        agent, "check the inbox",
+        is_self_invoke=True, trigger_override="Email Trigger",
+        is_autonomous=True, source="trigger",
+    )
+    assert out == golden
+
+
+def test_source_labelled_block_still_strips_from_history(frozen_time, tmp_path):
+    """A source-derived label keeps the header inside the strip frame."""
+    from nymeria.core.agent_history import CONTEXT_PREFIX_PATTERN
+
+    agent = make_agent(tmp_path)
+    for source in prompts.SOURCE_TRIGGER_LABELS:
+        block = agent._get_time_context(is_autonomous=True, source=source)
+        assert prompts.TURN_METADATA_TEMPLATE_PATTERN.fullmatch(block), source
+        assert CONTEXT_PREFIX_PATTERN.fullmatch(block + "\n\n"), source
+        out = prefix(
+            agent, "hello", is_self_invoke=True, is_autonomous=True, source=source
+        )
+        assert strip_prompt_context(out).endswith("hello"), source
+
+
+def test_metadata_hook_seam_label_matches_the_rendered_header(frozen_time, tmp_path):
+    """The seam's ``{trigger}`` var says what the injected block says.
+
+    ``trigger_label`` is what the turn-metadata action templates against and
+    what ``fire_conditions`` match, so a fork here means a hook firing on a
+    label the agent never saw.
+    """
+    from nymeria.core.agent_turn_metadata import _metadata_hook_context
+
+    agent = make_agent(tmp_path)
+    ctx = _metadata_hook_context(
+        thread_id="t1", user_id="default", message="check the inbox",
+        is_self_invoke=True, trigger_override=None,
+        is_autonomous=True, source="trigger",
+    )
+    header = prefix(
+        agent, "check the inbox",
+        is_self_invoke=True, is_autonomous=True, source="trigger",
+    )
+    assert ctx.trigger_label == "Event Trigger"
+    assert f"[Trigger: {ctx.trigger_label}]" in header
+
+
 def test_engine_path_with_default_template_matches_builtin_bytes(frozen_time, tmp_path):
     """A materialized-but-unchanged template renders the exact stock bytes.
 

@@ -62,7 +62,7 @@ class HookContext:
     user_id: str
     is_autonomous: bool
     holder_kind: Optional[str] = None      # interactive|todo|trigger|watchdog|dream|handoff
-    trigger_label: Optional[str] = None    # "User Message"/"Scheduled TODO"/trigger name
+    trigger_label: Optional[str] = None    # the turn's `[Trigger: ...]` label (prompts.resolve_trigger_label)
     provenance: HookProvenance = field(default_factory=HookProvenance)
     scratch: Mapping[str, object] = field(default_factory=dict)
     # Context-usage signal (best-effort, populated by the fire points; None when

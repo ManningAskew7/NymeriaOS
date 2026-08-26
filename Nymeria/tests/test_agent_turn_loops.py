@@ -892,3 +892,75 @@ def test_astream_drain_patches_dangling_before_inject():
     # tool_use without its tool_result.
     inject_at = order.index(("inject",))
     assert ("patch", DANGLING_MARKER_REPEATED) in order[:inject_at]
+
+
+def test_astream_hook_seams_get_the_label_the_agent_was_shown():
+    """One turn, one trigger label: injected header, PROMPT_SUBMIT ctx, run config.
+
+    A poll-based trigger fire reaches astream as ``source="trigger"`` with no
+    ``_trigger_override``. The header used to read "Scheduled TODO" (the
+    is_autonomous binary) while both hook seams were handed a bare ``None``,
+    so nothing downstream could tell a trigger fire from a TODO wake-up.
+    """
+    thread_id = "turn-loops-trigger-label"
+    agent = _resume_agent(thread_id)
+
+    # The real (pure-leaf) header builder, not the "[time]" stub, so the
+    # assertion reads what the model was actually handed.
+    agent._get_time_context = NymeriaAgent._get_time_context.__get__(agent)
+
+    run_configs: list[dict] = []
+
+    def _record_run_config(thread_id, user_id, **kwargs):
+        run_configs.append(kwargs)
+        return {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+
+    agent._graph_run_config = _record_run_config
+
+    submit_labels: list[Any] = []
+    real_submit_ctx = NymeriaAgent._prompt_submit_context.__get__(agent)
+
+    def _record_submit_ctx(**kwargs):
+        submit_labels.append(kwargs.get("trigger_label"))
+        return real_submit_ctx(**kwargs)
+
+    agent._prompt_submit_context = _record_submit_ctx
+
+    async def model_events():
+        yield {
+            "event": "on_chat_model_end",
+            "data": {"output": AIMessage(content="answer")},
+        }
+
+    graph = _FakeAsyncGraph(model_events)
+    agent._get_async_graph_for_user = lambda *args, **kwargs: graph
+
+    set_pending_queue(InMemoryPendingPromptQueue())
+    try:
+
+        async def collect():
+            async for _event in agent.astream(
+                "new mail arrived",
+                thread_id=thread_id,
+                user_id="user-a",
+                _is_self_invoke=True,
+                source="trigger",
+                source_id="trg-1",
+                source_label="Email Watcher",
+            ):
+                pass
+
+        asyncio.run(collect())
+    finally:
+        reset_pending_queue_for_tests()
+
+    sent = graph.stream_inputs[0][0]["messages"][0].content
+    trigger_line = next(
+        line for line in sent.splitlines() if line.startswith("[Trigger:")
+    )
+    assert trigger_line == "[Trigger: Event Trigger]"
+
+    assert submit_labels == ["Event Trigger"]
+    stamped = [c for c in run_configs if "hook_trigger_label" in c]
+    assert [c["hook_trigger_label"] for c in stamped] == ["Event Trigger"]
+    assert [c["hook_holder_kind"] for c in stamped] == ["trigger"]

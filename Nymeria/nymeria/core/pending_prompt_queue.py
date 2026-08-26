@@ -473,27 +473,19 @@ def make_pending_prompt(
     )
 
 
-# Maps ``PendingPrompt.source`` to the human-readable trigger label shown in
-# the drained-prompt header. Mirrors ``get_time_context`` in ``prompts.py`` so
-# a drained sub-turn reads consistently with a freshly-started turn.
-_SOURCE_LABELS = {
-    "ticker": "Scheduled TODO",
-    "user": "User Message",
-    "trigger": "Event Trigger",
-    "callable": "Callable Thread",
-    "mcp": "MCP Client",
-    "watchdog": "Watchdog",
-    "background_bash": "Background Bash",
-    "hook_continuation": "Hook Continuation",
-    "dream": "Dream",
-}
-
-
 def queued_prompt_header(prompt: PendingPrompt) -> str:
-    """Build the metadata header prefixed to each drained prompt's HumanMessage."""
+    """Build the metadata header prefixed to each drained prompt's HumanMessage.
+
+    The label comes from ``prompts.SOURCE_TRIGGER_LABELS``, the same table
+    ``get_time_context`` resolves a fresh turn's header against, so a drained
+    sub-turn reads exactly like a turn this prompt had started itself. An
+    unlisted source falls back to ``capitalize()`` rather than raising: a
+    novel source is still labelled honestly, just unpolished.
+    """
+    from .prompts import SOURCE_TRIGGER_LABELS
     from .time_utils import format_user_time
 
-    label = _SOURCE_LABELS.get(prompt.source, prompt.source.capitalize())
+    label = SOURCE_TRIGGER_LABELS.get(prompt.source, prompt.source.capitalize())
     return (
         f"[Time: {format_user_time(prompt.enqueued_at)}]\n"
         f"[Trigger: {label}]"

@@ -314,12 +314,15 @@ def build_full_system_prompt(
 def get_time_context_for_agent(
     is_autonomous: bool = False,
     trigger_override: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> str:
     """Get current time context. Delegates to prompts.get_time_context().
 
     A genuinely pure leaf: it never needed the agent, so it takes no host.
     """
-    return get_time_context(is_autonomous, trigger_override=trigger_override)
+    return get_time_context(
+        is_autonomous, trigger_override=trigger_override, source=source
+    )
 
 
 def get_memory_index(host: PromptHost, user_id: str) -> Optional[MemoryIndex]:

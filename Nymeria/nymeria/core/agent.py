@@ -39,6 +39,7 @@ from .agent_turn_loops import (
 )
 from .agent_compaction import CompactionManager
 from .agent_prune import PruneManager
+from .prompts import resolve_trigger_label
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager
 from .todo_schedule_db import TodoScheduleDB
@@ -643,9 +644,10 @@ class NymeriaAgent:
         self,
         is_autonomous: bool = False,
         trigger_override: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> str:
         from .agent_prompt import get_time_context_for_agent
-        return get_time_context_for_agent(is_autonomous, trigger_override)
+        return get_time_context_for_agent(is_autonomous, trigger_override, source)
 
     def _prefix_turn_metadata(
         self,
@@ -2220,6 +2222,12 @@ class NymeriaAgent:
         if source is None:
             source = "ticker" if _is_self_invoke else "user"
         is_autonomous_source = source in {"trigger", "ticker", "watchdog", "dream"} or _is_self_invoke
+        # The turn's `[Trigger: ...]` label, resolved ONCE so the injected
+        # header and every hook seam below say the same thing (see the
+        # astream twin).
+        turn_trigger_label = resolve_trigger_label(
+            _is_self_invoke, _trigger_override, source
+        )
 
         backend = get_pending_queue()
 
@@ -2379,7 +2387,7 @@ class NymeriaAgent:
                             message=message,
                             is_autonomous=is_autonomous_source,
                             holder_kind=source,
-                            trigger_label=_trigger_override,
+                            trigger_label=turn_trigger_label,
                             registry=_ps_reg,
                         ),
                         registry=_ps_reg,
@@ -2405,7 +2413,7 @@ class NymeriaAgent:
                 callbacks=[],
                 hook_is_autonomous=is_autonomous_source,
                 hook_holder_kind=source,
-                hook_trigger_label=_trigger_override,
+                hook_trigger_label=turn_trigger_label,
             )
 
             # Per-turn LLM-time accumulator, mirroring astream (see there).
@@ -2946,6 +2954,13 @@ class NymeriaAgent:
         if source is None:
             source = "ticker" if _is_self_invoke else "user"
         is_autonomous_source = source in {"trigger", "ticker", "watchdog", "dream"} or _is_self_invoke
+        # The turn's `[Trigger: ...]` label, resolved ONCE from the same
+        # inputs the injected header uses, so `HookContext.trigger_label`
+        # (PROMPT_SUBMIT and the tool seams' `hook_trigger_label`) can never
+        # disagree with what the agent was actually told about its own run.
+        turn_trigger_label = resolve_trigger_label(
+            _is_self_invoke, _trigger_override, source
+        )
         # Sources that observe the holder's stream after injection.
         # Autonomous sources (ticker / trigger / watchdog) MUST observe so the
         # queued prompt's response chunks are fanned to the worker's HTTP
@@ -3282,7 +3297,7 @@ class NymeriaAgent:
                             message=message,
                             is_autonomous=is_autonomous_source,
                             holder_kind=source,
-                            trigger_label=_trigger_override,
+                            trigger_label=turn_trigger_label,
                             registry=_ps_reg,
                         ),
                         registry=_ps_reg,
@@ -3392,7 +3407,7 @@ class NymeriaAgent:
                 user_id,
                 hook_is_autonomous=is_autonomous_source,
                 hook_holder_kind=source,
-                hook_trigger_label=_trigger_override,
+                hook_trigger_label=turn_trigger_label,
             )
 
             # The model node adds each successful call's streaming duration
