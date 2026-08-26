@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from .command_forms import CommandOutput, command_error
 from .command_params import BoundArgs
+from .time_utils import format_user_time_compact
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,9 @@ def _format_thread_usage(
         lines.append(f"  Compactions     {compactions}")
     last = stats.get("last_compaction")
     if last:
-        lines.append(f"  Last compacted  {last}")
+        # The wire value is UTC; a human reading their own usage wants their
+        # own clock, and the zone is named so the number is not ambiguous.
+        lines.append(f"  Last compacted  {format_user_time_compact(last)}")
 
     return "\n".join(lines)
 

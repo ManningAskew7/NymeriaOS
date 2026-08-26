@@ -207,3 +207,31 @@ class TestTurnLlmSeconds:
                       context_tokens=100, turn_llm_seconds=2.5)
         t.reset_after_compact("t", remaining_tokens=30)
         assert t.get_usage("t").turn_llm_seconds == 2.5
+
+
+def test_compaction_timestamp_is_aware_utc_not_a_naive_local_clock():
+    """``last_compaction_at`` used ``datetime.now()``, a naive LOCAL time, while
+    every other timestamp in the system is aware UTC.
+
+    It reaches clients verbatim as ``context_stats.last_compaction``
+    (``agent_context_stats`` calls ``.isoformat()`` on it), so the wire carried
+    a bare ISO string whose zone was the SERVER's, unmarked. Measured live
+    2026-08-26 on a Sydney deployment: a compaction whose turn ran at 11:34 UTC
+    reported ``2026-08-26T21:34:33.986808``. A consumer reading that as UTC,
+    which is the only reasonable default for an unmarked ISO string on an API,
+    is off by the server's offset, and arithmetic against an aware datetime
+    raises outright.
+    """
+    from datetime import timezone
+
+    from nymeria.core.token_tracker import TokenTracker
+
+    tracker = TokenTracker()
+    tracker.reset_after_compact("thread-1", remaining_tokens=100)
+
+    stamped = tracker._row("thread-1").last_compaction_at
+    assert stamped is not None
+    assert stamped.tzinfo is not None, "naive timestamp: the server's zone leaks to clients"
+    assert stamped.utcoffset() == timezone.utc.utcoffset(None)
+    # Serializes with an explicit offset, so a client cannot misread it.
+    assert stamped.isoformat().endswith("+00:00")
