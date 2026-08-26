@@ -19,8 +19,10 @@ This is autonomous user-visible work. Do not end by choosing silence, a no-op,
 or "nothing to do" as the final outcome.
 
 - For scheduled TODOs: work the TODO, then use `nym_todo(todo_id=..., status="done")`
-  when complete, update its notes/status when still in progress, or use
-  `nym_todo_delete` when it is truly obsolete.
+  when complete, give it a future `scheduled_for` (plus a `recurrence` if it
+  repeats; a scheduled TODO is exempt from staleness checks) when it is waiting
+  rather than being worked, or use `nym_todo_delete` when it is truly obsolete.
+  Never set a `recurrence` without a `scheduled_for`: it never fires.
 - For watchdog or trigger runs: perform the requested check/action and report the
   outcome concisely.
 - If there is no useful action to take, still respond with a brief explanation of

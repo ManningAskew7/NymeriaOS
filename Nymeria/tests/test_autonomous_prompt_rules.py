@@ -186,7 +186,15 @@ def test_watchdog_nudge_uses_current_tool_names_and_no_silence_language():
         ]
     )
 
-    assert "nym_todo tool" in message
+    # Current tool names, in the invocation form the message teaches. The
+    # third repair (schedule/recurrence) replaced the notes rewrite that
+    # re-armed the alert it was supposed to answer; test_watchdog_sweep.py
+    # owns that pin.
+    assert 'nym_todo (status="done")' in message
     assert "nym_todo_delete" in message
+    assert "nym_todo (scheduled_for=..., plus recurrence=... if it repeats)" in message
+    # The repair must prescribe a schedule, never a bare recurrence: an
+    # unscheduled recurrence is watchdog-exempt but never fires.
+    assert "an unscheduled recurrence never fires" in message
     assert "remain silent" not in message.lower()
     assert "stay silent" not in message.lower()
