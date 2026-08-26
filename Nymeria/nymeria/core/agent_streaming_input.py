@@ -83,31 +83,42 @@ def _apply_pending_fallback_note(
 
 
 def _sniff_data_url_image_mime(data_url: str) -> Optional[str]:
-    """Return the image MIME this payload's BYTES claim, or ``None``.
+    """Return a RELABELABLE image MIME this payload's BYTES claim, or ``None``.
 
     Magic bytes only: no filename reaches ``sniff_image_mime``, because its
     extension fallback is the same trust-the-label mistake being corrected
-    here. ``None`` means "not a raster image this project recognizes", and
-    the caller must then leave the block exactly as it arrived.
+    here. ``None`` means "nothing this correction may act on", and the caller
+    must then leave the block exactly as it arrived.
+
+    The answer is narrowed to ``_NATIVE_SUPPORTED_MIME`` (png/jpeg/webp/gif),
+    the set of types the providers actually accept, because the sniffer also
+    recognizes bmp and tiff. Relabeling to one of those would trade a
+    permanent wedge for a permanent wedge, and the resulting 400 wording IS
+    in ``nodes.py::_IMAGE_UNSUPPORTED_EXCLUDE_MARKERS``, so strip-and-retry
+    would still never fire. It also keeps a two-byte "BM" payload, which is
+    the whole of the bmp signature, from renaming an unrelated blob.
     """
     if not data_url.startswith("data:"):
         return None
     header, _sep, payload = data_url.partition(",")
-    if ";base64" not in header:
+    # Data-URL parameter names are case-insensitive, so ";BASE64" is the same
+    # declaration and must not walk past the sniff.
+    if ";base64" not in header.lower():
         # Nothing in-tree produces percent-encoded image data URLs, and
         # without base64 there is no cheap prefix decode to sniff.
         return None
     prefix = "".join(payload[:_SNIFF_BASE64_CHARS].split())
     prefix = prefix[: len(prefix) // 4 * 4]
-    if not prefix:
-        return None
     try:
         head = base64.b64decode(prefix, validate=False)
     except Exception:  # noqa: BLE001 - an undecodable prefix is "unknown", never fatal
         return None
-    from ..tools.image_read import sniff_image_mime  # Lazy: keeps nymeria.tools off import.
+    # Lazy: keeps nymeria.tools off this module's import. One source of truth
+    # for the supported set, so a provider gaining a format needs no edit here.
+    from ..tools.image_read import _NATIVE_SUPPORTED_MIME, sniff_image_mime
 
-    return sniff_image_mime(head)
+    sniffed = sniff_image_mime(head)
+    return sniffed if sniffed in _NATIVE_SUPPORTED_MIME else None
 
 
 def _relabel_data_url(data_url: str, mime: str) -> str:
@@ -134,23 +145,37 @@ def _correct_declared_image_mimes(
 
     So the bytes get the last word, here, at the last point an inbound image
     block is assembled before it becomes checkpoint state. Sniff and correct
-    ONLY: bytes this project cannot identify pass through untouched, since
-    refusing or re-encoding them is a separate, larger gate.
+    ONLY: bytes this project cannot identify, and bytes whose true type no
+    provider accepts, pass through untouched, since refusing or re-encoding
+    them is a separate, larger gate.
+
+    Each attachment declares its type TWICE, in the data-URL header and in
+    the ``mime_type`` field, and producers derive the two separately (the
+    desktop's ``fileProcessing.ts`` does), so they can disagree with each
+    other as well as with the payload. The bytes settle both: the header is
+    what the provider validates, the field is what history rendering and the
+    attachment pills read. An ABSENT field is not a claim and is left absent.
     """
     corrected: List[Dict[str, str]] = []
     for att in image_atts:
         data_url = att.get("data_url") or ""
         sniffed = _sniff_data_url_image_mime(data_url)
-        declared = extract_mime_from_data_url(data_url).strip().lower()
-        if sniffed is None or sniffed == declared:
+        if sniffed is None:
+            corrected.append(att)
+            continue
+        header_mime = extract_mime_from_data_url(data_url).strip().lower()
+        field_mime = (att.get("mime_type") or "").strip().lower()
+        if header_mime == sniffed and field_mime in ("", sniffed):
             corrected.append(att)
             continue
         logger.warning(
-            "Thread %s: image attachment %s declares %s but its bytes are %s; "
-            "relabeling it before it enters thread history",
+            "Thread %s: image attachment %s is declared %s in its data URL and "
+            "%s in its metadata, but its bytes are %s; relabeling both before "
+            "it enters thread history",
             thread_id,
             att.get("file_name") or "(unnamed)",
-            declared or "(none)",
+            header_mime or "(none)",
+            field_mime or "(none)",
             sniffed,
         )
         corrected.append({
@@ -245,6 +270,11 @@ def prepare_astream_input(
     effective_provider = llm_cfg.provider or agent.settings.llm_provider
     effective_model = llm_cfg.model or agent.settings.llm_model
 
+    # NB this runs on the DECLARED types, before _correct_declared_image_mimes
+    # below. Harmless today only because the check collapses every image/* to
+    # the one "image" modality, so a mislabeled subtype cannot change its
+    # answer. If it ever starts judging subtypes (a model that takes png but
+    # not gif), move the correction above this call.
     compatibility = evaluate_attachment_compatibility(
         effective_model,
         effective_provider,
