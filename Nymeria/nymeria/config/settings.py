@@ -2160,22 +2160,6 @@ class Settings(BaseSettings):
                 "  Either set POSTGRES_URI or change DATABASE_BACKEND to 'sqlite'."
             )
 
-        # Bot platforms that need an LLM key to process messages: warn when any
-        # of a platform's tokens is configured but no provider key is present.
-        # (attribute names, "set one of" env label, bot display name)
-        bot_token_warnings = (
-            (("twitch_bot_access_token",), "TWITCH_BOT_ACCESS_TOKEN", "Twitch"),
-            (("discord_bot_token",), "DISCORD_BOT_TOKEN", "Discord"),
-            (("slack_bot_token", "slack_app_token"), "SLACK_BOT_TOKEN or SLACK_APP_TOKEN", "Slack"),
-        )
-        if not provider_key:
-            for token_attrs, env_label, bot_name in bot_token_warnings:
-                if any(getattr(self, attr) for attr in token_attrs):
-                    warnings.append(
-                        f"{env_label} is set but no LLM API key configured.\n"
-                        f"  The {bot_name} bot will not be able to process messages."
-                    )
-
         # Warnings for optional features
         if not self.perplexity_api_key:
             warnings.append(
