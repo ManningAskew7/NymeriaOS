@@ -3603,6 +3603,50 @@ def test_complete_todo_propagates_unexpected_error(
         run(backend.complete_todo("owner", todo_id))
 
 
+def test_todos_complete_after_ticker_rearm_does_not_consume_the_armed_slot(
+    api_client_builder, tmp_path
+) -> None:
+    """`/todos complete` is the third done-path and shared the same defect.
+
+    It reaches ``CommandBackendClient.complete_todo``, which used to anchor the
+    recurrence advance on ``item.scheduled_for``. Once the ticker had re-armed
+    to day N+1 that advanced to day N+2 and silently ate day N+1 (the medication
+    reminders missed in production before 2026-08-26). The anchor is the
+    occurrence being completed, so the armed slot must survive.
+    """
+    settings = api_client_builder.settings(tmp_path)
+    user = _CommandBackendUser(id="alice", role="admin")
+    backend = CommandBackendClient(
+        SimpleNamespace(), user=user, settings_fn=lambda: settings
+    )
+    todo_manager = TodoManager(settings.data_dir)
+
+    day_n = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=3)
+    day_n_plus_1 = day_n + timedelta(days=1)
+    with todo_manager.atomic_update("alice") as todo_list:
+        created = todo_list.add_item(
+            "Hound Alex about his meds",
+            scheduled_for=day_n_plus_1,
+            thread_id="thread-1",
+            created_by="user",
+            recurrence="1d",
+        )
+        assert created is not None
+        created.last_execution = day_n
+    todo_id = created.id
+
+    result = run(
+        CommandService().execute(_ctx(), f"/todos complete {todo_id}", api=backend)
+    )
+
+    assert result.success is True, result.markdown
+    stored = todo_manager.get_todos("alice").get_item(todo_id)
+    assert stored is not None
+    assert stored.status.value == "pending"
+    assert stored.scheduled_for == day_n_plus_1
+    assert stored.last_execution == day_n
+
+
 def test_update_todo_patches_and_clears_fields_in_the_store(
     api_client_builder, tmp_path
 ) -> None:

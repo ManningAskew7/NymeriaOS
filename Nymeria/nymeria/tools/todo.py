@@ -10,7 +10,7 @@ When a TODO has a scheduled time, Nymeria wakes up to work on it.
 
 import logging
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated, Any, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -18,15 +18,14 @@ from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.activity_log import ActivityType, log_activity
 from ..core.time_utils import (
-    ensure_aware_utc,
     get_user_tz,
     parse_future_scheduled_time,
-    utc_now,
 )
 from ..core.todo_constants import (
     STATUS_ICONS,
     STATUS_ORDER,
     compute_recurrence_reschedule,
+    resolve_done_recurrence_anchor,
     validate_recurrence,
 )
 from ..core.todo_manager import TodoManager, TodoStatus
@@ -110,35 +109,36 @@ def _schedule_format_error(exc: ValueError) -> str:
     return f"[Error]: {exc}"
 
 
-def _recurrence_anchor(item, schedule_db, todo_id: str, user_id: str) -> datetime:
-    """Return the scheduled slot that recurrence should advance from."""
-    if schedule_db:
-        entry = schedule_db.get_entry(todo_id)
-        if entry and entry.user_id == user_id:
-            return datetime.fromtimestamp(entry.scheduled_for, timezone.utc)
-    if item and item.scheduled_for:
-        return ensure_aware_utc(item.scheduled_for)
-    return utc_now()
-
-
 def _advance_recurring_done(
     todo_list,
     anchor_item,
-    schedule_db,
     todo_id: str,
-    user_id: str,
     recurrence: str,
 ) -> Optional[datetime]:
     """Reschedule a recurring TODO after a done transition.
 
-    Advances from the current slot (``anchor_item``) to the next recurrence
-    time, flips the item back to PENDING at that time, and stamps
-    ``last_execution``. Returns the new scheduled datetime, or ``None`` when the
-    recurrence has no further slot. The schedule-db sync stays caller-side: the
-    nym_todo update path and the MCP completion path branch differently around
-    this reschedule, so only the shared state mutation lives here.
+    Advances from the occurrence being completed (``anchor_item``, resolved by
+    the shared ``resolve_done_recurrence_anchor``) to the next recurrence time,
+    flips the item back to PENDING at that time, and stamps ``last_execution``.
+    Returns the new scheduled datetime, or ``None`` when the recurrence has no
+    further slot. The schedule-db sync stays caller-side: the nym_todo update
+    path and the MCP completion path branch differently around this reschedule,
+    so only the shared state mutation lives here.
+
+    This used to read the schedule row and treat that as the anchor, which is
+    exactly the row the ticker's own re-arm had already advanced; see
+    ``resolve_done_recurrence_anchor`` for the skipped-occurrence incident that
+    cost. The schedule db is deliberately not a parameter any more.
     """
-    anchor = _recurrence_anchor(anchor_item, schedule_db, todo_id, user_id)
+    if anchor_item is not None and anchor_item.schedule_paused_at is not None:
+        # Auto-paused by the recurring-failure policy (#154): "done" must not
+        # silently resume the schedule. The reschedule below would write
+        # scheduled_for, and update_item's resume-clear would then erase the
+        # pause marker and the failure streak. The TODO completes as done with
+        # the pause intact; resume stays an explicit reschedule. Mirrors the
+        # REST complete and /todos complete guards.
+        return None
+    anchor = resolve_done_recurrence_anchor(anchor_item)
     existing_origin = anchor_item.recurrence_anchor if anchor_item else None
     rescheduled_time, origin_to_persist = compute_recurrence_reschedule(
         recurrence, anchor, existing_origin
@@ -181,6 +181,13 @@ def nym_todo(
 
     Recurring TODOs auto-reschedule when marked done; use nym_todo_delete or
     clear_recurrence to stop them permanently.
+
+    A future scheduled_for, optionally with a recurrence, exempts a TODO from
+    the staleness watchdog: use that to park a waiting TODO, and model a
+    long-lived watcher as ONE self-rescheduling TODO (re-arm scheduled_for
+    each cycle), not an unscheduled parent plus child TODOs. Never set a
+    recurrence without a scheduled_for: it never fires, it only silences the
+    watchdog.
 
     Args:
         todo_id: 8-char TODO ID (omit to create a new TODO)
@@ -380,7 +387,7 @@ def nym_todo(
             # Auto-reschedule recurring TODOs marked as done
             if todo_status == TodoStatus.DONE and item.recurrence:
                 rescheduled_time = _advance_recurring_done(
-                    todo_list, item, schedule_db, todo_id, user_id, item.recurrence
+                    todo_list, item, todo_id, item.recurrence
                 )
                 if rescheduled_time:
                     item = todo_list.get_item(todo_id)
@@ -476,7 +483,7 @@ def _todo_complete_internal(
             # Auto-reschedule recurring TODOs
             if has_recurrence:
                 rescheduled_time = _advance_recurring_done(
-                    todo_list, item, schedule_db, todo_id, user_id, has_recurrence
+                    todo_list, item, todo_id, has_recurrence
                 )
 
             # Sync schedule database

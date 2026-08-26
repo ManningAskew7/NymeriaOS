@@ -201,6 +201,30 @@ When a scheduled TODO succeeds:
 3. Reset status to `pending`
 4. Re-sync to TodoScheduleDB
 
+A recurring schedule has TWO writers for one occurrence: that ticker re-arm,
+and the completion itself (the `nym_todo` tool, the MCP completion, the REST
+complete / PATCH-to-done endpoints, `/todos complete`). The ticker re-arm
+anchors on its own poll-time snapshot of the slot it just ran; every done-path
+anchors on the OCCURRENCE being completed via the shared
+`core/todo_constants.resolve_done_recurrence_anchor` (`last_execution`, else
+`scheduled_for`, else now). Neither trusts whatever the schedule row happens
+to say at write time, and both land the same slot: a "done" during
+the scheduled turn and a "done" minutes after the ticker already re-armed both
+land the same next slot, and a second write for the same occurrence is a no-op.
+Anchoring on the current row instead advanced twice and silently dropped the
+following occurrence, which is what skipped five daily reminders in production
+before 2026-08-26.
+
+Two consequences of the occurrence anchor are deliberate. Marking a recurring
+TODO done EARLY (before the armed slot fires) does not consume that
+occurrence: the item returns to pending at the already-armed slot, so the
+worst case is a redundant reminder, never a silently skipped one. And a
+one-off `scheduled_for` edit defers only that occurrence: the next completion
+returns the series to its origin cadence, which is also what keeps a #154
+resume from re-anchoring the whole series on the resume time. Completing a
+#154-paused TODO never re-arms it on any path: resume stays an explicit
+reschedule.
+
 If a scheduled run fails, it is retried on subsequent polls up to
 `MAX_RETRIES` (3). On give-up, a **recurring** TODO skips only the failed
 occurrence and re-arms at its next slot (so a transient outage cannot silently
@@ -434,6 +458,7 @@ behaviour until edited or recreated.
 2. Wait for execution
 3. **Verify:** TODO status resets to pending
 4. **Verify:** Schedule updated to the next cadence slot based on the prior scheduled fire time, not completion time (for example a `5m` TODO due at 10:00 moves to 10:05 even if marked done at 10:01)
+5. **Verify:** The same holds when the "done" lands AFTER the run finished and the ticker already re-armed: that 10:00 TODO still shows 10:05, not 10:10, and the 10:05 occurrence still fires
 
 ### Test 4: Visual Distinction
 1. Create TODO via UI (should show user icon badge)

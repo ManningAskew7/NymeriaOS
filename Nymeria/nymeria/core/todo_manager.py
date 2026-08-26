@@ -685,6 +685,22 @@ class TodoManager:
 
         Sets last_execution to now, clears scheduled_for.
 
+        This is the ONE writer that puts a completion time (rather than an
+        intended slot) in `last_execution`, which the done-paths now anchor
+        recurrence on (`todo_constants.resolve_done_recurrence_anchor`). It
+        cannot poison that anchor. Both call sites are in
+        `Ticker._handle_recurrence`, and they are the two branches where no
+        next slot exists: the TODO has no recurrence at all, or
+        `compute_recurrence_reschedule` returned None. The latter is only
+        reachable with a recurrence string that `parse_recurrence_interval`
+        cannot parse (`validate_recurrence` rejects those on every input path,
+        so it means hand-edited data), and the same unparseable string makes
+        every done-path's `compute_recurrence_reschedule` return None too, so
+        the anchor is computed and then discarded without moving a schedule.
+        The #154 and #247 auto-pause paths do NOT come through here: they use
+        `update_item(clear_schedule=True)`, which never touches
+        `last_execution`.
+
         Args:
             user_id: User ID
             todo_id: TODO ID
