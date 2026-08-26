@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
 
+from .time_utils import utc_now
+
 
 @dataclass
 class ThreadTokenUsage:
@@ -263,7 +265,11 @@ class TokenTracker:
         with self._lock:
             usage = self._row(thread_id)
             usage.last_input_tokens = remaining_tokens
-            usage.last_compaction_at = datetime.now()
+            # Aware UTC, not datetime.now(): this value is serialized straight
+            # onto the wire as context_stats.last_compaction, where a naive ISO
+            # string silently carried the SERVER's zone and read as UTC to
+            # every client.
+            usage.last_compaction_at = utc_now()
             usage.compaction_count += 1
             if context_model:
                 usage.context_model = context_model
