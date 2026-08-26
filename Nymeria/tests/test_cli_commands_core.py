@@ -304,3 +304,42 @@ def test_core_commands_emit_json_payloads(capsys: Any) -> None:
     context_payload = json.loads(capsys.readouterr().out)
     assert context_payload["thread_id"] == "thread-1"
     assert context_payload["total_tokens"] == 120
+
+
+def test_cli_context_shows_last_compaction_in_the_user_timezone(monkeypatch: Any) -> None:
+    """The CLI printed ``last_compaction`` straight off the wire.
+
+    The backend now stamps it as aware UTC (it used to be a naive local clock,
+    fixed 2026-08-26), so the terminal showed a raw ISO instant in a zone that
+    is not the reader's. The backend /usage renders the same field through
+    format_user_time_compact; this is the CLI half of that sweep.
+    """
+    import zoneinfo
+
+    monkeypatch.setattr(
+        "nymeria.core.time_utils.get_user_tz",
+        lambda: zoneinfo.ZoneInfo("Australia/Sydney"),
+    )
+
+    client = CoreFakeClient()
+    client.context_stats["last_compaction"] = "2026-05-18T10:00:00+00:00"
+    registry = make_registry()
+    sink = ListCommandOutputSink()
+    ctx = make_context(client, output=sink, confirm=True)
+
+    assert run(registry.dispatch_async(ctx, "/context")).ok is True
+    rendered = "\n".join(message.content for message in sink.messages)
+
+    assert "2026-05-18 20:00 AEST" in rendered
+    assert "2026-05-18T10:00" not in rendered
+
+
+def test_cli_context_still_says_never_without_a_compaction() -> None:
+    client = CoreFakeClient()  # fixture leaves last_compaction None
+    registry = make_registry()
+    sink = ListCommandOutputSink()
+    ctx = make_context(client, output=sink, confirm=True)
+
+    assert run(registry.dispatch_async(ctx, "/context")).ok is True
+    rendered = "\n".join(message.content for message in sink.messages)
+    assert "Never" in rendered

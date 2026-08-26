@@ -79,6 +79,22 @@ async def _handle_compact_command(
     return _format_compaction_result(result)
 
 
+def _local_time(value: object) -> str:
+    """Render a wire timestamp in the reader's timezone, zone named.
+
+    ``last_compaction`` arrives as aware UTC, so printing it raw showed the
+    terminal a clock that is not the reader's. Imported inside the function on
+    purpose: the thin client must not pull the agent harness in at module load
+    (``tests/test_cli_startup_imports.py``), matching the local-import
+    convention in ``commands/backend.py``.
+    """
+    if not value:
+        return ""
+    from ....core.time_utils import format_user_time_compact
+
+    return format_user_time_compact(str(value))
+
+
 def _format_context_stats(stats: Mapping[str, object]) -> str:
     usage_pct = stats.get("usage_percentage", "")
     rows = [
@@ -88,7 +104,7 @@ def _format_context_stats(stats: Mapping[str, object]) -> str:
         ("Turn output", stats.get("output_tokens", "")),
         ("Context mgmt", stats.get("context_management", "")),
         ("Compactions", stats.get("compaction_count", "")),
-        ("Last compacted", stats.get("last_compaction") or "Never"),
+        ("Last compacted", _local_time(stats.get("last_compaction")) or "Never"),
     ]
     if usage_pct != "":
         rows.insert(2, ("Usage", f"{usage_pct}%"))
