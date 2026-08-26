@@ -5157,7 +5157,7 @@ class _CommandExecutor(
             "|---|---|---|---|---|",
         ]
         for token in tokens:
-            prefix = getattr(token, "token_hash_prefix", "")
+            prefix = token.hash_prefix
             label = getattr(token, "label", "") or ""
             created = getattr(token, "created_at", "") or ""
             last_used = getattr(token, "last_used_at", "") or ""

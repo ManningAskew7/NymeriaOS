@@ -84,6 +84,12 @@ class UserRecord:
     updated_at: str
 
 
+# How many leading hash characters address a token. Lives here, beside the
+# record it describes, so the API schema and the command listing cannot drift
+# apart on it; revoke_token independently refuses anything under four chars.
+TOKEN_HASH_PREFIX_LEN = 8
+
+
 @dataclass
 class TokenRecord:
     token_hash: str
@@ -93,6 +99,20 @@ class TokenRecord:
     expires_at: str
     last_used_at: Optional[str]
     revoked_at: Optional[str]
+
+    @property
+    def hash_prefix(self) -> str:
+        """The addressable short form: what ``revoke_token`` takes.
+
+        Raw tokens are not recoverable, so every surface addresses a token by
+        the first characters of its hash, and this is the ONE derivation of
+        that value: the API schema and the command listing both read it here.
+        They did not before, and the listing asked the dataclass for a
+        ``token_hash_prefix`` field it has never had, so the getattr default
+        won and the column that feeds ``/account tokens revoke`` was blank for
+        every token.
+        """
+        return self.token_hash[:TOKEN_HASH_PREFIX_LEN]
 
 
 @dataclass
