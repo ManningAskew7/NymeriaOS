@@ -624,8 +624,12 @@ def test_resolve_todos_offers_full_ids_across_every_status() -> None:
     assert [o["id"] for o in options] == ["abc12345-full-id", "def67890-full-id"]
     assert [o["label"] for o in options] == ["Water the plants", "Old chore"]
     by_id = {o["id"]: o for o in options}
+    # Fire time in the user's zone, named. The old expectation here was the
+    # raw stored ISO instant, which is a different wall clock from the one the
+    # schedule was parsed in (see format_user_time_compact); the test fixture
+    # leaves the zone at UTC, so the value is unchanged and only the shape is.
     assert by_id["abc12345-full-id"]["meta"] == (
-        "abc12345, pending, fires 2026-08-05T09:00, repeats 1d"
+        "abc12345, pending, fires 2026-08-05 09:00 UTC, repeats 1d"
     )
     assert by_id["def67890-full-id"]["meta"] == "def67890, done"
     assert api.list_calls == [
