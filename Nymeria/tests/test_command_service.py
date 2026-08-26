@@ -926,7 +926,11 @@ def test_context_degrades_when_parallel_fetch_returns_base_exception() -> None:
     assert result.success is True
     assert "### Context Breakdown" in result.markdown
     assert "gpt-test | openai" in result.markdown
-    assert "0 / 0 tokens" in result.markdown
+    # Was pinned as "0 / 0 tokens", which encoded the defect: a window of zero
+    # capacity is the ABSENCE of a reading, not a reading. The degradation this
+    # test exists for is unchanged; only the honesty of the unknown case moved.
+    assert "unavailable" in result.markdown
+    assert "0 / 0 tokens" not in result.markdown
 
 
 def test_memory_limit_command_shows_usage_and_updates_limits() -> None:
@@ -6095,6 +6099,61 @@ def test_thread_list_columns_stay_aligned_when_ids_are_long() -> None:
         assert row[pin_col] == ("*" if pinned else " ")
         assert row[title_col:].startswith(title)
         assert row[platform_col:].startswith(platform)
+
+
+def test_context_refuses_a_thread_that_does_not_exist() -> None:
+    """/context must not invent a breakdown for a thread it cannot find.
+
+    Its five sub-calls run under gather(return_exceptions=True) and every
+    result goes through _dict_result, which turns ANY exception into {}. That
+    resilience is deliberate, but it swallowed the 404 meaning "no such
+    thread" along with everything else, so a typo'd or foreign id rendered a
+    confident, entirely fictional report: real-looking model, tool counts,
+    "Thread Overrides: none", and the bogus id echoed back as fact. Measured
+    live against production, where a nonexistent id and a real one returned
+    byte-identical output. /thread switch on the same id says "No thread
+    matching", so the command layer disagreed with itself.
+    """
+    import httpx
+
+    class _MissingThreadApi(FakeCommandApi):
+        async def get_context_stats(self, thread_id: str) -> dict[str, Any]:
+            request = httpx.Request("GET", "nymeria://threads")
+            response = httpx.Response(404, json={"detail": "Not found"}, request=request)
+            raise httpx.HTTPStatusError("Not found", request=request, response=response)
+
+    result = run(
+        CommandService().execute(
+            _cli_ctx(thread_id="no-such-thread-xyz"),
+            "/context",
+            api=_MissingThreadApi(),
+        )
+    )
+
+    assert result.success is False, result.markdown
+    assert "no-such-thread-xyz" in result.markdown
+    # The fabricated report must be gone, not merely accompanied by a warning.
+    assert "Context Breakdown" not in result.markdown
+    assert "Thread Overrides" not in result.markdown
+
+
+def test_context_still_degrades_when_a_sub_call_fails_for_another_reason() -> None:
+    """Only a missing thread refuses; other failures keep the resilience.
+
+    One flaky sub-call should not take the whole breakdown down with it, which
+    is why gather(return_exceptions=True) is there in the first place.
+    """
+
+    class _FlakyToolsApi(FakeCommandApi):
+        async def get_tool_categories(self) -> dict[str, Any]:
+            raise RuntimeError("tool catalog unavailable")
+
+    result = run(
+        CommandService().execute(_cli_ctx(), "/context", api=_FlakyToolsApi())
+    )
+
+    assert result.success is True, result.markdown
+    assert "Context Breakdown" in result.markdown
 
 
 def test_thread_list_bounds_the_id_column_against_one_absurd_id() -> None:
