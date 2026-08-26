@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -209,6 +210,58 @@ def test_activity_list_renders_entries(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "said hi" in result.markdown
     assert "said bye" in result.markdown
     assert "| Time | Type | Thread | Message |" in result.markdown
+
+
+def test_activity_list_keeps_its_columns_when_a_message_holds_a_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pipe in free text must not end the cell and shift the columns.
+
+    The Message column quotes whatever the user or agent actually said, and a
+    shell pipeline is the single most likely thing a developer pastes into a
+    chat. Unescaped, `ps aux | grep nymeria` splits one row into five cells, so
+    the message spills into a phantom column and every row after the pipe reads
+    against the wrong header. Newlines end the row outright.
+    """
+    from nymeria.core.activity_log import ActivityType
+
+    class _FakeEntry:
+        def __init__(self, message: str) -> None:
+            self.id = "entry-1"
+            self.timestamp = "2026-05-18T10:00:00+00:00"
+            self.type = ActivityType.USER_MESSAGE
+            self.message = message
+            self.thread_id = "thread-1"
+            self.metadata = {}
+
+    class _FakeLog:
+        def get_entries(self, user_id, limit, activity_type, thread_id):
+            return [_FakeEntry("run `ps aux | grep nymeria` then\nreport back")]
+
+    monkeypatch.setattr(
+        "nymeria.core.activity_log.get_activity_log",
+        lambda: _FakeLog(),
+    )
+
+    result = run(CommandService().execute(_ctx(), "/activity list"))
+    assert result.success is True, result.markdown
+
+    header = next(
+        line for line in result.markdown.splitlines() if line.startswith("| Time |")
+    )
+    row = next(
+        line for line in result.markdown.splitlines() if "grep nymeria" in line
+    )
+    # One row, one line: the newline must not have split it.
+    assert row.count("grep nymeria") == 1
+    assert _cell_count(row) == _cell_count(header)
+    # And the text is still readable, not mangled away.
+    assert "ps aux \\| grep nymeria" in row
+
+
+def _cell_count(row: str) -> int:
+    """Count real (unescaped) cell separators in a rendered markdown row."""
+    return len(re.findall(r"(?<!\\)\|", row))
 
 
 def test_activity_list_rejects_unknown_type(monkeypatch: pytest.MonkeyPatch) -> None:

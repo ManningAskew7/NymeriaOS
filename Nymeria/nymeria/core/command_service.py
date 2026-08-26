@@ -352,6 +352,25 @@ def fmt_tokens(n: Optional[int]) -> str:
     return str(n)
 
 
+def _table_cell(value: Any, *, limit: int | None = None) -> str:
+    """Render user- or agent-authored text for a markdown table cell.
+
+    Free text in a table needs two things the listings here had been doing ad
+    hoc or not at all: a newline ends the row, and an unescaped pipe ends the
+    CELL, shifting every column after it so the rest of the row reads against
+    the wrong headers. A shell pipeline is the likeliest thing a developer
+    pastes into a chat, and `/activity` quotes chat messages verbatim.
+
+    Truncation happens BEFORE escaping, which is the one ordering that matters:
+    escaping first lets a cut land between a backslash and its pipe and leave a
+    dangling escape behind.
+    """
+    text = " ".join(str(value or "").split())
+    if limit is not None and len(text) > limit:
+        text = f"{text[: max(limit - 3, 0)].rstrip()}..."
+    return text.replace("|", "\\|")
+
+
 def _client_for_context(ctx: "CommandContext") -> Any:
     """The client execute() and resolve_options construct when the caller
     supplies none: in-process backend doors first, service-token HTTP
@@ -4274,7 +4293,7 @@ class _CommandExecutor(
         for server in sorted(servers, key=lambda s: s.id):
             state = server.install_status or ("enabled" if server.enabled else "disabled")
             tool_count = len(server.discovered_tools or [])
-            name = server.name or server.id
+            name = _table_cell(server.name or server.id)
             lines.append(f"| `{server.id}` | {state} | {tool_count} | {name} |")
         return "\n".join(lines)
 
@@ -4494,7 +4513,8 @@ class _CommandExecutor(
             status = "enabled" if t.enabled else "disabled"
             action_type = getattr(t.action, "type", "?") if t.action else "?"
             lines.append(
-                f"| `{t.id}` | {status} | {t.source_type} | {action_type} | {t.name} |"
+                f"| `{t.id}` | {status} | {t.source_type} | {action_type} "
+                f"| {_table_cell(t.name)} |"
             )
         return "\n".join(lines)
 
@@ -4622,7 +4642,8 @@ class _CommandExecutor(
             state = "enabled" if h.enabled else "disabled"
             scope = "global" if h.scope == "global" else f"thread:{h.thread_id or '?'}"
             lines.append(
-                f"| `{h.id}` | {state} | {h.event} | {h.logic.action} | {scope} | {h.name} |"
+                f"| `{h.id}` | {state} | {h.event} | {h.logic.action} "
+                f"| {scope} | {_table_cell(h.name)} |"
             )
         return "\n".join(lines)
 
@@ -4643,7 +4664,7 @@ class _CommandExecutor(
             lines.append(
                 f"| `{t.id}` | {hook.get('event', '?')} | "
                 f"{hook.get('action', 'inject_context')} | "
-                f"{hook.get('scope', 'global')} | {t.description or t.title} |"
+                f"{hook.get('scope', 'global')} | {_table_cell(t.description or t.title)} |"
             )
         lines.append("")
         lines.append("Install one with `/hook install <id>`.")
@@ -4867,7 +4888,7 @@ class _CommandExecutor(
             event = str(e.get("event") or "")
             if e.get("tool_name"):
                 event += f" ({e['tool_name']})"
-            detail = str(e.get("detail") or "").replace("|", "\\|")[:80]
+            detail = _table_cell(e.get("detail"), limit=80)
             lines.append(
                 f"| {ts} | `{e.get('hook_id') or '?'}` | {event} "
                 f"| {e.get('status', '?')} | {detail} |"
@@ -4896,7 +4917,7 @@ class _CommandExecutor(
             "|---|---|---|---|---|",
         ]
         for r in records:
-            prompt = str(r.get("prompt") or "").replace("|", "\\|")[:60]
+            prompt = _table_cell(r.get("prompt"), limit=60)
             lines.append(
                 f"| `{r.get('record_id')}` | {r.get('tool_name') or '?'} "
                 f"| {prompt} | {r.get('expires_at') or '?'} "
@@ -5158,7 +5179,7 @@ class _CommandExecutor(
         ]
         for token in tokens:
             prefix = token.hash_prefix
-            label = getattr(token, "label", "") or ""
+            label = _table_cell(getattr(token, "label", ""))
             created = getattr(token, "created_at", "") or ""
             last_used = getattr(token, "last_used_at", "") or ""
             revoked = getattr(token, "revoked_at", "") or ""
@@ -5265,7 +5286,7 @@ class _CommandExecutor(
             ts = format_user_time_compact(getattr(entry, "timestamp", None))
             etype = getattr(entry.type, "value", str(entry.type)) if entry.type else ""
             tid = getattr(entry, "thread_id", "") or ""
-            msg = (getattr(entry, "message", "") or "").replace("\n", " ")[:80]
+            msg = _table_cell(getattr(entry, "message", ""), limit=80)
             lines.append(f"| {ts} | {etype} | `{tid}` | {msg} |")
         return "\n".join(lines)
 
@@ -5287,7 +5308,7 @@ class _CommandExecutor(
         for n in notifications:
             nid = (getattr(n, "id", "") or "")[:8]
             read = "yes" if getattr(n, "read", False) else "no"
-            summary = (getattr(n, "summary", "") or "").replace("\n", " ")[:80]
+            summary = _table_cell(getattr(n, "summary", ""), limit=80)
             lines.append(f"| `{nid}` | {read} | {summary} |")
         return "\n".join(lines)
 
