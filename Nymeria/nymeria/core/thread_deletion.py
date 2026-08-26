@@ -93,8 +93,16 @@ def cascade_delete_thread(
     lock = agent._thread_locks.get_lock(thread_id)
     acquired = lock.acquire(timeout=lock_timeout_seconds)
     if not acquired:
+        # The abort above already fired, so this is NOT a no-op failure: the
+        # caller's in-flight turn has been stopped and only the deletion was
+        # refused. Saying just "busy" reads as "nothing happened" and loses a
+        # turn silently. The abort lands at the next iteration boundary, which
+        # a long tool call can miss inside the lock timeout, so retrying is the
+        # real remedy rather than a hopeful suggestion.
         raise ThreadDeletionBusy(
-            f"Thread '{thread_id}' is busy and could not be locked for deletion"
+            f"Thread '{thread_id}' was running a turn, which has been stopped, "
+            "but it could not be locked in time so the thread was NOT deleted. "
+            "Run the delete again in a moment."
         )
 
     try:
