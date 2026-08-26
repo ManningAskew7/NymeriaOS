@@ -44,6 +44,7 @@ from .command_forms import (
     form_tab,
     radio_field,
     search_field,
+    table_cell,
     text_field,
 )
 from .command_params import BoundArgs
@@ -511,7 +512,8 @@ class LLMCommandsMixin:
         for r in records:
             lines.append(
                 f"| `{r.get('record_id')}` | {r.get('kind') or 'transport'} "
-                f"| {r.get('from_model') or '?'} | {r.get('to_model') or '?'} "
+                f"| {table_cell(r.get('from_model') or '?')} "
+                f"| {table_cell(r.get('to_model') or '?')} "
                 f"| {r.get('expires_at') or '?'} | {r.get('thread_id') or '?'} |"
             )
         lines.append("")

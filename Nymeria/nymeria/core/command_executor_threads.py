@@ -251,9 +251,7 @@ def _thread_table(
     id_width: int,
 ) -> list[str]:
     """Return the column header followed by one row per thread."""
-    header = (
-        f"{indent}* {'ID':<{id_width}}  {'Pin':<3}  {'Title':<28}  Platform"
-    )
+    header = f"{indent}* {'ID':<{id_width}}  {'Pin':<3}  {'Title':<28}  Platform"
     return [header, *_format_thread_rows(
         threads, active_thread_id, indent=indent, id_width=id_width
     )]

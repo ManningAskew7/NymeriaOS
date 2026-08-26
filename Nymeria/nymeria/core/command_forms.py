@@ -172,6 +172,38 @@ def render_outcome(level: CommandResultLevel, text: str) -> str:
     return text
 
 
+def table_cell(value: Any, *, limit: int | None = None) -> str:
+    """THE renderer for one markdown table cell holding free text.
+
+    Every command listing that puts user- or agent-authored text in a table
+    needs this, and two of eight tables were doing it by hand: an unescaped
+    ``|`` ends the CELL, shifting every column after it so the rest of the row
+    reads against the wrong headers, and a newline ends the row. Backticks
+    around a cell are NOT protection: GFM splits a row into cells before it
+    parses inline code, so ``| `a|b` |`` is still two cells.
+
+    It lives here, in a leaf module every ``command_executor_*`` mixin already
+    imports, because the first version lived in ``command_service`` and the
+    mixins cannot import that (it imports them). The one table this helper was
+    written for and still missed, ``/fallback approvals``, is in a mixin: an
+    unreachable helper is one nobody can apply.
+
+    ``limit`` truncates BEFORE escaping, so a cut can never land inside an
+    escape sequence; note it therefore bounds the source text, not the
+    rendered width. ``None`` and only ``None`` renders empty, so a cell whose
+    value is ``0`` or ``False`` still shows its value.
+
+    The tool layer keeps its own copy (``tools/utils._escape_md_table_cell``,
+    which has the same escaping rules and its own tests). That is deliberate:
+    ``core`` must not import ``tools``, and collapsing them would drag the
+    command layer into every tool module.
+    """
+    text = " ".join(("" if value is None else str(value)).split())
+    if limit is not None and len(text) > limit:
+        text = f"{text[: max(limit - 3, 0)].rstrip()}..."
+    return text.replace("|", "\\|")
+
+
 def form_option(
     option_id: str,
     label: str | None = None,
