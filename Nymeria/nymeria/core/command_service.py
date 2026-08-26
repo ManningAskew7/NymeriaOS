@@ -1223,13 +1223,35 @@ class CommandBackendClient:
         if user_id != self.user.id and self.user.role != "admin":
             _raise_http_status(404, "Not found")
 
-    def _require_thread_access(self, thread_id: str) -> None:
+    def _require_thread_access(self, thread_id: str, *, claim: bool = True) -> None:
+        """Enforce that the caller owns ``thread_id`` (or is admin).
+
+        The in-process twin of ``triggers/api.py::_require_thread_access``, and
+        ``claim`` means exactly what it means there. With ``claim=True`` (the
+        default, for writes) a personal thread is claimed on first touch, which
+        is the platform's TOFU ownership mechanism: without it a thread stays
+        ownerless until some later write and the next caller to touch it would
+        claim-jack. With ``claim=False`` (read-only doors) an ownerless thread
+        is NOT claimed, because the access check would otherwise be a WRITE:
+        `claim_thread` is an INSERT, so merely reading a thread id that does
+        not exist registers it and it appears in `/thread list` forever as an
+        empty "New Chat". The REST layer fixed exactly that (its docstring
+        calls them "ghost" threads) and ten of its read routes pass
+        ``claim=False``, including the GET twins of the three read doors here;
+        this side had no such parameter, so the same read had a side effect its
+        REST equivalent deliberately avoids.
+
+        Cross-user isolation is identical in both modes: a thread owned by
+        someone else still resolves to 404. Only the TOFU claim of an
+        *ownerless* thread is dropped.
+        """
         from .thread_classification import is_shared_channel
 
         if self.user.role == "admin":
             if is_shared_channel(thread_id):
                 return
-            self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
+            if claim:
+                self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
             return
 
         if is_shared_channel(thread_id):
@@ -1237,8 +1259,14 @@ class CommandBackendClient:
                 return
             _raise_http_status(404, "Not found")
 
-        owner = self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
-        if owner != self.user.id:
+        if claim:
+            owner = self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
+            if owner != self.user.id:
+                _raise_http_status(404, "Not found")
+            return
+
+        owner = self.agent.accounts_repo.get_thread_owner(thread_id)
+        if owner is not None and owner != self.user.id:
             _raise_http_status(404, "Not found")
 
     def _checked_user_id(self, user_id: str) -> str:
@@ -1314,7 +1342,8 @@ class CommandBackendClient:
         return await self.agent.prune_now(thread_id, self.user.id, mode=mode)
 
     async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
-        self._require_thread_access(thread_id)
+        # Read-only door: never TOFU-claim (see _require_thread_access).
+        self._require_thread_access(thread_id, claim=False)
         stats = dict(self.agent.get_context_stats(thread_id) or {})
         thread_locks = getattr(self.agent, "_thread_locks", None)
         if thread_locks is not None:
@@ -1334,7 +1363,8 @@ class CommandBackendClient:
     ) -> dict:
         # Mirrors GET /threads/{id}/history: with include_internal the route
         # forces the autonomous/prompt-metadata filters off, so match that here.
-        self._require_thread_access(thread_id)
+        # Read-only door: never TOFU-claim (see _require_thread_access).
+        self._require_thread_access(thread_id, claim=False)
         show_autonomous = False
         show_prompt_metadata = False
         if not include_internal:
@@ -1352,7 +1382,8 @@ class CommandBackendClient:
         return {"thread_id": thread_id, "messages": messages}
 
     async def get_thread_config(self, thread_id: str, user_id: Optional[str] = None) -> Optional[dict]:
-        self._require_thread_access(thread_id)
+        # Read-only door: never TOFU-claim (see _require_thread_access).
+        self._require_thread_access(thread_id, claim=False)
         from ..api.routers.thread_config import (
             _config_response,
             _default_thread_config_response,

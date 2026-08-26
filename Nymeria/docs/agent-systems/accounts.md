@@ -373,6 +373,8 @@ A thread becomes owned in one of four ways:
 3. **Non-admin first-touch on `/chat`.** TOFU via `claim_thread` (`core/accounts.py`, `INSERT OR IGNORE`, race-safe). Subsequent access by any other non-admin user resolves to 404.
 4. **Startup orphan-backfill.** `NymeriaAgent.__init__` enumerates checkpoint thread_ids, filters to personal patterns (NOT shared-channel), and assigns any without a `thread_owners` row to the bootstrap admin. Idempotent across restarts.
 
+**Reads never claim.** Both `_require_thread_access` implementations (`triggers/api.py` for REST, `core/command_service.py::CommandBackendClient` for in-process command execution) take `claim: bool = True`; read-only doors pass `claim=False`. Without it the access check is itself a write, and merely reading a thread id that does not exist registers it: a mistyped id in `/context` used to add a permanent empty "New Chat" to the caller's thread list, and opening a new tab fired read-only GETs that left the same "ghost" behind. With `claim=False` an ownerless thread is read without inserting a row, and ownership is established by the first actual write. Cross-user isolation is identical in both modes: a thread owned by someone else resolves to 404 either way, so only the TOFU claim of an *ownerless* thread is dropped. The in-process side gained the parameter on 2026-08-26; before that, command-path reads (`/context`, `/history`, thread config, and the option resolvers built on them) still claimed.
+
 ### Personal vs shared patterns
 
 `_is_shared_channel_thread` (`triggers/api.py`) classifies thread IDs:
