@@ -6046,6 +6046,56 @@ def test_thread_list_formats_backend_teams_before_ungrouped_threads() -> None:
     assert any("pinned" in line and "Pinned ungrouped" in line for line in lines)
 
 
+def test_thread_list_columns_stay_aligned_when_ids_are_long() -> None:
+    """A whole thread ID must not shove the columns after it out of the table.
+
+    IDs stopped being truncated so the reader can copy one and switch to it,
+    but a UUID is 36 characters against a header that reserved 8, so every
+    column after the ID slid right by the overflow and the header stopped
+    describing its own rows. The ID column fits the widest ID on show.
+    """
+    from nymeria.core.command_executor_threads import _format_thread_list
+
+    long_id = "a4c1f0e2-7b6d-4f39-9c58-2ee1d0b7a3c4"
+    thread_list = [
+        {
+            "thread_id": long_id,
+            "title": "Long identifier",
+            "pinned": False,
+            "updated_at": "2026-05-10T12:00:00Z",
+            "platform": "desktop",
+        },
+        {
+            "thread_id": "short",
+            "title": "Short identifier",
+            "pinned": True,
+            "updated_at": "2026-05-10T11:00:00Z",
+            "platform": "cli",
+        },
+    ]
+
+    lines = _format_thread_list(thread_list, active_thread_id=long_id, teams=[])
+
+    assert any(long_id in line for line in lines), "the whole ID must still show"
+    header = next(line for line in lines if line.endswith("Platform"))
+    pin_col = header.index("Pin")
+    title_col = header.index("Title")
+    platform_col = header.index("Platform")
+
+    rows = {
+        title: next(line for line in lines if title in line)
+        for title in ("Long identifier", "Short identifier")
+    }
+    for title, platform, pinned in (
+        ("Long identifier", "desktop", False),
+        ("Short identifier", "cli", True),
+    ):
+        row = rows[title]
+        assert row[pin_col] == ("*" if pinned else " ")
+        assert row[title_col:].startswith(title)
+        assert row[platform_col:].startswith(platform)
+
+
 def test_in_process_branch_thread_refuses_while_processing() -> None:
     """CommandBackendClient.branch_thread mirrors the route's mid-turn 409.
 
