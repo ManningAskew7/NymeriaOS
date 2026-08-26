@@ -7898,3 +7898,42 @@ def test_memory_search_discloses_the_row_cap_like_its_sibling_listing() -> None:
     # The cap itself is unchanged: still 25 rows.
     assert "k24: v24" in result.markdown
     assert "k25: v25" not in result.markdown
+
+
+def test_context_reports_the_compaction_threshold_that_actually_governs() -> None:
+    """``/context`` printed the PERCENTAGE setting whenever the mode was
+    auto_compact, without checking ``compact_threshold_mode``.
+
+    Compaction on this deployment fires on absolute tokens, and /status and
+    /usage both said so ("of 200.0k"), while /context said "threshold 35%" of a
+    1.0M window, i.e. 350k. Measured live 2026-08-26. A user tuning compaction
+    reads /context, tunes the inert knob, and nothing changes.
+    """
+    class _TokensModeApi(FakeCommandApi):
+        async def get_settings(self, user_id: str | None = None):
+            settings = await super().get_settings(user_id)
+            settings["compact_threshold"] = 0.35  # inert in tokens mode
+            settings["compact_threshold_mode"] = "tokens"
+            settings["compact_threshold_tokens"] = 200_000
+            return settings
+
+        async def get_context_stats(self, thread_id: str):
+            stats = await super().get_context_stats(thread_id)
+            stats["compact_trigger_tokens"] = 200_000  # runtime-resolved, clamped
+            return stats
+
+    result = _run_command(_TokensModeApi(), "/context")
+    assert result.success is True
+    assert "200.0k" in result.markdown
+    assert "35%" not in result.markdown
+
+    class _PercentModeApi(FakeCommandApi):
+        async def get_settings(self, user_id: str | None = None):
+            settings = await super().get_settings(user_id)
+            settings["compact_threshold"] = 0.35
+            settings["compact_threshold_mode"] = "percentage"
+            return settings
+
+    percent = _run_command(_PercentModeApi(), "/context")
+    assert percent.success is True
+    assert "threshold 35%" in percent.markdown
