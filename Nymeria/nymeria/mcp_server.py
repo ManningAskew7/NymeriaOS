@@ -1181,10 +1181,11 @@ async def nymeria_command(
     apply to that user, not to an agent actor; only wire this surface to a
     caller trusted with that account's authority.
 
-    Commands that execute through the chat pipeline (/skill, /kit, /goal,
-    /compact, and others) are not run here: with a thread_id the result
-    carries a hint to send the same line via nymeria_chat, and without one
-    the thread-required error comes back first, as on any frontend.
+    Commands that execute through the chat pipeline (/skill, /kit,
+    /orchestrate, /compact, and others) are not run here: with a thread_id
+    the result carries a hint to send the same line via nymeria_chat, and
+    without one the thread-required error comes back first, as on any
+    frontend.
 
     surface: which frontend to emulate for discovery, per-surface blocking,
     and the per-surface output budget (long results truncate to the emulated

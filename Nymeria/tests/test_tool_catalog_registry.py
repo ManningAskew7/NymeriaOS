@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1260
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1256
 
 
 def test_catalog_key_equals_tool_name():
@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1275
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1271
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -1026,7 +1026,6 @@ BASELINE_CATALOG_NAMES = [
     "manage_mcp",
     "mandrill_send_email",
     "mandrill_send_template",
-    "mark_task_done",
     "marketstack_get_eod",
     "marketstack_get_exchange",
     "marketstack_get_ticker",
@@ -1247,8 +1246,6 @@ BASELINE_CATALOG_NAMES = [
     "posthog_track_page_or_screen",
     "profitwell_get_metrics",
     "profitwell_get_settings",
-    "propose_task",
-    "provide_review_feedback",
     "pushbullet_delete_push",
     "pushbullet_list_pushes",
     "pushbullet_send_push",
@@ -1289,7 +1286,6 @@ BASELINE_CATALOG_NAMES = [
     "regression_echo",
     "reload_all",
     "request_credential",
-    "request_review",
     "rss_feed_read",
     "rundeck_execute_job",
     "rundeck_get_job_metadata",
@@ -2293,7 +2289,6 @@ BASELINE_STATIC_NAMES = [
     "manage_mcp",
     "mandrill_send_email",
     "mandrill_send_template",
-    "mark_task_done",
     "marketstack_get_eod",
     "marketstack_get_exchange",
     "marketstack_get_ticker",
@@ -2521,8 +2516,6 @@ BASELINE_STATIC_NAMES = [
     "posthog_track_page_or_screen",
     "profitwell_get_metrics",
     "profitwell_get_settings",
-    "propose_task",
-    "provide_review_feedback",
     "pushbullet_delete_push",
     "pushbullet_list_pushes",
     "pushbullet_send_push",
@@ -2564,7 +2557,6 @@ BASELINE_STATIC_NAMES = [
     "regression_echo",
     "reload_all",
     "request_credential",
-    "request_review",
     "rss_feed_read",
     "run_tools_in_order",
     "rundeck_execute_job",

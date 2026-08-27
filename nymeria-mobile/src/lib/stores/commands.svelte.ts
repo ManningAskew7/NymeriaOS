@@ -34,7 +34,7 @@ const ROOTS_AWAIT_TIMEOUT_MS = 3_000;
 // hardcoded list was missing /done and /resume, which broke both); this
 // static fallback covers a failed catalog fetch.
 const CHAT_STREAM_FALLBACK_ROOTS: ReadonlySet<string> = new Set([
-  '/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick', '/done', '/resume'
+  '/compact', '/orchestrate', '/skill', '/kit', '/quick', '/done', '/resume'
 ]);
 
 export function createCommandsStore() {

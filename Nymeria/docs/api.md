@@ -1600,7 +1600,7 @@ survives `warning`; and `info` is reported honestly (older backends
 collapsed it into `success`, so a bare success level from them does not
 imply a confirmation). The retired `[Error]:`/`[Success]:`/`[Info]:`
 string prefixes never appear in first-party output anymore, including
-the chat-stream command surfaces (`/goal`, `/orchestrate`, `/quick`,
+the chat-stream command surfaces (`/orchestrate`, `/quick`,
 `/done`, skill relays), which speak the same artifact vocabulary over
 SSE; since 2026-08-04 their one-shot `response` frame also carries a
 `level` field with the same value (additive; current clients render the

@@ -7,8 +7,6 @@ Built-in SKILL.md bundles shipped with Nymeria. Each subdirectory contains a SKI
 - `callable-thread-builder/`  -  skill for creating callable threads
 - `cli-customization/`  -  kit: read/reconfigure the user's terminal CLI status bars via the `cli_statusbar_*` tools (not default-on; discovered via search or `/kit`)
 - `credential-management/`  -  kit: request, inspect, and clean up credentials and connections
-- `goal-supervisor/`  -  internal kit: supervises goal-worker threads
-- `goal-worker/`  -  internal kit: executes a goal under supervision
 - `mcp-management/`  -  kit: find, install, test, and manage MCP servers
 - `nymeria-resources/`  -  guidance skill: map of the on-disk resource stores and the rules for editing them directly as files (not default-on; pointed at by the file-tool descriptions and `data/README.md`)
 - `orchestrate/`  -  internal kit: multi-thread orchestration

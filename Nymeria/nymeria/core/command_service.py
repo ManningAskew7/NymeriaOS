@@ -3582,7 +3582,7 @@ def get_command_service() -> CommandService:
 # Skill kits are skills with `required_tools` in their frontmatter; activating
 # one binds those tools into `ThreadConfig.temporary_tools` with the kit's
 # `tool_ttl`. The standard path is the agent invoking the `Skill` meta-tool,
-# but slash commands (e.g. `/orchestrate`, `/goal`) also need to activate kits.
+# but slash commands (e.g. `/orchestrate`) also need to activate kits.
 # These helpers are shared by every slash command that wants kit semantics —
 # they mirror what `skills/meta_tool.py` does for the agent-driven path.
 

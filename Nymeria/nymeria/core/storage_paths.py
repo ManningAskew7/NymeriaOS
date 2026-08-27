@@ -2,8 +2,8 @@
 
 Several core storage layers derive a JSON or SQLite file path from a caller
 supplied identifier (a user id or thread id): ``TodoManager``,
-``TriggerManager``, ``GoalManager``, ``UserProfileManager``,
-``ThreadMetadataManager``, ``ActivityLog``, the notification store, the ticker's
+``TriggerManager``, ``UserProfileManager``, ``ThreadMetadataManager``,
+``ActivityLog``, the notification store, the ticker's
 TODO-completion indexer, and the per-user memory-index path in
 ``agent_prompt``. Each historically inlined the same path-traversal guard: keep
 only ``[A-Za-z0-9-_]`` characters and fall back to a default when nothing

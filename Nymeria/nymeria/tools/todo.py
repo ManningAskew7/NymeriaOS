@@ -348,26 +348,6 @@ def nym_todo(
         if not item:
             return _todo_not_found_for_thread(todo_id)
 
-        # /goal structural lock: goal-locked TODOs cannot be flipped to done
-        # by the worker thread. Only the goal's supervisor (via mark_task_done
-        # in goal_tools.py) has authority. The kit binding leaves
-        # mark_task_done off the worker entirely, but this runtime guard is
-        # defence-in-depth — if a user or operator manually adds nym_todo with
-        # `status=done` to a goal-locked item, refuse it here too.
-        if todo_status == TodoStatus.DONE and item.goal_id:
-            from ..core.goal_manager import get_goal_manager
-
-            gm = get_goal_manager()
-            if gm is None or not gm.can_authority(
-                user_id, item.goal_id, thread_id
-            ):
-                return (
-                    f"[Error]: TODO {todo_id} is locked under goal "
-                    f"{item.goal_id}. The worker thread cannot mark its own "
-                    f"goal-locked TODOs done; use `request_review` to escalate "
-                    f"to the supervisor."
-                )
-
         success = todo_list.update_item(
             todo_id,
             task=task,

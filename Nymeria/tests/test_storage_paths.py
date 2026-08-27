@@ -167,7 +167,6 @@ class TestWriteTextAtomic:
 # storage manager. UserProfileManager nests under a per-user directory, the rest
 # write a flat file, but all must keep the result inside their dir attribute.
 _MANAGERS = [
-    ("nymeria.core.goal_manager", "GoalManager", "_path_for", "goals_dir"),
     ("nymeria.core.trigger_manager", "TriggerManager", "_path_for", "triggers_dir"),
     ("nymeria.core.trigger_manager", "TriggerManager", "_executions_path", "triggers_dir"),
     ("nymeria.core.todo_manager", "TodoManager", "_get_todos_path", "todos_dir"),

@@ -214,7 +214,6 @@ from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
 from .dream_tools import thread_instructions_set, DREAM_TOOLS
-from .goal_tools import GOAL_TOOLS
 from .image_gen_integrations import (
     image_gen_openai,
     image_gen_gemini,
@@ -1668,7 +1667,6 @@ __all__ = [
     "EVENT_MEETING_SERVICE_TOOLS",
     "FILE_EDIT_TOOLS",
     "FILE_STORAGE_SERVICE_TOOLS",
-    "GOAL_TOOLS",
     "GOOGLE_ANALYTICS_SERVICE_TOOLS",
     "GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS",
     "GOOGLE_DOCS_TOOLS",

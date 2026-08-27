@@ -3779,8 +3779,11 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # into aliases of others, and seven arrived, five of them the overview
     # roots style-guide rule 2 requires. 151 after #133 added the /alias
     # family: root overview + create + delete + list. 154 after #143 ported
-    # the CLI-local todo verbs: todos edit + todos schedule + todos repeat.)
-    assert len(service._commands) == 154
+    # the CLI-local todo verbs: todos edit + todos schedule + todos repeat.
+    # 146 after the /goal subsystem was deleted, taking its eight commands
+    # with it; the executable count is untouched because all eight were
+    # chat_stream, so none of them ever dispatched here.)
+    assert len(service._commands) == 146
     assert sum(cmd.executable for cmd in service._commands.values()) == 137
 
     help_cmd = by_name["help"]
@@ -4919,15 +4922,13 @@ _COMMAND_LAYER_MODULES = tuple(
     f"core/{p.name}" for p in sorted(_NYMERIA_PKG.glob("core/command_*.py"))
 ) + ("api/routers/chat.py",)
 # The only functions allowed to spell a sentinel: the boundary's transition
-# parser (soft landing for plugin/out-of-tree handlers) and the two sites
-# that legitimately PARSE a sentinel-shaped protocol (the /notepad
-# tool-channel parse, and the goal-supervisor spawn's tool-channel check in
-# chat.py, which today spells the colon-less "[Error]" but must not trip
-# the ratchet if its comment's accurate "[Error]:" spelling ever lands).
+# parser (soft landing for plugin/out-of-tree handlers) and the one site
+# that legitimately PARSES a sentinel-shaped protocol (the /notepad
+# tool-channel parse). The goal-supervisor spawn in chat.py was the third
+# entry until the /goal subsystem was deleted.
 _SENTINEL_ALLOWED = {
     ("core/command_service.py", "_render_result_markdown"),
     ("core/command_service.py", "_cmd_notepad_write"),
-    ("api/routers/chat.py", "_spawn_goal_supervisor"),
 }
 
 # The outcome-artifact ratchet (#144): render_outcome in command_forms.py is
@@ -5126,7 +5127,7 @@ def test_render_outcome_is_byte_exact_per_level() -> None:
     assert render_outcome("warning", "partial") == "**Warning:** partial"
     body = "Status\n\nProvider  anthropic"
     # info is VERBATIM: no artifact, and none of the dispatcher's
-    # heading-heuristic rewriting (that would change /goal status bytes).
+    # heading-heuristic rewriting (that would change /mcp status bytes).
     assert render_outcome("info", body) == body
 
 

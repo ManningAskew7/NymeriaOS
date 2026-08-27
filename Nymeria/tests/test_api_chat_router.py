@@ -879,7 +879,6 @@ def test_chat_stream_command_failures_use_markdown_outcome_not_sentinel(
         "/quick": "Usage: `/quick",
         "/done": "Usage: `/done",
         "/orchestrate": "Usage: `/orchestrate",
-        "/goal": "Usage: `/goal",
     }
     for command, marker in usage_markers.items():
         with client.stream(
@@ -1096,20 +1095,17 @@ def test_orchestrate_clear_renders_the_authored_level(
     assert agent.astream_calls == []
 
 
-def test_goal_cancel_and_clear_with_no_goal_are_errors(
-    tmp_path: Path, api_client_builder, monkeypatch
+def test_goal_command_is_gone_and_reaches_the_agent_as_plain_text(
+    tmp_path: Path, api_client_builder
 ):
-    """#144 normalization: refusing an action because there is no goal is an
-    error like the sibling approve/pause/resume refusals (cancel and clear
-    used to answer with an unmarked info body); the status readout stays an
-    artifact-free info readout."""
-    from nymeria.core import goal_manager as gm_module
-
-    gm = SimpleNamespace(get_active_goal_for_thread=lambda *a, **k: None)
-    monkeypatch.setattr(gm_module, "get_goal_manager", lambda: gm)
+    """The /goal subsystem was deleted. Nothing in the chat pipeline may
+    still intercept the word: the line must fall through to a normal turn
+    exactly as any other unregistered slash text does, with no supervisor
+    spawn, no kit activation, and no usage banner."""
     client, agent, token = _chat_client(tmp_path, api_client_builder)
 
-    def _frame(message: str) -> dict[str, Any]:
+    for message in ("/goal", "/goal ship the beta", "/goal status"):
+        agent.astream_calls.clear()
         with client.stream(
             "POST",
             "/chat",
@@ -1117,62 +1113,46 @@ def test_goal_cancel_and_clear_with_no_goal_are_errors(
             json={"message": message, "thread_id": "caller-1"},
         ) as response:
             body = "".join(response.iter_text())
-        (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
-        return frame
-
-    cancel = _frame("/goal cancel")
-    assert cancel["content"] == "**Error:** No active goal to cancel."
-    assert cancel["level"] == "error"
-
-    clear = _frame("/goal clear")
-    assert clear["content"] == "**Error:** No active goal on this thread."
-    assert clear["level"] == "error"
-
-    status = _frame("/goal status")
-    assert status["level"] == "info"
-    assert status["content"].startswith("No active goal on this thread.")
-    assert "**" not in status["content"]
+        contents = _response_contents(body)
+        # The old intercept answered inline and never ran a turn; now the
+        # turn runs and the model sees the raw text.
+        assert agent.astream_calls, message
+        assert agent.astream_calls[0]["message"] == message
+        assert contents == ["stream response"], (message, contents)
 
 
-def test_goal_approve_partial_success_is_a_warning(
-    tmp_path: Path, api_client_builder, monkeypatch
-):
-    """#144 normalization: a spawned supervisor with a failed kit activation
-    is a partial success, so it renders the ``**Warning:**`` artifact (it
-    used to claim ``**Error:**`` even though the supervisor thread exists)."""
-    from nymeria.api.routers import chat as chat_module
-    from nymeria.core import command_service as cs
-    from nymeria.core import goal_manager as gm_module
+def test_command_catalog_has_no_goal_commands() -> None:
+    """Behaviour 1: no `goal*` name, path, or alias survives the catalog, so
+    /help cannot list one and the dispatcher cannot resolve one. The alias
+    half matters on its own: the eight registrations each carried a flat
+    `goal_*` bot spelling that resolves BEFORE the visibility gates."""
+    from nymeria.core.command_service import CommandService
 
-    goal = SimpleNamespace(
-        goal_id="g-1",
-        status="pending_approval",
-        tasks=[SimpleNamespace(status="pending")],
+    service = CommandService()
+    infos = service.list_commands(source=None, include_hidden=True)
+    offenders = sorted(
+        {
+            token
+            for info in infos
+            for token in [info.name, ".".join(info.path), *info.aliases]
+            if token == "goal" or token.startswith(("goal ", "goal.", "goal_"))
+        }
     )
-    gm = SimpleNamespace(get_active_goal_for_thread=lambda *a, **k: goal)
-    monkeypatch.setattr(gm_module, "get_goal_manager", lambda: gm)
-    monkeypatch.setattr(
-        chat_module, "_spawn_goal_supervisor", lambda *a, **k: ("sup-1", None)
-    )
-    monkeypatch.setattr(
-        cs, "activate_skill_kit", lambda **kwargs: (False, "kit missing")
-    )
-    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    assert offenders == [], offenders
 
-    with client.stream(
-        "POST",
-        "/chat",
-        headers=api_client_builder.auth(token),
-        json={"message": "/goal approve", "thread_id": "caller-1"},
-    ) as response:
-        body = "".join(response.iter_text())
-    (frame,) = [e for e in _sse_events(body) if e["type"] == "response"]
-    assert frame["content"] == (
-        "**Warning:** Supervisor spawned (sup-1) but "
-        "kit activation failed: kit missing"
-    )
-    assert frame["level"] == "warning"
-    assert agent.astream_calls == []
+    for spelling in (
+        "goal",
+        "goal status",
+        "goal approve",
+        "goal cancel",
+        "goal clear",
+        "goal pause",
+        "goal resume",
+        "goal edit",
+        "goal_approve",
+        "goal_status",
+    ):
+        assert service.find_command(spelling) is None, spelling
 
 
 def test_resume_stream_busy_acks_error_without_queueing(
