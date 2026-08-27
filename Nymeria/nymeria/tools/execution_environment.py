@@ -18,7 +18,7 @@ from ..config import get_settings
 # Original (pre-configure) description per tool name, so re-configuring is
 # idempotent. Reload-survivable (#277): pushed by core at boot and after tool
 # reloads, so this module re-executing mid-storm must not drop the bases.
-_DESCRIPTION_BASES: dict[str, str] = globals().get("_DESCRIPTION_BASES") or {}
+_DESCRIPTION_BASES: dict[str, str] = globals().get("_DESCRIPTION_BASES", {})
 _SHELL_TOOL_NAMES = {"bash_execute"}
 _FILE_TOOL_NAMES = {"file_read", "file_write", "file_edit"}
 
@@ -124,6 +124,25 @@ def configure_environment_aware_tool_descriptions(
             tool.description = _shell_description(base, env)
         elif name in _FILE_TOOL_NAMES:
             tool.description = _file_description(base, env)
+
+
+def configure_current_tool_descriptions(
+    env: ExecutionEnvironment | None = None,
+) -> None:
+    """Apply environment-aware descriptions to the CURRENT seed + catalog
+    tool objects.
+
+    One composition shared by boot (``core/agent.py``) and the post-reload
+    path (``core/agent_tools.py``), so the two cannot drift; a package
+    reload re-creates the tool objects, which is why the pass must re-run
+    after one (#277).
+    """
+    # Function-local import: this module is imported BY the package.
+    from . import CATALOG_TOOLS, SEED_TOOLS
+
+    configure_environment_aware_tool_descriptions(
+        [*SEED_TOOLS, *CATALOG_TOOLS.values()], env
+    )
 
 
 def _detect_container() -> bool:

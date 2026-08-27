@@ -61,8 +61,10 @@ class ToolGroup:
 # way). Reusing the existing dict object keeps sibling registrations intact
 # regardless of reload order; per-name replacement above keeps re-registration
 # idempotent. A family module DELETED from disk therefore keeps its group
-# until process restart: deleting builtin tool modules is a deploy operation.
-_TOOL_GROUPS: Dict[str, ToolGroup] = globals().get("_TOOL_GROUPS") or {}
+# until process restart, and a RENAMED group doubles up (the old name
+# persists beside the new until restart): deleting or renaming builtin tool
+# modules is a deploy operation.
+_TOOL_GROUPS: Dict[str, ToolGroup] = globals().get("_TOOL_GROUPS", {})
 
 
 def register_tool_group(group: ToolGroup) -> None:

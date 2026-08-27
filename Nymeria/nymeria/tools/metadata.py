@@ -219,10 +219,10 @@ _EXPLICIT_CATEGORY_BY_TOOL_NAME: Dict[str, ToolCategory] = {
 # tools-package reload storm re-executing this module must not wipe entries
 # nothing would re-register.
 _PLUGIN_TOOL_CATEGORIES: Dict[str, ToolCategory] = (
-    globals().get("_PLUGIN_TOOL_CATEGORIES") or {}
+    globals().get("_PLUGIN_TOOL_CATEGORIES", {})
 )
 _PLUGIN_TOOL_SECURITY_LEVELS: Dict[str, "SecurityLevel"] = (
-    globals().get("_PLUGIN_TOOL_SECURITY_LEVELS") or {}
+    globals().get("_PLUGIN_TOOL_SECURITY_LEVELS", {})
 )
 
 
@@ -1128,7 +1128,7 @@ def get_category_tools_summary() -> Dict[str, List[str]]:
 # core MCP loads, not by this package's own imports, so a tools-package
 # reload storm must not empty it between the storm and the follow-up load.
 MCP_SERVER_TOOL_METADATA: Dict[str, ToolMetadata] = (
-    globals().get("MCP_SERVER_TOOL_METADATA") or {}
+    globals().get("MCP_SERVER_TOOL_METADATA", {})
 )
 
 
@@ -1214,7 +1214,7 @@ def clear_mcp_server_tool_metadata() -> None:
 # Custom tool metadata registry (separate from built-ins). Reload-survivable
 # (#277) for the same reason as the MCP registry above.
 CUSTOM_TOOL_METADATA: Dict[str, ToolMetadata] = (
-    globals().get("CUSTOM_TOOL_METADATA") or {}
+    globals().get("CUSTOM_TOOL_METADATA", {})
 )
 
 

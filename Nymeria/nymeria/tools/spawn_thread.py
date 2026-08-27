@@ -54,8 +54,10 @@ PLATFORM_META_LAST_ACTIVE = "last_active_at"
 # and the depth limit (DEFAULT_MAX_SPAWN_DEPTH) is the hard guard against
 # recursive chains. For single-process deployments this is sufficient; if
 # horizontal scaling is ever added, move counters to Redis or the accounts DB.
-_spawn_rate_lock = threading.Lock()
-_spawn_counts: Dict[str, List[float]] = {}
+# Reload-survivable (#277): a tools-package reload must not hand every
+# spawn loop a fresh rate-limit window. Same idiom as tools/registry.py.
+_spawn_rate_lock = globals().get("_spawn_rate_lock") or threading.Lock()
+_spawn_counts: Dict[str, List[float]] = globals().get("_spawn_counts", {})
 
 
 def _slug_from_title(title: str, max_len: int = 24) -> str:

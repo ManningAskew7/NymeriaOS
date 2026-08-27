@@ -425,29 +425,34 @@ class NymeriaAgent:
         # Store base system prompt (from soul.md)
         self._base_system_prompt = self.settings.load_soul()
 
-        # Create tool registry. This inline boot sequence (base tools now,
-        # custom + MCP loads a few steps below) mirrors
-        # agent_tools.rebuild_tool_registry, which owns the assembly for
-        # every post-boot rebuild; keep the two in step (#277).
+        # Create tool registry. Boot deliberately builds a BASE registry
+        # (constructor-supplied tools now, custom + MCP loads a few steps
+        # below; callable-thread tools and the callable map are NOT built
+        # here); serving entrypoints then complete it via
+        # sync_agent_tools(), whose agent_tools.rebuild_tool_registry owns
+        # the full post-boot assembly (#277).
         self.tool_registry = ToolRegistry()
         if tools:
             self.tool_registry.register_all(tools)
+        # Module names the last reload_tools() failed to re-import (those
+        # modules kept their previous state); reload_all surfaces them.
+        self.last_tools_reload_failures: List[str] = []
+        # Custom-tool names currently registered, remembered so a reload
+        # can unregister a DELETED definition the loader no longer knows
+        # about (#277 review finding).
+        self._registered_custom_tool_names: set = set()
 
         # Detect shell/path runtime facts once at startup and expose them in
         # shell/file tool descriptions before any graph is built.
         self.execution_environment: Any = None
         try:
-            from ..tools import SEED_TOOLS, CATALOG_TOOLS
             from ..tools.execution_environment import (
-                configure_environment_aware_tool_descriptions,
+                configure_current_tool_descriptions,
                 detect_execution_environment,
             )
 
             self.execution_environment = detect_execution_environment()
-            configure_environment_aware_tool_descriptions(
-                [*SEED_TOOLS, *CATALOG_TOOLS.values()],
-                self.execution_environment,
-            )
+            configure_current_tool_descriptions(self.execution_environment)
         except Exception as e:  # noqa: BLE001
             self.execution_environment = None
             logger.warning("Execution environment detection failed (non-fatal): %s", e)
@@ -2016,21 +2021,21 @@ class NymeriaAgent:
         from .agent_tools import resolve_temporary_tools
         return resolve_temporary_tools(self, tc, persist=persist)
 
-    def _load_custom_tools(self) -> int:
+    def _load_custom_tools(self, registry=None) -> int:
         from .agent_tools import load_custom_tools
-        return load_custom_tools(self)
+        return load_custom_tools(self, registry=registry)
 
-    def _unregister_existing_mcp_tools(self) -> set[str]:
+    def _unregister_existing_mcp_tools(self, registry=None) -> set[str]:
         from .agent_tools import unregister_existing_mcp_tools
-        return unregister_existing_mcp_tools(self)
+        return unregister_existing_mcp_tools(self, registry=registry)
 
     def _prune_mcp_tool_bindings(self, live_tool_names: set[str]) -> int:
         from .agent_tools import prune_mcp_tool_bindings
         return prune_mcp_tool_bindings(self, live_tool_names)
 
-    def _load_mcp_server_tools(self) -> int:
+    def _load_mcp_server_tools(self, registry=None) -> int:
         from .agent_tools import load_mcp_server_tools
-        return load_mcp_server_tools(self)
+        return load_mcp_server_tools(self, registry=registry)
 
     def reload_mcp_server_tools(self) -> List[str]:
         from .agent_tools import reload_mcp_server_tools

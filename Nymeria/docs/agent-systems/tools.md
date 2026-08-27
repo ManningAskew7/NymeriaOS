@@ -3274,7 +3274,9 @@ imports the family so its `register_tool_group` fires (mirroring how
 
 ### 3. Tool is Automatically Available
 
-The tool is available on next startup, or call `reload_all()` for hot-reload.
+The tool is available on next startup, or call `reload_all()` for hot-reload
+(adding and editing modules are hot; REMOVING a family module takes effect on
+the next restart, since registrations deliberately survive reloads).
 Metadata is generated automatically from the registered tool object, so adding a
 tool to `SEED_TOOLS` or a catalog `ToolGroup` is enough to get a metadata entry;
 `__all__` is regenerated from the module namespace (a golden test fails if the

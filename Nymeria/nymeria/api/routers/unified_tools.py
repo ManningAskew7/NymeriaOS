@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.accounts import AuthenticatedUser
-from ...core.custom_tools import get_custom_tool_loader, reload_custom_tools
+from ...core.custom_tools import get_custom_tool_loader
 from ...core.time_utils import utc_now
 from ..schemas.custom_tools import (
     CustomToolCreateRequest,
@@ -442,7 +442,10 @@ def create_unified_tools_router(
             )
 
         loader.delete_definition(tool_id)
-        reload_custom_tools()
+        # Agent-level narrow reload: unregisters the deleted tool and
+        # rebuilds graphs (the module-level loader reload leaves the tool
+        # bound until restart).
+        get_agent_fn().reload_custom_tools()
 
         return {
             "status": "ok",

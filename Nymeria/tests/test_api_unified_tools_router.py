@@ -273,12 +273,6 @@ def test_unified_custom_tool_crud_is_admin_only_and_preserves_reload_side_effect
     monkeypatch,
 ):
     client, agent, loader = _client(tmp_path, api_client_builder, monkeypatch)
-    reload_custom_calls = []
-    monkeypatch.setattr(
-        unified_tools_router,
-        "reload_custom_tools",
-        lambda: reload_custom_calls.append("called"),
-    )
     user_token = _create_user(agent, "owner")
     admin_token = _create_user(agent, "admin", role="admin")
 
@@ -348,7 +342,10 @@ def test_unified_custom_tool_crud_is_admin_only_and_preserves_reload_side_effect
     assert delete_response.status_code == 200
     assert delete_response.json() == {"status": "ok", "deleted": "price_lookup"}
     assert loader.get_definition("price_lookup") is None
-    assert reload_custom_calls == ["called"]
+    # Delete rides the agent-level narrow reload (unregister + graph
+    # rebuild), not the loader-only module function that left the deleted
+    # tool bound until restart (#277 review finding).
+    assert agent.reload_count == 3
 
 
 def _seed_vault(tmp_path: Path, monkeypatch, *, connected_user: str | None = None):
