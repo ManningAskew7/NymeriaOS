@@ -54,7 +54,9 @@ class FakeAgent:
     def sync_agent_tools(self):
         self.synced_tools += 1
 
-    def reload_tools(self):
+    def reload_custom_tools(self):
+        # The routers deliberately use the narrow custom-tool reload; the
+        # full-module reload_tools is reserved for runtime_admin (#277).
         self.reload_count += 1
 
     def _rebuild_default_graphs(self):

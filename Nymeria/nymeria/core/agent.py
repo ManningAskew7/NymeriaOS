@@ -425,7 +425,10 @@ class NymeriaAgent:
         # Store base system prompt (from soul.md)
         self._base_system_prompt = self.settings.load_soul()
 
-        # Create tool registry
+        # Create tool registry. This inline boot sequence (base tools now,
+        # custom + MCP loads a few steps below) mirrors
+        # agent_tools.rebuild_tool_registry, which owns the assembly for
+        # every post-boot rebuild; keep the two in step (#277).
         self.tool_registry = ToolRegistry()
         if tools:
             self.tool_registry.register_all(tools)

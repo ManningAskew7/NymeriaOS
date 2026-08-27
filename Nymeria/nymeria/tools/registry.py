@@ -53,7 +53,16 @@ class ToolGroup:
 # Registry: group name -> ToolGroup. Keyed by name so a family that
 # re-registers (for example after a module reload) replaces its own entry in
 # place rather than duplicating it, and dict insertion order is preserved.
-_TOOL_GROUPS: Dict[str, ToolGroup] = {}
+#
+# Reload-survivable on purpose (#277): ``importlib.reload`` re-executes this
+# body inside the SAME module namespace, so a plain ``= {}`` here wipes every
+# family registered before this module's turn in a package-wide reload storm
+# (the 2026-08-27 incident collapsed the catalog from 1256 to 263 names that
+# way). Reusing the existing dict object keeps sibling registrations intact
+# regardless of reload order; per-name replacement above keeps re-registration
+# idempotent. A family module DELETED from disk therefore keeps its group
+# until process restart: deleting builtin tool modules is a deploy operation.
+_TOOL_GROUPS: Dict[str, ToolGroup] = globals().get("_TOOL_GROUPS") or {}
 
 
 def register_tool_group(group: ToolGroup) -> None:

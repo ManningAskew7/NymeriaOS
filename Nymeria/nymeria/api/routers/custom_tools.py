@@ -67,7 +67,7 @@ def create_custom_tools_router(
                     definition.workflow_config.revision_hash,
                     definition.workflow_config.source_code,
                 )
-            get_agent_fn().reload_tools()
+            get_agent_fn().reload_custom_tools()
 
             return custom_tool_definition_to_response(definition)
 
@@ -141,7 +141,7 @@ def create_custom_tools_router(
                 errors.append(f"{tool_data.get('id', 'unknown')}: {str(e)}")
 
         if imported > 0:
-            get_agent_fn().reload_tools()
+            get_agent_fn().reload_custom_tools()
 
         return {
             "status": "ok",
@@ -193,7 +193,7 @@ def create_custom_tools_router(
                 definition.workflow_config.revision_hash,
                 definition.workflow_config.source_code,
             )
-        get_agent_fn().reload_tools()
+        get_agent_fn().reload_custom_tools()
 
         return custom_tool_definition_to_response(definition)
 
@@ -211,7 +211,7 @@ def create_custom_tools_router(
                 detail=f"Tool '{tool_id}' not found",
             )
 
-        get_agent_fn().reload_tools()
+        get_agent_fn().reload_custom_tools()
 
         return {"status": "ok", "deleted_id": tool_id}
 
