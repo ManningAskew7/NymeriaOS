@@ -51,8 +51,8 @@ class ThreadLLMConfigRequest(BaseModel):
 
 class DreamingConfigRequest(BaseModel):
     """Partial dreaming-config update. Bookkeeping fields (last_dream_at,
-    last_dream_thread_id) are intentionally excluded — only the scheduler
-    writes them.
+    last_dream_thread_id) are intentionally excluded: only ``invoke_dream``
+    writes them, at kickoff, for manual and scheduled runs alike.
     """
 
     enabled: bool | None = None

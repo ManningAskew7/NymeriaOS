@@ -147,7 +147,9 @@ class DreamingConfig(BaseModel):
     changes (memory prune, instruction tweaks, scheduled TODOs, skill suggestions).
     Gating fields are layered cheapest-first; all of them must pass for a dream
     to fire. ``last_dream_at`` and ``last_dream_thread_id`` are bookkeeping
-    fields the scheduler writes after a successful run.
+    fields ``invoke_dream`` stamps at KICKOFF (manual and scheduled runs
+    alike), deliberately before the turn runs so the interval gate doubles as
+    a re-fire guard while a dream is in flight.
 
     The gating thresholds and ``model`` are per-thread overrides: when left
     None the dream inherits the global default (``Settings.dream_default_*``),
