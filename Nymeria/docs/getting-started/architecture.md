@@ -721,7 +721,7 @@ thread that structurally could not mark its own tasks done, with the
 authority held by a separately spawned supervisor thread. It was deleted in
 2026-08 after three months dead in production, since `/orchestrate` already
 covers the capability on generic primitives. The reinvention is tracked as
-backlog #269; the deleted code is recoverable at sha `a2dceb76`.
+backlog #269, and the deleted code remains recoverable from repo history.
 
 ### Slash-command-activates-skill
 
