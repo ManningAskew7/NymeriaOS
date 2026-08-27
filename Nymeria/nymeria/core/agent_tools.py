@@ -40,12 +40,14 @@ from ..vendor.react_agent import ToolRegistry
 from .time_utils import ensure_aware_utc, utc_now
 
 if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
+
     from .agent import NymeriaAgent
 
 logger = logging.getLogger(__name__)
 
 
-def rebuild_tool_registry(agent: "NymeriaAgent") -> List:
+def rebuild_tool_registry(agent: "NymeriaAgent") -> List["BaseTool"]:
     """THE registry assembly: swap in a fresh ToolRegistry from every source.
 
     Order: seed + callable-thread tools land on a FRESH registry, then the
@@ -66,9 +68,10 @@ def rebuild_tool_registry(agent: "NymeriaAgent") -> List:
     from .. import tools as tools_module
     from ..agents.tool_factory import get_callable_thread_tools
 
-    # Read SEED_TOOLS off the module object so a just-reloaded module wins
-    # over any cached from-import reference.
-    seed_tools = list(getattr(tools_module, "SEED_TOOLS", []))
+    # Read off the live module object (fresh after a reload). A missing
+    # attribute is a broken tools package and must raise here, not silently
+    # build a seed-less registry.
+    seed_tools = list(tools_module.SEED_TOOLS)
     thread_tools = get_callable_thread_tools(agent.thread_config_manager)
 
     # Rebuild callable tool -> thread_id map (for auto-abort on timeout).
@@ -79,12 +82,15 @@ def rebuild_tool_registry(agent: "NymeriaAgent") -> List:
             new_map[tc.callable_name] = tc.thread_id
     agent._callable_tool_thread_map = new_map
 
-    agent.tool_registry = ToolRegistry()
-    agent.tool_registry.register_all(seed_tools + thread_tools)
-
-    # Loaders register into the fresh registry the agent now holds.
-    agent._load_custom_tools()
-    agent._load_mcp_server_tools()
+    # Build the new registry DETACHED and publish it in one assignment:
+    # a concurrent graph build reading agent.tool_registry must never see
+    # a half-built registry (the MCP load in particular is not a short
+    # window; #277 review finding). Same discipline as new_map above.
+    registry = ToolRegistry()
+    registry.register_all(seed_tools + thread_tools)
+    agent._load_custom_tools(registry=registry)
+    agent._load_mcp_server_tools(registry=registry)
+    agent.tool_registry = registry
     return thread_tools
 
 
@@ -171,8 +177,17 @@ def resolve_temporary_tools(agent: "NymeriaAgent", tc, *, persist: bool = True) 
     return set(live.keys())
 
 
-def load_custom_tools(agent: "NymeriaAgent") -> int:
+def load_custom_tools(
+    agent: "NymeriaAgent", registry: ToolRegistry | None = None
+) -> int:
     """Load custom tools from the custom_tools directory.
+
+    ``registry`` targets a not-yet-published registry during an atomic
+    rebuild; default is the agent's live one. The unregister set is the
+    union of the loader's current names and the names REMEMBERED from the
+    last load (``agent._registered_custom_tool_names``): the loader
+    forgets a deleted definition before any reload runs, and the stale
+    binding must still come off (#277 review finding).
 
     Returns:
         Number of custom tools loaded.
@@ -180,31 +195,39 @@ def load_custom_tools(agent: "NymeriaAgent") -> int:
     try:
         from .custom_tools import get_custom_tool_loader
 
+        target = registry if registry is not None else agent.tool_registry
         agent._custom_tool_loader = get_custom_tool_loader()
-        old_custom_names = set(getattr(agent._custom_tool_loader, "_tools", {}).keys())
+        old_custom_names = set(
+            getattr(agent._custom_tool_loader, "_tools", {}).keys()
+        ) | set(getattr(agent, "_registered_custom_tool_names", set()))
         for name in old_custom_names:
-            agent.tool_registry.unregister(name)
+            target.unregister(name)
         custom_tools = agent._custom_tool_loader.load_all()
 
         if custom_tools:
-            agent.tool_registry.register_all(custom_tools)
+            target.register_all(custom_tools)
             logger.info(f"Loaded {len(custom_tools)} custom tool(s)")
 
+        agent._registered_custom_tool_names = {t.name for t in custom_tools}
         return len(custom_tools)
     except Exception as e:
         logger.error(f"Failed to load custom tools: {e}", exc_info=True)
         return 0
 
 
-def unregister_existing_mcp_tools(agent: "NymeriaAgent") -> set[str]:
-    """Remove previously registered dynamic MCP wrappers from the live registry."""
+def unregister_existing_mcp_tools(
+    agent: "NymeriaAgent", registry: ToolRegistry | None = None
+) -> set[str]:
+    """Remove previously registered dynamic MCP wrappers from ``registry``
+    (default: the agent's live one)."""
+    target = registry if registry is not None else agent.tool_registry
     existing = {
         tool.name
-        for tool in agent.tool_registry.get_all_tools()
+        for tool in target.get_all_tools()
         if getattr(tool, "name", "").startswith("mcp__")
     }
     for name in existing:
-        agent.tool_registry.unregister(name)
+        target.unregister(name)
     return existing
 
 
@@ -270,8 +293,13 @@ def prune_mcp_tool_bindings(agent: "NymeriaAgent", live_tool_names: set[str]) ->
     return removed
 
 
-def load_mcp_server_tools(agent: "NymeriaAgent") -> int:
+def load_mcp_server_tools(
+    agent: "NymeriaAgent", registry: ToolRegistry | None = None
+) -> int:
     """Load MCP server tools from the mcp_servers directory.
+
+    ``registry`` targets a not-yet-published registry during an atomic
+    rebuild; default is the agent's live one.
 
     Returns:
         Number of MCP server tools loaded.
@@ -284,9 +312,10 @@ def load_mcp_server_tools(agent: "NymeriaAgent") -> int:
             register_mcp_server_tool_metadata,
         )
 
-        registry = get_mcp_server_registry()
-        agent._unregister_existing_mcp_tools()
-        mcp_tools = registry.get_all_tools()
+        target = registry if registry is not None else agent.tool_registry
+        server_registry = get_mcp_server_registry()
+        agent._unregister_existing_mcp_tools(registry=target)
+        mcp_tools = server_registry.get_all_tools()
         live_names = {tool.name for tool in mcp_tools}
 
         # Metadata covers every discovered tool across every installed
@@ -296,7 +325,7 @@ def load_mcp_server_tools(agent: "NymeriaAgent") -> int:
         # (via get_all_tools()'s filter), but a name not yet "live" should
         # still be a known name the defaults endpoint will accept.
         clear_mcp_server_tool_metadata()
-        for defn in registry.get_all_servers():
+        for defn in server_registry.get_all_servers():
             for dt in defn.discovered_tools:
                 tool_name = format_mcp_tool_name(defn.id, dt.name)
                 register_mcp_server_tool_metadata(
@@ -311,7 +340,7 @@ def load_mcp_server_tools(agent: "NymeriaAgent") -> int:
         agent._prune_mcp_tool_bindings(live_names)
 
         if mcp_tools:
-            agent.tool_registry.register_all(mcp_tools)
+            target.register_all(mcp_tools)
             logger.info(f"Loaded {len(mcp_tools)} MCP server tool(s)")
 
         return len(mcp_tools)
@@ -495,7 +524,12 @@ def reload_custom_tools(agent: "NymeriaAgent") -> List[str]:
         from .custom_tools import get_custom_tool_loader
 
         loader = get_custom_tool_loader()
-        old_custom_names = set(getattr(loader, "_tools", {}).keys())
+        # Union with the REMEMBERED registration set: the loader forgets a
+        # deleted definition before this reload runs, and the stale binding
+        # must still come off the live registry (#277 review finding).
+        old_custom_names = set(getattr(loader, "_tools", {}).keys()) | set(
+            getattr(agent, "_registered_custom_tool_names", set())
+        )
         for name in old_custom_names:
             agent.tool_registry.unregister(name)
         custom_tools = loader.load_all()
@@ -503,6 +537,7 @@ def reload_custom_tools(agent: "NymeriaAgent") -> List[str]:
         # Re-register custom tools (they replace existing ones with same name)
         if custom_tools:
             agent.tool_registry.register_all(custom_tools)
+        agent._registered_custom_tool_names = {t.name for t in custom_tools}
 
         agent._rebuild_default_graphs()
         try:
@@ -521,15 +556,21 @@ def reload_custom_tools(agent: "NymeriaAgent") -> List[str]:
         return []
 
 
-def _reload_tools_package() -> None:
+def _reload_tools_package() -> List[str]:
     """importlib-reload every ``nymeria.tools`` submodule, then the package.
 
     Picks up brand-new module files and re-executes existing ones. Safe
-    against the #277 wipe because every cross-module accumulator in the
-    package is reload-survivable (see the ``_TOOL_GROUPS`` comment in
-    ``tools/registry.py``); the consequence is that a module DELETED from
-    disk keeps its registrations until process restart, which is fine:
-    deleting builtin tool modules is a deploy operation, not a runtime one.
+    against the #277 wipe because the package's cross-module accumulators
+    and live-resource singletons are reload-survivable (the contract lives
+    at the ``_TOOL_GROUPS`` comment in ``tools/registry.py``); the
+    consequence is that a module DELETED from disk keeps its registrations
+    until process restart, which is fine: deleting builtin tool modules is
+    a deploy operation, not a runtime one.
+
+    Returns:
+        Fully qualified names of modules that FAILED to reload or import
+        (they keep their previous in-process state); callers surface these
+        rather than reporting unconditional success.
     """
     from .. import tools as tools_module
 
@@ -538,6 +579,7 @@ def _reload_tools_package() -> None:
     submodules = [name for _, name, _ in pkgutil.iter_modules([str(tools_path)])]
     logger.info(f"Found tool submodules on disk: {submodules}")
 
+    failures: List[str] = []
     # Process each submodule - reload existing, import new
     for submod_name in submodules:
         full_name = f"nymeria.tools.{submod_name}"
@@ -546,16 +588,19 @@ def _reload_tools_package() -> None:
                 importlib.reload(sys.modules[full_name])
                 logger.debug(f"Reloaded existing: {full_name}")
             except Exception as e:
+                failures.append(full_name)
                 logger.warning(f"Failed to reload {full_name}: {e}")
         else:
             try:
                 importlib.import_module(full_name)
                 logger.info(f"Imported new module: {full_name}")
             except Exception as e:
+                failures.append(full_name)
                 logger.warning(f"Failed to import new module {full_name}: {e}")
 
     # Reload the main tools module (__init__.py) to pick up new exports
     importlib.reload(tools_module)
+    return failures
 
 
 def _reapply_environment_descriptions(agent: "NymeriaAgent") -> None:
@@ -569,16 +614,11 @@ def _reapply_environment_descriptions(agent: "NymeriaAgent") -> None:
     if env is None:
         return
     try:
-        from .. import tools as tools_module
         from ..tools.execution_environment import (
-            configure_environment_aware_tool_descriptions,
+            configure_current_tool_descriptions,
         )
 
-        seed = list(getattr(tools_module, "SEED_TOOLS", []))
-        catalog = getattr(tools_module, "CATALOG_TOOLS", {})
-        configure_environment_aware_tool_descriptions(
-            [*seed, *catalog.values()], env
-        )
+        configure_current_tool_descriptions(env)
     except Exception as e:  # noqa: BLE001 - description sugar must not break a reload
         logger.warning("Environment description re-apply failed (non-fatal): %s", e)
 
@@ -595,6 +635,11 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     user's default_thread_tools so they appear as enabled by default.  Removed
     core tools are cleaned out of the list as well.
 
+    The registry rebuild includes the MCP load and therefore the MCP
+    binding prune: an MCP server unavailable at reload time drops its tool
+    names from user defaults and thread configs, exactly as any
+    callable-thread sync does.
+
     NOTE: Due to how LangGraph works, newly created tools are NOT available
     in the same conversation turn. The current turn's graph was captured at
     the start of the turn. New tools will work on the next user message.
@@ -607,25 +652,31 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     logger.info("Reloading tools module...")
 
     # Snapshot current SEED_TOOLS before reload (for diff)
-    old_core_names = {
-        t.name for t in getattr(tools_module, 'SEED_TOOLS', [])
-    }
+    old_core_names = {t.name for t in tools_module.SEED_TOOLS}
 
-    _reload_tools_package()
+    failures = _reload_tools_package()
+    # Surfaced to callers (runtime_admin's reload_all reads it): a module
+    # that failed to reload kept its previous state, and reporting
+    # unconditional success here is how #277 hid for 17 hours.
+    agent.last_tools_reload_failures = failures
+
+    # Descriptions BEFORE the metadata refresh: ToolMetadata snapshots the
+    # description off the tool object, and boot enriches before metadata
+    # generates, so the reload path must match or the two disagree.
+    _reapply_environment_descriptions(agent)
 
     from ..tools.metadata import refresh_builtin_tool_metadata
 
-    # Get SEED_TOOLS directly from the reloaded module object
-    # (using 'from ..tools import SEED_TOOLS' could get cached references)
-    SEED_TOOLS = getattr(tools_module, 'SEED_TOOLS', [])
+    # Read SEED_TOOLS off the reloaded module object (a from-import taken
+    # before the reload would hold the same list anyway, but the module
+    # attribute is the unambiguous source).
+    SEED_TOOLS = tools_module.SEED_TOOLS
     refresh_builtin_tool_metadata()
     new_core_names = {t.name for t in SEED_TOOLS}
     logger.info(f"SEED_TOOLS after reload: {sorted(new_core_names)}")
 
     # Auto-sync default_thread_tools for all users
     agent._sync_default_thread_tools(old_core_names, new_core_names)
-
-    _reapply_environment_descriptions(agent)
 
     rebuild_tool_registry(agent)
 
@@ -637,19 +688,21 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     except Exception:
         logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
-    tool_names = [t["name"] for t in agent.tool_registry.list_tools()]
-    catalog_count = len(getattr(tools_module, "CATALOG_TOOLS", {}))
-    try:
-        from ..tools.registry import all_tool_groups
+    from ..tools.registry import all_tool_groups
 
-        group_count = len(all_tool_groups())
-    except Exception:  # noqa: BLE001
-        group_count = -1
+    tool_names = [t["name"] for t in agent.tool_registry.list_tools()]
+    if failures:
+        logger.warning(
+            "Tools reload had %d module failure(s), previous state kept: %s",
+            len(failures),
+            failures,
+        )
     logger.info(
-        "Tools reloaded. registry=%d catalog=%d groups=%d",
+        "Tools reloaded. registry=%d catalog=%d groups=%d failures=%d",
         len(tool_names),
-        catalog_count,
-        group_count,
+        len(tools_module.CATALOG_TOOLS),
+        len(all_tool_groups()),
+        len(failures),
     )
     return tool_names
 

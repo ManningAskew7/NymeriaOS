@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from typing import Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
@@ -137,11 +137,11 @@ def _lookup_candidates(name: str) -> set[str]:
 # reload time, so changing a credential spec requires a restart, the same
 # deploy-operation semantics as deleting a tool module.
 _lock = globals().get("_lock") or threading.Lock()
-_SPECS: dict[str, ProviderCredentialSpec] = globals().get("_SPECS") or {}
-_NAME_INDEX: dict[str, str] = globals().get("_NAME_INDEX") or {}
-_CANONICAL_NAMES: dict[str, str] = globals().get("_CANONICAL_NAMES") or {}
-_SERVICE_INDEX: dict[str, str] = globals().get("_SERVICE_INDEX") or {}
-_TOOL_INDEX: dict[str, str] = globals().get("_TOOL_INDEX") or {}
+_SPECS: dict[str, ProviderCredentialSpec] = globals().get("_SPECS", {})
+_NAME_INDEX: dict[str, str] = globals().get("_NAME_INDEX", {})
+_CANONICAL_NAMES: dict[str, str] = globals().get("_CANONICAL_NAMES", {})
+_SERVICE_INDEX: dict[str, str] = globals().get("_SERVICE_INDEX", {})
+_TOOL_INDEX: dict[str, str] = globals().get("_TOOL_INDEX", {})
 
 
 def _validate(spec: ProviderCredentialSpec) -> None:
@@ -176,8 +176,17 @@ def register_provider_spec(spec: ProviderCredentialSpec) -> ProviderCredentialSp
     with _lock:
         existing = _SPECS.get(spec.provider)
         if existing is not None:
-            if existing == spec:
-                return existing
+            # Class-blind value comparison (#277 review finding): a module
+            # reload re-creates the ProviderCredentialSpec CLASS, and
+            # dataclass __eq__ refuses across class identities, so the
+            # surviving store made byte-identical re-registrations from
+            # every family module reloaded after this one raise the
+            # conflict error below. astuple compares field values only;
+            # on a match the stored instance is refreshed so the store
+            # converges onto the current class.
+            if astuple(existing) == astuple(spec):
+                _SPECS[spec.provider] = spec
+                return spec
             raise ValueError(
                 f'conflicting ProviderCredentialSpec registrations for "{spec.provider}"; '
                 "share one spec object across modules instead of re-declaring it"

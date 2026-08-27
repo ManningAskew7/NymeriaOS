@@ -85,8 +85,11 @@ class BackgroundBashRegistry:
             self._jobs.pop(job_id, None)
 
 
-_registry: BackgroundBashRegistry | None = None
-_registry_lock = threading.Lock()
+# Reload-survivable (#277): this registry is the ONLY handle on live
+# background jobs; a tools-package reload re-executing this body must not
+# orphan running subprocesses. Same idiom as tools/registry.py.
+_registry: BackgroundBashRegistry | None = globals().get("_registry")
+_registry_lock = globals().get("_registry_lock") or threading.Lock()
 
 
 def get_registry() -> BackgroundBashRegistry:

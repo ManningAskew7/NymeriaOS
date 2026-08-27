@@ -503,9 +503,11 @@ class BrowserThread:
         self._playwright = None
 
 
-# Global browser thread instance
-_browser_thread: Optional[BrowserThread] = None
-_browser_lock = threading.Lock()
+# Global browser thread instance. Reload-survivable (#277): the only
+# handle on the live browser thread; a tools-package reload must not
+# strand it and spawn a second one. Same idiom as tools/registry.py.
+_browser_thread: Optional[BrowserThread] = globals().get("_browser_thread")
+_browser_lock = globals().get("_browser_lock") or threading.Lock()
 
 
 def _get_browser() -> BrowserThread:

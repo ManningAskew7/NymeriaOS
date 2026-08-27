@@ -62,11 +62,24 @@ def reload_all() -> str:
 
     try:
         tool_count, skill_count, source_count = _do_full_reload()
-        return (
+        message = (
             f"[Success]: Reloaded {tool_count} tools, {skill_count} skill(s) indexed, "
             f"{source_count} trigger source(s).\n"
             f"New tools will be available on the next message."
         )
+        # Honesty rider (#277): a module that failed to reload kept its
+        # previous in-process state; do not report unconditional success.
+        from ..core.agent import get_current_agent
+
+        agent = get_current_agent()
+        failures = list(getattr(agent, "last_tools_reload_failures", []) or [])
+        if failures:
+            message += (
+                f"\n[Warning]: {len(failures)} tool module(s) failed to "
+                f"reload and kept their previous state: {', '.join(failures)}. "
+                f"Check the api log; fix the source and reload again, or restart."
+            )
+        return message
     except Exception as e:
         logger.error(f"reload_all failed: {e}", exc_info=True)
         return f"[Error]: Failed to reload: {str(e)}"
