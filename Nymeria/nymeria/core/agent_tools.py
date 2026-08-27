@@ -45,11 +45,54 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def rebuild_tool_registry(agent: "NymeriaAgent") -> List:
+    """THE registry assembly: swap in a fresh ToolRegistry from every source.
+
+    Order: seed + callable-thread tools land on a FRESH registry, then the
+    custom-tool and MCP loaders re-register their slices into it. Shared by
+    ``sync_agent_tools`` and ``reload_tools`` so the two can never drift
+    again: #277 happened because ``reload_tools`` grew its own assembly that
+    dropped every MCP wrapper tool. ``NymeriaAgent.__init__`` mirrors this
+    sequence inline (constructor ordering: the registry must exist before
+    other init steps run); keep the two in step.
+
+    Also rebuilds ``_callable_tool_thread_map`` so the timeout-hook fallback
+    map stays consistent with the callable tools just registered.
+
+    Returns:
+        The callable-thread tool objects registered (for callers that report
+        callable names).
+    """
+    from .. import tools as tools_module
+    from ..agents.tool_factory import get_callable_thread_tools
+
+    # Read SEED_TOOLS off the module object so a just-reloaded module wins
+    # over any cached from-import reference.
+    seed_tools = list(getattr(tools_module, "SEED_TOOLS", []))
+    thread_tools = get_callable_thread_tools(agent.thread_config_manager)
+
+    # Rebuild callable tool -> thread_id map (for auto-abort on timeout).
+    # Build locally then assign atomically so readers never see a partial map.
+    new_map: Dict[str, str] = {}
+    for tc in agent.thread_config_manager.list_callable_threads():
+        if tc.callable_name:
+            new_map[tc.callable_name] = tc.thread_id
+    agent._callable_tool_thread_map = new_map
+
+    agent.tool_registry = ToolRegistry()
+    agent.tool_registry.register_all(seed_tools + thread_tools)
+
+    # Loaders register into the fresh registry the agent now holds.
+    agent._load_custom_tools()
+    agent._load_mcp_server_tools()
+    return thread_tools
+
+
 def sync_agent_tools(agent: "NymeriaAgent") -> List[str]:
     """Sync callable thread tools into the tool registry.
 
-    Rebuilds the registry with SEED_TOOLS + callable thread tools + custom tools.
-    Call this after creating/deleting callable threads.
+    Rebuilds the registry via ``rebuild_tool_registry`` (seed + callable +
+    custom + MCP). Call this after creating/deleting callable threads.
 
     Note: per-user graph builds source callable thread tools directly from
     the per-user-filtered ``thread_config_manager`` (see
@@ -60,31 +103,7 @@ def sync_agent_tools(agent: "NymeriaAgent") -> List[str]:
     Returns:
         List of callable thread tool names now in the registry
     """
-    from ..agents.tool_factory import get_callable_thread_tools
-    from ..tools import SEED_TOOLS
-
-    # Get callable thread tools (from threads with callable=True)
-    thread_tools = get_callable_thread_tools(agent.thread_config_manager)
-    thread_tool_names = {t.name for t in thread_tools}
-
-    # Rebuild callable tool -> thread_id map (for auto-abort on timeout)
-    # Build locally then assign atomically so readers never see a partial map
-    new_map: Dict[str, str] = {}
-    for tc in agent.thread_config_manager.list_callable_threads():
-        if tc.callable_name:
-            new_map[tc.callable_name] = tc.thread_id
-    agent._callable_tool_thread_map = new_map
-
-    # Rebuild the tool registry: core + callable thread tools
-    combined = list(SEED_TOOLS) + thread_tools
-    agent.tool_registry = ToolRegistry()
-    agent.tool_registry.register_all(combined)
-
-    # Re-register custom tools
-    agent._load_custom_tools()
-
-    # Re-register MCP server tools
-    agent._load_mcp_server_tools()
+    thread_tools = rebuild_tool_registry(agent)
 
     agent._rebuild_default_graphs()
     try:
@@ -94,8 +113,11 @@ def sync_agent_tools(agent: "NymeriaAgent") -> List[str]:
     except Exception:
         logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
-    all_names = list(thread_tool_names)
-    logger.info(f"Synced agent tools: {all_names} ({len(thread_tools)} callable threads, {len(combined)} total tools)")
+    all_names = [t.name for t in thread_tools]
+    logger.info(
+        f"Synced agent tools: {all_names} ({len(thread_tools)} callable "
+        f"threads, {len(agent.tool_registry.list_tools())} total tools)"
+    )
     return all_names
 
 
@@ -499,11 +521,75 @@ def reload_custom_tools(agent: "NymeriaAgent") -> List[str]:
         return []
 
 
+def _reload_tools_package() -> None:
+    """importlib-reload every ``nymeria.tools`` submodule, then the package.
+
+    Picks up brand-new module files and re-executes existing ones. Safe
+    against the #277 wipe because every cross-module accumulator in the
+    package is reload-survivable (see the ``_TOOL_GROUPS`` comment in
+    ``tools/registry.py``); the consequence is that a module DELETED from
+    disk keeps its registrations until process restart, which is fine:
+    deleting builtin tool modules is a deploy operation, not a runtime one.
+    """
+    from .. import tools as tools_module
+
+    # Get all submodule names (including newly created files)
+    tools_path = Path(tools_module.__file__).parent
+    submodules = [name for _, name, _ in pkgutil.iter_modules([str(tools_path)])]
+    logger.info(f"Found tool submodules on disk: {submodules}")
+
+    # Process each submodule - reload existing, import new
+    for submod_name in submodules:
+        full_name = f"nymeria.tools.{submod_name}"
+        if full_name in sys.modules:
+            try:
+                importlib.reload(sys.modules[full_name])
+                logger.debug(f"Reloaded existing: {full_name}")
+            except Exception as e:
+                logger.warning(f"Failed to reload {full_name}: {e}")
+        else:
+            try:
+                importlib.import_module(full_name)
+                logger.info(f"Imported new module: {full_name}")
+            except Exception as e:
+                logger.warning(f"Failed to import new module {full_name}: {e}")
+
+    # Reload the main tools module (__init__.py) to pick up new exports
+    importlib.reload(tools_module)
+
+
+def _reapply_environment_descriptions(agent: "NymeriaAgent") -> None:
+    """Re-run the boot-time environment-aware description pass.
+
+    A package reload re-creates the seed/catalog tool objects, so the
+    runtime facts boot stamped into shell/file tool descriptions would
+    otherwise silently vanish from the fresh objects (#277 rider).
+    """
+    env = getattr(agent, "execution_environment", None)
+    if env is None:
+        return
+    try:
+        from .. import tools as tools_module
+        from ..tools.execution_environment import (
+            configure_environment_aware_tool_descriptions,
+        )
+
+        seed = list(getattr(tools_module, "SEED_TOOLS", []))
+        catalog = getattr(tools_module, "CATALOG_TOOLS", {})
+        configure_environment_aware_tool_descriptions(
+            [*seed, *catalog.values()], env
+        )
+    except Exception as e:  # noqa: BLE001 - description sugar must not break a reload
+        logger.warning("Environment description re-apply failed (non-fatal): %s", e)
+
+
 def reload_tools(agent: "NymeriaAgent") -> List[str]:
     """Hot-reload all tools from the tools module.
 
-    This re-imports all tools (picking up any new files) and rebuilds the agent's
-    graphs so new tools become available on the NEXT message turn.
+    This re-imports all tools (picking up any new files), refreshes builtin
+    metadata and environment-aware descriptions, rebuilds the full registry
+    via ``rebuild_tool_registry`` (seed + callable + custom + MCP), and
+    rebuilds the agent's graphs so changes land on the NEXT message turn.
 
     New core tools (added to SEED_TOOLS) are automatically registered in each
     user's default_thread_tools so they appear as enabled by default.  Removed
@@ -525,31 +611,8 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
         t.name for t in getattr(tools_module, 'SEED_TOOLS', [])
     }
 
-    # Get all submodule names (including newly created files)
-    tools_path = Path(tools_module.__file__).parent
-    submodules = [name for _, name, _ in pkgutil.iter_modules([str(tools_path)])]
-    logger.info(f"Found tool submodules on disk: {submodules}")
+    _reload_tools_package()
 
-    # Process each submodule - reload existing, import new
-    for submod_name in submodules:
-        full_name = f"nymeria.tools.{submod_name}"
-        if full_name in sys.modules:
-            # Existing module - reload it
-            try:
-                importlib.reload(sys.modules[full_name])
-                logger.debug(f"Reloaded existing: {full_name}")
-            except Exception as e:
-                logger.warning(f"Failed to reload {full_name}: {e}")
-        else:
-            # New module - import it
-            try:
-                importlib.import_module(full_name)
-                logger.info(f"Imported new module: {full_name}")
-            except Exception as e:
-                logger.warning(f"Failed to import new module {full_name}: {e}")
-
-    # Reload the main tools module (__init__.py) to pick up new exports
-    importlib.reload(tools_module)
     from ..tools.metadata import refresh_builtin_tool_metadata
 
     # Get SEED_TOOLS directly from the reloaded module object
@@ -557,23 +620,14 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     SEED_TOOLS = getattr(tools_module, 'SEED_TOOLS', [])
     refresh_builtin_tool_metadata()
     new_core_names = {t.name for t in SEED_TOOLS}
-    logger.info(f"SEED_TOOLS after reload: {list(new_core_names)}")
+    logger.info(f"SEED_TOOLS after reload: {sorted(new_core_names)}")
 
     # Auto-sync default_thread_tools for all users
     agent._sync_default_thread_tools(old_core_names, new_core_names)
 
-    # Get callable thread tools
-    from ..agents.tool_factory import get_callable_thread_tools
-    thread_tools = get_callable_thread_tools(agent.thread_config_manager)
+    _reapply_environment_descriptions(agent)
 
-    # Clear and re-register all tools (core + callable thread tools)
-    combined_tools = list(SEED_TOOLS) + thread_tools
-    agent.tool_registry = ToolRegistry()
-    agent.tool_registry.register_all(combined_tools)
-
-    # Reload custom tools as well
-    custom_count = agent._load_custom_tools()
-    logger.info(f"Reloaded {custom_count} custom tool(s)")
+    rebuild_tool_registry(agent)
 
     agent._rebuild_default_graphs()
     try:
@@ -583,9 +637,20 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     except Exception:
         logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
-    tool_list = agent.tool_registry.list_tools()
-    tool_names = [t["name"] for t in tool_list]
-    logger.info(f"Tools reloaded successfully. Available ({len(tool_names)}): {tool_names}")
+    tool_names = [t["name"] for t in agent.tool_registry.list_tools()]
+    catalog_count = len(getattr(tools_module, "CATALOG_TOOLS", {}))
+    try:
+        from ..tools.registry import all_tool_groups
+
+        group_count = len(all_tool_groups())
+    except Exception:  # noqa: BLE001
+        group_count = -1
+    logger.info(
+        "Tools reloaded. registry=%d catalog=%d groups=%d",
+        len(tool_names),
+        catalog_count,
+        group_count,
+    )
     return tool_names
 
 
@@ -601,14 +666,18 @@ def sync_default_thread_tools(
     from ..tools import CAPABILITY_EXPANSION_TOOL_NAMES
 
     added = new_core - old_core
-    removed = (old_core - new_core) | set(CAPABILITY_EXPANSION_TOOL_NAMES)
-    if not added and not removed:
-        return
+    removed_core = old_core - new_core
+    # Capability-expansion tools are hot-loaded on demand and never belong in
+    # a default_thread_tools list, so they ride the strip set as janitorial
+    # policy. They are reported only by the per-user update line below:
+    # announcing them as "Removed core tools" on every reload was pure noise
+    # and buried the real diagnosis in the #277 incident.
+    removed = removed_core | set(CAPABILITY_EXPANSION_TOOL_NAMES)
 
     if added:
-        logger.info(f"New core tools detected: {added}")
-    if removed:
-        logger.info(f"Removed core tools detected: {removed}")
+        logger.info(f"New core tools detected: {sorted(added)}")
+    if removed_core:
+        logger.info(f"Removed core tools detected: {sorted(removed_core)}")
 
     for user_id in agent.profile_manager.list_users():
         try:

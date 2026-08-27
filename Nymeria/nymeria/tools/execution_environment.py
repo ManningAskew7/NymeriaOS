@@ -15,7 +15,10 @@ from langchain_core.tools import BaseTool
 from ..config import get_settings
 
 
-_DESCRIPTION_BASES: dict[str, str] = {}
+# Original (pre-configure) description per tool name, so re-configuring is
+# idempotent. Reload-survivable (#277): pushed by core at boot and after tool
+# reloads, so this module re-executing mid-storm must not drop the bases.
+_DESCRIPTION_BASES: dict[str, str] = globals().get("_DESCRIPTION_BASES") or {}
 _SHELL_TOOL_NAMES = {"bash_execute"}
 _FILE_TOOL_NAMES = {"file_read", "file_write", "file_edit"}
 

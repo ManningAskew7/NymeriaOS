@@ -386,7 +386,7 @@ def create_unified_tools_router(
         definition = build_custom_tool_definition(request, actor_user_id=user.id)
 
         loader.save_definition(definition)
-        get_agent_fn().reload_tools()
+        get_agent_fn().reload_custom_tools()
 
         return custom_tool_definition_to_unified(definition, True, "default", {})
 
@@ -416,7 +416,7 @@ def create_unified_tools_router(
         apply_custom_tool_update(definition, request, actor_user_id=user.id)
 
         loader.save_definition(definition)
-        get_agent_fn().reload_tools()
+        get_agent_fn().reload_custom_tools()
 
         return custom_tool_definition_to_unified(definition, True, "default", {})
 

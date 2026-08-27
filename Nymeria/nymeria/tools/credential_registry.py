@@ -127,12 +127,21 @@ def _lookup_candidates(name: str) -> set[str]:
     return provider_candidates(name, ())
 
 
-_lock = threading.Lock()
-_SPECS: dict[str, ProviderCredentialSpec] = {}
-_NAME_INDEX: dict[str, str] = {}
-_CANONICAL_NAMES: dict[str, str] = {}
-_SERVICE_INDEX: dict[str, str] = {}
-_TOOL_INDEX: dict[str, str] = {}
+# Reload-survivable accumulators (#277): family modules push specs in here at
+# import time, so an ``importlib.reload`` of THIS module must not wipe what
+# siblings registered before it (a package-wide reload storm re-executes this
+# body mid-sequence). Reusing the existing objects keeps the five indexes and
+# their lock consistent across reloads; ``register_provider_spec`` already
+# no-ops on identical re-registration. Consequence: an EDITED (non-identical)
+# spec re-registering under the same provider raises the conflict error at
+# reload time, so changing a credential spec requires a restart, the same
+# deploy-operation semantics as deleting a tool module.
+_lock = globals().get("_lock") or threading.Lock()
+_SPECS: dict[str, ProviderCredentialSpec] = globals().get("_SPECS") or {}
+_NAME_INDEX: dict[str, str] = globals().get("_NAME_INDEX") or {}
+_CANONICAL_NAMES: dict[str, str] = globals().get("_CANONICAL_NAMES") or {}
+_SERVICE_INDEX: dict[str, str] = globals().get("_SERVICE_INDEX") or {}
+_TOOL_INDEX: dict[str, str] = globals().get("_TOOL_INDEX") or {}
 
 
 def _validate(spec: ProviderCredentialSpec) -> None:
