@@ -71,11 +71,13 @@ class TodoItem(BaseModel):
                     existing_notes = data.get('notes') or ''
                     migrated = f"[was blocked: {data['blocked_reason']}] {existing_notes}".strip()
                     data['notes'] = migrated[:1000]  # Respect max_length
-            # Strip removed fields. Pydantic ignores unknown keys, so this is
-            # not what keeps an old store loadable; it is what stops a retired
-            # key surviving forever by being read back and rewritten on every
-            # save. `goal_id` joined the list when the /goal subsystem was
-            # deleted (it was the supervisor lock's marker).
+            # Strip removed fields. Pydantic drops unknown keys at validation
+            # (extra='ignore'), so for purely-retired keys these pops are
+            # documentation of deliberate retirement, not load-bearing; the
+            # load-bearing half is the blocked_reason READ above, which must
+            # happen before its key is stripped. `goal_id` joined the list
+            # when the /goal subsystem was deleted (it was the supervisor
+            # lock's marker).
             for field in ('priority', 'deadline', 'blocked_reason', 'permanent', 'goal_id'):
                 data.pop(field, None)
         return data
