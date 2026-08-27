@@ -205,6 +205,36 @@ class NymeriaDiscordBot(_BotBase):
 
         self.api = api
         self.respond_mode = respond_mode
+        # Opt-in default account for unlinked senders in allowlisted guilds
+        # (DISCORD_DEFAULT_ACCOUNT + DISCORD_DEFAULT_ACCOUNT_GUILDS). Both
+        # must be set; explicit platform links always win; DMs never fall
+        # back. The allowlist is deliberately explicit: Discord apps are
+        # Public Bot by default, so any guild could invite the bot.
+        from ..config import get_settings
+
+        _settings = get_settings()
+        self._default_account: Optional[str] = (
+            (_settings.discord_default_account or "").strip() or None
+        )
+        _raw_guilds = _settings.discord_default_account_guilds or ""
+        # isdecimal, not isdigit: isdigit() accepts Unicode digits (e.g.
+        # superscripts) that int() then refuses, crashing construction.
+        self._default_account_guilds: set[int] = {
+            int(part)
+            for part in map(str.strip, _raw_guilds.split(","))
+            if part.isdecimal()
+        }
+        # A half-configured fallback silently behaves like no fallback, so
+        # make the misconfiguration visible instead of leaving senders on
+        # link instructions with no clue why.
+        if bool(self._default_account) != bool(self._default_account_guilds):
+            logger.warning(
+                "Discord default-account fallback is HALF-configured and "
+                "therefore OFF: DISCORD_DEFAULT_ACCOUNT=%r, parsed guild "
+                "allowlist=%s (both must be set; guild ids must be numeric)",
+                self._default_account,
+                sorted(self._default_account_guilds),
+            )
         self._start_time = time.time()
         self._context_enabled: Dict[int, bool] = {}
         self._show_tool_calls: Dict[int, bool] = {}
@@ -270,15 +300,36 @@ class NymeriaDiscordBot(_BotBase):
     # Platform identity resolution
     # =========================================================================
 
-    async def resolve_user_id(self, discord_user_id: int) -> Optional[str]:
+    async def resolve_user_id(
+        self, discord_user_id: int, *, guild_id: Optional[int]
+    ) -> Optional[str]:
         """
         Resolve a Discord user id to the Nymeria account it's linked to.
         Returns ``None`` only for confirmed-unlinked Discord users; raises
         ``PlatformResolveUnavailableError`` (never cached) when the lookup
         itself failed, e.g. the backend rejected the bot's service token.
         Callers must render infra copy for that, not link instructions.
+
+        When ``DISCORD_DEFAULT_ACCOUNT`` and ``DISCORD_DEFAULT_ACCOUNT_GUILDS``
+        are both configured, an unlinked sender whose ``guild_id`` is in the
+        allowlist resolves to the configured account instead of ``None``
+        (stateless per-message fallback; no platform link is created).
+        Explicit links always win because the linked lookup runs first, and
+        DMs (``guild_id=None``) never fall back. A resolver outage still
+        raises rather than falling back: a backend fault must not silently
+        remap identities. ``guild_id`` is keyword-REQUIRED so a new call
+        site must state its guild context and cannot silently opt out of
+        the fallback.
         """
-        return await self._user_resolver.resolve(discord_user_id)
+        user_id = await self._user_resolver.resolve(discord_user_id)
+        if (
+            user_id is None
+            and self._default_account is not None
+            and guild_id is not None
+            and guild_id in self._default_account_guilds
+        ):
+            return self._default_account
+        return user_id
 
     async def _send_resolver_unavailable(self, interaction: "discord.Interaction") -> None:
         """Shared infra copy for interactions when resolution itself failed.
@@ -337,7 +388,9 @@ class NymeriaDiscordBot(_BotBase):
                 logger.warning("Could not send rejection: %s", e)
 
         try:
-            user_id = await self.resolve_user_id(interaction.user.id)
+            user_id = await self.resolve_user_id(
+                interaction.user.id, guild_id=interaction.guild_id
+            )
         except PlatformResolveUnavailableError:
             await self._send_resolver_unavailable(interaction)
             return None
@@ -859,6 +912,17 @@ class NymeriaDiscordBot(_BotBase):
         print(f"  Bot ID: {self.user.id}")
         print(f"  Guilds: {len(self.guilds)}")
         print(f"  Respond mode: {self.respond_mode}")
+        if self._default_account is not None and self._default_account_guilds:
+            guilds_str = ", ".join(str(g) for g in sorted(self._default_account_guilds))
+            print(
+                f"  Default account for unlinked senders: {self._default_account} "
+                f"(guilds: {guilds_str})"
+            )
+            logger.info(
+                "Unlinked Discord senders in guilds [%s] resolve to account %s",
+                guilds_str,
+                self._default_account,
+            )
         print(f"  API: {self.api.base_url}")
         for guild in self.guilds:
             print(f"  - {guild.name} (ID: {guild.id})")
@@ -940,7 +1004,7 @@ class NymeriaDiscordBot(_BotBase):
         guild_id = message.guild.id if message.guild else None
         thread_id = make_thread_id(guild_id, message.channel.id)
         try:
-            user_id = await self.resolve_user_id(message.author.id)
+            user_id = await self.resolve_user_id(message.author.id, guild_id=guild_id)
         except PlatformResolveUnavailableError:
             try:
                 await message.channel.send(RESOLVER_UNAVAILABLE_MESSAGE)
@@ -1052,7 +1116,9 @@ class NymeriaDiscordBot(_BotBase):
             return
 
         try:
-            user_id = await self.resolve_user_id(payload.user_id)
+            user_id = await self.resolve_user_id(
+                payload.user_id, guild_id=payload.guild_id
+            )
         except PlatformResolveUnavailableError:
             # A reaction is a one-tap gesture; no reply spam on infra faults
             # either (the resolver already logged at ERROR).
@@ -1477,7 +1543,9 @@ class NymeriaDiscordBot(_BotBase):
                     )
                     return
                 try:
-                    user_id = await bot.resolve_user_id(interaction.user.id)
+                    user_id = await bot.resolve_user_id(
+                        interaction.user.id, guild_id=interaction.guild_id
+                    )
                 except PlatformResolveUnavailableError:
                     await bot._send_resolver_unavailable(interaction)
                     return
@@ -1674,7 +1742,9 @@ class NymeriaDiscordBot(_BotBase):
                     )
                     return
                 try:
-                    user_id = await bot.resolve_user_id(interaction.user.id)
+                    user_id = await bot.resolve_user_id(
+                        interaction.user.id, guild_id=interaction.guild_id
+                    )
                 except PlatformResolveUnavailableError:
                     await bot._send_resolver_unavailable(interaction)
                     return
@@ -1781,7 +1851,9 @@ class NymeriaDiscordBot(_BotBase):
                 self, interaction: "discord.Interaction", button: "discord.ui.Button"
             ) -> None:
                 try:
-                    user_id = await bot.resolve_user_id(interaction.user.id)
+                    user_id = await bot.resolve_user_id(
+                        interaction.user.id, guild_id=interaction.guild_id
+                    )
                 except PlatformResolveUnavailableError:
                     await bot._send_resolver_unavailable(interaction)
                     return

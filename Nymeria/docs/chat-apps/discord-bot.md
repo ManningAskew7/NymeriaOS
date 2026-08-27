@@ -66,6 +66,44 @@ docker logs nymeria-discord-bot --tail 50
 
 When not using the Discord bot, set `DISCORD_BOT_TOKEN=disabled` to prevent docker-compose from complaining about the missing env var.
 
+### 4. Link Accounts
+
+Every Discord sender resolves to a Nymeria account through a platform link:
+
+```bash
+python run.py users link-platform <email> discord <discord_user_id>
+```
+
+Unlinked senders get a rejection reply containing their numeric Discord id.
+The bot caches the "unlinked" answer for 30 minutes, so restart the bot
+container after linking someone who already messaged (under the
+default-account fallback below, that pre-restart window is worse than a
+rejection: the newly linked member's messages land on the shared account).
+
+**Shared-server deployments** (one account for a whole guild) can skip
+per-user linking with an opt-in fallback: an unlinked sender whose message
+comes from an allowlisted guild resolves to a configured account instead.
+
+```bash
+DISCORD_DEFAULT_ACCOUNT=shared-account-user-id
+DISCORD_DEFAULT_ACCOUNT_GUILDS=123456789012345678   # comma-separated guild ids
+```
+
+Both must be set. Explicit links always win (a specific member can still be
+linked to a different account); DMs never fall back; guilds not in the
+allowlist keep the rejection; a backend outage raises the usual
+infrastructure copy rather than remapping identities. No platform link is
+created: the mapping is stateless per message and reverts by unsetting the
+vars.
+
+Two cautions. The resolved account's ROLE applies: point the fallback at a
+NON-admin account, or every guild member gets the account's admin-gated
+commands and can resolve its approval/consent prompts. And the allowlist is
+deliberately explicit with no wildcard: Discord applications are
+public-invitable by default, so an unrestricted fallback would grant any
+guild that invites the bot access to the account (consider also disabling
+"Public Bot" in the Developer Portal for these deployments).
+
 ### Slash Command Sync
 
 Discord slash commands are synced **per-guild** in the `on_ready` hook  -  the bot clears any stale global commands, copies the local command tree to each guild, and calls `tree.sync(guild=guild)`. This means:

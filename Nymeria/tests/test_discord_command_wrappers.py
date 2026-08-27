@@ -239,7 +239,9 @@ def _bot(api: _FakeAPI) -> NymeriaDiscordBot:
     bot = NymeriaDiscordBot.__new__(NymeriaDiscordBot)
     bot.api = api
 
-    async def resolve_user_id(discord_user_id: int) -> str:
+    async def resolve_user_id(
+        discord_user_id: int, *, guild_id: int | None = None
+    ) -> str:
         assert discord_user_id == _FakeUser.id
         return "user-1"
 

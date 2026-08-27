@@ -1976,7 +1976,20 @@ class NymeriaAPIClient:
             return data.get("user_id")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                return None
+                # A 404 is a CONFIRMED "no binding" only when it is this
+                # route's own answer ({"detail": "Not linked"}). Any other
+                # 404 (proxy error page, wrong --api-url path prefix, moved
+                # route on a skewed backend) is an infrastructure fault:
+                # re-raise so callers render infra copy instead of treating
+                # every sender as unlinked, which the Discord default-account
+                # fallback would otherwise convert into silent shared-account
+                # access for a whole guild.
+                try:
+                    detail = e.response.json().get("detail")
+                except Exception:  # noqa: BLE001 - non-JSON body = not ours
+                    detail = None
+                if detail == "Not linked":
+                    return None
             raise
 
     async def health(self) -> bool:

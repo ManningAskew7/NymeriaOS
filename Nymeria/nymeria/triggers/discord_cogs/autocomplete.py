@@ -75,7 +75,9 @@ def endpoint_resolver(ref: str) -> AutocompleteResolver:
         current: str,
     ) -> list[app_commands.Choice[str]]:
         try:
-            user_id = await bot.resolve_user_id(interaction.user.id)
+            user_id = await bot.resolve_user_id(
+                interaction.user.id, guild_id=interaction.guild_id
+            )
             if user_id is None:
                 return []
             thread_id = None

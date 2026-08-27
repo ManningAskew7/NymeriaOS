@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+
 import pytest
 
 from nymeria.triggers import api_client
@@ -851,3 +853,45 @@ def test_download_workspace_file_propagates_non_httpx_error(monkeypatch):
     _patch_get_client(monkeypatch, get_raises=ValueError("unexpected bug"))
     with pytest.raises(ValueError):
         _download_once()
+
+
+# ---------------------------------------------------------------------------
+# resolve_platform_user 404 discrimination: only the route's own
+# {"detail": "Not linked"} answer means "confirmed unlinked"; any other 404
+# (proxy error page, wrong path prefix, moved route) must raise so bots
+# render infrastructure copy instead of treating every sender as unlinked
+# (which the Discord default-account fallback would convert into silent
+# shared-account access for a whole guild).
+# ---------------------------------------------------------------------------
+
+
+def _client_with_404(*, json_body=None, text_body=None) -> NymeriaAPIClient:
+    client = NymeriaAPIClient(base_url="http://api/", api_key="secret")
+    request = httpx.Request("GET", "http://api/platform/resolve")
+    if json_body is not None:
+        response = httpx.Response(404, json=json_body, request=request)
+    else:
+        response = httpx.Response(404, text=text_body or "", request=request)
+
+    async def _get(path, **kwargs):
+        raise httpx.HTTPStatusError("404", request=request, response=response)
+
+    client._get = _get
+    return client
+
+
+def test_resolve_platform_user_not_linked_404_is_confirmed_unlinked():
+    client = _client_with_404(json_body={"detail": "Not linked"})
+    assert asyncio.run(client.resolve_platform_user("discord", "42")) is None
+
+
+def test_resolve_platform_user_foreign_404_raises():
+    client = _client_with_404(text_body="<html>proxy error</html>")
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(client.resolve_platform_user("discord", "42"))
+
+
+def test_resolve_platform_user_other_detail_404_raises():
+    client = _client_with_404(json_body={"detail": "Not Found"})
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(client.resolve_platform_user("discord", "42"))

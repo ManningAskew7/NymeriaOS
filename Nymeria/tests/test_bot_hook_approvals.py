@@ -109,7 +109,9 @@ def _update_for(query: _FakeQuery, tg_user_id: int = 42) -> Any:
 
 
 def _link(bot: NymeriaTelegramBot, user_id: Optional[str]) -> None:
-    async def resolve(_tg_id: int) -> Optional[str]:
+    async def resolve(
+        _tg_id: int, *, guild_id: Optional[int] = None
+    ) -> Optional[str]:
         return user_id
 
     bot.resolve_user_id = resolve  # type: ignore[method-assign]
@@ -327,6 +329,7 @@ class _FakeInteractionResponse:
 def _fake_interaction(user_id: int = 42, message: Any = None) -> Any:
     return SimpleNamespace(
         user=SimpleNamespace(id=user_id),
+        guild_id=None,
         response=_FakeInteractionResponse(),
         message=message,
     )
@@ -431,7 +434,7 @@ def test_discord_view_renders_infra_copy_when_resolution_unavailable():
     api = _FakeAPI()
     bot = _make_discord_bot(channel, api=api)
 
-    async def _raise(_discord_user_id: int):
+    async def _raise(_discord_user_id: int, *, guild_id: Optional[int] = None):
         raise PlatformResolveUnavailableError("discord", RuntimeError("backend down"))
 
     bot.resolve_user_id = _raise  # type: ignore[method-assign]

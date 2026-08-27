@@ -567,17 +567,15 @@ def test_docker_shape_carries_init_picks_in_env_docker(monkeypatch, tmp_path):
 
 
 def test_docker_shape_no_picks_writes_no_init_seed_vars(monkeypatch, tmp_path):
-    """No optional picks -> no tools carrier (the container's own core-seed
-    migration runs unchanged). The skills carrier IS written: the wizard's
-    all-kits-on default (default_checked_skill_kits, widened 2026-06-12)
-    deliberately differs from the backend's curated DEFAULT_GLOBAL_SKILLS
-    fallback, and the carrier is the only way it reaches the container's
-    volume."""
+    """No optional picks -> NO carriers at all (the container's own core-seed
+    and default-skill migrations run unchanged). Since 2026-08-27 the
+    wizard's default-checked kit set matches the backend's
+    DEFAULT_GLOBAL_SKILLS fallback (membership AND order), so the skills
+    carrier is written only when the user's picks actually differ."""
     from nymeria.config.init_seed_env import (
         INIT_DEFAULT_THREAD_TOOLS_ENV,
         INIT_ENABLED_GLOBAL_SKILLS_ENV,
     )
-    from nymeria.setup import family_catalog
 
     _stub_llm(monkeypatch)
     root = tmp_path / "checkout"
@@ -592,10 +590,7 @@ def test_docker_shape_no_picks_writes_no_init_seed_vars(monkeypatch, tmp_path):
     assert rc == 0
     env_docker = (root / ".env.docker").read_text(encoding="utf-8")
     assert INIT_DEFAULT_THREAD_TOOLS_ENV not in env_docker
-    expected_skills = ":".join(
-        ["self-improve", *family_catalog.default_checked_skill_kits()]
-    )
-    assert f"{INIT_ENABLED_GLOBAL_SKILLS_ENV}={expected_skills}" in env_docker
+    assert INIT_ENABLED_GLOBAL_SKILLS_ENV not in env_docker
 
 
 def test_local_shape_writes_no_init_seed_vars(monkeypatch, tmp_path):

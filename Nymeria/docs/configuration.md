@@ -909,6 +909,8 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `DISCORD_MODE` | `gateway` | Discord connection mode: `gateway` or `webhook` |
 | `DISCORD_RESPOND_MODE` | `mention` | Guild behavior: `mention` (only @Nymeria) or `all` |
 | `DISCORD_REACTION_TRIGGER_ENABLED` | `false` | Fire an agent turn when a user adds an emoji reaction to a Discord message the bot authored |
+| `DISCORD_DEFAULT_ACCOUNT` | - | Nymeria account user_id that unlinked Discord senders resolve to in allowlisted guilds (shared-server deployments; explicit links win, DMs never fall back). Requires the guild allowlist |
+| `DISCORD_DEFAULT_ACCOUNT_GUILDS` | - | Comma-separated Discord guild id allowlist for `DISCORD_DEFAULT_ACCOUNT`; no wildcard by design (Discord apps are public-invitable by default) |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook URL for notifications |
 | `SLACK_BOT_TOKEN` | - | Slack bot token for two-way communication |
 | `SLACK_APP_TOKEN` | - | Slack app-level token for Socket Mode (`xapp-...`, requires `connections:write`) |

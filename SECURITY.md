@@ -693,7 +693,13 @@ The network and trust-edge boundaries are enforced and fail closed:
   **Default-deny:** a platform user who is not linked to a Nymeria account is
   rejected. A link is created either self-service by the account holder (a
   short-lived link code redeemed in chat) or by an admin on another user's
-  behalf; a stranger with no account cannot self-link. Inbound HTTP webhooks are
+  behalf; a stranger with no account cannot self-link. One deliberate,
+  opt-in exception: `DISCORD_DEFAULT_ACCOUNT` (with its mandatory guild
+  allowlist) resolves unlinked senders in the listed Discord guilds to one
+  configured account, making guild membership an authentication factor for
+  that account; it is off by default, never applies to DMs or unlisted
+  guilds, and grants the configured account's role, so it should point at a
+  non-admin account. Inbound HTTP webhooks are
   verified per provider: the WhatsApp webhook checks Meta's HMAC-SHA256 signature
   and rejects stale/replayed payloads; the Teams webhook validates a Bot
   Framework RS256 JWT (issuer, audience, expiry). Discord, Slack, and Telegram

@@ -58,13 +58,24 @@ LEGACY_TOOL_RENAMES: Dict[str, Union[str, List[str]]] = {
 # self-improve (the text-only capability-expansion guidance skill) plus the
 # focused, default-on capability kits it routes to. All ship bundled in
 # skills_bundled/. Each is index-only until activated, so enabling them by
-# default costs only description chars per thread.
+# default costs only description chars per thread. Widened 2026-08-27 with
+# the trigger/hook management kits and the callable-thread builder so new
+# profiles start with the full management toolkit; the migration watermark
+# means existing profiles keep their current list. orchestrate stays out:
+# it is internal (driven by /orchestrate, not user activation). ORDER is
+# pinned to the wizard's carrier ("self-improve" + the
+# ``family_catalog._DEFAULT_CHECKED_KITS`` order): ``docker_init_seed_env``
+# writes its skills carrier only when the wizard picks DIFFER from this
+# list, so a no-picks install must compare equal, order included.
 DEFAULT_GLOBAL_SKILLS: List[str] = [
     "self-improve",
     "tool-management",
     "skill-management",
     "mcp-management",
     "credential-management",
+    "callable-thread-builder",
+    "trigger-management",
+    "hook-management",
 ]
 
 
