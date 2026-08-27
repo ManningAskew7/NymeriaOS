@@ -180,6 +180,7 @@ _UNREACHABLE_SETTINGS_EXEMPT = frozenset({
     "api_host", "api_port", "audit_log_enabled", "bash_env_passthrough",
     "checkpoint_executor_max_workers", "cors_origins", "database_backend",
     "default_executor_max_workers",
+    "discord_default_account", "discord_default_account_guilds",
     "discord_mode", "discord_reaction_trigger_enabled", "discord_respond_mode",
     "exec_sandbox_enabled",
     "facebook_access_token", "facebook_app_secret", "facebook_graph_base_url",

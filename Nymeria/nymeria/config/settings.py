@@ -340,6 +340,27 @@ class Settings(BaseSettings):
                     "one of the bot's own Discord messages (any emoji; each "
                     "reaction costs a full agent turn). Off by default.",
     )
+    discord_default_account: Optional[str] = Field(
+        default=None,
+        description="Nymeria account user_id that UNLINKED Discord senders "
+                    "resolve to when they message from a guild listed in "
+                    "DISCORD_DEFAULT_ACCOUNT_GUILDS (shared-server "
+                    "deployments: everyone in the server uses one account "
+                    "with no per-user linking). Explicit platform links "
+                    "always win; DMs never fall back. Requires the guild "
+                    "allowlist to also be set. Point this at a NON-admin "
+                    "account: the resolved account's role applies, so an "
+                    "admin account would hand admin-gated commands and "
+                    "approval prompts to every guild member.",
+    )
+    discord_default_account_guilds: Optional[str] = Field(
+        default=None,
+        description="Comma-separated Discord guild (server) id allowlist for "
+                    "DISCORD_DEFAULT_ACCOUNT. Deliberately explicit with no "
+                    "wildcard: Discord applications are public-invitable by "
+                    "default, so an unrestricted fallback would grant any "
+                    "guild that invites the bot access to the account.",
+    )
 
     # Messaging Platform Credentials - Twitch
     twitch_client_id: Optional[str] = Field(default=None, description="Twitch application Client ID")

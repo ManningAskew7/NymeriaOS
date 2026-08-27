@@ -516,7 +516,9 @@ class _ResolverBot:
         self.api = api
         self._user_id = user_id
 
-    async def resolve_user_id(self, discord_user_id: int) -> str | None:
+    async def resolve_user_id(
+        self, discord_user_id: int, *, guild_id: int | None = None
+    ) -> str | None:
         return self._user_id
 
 

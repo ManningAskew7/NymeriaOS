@@ -29,9 +29,9 @@ Defaults chosen for zero extra auth or cost:
   ships no voice engines (see `voice_catalog.slim_docker_local_voice`).
 - Image generation: none seeded; every provider needs a key.
 - Skill kits: left unset, which the seeding fallback resolves to the curated
-  default-checked set (`family_catalog.default_checked_skill_kits`, all six
-  kits existing as of 2026-06-12; newly bundled kits are offered, not
-  auto-checked; kits load their tools on demand, so on-by-default is cheap).
+  default-checked set (`family_catalog.default_checked_skill_kits`; newly
+  bundled kits are offered, not auto-checked; kits load their tools on
+  demand, so on-by-default is cheap).
 - Docker stack: slim (the single-container shape), the simplest single-user
   default; only consulted when hosting is Docker.
 """

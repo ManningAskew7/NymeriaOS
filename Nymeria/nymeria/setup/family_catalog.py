@@ -115,11 +115,13 @@ _SKILL_KIT_LABELS: dict[str, tuple[str, str]] = {
     ),
 }
 
-# The curated default-checked kit set: the six kits that existed when the
-# default was widened on 2026-06-12. Deliberately a literal, NOT derived from
-# skill_kit_choices: newly bundled kits are offered but not auto-checked, so
-# bundling a kit is never silently a default-on decision (users can still
-# enable them globally in Settings or per thread).
+# The curated default-checked kit set (widened 2026-06-12 to the six kits
+# existing then; hook-management added 2026-08-27). Deliberately a literal,
+# NOT derived from skill_kit_choices: newly bundled kits are offered but not
+# auto-checked, so bundling a kit is never silently a default-on decision
+# (users can still enable them globally in Settings or per thread).
+# workflow-authoring stays out deliberately (see skills.md); orchestrate is
+# internal and never offered here.
 _DEFAULT_CHECKED_KITS: tuple[str, ...] = (
     "tool-management",
     "skill-management",
@@ -127,6 +129,7 @@ _DEFAULT_CHECKED_KITS: tuple[str, ...] = (
     "credential-management",
     "callable-thread-builder",
     "trigger-management",
+    "hook-management",
 )
 
 # Keyless web fetch default: extracts from pages with the configured primary LLM,
@@ -209,16 +212,18 @@ def skill_kit_choices() -> list[FamilyChoice]:
 
 
 def default_checked_skill_kits() -> list[str]:
-    """The curated default-on kit set (all six existing kits as of 2026-06-12).
+    """The curated default-on kit set (seven kits as of 2026-08-27).
 
-    Widened from the four-kit ``DEFAULT_GLOBAL_SKILLS`` subset so fresh
-    installs start with the full current toolkit (kits load their tools only
-    on activation, so on-by-default is cheap), but still decoupled from the
-    offered set (``skill_kit_choices``): newly bundled kits are offered, not
-    auto-checked. The backend fallback for profiles that never chose
-    (``user_profile.DEFAULT_GLOBAL_SKILLS``) intentionally stays its own
-    narrower set so existing users are unaffected. ``self-improve`` is a
-    guidance skill, not a kit, and is added on separately by finalize seeding.
+    Kits load their tools only on activation, so on-by-default is cheap. The
+    set stays decoupled from the offered set (``skill_kit_choices``): newly
+    bundled kits are offered, not auto-checked. Since 2026-08-27 the backend
+    fallback for profiles that never chose
+    (``user_profile.DEFAULT_GLOBAL_SKILLS``) carries the SAME kits in the
+    same order (its watermark keeps existing profiles unaffected); keep the
+    two aligned, or the wizard starts writing a redundant Docker init-seed
+    carrier (``docker_init_seed_env`` writes it only on a real difference).
+    ``self-improve`` is a guidance skill, not a kit, and is added on
+    separately by finalize seeding.
     """
     return list(_DEFAULT_CHECKED_KITS)
 

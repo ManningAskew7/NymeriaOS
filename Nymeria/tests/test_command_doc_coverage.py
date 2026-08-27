@@ -255,7 +255,9 @@ def _discord_bot(api: _FakeAPI) -> NymeriaDiscordBot:
     bot = NymeriaDiscordBot.__new__(NymeriaDiscordBot)
     bot.api = api
 
-    async def resolve_user_id(discord_user_id: int) -> str:
+    async def resolve_user_id(
+        discord_user_id: int, *, guild_id: int | None = None
+    ) -> str:
         return "user-1"
 
     bot.resolve_user_id = resolve_user_id

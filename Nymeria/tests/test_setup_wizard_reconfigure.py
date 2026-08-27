@@ -424,11 +424,12 @@ def test_docker_reconfigure_revert_to_defaults_retires_carrier(monkeypatch, tmp_
         (root / ".env.docker").read_text(encoding="utf-8")
     )
 
-    # The user deselects the extra pick (back to backend defaults). The stale
-    # tools carrier must be REMOVED, or a later fresh volume (down -v && up -d
+    # The user deselects the extra pick (back to backend defaults). BOTH stale
+    # carriers must be REMOVED, or a later fresh volume (down -v && up -d
     # with the same .env.docker) would re-seed the reverted pick. The skills
-    # carrier stays: the wizard's all-kits-on default always differs from the
-    # backend's curated fallback (see docker_init_seed_env).
+    # carrier retires too since 2026-08-27: the wizard's default-checked kit
+    # set now matches the backend fallback exactly, so with no skill picks
+    # there is no difference to carry (see docker_init_seed_env).
     state = WizardState(root=root)
     assert hydrate_state_from_disk(state) is True
     assert state.extras.get("web_search") == ["web_search_tavily"]
@@ -438,7 +439,7 @@ def test_docker_reconfigure_revert_to_defaults_retires_carrier(monkeypatch, tmp_
                     overwrite_confirmed=True, merge=True) == 0
     after = (root / ".env.docker").read_text(encoding="utf-8")
     assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" not in after
-    assert "NYMERIA_INIT_ENABLED_GLOBAL_SKILLS" in after
+    assert "NYMERIA_INIT_ENABLED_GLOBAL_SKILLS" not in after
 
 
 # --- scripted reconfigure (--non-interactive against an existing install) ----

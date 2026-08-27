@@ -237,15 +237,18 @@ that each bind their tools (ttl 2h) only when activated:
 | `credential-management` | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` | request/inspect/clean up credentials (binds these auth tools on activation, like the other capability kits) |
 | `workflow-authoring` | `tool_create`, `workflow_info` | author/test/publish nym-SDK workflow tools (the cookbook: economics, the approve/continuation idiom, delivery targets, cross-run state). NOT default-on; discovered via skill search or `/kit workflow-authoring` |
 
-Nymeria initializes `self-improve` and all four `*-management` kits in each user
-profile's `enabled_global_skills` list once, so they are on by default for new
-threads and their tools load lazily on activation. The Settings → Skills "Enable
+Nymeria initializes `self-improve` and the default kit set (the four
+capability kits above plus `trigger-management`, `hook-management`, and
+`callable-thread-builder` since 2026-08-27; `DEFAULT_GLOBAL_SKILLS` in
+`core/user_profile.py`) in each user profile's `enabled_global_skills` list
+once, so they are on by default for new threads and their tools load lazily
+on activation. The Settings → Skills "Enable
 globally" checkbox is the source of truth: unticking one removes it from the
 user's default thread skill set and Nymeria will not silently re-add it.
 
-Note for kit authors: the setup wizard default-checks a curated kit set (as of
-2026-06-12, all six bundled kits). A newly bundled kit is offered in the wizard
-but NOT auto-checked; users can enable it globally in Settings → Skills or per
+Note for kit authors: the setup wizard default-checks a curated kit set
+(seven kits as of 2026-08-27; `workflow-authoring` deliberately excluded).
+A newly bundled kit is offered in the wizard but NOT auto-checked; users can enable it globally in Settings → Skills or per
 thread. Widen the curated list (`default_checked_skill_kits` in
 `setup/family_catalog.py`) only as a deliberate per-kit decision, and mark a
 kit `internal: true` to hide it from the wizard entirely.

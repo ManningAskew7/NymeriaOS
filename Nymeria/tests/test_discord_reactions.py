@@ -63,7 +63,9 @@ def _reaction_bot(
     async def _fetch_channel(channel_id: int):
         return channel if channel_id == channel.id else None
 
-    async def _resolve_user_id(discord_user_id: int) -> Optional[str]:
+    async def _resolve_user_id(
+        discord_user_id: int, *, guild_id: Optional[int] = None
+    ) -> Optional[str]:
         return linked_user
 
     dispatched: List[Dict[str, Any]] = []

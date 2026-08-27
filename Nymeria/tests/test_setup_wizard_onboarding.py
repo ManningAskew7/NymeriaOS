@@ -273,10 +273,10 @@ def test_family_catalog_skill_kits_discovered_live_and_default_checked():
 
     offered = {c.value for c in family_catalog.skill_kit_choices()}
     default_checked = family_catalog.default_checked_skill_kits()
-    # The curated default-on set: the six kits existing as of 2026-06-12,
-    # deliberately a literal decoupled from discovery, so a newly bundled kit
-    # is offered but NOT auto-checked (user decision; default-on stays a
-    # per-kit call).
+    # The curated default-on set: the six kits existing as of 2026-06-12
+    # plus hook-management (2026-08-27), deliberately a literal decoupled
+    # from discovery, so a newly bundled kit is offered but NOT auto-checked
+    # (user decision; default-on stays a per-kit call).
     assert default_checked == [
         "tool-management",
         "skill-management",
@@ -284,10 +284,13 @@ def test_family_catalog_skill_kits_discovered_live_and_default_checked():
         "credential-management",
         "callable-thread-builder",
         "trigger-management",
+        "hook-management",
     ]
     # Every default-checked kit is actually offered (discovered live).
     assert set(default_checked) <= offered
-    # The narrower backend fallback stays inside the curated set.
+    # The backend fallback carries the same kits as the curated set (they
+    # were aligned 2026-08-27; the subset assertion keeps them from drifting
+    # apart again).
     assert {s for s in DEFAULT_GLOBAL_SKILLS if s != "self-improve"} <= set(
         default_checked
     )

@@ -550,13 +550,16 @@ class _FakeInteractionResponse:
 def _fake_interaction(user_id: int = 42, message: Any = None) -> Any:
     return SimpleNamespace(
         user=SimpleNamespace(id=user_id),
+        guild_id=None,
         response=_FakeInteractionResponse(),
         message=message,
     )
 
 
 def _link_discord(bot: NymeriaDiscordBot, user_id: Optional[str]) -> None:
-    async def resolve(_discord_id: int) -> Optional[str]:
+    async def resolve(
+        _discord_id: int, *, guild_id: Optional[int] = None
+    ) -> Optional[str]:
         return user_id
 
     bot.resolve_user_id = resolve  # type: ignore[method-assign]
