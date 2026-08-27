@@ -72,13 +72,13 @@ describe('commandsStore: one shared catalog cache (backlog #135)', () => {
   it('derives chat-stream roots from execution_kind and the ROOT path segment', async () => {
     listCommandsMock.mockResolvedValue([
       cmd('compact', 'chat_stream'),
-      cmd('goal start', 'chat_stream'), // multi-segment path: root only
+      cmd('orchestrate clear', 'chat_stream'), // multi-segment path: root only
       cmd('model'), // plain command: excluded
     ]);
 
     const roots = await store.chatStreamRoots();
 
-    expect([...roots].sort()).toEqual(['/compact', '/goal']);
+    expect([...roots].sort()).toEqual(['/compact', '/orchestrate']);
   });
 
   it('degrades to the static fallback roots on a failed fetch, without a refetch per call', async () => {

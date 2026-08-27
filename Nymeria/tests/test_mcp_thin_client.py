@@ -441,12 +441,12 @@ def test_nymeria_command_chat_stream_result_gains_chat_hint(monkeypatch):
         monkeypatch,
         {
             "success": False,
-            "markdown": "`/goal` is handled outside the command service.",
-            "command": "goal",
+            "markdown": "`/orchestrate` is handled outside the command service.",
+            "command": "orchestrate",
             "level": "error",
             "data": {"execution_kind": "chat_stream"},
         },
-        command="/goal ship the beta",
+        command="/orchestrate ship the beta",
         thread_id="thread-7",
     )
 
@@ -456,7 +456,7 @@ def test_nymeria_command_chat_stream_result_gains_chat_hint(monkeypatch):
     assert backend.calls[0]["json_body"]["thread_id"] == "thread-7"
     assert "nymeria_chat" in result["hint"]
     # The backend's own markdown stays intact alongside the hint.
-    assert result["markdown"] == "`/goal` is handled outside the command service."
+    assert result["markdown"] == "`/orchestrate` is handled outside the command service."
 
 
 def test_nymeria_command_empty_command_errors_without_backend_call(monkeypatch):

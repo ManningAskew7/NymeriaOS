@@ -460,7 +460,6 @@ _OPERATIONAL_DIRS: dict[str, bool] = {
     "backups/": False,          # self-modification rollback, see below
     "cli_history/": False,
     "flags/": False,
-    "goals/": False,
     "hooks/approvals/": False,
     "logs/": False,
     "mcp_install_previews/": False,

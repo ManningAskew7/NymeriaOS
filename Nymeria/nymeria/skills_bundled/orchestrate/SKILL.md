@@ -35,8 +35,8 @@ Skip this kit when:
 
 - A single tool call would suffice.
 - The task is purely conversational.
-- The user wants you to do the work yourself with oversight  -  use `/goal`
-  instead.
+- The user wants you to do the work yourself with oversight: stay in this
+  thread, track the steps with `nym_todo`, and check in after each one.
 
 ## Workflow
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -473,3 +474,107 @@ def test_nym_todo_workflow_binding_is_create_only(tmp_path: Path, monkeypatch):
     )
     assert "create-only" in update
     assert manager.get_todo_by_id("owner", todo_id).workflow_id == "wf_x"
+
+
+def _write_raw_store(manager: TodoManager, user_id: str, payload: dict) -> None:
+    """Write a TODO store JSON straight to disk, bypassing the models."""
+    path = manager.todos_dir / f"{user_id}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_legacy_goal_id_todo_still_loads_lists_and_completes(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A store written before the /goal subsystem was removed carries a
+    serialized ``goal_id`` on its items. That key must not strand the item:
+    the whole store still loads (a validation failure would silently return
+    an EMPTY list from get_todos and lose every other TODO with it), the
+    item lists, and marking it done succeeds now that the supervisor lock
+    is gone.
+    """
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+
+    _write_raw_store(
+        manager,
+        "owner",
+        {
+            "user_id": "owner",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "items": [
+                {
+                    "id": "legacy01",
+                    "task": "Legacy goal-locked work",
+                    "status": "pending",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "thread_id": "thread-a",
+                    "goal_id": "goal-abc123",
+                },
+                {
+                    "id": "plain001",
+                    "task": "Ordinary neighbour",
+                    "status": "pending",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "thread_id": "thread-a",
+                },
+            ],
+        },
+    )
+
+    # Loads: both items survive the round trip, so the neighbour is not
+    # collateral damage of an unknown key on the first item.
+    loaded = manager.get_todos("owner")
+    assert [item.id for item in loaded.items] == ["legacy01", "plain001"]
+    legacy = loaded.get_item("legacy01")
+    assert legacy is not None
+    assert legacy.task == "Legacy goal-locked work"
+
+    # Lists: the tool surface shows it like any other pending TODO.
+    listing = todo_tools.nym_todo_list.func(config=_config("thread-a"))
+    assert "Legacy goal-locked work" in listing
+    assert "Ordinary neighbour" in listing
+
+    # Completes: no supervisor exists any more, so the done transition must
+    # go through rather than be refused.
+    result = todo_tools.nym_todo.func(
+        todo_id="legacy01",
+        status="done",
+        config=_config("thread-a"),
+    )
+    assert "[Error]" not in result
+    completed = manager.get_todos("owner").get_item("legacy01")
+    assert completed is not None
+    assert completed.status == TodoStatus.DONE
+
+
+def test_todo_atomic_update_raises_on_save_failure(tmp_path: Path):
+    """F11: a failed save inside ``TodoManager.atomic_update`` raises instead of
+    silently dropping the mutation."""
+    tm = TodoManager(tmp_path)
+    tm.save_todos = lambda todo_list: False  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="Failed to persist TODOs"):
+        with tm.atomic_update("u1") as todo_list:
+            todo_list.add_item("task", created_by="user", thread_id="t1")
+
+
+def test_todo_atomic_update_does_not_mask_body_exception(tmp_path: Path):
+    """F11: an exception raised inside the block propagates (not masked by the
+    save-failure check), and the save is still attempted in ``finally``."""
+    tm = TodoManager(tmp_path)
+    saves = {"n": 0}
+    real_save = tm.save_todos
+
+    def _counting_save(todo_list):
+        saves["n"] += 1
+        return real_save(todo_list)
+
+    tm.save_todos = _counting_save  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="boom"):
+        with tm.atomic_update("u1"):
+            raise ValueError("boom")
+    # The save still ran in ``finally`` despite the body exception.
+    assert saves["n"] == 1

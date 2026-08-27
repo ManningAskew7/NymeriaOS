@@ -275,8 +275,8 @@ def test_backend_root_overrides_local_root_and_preserves_local_subcommands():
 def test_backend_registration_is_idempotent_for_brand_new_commands():
     """Adding a new backend command never raises even with local modules loaded.
 
-    Locks in the structural guarantee that new backend commands (like /skill,
-    /goal, /orchestrate from commit 5734bf8) cannot break CLI startup.
+    Locks in the structural guarantee that new backend commands (like /skill
+    and /orchestrate from commit 5734bf8) cannot break CLI startup.
     """
     registry = CommandRegistry(include_builtins=False)
     memory.register(registry)
@@ -290,12 +290,11 @@ def test_backend_registration_is_idempotent_for_brand_new_commands():
             command_info("kit", category="Skills", execution_kind="chat_stream"),
             command_info("skills", category="Skills"),
             command_info("skills list", category="Skills"),
-            command_info("goal", category="Goals", execution_kind="chat_stream"),
             command_info("orchestrate", category="Other", execution_kind="chat_stream"),
         ]
     ).register(registry)
 
-    for path in ("/skill", "/kit", "/skills", "/skills list", "/goal", "/orchestrate"):
+    for path in ("/skill", "/kit", "/skills", "/skills list", "/orchestrate"):
         match = registry.resolve(path)
         assert match is not None, f"{path} did not resolve"
         assert match.command.metadata.get("backend_command") is True

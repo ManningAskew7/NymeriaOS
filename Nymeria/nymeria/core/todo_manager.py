@@ -71,8 +71,12 @@ class TodoItem(BaseModel):
                     existing_notes = data.get('notes') or ''
                     migrated = f"[was blocked: {data['blocked_reason']}] {existing_notes}".strip()
                     data['notes'] = migrated[:1000]  # Respect max_length
-            # Strip removed fields (Pydantic would reject unknown fields)
-            for field in ('priority', 'deadline', 'blocked_reason', 'permanent'):
+            # Strip removed fields. Pydantic ignores unknown keys, so this is
+            # not what keeps an old store loadable; it is what stops a retired
+            # key surviving forever by being read back and rewritten on every
+            # save. `goal_id` joined the list when the /goal subsystem was
+            # deleted (it was the supervisor lock's marker).
+            for field in ('priority', 'deadline', 'blocked_reason', 'permanent', 'goal_id'):
                 data.pop(field, None)
         return data
 
@@ -80,13 +84,6 @@ class TodoItem(BaseModel):
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
     recurrence: Optional[str] = Field(default=None, description="Recurrence interval as a duration string (e.g. '5m', '2h', '1d', '1w', '1mo'). Calendar months (Nmo) use calendar arithmetic; everything else is a fixed duration. Legacy preset names (hourly/daily/weekly/monthly, 5min/10min/15min/30min) are still accepted on input and resolved by todo_constants.")
     recurrence_anchor: Optional[datetime] = Field(default=None, description="Stable origin fire time for calendar-month (Nmo) recurrence. Next slots are derived as origin + N months so a month-end day (29-31) clamps to short months without drifting downward. Adopted lazily from the first fired slot and reset when the recurrence changes; unused for fixed-duration intervals.")
-
-    # /goal integration: when set, this TODO is part of a supervised goal and
-    # cannot be transitioned to `done` by anyone but the goal's supervisor
-    # thread. Worker-side `nym_todo(status="done", ...)` calls are refused;
-    # only `mark_task_done` (in goal_tools.py) and its authority check can
-    # flip a goal-locked TODO to done.
-    goal_id: Optional[str] = Field(default=None, description="Parent goal_id when this TODO is goal-locked")
 
     # Scheduled-workflow integration: when workflow_id is set, the ticker
     # runs that published workflow tool headlessly (no agent turn) instead

@@ -6,7 +6,7 @@
  * tiers, a permissive description-match floods the list with commands whose
  * descriptions happen to contain a common letter (e.g. "h" pulls in any
  * command mentioning "the" or "thread"), and the backend's (category, name)
- * sort then surfaces alphabetically early categories like "Goals" at the top
+ * sort then surfaces alphabetically early categories like "Automation" at the top
  * regardless of relevance.
  *
  * Deliberately NOT `toolSearch.ts::filterToolSearch`: the palette wants

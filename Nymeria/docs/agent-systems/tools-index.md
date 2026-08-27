@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1261 tools found.**
+**1257 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -678,7 +678,6 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `mailjet_send_sms` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS with Mailjet. |
 | `mandrill_send_email` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an email with Mandrill / Mailchimp Transactional. |
 | `mandrill_send_template` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an email with a Mandrill template. |
-| `mark_task_done` | `nymeria/tools/goal_tools.py` | Approve a task as complete (supervisor side). Authority enforced. |
 | `marketstack_get_eod` | `nymeria/tools/business_service_integrations.py` | Get Marketstack end-of-day stock market data. |
 | `marketstack_get_exchange` | `nymeria/tools/business_service_integrations.py` | Get Marketstack exchange metadata. |
 | `marketstack_get_ticker` | `nymeria/tools/business_service_integrations.py` | Get Marketstack ticker metadata. |
@@ -902,8 +901,6 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `posthog_track_page_or_screen` | `nymeria/tools/marketing_contact_service_integrations.py` | Track a PostHog page or screen view. |
 | `profitwell_get_metrics` | `nymeria/tools/commerce_billing_service_integrations.py` | Get ProfitWell daily or monthly metrics. |
 | `profitwell_get_settings` | `nymeria/tools/commerce_billing_service_integrations.py` | Get ProfitWell account settings. |
-| `propose_task` | `nymeria/tools/goal_tools.py` | Add a task to the active goal's task list (worker side). |
-| `provide_review_feedback` | `nymeria/tools/goal_tools.py` | Send refinement guidance back to the worker (supervisor side). |
 | `pushbullet_delete_push` | `nymeria/tools/notification_service_integrations.py` | Delete a Pushbullet push by ID. |
 | `pushbullet_list_pushes` | `nymeria/tools/notification_service_integrations.py` | List Pushbullet push history. |
 | `pushbullet_send_push` | `nymeria/tools/notification_service_integrations.py` | Send a Pushbullet note or link push. |
@@ -945,7 +942,6 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `regression_echo` | `nymeria/tools/regression_echo.py` | Echo the supplied text back with a fixed prefix. |
 | `reload_all` | `nymeria/tools/runtime_admin.py` | Reload all tools, skills, and trigger sources. |
 | `request_credential` | `nymeria/tools/credential_prompt.py` | Open a secure in-chat prompt (modal / hosted form / OAuth dance) to |
-| `request_review` | `nymeria/tools/goal_tools.py` | Escalate a task to the supervisor for review (worker side). BLOCKS. |
 | `rss_feed_read` | `nymeria/tools/public_info_integrations.py` | Read an RSS or Atom feed URL. |
 | `run_tools_in_order` | `nymeria/tools/tool_order.py` | Run this whole batch of tool calls in the order listed, not concurrently. |
 | `rundeck_execute_job` | `nymeria/tools/operations_monitoring_service_integrations.py` | Execute a Rundeck job. |

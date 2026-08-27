@@ -47,14 +47,11 @@ CANON_VERBS: frozenset[str] = frozenset(
 # spellings (the registry's storage form).
 SANCTIONED_LEAF_TOKENS: dict[str, str] = {
     # Consent and lifecycle flows
-    "approve": "consent flow verb (hooks, fallback, goal)",
+    "approve": "consent flow verb (hooks, fallback)",
     "deny": "consent flow verb",
     "approvals": "noun sub-list: pending consent queue",
     "revert": "consent-flow undo of an applied fallback swap",
-    "pause": "goal lifecycle verb",
-    "resume": "goal lifecycle verb",
-    "cancel": "goal lifecycle verb",
-    "edit": "in-place mutation of hooks, goals and todos",
+    "edit": "in-place mutation of hooks and todos",
     "complete": "todos are completed, not deleted",
     "schedule": "todos fire-time verb: set or clear when a TODO fires",
     "repeat": "todos recurrence verb: set or clear the recurrence interval",

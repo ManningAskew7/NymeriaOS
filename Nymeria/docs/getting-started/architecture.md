@@ -687,22 +687,21 @@ Input interfaces and event-driven adapters that route messages to the agent:
 
 ---
 
-## Supervised & Delegated Execution: `/goal` and `/orchestrate`
+## Delegated Execution: `/orchestrate`
 
-Two slash commands turn a regular thread into a long-running, structured-work
-mode. They are command-specific chat-stream lifecycles that bind internal
-Skill Kits as part of their setup, then rewrite the user's message into a
-kickoff prompt the agent acts on. They are inverse of each other in
-who-does-what:
+`/orchestrate` turns a regular thread into a long-running, structured-work
+mode. It is a command-specific chat-stream lifecycle that binds an internal
+Skill Kit as part of its setup, then rewrites the user's message into a
+kickoff prompt the agent acts on.
 
-| | `/orchestrate` (delegated) | `/goal` (supervised) |
-|---|---|---|
-| User's thread X is the… | **orchestrator** | **worker** |
-| Helper thread is the… | **worker** (forked from X via `branch_thread`) | **supervisor** (freshly spawned, no inherited context) |
-| Owns the task list | X | X |
-| Authority to mark "done" | X (self-managed) | Helper thread (structurally enforced) |
-| Helper lifetime | `temporary` (idle-deletes) | `temporary` (idle-deletes) |
-| Persisted state | None  -  agent self-manages via `nym_todo` | `Goal` record (`data/goals/{user}.json`) |
+| | `/orchestrate` (delegated) |
+|---|---|
+| User's thread X is the… | **orchestrator** |
+| Helper thread is the… | **worker** (forked from X via `branch_thread`) |
+| Owns the task list | X |
+| Authority to mark "done" | X (self-managed) |
+| Helper lifetime | `temporary` (idle-deletes) |
+| Persisted state | None  -  agent self-manages via `nym_todo` |
 
 ### `/orchestrate`  -  prompt-driven delegation
 
@@ -712,51 +711,17 @@ who-does-what:
   `nym_todo_list`, `tool_search`.
 - Workers are spawned via `spawn_thread(mode="branched",
   ttl_hours=24)` so they inherit X's context up to the spawn point and
-  idle-delete after the goal.
+  idle-delete when the objective is finished.
 - No framework enforcement  -  the orchestrator persona in the kit body tells
   the agent how to decompose, delegate, and judge. Extensible to a swarm
   (multiple parallel workers) for free, since `spawn_thread` doesn't cap it.
 
-### `/goal`  -  framework-enforced supervision
-
-The structural novelty: **the worker thread cannot mark its own tasks
-complete.** Authority is held by the supervisor thread, enforced via three
-layers of defence-in-depth:
-
-1. **Tool binding**  -  the `goal-worker` kit binds `propose_task` and
-   `request_review` only; `mark_task_done` is in the `goal-supervisor` kit.
-2. **Runtime authority check**  -  `mark_task_done` itself verifies
-   `goal_manager.can_authority(user_id, goal_id, thread_id)` and refuses
-   if the calling thread isn't the recorded supervisor.
-3. **`nym_todo` lock**  -  TODO items carry an optional `goal_id`; the
-   done-transition path in `nym_todo` refuses for any thread that isn't
-   the supervisor, catching attempts that bypass the goal tools.
-
-Lifecycle (`pending_approval` → `active` → `done` / `paused` / `cleared` /
-`budget_limited`):
-
-1. User runs `/goal <objective>` on thread X. The Goal record is created
-   in `pending_approval` and the `goal-worker` kit is activated on X.
-2. The worker decomposes the objective into tasks via `propose_task`
-   (each task has a `description` and a verifiable `criterion`).
-3. User runs `/goal approve`. A fresh supervisor thread S is spawned
-   (`mode="fresh"`, `ttl_hours=48`, `make_callable=True`) with the
-   `goal-supervisor` kit activated. The Goal transitions to `active` and
-   records `helper_thread_id=S`.
-4. Worker executes tasks one at a time. When it believes a task is done,
-   it calls `request_review(task_id, summary, evidence)`, which marks the
-   task `awaiting_review`, invokes S via `thread_agent_executor.invoke`,
-   and **blocks for S's verdict**.
-5. S verifies independently (it can read files, run tests, web_search_perplexity,
-   enable more tools) and either calls `mark_task_done` (approve) or
-   `provide_review_feedback` (refine). The verdict and any feedback flow
-   back to X as the tool's return value.
-6. Circuit breakers: `max_turns` (default 20) → `budget_limited`,
-   `token_budget` (optional, excludes cached tokens) → `budget_limited`,
-   `consecutive_rejections` ≥ 3 → auto-`paused` for user intervention.
-7. Terminal lifecycle: `/goal clear` aborts and deletes S;
-   `ttl_hours=48` cleanup deletes S 48h after last invocation;
-   all tasks done → Goal auto-transitions to `done`.
+A second, supervised mode (`/goal`) once sat beside this one: a worker
+thread that structurally could not mark its own tasks done, with the
+authority held by a separately spawned supervisor thread. It was deleted in
+2026-08 after three months dead in production, since `/orchestrate` already
+covers the capability on generic primitives. The reinvention is tracked as
+backlog #269; the deleted code is recoverable at sha `a2dceb76`.
 
 ### Slash-command-activates-skill
 
@@ -779,7 +744,7 @@ current model turn. `/kit` activates Skill Kits, optionally accepts a TTL
 override, binds required tools, and prepends the kit body to the same turn. The
 command registry exposes `/skills` for listing, showing, and deactivating
 visible skills. The chat-stream intercept (`api/routers/chat.py`) still calls
-the same helpers for `/goal` and `/orchestrate`, whose bundled kits opt out of
+the same helpers for `/orchestrate`, whose bundled kit opts out of
 user-facing activation with `metadata.nymeria.internal: true`. See [Agent
 Skills](./skills.md#slash-command-activation).
 
@@ -787,15 +752,10 @@ Skills](./skills.md#slash-command-activation).
 
 | Concern | File |
 |---|---|
-| Goal data model + lifecycle + authority check | `nymeria/core/goal_manager.py` |
-| Goal tools (`propose_task`, `request_review`, `mark_task_done`, `provide_review_feedback`) | `nymeria/tools/goal_tools.py` |
-| `nym_todo` lock guard | `nymeria/tools/todo.py` (TodoItem.goal_id + done-transition check) |
-| Worker kit | `nymeria/skills_bundled/goal-worker/SKILL.md` |
-| Supervisor kit | `nymeria/skills_bundled/goal-supervisor/SKILL.md` |
 | Orchestrator kit | `nymeria/skills_bundled/orchestrate/SKILL.md` |
 | Slash-command registration | `nymeria/core/command_service.py::_register_defaults` (applies the `nymeria/core/registry_defaults.py` catalog) |
 | Slash-command activation helpers | `nymeria/core/command_service.py::activate_skill_kit` / `deactivate_skill_kit` |
-| Chat-stream intercept + supervisor spawn helper | `nymeria/api/routers/chat.py` |
+| Chat-stream intercept | `nymeria/api/routers/chat.py` |
 | `spawn_thread` modes (`branched`, `temporary`) | `nymeria/tools/spawn_thread.py` |
 | Idle-sweep for temporary threads | `nymeria/core/ticker.py::_maybe_submit_spawn_sweep` |
 

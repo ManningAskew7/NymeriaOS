@@ -31,11 +31,10 @@ shape passes through untouched rather than erroring, because a POST hook that
 cannot read a result must never be able to break the call.
 
 Scope, because both the docstring above and ``SECURITY.md`` read as exhaustive:
-"every path" means every AGENT-initiated one. Two platform-initiated call sites
-stay outside deliberately (the goal-supervisor spawn in ``api/routers/chat.py``
-and the error-report mail in ``api/routers/system.py``): they are the server
-acting on its own behalf, not a model choosing a tool, so a per-turn hook has no
-turn to attach to.
+"every path" means every AGENT-initiated one. One platform-initiated call site
+stays outside deliberately (the error-report mail in ``api/routers/system.py``):
+it is the server acting on its own behalf, not a model choosing a tool, so a
+per-turn hook has no turn to attach to.
 
 This module is also where a future per-tool permission model or security profile
 attaches (:func:`tool_allowlist`, :func:`by_name_gate_reason`). Read

@@ -76,7 +76,8 @@ metadata:
   compaction/`/clear`/the sliding window evicts it regardless of TTL. It is
   ignored for skills that bind no tools.
 - `internal: true` under `metadata.nymeria` keeps a skill available to code
-  paths such as `/goal` while hiding it from user-facing `/skill`, `/kit`,
+  paths that activate it by name (a slash-command intercept, a kit's
+  `required_skills`) while hiding it from user-facing `/skill`, `/kit`,
   and `/skills list` surfaces.
 - `allowed-tools` remains advisory/portable and never auto-binds tools.
 - Required tools already present in the current graph are treated as a no-op
