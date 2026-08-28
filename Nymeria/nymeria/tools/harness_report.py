@@ -153,7 +153,10 @@ def harness_report(
         title: One-line summary of the issue.
         details: What happened vs what you expected, with enough context to
             locate the problem later: tool names, exact commands or
-            arguments, verbatim error text or output snippets.
+            arguments, verbatim error text or output snippets. Include the
+            date/time the incident occurred if the details do not already
+            say: the report is stamped only with filing time, which can be
+            well after the incident.
         kind: "bug" (broken behavior), "friction" (worked, but fought you),
             "papercut" (minor annoyance), or "idea" (improvement suggestion).
         area: Optional subsystem guess, e.g. "tools/web_fetch" or
