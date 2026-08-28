@@ -2,6 +2,8 @@
 
 Nymeria's Discord integration runs as a stateless gateway that translates Discord slash commands and mentions into Nymeria REST API calls. All state lives in the API container  -  the bot is a thin client with no local persistence (except a per-channel context toggle held in memory).
 
+Orientation shortcut: the Key Files table at the end of this doc maps every implementation file; jump there first when you need code, not concepts.
+
 ## Architecture
 
 ```
