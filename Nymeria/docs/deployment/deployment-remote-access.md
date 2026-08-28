@@ -253,9 +253,16 @@ Any of the paths on this page satisfies it:
 | No domain, want a public URL | [Cloudflare Tunnel](#cloudflare-tunnel): the `trycloudflare.com` URL is HTTPS |
 | Own a domain | [Domain + Caddy](#domain--caddy): certificates issue automatically |
 
-Whichever you pick, add the extension's ID to `CORS_ORIGINS` as
-`chrome-extension://<id>` and restart the API. Setup steps for the extension
-itself are in `nymeria-browser/README.md`.
+Whichever you pick, CORS is zero-config on current backends: the API accepts
+any well-formed `chrome-extension://` origin by pattern (2026-08-28), so
+there is nothing to allowlist and nothing to restart. (Backends older than
+that still need the extension's ID added to `CORS_ORIGINS` as
+`chrome-extension://<id>` plus an API restart; the shipped extension's
+pinned ID is `hfjpeeimhfbkpidpeabpdppddahckhgp`.) A remote backend also
+always works over a plain SSH tunnel
+(`ssh -L 8000:127.0.0.1:8000 user@host`, then `http://localhost:8000` in
+the popup), riding the extension's loopback permission. Setup steps for the
+extension itself are in `nymeria-browser/README.md`.
 
 ---
 
