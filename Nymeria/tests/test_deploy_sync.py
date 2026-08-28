@@ -184,6 +184,18 @@ def test_everything_current_is_a_quiet_noop(world):
     assert not any("pull" in c for c in world.runner.commands())
 
 
+def test_repo_state_fetch_never_writes_fetch_head(world):
+    """#221: the timer's 5-minute fetch races interactive `git pull --ff-only`
+    sessions through FETCH_HEAD ("Cannot fast-forward to multiple branches").
+    The fix is fetching with --no-write-fetch-head, so the flag on every fetch
+    IS the contract this pins."""
+    run_sync(world)
+    fetches = [c for c in world.runner.calls if len(c[0]) > 3 and c[0][3] == "fetch"]
+    assert fetches, "sync ran no fetch"
+    for call in fetches:
+        assert "--no-write-fetch-head" in call[0]
+
+
 def test_origin_ahead_pulls_restarts_both_and_advances_markers(world):
     world.origin = SHA_NEW
     world.merge_base = SHA_OLD  # behind
