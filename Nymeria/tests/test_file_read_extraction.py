@@ -24,7 +24,7 @@ def test_extraction_prompt_runs_secondary_model_and_tags(tmp_path, monkeypatch):
     def fake_extraction(content, prompt):
         calls["content"] = content
         calls["prompt"] = prompt
-        return "EXTRACTED", "fake-model"
+        return "EXTRACTED", "fake-model", False
 
     monkeypatch.setattr(llm_extract, "run_extraction", fake_extraction)
 
@@ -33,6 +33,23 @@ def test_extraction_prompt_runs_secondary_model_and_tags(tmp_path, monkeypatch):
     assert artifact == {}
     assert calls["prompt"] == "the second line"
     assert "line two" in calls["content"]   # the full file text is handed to the LLM
+
+
+def test_truncated_extraction_owns_up_in_the_attribution(tmp_path, monkeypatch):
+    """#198: an extraction cut at its output ceiling ends mid-structure with
+    no visible seam, so the attribution is the one place the cut can be
+    owned. A clean run keeps the plain tag (the test above pins that)."""
+    path = tmp_path / "big.log"
+    path.write_text("row after row\n" * 50, encoding="utf-8")
+
+    monkeypatch.setattr(
+        llm_extract, "run_extraction", lambda c, p: ("| row 3 |", "fake-model", True)
+    )
+
+    content, _ = file_read.func(str(path), extraction_prompt="the table")
+    assert "[Extracted by fake-model;" in content
+    assert "hit its output limit" in content
+    assert "the tail may be missing" in content
 
 
 def test_empty_extraction_prompt_returns_raw_and_skips_llm(tmp_path, monkeypatch):
@@ -56,7 +73,7 @@ def test_extraction_error_returned_without_attribution(tmp_path, monkeypatch):
     monkeypatch.setattr(
         llm_extract,
         "run_extraction",
-        lambda content, prompt: ("[Error]: Extraction step failed: X", ""),
+        lambda content, prompt: ("[Error]: Extraction step failed: X", "", False),
     )
 
     content, artifact = file_read.func(str(path), extraction_prompt="anything")

@@ -129,7 +129,11 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   (the phantom-success shape where every other field looks fine): verify a
   page fact before retrying, never re-fire blind. Nonzero is weak (dynamic
   pages mutate constantly). Absent = unmeasured (a navigating act, hover/
-  scroll, a spent budget), never zero.
+  scroll, a spent budget), never zero. A zero-mutation `fill` is MARKED
+  with a [Fill note]: fill commits the value in one IME-style insert (no
+  key events), so a widget that reacts per keystroke (autocomplete, a
+  dependent dropdown) can take the value and never notice; `type` on the
+  same ref is the keystroke-driven route.
 - `scroll_moved` -> did the scroll actually move anything, and WHAT: a
   ref scroll wheels AT that element (scrolling the pane UNDER it; inner
   panes need no coordinates any more) and reports {dx, dy, scroller}:
@@ -189,6 +193,14 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   `found: false` does NOT fail the call (the input was delivered); it means
   the outcome you named never showed inside `timeout_ms`, so judge by the
   rest of the payload and re-read before assuming the action worked.
+  `wait_for_text` is an EXACT, case-sensitive substring: wait on the
+  shortest stable fragment ("Added", not "Added to Cart", which misses when
+  the site says Basket). A text miss reports what IS there:
+  `page_text_excerpt` is the ROOT document's visible text and
+  `found_case_insensitive: true` means a case-insensitive scan found it
+  (usually only the casing missed), so read those before concluding the
+  action failed (absent on an older extension build, never meaningful by
+  absence).
 - `settled: {reason: "deadline"}` -> the page never went quiet. It may still
   be working. Next time, arm the outcome on the action itself
   (`wait_for_text=...`); after the fact, `chrome_act(action="wait", ...)`
@@ -303,8 +315,10 @@ screen.
 was found in a data breach" warning, an HTTP Basic auth prompt): Chrome
 discards every input event sent to that tab, *after* accepting it. The page
 itself keeps running, so reads and `fill` still work while `click`, `key`,
-`type` and `drag` do nothing; the call fails and says
-`input_delivered: "no"`. The suppression can OUTLIVE the dialog (measured:
+`type` and `drag` do nothing (fill rides an IME path the gate does not
+consult, which is also its everyday limit: no key events, so
+keystroke-driven widgets may ignore it, see `dom_mutations` above); the
+call fails and says `input_delivered: "no"`. The suppression can OUTLIVE the dialog (measured:
 after one was cleared, scripts ran while input stayed dead), so "I looked
 and there was no dialog" does not mean the tab is healthy. Trust
 `input_delivered`. Recovery, cheapest first: navigate the tab somewhere else

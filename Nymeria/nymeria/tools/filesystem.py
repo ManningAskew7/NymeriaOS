@@ -589,7 +589,9 @@ def file_read(
         "[Truncated after N lines]". Windowed reads (offset set) are
         line-numbered and end with "[Showing lines A-B of N]". When
         extraction_prompt is used, the extracted text ends with
-        "[Extracted by <model>]". Errors: "[Error]: <reason>".
+        "[Extracted by <model>]", which grows an output-limit clause when the
+        extraction model was cut mid-answer (the tail may be missing).
+        Errors: "[Error]: <reason>".
     """
     logger.info(f"Reading file: {file_path}")
 
@@ -661,12 +663,12 @@ def file_read(
         logger.debug(f"Read {len(content)} characters from {file_path}")
 
         if extraction_prompt.strip():
-            from .llm_extract import run_extraction
+            from .llm_extract import extraction_attribution, run_extraction
 
-            extracted, model = run_extraction(content, extraction_prompt)
+            extracted, model, cut = run_extraction(content, extraction_prompt)
             if extracted.startswith("[Error]:"):
                 return extracted, {}
-            return f"{extracted}\n\n[Extracted by {model}]", {}
+            return f"{extracted}\n\n{extraction_attribution(model, cut)}", {}
 
         if numbered is not None:
             return numbered, {}

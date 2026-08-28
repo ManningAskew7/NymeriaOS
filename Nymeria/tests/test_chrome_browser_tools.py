@@ -938,10 +938,10 @@ def test_extraction_prompt_returns_only_the_extraction(monkeypatch) -> None:
 
     seen: dict[str, str] = {}
 
-    def fake_extraction(content: str, prompt: str) -> tuple[str, str]:
+    def fake_extraction(content: str, prompt: str) -> tuple[str, str, bool]:
         seen["content"] = content
         seen["prompt"] = prompt
-        return "Total: $42.00", "test-background-model"
+        return "Total: $42.00", "test-background-model", False
 
     monkeypatch.setattr(llm_extract, "run_extraction", fake_extraction)
 
@@ -965,7 +965,7 @@ def test_extraction_failure_is_surfaced_not_swallowed(monkeypatch) -> None:
     import nymeria.tools.llm_extract as llm_extract
 
     monkeypatch.setattr(
-        llm_extract, "run_extraction", lambda c, p: ("[Error]: no model configured", "")
+        llm_extract, "run_extraction", lambda c, p: ("[Error]: no model configured", "", False)
     )
     out = _invoke(
         chrome_read_text,
@@ -973,6 +973,129 @@ def test_extraction_failure_is_surfaced_not_swallowed(monkeypatch) -> None:
         _ok({"text": "hello"}),
     )
     assert out.startswith("[Error]:")
+
+
+def test_truncated_extraction_owns_up_in_the_attribution(monkeypatch) -> None:
+    """#198: a mid-table cut looks complete (no seam, no marker), and the
+    [Extracted by ...] tag read as a completeness claim. The truncated flag
+    from the extraction's own stop reason replaces the tag with one that
+    says the tail may be missing."""
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(
+        llm_extract, "run_extraction", lambda c, p: ("| QF405 SYD 06:25 |", "test-model", True)
+    )
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1, "extraction_prompt": "the fare table"},
+        _ok({"text": "long fare table", "url": "https://qantas.test"}),
+    )
+    assert "[Extracted by test-model;" in out
+    assert "hit its output limit" in out
+    assert "the tail may be missing" in out
+
+
+def test_clean_extraction_keeps_the_plain_attribution(monkeypatch) -> None:
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(
+        llm_extract, "run_extraction", lambda c, p: ("all four rows", "test-model", False)
+    )
+    out = _invoke(
+        chrome_read_text,
+        {"tab_id": 1, "extraction_prompt": "the fare table"},
+        _ok({"text": "short table"}),
+    )
+    assert "[Extracted by test-model]" in out
+    assert "hit its output limit" not in out
+
+
+def test_find_owns_up_when_the_matcher_was_cut(monkeypatch) -> None:
+    """#198's find half: a cut match list is a PREFIX, so a miss stops being
+    evidence of absence. The note rides the hit branch AND the miss branch,
+    since the miss is exactly where the wrong conclusion gets drawn."""
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(
+        llm_extract,
+        "run_extraction",
+        lambda c, p: ("@e1 | link | Home | matches", "test-model", True),
+    )
+    tree = '- link "Home" [ref=@e1]\n- button "Pay" [ref=@e2]'
+    hit = _invoke(chrome_find, {"tab_id": 1, "query": "the home link"}, _ok({"tree": tree}))
+    assert "@e1" in hit
+    assert "hit its output limit mid-answer" in hit
+    assert "NOT evidence of absence" in hit
+
+    monkeypatch.setattr(
+        llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", True)
+    )
+    miss = _invoke(chrome_find, {"tab_id": 1, "query": "anything"}, _ok({"tree": tree}))
+    assert "hit its output limit mid-answer" in miss
+
+    monkeypatch.setattr(
+        llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False)
+    )
+    clean = _invoke(chrome_find, {"tab_id": 1, "query": "anything"}, _ok({"tree": tree}))
+    assert "hit its output limit" not in clean
+
+
+def test_read_text_surfaces_the_extensions_own_cut(monkeypatch) -> None:
+    """#198 survey find: `extract_text.ts` has always reported its wire-cap
+    cut as `truncated: true` and the backend never read it, so the raw
+    branch under-claimed nothing while the extraction branch silently fed a
+    shortened page to the model. Both branches now carry the [Read cap]
+    note; the identity check keeps a page-shaped string from switching it
+    on."""
+    raw = _invoke(
+        chrome_read_text, {"tab_id": 1}, _ok({"text": "the visible part", "truncated": True})
+    )
+    assert "[Read cap:" in raw
+    assert "missing the page's tail" in raw
+
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(
+        llm_extract, "run_extraction", lambda c, p: ("summary", "test-model", False)
+    )
+    extracted = _invoke(
+        chrome_read_text,
+        {"tab_id": 1, "extraction_prompt": "anything"},
+        _ok({"text": "the visible part", "truncated": True}),
+    )
+    assert "[Read cap:" in extracted
+
+    for forged in ("true", 1, "yes"):
+        out = _invoke(
+            chrome_read_text, {"tab_id": 1}, _ok({"text": "hello", "truncated": forged})
+        )
+        assert "Read cap" not in out, forged
+
+
+def test_backend_cap_stops_claiming_completeness_over_an_upstream_cut(workspace) -> None:
+    """Review catch on the [Read cap] fix: when the extension already cut
+    the text, `_cap`'s own note said "showing N of M characters ... Full
+    content saved" where M was the extension's cap and the spill file a
+    prefix, the same completeness lie one layer up. Both claims now say
+    what they actually hold."""
+    big = "\n".join(f"row {i}" for i in range(3000))
+    cut = _invoke(
+        chrome_read_text,
+        {"tab_id": 1, "max_chars": 500},
+        _ok({"text": big, "truncated": True}),
+    )
+    assert "characters the extension returned" in cut
+    assert "the page continues past them" in cut
+    assert "That received prefix saved" in cut
+    assert "Full content saved" not in cut
+
+    clean = _invoke(
+        chrome_read_text,
+        {"tab_id": 1, "max_chars": 500},
+        _ok({"text": big}),
+    )
+    assert "Full content saved" in clean
+    assert "extension returned" not in clean
 
 
 # ---------- find ----------
@@ -984,7 +1107,7 @@ def test_find_returns_matching_refs(monkeypatch) -> None:
     monkeypatch.setattr(
         llm_extract,
         "run_extraction",
-        lambda c, p: ("@e2 | button | Add to cart | matches the description", "test-model"),
+        lambda c, p: ("@e2 | button | Add to cart | matches the description", "test-model", False),
     )
     tree = '- link "Home" [ref=@e1]\n- button "Add to cart" [ref=@e2]'
     out = _invoke(chrome_find, {"tab_id": 1, "query": "the add to cart button"}, _ok({"tree": tree}))
@@ -1003,7 +1126,7 @@ def test_find_returns_a_note_not_an_error_when_nothing_matches(monkeypatch) -> N
     """
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
     out = _invoke(
         chrome_find, {"tab_id": 1, "query": "a checkout button"}, _ok({"tree": '- link "Home" [ref=@e1]'})
     )
@@ -1022,7 +1145,7 @@ def test_find_miss_on_a_page_of_controls_says_only_controls_are_searchable(monke
     """
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
     out = _invoke(
         chrome_find,
         {"tab_id": 1, "query": "frame row 3"},
@@ -1042,7 +1165,7 @@ def test_find_miss_on_an_all_static_page_blames_the_page_not_the_query(monkeypat
     note states the page-level fact and points at the read."""
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
     out = _invoke(
         chrome_find,
         {"tab_id": 1, "query": "frame row 3"},
@@ -1070,7 +1193,7 @@ def test_find_miss_keeps_the_old_wording_against_a_pre_208_extension(monkeypatch
     pull), so the page-level claim is unknowable and must not be asserted."""
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
     out = _invoke(
         chrome_find,
         {"tab_id": 1, "query": "anything"},
@@ -1088,7 +1211,7 @@ def test_find_drops_refs_that_are_not_in_the_tree(monkeypatch) -> None:
     monkeypatch.setattr(
         llm_extract,
         "run_extraction",
-        lambda c, p: ("@e9 | button | Invented | not real\n@e1 | link | Home | real", "test-model"),
+        lambda c, p: ("@e9 | button | Invented | not real\n@e1 | link | Home | real", "test-model", False),
     )
     out = _invoke(chrome_find, {"tab_id": 1, "query": "anything"}, _ok({"tree": '- link "Home" [ref=@e1]'}))
 
@@ -1746,6 +1869,142 @@ def test_region_withholds_the_frame_when_the_capture_reflowed_the_page(workspace
     assert "[Reflow]" in content, "control: this capture does warn about the reflow"
     assert "[Frame]" not in content
     assert "No chrome_act coordinate can be read off this image directly" in content
+    # #237: the fixture's box sits entirely ON screen (700..840 x 400..460
+    # against a 500..1780 x 340..1060 viewport window), so a direction would
+    # have nothing true to say and must say nothing. The flag alone is not
+    # geometry.
+    assert "The box reaches" not in content
+
+
+def test_offscreen_region_withhold_names_the_direction_below(workspace) -> None:
+    """#237: "reaching past the viewport" was accurate and directionless, and
+    an element just ABOVE fires the same withhold as one below, so the
+    operator guessed-and-rescrolled. The overhang is one subtraction from
+    numbers already in the payload; "roughly" is load-bearing (the reflow
+    this rides beside moves the viewport the metrics were read in)."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 960, 140, 60]},
+        _frame_shot(
+            beyond_viewport=True,
+            region={"x": 700, "y": 1300, "width": 140, "height": 60, "scale": 2},
+        ),
+    )
+
+    assert "[Frame]" not in content
+    assert "roughly 300 px below its bottom edge" in content
+    assert "scroll there and recapture to earn a coordinate frame" in content
+    assert "above the viewport's top edge" not in content
+
+
+def test_offscreen_region_withhold_composes_two_directions(workspace) -> None:
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [0, 0, 140, 60]},
+        _frame_shot(
+            beyond_viewport=True,
+            region={"x": 100, "y": 100, "width": 140, "height": 60, "scale": 2},
+        ),
+    )
+
+    assert "roughly 240 px above the viewport's top edge" in content
+    assert "roughly 400 px left of its left edge" in content
+    assert " and " in content.split("The box reaches", 1)[1].split(";", 1)[0]
+
+
+def test_offscreen_direction_and_zoom_cause_are_additive(workspace) -> None:
+    """The withhold's causes are independent facts, not alternatives (review
+    catch): an off-screen box whose zoom was ALSO unreadable must carry the
+    direction AND the aim warning, since scrolling alone cannot make an
+    unmultiplied clip aim true."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 960, 140, 60]},
+        _frame_shot(
+            beyond_viewport=True,
+            region={
+                "x": 700,
+                "y": 1300,
+                "width": 140,
+                "height": 60,
+                "scale": 2,
+                "clip_zoom": None,
+            },
+            zoom=None,
+        ),
+    )
+
+    assert "roughly 300 px below its bottom edge" in content
+    assert "zoom could not be read at capture" in content
+
+
+def test_a_box_taller_than_the_viewport_is_not_told_to_scroll(workspace) -> None:
+    """Opposing-edge overhangs mean no scroll shows the whole box; 'scroll
+    there and recapture' would be a loop-inducing instruction (review
+    catch), so the recovery names the true way out."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 0, 140, 900]},
+        _frame_shot(
+            beyond_viewport=True,
+            region={"x": 700, "y": 100, "width": 140, "height": 1400, "scale": 2},
+        ),
+    )
+
+    assert "above the viewport's top edge" in content
+    assert "below its bottom edge" in content
+    assert "capture a smaller region instead" in content
+    assert "scroll there and recapture" not in content
+
+
+def test_a_sub_pixel_overhang_earns_no_direction(workspace) -> None:
+    """The >= 1 px threshold: a fractional overhang is rounding noise, and a
+    direction built on it would send the agent scrolling after nothing."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 400, 140, 60]},
+        _frame_shot(
+            beyond_viewport=True,
+            region={"x": 700, "y": 339.5, "width": 140, "height": 60, "scale": 2},
+        ),
+    )
+
+    assert "[Reflow]" in content
+    assert "The box reaches" not in content
+
+
+def test_offscreen_direction_says_nothing_on_junk_geometry(workspace) -> None:
+    """A direction composed from unparseable numbers would be a guess wearing
+    a measurement's voice; the withhold and [Reflow] stand on their own."""
+    content, _ = _invoke_raw(
+        chrome_screenshot,
+        {"tab_id": 1, "region": [200, 960, 140, 60]},
+        _frame_shot(
+            beyond_viewport=True,
+            region={"x": "junk", "y": 1300, "width": 140, "height": 60, "scale": 2},
+        ),
+    )
+
+    assert "[Reflow]" in content
+    assert "The box reaches" not in content
+
+
+def test_the_frame_line_echoes_the_page_zoom_it_folded(workspace) -> None:
+    """#237's second half: the fold already lives in [Geometry], and a pasted
+    [Frame] line was not self-contained without it. Keyed on the same
+    verified_fold the frame verdict rests on, so the echo can never name a
+    zoom the clip did not fold."""
+    content, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1, "region": [200, 60, 140, 60]}, _folded_shot()
+    )
+    frame_line = next(ln for ln in content.splitlines() if ln.startswith("[Frame]"))
+    assert "at 150% page zoom" in frame_line
+
+    content, _ = _invoke_raw(
+        chrome_screenshot, {"tab_id": 1, "region": [200, 60, 140, 60]}, _frame_shot()
+    )
+    frame_line = next(ln for ln in content.splitlines() if ln.startswith("[Frame]"))
+    assert "page zoom" not in frame_line, "an unzoomed frame stays byte-identical"
 
 
 def test_region_frame_rides_an_unmeasurable_image_deliberately(workspace) -> None:
@@ -2513,7 +2772,7 @@ def test_find_match_list_warns_when_the_page_was_loading(monkeypatch) -> None:
     monkeypatch.setattr(
         llm_extract,
         "run_extraction",
-        lambda c, p: ("@e1 | link | Home | matches", "test-model"),
+        lambda c, p: ("@e1 | link | Home | matches", "test-model", False),
     )
     out = _invoke(
         chrome_find,
@@ -2529,7 +2788,7 @@ def test_find_no_match_hints_when_the_page_was_loading(monkeypatch) -> None:
     only the payload knows which one the agent should draw."""
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
     out = _invoke(
         chrome_find,
         {"tab_id": 1, "query": "a checkout button"},
@@ -3395,6 +3654,22 @@ def test_act_docstring_teaches_deterministic_evidence_and_the_mutation_tally() -
     assert "verify a page fact before retrying" in d
 
 
+def test_act_docstring_teaches_the_fill_limit_and_the_wait_miss_report() -> None:
+    """Batch-A copy ratchet (#217 + #196). Fill's IME limit was stated only
+    in an extension-internal docstring while the skill taught fill with no
+    downside; and the wait matcher's semantics (exact, case-sensitive) were
+    never stated anywhere the model reads."""
+    d = " ".join(chrome_act.description.split())
+    # #217: the limit, the marking, and the route out.
+    assert "NO per-key events" in d
+    assert "[Fill note]" in d
+    # #196: the semantics and both miss-report keys, with the absence rule.
+    assert "EXACT, case-sensitive substring" in d
+    assert "page_text_excerpt" in d
+    assert "found_case_insensitive" in d
+    assert "absent on an older extension build" in d
+
+
 # ---------- a failed command must read as failed ----------
 
 
@@ -4021,7 +4296,7 @@ def test_find_names_the_document_status_on_a_miss(monkeypatch) -> None:
     # whether to keep hunting or re-navigate.
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
     out = _invoke(
         chrome_find,
         {"tab_id": 1, "query": "the add to cart button"},
@@ -4582,7 +4857,7 @@ def test_the_extraction_branch_carries_both_notes(monkeypatch) -> None:
     # text, only a confident summary of it.
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("six pawn moves", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("six pawn moves", "test-model", False))
     out = _invoke(
         chrome_read_text,
         {"tab_id": 1, "extraction_prompt": "list the moves"},
@@ -4598,7 +4873,7 @@ def test_find_appends_the_view_constraint_note(monkeypatch) -> None:
     """A modal context explains a no-match: the element is pruned, not absent."""
     import nymeria.tools.llm_extract as llm_extract
 
-    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model"))
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
     out = _invoke(
         chrome_find,
         {"tab_id": 1, "query": "the checkout button"},
@@ -5258,6 +5533,87 @@ def test_act_invisible_caution_needs_the_boolean_itself() -> None:
             _ok({"action": "click", "input": "trusted", "target_invisible": value}),
         )
         assert "Invisible target" not in out, value
+
+
+def test_act_marks_a_zero_mutation_fill_with_the_ime_limit() -> None:
+    """#217: the Amazon postcode fill carried every truthful field and a
+    dom_mutations of 0, and the signal was still missed among twenty keys.
+    The zero-mutation FILL gets a marked note naming fill's own limit (an
+    IME commit, no key events) and the keystroke route out."""
+    out = _invoke(
+        chrome_act,
+        {"tab_id": 1, "action": "fill", "ref": "@e1", "value": "2000"},
+        _ok(
+            {
+                "action": "fill",
+                "input": "trusted",
+                "input_delivered": "yes",
+                "dom_mutations": 0,
+            }
+        ),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "[Fill note:" in after
+    assert "no per-key events" in after
+    assert 'action="type"' in after
+
+
+def test_act_fill_note_needs_the_measured_zero_and_the_fill_itself() -> None:
+    """The note keys on action == "fill" plus an int zero (bool excluded)
+    plus delivery not already "no": every neighbouring shape stays silent,
+    because a marked signal that fires loosely trains the agent to ignore
+    it, and a page-shaped string must not switch it on."""
+    cases = [
+        ({"action": "fill", "dom_mutations": 3}, "a nonzero tally"),
+        ({"action": "fill"}, "an absent tally"),
+        ({"action": "fill", "dom_mutations": "0"}, "a string zero"),
+        ({"action": "fill", "dom_mutations": False}, "a bool"),
+        ({"action": "click", "dom_mutations": 0}, "a click's zero"),
+        (
+            {"action": "fill", "dom_mutations": 0, "input_delivered": "no"},
+            "an undelivered fill (the failure tells its own story)",
+        ),
+    ]
+    for data, why in cases:
+        out = _invoke(
+            chrome_act,
+            {"tab_id": 1, "action": "fill", "ref": "@e1", "value": "x"},
+            _ok({"input": "trusted", **data}),
+        )
+        assert "Fill note" not in out, why
+
+
+def test_act_marks_a_case_only_wait_miss_outside_the_fence() -> None:
+    """#196 review rider: the case-blind tell is the one miss-report flag
+    that flips the agent's conclusion, and a raw key among twenty is how
+    #217's signal got missed. One extension boolean, fixed words."""
+    out = _invoke(
+        chrome_act,
+        {"tab_id": 1, "action": "wait", "wait_for_text": "Add to Cart"},
+        _ok(
+            {
+                "action": "wait",
+                "found": False,
+                "found_case_insensitive": True,
+                "page_text_excerpt": "add to cart now",
+                "input": "none",
+            }
+        ),
+    )
+    after = out.rpartition("</untrusted_page_content>")[2]
+    assert "[Wait miss:" in after
+    assert "different casing" in after
+    assert "page_text_excerpt" in after
+
+
+def test_act_wait_miss_note_needs_the_boolean_itself() -> None:
+    for value in ("true", 1, "yes", None, False):
+        out = _invoke(
+            chrome_act,
+            {"tab_id": 1, "action": "wait", "wait_for_text": "x"},
+            _ok({"action": "wait", "found": False, "found_case_insensitive": value}),
+        )
+        assert "Wait miss" not in out, value
 
 
 def test_act_names_an_ambiguous_selector_and_a_shadow_match() -> None:

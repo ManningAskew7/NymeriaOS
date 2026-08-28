@@ -14,8 +14,49 @@ so its tokens never leak into the parent agent's live SSE transcript.
 from __future__ import annotations
 
 import logging
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
+
+
+class ExtractionResult(NamedTuple):
+    """What one extraction produced, and whether the model was cut mid-output.
+
+    ``truncated`` is the #198 completeness signal: True when the response's
+    own metadata says generation stopped at the output ceiling
+    (finish_reason length/max_tokens, stop_reason max_tokens, or the
+    Responses-API status=incomplete), judged provider-blind by
+    ``vendor.react_agent.nodes.is_truncated_metadata``. Callers render it
+    beside their ``[Extracted by ...]`` attribution so a cut table cannot
+    read as a complete one. Error results carry ``truncated=False``: the
+    error string is the whole story there.
+    """
+
+    text: str
+    model: str
+    truncated: bool = False
+
+
+def extraction_attribution(model: str, truncated: bool) -> str:
+    """The one spelling of the ``[Extracted by ...]`` attribution (#198).
+
+    Shared by the attribution-rendering consumers (chrome_read_text,
+    fetch_url_nymeria, file_read) so the completeness claim and its
+    retraction cannot drift apart per tool. chrome_find consumes
+    run_extraction too but has no attribution tag to amend: it renders its
+    own find-specific clause (a cut match list is a PREFIX, so a miss is
+    not evidence of absence), reusing the "hit its output limit mid-answer"
+    spelling. The plain form reads as a completeness claim, which is
+    exactly why the truncated form must replace it rather than ride beside
+    it: a cut extraction ends mid-structure with no visible seam.
+    """
+    if not truncated:
+        return f"[Extracted by {model}]"
+    return (
+        f"[Extracted by {model}; the extraction hit its output limit "
+        "mid-answer, so the tail may be missing. Narrow the "
+        "extraction_prompt to the part you need, or read without it.]"
+    )
 
 # Cap on cleaned content handed to the secondary model (~30k tokens). Content
 # past this is dropped before the model sees it; map-reduce is out of scope, so
@@ -127,12 +168,13 @@ def build_extraction_llm_config(settings):
     )
 
 
-def run_extraction(content: str, prompt: str) -> tuple[str, str]:
+def run_extraction(content: str, prompt: str) -> ExtractionResult:
     """Read already-cleaned content with the secondary model and extract per the prompt.
 
-    Returns ``(text, model_name)``. On any failure ``text`` is an
-    ``[Error]: ...`` string and ``model_name`` is empty. Callers check
-    ``text.startswith("[Error]:")`` before rendering the model attribution.
+    Returns ``ExtractionResult(text, model_name, truncated)``. On any failure
+    ``text`` is an ``[Error]: ...`` string and ``model_name`` is empty.
+    Callers check ``text.startswith("[Error]:")`` before rendering the model
+    attribution, and render ``truncated`` beside it (see ExtractionResult).
     """
     import time
 
@@ -145,7 +187,7 @@ def run_extraction(content: str, prompt: str) -> tuple[str, str]:
     try:
         config = build_extraction_llm_config(get_settings())
         if not config.model:
-            return (
+            return ExtractionResult(
                 "[Error]: No extraction model configured. Set the background "
                 "model in settings or configure a default LLM.",
                 "",
@@ -192,8 +234,14 @@ def run_extraction(content: str, prompt: str) -> tuple[str, str]:
             text = " ".join(parts)
         text = (text or "").strip()
         if not text:
-            return "[Error]: Extraction model returned no content.", ""
-        return text, (config.model or "")
+            return ExtractionResult("[Error]: Extraction model returned no content.", "")
+        from ..vendor.react_agent.nodes import is_truncated_metadata
+
+        # The response's own stop reason is the one deterministic witness of
+        # an output-ceiling cut (#198): the text of a mid-table cut looks
+        # complete, which is the whole defect.
+        truncated = is_truncated_metadata(getattr(result, "response_metadata", None) or {})
+        return ExtractionResult(text, (config.model or ""), truncated)
     except Exception as e:  # noqa: BLE001 - never leak provider URLs/keys from the exception text
         logger.error("run_extraction failed: %s", e, exc_info=True)
         detail = f"{type(e).__name__} (see server logs)"
@@ -214,4 +262,4 @@ def run_extraction(content: str, prompt: str) -> tuple[str, str]:
             hint = ""
         if hint:
             detail = f"{detail}. {hint}"
-        return f"[Error]: Extraction step failed: {detail}", ""
+        return ExtractionResult(f"[Error]: Extraction step failed: {detail}", "")

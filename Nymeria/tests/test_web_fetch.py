@@ -240,7 +240,7 @@ def test_extraction_prompt_gates_the_llm_call(monkeypatch):
 
     def fake_extraction(content, prompt):
         calls["prompt"] = prompt
-        return "EXTRACTED", "fake-model"
+        return "EXTRACTED", "fake-model", False
 
     monkeypatch.setattr(web_fetch, "run_extraction", fake_extraction)
 
@@ -256,13 +256,28 @@ def test_extraction_prompt_gates_the_llm_call(monkeypatch):
     assert "[Extracted by fake-model]" in out
 
 
+def test_truncated_extraction_owns_up_in_the_attribution(monkeypatch):
+    """#198: the fetch integration renders the shared attribution, so a cut
+    extraction says so instead of presenting a prefix as the page's answer."""
+    _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
+    monkeypatch.setattr(
+        web_fetch, "run_extraction", lambda content, prompt: ("EXTRACTED", "fake-model", True)
+    )
+
+    out = web_fetch.fetch_url_nymeria.func(
+        url="https://example.com/page", extraction_prompt="pricing tiers"
+    )
+    assert "[Extracted by fake-model;" in out
+    assert "hit its output limit" in out
+
+
 def test_extraction_error_short_circuits(monkeypatch):
     # An [Error]: from the extraction step is returned as-is, with no attribution.
     _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
     monkeypatch.setattr(
         web_fetch,
         "run_extraction",
-        lambda content, prompt: ("[Error]: Extraction step failed: X", ""),
+        lambda content, prompt: ("[Error]: Extraction step failed: X", "", False),
     )
 
     out = web_fetch.fetch_url_nymeria.func(
