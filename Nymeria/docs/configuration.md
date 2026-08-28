@@ -1,5 +1,8 @@
 # Nymeria Configuration
 
+Code-side source of truth: `nymeria/config/settings.py` (every var below is a
+field there; keep the two in sync when adding or changing a setting).
+
 All configuration is done via environment variables. Source checkouts load
 `.env`, `config.env`, and `.env.docker` from the backend root if present;
 when the same variable appears in multiple files, `.env.docker` has the

@@ -1,4 +1,9 @@
-"""Nymeria settings management using Pydantic."""
+"""Nymeria settings management using Pydantic.
+
+Every env var here is documented for users in ``docs/configuration.md``
+(field descriptions below are the short form; the doc carries the rationale).
+Keep the two in sync when adding or changing a setting.
+"""
 
 import os
 import sys
@@ -183,7 +188,7 @@ class Settings(BaseSettings):
     # API Authentication — legacy shared key, retired. Kept as a field so
     # existing `.env.docker` values don't raise validation errors, but the
     # server no longer accepts it; authentication is per-user account
-    # tokens only. See docs/accounts.md.
+    # tokens only. See docs/agent-systems/accounts.md.
     nymeria_api_key: Optional[str] = Field(
         default=None,
         description="Deprecated — per-user account tokens are authoritative. Safe to delete from .env.",
@@ -2146,7 +2151,7 @@ class Settings(BaseSettings):
         # NYMERIA_API_KEY is retired — authentication uses per-user account
         # tokens minted via ``python run.py users add``. The bootstrap admin
         # token is written to data/BOOTSTRAP_TOKEN.txt on first run. See
-        # docs/accounts.md.
+        # docs/agent-systems/accounts.md.
         #
         # Internal callers (bots, ticker, watchdog, slash_command, triggers)
         # need NYMERIA_SERVICE_TOKEN to call the API with X-Nymeria-Act-As.
