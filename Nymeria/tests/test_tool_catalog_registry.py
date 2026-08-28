@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1256
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1257
 
 
 def test_catalog_key_equals_tool_name():
@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1271
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1272
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -842,6 +842,7 @@ BASELINE_CATALOG_NAMES = [
     "hackernews_get_item",
     "hackernews_get_user",
     "hackernews_search",
+    "harness_report",
     "harvest_create_time_entry",
     "harvest_delete_time_entry",
     "harvest_get_company",
@@ -2105,6 +2106,7 @@ BASELINE_STATIC_NAMES = [
     "hackernews_get_item",
     "hackernews_get_user",
     "hackernews_search",
+    "harness_report",
     "harvest_create_time_entry",
     "harvest_delete_time_entry",
     "harvest_get_company",

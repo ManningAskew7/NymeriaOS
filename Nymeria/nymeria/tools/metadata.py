@@ -192,6 +192,7 @@ _GENERAL_MODERATE_TOOL_NAMES = frozenset(
         "bash_job",
         "file_write",
         "file_edit",
+        "harness_report",
         "notify",
         "slash_command",
         "http_request",
