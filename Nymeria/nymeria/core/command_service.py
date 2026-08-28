@@ -27,6 +27,7 @@ import httpx
 
 from ..config import get_settings
 from .command_executor_aliases import AliasCommandsMixin
+from .command_executor_browser import BrowserCommandsMixin
 from .command_executor_cliproxy import CliproxyCommandsMixin
 from .command_executor_context import ContextCommandsMixin
 from .command_executor_llm import LLMCommandsMixin, model_select_form
@@ -3956,6 +3957,7 @@ class _CommandExecutor(
     ProviderSetupCommandsMixin,
     CliproxyCommandsMixin,
     AliasCommandsMixin,
+    BrowserCommandsMixin,
 ):
     """Per-request command executor with the migrated command bodies."""
 

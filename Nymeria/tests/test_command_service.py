@@ -3782,9 +3782,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # the CLI-local todo verbs: todos edit + todos schedule + todos repeat.
     # 146 after the /goal subsystem was deleted, taking its eight commands
     # with it; the executable count is untouched because all eight were
-    # chat_stream, so none of them ever dispatched here.)
-    assert len(service._commands) == 146
-    assert sum(cmd.executable for cmd in service._commands.values()) == 137
+    # chat_stream, so none of them ever dispatched here. 148 after the
+    # browser-login pass added the /browser family: root overview + login.)
+    assert len(service._commands) == 148
+    assert sum(cmd.executable for cmd in service._commands.values()) == 139
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"

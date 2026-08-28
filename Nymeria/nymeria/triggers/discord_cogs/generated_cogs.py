@@ -60,6 +60,11 @@ class GeneratedCommandsCog(commands.Cog):
         description="Show or set the global background/utility model tier",
     )
 
+    browser_group = app_commands.Group(
+        name="browser",
+        description="Show the live browser login handoff, if one is open (family overview)",
+    )
+
     doctor_group = app_commands.Group(
         name="doctor",
         description="Run server-side diagnostics (auth + model)",
@@ -392,6 +397,28 @@ class GeneratedCommandsCog(commands.Cog):
         await self.bot._send_backend_command(
             interaction,
             "background set-url",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @browser_group.command(
+        name="login",
+        description="Open a login window to sign the agent's browser into a site by hand",
+    )
+    @app_commands.describe(
+        url="The sign-in page to open (a fresh tab is used)",
+    )
+    async def cmd_browser_login(
+        self,
+        interaction: discord.Interaction,
+        url: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(url))
+        await self.bot._send_backend_command(
+            interaction,
+            "browser login",
             args=" ".join(parts),
             require_admin=False,
         )
@@ -1876,6 +1903,7 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "background clear",
     "background set",
     "background set-url",
+    "browser login",
     "context",
     "doctor auth",
     "doctor model",
@@ -1947,6 +1975,7 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "background clear": "LLM",
     "background set": "LLM",
     "background set-url": "LLM",
+    "browser login": "Tools",
     "context": "Status",
     "doctor auth": "System",
     "doctor model": "System",

@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 from queue import Queue, Full
 from urllib.parse import urlsplit, urlunsplit
 
+from .loop_pulse import LoopPulse
 from .time_utils import utc_now
 
 if TYPE_CHECKING:
@@ -75,6 +76,12 @@ class EventBus:
 
     def __init__(self):
         self._subscribers: Dict[str, Queue] = {}
+        # Per-subscriber wakeup doorbells. An async consumer (the SSE
+        # generator) captures its doorbell before checking the queue and
+        # awaits it instead of sleeping a poll interval, which is what makes
+        # event delivery push-latency; sync consumers ignore theirs and poll
+        # the queue as before. Rung on every successful enqueue.
+        self._doorbells: Dict[str, LoopPulse] = {}
         self._lock = threading.Lock()
         self._publish_counts: Dict[str, int] = {}
         self._enqueue_counts: Dict[str, int] = {}
@@ -116,8 +123,19 @@ class EventBus:
 
             queue: Queue = Queue(maxsize=100)
             self._subscribers[subscriber_id] = queue
+            pulse = LoopPulse()
+            # Bound when the subscriber is created from a running loop (the
+            # SSE route handler); a sync-context subscriber gets an unbound
+            # pulse it simply never listens to.
+            pulse.bind_running_loop()
+            self._doorbells[subscriber_id] = pulse
             logger.info(f"[EVENT BUS] Subscriber connected: {subscriber_id[:8]}..., total: {len(self._subscribers)}")
             return queue
+
+    def doorbell(self, subscriber_id: str) -> Optional[LoopPulse]:
+        """The subscriber's wakeup doorbell (None once unsubscribed)."""
+        with self._lock:
+            return self._doorbells.get(subscriber_id)
 
     def unsubscribe(self, subscriber_id: str) -> None:
         """
@@ -130,6 +148,7 @@ class EventBus:
             if subscriber_id in self._subscribers:
                 del self._subscribers[subscriber_id]
                 logger.info(f"[EVENT BUS] Subscriber disconnected: {subscriber_id[:8]}..., total: {len(self._subscribers)}")
+            self._doorbells.pop(subscriber_id, None)
             # Always prune this subscriber's diagnostic counters, even if the
             # queue was already gone, so the counter dicts can't leak.
             self._prune_counter_keys(f"{subscriber_id}:")
@@ -171,10 +190,14 @@ class EventBus:
                     event.task_id,
                 )
 
+            rung: list[LoopPulse] = []
             for sub_id, queue in list(self._subscribers.items()):
                 try:
                     # Non-blocking put, drop if queue is full
                     queue.put_nowait(event)
+                    pulse = self._doorbells.get(sub_id)
+                    if pulse is not None:
+                        rung.append(pulse)
                     enqueue_key = f"{sub_id}:{event.event_type}"
                     enqueue_count = self._bump_counter(self._enqueue_counts, enqueue_key)
                     if should_log_stream_event_sample(event.event_type, enqueue_count):
@@ -201,6 +224,12 @@ class EventBus:
                         event.thread_id,
                         event.task_id,
                     )
+
+        # Ring outside the lock: a doorbell wake can run listener code on
+        # another loop immediately, and nothing it might do may deadlock
+        # against a subscribe/unsubscribe holding the lock.
+        for pulse in rung:
+            pulse.ring()
 
     def get_subscriber_count(self) -> int:
         """Get the number of active subscribers."""

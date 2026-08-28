@@ -1819,7 +1819,7 @@ Connects to a Server-Sent Events stream for receiving real-time updates during a
 
 **Transcript rendering note:** the desktop and mobile GUI clients consume this stream for lifecycle and dashboard signals only (task start/end, thread-list activity, notifications, approvals, sync events). They render autonomous turn transcripts by attaching to the per-thread turn buffer (`GET /threads/{thread_id}/turn/stream`, see "Re-attach to a Turn") on the `task_started` signal. The Discord and Telegram bots do the same (attach-preferred, falling back to rendering this stream's transcript events when a turn is not attachable); the CLI still renders transcripts directly from this stream, so turn-output chunks keep flowing here (dual-feed).
 
-**Client behavior:** Treat this as a long-lived fetch stream, not a finite request. Heartbeats are SSE comments (`: heartbeat`) and do not carry JSON. Clients should reconnect when the response ends, errors, or stops receiving heartbeat/data bytes. The desktop client also refreshes current thread history/context and the thread list after reconnect so missed autonomous chunks are reconciled from persisted state.
+**Client behavior:** Treat this as a long-lived fetch stream, not a finite request. Keepalives are SSE comments (`: keepalive`) and do not carry JSON. Clients should reconnect when the response ends, errors, or stops receiving keepalive/data bytes. The desktop client also refreshes current thread history/context and the thread list after reconnect so missed autonomous chunks are reconciled from persisted state.
 
 Every data frame is a JSON object with canonical `type`, `thread_id`, `task_id`,
 and `timestamp` fields plus the event-specific payload. Internal fields such as
@@ -1899,10 +1899,12 @@ The same stream also carries cross-client sync events used by open frontends:
 | `thread_rewound` | Trailing exchanges were removed via the rewind endpoint | `steps`, `removed`, optional `to_message_id` |
 | `queue_restored` | A user-initiated stop returned queued user prompts unprocessed; other open clients should restore their local queued copies to the composer. Suppressed for the originating client via `X-Nymeria-Client-Id`. | `count`, `prompts` (list of raw prompt texts) |
 | `thread_teams_changed` | Callable-team entities or membership changed (teams REST, config PATCH, `team_manage`, `nym.threads.configure` team=, a teamed spawn). The payload is a hint; clients refetch `GET /thread-teams`. | optional `team_id`, `reason` (`created`/`renamed`/`described`/`membership`/`updated`/`deleted`) |
+| `browser_login_started` | A browser login handoff opened; the desktop raises the live viewer (see "Browser Login Handoff API") | the session status object plus `origin` (`agent`/`command`) |
+| `browser_login_ended` | A login session ended by any path (operator button, agent cancel, TTL expiry, thread abort); every client retracts its viewer. Unknown session ids are ignored | the final session status object (`end_reason` set) |
 
 **Example Stream:**
 ```
-: heartbeat
+: keepalive
 data: {"type":"task_started","thread_id":"abc123","task_id":"todo-xyz","prompt":"Check inbox","todo_id":"xyz"}
 data: {"type":"thinking","content":"I'll check the inbox now..."}
 data: {"type":"tool_call","id":"tool1","name":"bash_execute","args":{"command":"ls ~/inbox"}}
@@ -1911,10 +1913,10 @@ data: {"type":"tool_reload","tools":["inbox_read"],"ttl":"2h","ttl_seconds":7200
 data: {"type":"workspace_artifact","tool_call_id":"tool2","tool_name":"file_write","path":"/workspace/report.csv","name":"report.csv","mime_type":"text/csv","size_bytes":1024}
 data: {"type":"response","content":"Found 2 new emails in inbox."}
 data: {"type":"task_completed","notify":false,"content":"Found 2 new emails.","todo_id":"xyz"}
-: heartbeat
+: keepalive
 ```
 
-**Heartbeat:** Sent every ~1 second when no events to keep connection alive.
+**Keepalive:** a `: keepalive` comment frame after ~10 seconds of continuous silence holds the connection open (under the desktop's 30s idle-reconnect timer and proxy idle floors). Events themselves are pushed the moment they are published (a per-subscriber doorbell wakes the stream; delivery is not poll-bound).
 
 **Operational diagnostics:** A healthy live path produces log lines for each hop:
 - Worker/API publish: `[REDIS EVENT BUS] publish ...`
@@ -3024,6 +3026,112 @@ Authorization: Bearer <admin-token>
 - `404`: File does not exist.
 
 **Security:** Admin-only. Only files within `NYMERIA_WORKSPACE_DIR` (default `/workspace`) can be served. Paths are resolved and checked against the workspace root to prevent traversal. This same workspace boundary is what controls whether `file_write(..., attach=True)` produces a deliverable artifact at all.
+
+---
+
+## Browser Login Handoff API
+
+A login session hands one tab of the server-side Chrome to a human: the
+extension screencasts the tab up, the desktop viewer shows it live and sends
+the operator's keystrokes and clicks back down as trusted input, and the agent
+is suspended from that tab until the session ends. The agent starts one with
+the `chrome_request_login` tool (or the user runs `/browser login <url>`),
+awaits the outcome with `chrome_await_login`, and never sees a pixel of it:
+frame bytes leave the backend by exactly one route (the stream below) and the
+only session shape the agent or any log can carry is the scalar status object.
+
+**Owner-only, no admin exemption.** Every endpoint here resolves the session
+against the authenticated caller and answers `404` for anyone else, admins
+included (the wire shows somebody typing their password, so "an admin may
+watch" is deliberately not a capability). `X-Nymeria-Act-As` does not apply.
+
+Sessions are single-per-user, expire on a fixed TTL (default 600s, never
+extended), and end through one choke point regardless of path (viewer button,
+agent cancel, TTL sweep, thread abort), which announces `browser_login_ended`
+and tells the extension to stop capturing.
+
+### Session Status Shape
+
+All endpoints and events use the same scalar status object (never frame
+bytes): `session_id`, `thread_id`, `tab_id`, `url`, `state`
+(`active`/`ended`), `end_reason` (`completed`/`cancelled`/`expired`/`failed`/
+`aborted`, null while active), `last_seq`, `frames_received`,
+`frames_dropped`, `has_frame`, `seconds_remaining`, `expires_at`.
+
+### List Live Sessions
+
+```http
+GET /browser-login/sessions
+Authorization: Bearer <token>
+```
+
+Returns `{"sessions": [<status>, ...]}` for the caller's live sessions. The
+desktop calls it on startup so a reload mid-login finds its way back to the
+viewer.
+
+### Stream Frames (SSE)
+
+```http
+GET /browser-login/{session_id}/stream?from_seq=0
+Authorization: Bearer <token>
+```
+
+The desktop viewer's feed, and the only route frame bytes leave by. Opens
+with a `login_attach` event (the status object, so the viewer can render its
+countdown before any frame), then `login_frame` events (`data`: base64 JPEG,
+`metadata`: CDP deviceWidth/deviceHeight/pageScaleFactor), and closes with
+`login_end` (the final status, carrying `end_reason`). `from_seq` resumes
+after a dropped connection; a viewer slower than the screencast skips
+outrun frames rather than lagging behind live.
+
+### Send Operator Input
+
+```http
+POST /browser-login/{session_id}/input
+{"events": [{"type": "key", "key": "Enter", "modifiers": 0}]}
+```
+
+Batched (max 32), fire-and-forget: the ack is `{"dispatched": N,
+"session_active": true}` and the real acknowledgement is the keystroke
+appearing in the next frame. Events are SEMANTIC, not CDP calls, so the
+channel cannot become a CDP tunnel: `key` (key name + CDP modifier bitmask
+Alt=1/Ctrl=2/Meta=4/Shift=8), `text` (paste/bulk insert), `mouse` (`action`
+`click`/`move`, `x`/`y` NORMALIZED 0.0-1.0 against the frame, `button`,
+`click_count`), `wheel` (`delta_x`/`delta_y`). Out-of-range coordinates `422`
+the whole batch. Input transits to the extension as a chrome-only
+`browser_login_input` autonomous event, is never journalled anywhere, and its
+payloads are never logged (keystrokes here are passwords).
+
+### End a Session
+
+```http
+POST /browser-login/{session_id}/end
+{"reason": "completed"}
+```
+
+The viewer's buttons: `completed` (the operator finished signing in) or
+`cancelled`. Returns the final status. Ending wakes a `chrome_await_login`
+the agent may be blocked on and re-enables agent `chrome_*` access to the tab.
+
+### Upload Frames (extension-internal)
+
+```http
+POST /browser-login/{session_id}/frame
+{"frames": [{"data": "<base64 jpeg>", "metadata": {...}}]}
+```
+
+The extension's upstream wire (batched, max 8). A session that has ended (or
+never existed) answers `{"accepted": 0, "session_active": false}` instead of
+erroring, which is the extension's cue to stop the screencast.
+
+### Autonomous Events
+
+Two session-lifecycle events ride `GET /autonomous/stream` so every open
+desktop can raise and retract the viewer (see the sync-events table there):
+`browser_login_started` (the status object plus `origin`: `agent` when the
+tool opened it, `command` for `/browser login`) and `browser_login_ended`
+(the final status; clients ignore unknown session ids, since a failed start
+can end a session that never announced started).
 
 ---
 

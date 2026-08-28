@@ -58,6 +58,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator, Deque, Optional, Tuple
 
 from .future_rendezvous import FutureRendezvous
+from .loop_pulse import LoopPulse
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,10 @@ logger = logging.getLogger(__name__)
 LOGIN_SESSION_TTL_SECONDS = 600
 # Short enough that "10 minutes" does not mean "10 to 11 minutes".
 _SWEEP_INTERVAL_SECONDS = 15
+# Wire timeout on the fire-and-forget ``login_session_stop`` push in
+# ``_announce_ended``. Single source of truth: ``chrome_browser._TIMEOUTS``
+# references this for the same command type.
+LOGIN_SESSION_STOP_TIMEOUT_SECONDS = 10
 
 # Frames held per session. The buffer absorbs an extension micro-batch
 # (2-4 frames) plus jitter; anything older than that is stale video the
@@ -80,6 +85,14 @@ MAX_FRAME_BYTES_BUFFERED = 2 * 1024 * 1024
 
 # Poll ceiling for live frame readers; real wakeups come from the pulse.
 _READER_WAIT_SECONDS = 15.0
+
+# How long a finished session's outcome stays readable after the registry
+# pops its record (``_resolve`` pops), and how many are kept. The agent's
+# ``chrome_await_login`` may arrive well after the user clicked Done, so the
+# outcome must outlive the record; generously past the TTL, because a turn
+# that parks the await behind other work still deserves the real answer.
+_OUTCOME_RETENTION_SECONDS = 900
+_MAX_RECENT_OUTCOMES = 64
 
 STATE_ACTIVE = "active"
 STATE_ENDED = "ended"
@@ -105,13 +118,7 @@ class BrowserLoginSession:
     #: and the agent's result line, never used to route anything.
     url: str
     future: asyncio.Future
-    #: The loop the desktop's SSE readers run on (the API loop), captured
-    #: at construction so off-loop writers can marshal reader wakeups onto
-    #: it. The sibling turn-stream buffer keeps this in a module global
-    #: registered at API startup; per-session capture needs no startup wiring.
-    loop: Optional[asyncio.AbstractEventLoop] = None
     created_at: float = field(default_factory=time.monotonic)
-    metadata: dict[str, Any] = field(default_factory=dict)
 
     state: str = STATE_ACTIVE
     end_reason: Optional[str] = None
@@ -122,19 +129,25 @@ class BrowserLoginSession:
     frames_dropped: int = 0
 
     # Frame buffer internals. ``init=False`` so they are per-instance state
-    # rather than constructor arguments; the pulse event is replaced (not
-    # cleared) on every wake so any number of readers wake without races.
+    # rather than constructor arguments. The reader doorbell is the shared
+    # ``LoopPulse`` (replace-not-clear wake semantics, off-loop marshalling);
+    # the registry binds it to the reader loop at :meth:`start`.
     _entries: Deque[Tuple[int, str]] = field(
         default_factory=deque, init=False, repr=False
     )
     _next_seq: int = field(default=1, init=False, repr=False)
     _bytes: int = field(default=0, init=False, repr=False)
-    _pulse_event: asyncio.Event = field(
-        default_factory=asyncio.Event, init=False, repr=False
-    )
+    _doorbell: LoopPulse = field(default_factory=LoopPulse, init=False, repr=False)
     _meta_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
+
+    def bind_loop(self, loop: Optional[asyncio.AbstractEventLoop]) -> None:
+        """Name the loop the desktop's SSE frame readers run on (the API
+        loop), so off-loop writers can marshal reader wakeups onto it. The
+        sibling turn-stream buffer keeps this in a module global registered
+        at API startup; per-session binding needs no startup wiring."""
+        self._doorbell.bind(loop)
 
     # -- deadline -----------------------------------------------------------
 
@@ -202,32 +215,66 @@ class BrowserLoginSession:
             self.state = STATE_ENDED
             self.end_reason = reason
         self._pulse()
+        self._announce_ended()
         return True
 
-    def _pulse(self) -> None:
-        """Wake frame readers, marshaling onto the reader loop when off-loop.
+    def _announce_ended(self) -> None:
+        """Tell the two parties an ending never reaches otherwise. Never raises.
 
-        The frame POST endpoint runs on the API loop, where a plain
-        ``Event.set()`` is correct. Endings can arrive from off-loop callers
-        (a thread abort cascading from a sync path), and ``asyncio.Event.set``
-        is not thread-safe, so those hand the set to the captured loop.
+        The desktop gets ``browser_login_ended`` on the autonomous stream:
+        an attached viewer also sees the stream's own ``login_end``, but a
+        viewer that never attached (or a prompt chip) has only this
+        broadcast. The extension gets a fire-and-forget
+        ``login_session_stop`` command envelope: its only other stop cue is
+        ``session_active: false`` on a frame ack, and a static page sends
+        no frames, so without this a screencast (and its debugger hold)
+        could outlive the session indefinitely. The stop is idempotent
+        extension-side, and the result it POSTs back resolves no future
+        (the result endpoint answers ``delivered=False`` for an unknown
+        command_id, by design).
+
+        Sits on the state flip above, so every ended session announces
+        exactly once no matter which path ended it (Done, cancel, TTL
+        sweep, thread abort).
         """
-        with self._meta_lock:
-            event = self._pulse_event
-            self._pulse_event = asyncio.Event()
-        loop = self.loop
-        if loop is not None and loop.is_running():
-            try:
-                running: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
-            except RuntimeError:
-                running = None
-            if running is not loop:
-                try:
-                    loop.call_soon_threadsafe(event.set)
-                    return
-                except RuntimeError:
-                    pass  # loop closed between the check and the call
-        event.set()
+        try:
+            from .browser_command_coordinator import new_command_id
+            from .event_bus import publish_autonomous_event
+
+            publish_autonomous_event(
+                event_type="browser_login_ended",
+                thread_id=self.thread_id,
+                user_id=self.user_id,
+                task_id="",
+                data=self.snapshot(),
+            )
+            publish_autonomous_event(
+                event_type="browser_command",
+                thread_id=self.thread_id,
+                user_id=self.user_id,
+                task_id="",
+                data={
+                    "command_id": new_command_id(),
+                    "command_type": "login_session_stop",
+                    "args": {"tab_id": self.tab_id, "session_id": self.session_id},
+                    "timeout_seconds": LOGIN_SESSION_STOP_TIMEOUT_SECONDS,
+                },
+            )
+        except Exception:  # noqa: BLE001 - an ending must never fail to end
+            logger.debug(
+                "browser_login_sessions ended-announce failed for %s",
+                self.session_id,
+                exc_info=True,
+            )
+
+    def _pulse(self) -> None:
+        """Wake frame readers (off-loop callers are marshalled by the pulse).
+
+        The frame POST endpoint rings from the API loop; endings can ring
+        from off-loop callers (a thread abort cascading from a sync path).
+        Both are the shared :class:`LoopPulse`'s problem now.
+        """
+        self._doorbell.ring()
 
     # -- reader side (the desktop's SSE attach) -----------------------------
 
@@ -274,7 +321,7 @@ class BrowserLoginSession:
             # Capture the pulse BEFORE checking for data, so an append
             # racing this check cannot be missed (it pulses the captured
             # event and we re-check on wake).
-            pulse = self._pulse_event
+            pulse = self._doorbell.listen()
             for seq, payload in self._entries_after(cursor):
                 cursor = seq
                 yield payload
@@ -290,6 +337,25 @@ class BrowserLoginSession:
                 continue
 
 
+class LoginSessionConflictError(RuntimeError):
+    """The user already has a live login session (one human, one screen).
+
+    Raised by :meth:`BrowserLoginSessionRegistry.start`, which is the
+    ATOMIC enforcement of one-session-per-user: callers may pre-check
+    ``active_for_user`` for a friendly early answer, but that check races
+    their own awaits (tab creation is a network round trip), so only the
+    registry's claim-under-lock decides. Carries the winning session so
+    the loser can name it.
+    """
+
+    def __init__(self, existing: BrowserLoginSession) -> None:
+        super().__init__(
+            f"login session {existing.session_id} already active for "
+            f"user {existing.user_id}"
+        )
+        self.existing = existing
+
+
 class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
     """Tracks live login sessions keyed by ``session_id``."""
 
@@ -299,6 +365,92 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
             sweep_interval_seconds=_SWEEP_INTERVAL_SECONDS,
             log_label="browser_login_sessions",
         )
+        # Outcomes of finished sessions, keyed by session_id:
+        # ``(recorded_at, user_id, payload)``. Needed because ``_resolve``
+        # POPS the record: the agent's await may arrive after the user
+        # finished, and "no such session" would be a lie about a login that
+        # succeeded. Own lock: builders run inside base-class paths whose
+        # lock discipline this store must not depend on.
+        self._recent_outcomes: dict[str, tuple[float, str, dict[str, Any]]] = {}
+        self._recent_lock = threading.Lock()
+
+    def _remember_outcome(
+        self, session: BrowserLoginSession, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Record a finished session's agent payload, pruned by age and count."""
+        now = time.monotonic()
+        with self._recent_lock:
+            self._recent_outcomes[session.session_id] = (
+                now,
+                session.user_id,
+                dict(payload),
+            )
+            expired = [
+                key
+                for key, (at, _, _) in self._recent_outcomes.items()
+                if now - at > _OUTCOME_RETENTION_SECONDS
+            ]
+            for key in expired:
+                del self._recent_outcomes[key]
+            while len(self._recent_outcomes) > _MAX_RECENT_OUTCOMES:
+                oldest = min(self._recent_outcomes, key=lambda k: self._recent_outcomes[k][0])
+                del self._recent_outcomes[oldest]
+        return payload
+
+    def outcome_for(self, session_id: str, *, user_id: str) -> Optional[dict[str, Any]]:
+        """A finished session's outcome, or None. Scoped to its owner:
+        another user's session_id reads the same as one that never existed."""
+        with self._recent_lock:
+            entry = self._recent_outcomes.get(session_id)
+        if entry is None:
+            return None
+        recorded_at, owner, payload = entry
+        if owner != user_id:
+            return None
+        if time.monotonic() - recorded_at > _OUTCOME_RETENTION_SECONDS:
+            return None
+        return dict(payload)
+
+    async def await_outcome(
+        self, session_id: str, *, user_id: str, timeout_seconds: float
+    ) -> tuple[str, Optional[dict[str, Any]]]:
+        """Wait (bounded) for a session to end; never ends it.
+
+        Returns ``("ended", outcome)`` once the session has finished (now
+        or already), ``("active", snapshot)`` when the wait ran out with
+        the session still live, or ``("unknown", None)`` for an id that is
+        not this user's or is gone past retention. The wait shields the
+        session's future: this method's own timeout, or the caller being
+        cancelled (a tool timeout), must never cancel the login itself.
+        """
+        session = self.get(session_id)
+        if session is not None and session.user_id == user_id:
+            try:
+                outcome = await asyncio.wait_for(
+                    asyncio.shield(session.future), timeout=max(0.0, timeout_seconds)
+                )
+                return "ended", outcome
+            except asyncio.TimeoutError:
+                if session.state == STATE_ACTIVE:
+                    return "active", session.snapshot()
+                # Ended in the same instant the wait gave up. Every ending
+                # path wakes the future right after the state flip, so a
+                # short grace wait reads the real outcome instead of racing
+                # the resolver to the remembered-outcome store.
+                try:
+                    outcome = await asyncio.wait_for(
+                        asyncio.shield(session.future), timeout=1.0
+                    )
+                    return "ended", outcome
+                except asyncio.TimeoutError:
+                    # A pathological path ended the session without waking
+                    # the future; fall through to the remembered-outcome
+                    # store, whose miss answers "unknown" honestly.
+                    pass
+        recent = self.outcome_for(session_id, user_id=user_id)
+        if recent is not None:
+            return "ended", recent
+        return "unknown", None
 
     def start(
         self,
@@ -308,13 +460,19 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
         thread_id: str,
         tab_id: int,
         url: str,
-        metadata: Optional[dict[str, Any]] = None,
     ) -> tuple[BrowserLoginSession, asyncio.Future]:
         """Register a session and return it with the agent's await future.
 
         Must be called from a running loop (the agent's login tool runs on
         the API loop), which is also the loop the desktop's frame readers
         will run on.
+
+        Raises :class:`LoginSessionConflictError` when the user already
+        has a live session. The check and the insert share ONE lock
+        acquisition: a caller-side pre-check races the caller's own awaits
+        (two concurrent starts both read "none live" while one is still
+        creating its tab), so this is where one-per-user is actually
+        enforced.
         """
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -325,10 +483,14 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
             tab_id=tab_id,
             url=url,
             future=future,
-            loop=loop,
-            metadata=metadata or {},
         )
-        self._add(session_id, session)
+        session.bind_loop(loop)
+        with self._lock:
+            for other in self._items.values():
+                if other.user_id == user_id and other.state == STATE_ACTIVE:
+                    raise LoginSessionConflictError(other)
+            self._items[session_id] = session
+        self._ensure_sweep()
         return session, future
 
     def active_for_tab(self, user_id: str, tab_id: int) -> Optional[BrowserLoginSession]:
@@ -377,7 +539,9 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
             session.mark_ended(reason)
         return self._resolve(
             session_id,
-            lambda record: _outcome(record, reason=reason, detail=detail),
+            lambda record: self._remember_outcome(
+                record, _outcome(record, reason=reason, detail=detail)
+            ),
         )
 
     def abort_thread(self, thread_id: str) -> int:
@@ -389,8 +553,16 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
         matched = self._drain_matching(lambda session: session.thread_id == thread_id)
         aborted = 0
         for session in matched:
+            # Remember BEFORE announcing: the drain above already popped the
+            # record, so until the outcome lands in the retention store a
+            # concurrent chrome_await_login reads "unknown" about a login
+            # that just ended, and mark_ended's announce publishes
+            # synchronously (seconds, on a stalled Redis).
+            payload = self._remember_outcome(
+                session, _outcome(session, reason=REASON_ABORTED)
+            )
             session.mark_ended(REASON_ABORTED)
-            if self._wake(session.future, _outcome(session, reason=REASON_ABORTED)):
+            if self._wake(session.future, payload):
                 aborted += 1
         if aborted:
             logger.info(
@@ -402,14 +574,21 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
 
     def _swept_result(self, record: BrowserLoginSession) -> dict[str, Any]:
         # The TTL sweep IS the auto-teardown: the base class pops the record
-        # past its deadline, and this is the result the agent reads.
-        return _outcome(record, reason=REASON_EXPIRED)
+        # past its deadline, and this is the result the agent reads. The
+        # outcome was already remembered in _on_orphan_swept (before the
+        # announce, closing the pop-to-remember "unknown" window); this
+        # second remember overwrites the same key, harmlessly.
+        return self._remember_outcome(record, _outcome(record, reason=REASON_EXPIRED))
 
     def _on_orphan_swept(self, record: BrowserLoginSession) -> None:
         # The base class's designated pre-resolve side-effect hook, and the
         # right place to end the session: it runs before the future is woken,
         # so the agent never learns the session expired while its readers
-        # still believe it is live.
+        # still believe it is live. Remember the outcome FIRST: the base
+        # already popped the record, and mark_ended's announce publishes
+        # synchronously, so until the retention store has the outcome a
+        # concurrent await reads "unknown" about a login that just expired.
+        self._remember_outcome(record, _outcome(record, reason=REASON_EXPIRED))
         record.mark_ended(REASON_EXPIRED)
         logger.info(
             "browser_login_sessions expired session %s (user=%s, tab=%s, "
@@ -481,6 +660,8 @@ def reset_for_tests() -> None:
 __all__ = [
     "BrowserLoginSession",
     "BrowserLoginSessionRegistry",
+    "LoginSessionConflictError",
+    "LOGIN_SESSION_STOP_TIMEOUT_SECONDS",
     "LOGIN_SESSION_TTL_SECONDS",
     "MAX_FRAMES_BUFFERED",
     "REASON_ABORTED",

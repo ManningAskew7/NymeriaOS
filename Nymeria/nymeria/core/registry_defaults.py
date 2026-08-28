@@ -1113,6 +1113,28 @@ def register_default_commands(service: "CommandService") -> None:
         params=(),
     )
     service.register(
+        "browser",
+        description="Show the live browser login handoff, if one is open (family overview)",
+        category="Tools",
+        params=(),
+    )
+    service.register(
+        "browser login",
+        description="Open a login window to sign the agent's browser into a site by hand",
+        category="Tools",
+        aliases=("browser_login",),
+        mutates_state=True,
+        danger_level="normal",
+        examples=("/browser login https://accounts.google.com",),
+        params=(
+            CommandParam(
+                "url",
+                required=True,
+                description="The sign-in page to open (a fresh tab is used)",
+            ),
+        ),
+    )
+    service.register(
         "tools",
         description="Show the tools enabled on this thread",
         category="Tools",

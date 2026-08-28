@@ -63,7 +63,19 @@ from ..core.browser_command_coordinator import (
     get_browser_command_coordinator,
     new_command_id,
 )
-from ..core.browser_login_sessions import active_session_for_tab
+from ..core.browser_login_sessions import (
+    LOGIN_SESSION_STOP_TIMEOUT_SECONDS,
+    LOGIN_SESSION_TTL_SECONDS,
+    REASON_ABORTED,
+    REASON_CANCELLED,
+    REASON_COMPLETED,
+    REASON_EXPIRED,
+    REASON_FAILED,
+    LoginSessionConflictError,
+    active_session_for_tab,
+    get_browser_login_registry,
+    new_login_session_id,
+)
 from ..core.chrome_subscribers import (
     chrome_connect_count,
     chrome_disconnect_age,
@@ -113,6 +125,9 @@ _TIMEOUTS: dict[str, int] = {
     # only needs to cover the ack.
     "reload_extension": 10,
     "cdp": 60,
+    # Attach + Page.enable + startScreencast, all local CDP calls.
+    "login_session_start": 15,
+    "login_session_stop": LOGIN_SESSION_STOP_TIMEOUT_SECONDS,
 }
 assert max(_TIMEOUTS.values()) <= _MAX_TIMEOUT_S, "a command may not outlive the orphan sweep"
 
@@ -136,6 +151,8 @@ _WIRE_TO_TOOL: dict[str, str] = {
     "health": "chrome_health",
     "reload_extension": "chrome_reload_extension",
     "cdp": "chrome_cdp",
+    "login_session_start": "chrome_request_login",
+    "login_session_stop": "chrome_cancel_login",
 }
 assert _WIRE_TO_TOOL.keys() == _TIMEOUTS.keys(), "every wire command needs a tool-name mapping"
 
@@ -4131,6 +4148,352 @@ async def _reload_reconnect_note(user_id: str, connects_before: int) -> str:
     )
 
 
+# --- Human login handoff (browser-login Phase B, backlog: browser login) ----
+#
+# The three tools below open, await and end a session in which the USER, not
+# the agent, drives one tab through nymeria-desktop's live viewer, so a
+# password is typed by a human into a screen the model never sees (the
+# structural guarantees live in core/browser_login_sessions.py). The tool
+# shape mirrors request_credential: dispatch returns immediately (a blocking
+# tool would die at SafeToolNode's 300s ceiling long before the session's
+# 600s cap), and a separate bounded await lets the agent pick the outcome up
+# in the same turn or a later one.
+
+_LOGIN_URL_MAX_CHARS = 2048
+# Stay under SafeToolNode's 300s default like request_credential does.
+_AWAIT_LOGIN_MIN_WAIT_S = 5
+_AWAIT_LOGIN_DEFAULT_WAIT_S = 240
+_AWAIT_LOGIN_MAX_WAIT_S = 270
+
+_LOGIN_MINUTES = int(LOGIN_SESSION_TTL_SECONDS // 60)
+
+# One sentence per way a session ends, composed onto the outcome payload so
+# the wording cannot drift between the await and cancel tools.
+_LOGIN_OUTCOME_LINES = {
+    REASON_COMPLETED: (
+        "The user finished signing in. The tab is signed in and the browser "
+        "profile keeps that session across restarts; resume driving it."
+    ),
+    REASON_EXPIRED: (
+        f"The login window hit its {_LOGIN_MINUTES}-minute cap before the user "
+        "finished. The tab accepts commands again; ask the user whether to "
+        "open a fresh login window."
+    ),
+    REASON_CANCELLED: (
+        "The login was cancelled before the user finished. The tab accepts "
+        "commands again."
+    ),
+    REASON_ABORTED: "The thread was stopped mid-login, which ended the session.",
+    REASON_FAILED: (
+        "The session ended because the live view could not run; the tab was "
+        "never handed over."
+    ),
+}
+
+
+def _login_json(payload: dict[str, Any]) -> str:
+    outcome_line = _LOGIN_OUTCOME_LINES.get(str(payload.get("status") or ""))
+    if outcome_line and "message" not in payload:
+        payload = {**payload, "message": outcome_line}
+    return json.dumps(payload, default=str)
+
+
+def _login_failure_text(lead: str, payload: dict[str, Any]) -> str:
+    """A start failure: our sentence, the extension's reason fenced.
+
+    The reason string is extension-authored today, but it rides the same
+    payload channel page-derived text does, so it gets the same fence
+    rather than a judgement call per failure shape.
+    """
+    detail = str(payload.get("error") or "").strip()[:400]
+    fenced = f"\n{_fence(detail)}" if detail else ""
+    return f"{lead}.{fenced}"
+
+
+def _bare_error(text: str) -> str:
+    """Strip the tool-layer sentinel off a ``_run`` error.
+
+    The orchestration serves two layers with different failure protocols:
+    the chrome tools re-add ``[Error]: `` themselves, and the ``/browser``
+    command renders a typed error level instead (the command layer's
+    sentinel ratchet exists precisely so it never hand-writes the tool
+    spelling). So the shared function returns plain reasons.
+    """
+    return text.removeprefix("[Error]: ")
+
+
+def _already_open_reason(live: Any) -> str:
+    """The one-at-a-time refusal, naming the session that holds the slot."""
+    return (
+        f"A login session is already open (session_id "
+        f"{live.session_id}, tab {live.tab_id}, "
+        f"{int(live.seconds_remaining)}s remaining). One at a time: a "
+        "human has one screen. Wait for it with chrome_await_login, or "
+        "end it with chrome_cancel_login, then retry."
+    )
+
+
+async def start_login_handoff(
+    *,
+    url: str,
+    tab_id: Optional[int],
+    config: Optional[RunnableConfig],
+    origin: str,
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Open a login session end to end; the one orchestration both entry
+    points share (the agent tool below and the ``/browser login`` command).
+
+    Returns ``(session_snapshot, None)`` or ``(None, "reason")``; the
+    reason carries no ``[Error]`` sentinel (see :func:`_bare_error`).
+
+    Ordering is load-bearing: the session registers BEFORE the start
+    command is dispatched, because the extension's first frame POST can
+    land within the ack window, and a frame POSTed to an unknown session
+    answers ``session_active: false``, which the extension obeys by
+    shutting the screencast straight back down.
+    """
+    user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
+    registry = get_browser_login_registry()
+    existing = registry.active_for_user(user_id)
+    if existing:
+        # Friendly fast path only: the ATOMIC one-per-user claim is
+        # registry.start below, because this check races our own awaits
+        # (the tab-create round trip) against a concurrent starter.
+        return None, _already_open_reason(existing[0])
+    label = (url or "").strip()[:_LOGIN_URL_MAX_CHARS]
+    created_fresh_tab = tab_id is None
+    if tab_id is None:
+        if not label:
+            return None, (
+                "url is required when tab_id is not given; it is "
+                "where the login tab is opened."
+            )
+        payload, error = await _run(
+            command_type="tabs",
+            args={"action": "create", "url": label},
+            config=config,
+            timeout_override=_TIMEOUTS["navigate"],
+        )
+        if error is not None:
+            return None, _bare_error(error)
+        payload = payload or {}
+        tab = _data(payload).get("tab")
+        created = tab.get("id") if isinstance(tab, dict) else None
+        if not payload.get("ok") or not isinstance(created, int) or isinstance(created, bool):
+            return None, _login_failure_text(
+                "could not open a tab for the login", payload
+            )
+        tab_id = created
+    session_id = new_login_session_id()
+    try:
+        session, _future = registry.start(
+            session_id=session_id,
+            user_id=user_id,
+            thread_id=thread_id,
+            tab_id=tab_id,
+            url=label,
+        )
+    except LoginSessionConflictError as conflict:
+        # Lost the claim to a concurrent starter. Close the tab this call
+        # just opened (best-effort: the winner's session does not hold it,
+        # and leaving it orphans a blank tab); a caller-supplied tab stays.
+        if created_fresh_tab:
+            await _run(
+                command_type="tabs",
+                args={"action": "close", "tab_id": tab_id},
+                config=config,
+            )
+        return None, _already_open_reason(conflict.existing)
+    payload, error = await _run(
+        command_type="login_session_start",
+        args={"tab_id": tab_id, "session_id": session_id},
+        config=config,
+    )
+    if error is not None or not (payload or {}).get("ok"):
+        registry.finish(
+            session_id,
+            reason=REASON_FAILED,
+            detail="the extension could not start the live login view",
+        )
+        if error is not None:
+            return None, _bare_error(error)
+        return None, _login_failure_text(
+            "the extension could not start the live login view", payload or {}
+        )
+    publish_autonomous_event(
+        event_type="browser_login_started",
+        thread_id=thread_id,
+        user_id=user_id,
+        task_id="",
+        data={**session.snapshot(), "origin": origin},
+    )
+    return session.snapshot(), None
+
+
+@tool
+async def chrome_request_login(
+    url: str,
+    tab_id: Optional[int] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Hand one tab to the USER so they sign a site in by hand.
+
+    Opens a live view of the tab in Nymeria Desktop where the user drives
+    with their own mouse and keyboard (real, trusted input), for a login
+    wall, a 2FA step, or any verify-you-are-human wall you cannot and must
+    not pass yourself. You never see that screen: while the session runs,
+    every chrome_* command aimed at the tab is refused, and the frames go
+    to the user's viewer only, so their password is never in your context.
+    Once they finish, the tab is signed in and the browser profile keeps
+    the session across restarts, so one handoff fixes a site for good.
+
+    url: where the login happens. With no tab_id it is opened in a NEW tab;
+        with a tab_id it is only the label the user sees on the viewer, so
+        pass the page the tab is actually on.
+    tab_id: hand over THIS tab, already at the wall you hit. Omit to open a
+        fresh tab at url instead. The tab is returned to you when the
+        session ends.
+
+    Dispatch contract, like request_credential: returns immediately with
+    status="dispatched" and a session_id. The session runs up to 10 minutes
+    (hard cap, not extended by activity) and one session per user can be
+    open at a time. Tell the user the login window is ready in Nymeria
+    Desktop and what to do there. Then either call chrome_await_login with
+    the session_id to wait for the outcome (usually right away, so you can
+    continue the task the moment they finish), or keep working on OTHER
+    tabs and await later. chrome_cancel_login ends it early if the user
+    changes their mind in chat.
+    """
+    snapshot, error = await start_login_handoff(
+        url=url, tab_id=tab_id, config=config, origin="agent"
+    )
+    if error is not None:
+        return f"[Error]: {error}"
+    snapshot = snapshot or {}
+    return _login_json(
+        {
+            "ok": True,
+            "status": "dispatched",
+            "session_id": snapshot.get("session_id"),
+            "tab_id": snapshot.get("tab_id"),
+            "url": snapshot.get("url"),
+            "seconds_remaining": snapshot.get("seconds_remaining"),
+            "expires_at": snapshot.get("expires_at"),
+            "message": (
+                "A live login window is ready for the user in Nymeria "
+                "Desktop. Tell them it is open and what to sign into. You "
+                "cannot see or drive that tab until the session ends; "
+                "chrome_await_login(session_id) waits for the outcome."
+            ),
+        }
+    )
+
+
+@tool
+async def chrome_await_login(
+    session_id: str,
+    timeout_seconds: int = _AWAIT_LOGIN_DEFAULT_WAIT_S,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Wait for a login handoff to end and learn how it ended.
+
+    Blocks up to timeout_seconds (5 to 270, default 240) for the session
+    opened by chrome_request_login to finish. Waiting does not end or
+    extend the session; it only listens, so calling this immediately after
+    dispatching is the normal pattern: the moment the user clicks "finish"
+    in the viewer you get the outcome and can continue the task.
+
+    Returns the outcome payload once the session has ended (now or
+    earlier): status is "completed" (user signed in; resume driving the
+    tab), "expired" (10-minute cap hit first), "cancelled", "aborted"
+    (thread stopped), or "failed" (the live view never started). If the
+    wait runs out with the session still live, you get status="active"
+    with the seconds remaining; the user may simply be mid-2FA, so say
+    something reassuring and call this again to keep waiting. Outcomes
+    stay readable for 15 minutes after a session ends; a finished login
+    outlives that regardless, in the browser profile itself.
+    """
+    user_id = get_user_id(config)
+    wait = max(
+        _AWAIT_LOGIN_MIN_WAIT_S,
+        min(_AWAIT_LOGIN_MAX_WAIT_S, int(timeout_seconds or 0)),
+    )
+    sid = (session_id or "").strip()
+    status, payload = await get_browser_login_registry().await_outcome(
+        sid, user_id=user_id, timeout_seconds=wait
+    )
+    if status == "ended":
+        return _login_json(payload or {})
+    if status == "active":
+        snapshot = payload or {}
+        return _login_json(
+            {
+                "ok": True,
+                "status": "active",
+                "session_id": sid,
+                "seconds_remaining": snapshot.get("seconds_remaining"),
+                "message": (
+                    "The user has not finished yet (they may be mid-2FA). "
+                    "Call chrome_await_login again to keep waiting, or work "
+                    "on other tabs meanwhile."
+                ),
+            }
+        )
+    return (
+        f"[Error]: No login session '{sid}' is live or recently finished for "
+        "this user. Outcomes are kept for 15 minutes after a session ends. A "
+        "login the user completed persists in the browser profile regardless, "
+        "so if the handoff was a while ago, just drive the tab and see."
+    )
+
+
+@tool
+async def chrome_cancel_login(
+    session_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """End a live login handoff early, before the user finishes.
+
+    For when plans change mid-handoff: the user says in chat to forget the
+    login, or the task no longer needs the site. Ends the session opened by
+    chrome_request_login (or /browser login), closes the user's viewer, and
+    returns the tab to your control. This does not undo anything the user
+    already did on the page.
+
+    session_id: which session to end. Omit it to end the user's one active
+        session (only one can be open at a time).
+    """
+    user_id = get_user_id(config)
+    registry = get_browser_login_registry()
+    sid = (session_id or "").strip()
+    if not sid:
+        active = registry.active_for_user(user_id)
+        if not active:
+            return "[Error]: No login session is open for this user."
+        sid = active[0].session_id
+    else:
+        record = registry.get(sid)
+        if record is None or record.user_id != user_id:
+            done = registry.outcome_for(sid, user_id=user_id)
+            if done is not None:
+                return _login_json(
+                    {**done, "message": "That session had already ended."}
+                )
+            return (
+                f"[Error]: No login session '{sid}' is open for this user."
+            )
+    registry.finish(
+        sid,
+        reason=REASON_CANCELLED,
+        detail="cancelled by the agent before the user finished",
+    )
+    outcome = registry.outcome_for(sid, user_id=user_id)
+    if outcome is None:
+        return "[Error]: The session was already gone before the cancel landed."
+    return _login_json(outcome)
+
+
 CHROME_BROWSER_TOOLS = [
     chrome_tabs,
     chrome_navigate,
@@ -4146,16 +4509,20 @@ CHROME_BROWSER_TOOLS = [
     chrome_health,
     chrome_cdp,
     chrome_reload_extension,
+    chrome_request_login,
+    chrome_await_login,
+    chrome_cancel_login,
 ]
 
 #: What the browser-control kit binds: the whole working surface, all
-#: fourteen tools, diagnostics and the escape hatch included (the
+#: seventeen tools, diagnostics and the escape hatch included (the
 #: scoped-tools principle: a kit carries the tools its domain needs).
 #: ``chrome_dialog`` joined in the #169 pass, which made it a working tool
 #: (Page ownership: dialogs raised while driving are held and answerable);
 #: ``chrome_reload_extension`` joined 2026-08-16 (the dev loop's remote
 #: refresh); ``chrome_health`` joined in the #188 pass (the one-call tab
-#: health read).
+#: health read); the login-handoff trio joined in the browser-login pass
+#: (a human signs a tab in through the desktop viewer, off-model).
 CHROME_KIT_TOOL_NAMES = (
     "chrome_tabs",
     "chrome_navigate",
@@ -4171,6 +4538,9 @@ CHROME_KIT_TOOL_NAMES = (
     "chrome_health",
     "chrome_cdp",
     "chrome_reload_extension",
+    "chrome_request_login",
+    "chrome_await_login",
+    "chrome_cancel_login",
 )
 
 
@@ -4192,6 +4562,10 @@ __all__ = [
     "chrome_health",
     "chrome_cdp",
     "chrome_reload_extension",
+    "chrome_request_login",
+    "chrome_await_login",
+    "chrome_cancel_login",
+    "start_login_handoff",
 ]
 
 

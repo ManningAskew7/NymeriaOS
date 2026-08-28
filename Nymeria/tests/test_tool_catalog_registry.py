@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1257
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1260
 
 
 def test_catalog_key_equals_tool_name():
@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1272
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1275
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -522,7 +522,9 @@ BASELINE_CATALOG_NAMES = [
     "chargebee_list_records",
     "chargebee_update_customer",
     "chrome_act",
+    "chrome_await_login",
     "chrome_batch",
+    "chrome_cancel_login",
     "chrome_cdp",
     "chrome_console",
     "chrome_dialog",
@@ -533,6 +535,7 @@ BASELINE_CATALOG_NAMES = [
     "chrome_read_page",
     "chrome_read_text",
     "chrome_reload_extension",
+    "chrome_request_login",
     "chrome_screenshot",
     "chrome_tabs",
     "circleci_get_pipeline",
@@ -1783,7 +1786,9 @@ BASELINE_STATIC_NAMES = [
     "chargebee_list_records",
     "chargebee_update_customer",
     "chrome_act",
+    "chrome_await_login",
     "chrome_batch",
+    "chrome_cancel_login",
     "chrome_cdp",
     "chrome_console",
     "chrome_dialog",
@@ -1794,6 +1799,7 @@ BASELINE_STATIC_NAMES = [
     "chrome_read_page",
     "chrome_read_text",
     "chrome_reload_extension",
+    "chrome_request_login",
     "chrome_screenshot",
     "chrome_tabs",
     "circleci_get_pipeline",

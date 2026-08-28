@@ -278,6 +278,12 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/env get <key>` | Show one environment variable. Admin only. |
 | `/env set <key> <value>` | Write one environment variable. Admin only. |
 
+### Browser login (`/browser`)
+
+| Command | Description |
+|---------|-------------|
+| `/browser login <url>` | Open a login window in Nymeria Desktop where you sign the agent's browser into a site by hand (up to 10 minutes). What you type there never reaches the agent, and the agent stays out of that tab until you finish. Needs the desktop app open somewhere to drive the login. |
+
 ### Tools (`/tools`)
 
 | Command | Description |

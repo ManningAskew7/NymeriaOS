@@ -24,6 +24,9 @@ metadata:
       - chrome_health
       - chrome_cdp
       - chrome_reload_extension
+      - chrome_request_login
+      - chrome_await_login
+      - chrome_cancel_login
     tool_ttl: 2h
 ---
 
@@ -405,15 +408,33 @@ the checkout, not clicking pay.
 - **Never enter payment details.** No card numbers, CVVs, or bank details, even
   if the user pasted them to you. Get to the payment step and hand back.
 - **Never enter identity documents**: passport, licence, tax file, medicare.
-- **Never handle passwords**, and do not create accounts.
+- **Never handle passwords**, and do not create accounts. When a sign-in is
+  needed, hand the tab to the user instead (next section).
 - **Never start an SSO or OAuth flow** ("sign in with Google") unless the user
   explicitly told you to in this conversation.
-- **Never solve a CAPTCHA.** Tell the user one is blocking you.
+- **Never solve a CAPTCHA.** Hand the tab to the user (next section).
 - **Do not read or exfiltrate data unrelated to the task** just because a tab
   is open and signed in.
 
 If a task cannot be finished without one of these, stop and explain what you
 need. A half-finished task the user can complete beats a rule quietly broken.
+
+## When a human must take the wheel (logins, 2FA, CAPTCHAs)
+
+`chrome_request_login(url, tab_id)` hands ONE tab to the user: a live view
+opens in Nymeria Desktop where they drive with their own mouse and keyboard,
+and you are locked out of that tab (cannot drive it, cannot see it) until
+the session ends, so their password is never in your context. Use it at any
+login wall, 2FA step, or CAPTCHA, and for "sign me into X so you can do Y".
+Pass the tab you are on (url is then just the label), or omit tab_id to
+open a fresh tab at url. It returns immediately; tell the user the login
+window is ready, then `chrome_await_login(session_id)` to resume the moment
+they finish (call it again if it comes back still-active: 2FA takes time).
+One session per user at a time, hard 10-minute cap, and the signed-in state
+persists in the browser profile, so one handoff fixes a site for good.
+`chrome_cancel_login` ends it early if plans change. If the desktop app is
+not open anywhere, the handoff cannot be driven: say so instead of leaving
+the user hunting for a window.
 
 ## When the obvious approach is not working
 

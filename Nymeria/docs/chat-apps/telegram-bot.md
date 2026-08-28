@@ -224,6 +224,7 @@ platform history.
 | `/aliases` | List your personal command aliases with author and health flags |
 | `/alias_create <name> <command...>` | Create an alias that expands to a full command, values included (e.g. `/alias_create gpt5 model openai/gpt-5.5`) |
 | `/alias_delete <name>` | Delete one of your aliases |
+| `/browser_login <url>` | Open a login window in Nymeria Desktop where you sign the agent's browser into a site by hand (up to 10 minutes; served by the passthrough). What you type there never reaches the agent. Needs the desktop app open somewhere to drive the login. |
 
 Aliases are per-user and expand server-side at dispatch, so a spelling
 created anywhere works here through the passthrough: type `/gpt5` and the

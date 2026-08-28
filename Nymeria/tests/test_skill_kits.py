@@ -1356,6 +1356,7 @@ def test_bundled_capability_kits_expose_exact_required_tools():
         "credential-management": [
             "auth_inspect", "auth_cleanup", "auth_bindings", "auth_test", "auth_write",
             "request_credential",
+            "chrome_request_login", "chrome_await_login", "chrome_cancel_login",
         ],
         "workflow-authoring": ["tool_create", "workflow_info"],
         "cli-customization": ["cli_statusbar_get", "cli_statusbar_set"],
