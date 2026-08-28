@@ -47,8 +47,17 @@ def _spec(provider: str, **overrides) -> ProviderCredentialSpec:
 
 
 def test_register_is_idempotent_for_identical_specs():
-    spec = register_provider_spec(_spec("testreg_idem"))
-    assert register_provider_spec(_spec("testreg_idem")) is spec
+    """An identical re-registration is accepted and REFRESHES the stored
+    instance (the #277 class-blind contract: after a module reload the store
+    converges onto the current class), preserving field values exactly."""
+    from dataclasses import astuple
+
+    first = register_provider_spec(_spec("testreg_idem"))
+    second = _spec("testreg_idem")
+    returned = register_provider_spec(second)
+    assert returned is second
+    assert astuple(returned) == astuple(first)
+    assert get_provider_spec("testreg_idem") is second
 
 
 def test_conflicting_registration_raises():
