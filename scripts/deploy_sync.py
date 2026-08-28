@@ -195,7 +195,16 @@ def git(repo: str, *args: str, runner: Callable = run_command) -> tuple[int, str
 
 def repo_state(repo: str, runner: Callable = run_command) -> dict[str, Any]:
     """HEAD/origin relation after a fetch. relation: current|behind|ahead|diverged."""
-    fetch_rc, fetch_out = git(repo, "fetch", "origin", "main", runner=runner)
+    # --no-write-fetch-head: this fetch runs every 5 minutes on a checkout
+    # where interactive agent sessions also run `git pull --ff-only`. A plain
+    # fetch rewrites FETCH_HEAD, and two uncoordinated writers can leave it
+    # with multiple merge-candidate lines, failing the agent's pull with
+    # "Cannot fast-forward to multiple branches" (backlog #221). This fetch
+    # only needs origin/main updated; skipping FETCH_HEAD removes the
+    # collision at its source (verified: the tracking ref still updates).
+    fetch_rc, fetch_out = git(
+        repo, "fetch", "--no-write-fetch-head", "origin", "main", runner=runner
+    )
     head_rc, head = git(repo, "rev-parse", "HEAD", runner=runner)
     if head_rc != 0:
         # Never let git's error text flow onward as if it were a commit id
@@ -642,7 +651,7 @@ def mark_deployed(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "deploy_sync").splitlines()[0])
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--dry-run", action="store_true", help="report, change nothing")
