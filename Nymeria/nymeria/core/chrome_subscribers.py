@@ -29,10 +29,15 @@ CHROME_CLIENT_ID_PREFIX = "nymeria-browser-"
 # mobile, both CLI transports, the bots' admin firehose) parsed it and
 # dropped it: a 10MB upload reached each of them as ~14MB of JSON to throw
 # away. ``browser_session_release`` (#191) is the turn-end signal to drop
-# idle debugger holds: nothing but the extension holds one. Lives here,
-# beside the "is this caller the extension" test, so the stream and the
-# in-process CLI transport cannot filter differently.
-CHROME_ONLY_EVENT_TYPES = frozenset({"browser_command", "browser_session_release"})
+# idle debugger holds: nothing but the extension holds one.
+# ``browser_login_input`` carries an operator's keystrokes toward the tab
+# they are signing into, so fanning it out would mail a password to every
+# other subscriber; it is chrome-only for confidentiality, not just waste.
+# Lives here, beside the "is this caller the extension" test, so the stream
+# and the in-process CLI transport cannot filter differently.
+CHROME_ONLY_EVENT_TYPES = frozenset(
+    {"browser_command", "browser_session_release", "browser_login_input"}
+)
 
 _lock = threading.Lock()
 _subscribers_by_user: dict[str, Set[str]] = {}

@@ -21,6 +21,11 @@ from nymeria.core.browser_command_coordinator import (
     ORPHAN_TTL_SECONDS,
 )
 from nymeria.core.browser_command_coordinator import get_browser_command_coordinator
+from nymeria.core.browser_login_sessions import (
+    get_browser_login_registry,
+    new_login_session_id,
+)
+from nymeria.core.browser_login_sessions import reset_for_tests as reset_login_sessions
 from nymeria.core.event_bus import set_event_bus, EventBus
 from nymeria.tools import chrome_browser as chrome_browser_module
 from nymeria.tools.chrome_browser import (
@@ -63,8 +68,10 @@ def isolate_state(monkeypatch):
     monkeypatch.setattr(chrome_browser_module, "_PROCESS_START", time.monotonic() - 10_000)
     set_event_bus(EventBus())
     chrome_subscribers.reset_for_tests()
+    reset_login_sessions()
     yield
     chrome_subscribers.reset_for_tests()
+    reset_login_sessions()
 
 
 @pytest.fixture
@@ -6011,3 +6018,178 @@ def test_the_refusal_note_never_echoes_the_landed_url() -> None:
 
     assert "[Sign-in refused by Google:" in after
     assert "IGNORE" not in after, "the note must not carry page-chosen text outside the fence"
+
+
+# ---------- a tab a human is signing into is off limits (browser-login B3) ----
+
+
+def _hold(tab_id: int, *, user_id: str = "u1", thread_id: str = "t1"):
+    """Open a login session on ``tab_id``. Must run inside the test's loop."""
+    return get_browser_login_registry().start(
+        session_id=new_login_session_id(),
+        user_id=user_id,
+        thread_id=thread_id,
+        tab_id=tab_id,
+        url="https://accounts.google.com/signin",
+    )
+
+
+def _invoke_with_hold(
+    tool,
+    args: dict,
+    *,
+    hold_tab: int,
+    hold_user: str = "u1",
+    config: RunnableConfig | None = None,
+    payload: dict | None = None,
+):
+    """Invoke a tool while a login session holds ``hold_tab``.
+
+    Returns ``(result, commands_registered)``. The counter is the load-bearing
+    half: a refusal that still put the command on the wire would drive the
+    tab the human is typing into, so "nothing was dispatched" has to be
+    asserted, not inferred from the message. ``payload`` answers the command
+    for the cases where the gate is expected to let it through.
+    """
+    _connect(hold_user if config is None else "u1")
+
+    async def run():
+        _hold(hold_tab, user_id=hold_user)
+        if payload is None:
+            result = await tool.ainvoke(args, config=config or _config())
+        else:
+            resolver = asyncio.create_task(_resolve_next(payload))
+            result = await tool.ainvoke(args, config=config or _config())
+            await resolver
+        return result
+
+    result = asyncio.run(run())
+    return result
+
+
+def test_driving_a_tab_being_signed_into_is_refused_and_dispatches_nothing() -> None:
+    out = _invoke_with_hold(
+        chrome_act,
+        {"tab_id": 7, "action": "click", "ref": "@e1"},
+        hold_tab=7,
+    )
+    assert "[Error]:" in out
+    assert "human login is in progress on tab 7" in out
+    assert "Nothing was sent to the browser" in out
+    # The proof, not the prose: no command was ever registered, so nothing
+    # reached the extension and nothing touched the tab.
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_reading_a_tab_being_signed_into_is_refused_too() -> None:
+    """The read half is the security half: a page read mid-login would put
+    the password on screen straight into the model's context."""
+    out = _invoke_with_hold(chrome_read_page, {"tab_id": 7}, hold_tab=7)
+    assert "human login is in progress on tab 7" in out
+    assert "You are not shown what is on that screen" in out
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_a_screenshot_of_a_tab_being_signed_into_is_refused() -> None:
+    out = _invoke_with_hold(chrome_screenshot, {"tab_id": 7}, hold_tab=7)
+    assert "human login is in progress on tab 7" in out
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_another_tab_is_unaffected_by_a_login_session() -> None:
+    """The hold is per-tab: the agent keeps working everywhere else."""
+    out = _invoke_with_hold(
+        chrome_read_page,
+        {"tab_id": 8},
+        hold_tab=7,
+        payload=_ok({"tree": '- button "Ordinary" [ref=@e1]', "ref_count": 1}),
+    )
+    assert "human login is in progress" not in out
+    assert "Ordinary" in out
+
+
+def test_another_users_login_session_does_not_hold_this_users_tab() -> None:
+    """Sessions are scoped to their own user's browser; u2 signing into their
+    tab 7 says nothing about u1's tab 7."""
+    out = _invoke_with_hold(
+        chrome_read_page,
+        {"tab_id": 7},
+        hold_tab=7,
+        hold_user="u2",
+        config=_config(user_id="u1"),
+        payload=_ok({"tree": '- heading "My own tab" [ref=@e1]', "ref_count": 1}),
+    )
+    assert "human login is in progress" not in out
+    assert "My own tab" in out
+
+
+def test_a_tabless_command_is_not_blocked_by_a_login_session() -> None:
+    """A tab listing or a connection probe targets no held tab."""
+    out = _invoke_with_hold(
+        chrome_tabs,
+        {"action": "list"},
+        hold_tab=7,
+        payload=_ok({"tabs": [{"id": 7, "title": "Sign in"}]}),
+    )
+    assert "human login is in progress" not in out
+    assert "Sign in" in out
+
+
+def test_the_session_control_commands_are_exempt_from_the_gate() -> None:
+    """Refusing these would leave a held tab with no way to be released."""
+
+    async def run() -> None:
+        _hold(7)
+        for command_type in ("login_session_start", "login_session_stop"):
+            assert (
+                chrome_browser_module._login_session_block(
+                    command_type=command_type, args={"tab_id": 7}, user_id="u1"
+                )
+                is None
+            ), command_type
+        # Any other command aimed at the same tab is still refused.
+        assert (
+            chrome_browser_module._login_session_block(
+                command_type="read_page", args={"tab_id": 7}, user_id="u1"
+            )
+            is not None
+        )
+
+    asyncio.run(run())
+
+
+def test_the_gate_ignores_a_missing_or_malformed_tab_id() -> None:
+    """``tab_id`` arrives from tool args; a bool is not a tab (bool subclasses
+    int, so ``isinstance(True, int)`` would otherwise match tab 1)."""
+
+    async def run() -> None:
+        _hold(1)
+        for args in ({}, {"tab_id": None}, {"tab_id": "1"}, {"tab_id": True}):
+            assert (
+                chrome_browser_module._login_session_block(
+                    command_type="read_page", args=args, user_id="u1"
+                )
+                is None
+            ), args
+
+    asyncio.run(run())
+
+
+def test_the_tab_is_released_the_moment_the_session_ends() -> None:
+    """No cooldown: the agent can drive again as soon as the human is done."""
+    _connect()
+
+    async def run():
+        session, _ = _hold(7)
+        blocked = await chrome_read_page.ainvoke({"tab_id": 7}, config=_config())
+        get_browser_login_registry().finish(session.session_id, reason="completed")
+        resolver = asyncio.create_task(
+            _resolve_next(_ok({"tree": '- heading "Signed in" [ref=@e1]', "ref_count": 1}))
+        )
+        allowed = await chrome_read_page.ainvoke({"tab_id": 7}, config=_config())
+        await resolver
+        return blocked, allowed
+
+    blocked, allowed = asyncio.run(run())
+    assert "human login is in progress" in blocked
+    assert "Signed in" in allowed

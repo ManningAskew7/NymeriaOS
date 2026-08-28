@@ -31,6 +31,7 @@ from ..tools import SEED_TOOLS
 from ..api.routers.accounts import create_accounts_router
 from ..api.routers.autonomous_stream import create_autonomous_stream_router
 from ..api.routers.browser_commands import create_browser_commands_router
+from ..api.routers.browser_login import create_browser_login_router
 from ..api.routers.ui_prompts import create_ui_prompts_router
 from ..api.routers.cli_config import create_cli_config_router
 from ..api.routers.chat import create_chat_router
@@ -1018,6 +1019,7 @@ def create_api_app(
     app.include_router(create_credentials_router(verify_api_key, require_admin_user, get_agent))
     app.include_router(create_credential_prompts_router(verify_api_key, get_agent, get_settings))
     app.include_router(create_browser_commands_router(verify_api_key))
+    app.include_router(create_browser_login_router(verify_api_key))
     app.include_router(create_ui_prompts_router(verify_api_key))
     app.include_router(create_cli_config_router(verify_api_key))
     app.include_router(create_workspace_router(verify_api_key))
