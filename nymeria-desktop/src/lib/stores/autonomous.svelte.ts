@@ -15,6 +15,8 @@ import { notificationStore } from './notifications.svelte';
 import { workflowsStore } from './workflows.svelte';
 import { authPromptStore } from './authPrompt.svelte';
 import { uiPromptStore } from './uiPrompt.svelte';
+import { browserLoginStore } from './browserLogin.svelte';
+import type { BrowserLoginSessionStatus } from '$lib/services/api/browser-login';
 import { errorsStore } from './errors.svelte';
 import { refreshThreadSyncBaseline } from './syncPoll.svelte';
 import { api } from '$lib/services/api.svelte';
@@ -708,6 +710,48 @@ function createAutonomousStore() {
         // closure); retract this client's copy of the modal.
         const promptId = event.prompt_id as string | undefined;
         if (promptId) uiPromptStore.clearById(promptId);
+        break;
+      }
+
+      case 'browser_login_started': {
+        // A human login handoff opened (agent tool or /browser login). The
+        // payload is the session's safe status snapshot plus `origin`; it
+        // never carries frame bytes. Per-user filtering already happened at
+        // the SSE generator, and the viewer is global like the prompts
+        // above: it must survive navigating away from the issuing thread.
+        const sessionId = event.session_id as string | undefined;
+        if (!sessionId) break;
+        browserLoginStore.open(
+          {
+            session_id: sessionId,
+            thread_id: (event.thread_id as string) || '',
+            tab_id: (event.tab_id as number) ?? 0,
+            url: (event.url as string) || '',
+            state: (event.state as string) || 'active',
+            end_reason: (event.end_reason as string | null | undefined) ?? null,
+            last_seq: (event.last_seq as number) ?? 0,
+            frames_received: (event.frames_received as number) ?? 0,
+            frames_dropped: (event.frames_dropped as number) ?? 0,
+            has_frame: (event.has_frame as boolean) ?? false,
+            seconds_remaining: (event.seconds_remaining as number) ?? 0,
+            expires_at: (event.expires_at as string) || '',
+          } satisfies BrowserLoginSessionStatus,
+          (event.origin as string) || 'agent'
+        );
+        break;
+      }
+
+      case 'browser_login_ended': {
+        // Every ending path announces exactly once (operator finish, agent
+        // cancel, TTL expiry, thread abort). Unknown ids are ignored on
+        // purpose: a failed start can end a session that never announced
+        // itself, and a viewer the user already closed clears by id.
+        const sessionId = event.session_id as string | undefined;
+        if (!sessionId) break;
+        browserLoginStore.endById(
+          sessionId,
+          (event.end_reason as string | null | undefined) || 'cancelled'
+        );
         break;
       }
 
