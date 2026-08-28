@@ -286,9 +286,13 @@ class RedisEventBus(EventBus):
                     )
                 return
 
+            rung = []
             for sub_id, queue in list(self._subscribers.items()):
                 try:
                     queue.put_nowait(event)
+                    pulse = self._doorbells.get(sub_id)
+                    if pulse is not None:
+                        rung.append(pulse)
                     enqueue_key = f"redis:{sub_id}:{event.event_type}"
                     enqueue_count = self._bump_counter(self._enqueue_counts, enqueue_key)
                     if should_log_stream_event_sample(event.event_type, enqueue_count):
@@ -314,6 +318,12 @@ class RedisEventBus(EventBus):
                         event.thread_id,
                         event.task_id,
                     )
+
+        # Ring outside the lock (same rule as the base class): this runs on
+        # the Redis subscriber THREAD, and the wake is marshalled onto each
+        # listener's loop by the pulse itself.
+        for pulse in rung:
+            pulse.ring()
 
     def publish(self, event: AutonomousEvent) -> None:
         """

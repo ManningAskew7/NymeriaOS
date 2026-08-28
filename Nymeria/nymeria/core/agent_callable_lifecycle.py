@@ -146,6 +146,17 @@ def abort_with_cascade(
             f"Failed to abort pending browser commands on abort for {thread_id}: {e}"
         )
     try:
+        from .browser_login_sessions import get_browser_login_registry
+        login_sessions = get_browser_login_registry().abort_thread(thread_id)
+        if login_sessions:
+            logger.info(
+                f"Abort on thread {thread_id} ended {login_sessions} live browser login session(s)"
+            )
+    except Exception as e:
+        logger.warning(
+            f"Failed to end browser login sessions on abort for {thread_id}: {e}"
+        )
+    try:
         from .ui_prompt_coordinator import get_ui_prompt_coordinator
         prompts_aborted = get_ui_prompt_coordinator().abort_thread(thread_id)
         if prompts_aborted:

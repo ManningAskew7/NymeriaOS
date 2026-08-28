@@ -575,3 +575,64 @@ def test_autonomous_generator_no_longer_self_emits_heartbeat():
 
     source = inspect.getsource(_generate_autonomous_sse_events)
     assert ": heartbeat" not in source
+
+
+# -- B-6: doorbell push latency beats the poll interval -------------------------
+
+
+def test_autonomous_sse_push_latency_beats_the_poll_interval():
+    # With the PRODUCTION 1s poll interval untouched, an event published from
+    # a worker thread while the generator idles must arrive well under that
+    # interval: the enqueue rings the subscriber's doorbell and the generator
+    # wakes on it instead of sleeping out the poll timer. Before the doorbell
+    # (measured) idle-bus delivery averaged 871ms; with it, sub-millisecond.
+    # The 0.6s bound leaves CI slack while staying red for any poll-bound
+    # regression, which cannot deliver before ~1.0s.
+    import threading
+    import time
+
+    async def drive() -> tuple[str, float]:
+        event_bus = EventBus()
+        subscriber_id = "test-subscriber"
+        queue = event_bus.subscribe(subscriber_id)  # binds doorbell here
+        generator = _generate_autonomous_sse_events(
+            request=cast(Request, FakeRequest()),
+            event_bus=event_bus,
+            queue=queue,
+            subscriber_id=subscriber_id,
+            user_id="alice",
+            firehose=False,
+            client_id=None,
+        )
+
+        def publish_later() -> None:
+            time.sleep(0.15)  # let the generator park in its doorbell wait
+            event_bus.publish(
+                AutonomousEvent(
+                    event_type="response",
+                    thread_id="thread-alice",
+                    user_id="alice",
+                    data={"content": "pushed"},
+                )
+            )
+
+        thread = threading.Thread(target=publish_later)
+        thread.start()
+        start = time.monotonic()
+        try:
+            frame = await asyncio.wait_for(generator.__anext__(), timeout=5.0)
+        finally:
+            await generator.aclose()
+            thread.join()
+        return frame, time.monotonic() - start
+
+    frame, elapsed = asyncio.run(drive())
+    assert frame.startswith("data: ")
+    assert '"content": "pushed"' in frame
+    # Poll-bound delivery cannot beat ~1.15s (the 1s timer plus the 0.15s
+    # publish delay); doorbell-woken delivery lands at ~0.15s. The 0.9s
+    # bound keeps xdist-on-a-loaded-box slack while staying red for any
+    # poll-bound regression.
+    assert elapsed < 0.9, (
+        f"frame took {elapsed:.3f}s: delivery is poll-bound, not doorbell-woken"
+    )

@@ -160,7 +160,7 @@ def _ok(data: dict) -> dict:
 # ---------- surface shape ----------
 
 
-def test_surface_is_fourteen_tools_and_the_kit_binds_all_of_them() -> None:
+def test_surface_is_seventeen_tools_and_the_kit_binds_all_of_them() -> None:
     names = {t.name for t in CHROME_BROWSER_TOOLS}
     assert names == {
         "chrome_tabs",
@@ -177,13 +177,17 @@ def test_surface_is_fourteen_tools_and_the_kit_binds_all_of_them() -> None:
         "chrome_health",
         "chrome_cdp",
         "chrome_reload_extension",
+        "chrome_request_login",
+        "chrome_await_login",
+        "chrome_cancel_login",
     }
     # #167 put the whole working surface in the kit; #169 completed it
     # (chrome_dialog joined once Page ownership made it a working tool);
     # chrome_reload_extension joined 2026-08-16 (remote dev-loop refresh);
-    # chrome_health joined in the #188 pass (one-call tab health read).
+    # chrome_health joined in the #188 pass (one-call tab health read);
+    # the login-handoff trio joined in the browser-login pass.
     assert set(CHROME_KIT_TOOL_NAMES) == names
-    assert len(CHROME_KIT_TOOL_NAMES) == 14
+    assert len(CHROME_KIT_TOOL_NAMES) == 17
 
 
 def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
@@ -204,6 +208,13 @@ def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
     health = get_tool_metadata("chrome_health")
     assert health.category == ToolCategory.BROWSER
     assert health.security_level == SecurityLevel.SAFE
+
+    # The login handoff drives the browser (opens tabs, starts a screencast,
+    # locks the agent out of one): moderate like the other driving tools.
+    for name in ("chrome_request_login", "chrome_await_login", "chrome_cancel_login"):
+        meta = get_tool_metadata(name)
+        assert meta.category == ToolCategory.BROWSER
+        assert meta.security_level == SecurityLevel.MODERATE
 
 
 def test_browser_control_kit_binds_the_whole_surface_dialog_included() -> None:
@@ -6193,3 +6204,448 @@ def test_the_tab_is_released_the_moment_the_session_ends() -> None:
     blocked, allowed = asyncio.run(run())
     assert "human login is in progress" in blocked
     assert "Signed in" in allowed
+
+
+# ---------- opening, awaiting and cancelling the handoff (browser-login B5) ---
+
+
+from contextlib import contextmanager  # noqa: E402
+
+from nymeria.tools.chrome_browser import (  # noqa: E402
+    chrome_await_login,
+    chrome_cancel_login,
+    chrome_request_login,
+)
+
+
+@contextmanager
+def _capture_events(monkeypatch):
+    """Record every autonomous event either module publishes.
+
+    chrome_browser holds a module-level reference to the publisher, so it
+    needs its own patch; browser_login_sessions imports it function-locally
+    from event_bus, so the bus module attribute covers that side.
+    """
+    import nymeria.core.event_bus as bus_mod
+    import nymeria.tools.chrome_browser as chrome_mod
+
+    events: list = []
+
+    def record(**kw):
+        events.append(kw)
+
+    monkeypatch.setattr(chrome_mod, "publish_autonomous_event", record)
+    monkeypatch.setattr(bus_mod, "publish_autonomous_event", record)
+    yield events
+
+
+def _of_type(events: list, event_type: str) -> list:
+    return [e for e in events if e.get("event_type") == event_type]
+
+
+def test_request_login_hands_over_an_existing_tab(monkeypatch) -> None:
+    with _capture_events(monkeypatch) as events:
+        commands: list = []
+        out = _invoke(
+            chrome_request_login,
+            {"url": "https://accounts.google.com", "tab_id": 7},
+            _ok({}),
+            capture=commands,
+        )
+    result = json.loads(out)
+    assert result["ok"] is True and result["status"] == "dispatched"
+    sid = result["session_id"]
+    assert sid.startswith("blogin_")
+    assert result["tab_id"] == 7
+    assert "Nymeria Desktop" in result["message"]
+    # The wire carried the start command for that tab and session, only.
+    assert [c["type"] for c in commands] == ["login_session_start"]
+    assert commands[0]["args"] == {"tab_id": 7, "session_id": sid}
+    # The session is live and holds the tab.
+    session = get_browser_login_registry().active_for_tab("u1", 7)
+    assert session is not None and session.session_id == sid
+    # The desktop was told, once, with the safe snapshot shape.
+    started = _of_type(events, "browser_login_started")
+    assert len(started) == 1
+    assert started[0]["data"]["session_id"] == sid
+    assert started[0]["data"]["origin"] == "agent"
+    assert "data" not in started[0]["data"]  # no frame field in a snapshot
+
+
+def test_request_login_opens_a_fresh_tab_when_none_is_given(monkeypatch) -> None:
+    """No tab_id: the orchestration creates a tab at the url first, then
+    starts the session on the tab the extension reports."""
+    _connect()
+    commands: list = []
+
+    async def run():
+        with _capture_events(monkeypatch) as events:
+            task = asyncio.create_task(
+                chrome_request_login.ainvoke(
+                    {"url": "https://example.com/signin"}, config=_config()
+                )
+            )
+            await _resolve_next(
+                _ok({"tab": {"id": 42, "url": "https://example.com/signin"}, "complete": True}),
+                commands,
+            )
+            await _resolve_next(_ok({}), commands)
+            return await task, list(events)
+
+    out, events = asyncio.run(run())
+    result = json.loads(out)
+    assert result["ok"] is True and result["tab_id"] == 42
+    assert [c["type"] for c in commands] == ["tabs", "login_session_start"]
+    assert commands[0]["args"] == {"action": "create", "url": "https://example.com/signin"}
+    assert commands[1]["args"]["tab_id"] == 42
+    assert len(_of_type(events, "browser_login_started")) == 1
+
+
+def test_the_session_registers_before_the_extension_hears_start() -> None:
+    """The extension's first frame POST can land within the start command's
+    ack window; a frame POSTed to an unknown session answers
+    ``session_active: false`` and kills the screencast. So by the time the
+    start command is on the wire, the session must already exist."""
+    _connect()
+
+    async def run():
+        task = asyncio.create_task(
+            chrome_request_login.ainvoke(
+                {"url": "https://accounts.google.com", "tab_id": 7},
+                config=_config(),
+            )
+        )
+        coord = get_browser_command_coordinator()
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if coord.pending_count() >= 1:
+                break
+        else:
+            raise AssertionError("start command never dispatched")
+        # The moment the wire sees the command, the registry answers.
+        held = get_browser_login_registry().active_for_tab("u1", 7)
+        with coord._lock:
+            command_id = next(iter(coord._commands))
+        coord.resolve(command_id, _ok({}))
+        return held, await task
+
+    held, out = asyncio.run(run())
+    assert held is not None
+    assert json.loads(out)["session_id"] == held.session_id
+
+
+def test_request_login_refuses_a_second_session_for_the_user(monkeypatch) -> None:
+    _connect()
+
+    async def run():
+        with _capture_events(monkeypatch) as events:
+            live, _ = _hold(3)
+            out = await chrome_request_login.ainvoke(
+                {"url": "https://example.com", "tab_id": 9}, config=_config()
+            )
+            return live, out, list(events)
+
+    live, out, events = asyncio.run(run())
+    assert out.startswith("[Error]")
+    assert live.session_id in out
+    assert "chrome_await_login" in out and "chrome_cancel_login" in out
+    # Nothing was dispatched and nothing was announced.
+    assert get_browser_command_coordinator().pending_count() == 0
+    assert _of_type(events, "browser_login_started") == []
+    # The live session is untouched.
+    assert get_browser_login_registry().active_for_tab("u1", 3) is live
+
+
+def test_a_failed_start_ends_the_session_and_announces_no_opening(monkeypatch) -> None:
+    with _capture_events(monkeypatch) as events:
+        out = _invoke(
+            chrome_request_login,
+            {"url": "https://example.com", "tab_id": 7},
+            {"ok": False, "status": "error", "error": "could not attach the debugger"},
+        )
+    assert out.startswith("[Error]")
+    assert "could not attach the debugger" in out
+    registry = get_browser_login_registry()
+    # No half-open session survives, so the tab is not stranded behind the gate.
+    assert registry.active_for_tab("u1", 7) is None
+    assert _of_type(events, "browser_login_started") == []
+    # The agent can still learn what happened.
+    ended = _of_type(events, "browser_login_ended")
+    assert len(ended) == 1 and ended[0]["data"]["end_reason"] == "failed"
+
+
+def test_await_login_returns_the_outcome_the_user_produced() -> None:
+    async def run():
+        session, _ = _hold(7)
+        sid = session.session_id
+        get_browser_login_registry().finish(
+            sid, reason="completed", detail="user clicked finish"
+        )
+        return sid, await chrome_await_login.ainvoke(
+            {"session_id": sid}, config=_config()
+        )
+
+    sid, out = asyncio.run(run())
+    result = json.loads(out)
+    assert result["ok"] is True and result["status"] == "completed"
+    assert result["session_id"] == sid
+    assert "resume driving" in result["message"]
+
+
+def test_await_login_reports_still_active_without_ending_anything(monkeypatch) -> None:
+    import nymeria.tools.chrome_browser as chrome_mod
+
+    monkeypatch.setattr(chrome_mod, "_AWAIT_LOGIN_MIN_WAIT_S", 0)
+
+    async def run():
+        session, future = _hold(7)
+        out = await chrome_await_login.ainvoke(
+            {"session_id": session.session_id, "timeout_seconds": 0},
+            config=_config(),
+        )
+        return session, future, out
+
+    session, future, out = asyncio.run(run())
+    result = json.loads(out)
+    assert result["status"] == "active"
+    assert result["seconds_remaining"] > 0
+    assert "again" in result["message"]
+    assert session.state == "active"
+    assert not future.cancelled()
+
+
+def test_await_login_is_honest_about_an_unknown_or_foreign_session() -> None:
+    async def run():
+        session, _ = _hold(7, user_id="someone-else")
+        mine = await chrome_await_login.ainvoke(
+            {"session_id": session.session_id}, config=_config()
+        )
+        nothing = await chrome_await_login.ainvoke(
+            {"session_id": "blogin_never-existed"}, config=_config()
+        )
+        return mine, nothing
+
+    mine, nothing = asyncio.run(run())
+    assert mine.startswith("[Error]") and "No login session" in mine
+    assert nothing.startswith("[Error]")
+
+
+def test_cancel_login_defaults_to_the_users_active_session(monkeypatch) -> None:
+    with _capture_events(monkeypatch) as events:
+
+        async def run():
+            session, _ = _hold(7)
+            out = await chrome_cancel_login.ainvoke({}, config=_config())
+            return session, out
+
+        session, out = asyncio.run(run())
+    result = json.loads(out)
+    assert result["status"] == "cancelled"
+    assert result["session_id"] == session.session_id
+    assert get_browser_login_registry().active_for_tab("u1", 7) is None
+    # The ending announced: the viewer closes and the screencast is stopped.
+    assert len(_of_type(events, "browser_login_ended")) == 1
+    stops = [
+        e
+        for e in _of_type(events, "browser_command")
+        if e["data"].get("command_type") == "login_session_stop"
+    ]
+    assert len(stops) == 1
+
+
+def test_cancel_login_with_nothing_open_or_a_foreign_id_is_refused() -> None:
+    async def run():
+        none_open = await chrome_cancel_login.ainvoke({}, config=_config())
+        session, _ = _hold(7, user_id="someone-else")
+        foreign = await chrome_cancel_login.ainvoke(
+            {"session_id": session.session_id}, config=_config()
+        )
+        return none_open, foreign
+
+    none_open, foreign = asyncio.run(run())
+    assert none_open.startswith("[Error]")
+    assert foreign.startswith("[Error]")
+
+
+def test_cancel_login_after_the_end_reports_the_real_outcome() -> None:
+    async def run():
+        session, _ = _hold(7)
+        sid = session.session_id
+        get_browser_login_registry().finish(sid, reason="completed")
+        return await chrome_cancel_login.ainvoke(
+            {"session_id": sid}, config=_config()
+        )
+
+    out = asyncio.run(run())
+    result = json.loads(out)
+    assert result["status"] == "completed"
+    assert "already ended" in result["message"]
+
+
+# ---------- the user-started twin: /browser login ----------
+
+
+def _command_ctx(user_id: str = "u1", thread_id: str = "t1"):
+    from nymeria.core.command_service import CommandContext, CommandService
+
+    return CommandService(), CommandContext(
+        user_id=user_id, thread_id=thread_id, actor="user", surface="cli", is_admin=True
+    )
+
+
+def test_browser_overview_names_the_live_handoff_or_says_none() -> None:
+    svc, ctx = _command_ctx()
+
+    async def run():
+        empty = await svc.execute(ctx, "/browser", api=object())
+        session, _ = _hold(7)
+        live = await svc.execute(ctx, "/browser", api=object())
+        return empty, session, live
+
+    empty, session, live = asyncio.run(run())
+    assert empty.success is True
+    assert "/browser login" in empty.markdown
+    assert live.success is True
+    assert session.session_id in live.markdown
+    assert "Nymeria Desktop" in live.markdown
+
+
+def test_browser_login_command_runs_the_same_orchestration(monkeypatch) -> None:
+    """The command is the user-started twin of chrome_request_login: fresh
+    tab at the url, session registered, desktop announced, one shared code
+    path so the two entry points cannot drift."""
+    svc, ctx = _command_ctx()
+    _connect()
+    commands: list = []
+
+    async def run():
+        with _capture_events(monkeypatch) as events:
+            task = asyncio.create_task(
+                svc.execute(ctx, "/browser login https://example.com/signin", api=object())
+            )
+            await _resolve_next(
+                _ok({"tab": {"id": 42}, "complete": True}), commands
+            )
+            await _resolve_next(_ok({}), commands)
+            return await task, list(events)
+
+    result, events = asyncio.run(run())
+    assert result.success is True, result.markdown
+    assert "Nymeria Desktop" in result.markdown
+    assert "never reaches the agent" in result.markdown
+    assert [c["type"] for c in commands] == ["tabs", "login_session_start"]
+    session = get_browser_login_registry().active_for_tab("u1", 42)
+    assert session is not None
+    started = _of_type(events, "browser_login_started")
+    assert len(started) == 1 and started[0]["data"]["origin"] == "command"
+
+
+def test_browser_login_command_surfaces_a_start_failure() -> None:
+    svc, ctx = _command_ctx()
+    _connect()
+
+    async def run():
+        task = asyncio.create_task(
+            svc.execute(ctx, "/browser login https://example.com", api=object())
+        )
+        await _resolve_next(_ok({"tab": {"id": 42}, "complete": True}))
+        await _resolve_next(
+            {"ok": False, "status": "error", "error": "could not attach the debugger"}
+        )
+        return await task
+
+    result = asyncio.run(run())
+    assert result.success is False
+    assert "could not attach" in result.markdown
+    assert get_browser_login_registry().active_for_tab("u1", 42) is None
+
+
+def test_concurrent_login_starts_yield_one_session_and_close_the_losers_tab(
+    monkeypatch,
+) -> None:
+    """Two starts for one user racing through the tab-create round trip:
+    the registry's atomic claim lets exactly one win; the loser closes the
+    tab it just opened and names the winner instead of leaving two live
+    screencasts."""
+    from nymeria.tools.chrome_browser import start_login_handoff
+
+    _connect()
+    coord_capture: list = []
+
+    async def _resolve_next_of_type(ctype: str, payload: dict) -> None:
+        coord = get_browser_command_coordinator()
+        for _ in range(400):
+            await asyncio.sleep(0.005)
+            with coord._lock:
+                match = next(
+                    (
+                        cid
+                        for cid, rec in coord._commands.items()
+                        if rec.command_type == ctype
+                    ),
+                    None,
+                )
+                if match is not None:
+                    record = coord._commands[match]
+                    coord_capture.append(
+                        {"type": record.command_type, "args": dict(record.metadata or {})}
+                    )
+                    break
+        else:
+            raise AssertionError(f"no pending {ctype} command appeared")
+        coord.resolve(match, payload)
+
+    async def run():
+        with _capture_events(monkeypatch) as events:
+            task_a = asyncio.create_task(
+                start_login_handoff(
+                    url="https://a.example/signin",
+                    tab_id=None,
+                    config=_config(),
+                    origin="agent",
+                )
+            )
+            task_b = asyncio.create_task(
+                start_login_handoff(
+                    url="https://b.example/signin",
+                    tab_id=None,
+                    config=_config(),
+                    origin="command",
+                )
+            )
+            # Both tasks pass the friendly pre-check (neither has registered
+            # yet) and park on their tab-create round trips.
+            await _resolve_next_of_type(
+                "tabs", _ok({"tab": {"id": 71, "url": "https://a.example/signin"}})
+            )
+            await _resolve_next_of_type(
+                "tabs", _ok({"tab": {"id": 72, "url": "https://b.example/signin"}})
+            )
+            # The first-resumed task claims the registry slot and dispatches
+            # the session start; the loser dispatches a close for its tab.
+            await _resolve_next_of_type("login_session_start", _ok({}))
+            await _resolve_next_of_type("tabs", _ok({}))
+            results = await asyncio.gather(task_a, task_b)
+            return results, list(events)
+
+    results, events = asyncio.run(run())
+    winners = [snap for snap, err in results if err is None]
+    losers = [err for snap, err in results if err is not None]
+    assert len(winners) == 1 and len(losers) == 1
+    (winner,) = winners
+    (loser_reason,) = losers
+    assert winner["session_id"] in loser_reason
+    assert "already open" in loser_reason
+    # Exactly one live session survives the race.
+    live = get_browser_login_registry().active_for_user("u1")
+    assert [s.session_id for s in live] == [winner["session_id"]]
+    # The loser closed the tab it opened; the winner's tab stays.
+    closes = [c for c in coord_capture if c["args"].get("action") == "close"]
+    assert len(closes) == 1
+    closed_tab = closes[0]["args"]["tab_id"]
+    assert {winner["tab_id"], closed_tab} == {71, 72}
+    assert closed_tab != winner["tab_id"]
+    # One started announce, from the winner only.
+    started = _of_type(events, "browser_login_started")
+    assert len(started) == 1
+    assert started[0]["data"]["session_id"] == winner["session_id"]

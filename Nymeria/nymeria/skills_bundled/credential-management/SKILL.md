@@ -16,12 +16,26 @@ metadata:
     - auth_test
     - auth_write
     - request_credential
+    - chrome_request_login
+    - chrome_await_login
+    - chrome_cancel_login
     tool_ttl: 2h
 ---
 
 # Credential Management
 
 This skill teaches you how to use the six auth tools (`request_credential`, `auth_inspect`, `auth_cleanup`, `auth_bindings`, `auth_test`, `auth_write`) to manage the user's credentials vault. You never see secret values directly; all operations work through metadata and encrypted storage (`auth_write` can save secrets the user pastes in chat, but nothing can read them back).
+
+One kind of sign-in lives outside the vault: a WEBSITE login for the agent's
+browser (Amazon, Google, a site the user wants you acting signed-in on). That
+is not a credential to collect; it is a session to establish. Use
+`chrome_request_login(url)` to hand a browser tab to the user, who signs in
+by hand through the Nymeria Desktop viewer while you are locked out of that
+tab; `chrome_await_login(session_id)` picks up the outcome, and the login
+then persists in the browser profile with no secret stored anywhere you can
+reach. Prefer it over `request_credential` whenever the "credential" is a
+website session rather than an API key, an OAuth token, or a value some tool
+needs.
 
 ## Quick Decision Tree
 

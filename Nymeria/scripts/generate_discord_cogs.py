@@ -137,6 +137,7 @@ EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
     "alias",
     "artifacts",
     "background",
+    "browser",
     "doctor",
     # env and memory gained overview roots in backlog #131 (style-guide rule
     # 2). Their bare readouts join the other dropped roots on Discord; the

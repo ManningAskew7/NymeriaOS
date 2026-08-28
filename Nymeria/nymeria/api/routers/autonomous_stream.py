@@ -31,11 +31,13 @@ from ..sse import SSE_KEEPALIVE_FRAME, SSE_RESPONSE_HEADERS
 
 logger = logging.getLogger(__name__)
 
-# Idle subscribers re-poll the synchronous event queue on this cadence. It bounds
-# event-delivery latency and the client-disconnect check interval, and is kept
-# deliberately separate from the keepalive cadence below. (Switching the queue to
-# an awaitable would drop the poll entirely but touches the shared event bus, out
-# of scope here.)
+# Ceiling on one idle wait. Event delivery is PUSH-latency now: the bus rings
+# a per-subscriber doorbell (`EventBus.doorbell`) on every enqueue, and the
+# idle branch awaits it, so this interval no longer bounds delivery. What it
+# still bounds is the client-disconnect check and the keepalive cadence, which
+# is why it stays at 1s rather than growing. Measured 2026-08-28 (browser-login
+# B8): off-loop publish to generator yield went from mean 871ms / max 885ms
+# (poll-bound) to sub-millisecond (doorbell-bound) on an idle bus.
 _QUEUE_POLL_INTERVAL_SECONDS = 1.0
 
 # A `: keepalive` SSE comment frame is emitted after this many seconds of
@@ -50,6 +52,10 @@ _KEEPALIVE_INTERVAL_SECONDS = 10.0
 # Emit one keepalive every Nth consecutive idle poll (always at least one).
 # Derived once at import from the two interval constants above, so a test or
 # reconfig that changes a single interval should patch this value directly.
+# Known compression, accepted: an idle "poll" is doorbell-woken, so a flood
+# of events this stream FILTERS OUT (another user's, chrome-only types)
+# shortens the polls and the keepalive cadence with them. Extra SSE comment
+# frames only; every consumer skips them.
 _KEEPALIVE_POLL_INTERVAL = max(
     1, round(_KEEPALIVE_INTERVAL_SECONDS / _QUEUE_POLL_INTERVAL_SECONDS)
 )
@@ -148,6 +154,7 @@ async def _generate_autonomous_sse_events(
         counter[key] = counter.get(key, 0) + 1
         return counter[key]
 
+    doorbell = event_bus.doorbell(subscriber_id)
     try:
         idle_polls = 0
         while True:
@@ -162,6 +169,10 @@ async def _generate_autonomous_sse_events(
                 )
                 break
 
+            # Capture the doorbell BEFORE checking the queue: an enqueue
+            # landing between the check and the await rings the captured
+            # event, so the wakeup cannot be lost (the loop_pulse contract).
+            listened = doorbell.listen() if doorbell is not None else None
             try:
                 event: AutonomousEvent = queue.get_nowait()
                 received_count = bump(received_counts, event.event_type)
@@ -251,11 +262,20 @@ async def _generate_autonomous_sse_events(
                 # (every `_KEEPALIVE_POLL_INTERVAL` idle polls), not on every
                 # poll, so an idle stream is not flooded with one frame per
                 # second. `: keepalive` is an SSE comment that every consumer
-                # skips; the sleep bounds event latency and the disconnect check.
+                # skips. The wait is doorbell-woken (push latency); its timeout
+                # only bounds the disconnect check and the keepalive cadence.
                 idle_polls += 1
                 if idle_polls % _KEEPALIVE_POLL_INTERVAL == 0:
                     yield SSE_KEEPALIVE_FRAME
-                await asyncio.sleep(_QUEUE_POLL_INTERVAL_SECONDS)
+                if listened is not None:
+                    try:
+                        await asyncio.wait_for(
+                            listened.wait(), timeout=_QUEUE_POLL_INTERVAL_SECONDS
+                        )
+                    except asyncio.TimeoutError:
+                        pass  # idle tick: fall through to the disconnect check
+                else:
+                    await asyncio.sleep(_QUEUE_POLL_INTERVAL_SECONDS)
 
     finally:
         event_bus.unsubscribe(subscriber_id)

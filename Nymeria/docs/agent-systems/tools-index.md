@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1258 tools found.**
+**1261 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -172,7 +172,9 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `chargebee_list_records` | `nymeria/tools/commerce_billing_service_integrations.py` | List Chargebee billing records. |
 | `chargebee_update_customer` | `nymeria/tools/commerce_billing_service_integrations.py` | Update a Chargebee customer. |
 | `chrome_act` | `nymeria/tools/chrome_browser.py` | Do one thing to a Chrome page: click, type, choose, scroll, drag, wait. |
+| `chrome_await_login` | `nymeria/tools/chrome_browser.py` | Wait for a login handoff to end and learn how it ended. |
 | `chrome_batch` | `nymeria/tools/chrome_browser.py` | Run several browser commands in one round trip. |
+| `chrome_cancel_login` | `nymeria/tools/chrome_browser.py` | End a live login handoff early, before the user finishes. |
 | `chrome_cdp` | `nymeria/tools/chrome_browser.py` | Raw Chrome DevTools Protocol call. LAST RESORT. |
 | `chrome_console` | `nymeria/tools/chrome_browser.py` | Read console messages and uncaught exceptions from a Chrome tab. |
 | `chrome_dialog` | `nymeria/tools/chrome_browser.py` | Answer the JS dialog standing on a tab you are driving. |
@@ -183,6 +185,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `chrome_read_page` | `nymeria/tools/chrome_browser.py` | Read a Chrome tab's accessibility tree: the map you act on. |
 | `chrome_read_text` | `nymeria/tools/chrome_browser.py` | Read the visible text of a Chrome tab. Cheaper than a screenshot for prose. |
 | `chrome_reload_extension` | `nymeria/tools/chrome_browser.py` | Reload the Nymeria browser extension from disk (dev-loop helper). |
+| `chrome_request_login` | `nymeria/tools/chrome_browser.py` | Hand one tab to the USER so they sign a site in by hand. |
 | `chrome_screenshot` | `nymeria/tools/chrome_browser.py` | Capture what the user's Chrome tab looks like, and see it. |
 | `chrome_tabs` | `nymeria/tools/chrome_browser.py` | List or manage tabs in the user's Chrome. Start here to get a tab_id. |
 | `circleci_get_pipeline` | `nymeria/tools/build_ci_service_integrations.py` | Get one CircleCI pipeline by project and pipeline number. |

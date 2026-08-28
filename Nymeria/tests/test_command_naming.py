@@ -269,6 +269,7 @@ def test_leading_single_token_aliases_snapshot() -> None:
         "alias.create": "alias_create",
         "alias.delete": "alias_delete",
         "alias.list": "alias_list",
+        "browser.login": "browser_login",
         "account.show": "account_current",
         "account.tokens": "account_tokens",
         "account.tokens.issue": "account_tokens_issue",

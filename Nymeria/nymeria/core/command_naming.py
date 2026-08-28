@@ -77,6 +77,7 @@ SANCTIONED_LEAF_TOKENS: dict[str, str] = {
     "history": "past executions (hook, triggers)",
     "setup": "the chained provider setup flow",
     "set_url": "URL variant of set (renders set-url)",
+    "login": "the human sign-in handoff (browser family): a login is performed, not created",
     # Noun leaves: sub-family collections and named views
     "platforms": "noun sub-list: linked platforms",
     "tokens": "noun sub-family: account tokens",
