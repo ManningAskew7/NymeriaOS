@@ -1574,6 +1574,55 @@ def _http_status_sentence(data: dict[str, Any]) -> str:
     )
 
 
+#: Where Google sends a browser it has classified as unsafe to sign in from.
+#: Both are Google's own URL vocabulary, not page text: `/v3/signin/rejected`
+#: is the refusal landing, and `WebLiteSignIn` is the degraded flow it serves
+#: instead of `GlifWebSignIn` before refusing.
+_SIGNIN_REJECTED_MARKERS = ("/v3/signin/rejected", "flowname=weblitesignin")
+
+
+def _signin_rejected_sentence(data: dict[str, Any]) -> str:
+    """Name a Google sign-in refusal for what it is: an ENVIRONMENT verdict.
+
+    Measured 2026-08-28: a headless Chrome whose UA carries the
+    `HeadlessChrome` product token is served Google's degraded
+    `WebLiteSignIn` flow and then refused at the identifier step with "this
+    browser or app may not be secure", no matter who is typing (CDP input is
+    `isTrusted`, so a human at a remote viewer is refused identically). The
+    launcher removes both known triggers (it overrides the UA and never
+    passes `--enable-automation`), so this note exists for the day Google
+    changes the rule server-side, which it does without notice.
+
+    Worth a note because the failure LIES about its cause. The page says the
+    account or the browser is the problem, so an agent retries the password,
+    doubts the credential, or tells the user their account is locked, when
+    nothing about the account is wrong and no retry from this browser can
+    ever succeed. The cure is operator-side, so the note says so and stops.
+
+    Whitelisted values only: the marker match is a boolean and the text is
+    ours. The landed URL is page-influenced and never echoed, because this
+    renders OUTSIDE the fence.
+    """
+    url = data.get("url")
+    if not isinstance(url, str):
+        return ""
+    lowered = url.lower()
+    if "google.com/" not in lowered:
+        return ""
+    if not any(marker in lowered for marker in _SIGNIN_REJECTED_MARKERS):
+        return ""
+    return (
+        "[Sign-in refused by Google: this is Google's rejected-browser flow, "
+        "not a password or account problem, and it is a verdict on the "
+        "BROWSER rather than on whoever is typing. Retrying, re-entering the "
+        "password, or having a human drive this same browser will all be "
+        "refused the same way. Nothing you can do from inside the page fixes "
+        "it: report it to the user and stop. The operator's fix is on the "
+        "browser launch (the User-Agent must not say HeadlessChrome, and "
+        "--enable-automation must be absent).]"
+    )
+
+
 def _text_loss_sentence(data: dict[str, Any]) -> str:
     """Own up to meaning a TEXT read could not carry (#190).
 
@@ -1643,6 +1692,10 @@ def _read_honesty_lines(
     parts = [
         p
         for p in (
+            # Before the status line: a sign-in refusal explains the whole
+            # page, and its cure is operator-side, so an agent reading it
+            # should stop rather than work through the notes below it.
+            _signin_rejected_sentence(data),
             # First: it can invalidate everything below it, and it is the one
             # note that says the whole read may be about the wrong page.
             _http_status_sentence(data),
@@ -1902,7 +1955,12 @@ async def chrome_navigate(
             config=config,
         )
     return await _dispatch(
-        command_type="navigate", args={"tab_id": tab_id, "url": target}, config=config
+        command_type="navigate",
+        args={"tab_id": tab_id, "url": target},
+        config=config,
+        # A navigation is where Google's rejected-browser landing shows up
+        # first, and the payload carries the URL it actually landed on.
+        notes=_signin_rejected_sentence,
     )
 
 
