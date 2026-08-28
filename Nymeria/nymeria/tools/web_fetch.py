@@ -32,7 +32,7 @@ from ..core.http_policy import (
     HTTPPolicyViolation,
     requests_get_with_policy,
 )
-from .llm_extract import run_extraction
+from .llm_extract import extraction_attribution, run_extraction
 from .web_batch import run_batched
 
 logger = logging.getLogger(__name__)
@@ -365,10 +365,10 @@ def _fetch_and_render(
             title = ""
 
     if extraction_prompt.strip():
-        extracted, model = run_extraction(body, extraction_prompt)
+        extracted, model, cut = run_extraction(body, extraction_prompt)
         if extracted.startswith("[Error]:"):
             return extracted
-        body = f"{extracted}\n\n[Extracted by {model}]"
+        body = f"{extracted}\n\n{extraction_attribution(model, cut)}"
     elif len(body) > max_length:
         full_len = len(body)
         preview = body[:max_length].rstrip()
@@ -419,7 +419,10 @@ def fetch_url_nymeria(
                  few specific facts; skip it for small pages (just read them).
                  The LLM sees the cleaned page up to ~30k tokens, so for very
                  large pages it can miss content past that; the result is tagged
-                 with the model that produced it.
+                 with the model that produced it, and the tag says so when the
+                 model was cut at its output limit mid-answer (the tail may be
+                 missing; without that clause the extraction ran to its own
+                 finish).
         max_length: Max characters of content returned (500-50000, default 8000).
                    Long pages are truncated when extraction_prompt is empty. When
                    truncated, the FULL extracted text is saved to a file in your

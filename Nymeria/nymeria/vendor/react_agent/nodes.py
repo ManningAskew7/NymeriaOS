@@ -1199,13 +1199,17 @@ def _finish_spelling(metadata: dict, key: str) -> str:
     return value.lower() if isinstance(value, str) else ""
 
 
-def _is_truncated_metadata(metadata: dict) -> bool:
+def is_truncated_metadata(metadata: dict) -> bool:
     """Provider-blind output-cap detection.
 
     ``length`` (OpenAI chat), ``max_tokens`` (Anthropic stop_reason AND
     Gemini's MAX_TOKENS finish enum, which lowercases to the same string),
     plus the Responses-API spelling: ``status: "incomplete"`` with no
     finish_reason at all.
+
+    Public (#198): ``tools/llm_extract.run_extraction`` reads it to label a
+    cut extraction, the same way ``is_retryable_llm_error`` is consumed
+    from outside the fork.
     """
     if _finish_spelling(metadata, "finish_reason") in ("length", "max_tokens"):
         return True
@@ -1252,7 +1256,7 @@ def _is_silent_stop_response(response: Any) -> bool:
     reject on replay.
     """
     metadata = getattr(response, "response_metadata", None) or {}
-    if _is_truncated_metadata(metadata) or _is_refused_metadata(metadata):
+    if is_truncated_metadata(metadata) or _is_refused_metadata(metadata):
         return False
     if _visible_text_of(getattr(response, "content", None)):
         return False
@@ -2499,10 +2503,10 @@ def create_agent_node(
         # Anthropic path: measured across 658 Anthropic messages, `finish_reason`
         # was present in exactly zero of them.
         metadata = getattr(response, "response_metadata", None) or {}
-        # Provider-blind spellings: see _is_truncated_metadata /
+        # Provider-blind spellings: see is_truncated_metadata /
         # _is_refused_metadata (Gemini reports UPPERCASE finish enums, the
         # Responses API reports status="incomplete" with no finish_reason).
-        truncated = _is_truncated_metadata(metadata)
+        truncated = is_truncated_metadata(metadata)
         if truncated:
             reason = (
                 "stop_reason='max_tokens'"

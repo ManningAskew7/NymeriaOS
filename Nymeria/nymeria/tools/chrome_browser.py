@@ -260,13 +260,25 @@ def _spill(text: str, *, thread_id: str, prefix: str) -> Optional[str]:
 
 
 def _cap(
-    text: str, *, thread_id: str, prefix: str, max_chars: int = MAX_PAGE_CHARS
+    text: str,
+    *,
+    thread_id: str,
+    prefix: str,
+    max_chars: int = MAX_PAGE_CHARS,
+    upstream_cut: bool = False,
 ) -> tuple[str, str]:
     """Cap text for the model.
 
     Returns ``(shown, note)``. The note is emitted OUTSIDE the untrusted fence
     by callers: it is our instruction to the model and it names a real
     workspace path, so a page must not be able to forge one.
+
+    ``upstream_cut`` (#198 review): the extension already cut this text at
+    its own wire cap, so ``len(text)`` is that cap, not the page's total,
+    and the spill file is a PREFIX. Without the flag this note claimed
+    "showing N of 200000 characters ... Full content saved" over a page
+    that continued past both numbers, which is the same completeness lie
+    one layer up.
     """
     if len(text) <= max_chars:
         return text, ""
@@ -280,12 +292,18 @@ def _cap(
     complete_lines = shown.count("\n") + 1 if shown else 0
     total_lines = text.count("\n") + 1
     path = _spill(text, thread_id=thread_id, prefix=prefix)
+    received = (
+        f"the first {len(text)} characters the extension returned (the page continues past them)"
+        if upstream_cut
+        else f"{len(text)} characters"
+    )
     note = (
-        f"[Truncated: showing {len(shown)} of {len(text)} characters "
+        f"[Truncated: showing {len(shown)} of {received} "
         f"(lines 1-{complete_lines} of {total_lines}). "
     )
     if path:
-        note += f'Full content saved: file_read("{path}", offset={complete_lines + 1})]'
+        saved = "That received prefix" if upstream_cut else "Full content"
+        note += f'{saved} saved: file_read("{path}", offset={complete_lines + 1})]'
     else:
         note += "Narrow the request (a selector, or a smaller detail level) to see more.]"
     return shown, note
@@ -912,10 +930,19 @@ def _region_frame_sentence(
     # right edge, and rounding the raw extent separately can miss by one.
     width = right - left
     height = bottom - top
+    # Echo the fold on the frame itself (#237): the fact already lives one
+    # line up in [Geometry], and repeating it here makes a pasted [Frame]
+    # self-contained. One clause, keyed on the same verified_fold the frame
+    # verdict rests on, so it can never name a zoom the frame did not fold.
+    zoomed = (
+        f", at {_num_text(verified_fold * 100)}% page zoom"
+        if abs(verified_fold - 1.0) >= 0.005
+        else ""
+    )
     return (
         f"[Frame]: this image covers viewport CSS x {_num_text(left)} to "
         f"{_num_text(right)}, y {_num_text(top)} to {_num_text(bottom)} "
-        f"({_num_text(width)}x{_num_text(height)} CSS px). Convert a point by its "
+        f"({_num_text(width)}x{_num_text(height)} CSS px{zoomed}). Convert a point by its "
         f"FRACTION across this image, never by a pixel ratio: "
         f"x = {_num_text(left)} + {_num_text(width)} * (fraction from left), "
         f"y = {_num_text(top)} + {_num_text(height)} * (fraction from top), rounded "
@@ -923,6 +950,75 @@ def _region_frame_sentence(
         f"fractions so a resize in transit cannot invalidate it. Holds until the "
         f"page scrolls."
     )
+
+
+def _offscreen_direction(data: dict[str, Any]) -> str:
+    """Which way, and roughly how far, a region reached past the viewport (#237).
+
+    The withhold used to be directionless ("reaching past the viewport"), and
+    an element just ABOVE the viewport fires it the same as one below, so the
+    operator guessed-and-rescrolled to learn which. The payload already
+    carries everything a direction needs: `region` x/y/w/h are DOCUMENT-space
+    CSS px and `scroll`/`viewport` are the same space, so each edge's overhang
+    is one subtraction. "Roughly" is load-bearing: the metrics were read
+    before the shutter and the reflow this warning rides beside moves the
+    viewport they were read in, so the sign is trustworthy and the distance
+    is approximate. Silence when nothing overhangs (the flag can be set by
+    predicates whose geometry does not decompose per-edge, and a direction
+    with nothing true to say must say nothing) or when any number is junk.
+    """
+    region = data.get("region") if isinstance(data.get("region"), dict) else {}
+    scroll = data.get("scroll") if isinstance(data.get("scroll"), dict) else {}
+    viewport = data.get("viewport") if isinstance(data.get("viewport"), dict) else {}
+    x = _number(region.get("x"))
+    y = _number(region.get("y"))
+    w = _number(region.get("width"))
+    h = _number(region.get("height"))
+    sx = _number(scroll.get("x"))
+    sy = _number(scroll.get("y"))
+    vw = _number(viewport.get("width"))
+    vh = _number(viewport.get("height"))
+    if (
+        x is None
+        or y is None
+        or w is None
+        or h is None
+        or sx is None
+        or sy is None
+        or vw is None
+        or vh is None
+    ):
+        return ""
+    overhangs = [
+        (sy - y, "above the viewport's top edge"),
+        ((y + h) - (sy + vh), "below its bottom edge"),
+        (sx - x, "left of its left edge"),
+        ((x + w) - (sx + vw), "right of its right edge"),
+    ]
+    parts = [
+        f"roughly {_num_text(round(amount))} px {edge}"
+        for amount, edge in overhangs
+        if amount >= 1
+    ]
+    if not parts:
+        return ""
+    # A box overhanging OPPOSING edges is bigger than the viewport on that
+    # axis: no scroll can show all of it, so "scroll there and recapture"
+    # would be a loop-inducing instruction (review catch). Say the true
+    # recovery instead.
+    too_tall = overhangs[0][0] >= 1 and overhangs[1][0] >= 1
+    too_wide = overhangs[2][0] >= 1 and overhangs[3][0] >= 1
+    if too_tall or too_wide:
+        recovery = (
+            "the box is larger than the viewport on that axis, so no scroll "
+            "shows all of it: capture a smaller region instead"
+        )
+    else:
+        # "coordinate frame" in prose, never the bracketed [Frame] token:
+        # this sentence exists only where the frame is withheld, and the
+        # token's absence from the payload is the invariant tests pin.
+        recovery = "scroll there and recapture to earn a coordinate frame"
+    return f"The box reaches {' and '.join(parts)}; {recovery}."
 
 
 def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int]]) -> str:
@@ -997,15 +1093,27 @@ def _viewport_sentence(data: dict[str, Any], image_size: Optional[tuple[int, int
             warning = " Convert with [Frame] below, not off the image directly."
         else:
             warning = " No chrome_act coordinate can be read off this image directly."
-            # A withhold explains itself (#194's rule). Two causes the
-            # payload can name: `clip_zoom: null` says the extension could
-            # not read the page's zoom at the shutter and sent the clip
-            # unmultiplied; a fold claim the page zoom does not confirm
-            # (possible only from a buggy or tampered payload, since the two
-            # are one read extension-side) gets the generic form. This reads
-            # the dict and `_region_box` rather than re-deriving the
-            # verdict; the cause split is phrasing the verdict deliberately
-            # collapses.
+            # A withhold explains itself (#194's rule). Three causes the
+            # payload can name, and they are INDEPENDENT facts, not
+            # alternatives (review catch: an off-screen box whose zoom was
+            # also unreadable lost the aim warning to an elif, exactly
+            # where the direction's own scroll advice is least sufficient):
+            # an off-screen box gets its direction (#237, previously
+            # "reaching past the viewport" with no which-way, so the
+            # operator guessed-and-rescrolled); `clip_zoom: null` says the
+            # extension could not read the page's zoom at the shutter and
+            # sent the clip unmultiplied; a fold claim the page zoom does
+            # not confirm (possible only from a buggy or tampered payload,
+            # since the two are one read extension-side) gets the generic
+            # form. The direction's gate mirrors the frame function's own
+            # withhold predicate verbatim (same truthiness, per the
+            # parallel-predicate warning above); the sentence it renders is
+            # composed only from whitelisted numbers, so the looser gate
+            # cannot let a page write here.
+            if _reflow_sentence(data) or region.get("beyond_viewport"):
+                direction = _offscreen_direction(data)
+                if direction:
+                    warning += f" {direction}"
             if "clip_zoom" in region and region.get("clip_zoom") is None:
                 warning += (
                     " The page's zoom could not be read at capture, so this"
@@ -1496,8 +1604,28 @@ def _text_loss_sentence(data: dict[str, Any]) -> str:
     )
 
 
+def _extension_cut_sentence(data: dict[str, Any]) -> str:
+    """Own the extension's OWN transfer cap (#198 survey find).
+
+    `extract_text.ts` has always set `truncated: true` when it cut the text
+    at the wire limit, and the backend never read the flag: `_cap`'s note
+    only measures what ARRIVED, so an extension-side cut was invisible on
+    the raw branch and silently fed a shortened page to the extraction
+    branch. One boolean, identity-checked because the payload is
+    extension-supplied.
+    """
+    if data.get("truncated") is not True:
+        return ""
+    return (
+        "[Read cap: the extension cut this read at its own transfer cap "
+        "before returning it, so the text, and anything derived from it "
+        "(an extraction included), is missing the page's tail. Scope the "
+        "read with a selector to reach the part you need.]"
+    )
+
+
 def _read_honesty_lines(
-    data: dict[str, Any], *, truncated: bool = False, scoped: bool = False
+    data: dict[str, Any], *, capped: bool = False, scoped: bool = False
 ) -> str:
     """The read-honesty block, most load-bearing first. OUR text composed from
     booleans and whitelisted counts, never page text, with ONE exception that
@@ -1518,8 +1646,11 @@ def _read_honesty_lines(
             # First: it can invalidate everything below it, and it is the one
             # note that says the whole read may be about the wrong page.
             _http_status_sentence(data),
+            # Second: everything below describes a read that may be a PREFIX
+            # of the page, and only this line says so.
+            _extension_cut_sentence(data),
             _view_state_sentence(data),
-            _frames_sentence(data, truncated=truncated),
+            _frames_sentence(data, truncated=capped),
             _hidden_sentence(data),
             # Identity before count: "which container did I get" is the
             # first question, "how many were there" the second. Both sit
@@ -1934,7 +2065,7 @@ async def chrome_read_page(
     header = f"{counted} actionable elements, detail={data.get('detail', detail)}"
     if _loading_sentence(data):
         header += f" ({_loading_sentence(data)})"
-    honesty = _read_honesty_lines(data, truncated=bool(note), scoped=bool(scope_selector or scope_ref))
+    honesty = _read_honesty_lines(data, capped=bool(note), scoped=bool(scope_selector or scope_ref))
     return f"{header}\n{_fence(capped, url=url)}{_outside_fence(tree, note=note, extra=honesty)}"
 
 
@@ -1954,6 +2085,11 @@ async def chrome_read_text(
         (e.g. "the order total and delivery date") and a secondary LLM reads
         the page and returns only that, which keeps a long page out of your
         context entirely. Best for big pages where you need a few facts.
+        The [Extracted by ...] tag says so when that model was cut at its
+        output limit mid-answer (the tail may be missing: narrow the
+        prompt); without that clause the extraction ran to its own finish.
+        A [Read cap] note means the extension cut the page text itself
+        before anything here ran.
 
     Reads the ROOT document only: iframe text is chrome_read_page's job. A
     read that FAILED says so rather than reporting a page with no text.
@@ -2015,13 +2151,13 @@ async def chrome_read_text(
         return f"{empty}\n{notes}" if notes else empty
 
     if extraction_prompt.strip():
-        from .llm_extract import run_extraction
+        from .llm_extract import extraction_attribution, run_extraction
 
         # run_extraction is sync and blocks for up to its 90s request timeout.
         # The two pre-existing callers are sync @tools, so LangChain hands them
         # a thread; these tools are async, so without to_thread the call would
         # sit on the one event loop that runs every agent turn.
-        extracted, model = await asyncio.to_thread(run_extraction, text, extraction_prompt)
+        extracted, model, cut = await asyncio.to_thread(run_extraction, text, extraction_prompt)
         if extracted.startswith("[Error]:"):
             return extracted
         # Scan the RAW page, not just what the extractor returned: a summary
@@ -2031,17 +2167,21 @@ async def chrome_read_text(
         # it matters most: the raw text never reaches the agent here, so an
         # unflagged error page or a move list missing its pieces arrives as a
         # confident summary with nothing left to notice it by.
-        return (
-            f"{loading_note}{_fence(extracted, url=url)}"
-            f"{_outside_fence(text, note=f'[Extracted by {model}]', extra=_read_honesty_lines(data))}"
+        outside = _outside_fence(
+            text, note=extraction_attribution(model, cut), extra=_read_honesty_lines(data)
         )
+        return f"{loading_note}{_fence(extracted, url=url)}{outside}"
 
     capped, note = _cap(
-        text, thread_id=get_thread_id(config), prefix="chrome-read-text", max_chars=max_chars
+        text,
+        thread_id=get_thread_id(config),
+        prefix="chrome-read-text",
+        max_chars=max_chars,
+        upstream_cut=data.get("truncated") is True,
     )
     return (
         f"{loading_note}{_fence(capped, url=url)}"
-        f"{_outside_fence(text, note=note, extra=_read_honesty_lines(data, truncated=bool(note)))}"
+        f"{_outside_fence(text, note=note, extra=_read_honesty_lines(data, capped=bool(note)))}"
     )
 
 
@@ -2103,7 +2243,7 @@ async def chrome_find(
 
     from .llm_extract import run_extraction
 
-    matched, model = await asyncio.to_thread(
+    matched, model, cut = await asyncio.to_thread(
         run_extraction,
         tree,
         f"{_FIND_SYSTEM}\n\nFind the elements matching this description: {query}",
@@ -2126,6 +2266,15 @@ async def chrome_find(
     notes = [
         n for n in (_http_status_sentence(_data(payload)), _view_state_sentence(_data(payload))) if n
     ]
+    if cut:
+        # The matcher was cut mid-answer at its output ceiling (#198), so
+        # this list is a PREFIX of what it would have said: a hit can be
+        # trusted, a miss cannot, and both branches render this suffix.
+        notes.append(
+            "[Note]: the matcher hit its output limit mid-answer, so this "
+            "result may be incomplete: an element missing here is NOT "
+            "evidence of absence. Narrow the query, or read the page."
+        )
     view_suffix = ("\n" + "\n".join(notes)) if notes else ""
     if not kept:
         hint = f" ({loading})" if loading else ""
@@ -2299,6 +2448,64 @@ def _act_selector_sentence(data: dict[str, Any]) -> str:
     return f"[Selector target: {'; '.join(parts)}.]"
 
 
+def _act_fill_sentence(data: dict[str, Any]) -> str:
+    """Mark the fill whose value took and whose page did not react (#217).
+
+    `fill` rides `Input.insertText`, an IME-style commit chosen deliberately
+    because it does not consult the input gate a tab-modal dialog closes. The
+    price is one trusted `input` event and NO key events, so a widget keyed on
+    keystrokes (autocomplete, dependent dropdowns, per-key validation) can
+    ignore a fill entirely while every delivery field reads success. Measured
+    live (Amazon AU postcode -> suburb, 2026-08-19): `dom_mutations: 0` was in
+    that payload and the verb-neutral docstring reading already existed, and
+    the signal was still missed among twenty keys. This line is the marking.
+
+    Fill-only by decision (2026-08-22): a click's zero is already framed by
+    `hit`/`target_exists`, and an always-on zero note is the context cost the
+    surface's priority order rejects. Silent when delivery already reported
+    "no": the IME explanation would be wrong there, and the failure tells its
+    own story. One string compare and one type-checked integer, nothing
+    composed from the payload, which is what lets it render outside the fence.
+    """
+    if data.get("action") != "fill":
+        return ""
+    if _int_field(data, "dom_mutations") != 0:
+        return ""
+    if data.get("input_delivered") == "no":
+        return ""
+    return (
+        "[Fill note: fill commits its value in one IME-style insert (a real "
+        "input event, no per-key events) and the document made nothing "
+        "observable of it. A widget that reacts per keystroke (autocomplete, "
+        "dependent dropdowns, live validation) may not have noticed the "
+        'commit; action="type" on the same ref drives it key by key.]'
+    )
+
+
+def _act_wait_miss_sentence(data: dict[str, Any]) -> str:
+    """Mark the case-only wait miss (#196 review rider).
+
+    `found_case_insensitive` is the one flag in the miss report that changes
+    the agent's conclusion outright (a case-insensitive scan FOUND the thing
+    it waited for), and this pass's own #217 lesson is that a
+    decision-changing signal left as a raw key among twenty goes unread. The
+    copy says "usually" because the flag has one narrow non-casing reading:
+    the report runs once at the deadline, so text that appeared in exact
+    casing after the final poll also sets it. The excerpt itself stays inside
+    the fence (page text); this line is one extension boolean,
+    identity-checked, rendering fixed words.
+    """
+    if data.get("found_case_insensitive") is not True:
+        return ""
+    return (
+        "[Wait miss: a case-insensitive scan DID find the text you waited on "
+        "(the match is case-sensitive, so different casing is the usual "
+        "cause; rarely it appeared just as the wait ended). Check "
+        "page_text_excerpt in the payload before concluding the action "
+        "failed.]"
+    )
+
+
 def _act_honesty_lines(data: dict[str, Any]) -> str:
     """The act-honesty block, composed once so every line lands outside the
     fence through `_outside_fence`, exactly as the read notes do."""
@@ -2308,6 +2515,8 @@ def _act_honesty_lines(data: dict[str, Any]) -> str:
             _act_refusal_sentence(data),
             _act_selector_sentence(data),
             _act_invisible_sentence(data),
+            _act_fill_sentence(data),
+            _act_wait_miss_sentence(data),
         )
         if p
     ]
@@ -2467,7 +2676,18 @@ async def chrome_act(
         makes "click and confirm the row appeared" ONE call, not a click
         then a wait. action="wait" alone (nothing dispatched) still FAILS on
         timeout. Multiple conditions are OR'd: the first to hold ends the
-        wait and is the one named; a timeout names them all. timeout_ms with
+        wait and is the one named; a timeout names them all. The text
+        condition is an EXACT, case-sensitive substring of the page's
+        visible text, so wait on the shortest stable fragment ("Added", not
+        "Added to Cart", which misses when the site says Basket). A missed
+        text condition reports what IS there: "page_text_excerpt" carries
+        the ROOT document's visible text (bounded; same-origin frames are
+        scanned for the match but not excerpted, and a cross-origin frame's
+        text is invisible to this report, though the wait itself does match
+        it) and "found_case_insensitive": true means a case-insensitive scan
+        found it (usually only the casing missed); read both before
+        concluding the action failed. Both keys are absent on an older
+        extension build, never meaningful by absence. timeout_ms with
         no condition simply gives the page longer to go quiet (reported
         under "settled", never as a failed condition). timeout_ms is capped:
         an ask that cannot fit under the transport ceiling with the
@@ -2519,7 +2739,13 @@ async def chrome_act(
     un-prevented click on the link you meant, with no navigation following,
     means the page or browser declined the default action, not that your
     input missed. A fill reports "input_delivered" through its trusted input
-    event the same way.
+    event the same way, and carries fill's own limit: the value is committed
+    in one IME-style insert (a real input event, NO per-key events), so a
+    widget that reacts per keystroke (autocomplete, a dependent dropdown,
+    live validation) can take the value and never react. A fill whose
+    document showed no reaction says so in a [Fill note]; action="type" on
+    the same ref drives such a widget key by key (slower, and unlike fill it
+    is suppressed under a standing dialog).
 
     Frames are full targets, not blind spots. A ref inside an iframe, whether
     cross-origin or same-origin, gets its input dispatched into that frame
@@ -2571,8 +2797,9 @@ async def chrome_act(
     the strong signal, the document made nothing observable of your input
     (the phantom-success shape where every delivery field is truthful and
     nothing happened): verify a page fact before retrying rather than
-    re-firing blind. A nonzero count is weak evidence, since dynamic pages
-    mutate constantly. Synchronous handler reactions ARE counted (the
+    re-firing blind. A zero-mutation fill is additionally MARKED with a
+    [Fill note] naming the keystroke limit above. A nonzero count is weak
+    evidence, since dynamic pages mutate constantly. Synchronous handler reactions ARE counted (the
     watch starts before dispatch); reactions inside shadow roots are not.
     The key is ABSENT wherever nothing can be measured: a navigating act
     (the watch died with the document; the navigation is the reaction),

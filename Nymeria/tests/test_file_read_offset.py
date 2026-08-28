@@ -104,7 +104,7 @@ def test_extraction_receives_raw_unnumbered_window(tmp_path, monkeypatch):
 
     def fake_extraction(content, prompt):
         calls["content"] = content
-        return "EXTRACTED", "fake-model"
+        return "EXTRACTED", "fake-model", False
 
     monkeypatch.setattr(llm_extract, "run_extraction", fake_extraction)
 
@@ -205,7 +205,7 @@ def test_no_trailing_newline_extraction_window_has_no_phantom_newline(
 
     def fake_extraction(content, prompt):
         calls["content"] = content
-        return "X", "m"
+        return "X", "m", False
 
     monkeypatch.setattr(llm_extract, "run_extraction", fake_extraction)
     file_read.func(str(path), offset=2, extraction_prompt="x")

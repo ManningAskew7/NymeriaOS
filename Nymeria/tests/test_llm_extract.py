@@ -28,7 +28,7 @@ def test_run_extraction_invokes_secondary_model(monkeypatch):
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    text, model = llm_extract.run_extraction("page body content", "extract the pricing")
+    text, model, _truncated = llm_extract.run_extraction("page body content", "extract the pricing")
     assert text == "EXTRACTED SUMMARY"
     assert model == "fake-model"
     # The nested call MUST sever callbacks so its tokens never leak into the
@@ -56,9 +56,61 @@ def test_run_extraction_handles_list_content(monkeypatch):
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    text, model = llm_extract.run_extraction("page body", "prompt")
+    text, model, _truncated = llm_extract.run_extraction("page body", "prompt")
     assert text == "PART ONE"
     assert model == "fake"
+
+
+def _fake_llm_with_metadata(monkeypatch, *, metadata, content="EXTRACTED"):
+    from nymeria.vendor.react_agent import providers
+
+    class FakeMessage:
+        pass
+
+    FakeMessage.content = content
+    FakeMessage.response_metadata = metadata
+
+    class FakeLLM:
+        def invoke(self, messages, config=None):
+            return FakeMessage()
+
+    class FakeConfig:
+        model = "fake-model"
+
+    monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
+    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
+
+
+def test_run_extraction_flags_an_output_ceiling_cut_provider_blind(monkeypatch):
+    """#198: the truncated flag comes from the response's own stop reason,
+    across every provider spelling `is_truncated_metadata` knows (OpenAI
+    `length`, Anthropic `max_tokens`, Gemini's UPPERCASE enum, the
+    Responses-API `status: incomplete`), and stays False on a clean stop."""
+    cases = [
+        ({"finish_reason": "length"}, True),
+        ({"stop_reason": "max_tokens"}, True),
+        ({"finish_reason": "MAX_TOKENS"}, True),
+        ({"status": "incomplete"}, True),
+        ({"finish_reason": "stop"}, False),
+        ({"stop_reason": "end_turn"}, False),
+        ({}, False),
+    ]
+    for metadata, expected in cases:
+        _fake_llm_with_metadata(monkeypatch, metadata=metadata)
+        result = llm_extract.run_extraction("body", "prompt")
+        assert result.truncated is expected, metadata
+        assert result.text == "EXTRACTED"
+        assert result.model == "fake-model"
+
+
+def test_extraction_attribution_is_the_one_spelling():
+    """Every consumer renders through this helper, so the completeness claim
+    and its retraction cannot drift apart per tool."""
+    assert llm_extract.extraction_attribution("m", False) == "[Extracted by m]"
+    cut = llm_extract.extraction_attribution("m", True)
+    assert cut.startswith("[Extracted by m;")
+    assert "hit its output limit" in cut
+    assert "the tail may be missing" in cut
 
 
 def test_run_extraction_no_model_configured_returns_error(monkeypatch):
@@ -67,7 +119,7 @@ def test_run_extraction_no_model_configured_returns_error(monkeypatch):
 
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
 
-    text, model = llm_extract.run_extraction("body", "prompt")
+    text, model, _truncated = llm_extract.run_extraction("body", "prompt")
     assert text.startswith("[Error]: No extraction model configured")
     assert model == ""
 
@@ -84,7 +136,7 @@ def test_run_extraction_swallows_exceptions(monkeypatch):
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", boom)
 
-    text, model = llm_extract.run_extraction("body", "prompt")
+    text, model, _truncated = llm_extract.run_extraction("body", "prompt")
     # Error is generic (type name only); the exception text never leaks.
     assert text.startswith("[Error]: Extraction step failed: RuntimeError")
     assert "secret-url" not in text
@@ -116,7 +168,7 @@ def test_run_extraction_cliproxy_429_surfaces_quota_hint_without_retry(monkeypat
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    text, model = llm_extract.run_extraction("body", "prompt")
+    text, model, _truncated = llm_extract.run_extraction("body", "prompt")
 
     assert text.startswith("[Error]: Extraction step failed: FakeRateLimitError")
     assert "usage window" in text
@@ -149,7 +201,7 @@ def test_run_extraction_does_not_retry_429_with_bland_text(monkeypatch):
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    text, _model = llm_extract.run_extraction("body", "prompt")
+    text, _model, _truncated = llm_extract.run_extraction("body", "prompt")
 
     assert text.startswith("[Error]: Extraction step failed: FakeStatusOnlyError")
     assert calls["n"] == 1
@@ -178,7 +230,7 @@ def test_run_extraction_does_not_retry_rate_limit_text_on_retryable_status(monke
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    text, _model = llm_extract.run_extraction("body", "prompt")
+    text, _model, _truncated = llm_extract.run_extraction("body", "prompt")
 
     assert text.startswith("[Error]: Extraction step failed: FakeOverloadedError")
     assert calls["n"] == 1
@@ -215,7 +267,7 @@ def test_run_extraction_retries_transient_fault_once(monkeypatch):
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    text, model = llm_extract.run_extraction("body", "prompt")
+    text, model, _truncated = llm_extract.run_extraction("body", "prompt")
 
     assert text == "RECOVERED"
     assert model == "m"
@@ -245,7 +297,7 @@ def test_run_extraction_transient_fault_fails_after_single_retry(monkeypatch):
     monkeypatch.setattr(llm_extract, "build_extraction_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    text, model = llm_extract.run_extraction("body", "prompt")
+    text, model, _truncated = llm_extract.run_extraction("body", "prompt")
 
     assert text.startswith("[Error]: Extraction step failed: FakeServerError")
     # No base_url => no CLIProxy hint appended; the generic pointer stands.
