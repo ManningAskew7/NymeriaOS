@@ -63,6 +63,7 @@ from ..core.browser_command_coordinator import (
     get_browser_command_coordinator,
     new_command_id,
 )
+from ..core.browser_login_sessions import active_session_for_tab
 from ..core.chrome_subscribers import (
     chrome_connect_count,
     chrome_disconnect_age,
@@ -456,6 +457,49 @@ async def _await_reconnect(user_id: str) -> Optional[str]:
     )
 
 
+# The two command types that RUN a login session. They are the only ones
+# allowed through the suspension gate below, because refusing them would
+# mean a session could neither be opened nor closed on a held tab.
+_LOGIN_SESSION_COMMANDS = frozenset({"login_session_start", "login_session_stop"})
+
+
+def _login_session_block(
+    *, command_type: str, args: dict[str, Any], user_id: str
+) -> Optional[str]:
+    """Refuse a command aimed at a tab a human is currently signing into.
+
+    While a login session holds a tab, the person at the other end is
+    typing a password into it. The agent may not drive that tab (its input
+    would fight theirs) and may not read it (a read would put the password
+    on screen into the model's context, which is the one thing the whole
+    handoff exists to prevent). Both halves are the same refusal, so the
+    check sits at the single dispatch choke point rather than per tool.
+
+    Keyed on the tab, not the thread: a second thread must not be able to
+    drive a tab a human is signing into merely because it did not open the
+    session. A command carrying no ``tab_id`` (a tab listing, a
+    connection probe) targets no held tab and passes.
+    """
+    if command_type in _LOGIN_SESSION_COMMANDS:
+        return None
+    tab_id = args.get("tab_id")
+    if not isinstance(tab_id, int) or isinstance(tab_id, bool):
+        return None
+    session = active_session_for_tab(user_id, tab_id)
+    if session is None:
+        return None
+    return (
+        f"[Error]: A human login is in progress on tab {tab_id}. The user is "
+        "typing into that tab right now, so it cannot be driven or read "
+        f"until they finish (at most {int(session.seconds_remaining)}s from "
+        "now, and usually much sooner when they click Done). Nothing was "
+        "sent to the browser. You are not shown what is on that screen, by "
+        "design: it is where their password is being entered. Work on "
+        "another tab, or wait and retry. When the session ends you will be "
+        "told the outcome, and the tab will be signed in."
+    )
+
+
 async def _run(
     *,
     command_type: str,
@@ -474,6 +518,12 @@ async def _run(
     connect_error = await _await_reconnect(user_id)
     if connect_error is not None:
         return None, connect_error
+
+    login_block = _login_session_block(
+        command_type=command_type, args=args, user_id=user_id
+    )
+    if login_block is not None:
+        return None, login_block
 
     timeout_s = _timeout_for(command_type, timeout_override)
     command_id = new_command_id()
