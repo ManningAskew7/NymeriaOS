@@ -932,10 +932,21 @@ def create_api_app(
         ],
     )
 
-    # Add CORS middleware with configurable origins
+    # Add CORS middleware with configurable origins. Browser-extension origins
+    # are additionally allowed by pattern (2026-08-28, backlog 12 entry 35):
+    # the nymeria-browser extension's origin is chrome-extension://<id>, where
+    # the id is install-dependent for unpacked loads, and the old exact-match
+    # requirement (hand-add the id to CORS_ORIGINS, restart) made every
+    # remote install fail its first authenticated call with a bare
+    # "Failed to fetch" (the preflight 400s with no ACAO header, which is
+    # this exact symptom). Auth here is bearer-token, not cookies, so an
+    # allowed origin without a token still gets 401s: the pattern admits
+    # requests to PUBLIC endpoints only, which any curl already reaches.
+    # The pattern is anchored to Chrome's real id alphabet (32 chars of a-p).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
+        allow_origin_regex=r"^chrome-extension://[a-p]{32}$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
