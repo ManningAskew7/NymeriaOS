@@ -7,7 +7,8 @@ on top, and finalize writes the whole set (core plus picks) into the bootstrap
 admin's `default_thread_tools`. The displayed list is the REAL seed
 (`tool_seed.core_seed_tool_names`, i.e. `SEED_TOOLS` minus capability-expansion),
 which is what finalize writes; `CORE_TOOLSET_TARGET` below is the aspirational 12-tool
-target from `docs/private/core-toolset-plan.md` Section A (core-slimming unbuilt).
+target from `docs/private/plans/core-toolset-plan.md` Section A (core-slimming
+unbuilt).
 """
 
 from __future__ import annotations
