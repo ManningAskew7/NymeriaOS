@@ -1700,13 +1700,13 @@ def _capture_note(data: dict[str, Any]) -> str:
             )
             gap = f" (about {phrase} went unwatched)"
         return (
-            "[Capture had lapsed before this read: the extension releases an "
-            "idle tab about 10s after the last command that touched it, so "
-            f"whatever the page did between commands was not seen{gap}. Each "
-            "read reports its own lapse, so a fresh pause yields a fresh "
-            "number, and a read within ~10s of the last command truthfully "
-            "carries no lapse at all. What is listed was captured while the "
-            "tab was being driven.]"
+            "[Capture had lapsed before this read: the extension releases a "
+            "driven tab when your turn ends, or about 2 minutes after the "
+            "last command that touched it, so whatever the page did while "
+            f"released was not seen{gap}. Each read reports its own lapse, "
+            "so a fresh pause yields a fresh number, and a read while the "
+            "tab is still held truthfully carries no lapse at all. What is "
+            "listed was captured while the tab was being driven.]"
         )
     return ""
 
@@ -2298,11 +2298,21 @@ async def chrome_find(
                 "text by css= selector or coordinate, and scroll it with a "
                 f"document's \"@e\" ref. (searched by {model}){hint}{view_suffix}"
             )
+        # Second teaching clause (#189, measured on the roleless-div fixture):
+        # a click-handler div with no role/tabindex/ARIA is absent from the
+        # accessibility tree, so it is invisible to this search AND mints no
+        # ref in a page read. The old copy's "read the page for that" was a
+        # dead end for exactly the element the agent was after; the working
+        # route is a css= or coordinate act, confirmed by its own payload.
         return (
             f'[Note]: No ACTABLE element matching "{query}" on this page '
             "(this searches controls only, so text that is merely displayed "
-            f"is never listed here: read the page for that). "
-            f"(searched by {model}){hint}{view_suffix}"
+            "is never listed here: read the page for that). A thing that "
+            "LOOKS clickable but has no ref here or in a page read is "
+            "usually a click-handler div with no accessibility role, "
+            "invisible to both: act on it by css= selector or by coordinate "
+            "from a screenshot, and confirm via the click's hit field or a "
+            f"page change. (searched by {model}){hint}{view_suffix}"
         )
     listed = "\n".join(kept[:20])
     # A match against a half-built tree is the more dangerous half: the refs
@@ -2593,7 +2603,14 @@ async def chrome_act(
         in a picture. A region capture is the exception: it publishes a
         "[Frame]" line, and that box is the conversion for that image, so
         use it instead of the two sizes. Whole numbers only, a fractional
-        pair is rejected.
+        pair is rejected. A pointer-verb coordinate (click, hover, drag) is
+        checked against the viewport the tab's LAST screenshot was taken
+        in: when the viewport has changed since (Chrome's own debugging
+        banner coming or going, zoom, a resize), the act refuses with
+        "viewport_changed" naming both sizes instead of clicking a point
+        that has moved. Take a fresh screenshot and re-aim; "@eN" and
+        "css=" targets re-resolve and never need this. A scroll coordinate
+        is exempt: its scroll_moved report verifies the effect instead.
     modifiers: any of ["Ctrl", "Shift", "Alt", "Meta"].
     direction / amount_px: for scroll (default down, 500px). action="scroll"
         with a ref wheels AT that element (at its visible point), which

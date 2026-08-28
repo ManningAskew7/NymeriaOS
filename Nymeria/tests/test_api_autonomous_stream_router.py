@@ -358,6 +358,42 @@ def test_browser_command_does_not_reach_the_admin_firehose():
     assert "browser_command" not in frame
 
 
+def _session_release_frame_for(client_id: str | None) -> str:
+    queue: Queue = Queue()
+    queue.put_nowait(
+        AutonomousEvent(
+            event_type="browser_session_release",
+            thread_id="thread-1",
+            user_id="alice",
+            data={},
+        )
+    )
+    queue.put_nowait(_marker())
+    frame, _bus = asyncio.run(
+        _next_sse_data(
+            queue=queue,
+            event_bus=EventBus(),
+            user_id="alice",
+            firehose=False,
+            client_id=client_id,
+        )
+    )
+    return frame
+
+
+def test_session_release_reaches_the_extension_and_nobody_else():
+    """The turn-end release (#191) is chrome-only: nothing but the extension
+    holds a debugger session, so serving it anywhere else is one event per
+    browser-driving turn of pure noise on every other subscriber."""
+    frame = _session_release_frame_for("nymeria-browser-abc123")
+    assert '"type": "browser_session_release"' in frame
+
+    for client_id in ("6f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8", "cli-9f8e7d6c5b4a", None):
+        frame = _session_release_frame_for(client_id)
+        assert '"content": "marker"' in frame
+        assert "browser_session_release" not in frame
+
+
 def test_non_browser_events_are_untouched_by_the_kind_filter():
     queue: Queue = Queue()
     queue.put_nowait(

@@ -1158,6 +1158,31 @@ def test_find_miss_on_a_page_of_controls_says_only_controls_are_searchable(monke
     assert "no controls, only static content" not in out
 
 
+def test_find_miss_names_the_roleless_div_route(monkeypatch) -> None:
+    """Measured on the roleless-div fixture (#189, 2026-08-28): a click-handler
+    div with no role/tabindex/ARIA is absent from the accessibility tree, so
+    chrome_find misses it under ANY phrasing and a page read mints no ref for
+    it either. The old copy's "read the page for that" was therefore a dead
+    end for exactly this element; the miss note must name the class and the
+    route that works (css= or coordinate act, confirmed by the act's own
+    payload), not just "displayed text".
+    """
+    import nymeria.tools.llm_extract as llm_extract
+
+    monkeypatch.setattr(llm_extract, "run_extraction", lambda c, p: ("NONE", "test-model", False))
+    out = _invoke(
+        chrome_find,
+        {"tab_id": 1, "query": "Beginner bots category row"},
+        _ok({"tree": '- link "Help" [ref=@e1]', "ref_count": 1, "control_ref_count": 1}),
+    )
+
+    assert "click-handler div with no accessibility role" in out
+    assert "css= selector or by coordinate" in out
+    assert "hit field" in out
+    # The route clause belongs only to the have-controls branch: the all-static
+    # branch already teaches css=/coordinate in its own words.
+
+
 def test_find_miss_on_an_all_static_page_blames_the_page_not_the_query(monkeypatch) -> None:
     """Measured live (#205): a page whose text is entirely static can never
     answer a find, and saying "no elements matching your query" invites the
@@ -1185,6 +1210,10 @@ def test_find_miss_on_an_all_static_page_blames_the_page_not_the_query(monkeypat
     # keeps the attribution the other miss branch carries.
     assert "scroll it with a document's" in out
     assert "(searched by test-model)" in out
+    # The roleless-div route clause (#189) belongs to the have-controls
+    # branch only: this branch already teaches css=/coordinate in its own
+    # words, and doubling the clause here would say it twice.
+    assert "click-handler div" not in out
 
 
 def test_find_miss_keeps_the_old_wording_against_a_pre_208_extension(monkeypatch) -> None:
@@ -4906,10 +4935,11 @@ def test_network_cold_read_says_capture_only_just_started() -> None:
 
 
 def test_network_resumed_read_owns_the_gap_instead_of_claiming_a_cold_start() -> None:
-    """Capture is not continuous: the extension releases an idle tab, so a
-    read after a pause re-attaches. Telling that story as "capture started
-    with this read" would contradict the entries in the same payload and
-    tell the agent to disregard data it can see."""
+    """Capture is not continuous: the extension releases a driven tab at
+    turn end (or on the idle linger), so a read after a pause re-attaches.
+    Telling that story as "capture started with this read" would contradict
+    the entries in the same payload and tell the agent to disregard data it
+    can see."""
     out = _invoke(
         chrome_network,
         {"tab_id": 1},
@@ -4924,7 +4954,7 @@ def test_network_resumed_read_owns_the_gap_instead_of_claiming_a_cold_start() ->
     )
     after = out.rpartition("</untrusted_page_content>")[2]
     assert "[Capture had lapsed before this read:" in after
-    assert "between commands was not seen" in after
+    assert "whatever the page did while released was not seen" in after
     assert "Capture started" not in after
 
 
@@ -4992,8 +5022,10 @@ def test_network_resumed_note_says_how_long_when_the_gap_is_a_true_int() -> None
     assert "about 30s went unwatched" in after
     # The note teaches the mechanism (QA round 2, 2026-08-18): a capable
     # operator read per-read lapses as a growing/latching bug because nothing
-    # named the ~10s idle release or the per-read semantics.
-    assert "about 10s after the last command" in after
+    # named the idle release or the per-read semantics. Since #191 the
+    # boundaries are the turn end and the ~2 minute safety-net linger, and
+    # the note must state THOSE, not the falsified 10s window.
+    assert "when your turn ends, or about 2 minutes after" in after
     assert "Each read reports its own lapse" in after
 
     # A long gap reads in minutes, not a wall of seconds.
