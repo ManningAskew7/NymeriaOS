@@ -394,6 +394,14 @@ services:
       # button (POST /report), delivered via the Outlook email tool. Unset = the
       # endpoint returns 503 instead of emailing anyone.
       NYMERIA_ERROR_REPORT_EMAIL: ${NYMERIA_ERROR_REPORT_EMAIL:-}
+      # Agent-filed harness reports (harness_report tool): existing container
+      # path the reports are dropped into (an operator bind mount outside the
+      # agent workspace, e.g. /backlog-intake; a /workspace path would make
+      # filed reports agent-editable). Unset = the tool refuses honestly. The
+      # empty string a bare expansion passes becomes None in settings.
+      HARNESS_REPORT_DIR: ${HARNESS_REPORT_DIR:-}
+      HARNESS_REPORT_INSTANCE_LABEL: ${HARNESS_REPORT_INSTANCE_LABEL:-}
+      HARNESS_REPORT_EMAIL: ${HARNESS_REPORT_EMAIL:-}
       # Voice (TTS/STT). Base URLs default EMPTY on purpose: an unconditional
       # sidecar default here would hijack hosted providers (an explicit base
       # URL beats the provider's own default in core/voice.py). The init

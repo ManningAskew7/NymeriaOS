@@ -187,6 +187,11 @@ _UNREACHABLE_SETTINGS_EXEMPT = frozenset({
     "fcm_credentials_json",
     "fcm_enabled", "freshservice_api_key", "freshservice_base_url",
     "freshservice_domain",
+    # harness_report_*: deployment wiring (a mounted intake dir, an email
+    # destination, an instance label), env-only like nymeria_error_report_email;
+    # a runtime PATCH cannot conjure the mount the dir setting names.
+    "harness_report_dir", "harness_report_email",
+    "harness_report_instance_label",
     "hooks_run_command_enabled", "http_allow_https_to_http_redirect",
     "http_domain_allowlist", "http_domain_blocklist",
     "http_internal_allowlist", "http_max_redirects", "linkedin_access_token",

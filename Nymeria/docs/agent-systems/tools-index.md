@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1257 tools found.**
+**1258 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -495,6 +495,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `hackernews_get_item` | `nymeria/tools/public_info_integrations.py` | Get a Hacker News item by ID. |
 | `hackernews_get_user` | `nymeria/tools/public_info_integrations.py` | Get a Hacker News user profile. |
 | `hackernews_search` | `nymeria/tools/public_info_integrations.py` | Search Hacker News via the Algolia HN API. |
+| `harness_report` | `nymeria/tools/harness_report.py` | Report a Nymeria platform issue or pain point to the developer's backlog intake. |
 | `harvest_create_time_entry` | `nymeria/tools/time_hr_service_integrations.py` | Create a Harvest time entry by duration. |
 | `harvest_delete_time_entry` | `nymeria/tools/time_hr_service_integrations.py` | Delete a Harvest time entry. |
 | `harvest_get_company` | `nymeria/tools/time_hr_service_integrations.py` | Get the Harvest account company profile. |

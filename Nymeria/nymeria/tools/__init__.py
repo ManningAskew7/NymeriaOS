@@ -86,6 +86,7 @@ from .triggers import (
     trigger_info,
     TRIGGER_TOOLS,
 )
+from .harness_report import harness_report, HARNESS_REPORT_TOOLS
 from .hooks import (
     hook_config,
     hook_info,
@@ -1672,6 +1673,7 @@ __all__ = [
     "GOOGLE_DOCS_TOOLS",
     "GOOGLE_SHEETS_TOOLS",
     "GOOGLE_WORKSPACE_SERVICE_TOOLS",
+    "HARNESS_REPORT_TOOLS",
     "HOOK_TOOLS",
     "HTTP_API_TOOLS",
     "IMAGE_GEN_INTEGRATION_TOOLS",
@@ -2156,6 +2158,7 @@ __all__ = [
     "hackernews_get_item",
     "hackernews_get_user",
     "hackernews_search",
+    "harness_report",
     "harvest_create_time_entry",
     "harvest_delete_time_entry",
     "harvest_get_company",

@@ -218,6 +218,33 @@ class Settings(BaseSettings):
             "503 instead of emailing anyone."
         ),
     )
+    harness_report_dir: Optional[str] = Field(
+        default=None,
+        description=(
+            "Existing directory the harness_report tool drops agent-filed "
+            "issue reports into (one new markdown file per report), for "
+            "operator triage. Unset disables the tool with an honest "
+            "refusal; the tool never creates the directory itself."
+        ),
+    )
+    harness_report_instance_label: Optional[str] = Field(
+        default=None,
+        description=(
+            "Deployment label stamped into harness_report files so multi-"
+            "instance operators can tell reports apart. Defaults to the "
+            "hostname when unset."
+        ),
+    )
+    harness_report_email: Optional[str] = Field(
+        default=None,
+        description=(
+            "Destination address each filed harness report is additionally "
+            "emailed to (file attached), in the background over the owner "
+            "account's connected Outlook credential, mirroring the /report "
+            "endpoint. Unset disables the email copy; the file leg is "
+            "unaffected."
+        ),
+    )
     account_token_ttl_days: int = Field(
         default=90,
         ge=1,

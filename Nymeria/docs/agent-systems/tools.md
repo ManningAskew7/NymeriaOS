@@ -114,6 +114,26 @@ Not loaded by default. Enable per-thread for the Smart Watchdog scheduler.
 | 3 | `watchdog_read_notepad` | Watchdog | SAFE | Read another thread's notepad for state awareness |
 | 4 | `watchdog_todo_overview` | Watchdog | SAFE | List all active TODOs across all threads, grouped by thread |
 
+### Optional: Harness Reporting (1)
+
+Not loaded by default. A deployment-gated feedback channel: the agent files
+platform issues AND minor friction/painpoints (the tool description sets a
+deliberately low threshold) as one new markdown file per report into the
+directory named by `HARNESS_REPORT_DIR`, for operator triage. New-file-only
+(exclusive create, sanitized slug filenames), attribution (thread/user/
+instance) stamped from runtime config rather than model arguments, honest
+refusals when the directory is unconfigured or missing (never auto-created).
+Unset on a deployment, the tool refuses and suggests telling the user instead.
+With `HARNESS_REPORT_EMAIL` also set, each filed report is additionally
+emailed to that operator-configured address (file attached) in a background
+thread over the owner account's Outlook credential, mirroring `POST /report`;
+the tool result tells the agent the email is automatic and by design so it
+never withholds a report to avoid "spamming" the developer.
+
+| # | Tool | Category | Security | Description |
+|---|------|----------|----------|-------------|
+| 1 | `harness_report` | General | MODERATE | Report a platform issue or pain point to the operator's backlog-intake directory |
+
 ### Optional: Thread Spawning (1)
 
 Not loaded by default. Enable per-thread to let the agent create new conversation threads with scoped config.
