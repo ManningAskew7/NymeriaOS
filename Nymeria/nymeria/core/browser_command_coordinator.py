@@ -67,6 +67,17 @@ class BrowserCommandCoordinator(FutureRendezvous[PendingCommand]):
             sweep_interval_seconds=_SWEEP_INTERVAL_SECONDS,
             log_label="browser_command_coordinator",
         )
+        # Which (user, thread) pairs have dispatched a browser command since
+        # their last turn end (#191): the turn-end session release publishes
+        # only for a turn that actually drove the browser, so ordinary turns
+        # put nothing on the wire. Lives HERE, not in the tools module, so a
+        # tools hot-reload cannot lose a pending release mid-turn. Entries
+        # are popped at every turn end of their thread; one stranded by a
+        # crashed turn is popped (and harmlessly released) by that thread's
+        # next turn, so the set is bounded by live threads. Guarded by the
+        # class's own lock like the rest of its shared state: register runs
+        # on the event loop while the sync chat path pops from off-loop.
+        self._turn_dispatches: set[tuple[str, str]] = set()
 
     @property
     def _commands(self) -> dict[str, PendingCommand]:
@@ -94,7 +105,24 @@ class BrowserCommandCoordinator(FutureRendezvous[PendingCommand]):
             metadata=metadata or {},
         )
         self._add(command_id, command)
+        # The turn-end release ledger (#191): registering a command IS the
+        # "this turn drove the browser" fact, so it is stamped here rather
+        # than trusting each tool call site to remember.
+        if user_id and thread_id:
+            with self._lock:
+                self._turn_dispatches.add((user_id, thread_id))
         return future
+
+    def pop_turn_dispatched(self, user_id: str, thread_id: str) -> bool:
+        """True (once) when this (user, thread) dispatched a browser command
+        since the last pop. The turn-end seam calls this to decide whether a
+        session release is worth publishing."""
+        with self._lock:
+            try:
+                self._turn_dispatches.remove((user_id, thread_id))
+            except KeyError:
+                return False
+            return True
 
     def resolve(self, command_id: str, result: dict[str, Any]) -> bool:
         """Wake the tool with ``result``. Returns False if there's nothing to
@@ -154,9 +182,43 @@ def new_command_id() -> str:
     return f"bcmd_{secrets.token_urlsafe(16)}"
 
 
+def release_browser_session(user_id: str, thread_id: str) -> bool:
+    """Publish the turn-end ``browser_session_release`` event (#191).
+
+    Called from the agent's DONE seam (``core/agent.py``, both the async and
+    sync observe fire points, which every turn end funnels through exactly
+    once). Publishes only when this (user, thread) dispatched a browser
+    command since its last turn end, so ordinary turns put nothing on the
+    wire. The extension drops its idle debugger holds on receipt, which is
+    what lets the "being debugged" banner fall the moment the agent answers;
+    a lost event degrades to the extension's own safety-net linger, so this
+    must never raise into the turn tail.
+    """
+    if not user_id or not thread_id:
+        return False
+    coord = get_browser_command_coordinator()
+    if not coord.pop_turn_dispatched(user_id, thread_id):
+        return False
+    try:
+        from .event_bus import publish_autonomous_event
+
+        publish_autonomous_event(
+            event_type="browser_session_release",
+            thread_id=thread_id,
+            user_id=user_id,
+            task_id="",
+            data={},
+        )
+    except Exception:  # noqa: BLE001 - a release must never break a turn end
+        logger.debug("browser_session_release publish failed", exc_info=True)
+        return False
+    return True
+
+
 __all__ = [
     "BrowserCommandCoordinator",
     "PendingCommand",
     "get_browser_command_coordinator",
     "new_command_id",
+    "release_browser_session",
 ]

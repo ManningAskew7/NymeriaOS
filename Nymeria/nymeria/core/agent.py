@@ -1050,7 +1050,15 @@ class NymeriaAgent:
         clean one. Observe returns are ignored; a hook fault is swallowed. The
         dispatch is scheduled off-turn (``schedule_observe``), so it never
         delays the turn tail and is safe from a ``finally`` during teardown.
+
+        Also the turn-end seam for the browser session release (#191): every
+        turn end funnels through exactly one observe fire, so this is where a
+        turn that drove the browser tells the extension to drop its debugger
+        holds (the "being debugged" banner falls when the agent answers, not
+        two minutes later). Idempotent and never raises; a turn that never
+        dispatched a browser command publishes nothing.
         """
+        self._release_browser_session(user_id, thread_id)
         try:
             from .hooks import HookEvent, schedule_observe
             _reg = self._hook_registry_for_turn(thread_id, user_id)
@@ -1085,7 +1093,10 @@ class NymeriaAgent:
         Kept ``async`` for call-site and monkeypatch stability, but the body
         only schedules (``schedule_observe`` puts the dispatch on the running
         loop as a background task and returns immediately).
+
+        Turn-end browser-session release: see the sync twin's docstring.
         """
+        self._release_browser_session(user_id, thread_id)
         try:
             from .hooks import HookEvent, schedule_observe
             _reg = self._hook_registry_for_turn(thread_id, user_id)
@@ -1104,6 +1115,22 @@ class NymeriaAgent:
             )
         except Exception:
             logger.debug("DONE observe hook dispatch failed (async)", exc_info=True)
+
+    @staticmethod
+    def _release_browser_session(user_id: str, thread_id: str) -> None:
+        """Publish the turn-end browser session release (#191), never raising.
+
+        A thin seam over ``browser_command_coordinator.release_browser_session``
+        so the two DONE observe fire points share one call and tests have one
+        thing to patch. The coordinator side decides whether anything goes on
+        the wire (only a turn that dispatched a browser command publishes).
+        """
+        try:
+            from .browser_command_coordinator import release_browser_session
+
+            release_browser_session(user_id, thread_id)
+        except Exception:
+            logger.debug("browser session release failed", exc_info=True)
 
     def _get_memory_index(self, user_id: str) -> Optional[MemoryIndex]:
         from .agent_prompt import get_memory_index

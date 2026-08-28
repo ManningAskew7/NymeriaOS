@@ -173,6 +173,10 @@ Every `chrome_act` tells you what actually happened. Look at it before moving on
   convert before you aim: every capture reports its image size beside the
   viewport in CSS pixels, and those two differ on a HiDPI display or a zoomed
   page (which the `[Zoom]` note names). `chrome_act` takes the CSS ones. A
+  coordinate aimed before the tab's viewport changed (zoom, a resize,
+  Chrome's own debug banner) is refused as `viewport_changed` naming both
+  sizes: re-screenshot and re-aim, it is protecting you from a click that
+  would land offset and report success. A
   coordinate that lands on a cross-origin iframe (payment fields, embedded
   checkouts) is REFUSED before anything is sent: page coordinates cannot
   reach inside another origin's frame. The refusal names the fix: read the
@@ -304,8 +308,9 @@ ownership for it, so a dialog your own action raises is never a dead end:
   to it, `chrome_dialog` says so.
 
 What ownership cannot cover is a dialog raised while you were NOT driving:
-before your first command on the tab, or after the attach lapsed (about 10s
-past your last). `chrome_dialog` cannot answer those, because ownership
+before your first command on the tab, or after the attach lapsed (released
+when your turn ends, or about 2 minutes after your last command).
+`chrome_dialog` cannot answer those, because ownership
 cannot be taken retroactively (measured). If a page will not run scripts and
 no dialog was ever named to you, that is the likely cause: close the tab and
 redo the work in a fresh one, or ask the user to clear what is on their
@@ -338,8 +343,9 @@ by a page timer, is invisible to every check here: if the user says their
 browser is stuck while your checks read healthy, that is the likely reason.
 And while it holds, the user's OWN "Choose File" click in that tab is
 swallowed too; if they say uploading stopped working mid-task, that is you,
-and it recovers on its own moments after your last command (longer while a
-dialog stands: the detach waits for the dialog to resolve first).
+and it recovers when your turn ends (or about 2 minutes after your last
+command if the turn-end signal is lost; longer while a dialog stands: the
+detach waits for the dialog to resolve first).
 
 ## Batching
 
