@@ -49,6 +49,7 @@ BUDGETS = {
     "nymeria-desktop/CLAUDE.md": 600,
     "nymeria-mobile/CLAUDE.md": 300,
     "Nymeria/docs/private/security/CLAUDE.md": 1200,
+    "Nymeria/tests/CLAUDE.md": 300,
 }
 
 # Path-resolution bases per guide (index-relative prefixes, "" = repo root),
@@ -62,6 +63,7 @@ GUIDE_BASES = {
         "", "Nymeria", "Nymeria/nymeria", "Nymeria/docs",
         "Nymeria/docs/private/security",  # its refs are dir-relative
     ],
+    "Nymeria/tests/CLAUDE.md": ["", "Nymeria", "Nymeria/tests", "Nymeria/docs"],
 }
 
 # Intentionally untracked or host-local paths that guides legitimately name.
