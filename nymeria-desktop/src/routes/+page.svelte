@@ -8,10 +8,12 @@
   import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
   import AuthPromptModal from '$lib/components/credentials/AuthPromptModal.svelte';
   import UiPromptModal from '$lib/components/artifacts/UiPromptModal.svelte';
+  import BrowserLoginModal from '$lib/components/browser/BrowserLoginModal.svelte';
   import RulerOverlay from '$lib/components/dev/RulerOverlay.svelte';
   import TooltipPortal from '$lib/components/common/TooltipPortal.svelte';
   import { authPromptStore } from '$lib/stores/authPrompt.svelte';
   import { uiPromptStore } from '$lib/stores/uiPrompt.svelte';
+  import { browserLoginStore } from '$lib/stores/browserLogin.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
@@ -315,6 +317,20 @@
         debugLog('[Page] Calling autonomousStore.connect()');
         autonomousStore.connect();
       }, 500);
+
+      // Reload recovery for the browser login handoff: a session started
+      // while this app was closed (say from Telegram) announces on a bus
+      // this client was not attached to, so ask once at startup. Live
+      // arrivals ride the browser_login_started SSE case instead.
+      void api
+        .listBrowserLoginSessions()
+        .then(({ sessions }) => {
+          const live = sessions.find((s) => s.state === 'active');
+          if (live && !browserLoginStore.active) {
+            browserLoginStore.open(live, 'recovered');
+          }
+        })
+        .catch(() => {});
     } else {
       debugLog('[Page] Config NOT ready (no apiUrl or apiKey), SSE will connect when configured');
     }
@@ -390,6 +406,11 @@
 <!-- Global ui-prompt modal: opens when the agent calls ui_prompt. Renders the
      agent-authored HTML form in a sandboxed iframe and posts the answer back. -->
 <UiPromptModal prompt={uiPromptStore.active} onResolved={(id) => uiPromptStore.clearById(id)} />
+
+<!-- Global browser-login viewer: opens on browser_login_started (the agent's
+     chrome_request_login or the /browser login command). Streams the tab and
+     forwards the user's input so they log the agent's browser in by hand. -->
+<BrowserLoginModal login={browserLoginStore.active} onResolved={(id) => browserLoginStore.clearById(id)} />
 
 <!-- Dev ruler overlay — draggable guides, crosshair, and measurement box for
      pixel-perfect alignment work. Toggle with the pin in the bottom-right
