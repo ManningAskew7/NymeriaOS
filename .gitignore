@@ -93,7 +93,14 @@ Thumbs.db
 desktop.ini
 
 # === Claude Code ===
-.claude/
+# Host-local state stays ignored (worktrees/, agent-memory/, scheduled_tasks*,
+# settings.local.json); the shareable project config below is tracked and is
+# stripped from the public mirror by publish-prep (paths_to_remove: .claude/).
+.claude/*
+!.claude/settings.json
+!.claude/skills/
+!.claude/agents/
+!.claude/rules/
 .claude-backup/
 .playwright-mcp/
 
