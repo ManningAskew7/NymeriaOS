@@ -97,6 +97,7 @@ desktop.ini
 # settings.local.json); the shareable project config below is tracked and is
 # stripped from the public mirror by publish-prep (paths_to_remove: .claude/).
 .claude/*
+!.claude/README.md
 !.claude/settings.json
 !.claude/skills/
 !.claude/agents/
@@ -156,4 +157,4 @@ initial-load.png
 # Coding agents write throwaway working notes here per the repo workflow
 # (e.g. a plan .md for a complex slice); these are never tracked.
 /tmp/
-/Nymeria/tmp/
+/Nymeria/tmp
