@@ -81,3 +81,34 @@ def test_build_attachment_accepts_png():
     assert att["file_type"] == "image"
     assert att["mime_type"] == "image/png"
     assert att["data_url"].startswith("data:image/png;base64,")
+
+
+def test_build_attachment_accepts_parameterized_mime():
+    # Discord's CDN reports Content-Type header values with parameters
+    # ("text/markdown; charset=utf-8"); the bare type must still classify.
+    att, err = attachment_helpers.build_attachment(
+        b"# handoff", "text/markdown; charset=utf-8", "handoff.md"
+    )
+    assert err is None
+    assert att is not None
+    assert att["file_type"] == "document"
+    assert att["mime_type"] == "text/markdown"
+    assert att["data_url"].startswith("data:text/markdown;base64,")
+
+
+def test_infer_mime_type_strips_parameters():
+    assert attachment_helpers.infer_mime_type("text/plain; charset=utf-8", None) == "text/plain"
+    # Parameterized octet-stream is still generic: extension fallback fires.
+    assert (
+        attachment_helpers.infer_mime_type("application/octet-stream; charset=binary", "notes.md")
+        == "text/markdown"
+    )
+
+
+def test_build_attachment_rejects_parameterized_unsupported_type():
+    att, err = attachment_helpers.build_attachment(
+        b"PK", "application/zip; charset=binary", "a.zip"
+    )
+    assert att is None
+    assert err is not None
+    assert "Unsupported file type" in err
