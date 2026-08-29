@@ -47,7 +47,11 @@ def infer_mime_type(mime_type: Optional[str], file_name: Optional[str]) -> Optio
     no match so callers can still reject it consistently.
     """
     if mime_type:
-        cleaned = mime_type.strip().lower()
+        # Bots receive Content-Type HEADER values, which may carry parameters
+        # (Discord's CDN reports "text/markdown; charset=utf-8"); strip them
+        # so the bare type matches the allow-sets. Browser File.type (the
+        # desktop twin's input) is always bare, so the twin needs no strip.
+        cleaned = mime_type.split(";", 1)[0].strip().lower()
         if cleaned and cleaned not in _GENERIC_BINARY_TYPES:
             return cleaned
 
