@@ -31,7 +31,15 @@ from .scheduler_state import SchedulerStateManager
 from .storage_paths import safe_path_segment
 from .stream_bridge import StreamCollection, stream_and_collect
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
-from .todo_manager import PAUSE_NOTE_PREFIX, TodoManager, TodoStatus
+from .todo_manager import (
+    BACKOFF_NOTE_PREFIX,
+    GIVEUP_NOTE_PREFIX,
+    PAUSE_NOTE_PREFIX,
+    TodoManager,
+    TodoStatus,
+    format_note_banner,
+    prepend_note_banner,
+)
 from .trigger_manager import TriggerManager
 from .turn_executor import TurnExecutor
 from .watchdog_sweep import WatchdogSweep
@@ -983,13 +991,16 @@ class Ticker:
                 f"({error.get('kind', 'unknown')}): {error.get('message', '')}"
             )
 
-        self._handle_recurrence(entry, todo)
+        schedule_rewritten = self._handle_recurrence(entry, todo)
         self._reset_failure_streak(entry.user_id, todo.id)
         current = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
-        if current and not current.recurrence:
+        if current and not current.recurrence and not schedule_rewritten:
             # The agent path leaves closing the TODO to the agent turn; a
             # workflow TODO has no agent turn, so close it here (recurring
-            # ones were just reset to PENDING by _handle_recurrence).
+            # ones were just reset to PENDING by _handle_recurrence). A
+            # mid-run schedule rewrite means the run armed its own next
+            # wake; closing would park that live wake behind a done status,
+            # so the honored rewrite skips the close too.
             with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                 todo_list.update_item(todo.id, status=TodoStatus.DONE)
         if todo.id in self._retry_counts:
@@ -1197,23 +1208,55 @@ class Ticker:
         todo,
         thread_id: str,
     ) -> None:
-        backoff_time = datetime.now(timezone.utc) + timedelta(minutes=10)
-        with self.todo_manager.atomic_update(entry.user_id) as todo_list:
-            todo_list.update_item(
-                todo.id,
-                scheduled_for=backoff_time,
-                notes=(
-                    f"Hit iteration limit twice — rescheduled "
-                    f"for {backoff_time.isoformat()}"
-                ),
+        current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
+        if current_todo is not None and self._schedule_rewritten_mid_run(
+            current_todo, entry
+        ):
+            # Same contract as _handle_recurrence's honored branch: a
+            # schedule write made during the run (the agent's own re-arm, a
+            # REST/GUI edit) wins over the automatic +10min backoff, and the
+            # notes it may have set stay untouched. No last_execution stamp
+            # here: the occurrence did not complete, matching the normal
+            # backoff branch. The row re-sync is the same JSON-authority
+            # belt as the other honored branch.
+            self.todo_manager.sync_schedule_to_db(
+                entry.user_id, todo.id, self.schedule_db
             )
-        self.todo_manager.sync_schedule_to_db(
-            entry.user_id, todo.id, self.schedule_db
-        )
-        logger.info(
-            f"[TICKER] TODO {todo.id} rescheduled to "
-            f"{backoff_time.isoformat()} after double iteration_limit"
-        )
+            logger.info(
+                f"[TICKER] TODO {todo.id} schedule was rewritten during its "
+                f"own run; skipping double-iteration-limit backoff"
+            )
+            content = (
+                "Task hit the iteration limit twice; keeping the "
+                "wake the run itself scheduled."
+            )
+        else:
+            backoff_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+            banner = format_note_banner(
+                BACKOFF_NOTE_PREFIX,
+                f"hit iteration limit twice, rescheduled "
+                f"for {backoff_time.isoformat()}",
+            )
+            with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                item = todo_list.get_item(todo.id)
+                existing_notes = item.notes if item else None
+                todo_list.update_item(
+                    todo.id,
+                    scheduled_for=backoff_time,
+                    notes=prepend_note_banner(existing_notes, banner),
+                )
+            self.todo_manager.sync_schedule_to_db(
+                entry.user_id, todo.id, self.schedule_db
+            )
+            logger.info(
+                f"[TICKER] TODO {todo.id} rescheduled to "
+                f"{backoff_time.isoformat()} after double iteration_limit"
+            )
+            content = (
+                "Task requires more steps than the current "
+                "iteration limit allows. Rescheduled for "
+                "10 minutes from now."
+            )
 
         publish_autonomous_event(
             event_type="task_completed",
@@ -1222,11 +1265,7 @@ class Ticker:
             task_id=todo.id,
             data={
                 "notify": False,
-                "content": (
-                    "Task requires more steps than the current "
-                    "iteration limit allows. Rescheduled for "
-                    "10 minutes from now."
-                ),
+                "content": content,
                 "todo_id": todo.id,
             },
         )
@@ -1323,10 +1362,67 @@ class Ticker:
 
         self._trim_context_if_needed(entry, thread_id)
 
-    def _handle_recurrence(self, entry: ScheduledTodoEntry, todo) -> None:
+    @staticmethod
+    def _schedule_rewritten_mid_run(
+        current_todo, entry: ScheduledTodoEntry
+    ) -> bool:
+        """True when the TODO's schedule no longer matches the fired slot.
+
+        The ticker never touches ``scheduled_for`` while a run is in flight,
+        so at finalize time any difference from the slot that fired,
+        including None (a mid-run ``clear_schedule``), proves a deliberate
+        write made during the run: the agent's own re-arm, a REST/GUI edit,
+        or the done-path advance. The 1s tolerance is defensive only: both
+        sides derive from the same stored datetime (the row is written from
+        the item and the isoformat/epoch round-trips are exact), so equality
+        holds today and the tolerance guards a future lossy path.
+        """
+        current = current_todo.scheduled_for
+        if current is None:
+            return True
+        return abs(current.timestamp() - entry.scheduled_for) > 1.0
+
+    def _handle_recurrence(self, entry: ScheduledTodoEntry, todo) -> bool:
+        """Re-arm or clear a fired TODO's schedule at end of run.
+
+        Returns True when a mid-run schedule write was detected and honored
+        instead. A schedule write made DURING the TODO's own fire turn wins
+        over the automatic re-arm/clear: before 2026-08-29 this method
+        rewrote the schedule unconditionally from its pre-run snapshot,
+        silently destroying mid-run re-arms ("remind me again in 35 min") on
+        recurring TODOs and clearing the documented self-rescheduling-watcher
+        pattern for non-recurring ones. When honoring, ``last_execution`` is
+        stamped with the slot that actually ran (the done-anchor invariant,
+        ``resolve_done_recurrence_anchor``), the ticker's own fire-start
+        IN_PROGRESS returns to PENDING (a lifecycle write, not agent intent;
+        any other status the run set is preserved), and the schedule DB row
+        is re-synced from the JSON, so a mid-run re-arm to a time already
+        past fires on the next poll rather than being lost.
+        """
         from .todo_constants import compute_recurrence_reschedule
 
         current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
+        if current_todo is not None and self._schedule_rewritten_mid_run(
+            current_todo, entry
+        ):
+            fired_slot = datetime.fromtimestamp(
+                entry.scheduled_for, timezone.utc
+            )
+            logger.info(
+                f"TODO {todo.id} schedule was rewritten during its own run "
+                f"(fired slot {fired_slot}, now "
+                f"{current_todo.scheduled_for}); honoring the mid-run write"
+            )
+            with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                item = todo_list.get_item(todo.id)
+                if item:
+                    item.last_execution = fired_slot
+                    if item.status == TodoStatus.IN_PROGRESS:
+                        item.status = TodoStatus.PENDING
+            self.todo_manager.sync_schedule_to_db(
+                entry.user_id, todo.id, self.schedule_db,
+            )
+            return True
         if current_todo and current_todo.recurrence:
             recurrence_anchor = datetime.fromtimestamp(
                 entry.scheduled_for,
@@ -1365,6 +1461,7 @@ class Ticker:
             self.todo_manager.clear_todo_schedule(
                 entry.user_id, todo.id, self.schedule_db,
             )
+        return False
 
     def _trim_context_if_needed(
         self, entry: ScheduledTodoEntry, thread_id: str,
@@ -1516,12 +1613,25 @@ class Ticker:
                 )
                 return
 
+            # Non-recurring give-up is a deliberate DEAD STOP and stays
+            # OUTSIDE the mid-run-edit-wins guard: honoring a mid-run re-arm
+            # here would let a permanently failing self-rescheduling one-shot
+            # retry forever with no #154-style pause backstop (the failure
+            # streak only exists for recurring TODOs). The clear is loud
+            # (per-retry failure notifications plus the banner below), not
+            # the silent-death shape the guard exists to prevent.
             self.schedule_db.remove_scheduled(todo.id)
+            giveup_banner = format_note_banner(
+                GIVEUP_NOTE_PREFIX,
+                f"{retry_count} retries: {str(error)[:100]}",
+            )
             with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                item = todo_list.get_item(todo.id)
+                existing_notes = item.notes if item else None
                 todo_list.update_item(
                     todo.id,
                     status=TodoStatus.PENDING,
-                    notes=f"Scheduled execution failed after {retry_count} retries: {str(error)[:100]}",
+                    notes=prepend_note_banner(existing_notes, giveup_banner),
                     clear_schedule=True,
                 )
             logger.error(f"TODO {todo.id} failed permanently after {retry_count} retries")
@@ -1583,6 +1693,23 @@ class Ticker:
                 or current.schedule_paused_at
             ):
                 return
+            if (
+                current.schedule_paused_at is not None
+                and current.scheduled_for is None
+            ):
+                # A LIVE pause (marker set, schedule cleared) at
+                # success-finalize time can only be a #247 delivery-pause
+                # that landed during this very run: a #154 pause of this
+                # TODO rides its own failure path, and any earlier pause
+                # would have kept it from firing at all. The pause is a
+                # deliberate failure-policy write about delivery of prior
+                # occurrences, so this run's execution success must not end
+                # it; clearing only the marker here would leave the
+                # marker-less dead-schedule shape #154 exists to prevent,
+                # plus a pause banner the resume-strip could never remove.
+                # The episode ends via explicit resume (update_item) or a
+                # delivered report, never here.
+                return
             with self.todo_manager.atomic_update(user_id) as todo_list:
                 item = todo_list.get_item(todo_id)
                 if item:
@@ -1616,9 +1743,9 @@ class Ticker:
             # PREPEND the pause reason: notes are prompt input on every run
             # (and the user's own instructions), so they must survive the
             # pause; update_item's resume-clear strips this prefix back off.
-            pause_note = (
-                f"{PAUSE_NOTE_PREFIX} {failure_count} consecutive failed "
-                f"runs: {str(error)[:100]}]"
+            pause_note = format_note_banner(
+                PAUSE_NOTE_PREFIX,
+                f"{failure_count} consecutive failed runs: {str(error)[:100]}",
             )
             with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                 item = todo_list.get_item(todo.id)

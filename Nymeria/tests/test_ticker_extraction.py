@@ -240,11 +240,14 @@ def test_continuation_pass_merges_results(tmp_path: Path, monkeypatch):
     """After an initial iteration_limit, the continuation result is merged."""
     ticker, agent = _make_ticker(tmp_path)
     todo = _add_todo(agent)
+    # The entry slot mirrors the item's scheduled_for, as at a real fire
+    # (the schedule row is always derived from the item): a divergent slot
+    # would read as a mid-run schedule rewrite and skip finalize's re-arm.
     entry = ScheduledTodoEntry(
         todo_id=todo.id,
         user_id="owner",
         thread_id="thread-1",
-        scheduled_for=time.time() - 1,
+        scheduled_for=todo.scheduled_for.timestamp(),
         task_preview=todo.task,
         created_at=time.time(),
     )
@@ -293,11 +296,12 @@ def test_double_iteration_limit_triggers_backoff(tmp_path: Path, monkeypatch):
     """Two consecutive iteration limits reschedule 10 min ahead."""
     ticker, agent = _make_ticker(tmp_path)
     todo = _add_todo(agent)
+    # Entry slot mirrors the item (see test_continuation_pass_merges_results).
     entry = ScheduledTodoEntry(
         todo_id=todo.id,
         user_id="owner",
         thread_id="thread-1",
-        scheduled_for=time.time() - 1,
+        scheduled_for=todo.scheduled_for.timestamp(),
         task_preview=todo.task,
         created_at=time.time(),
     )
@@ -426,11 +430,14 @@ def _add_workflow_todo(agent: FakeAgent, *, recurrence: str | None = None):
 
 
 def _entry_for(todo) -> ScheduledTodoEntry:
+    # Entry slot mirrors the item's scheduled_for, as at a real fire; a
+    # divergent slot reads as a mid-run schedule rewrite and is honored
+    # instead of re-armed.
     return ScheduledTodoEntry(
         todo_id=todo.id,
         user_id="owner",
         thread_id="thread-1",
-        scheduled_for=time.time() - 1,
+        scheduled_for=todo.scheduled_for.timestamp(),
         task_preview=todo.task,
         created_at=time.time(),
     )

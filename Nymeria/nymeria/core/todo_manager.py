@@ -24,13 +24,67 @@ if TYPE_CHECKING:
 # Thread-safe locks for todo operations (keyed by user_id)
 _todo_locks = KeyedRLockMap()
 
-# The auto-pause banner prefix, a THREE-SITE contract: the ticker's #154
+# Notes-banner contracts. Notes are prompt input on every run and carry the
+# user's own instructions, so no automation may overwrite them wholesale;
+# banners are PREPENDED and later stripped by prefix.
+#
+# The auto-pause banner prefix is a THREE-SITE contract: the ticker's #154
 # pause and delivery_accounting's #247 pause both PREPEND a note starting
 # with this to the TODO's notes, and update_item's resume-clear strips a
 # note by matching it. Rewording any writer without this constant would
-# silently stop the strip, leaving a stale pause banner in notes (which are
-# prompt input on every run).
+# silently stop the strip, leaving a stale pause banner in notes.
 PAUSE_NOTE_PREFIX = "[auto-paused after"
+
+# TRANSIENT banners (the ticker's double-iteration-limit backoff and the
+# non-recurring retry-give-up) have no explicit resume event, so they dedup
+# on write instead: prepend_note_banner strips any LEADING transient
+# banner(s) first, keeping at most one transient banner in front of the
+# notes. The pause banner is deliberately not transient (its strip contract
+# is the explicit resume above) and outranks them: a pause prepends in front
+# of a transient banner, and the resume-strip exposes the transient again.
+BACKOFF_NOTE_PREFIX = "[iteration-limit backoff:"
+GIVEUP_NOTE_PREFIX = "[run failed after"
+TRANSIENT_NOTE_PREFIXES: tuple = (BACKOFF_NOTE_PREFIX, GIVEUP_NOTE_PREFIX)
+
+
+def format_note_banner(prefix: str, body: str) -> str:
+    """Build a ``"[prefix body]"`` notes banner.
+
+    ``]`` in the body (e.g. a ``KeyError['x']`` repr in an error message) is
+    sanitized to ``)`` so the FIRST ``]`` always terminates the banner:
+    both the resume-clear strip in ``update_item`` and
+    ``prepend_note_banner``'s replace-scan find a banner's end that way, and
+    an embedded bracket used to leave un-strippable residue in the notes.
+    """
+    return f"{prefix} {body.replace(']', ')')}]"
+
+
+def strip_leading_note_banner(text: str, prefixes) -> str:
+    """Remove one leading banner matching any of ``prefixes``, if present."""
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            close = text.find("]")
+            if close != -1:
+                return text[close + 1 :].strip()
+    return text
+
+
+def prepend_note_banner(existing: Optional[str], banner: str) -> str:
+    """Prepend a TRANSIENT banner, replacing any leading transient banners.
+
+    ``banner`` must come from ``format_note_banner`` with a
+    ``TRANSIENT_NOTE_PREFIXES`` prefix. Strips consecutive leading transient
+    banners of ANY kind first (a give-up replaces a stale backoff and vice
+    versa), so repeated automation events never stack banners in front of
+    the user's notes.
+    """
+    text = (existing or "").strip()
+    while True:
+        stripped = strip_leading_note_banner(text, TRANSIENT_NOTE_PREFIXES)
+        if stripped == text:
+            break
+        text = stripped
+    return f"{banner} {text}".strip()[:1000]
 
 
 class TodoStatus(str, Enum):
@@ -331,10 +385,11 @@ class TodoList(BaseModel):
                 # prompt input and user instructions); strip that prefix so
                 # a resumed TODO does not carry a stale pause banner.
                 existing_notes = item.notes or ""
-                if existing_notes.startswith(PAUSE_NOTE_PREFIX):
-                    close = existing_notes.find("]")
-                    if close != -1:
-                        item.notes = existing_notes[close + 1 :].strip() or None
+                stripped_notes = strip_leading_note_banner(
+                    existing_notes, (PAUSE_NOTE_PREFIX,)
+                )
+                if stripped_notes != existing_notes:
+                    item.notes = stripped_notes or None
             item.scheduled_for = scheduled_for
         # thread_id is independent of the schedule: an unspecified one is
         # preserved (scoping stays even when the schedule is cleared), and an
