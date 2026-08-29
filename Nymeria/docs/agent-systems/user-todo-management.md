@@ -201,6 +201,32 @@ When a scheduled TODO succeeds:
 3. Reset status to `pending`
 4. Re-sync to TodoScheduleDB
 
+A guard gates all four steps: **a schedule write made during the TODO's own
+fire turn wins over the post-run automation**. The ticker never touches
+`scheduled_for` while a run is in flight, so at finalize time any difference
+from the slot that fired, including None from a mid-run `clear_schedule`,
+proves a deliberate write (the run's own `nym_todo` re-arm, a GUI/REST edit,
+or the done-path advance). The ticker then skips the re-arm/clear, stamps
+`last_execution` with the slot that actually ran, returns its own fire-start
+IN_PROGRESS to PENDING (a lifecycle write, not agent intent; any other
+status the run set is preserved), and re-syncs the schedule row from the
+item, so a mid-run re-arm to a time already past fires on the next poll
+instead of being lost. The same guard covers the recurring retry-give-up
+re-arm, the workflow TODO auto-close, and the double-iteration-limit
+backoff. Two schedule writers deliberately stay outside it: the
+non-recurring retry-give-up dead-stop still clears the schedule (honoring a
+re-arm there would let a permanently failing self-rescheduling one-shot
+retry forever with no pause backstop; the clear is loud, with per-retry
+failure notifications and a note banner), and the #154/#247 failure-policy
+pauses are deliberate schedule writes of their own, not post-run automation.
+A pause that lands mid-run is itself honored at finalize: the cleared
+schedule, pause marker, delivery streak, and pause banner all survive the
+success path's streak reset. Before 2026-08-29 the re-arm was
+unconditional: it silently destroyed mid-run re-arms on recurring TODOs
+("remind me again in 35 minutes", two lost medication-reminder wakes in
+production), and the non-recurring post-run clear killed the
+self-rescheduling-watcher pattern the `nym_todo` docstring recommends.
+
 A recurring schedule has TWO writers for one occurrence: that ticker re-arm,
 and the completion itself (the `nym_todo` tool, the MCP completion, the REST
 complete / PATCH-to-done endpoints, `/todos complete`). The ticker re-arm
@@ -209,11 +235,20 @@ anchors on the OCCURRENCE being completed via the shared
 `core/todo_constants.resolve_done_recurrence_anchor` (`last_execution`, else
 `scheduled_for`, else now). Neither trusts whatever the schedule row happens
 to say at write time, and both land the same slot: a "done" during
-the scheduled turn and a "done" minutes after the ticker already re-armed both
-land the same next slot, and a second write for the same occurrence is a no-op.
+the scheduled turn moves `scheduled_for` off the fired slot, so the guard
+above makes finalize honor it rather than rewrite the same value, and a
+"done" minutes after the ticker already re-armed is a no-op.
 Anchoring on the current row instead advanced twice and silently dropped the
 following occurrence, which is what skipped five daily reminders in production
 before 2026-08-26.
+
+One cadence consequence of honoring mid-run re-arms: fixed-duration
+recurrence advances from the last FIRED slot, so a chain of re-arms
+(13:00 fires, re-arms 13:38, 13:38 fires, ...) re-anchors the daily slot on
+wherever the chain ends unless it ends in a "done" (whose anchor restores
+the original cadence) or an explicit re-arm to the original time. A stable
+cadence anchor for fixed durations is an open design question (backlog
+#295).
 
 Two consequences of the occurrence anchor are deliberate. Marking a recurring
 TODO done EARLY (before the armed slot fires) does not consume that
@@ -229,8 +264,11 @@ If a scheduled run fails, it is retried on subsequent polls up to
 `MAX_RETRIES` (3). On give-up, a **recurring** TODO skips only the failed
 occurrence and re-arms at its next slot (so a transient outage cannot silently
 kill the schedule by leaving `recurrence` set with a null `scheduled_for`); a
-**one-time** TODO has its schedule cleared and is left `pending` with a failure
-note.
+**one-time** TODO has its schedule cleared and is left `pending` with a
+failure note. The failure note, like the double-iteration-limit backoff note,
+is a banner PREPENDED to the TODO's existing notes (notes are prompt input
+and may carry the user's instructions), replacing a previous banner of the
+same kind rather than stacking.
 
 Recurring failures also feed an escalation policy so a permanently broken
 schedule cannot loop silently forever. Each exhausted occurrence increments

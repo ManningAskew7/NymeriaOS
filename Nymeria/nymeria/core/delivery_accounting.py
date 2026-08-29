@@ -41,7 +41,12 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .notification_dispatch import send_owner_alert
-from .todo_manager import PAUSE_NOTE_PREFIX, TodoManager, TodoStatus
+from .todo_manager import (
+    PAUSE_NOTE_PREFIX,
+    TodoManager,
+    TodoStatus,
+    format_note_banner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -238,9 +243,9 @@ def _pause_undelivered_schedule(
     persisted.
     """
     try:
-        pause_note = (
-            f"{PAUSE_NOTE_PREFIX} {failure_count} consecutive undelivered "
-            f"runs: {error[:100]}]"
+        pause_note = format_note_banner(
+            PAUSE_NOTE_PREFIX,
+            f"{failure_count} consecutive undelivered runs: {error[:100]}",
         )
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)

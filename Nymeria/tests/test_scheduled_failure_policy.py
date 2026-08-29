@@ -108,12 +108,20 @@ def _get_trigger(manager: TriggerManager, trigger_id: str, user_id: str = "owner
     return stored
 
 
-def _entry_for(todo, user_id: str = "owner") -> ScheduledTodoEntry:
+def _entry_for(agent, todo, user_id: str = "owner") -> ScheduledTodoEntry:
+    # Entry slot mirrors the item's CURRENT scheduled_for, re-read from the
+    # store, as at a real fire (the schedule row is always derived from the
+    # item). Previously an approximate time.time() - 60 that matched the
+    # item only within sub-second luck, and a stale snapshot would diverge
+    # after the first occurrence re-arms; a divergent slot reads as a
+    # mid-run schedule rewrite and skips the re-arm under test.
+    current = agent.todo_manager.get_todo_by_id(user_id, todo.id)
+    assert current is not None and current.scheduled_for is not None
     return ScheduledTodoEntry(
         todo_id=todo.id,
         user_id=user_id,
         thread_id="thread-1",
-        scheduled_for=time.time() - 60,
+        scheduled_for=current.scheduled_for.timestamp(),
         task_preview=todo.task,
         created_at=time.time(),
     )
@@ -178,7 +186,7 @@ def test_failed_occurrence_increments_streak_once_and_rearms(
     todo = _add_recurring_todo(agent)
     agent.astream = _failing_astream()
 
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     # ONE increment per occurrence, not one per retry attempt.
@@ -195,14 +203,14 @@ def test_successful_occurrence_resets_streak(tmp_path, quiet_ticker_module):
     ticker, agent = _make_ticker(tmp_path)
     todo = _add_recurring_todo(agent)
     agent.astream = _failing_astream()
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
     assert (
         _get_todo(agent, todo.id).consecutive_failures
         == 1
     )
 
     agent.astream = _succeeding_astream()
-    ticker._execute_scheduled_todo(_entry_for(todo))
+    ticker._execute_scheduled_todo(_entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     assert current.consecutive_failures == 0
@@ -221,10 +229,10 @@ def test_alert_fires_exactly_once_at_threshold(tmp_path, quiet_ticker_module):
     todo = _add_recurring_todo(agent)
     agent.astream = _failing_astream("no such model")
 
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
     assert alerts == []  # first failure: could be a one-off
 
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
     assert len(alerts) == 1
     message = alerts[0]["message"]
     assert "Morning briefing" in message
@@ -232,8 +240,8 @@ def test_alert_fires_exactly_once_at_threshold(tmp_path, quiet_ticker_module):
     assert "no such model" in message
     assert alerts[0]["user_id"] == "owner"
 
-    _run_one_occurrence(ticker, _entry_for(todo))
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
     assert len(alerts) == 1  # still exactly one for the episode
 
 
@@ -248,8 +256,8 @@ def test_pause_at_threshold_stops_the_schedule(tmp_path, quiet_ticker_module):
     todo = _add_recurring_todo(agent)
     agent.astream = _failing_astream()
 
-    _run_one_occurrence(ticker, _entry_for(todo))
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     assert current.schedule_paused_at is not None
@@ -279,7 +287,7 @@ def test_explicit_reschedule_resumes_a_paused_todo(
     ticker, agent = _make_ticker(tmp_path, alert_after=0, pause_after=1)
     todo = _add_recurring_todo(agent)
     agent.astream = _failing_astream()
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
     assert (
         _get_todo(agent, todo.id).schedule_paused_at
         is not None
@@ -308,7 +316,7 @@ def test_ticker_rearm_preserves_streak_on_unpaused_todo(
     ticker, agent = _make_ticker(tmp_path)
     todo = _add_recurring_todo(agent)
     agent.astream = _failing_astream()
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     # The occurrence ended with a re-arm (scheduled_for set by update_item);
@@ -339,7 +347,7 @@ def test_pause_preserves_and_resume_restores_user_notes(
         todo_list.update_item(todo.id, notes="Include weather; skip weekends")
     agent.astream = _failing_astream()
 
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     assert (current.notes or "").startswith("[auto-paused after 1 consecutive")
@@ -367,7 +375,7 @@ def test_zero_thresholds_disable_alert_and_pause(
     agent.astream = _failing_astream()
 
     for _ in range(4):
-        _run_one_occurrence(ticker, _entry_for(todo))
+        _run_one_occurrence(ticker, _entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     assert current.consecutive_failures == 4  # counting still happens
@@ -396,7 +404,7 @@ def test_non_recurring_failure_keeps_todays_behavior(
     agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
     agent.astream = _failing_astream()
 
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     assert current.consecutive_failures == 0
@@ -436,11 +444,11 @@ def test_workflow_todo_success_resets_streak(tmp_path, quiet_ticker_module):
     executor = _FlippableWorkflowExecutor()
     ticker._turn_executor = executor
 
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
     assert _get_todo(agent, todo.id).consecutive_failures == 1
 
     executor.envelope = {"ok": True, "status": "ok"}
-    ticker._execute_scheduled_todo(_entry_for(todo))
+    ticker._execute_scheduled_todo(_entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     assert current.consecutive_failures == 0
@@ -476,7 +484,7 @@ def test_ticker_survives_a_raising_alert_dispatch(tmp_path, monkeypatch):
     todo = _add_recurring_todo(agent)
     agent.astream = _failing_astream()
 
-    _run_one_occurrence(ticker, _entry_for(todo))  # must not raise
+    _run_one_occurrence(ticker, _entry_for(agent, todo))  # must not raise
 
     current = _get_todo(agent, todo.id)
     assert current.consecutive_failures == 1
@@ -556,7 +564,7 @@ def test_workflow_todo_failure_rides_the_policy(tmp_path, quiet_ticker_module):
     agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
     ticker._turn_executor = _FailingWorkflowExecutor()
 
-    _run_one_occurrence(ticker, _entry_for(todo))
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
 
     current = _get_todo(agent, todo.id)
     assert current.consecutive_failures == 1
@@ -830,3 +838,34 @@ def test_trigger_alert_failure_does_not_break_the_fire(
     assert stored.health_status == "failing"
     executions = manager.get_executions("owner")
     assert len(executions) == 5
+
+
+def test_pause_banner_with_brackets_strips_clean_on_resume(
+    tmp_path, quiet_ticker_module
+):
+    """A pause reason containing ']' (e.g. a KeyError repr) must not break
+    the resume-clear's banner strip: the banner body is sanitized so the
+    first ']' always terminates the banner, and resume leaves the user's own
+    notes exactly as they were."""
+    ticker, agent = _make_ticker(tmp_path, alert_after=0, pause_after=1)
+    todo = _add_recurring_todo(agent)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, notes="med instructions")
+    agent.astream = _failing_astream("KeyError['dose'] boom")
+
+    _run_one_occurrence(ticker, _entry_for(agent, todo))
+
+    paused = _get_todo(agent, todo.id)
+    assert paused.schedule_paused_at is not None
+    assert (paused.notes or "").startswith("[auto-paused after")
+    assert "med instructions" in (paused.notes or "")
+
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(
+            todo.id,
+            scheduled_for=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    resumed = _get_todo(agent, todo.id)
+    assert resumed.schedule_paused_at is None
+    assert resumed.notes == "med instructions"  # no banner residue

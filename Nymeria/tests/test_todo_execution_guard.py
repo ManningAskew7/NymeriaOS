@@ -962,3 +962,406 @@ def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch, api_client_buil
 
     assert len(archive_thread_ids) == 1
     assert archive_thread_ids[0] != main_thread_id
+
+
+# ── Mid-run schedule edits win over the post-run automation ──────────────
+# A schedule write made DURING a TODO's own fire turn (agent tool, REST/GUI,
+# or the done-path re-arm) must survive the ticker's post-run re-arm/clear.
+# Before 2026-08-29 the finalize path rewrote the schedule unconditionally
+# from its pre-run snapshot, silently destroying mid-run re-arms (two lost
+# medication-reminder wakes in production) and clearing the documented
+# self-rescheduling-watcher pattern for non-recurring TODOs.
+
+
+def _rewrite_mid_run(
+    agent: FakeAgent,
+    todo_id: str,
+    *,
+    scheduled_for: datetime | None = None,
+    clear_schedule: bool = False,
+    status: TodoStatus | None = None,
+    user_id: str = "owner",
+) -> None:
+    """Simulate the fire turn editing its own TODO (tool/REST path shape)."""
+    with agent.todo_manager.atomic_update(user_id) as todo_list:
+        assert todo_list.update_item(
+            todo_id,
+            scheduled_for=scheduled_for,
+            clear_schedule=clear_schedule,
+            status=status,
+        )
+    agent.todo_manager.sync_schedule_to_db(user_id, todo_id, agent._schedule_db)
+
+
+def test_mid_run_reschedule_survives_recurring_rearm(
+    tmp_path: Path, api_client_builder
+):
+    """A recurring TODO that re-arms itself during its own fire turn keeps the
+    mid-run wake: the post-run re-arm must not overwrite it with
+    fired-slot + interval, and last_execution records the slot that ran."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_recurring_todo(
+        agent, task="Medication hound", scheduled_for=fire_time, recurrence="1d"
+    )
+    entry = _entry_for(todo, fire_time)
+    rearm = fire_time + timedelta(minutes=38)
+    _rewrite_mid_run(
+        agent, todo.id, scheduled_for=rearm, status=TodoStatus.IN_PROGRESS
+    )
+
+    ticker._handle_recurrence(entry, todo)
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for == rearm
+    # The IN_PROGRESS at fire start is the ticker's own lifecycle write, so
+    # the end-of-run transition back to PENDING still applies on the honored
+    # branch (a DONE set by the run is preserved); only the SCHEDULE write is
+    # what the guard protects.
+    assert refreshed.status == TodoStatus.PENDING
+    assert refreshed.last_execution is not None
+    assert abs(refreshed.last_execution.timestamp() - fire_time.timestamp()) < 1
+    row = agent._schedule_db.get_entry(todo.id)
+    assert row is not None
+    assert abs(row.scheduled_for - rearm.timestamp()) < 1
+
+
+def test_mid_run_reschedule_survives_oneshot_clear(
+    tmp_path: Path, api_client_builder
+):
+    """A non-recurring TODO that re-arms itself mid-run (the documented
+    self-rescheduling-watcher pattern) must not have its schedule cleared by
+    the post-run finalize."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_scheduled_todo(agent, task="Watcher", scheduled_for=fire_time)
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    entry = _entry_for(todo, fire_time)
+    rearm = fire_time + timedelta(minutes=35)
+    _rewrite_mid_run(agent, todo.id, scheduled_for=rearm)
+
+    ticker._handle_recurrence(entry, todo)
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for == rearm
+    assert refreshed.last_execution is not None
+    assert abs(refreshed.last_execution.timestamp() - fire_time.timestamp()) < 1
+    row = agent._schedule_db.get_entry(todo.id)
+    assert row is not None
+    assert abs(row.scheduled_for - rearm.timestamp()) < 1
+
+
+def test_mid_run_clear_schedule_is_not_resurrected(
+    tmp_path: Path, api_client_builder
+):
+    """An explicit clear_schedule during the fire turn is honored: the
+    post-run re-arm must not resurrect the next recurrence slot."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_recurring_todo(
+        agent, task="Stopped hound", scheduled_for=fire_time, recurrence="1d"
+    )
+    entry = _entry_for(todo, fire_time)
+    _rewrite_mid_run(agent, todo.id, clear_schedule=True)
+
+    ticker._handle_recurrence(entry, todo)
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for is None
+    assert refreshed.recurrence == "1d"  # recurrence untouched, schedule off
+    assert refreshed.last_execution is not None
+    assert abs(refreshed.last_execution.timestamp() - fire_time.timestamp()) < 1
+    assert agent._schedule_db.get_entry(todo.id) is None
+
+
+def test_mid_run_rearm_to_now_past_time_stays_due(
+    tmp_path: Path, api_client_builder
+):
+    """A mid-run re-arm to a time that has already passed by finalize keeps
+    its schedule row and shows up as due, so it fires on the next poll."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    todo = _add_recurring_todo(
+        agent, task="Quick re-ping", scheduled_for=fire_time, recurrence="1d"
+    )
+    entry = _entry_for(todo, fire_time)
+    rearm = fire_time + timedelta(minutes=1)  # already 4 minutes in the past
+    _rewrite_mid_run(agent, todo.id, scheduled_for=rearm)
+
+    ticker._handle_recurrence(entry, todo)
+
+    due_ids = [e.todo_id for e in agent._schedule_db.get_due(before=time.time())]
+    assert todo.id in due_ids
+
+
+def test_mid_run_done_advance_is_left_alone_by_finalize(
+    tmp_path: Path, api_client_builder
+):
+    """A recurring TODO marked done during its own fire turn was already
+    advanced to the next slot by the done-path; finalize must leave that armed
+    slot alone and stamp last_execution with the slot that ran.
+
+    Teeth note: on the pre-guard code this test passed by idempotence (the
+    re-arm recomputed the same armed slot and stamped the same value), so its
+    teeth are the last_execution/slot semantics, proven red by perturbing the
+    honored branch's stamp; it guards the done-anchor invariant, not the
+    guard's existence."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_recurring_todo(
+        agent, task="Daily check", scheduled_for=fire_time, recurrence="1d"
+    )
+    entry = _entry_for(todo, fire_time)
+    armed = fire_time + timedelta(days=1)  # what the done-path arms
+    _rewrite_mid_run(
+        agent, todo.id, scheduled_for=armed, status=TodoStatus.PENDING
+    )
+
+    ticker._handle_recurrence(entry, todo)
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for == armed
+    assert refreshed.last_execution is not None
+    assert abs(refreshed.last_execution.timestamp() - fire_time.timestamp()) < 1
+
+
+def test_retry_giveup_honors_mid_run_reschedule(
+    tmp_path: Path, api_client_builder
+):
+    """The recurring retry-give-up re-arm routes through the same guard: a
+    wake the failing run set for itself survives instead of being replaced by
+    the next recurrence slot."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_recurring_todo(
+        agent, task="Flaky feed", scheduled_for=fire_time, recurrence="1d"
+    )
+    entry = _entry_for(todo, fire_time)
+    rearm = fire_time + timedelta(minutes=38)
+    _rewrite_mid_run(agent, todo.id, scheduled_for=rearm)
+
+    for _ in range(Ticker.MAX_RETRIES):
+        ticker._handle_execution_failure(
+            entry, todo, todo.thread_id, RuntimeError("proxy 503")
+        )
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for == rearm
+    assert refreshed.consecutive_failures == 1  # streak still recorded
+    row = agent._schedule_db.get_entry(todo.id)
+    assert row is not None
+    assert abs(row.scheduled_for - rearm.timestamp()) < 1
+
+
+def test_workflow_todo_mid_run_rearm_skips_auto_done_close(
+    tmp_path: Path, api_client_builder
+):
+    """A non-recurring workflow TODO whose schedule was rewritten during the
+    run keeps the new wake: the post-run auto-DONE close would park a live
+    wake behind a done status, so it must be skipped."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        todo = todo_list.add_item(
+            "Scheduled workflow",
+            scheduled_for=fire_time,
+            thread_id="thread-1",
+            workflow_id="wf-test",
+        )
+        assert todo is not None
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    entry = _entry_for(todo, fire_time)
+    rearm = fire_time + timedelta(minutes=20)
+
+    async def fake_run_workflow(workflow_id, params, *, user_id, thread_id):
+        _rewrite_mid_run(agent, todo.id, scheduled_for=rearm)
+        return {"ok": True, "status": "completed"}
+
+    ticker._turn_executor.run_workflow = fake_run_workflow
+
+    ticker._execute_workflow_todo(entry, todo, "thread-1")
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.status != TodoStatus.DONE
+    assert refreshed.scheduled_for == rearm
+    row = agent._schedule_db.get_entry(todo.id)
+    assert row is not None
+    assert abs(row.scheduled_for - rearm.timestamp()) < 1
+
+
+def test_backoff_honors_mid_run_reschedule(tmp_path: Path, api_client_builder):
+    """The double-iteration-limit backoff must not overwrite a wake (or the
+    notes) the run set for itself."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_scheduled_todo(agent, task="Long task", scheduled_for=fire_time)
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, notes="user instructions here")
+    entry = _entry_for(todo, fire_time)
+    rearm = fire_time + timedelta(minutes=45)
+    _rewrite_mid_run(agent, todo.id, scheduled_for=rearm)
+
+    ticker._backoff_after_double_limit(entry, todo, "thread-1")
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for == rearm
+    assert refreshed.notes == "user instructions here"
+
+
+def test_backoff_prepends_banner_and_replaces_it_on_repeat(
+    tmp_path: Path, api_client_builder
+):
+    """Without a mid-run edit the backoff reschedules +10min, but its note is
+    PREPENDED to the existing notes (notes are prompt input and user
+    instructions), and a second backoff replaces its banner instead of
+    stacking."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_scheduled_todo(agent, task="Long task", scheduled_for=fire_time)
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, notes="user instructions here")
+    entry = _entry_for(todo, fire_time)
+
+    ticker._backoff_after_double_limit(entry, todo, "thread-1")
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for is not None
+    assert refreshed.scheduled_for > datetime.now(timezone.utc)
+    assert "user instructions here" in (refreshed.notes or "")
+    assert (refreshed.notes or "").index("user instructions here") > 0
+
+    # Second backoff (fired at the slot the first one armed): one banner only.
+    second_entry = _entry_for(refreshed, refreshed.scheduled_for)
+    ticker._backoff_after_double_limit(second_entry, refreshed, "thread-1")
+    again = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert again is not None
+    banner_prefix = ticker_module.BACKOFF_NOTE_PREFIX
+    assert (again.notes or "").count(banner_prefix) == 1
+    assert "user instructions here" in (again.notes or "")
+
+
+def test_retry_giveup_prepends_failure_note(tmp_path: Path, api_client_builder):
+    """The non-recurring give-up failure note is prepended, preserving the
+    TODO's existing notes instead of overwriting them."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_scheduled_todo(agent, task="One-shot", scheduled_for=fire_time)
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, notes="user instructions here")
+    entry = _entry_for(todo, fire_time)
+
+    for _ in range(Ticker.MAX_RETRIES):
+        ticker._handle_execution_failure(
+            entry, todo, todo.thread_id, RuntimeError("boom")
+        )
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for is None
+    assert "failed after 3 retries" in (refreshed.notes or "")
+    assert "user instructions here" in (refreshed.notes or "")
+
+
+def test_mid_run_delivery_pause_survives_success_finalize(
+    tmp_path: Path, api_client_builder
+):
+    """A #247 delivery-pause that lands while the TODO's own turn is running
+    must survive the success finalize wholesale: schedule stays cleared (not
+    resurrected), and the pause marker, delivery streak, and pause banner are
+    not half-undone by the post-run failure-streak reset (which would leave
+    the marker-less dead-schedule shape #154 exists to prevent)."""
+    from nymeria.core import delivery_accounting
+
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_recurring_todo(
+        agent, task="Daily digest", scheduled_for=fire_time, recurrence="1d"
+    )
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, notes="user instructions here")
+    entry = _entry_for(todo, fire_time)
+
+    async def pausing_astream(**kwargs):
+        # The real #247 pause writer fires mid-turn (a delivery report for a
+        # prior occurrence crossing the pause threshold).
+        assert delivery_accounting._pause_undelivered_schedule(
+            agent.todo_manager,
+            agent._schedule_db,
+            "owner",
+            todo.id,
+            5,
+            "chat delivery failed",
+        )
+        with agent.todo_manager.atomic_update("owner") as todo_list:
+            item = todo_list.get_item(todo.id)
+            item.delivery_failures = 5
+        yield {"type": "response", "content": "did the thing"}
+
+    agent.astream = pausing_astream
+
+    ticker._execute_scheduled_todo(entry)
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for is None  # pause honored, not resurrected
+    assert refreshed.schedule_paused_at is not None  # marker survives reset
+    assert refreshed.delivery_failures == 5  # streak survives
+    assert (refreshed.notes or "").startswith("[auto-paused after")
+    assert "user instructions here" in (refreshed.notes or "")
+    assert agent._schedule_db.get_entry(todo.id) is None
+
+
+def test_transient_banners_replace_across_kinds(
+    tmp_path: Path, api_client_builder
+):
+    """A give-up banner replaces a leading backoff banner (and vice versa):
+    at most one transient banner leads the notes, so stale banners never
+    accumulate in front of the user's instructions."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_scheduled_todo(agent, task="One-shot", scheduled_for=fire_time)
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, notes="user instructions here")
+
+    ticker._backoff_after_double_limit(
+        _entry_for(todo, fire_time), todo, "thread-1"
+    )
+    backed_off = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert backed_off is not None and backed_off.scheduled_for is not None
+
+    second_entry = _entry_for(backed_off, backed_off.scheduled_for)
+    for _ in range(Ticker.MAX_RETRIES):
+        ticker._handle_execution_failure(
+            second_entry, backed_off, "thread-1", RuntimeError("boom")
+        )
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    notes = refreshed.notes or ""
+    assert "failed after 3 retries" in notes
+    assert ticker_module.BACKOFF_NOTE_PREFIX not in notes  # replaced, not buried
+    assert "user instructions here" in notes
