@@ -96,9 +96,10 @@ disclaimer), or run a free local model with Ollama (no account at all; the
 wizard lists your installed models and checks the server is running).
 Everything
 else gets free, keyless defaults you can change later in the app: local
-semantic memory, keyless web search (the bundled SearXNG container on Docker,
-in-process metasearch elsewhere), the built-in page fetcher, local voice on
-bare-metal installs, and all six bundled skill kits. Full setup walks every step
+semantic memory, keyless in-process web search (DDGS metasearch on every
+shape; picking SearXNG instead still deploys its bundled container on
+Docker), the built-in page fetcher, local voice on
+bare-metal installs, and the default bundled skill kits. Full setup walks every step
 instead (tool families, embeddings, image generation, voice, context tuning,
 agent limits). A third option, finishing setup in the desktop app, is on the
 way.

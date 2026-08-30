@@ -19,10 +19,11 @@ Defaults chosen for zero extra auth or cost:
 - Web fetch: `fetch_url_nymeria`, which can extract from pages with your already
   configured primary LLM, so it needs no separate key. (It is also the
   default-checked option in the full path's fetch step.)
-- Web search: keyless, by hosting shape. Docker gets `web_search_searxng`
-  backed by the bundled SearXNG sidecar (finalize enables the `search` compose
-  profile and writes SEARXNG_BASE_URL); bare-metal gets `web_search_ddgs`, the
-  in-process keyless metasearch (no infra at all).
+- Web search: `web_search_ddgs`, the in-process keyless metasearch, on every
+  hosting shape (since 2026-08-30; the head-to-head behind dropping the
+  SearXNG-on-Docker default is recorded on
+  `core/user_profile.DEFAULT_WEB_TOOL_NAMES`). Picking SearXNG in the full
+  path still deploys the sidecar; it is just not the quick default.
 - Voice: the free local pair (kokoro TTS + faster-whisper STT) on bare-metal
   hosting only; it runs in-process and needs the voice-local extra, which
   finalize points out. Docker quickstart leaves voice off: the slim image
@@ -89,11 +90,10 @@ QUICK_KEEP_STEP_IDS = frozenset(
 # in family_catalog so the full-path fetch step and the quick path agree.
 QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 
-# Keyless web search defaults, by hosting shape. Docker stacks bundle the
-# SearXNG sidecar (the more robust self-hosted aggregator); bare-metal installs
-# get the in-process ddgs metasearch, which needs no infra at all.
-QUICK_WEB_SEARCH_DOCKER = ("web_search_searxng",)
-QUICK_WEB_SEARCH_LOCAL = ("web_search_ddgs",)
+# Keyless web search default, every hosting shape (single source in
+# family_catalog / DEFAULT_WEB_TOOL_NAMES, shared with the full path's
+# default-checked pick and the backend's no-wizard seeding).
+QUICK_WEB_SEARCH_DEFAULT = tuple(family_catalog.default_checked_web_search())
 
 # Free local voice pair (bare-metal hosting only; in Docker the slim image has
 # no voice engines, so quickstart leaves voice off there).
@@ -275,9 +275,7 @@ def apply_quick_hosting_defaults(state: "WizardState") -> None:
     seeded = state.extras.setdefault("quick_seeded", {})
     docker = state.hosting is HostingOption.DOCKER
 
-    desired_search = list(
-        QUICK_WEB_SEARCH_DOCKER if docker else QUICK_WEB_SEARCH_LOCAL
-    )
+    desired_search = list(QUICK_WEB_SEARCH_DEFAULT)
     if "web_search" not in state.extras or (
         state.extras.get("web_search") == seeded.get("web_search")
     ):
@@ -335,8 +333,7 @@ __all__ = [
     "QUICK_FETCH_DEFAULT",
     "QUICK_STT_DEFAULT",
     "QUICK_TTS_DEFAULT",
-    "QUICK_WEB_SEARCH_DOCKER",
-    "QUICK_WEB_SEARCH_LOCAL",
+    "QUICK_WEB_SEARCH_DEFAULT",
     "apply_quick_defaults",
     "apply_quick_hosting_defaults",
     "unapply_quick_defaults",

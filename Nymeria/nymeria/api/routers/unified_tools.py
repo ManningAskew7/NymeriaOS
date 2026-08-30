@@ -55,6 +55,7 @@ def create_unified_tools_router(
             SEED_TOOLS,
             CATALOG_TOOLS,
             filter_discoverable_catalog_tool_names,
+            resolve_default_tool_names,
         )
         from ...tools.metadata import MCP_SERVER_TOOL_METADATA, get_tool_metadata
 
@@ -64,11 +65,10 @@ def create_unified_tools_router(
         profile = agent.profile_manager.get_profile(user_id)
         tool_prefs = profile.tool_preferences
 
-        dtt = tool_prefs.default_thread_tools
-        if dtt is None:
-            dtt_set = {tool.name for tool in SEED_TOOLS}
-        else:
-            dtt_set = set(dtt)
+        # None is effectively unreachable now (the lazy profile migration
+        # materializes the list); the canonical helper keeps the fallback
+        # correct regardless.
+        dtt_set = set(resolve_default_tool_names(tool_prefs.default_thread_tools))
 
         unified_tools = []
         seen = set()
@@ -213,8 +213,8 @@ def create_unified_tools_router(
         require_same_user_or_admin_fn(user, user_id)
         from ...tools import (
             ADMIN_ONLY_TOOL_NAMES,
-            SEED_TOOLS,
             DEVELOPER_ONLY_TOOL_NAMES,
+            resolve_default_tool_names,
         )
         from ...tools.metadata import get_all_tool_metadata
 
@@ -252,9 +252,12 @@ def create_unified_tools_router(
             )
 
         with agent.profile_manager.atomic_update(user_id) as profile:
-            dtt = profile.tool_preferences.default_thread_tools
-            if dtt is None:
-                dtt = [tool.name for tool in SEED_TOOLS]
+            # Effectively unreachable fallback since the lazy profile
+            # migration materializes the list; kept as the canonical helper
+            # so the pattern stays correct if that ever changes.
+            dtt = resolve_default_tool_names(
+                profile.tool_preferences.default_thread_tools
+            )
 
             if request.enabled:
                 if tool_id not in dtt:

@@ -8,7 +8,7 @@ Callable thread tools are added per-graph in _build_graph_with_prompt(), not glo
 
 Tool classification (read this before reasoning about "core" vs "optional"):
 
-- ``SEED_TOOLS`` (~14) is the code-level set that SEEDS each user's editable
+- ``SEED_TOOLS`` (~16) is the code-level set that SEEDS each user's editable
   ``default_thread_tools`` on first run (``NymeriaAgent._migrate_tool_preferences``).
   It is NOT "all tools" and NOT a runtime guarantee: a user can demote a seed
   tool out of their defaults, and any thread can disable it.
@@ -1550,6 +1550,11 @@ SEED_TOOLS = [
     # Cache-safe deferred execution: run any discoverable tool by name without
     # binding it to the thread (see tool_invoke.py).
     tool_invoke,
+    # Sub-thread orchestration (promoted from the catalog 2026-08-30 per
+    # core-toolset-plan Section A: every default thread can orchestrate
+    # sub-threads). Its module registers no ToolGroup, keeping seed/catalog
+    # disjoint.
+    spawn_thread,
 ]
 
 
@@ -1561,6 +1566,42 @@ def seed_tool_names() -> list[str]:
     not a runtime guarantee. Returns a fresh list each call.
     """
     return [t.name for t in SEED_TOOLS]
+
+
+def core_seed_tool_names() -> list[str]:
+    """The always-on core portion of a fresh profile's defaults.
+
+    ``SEED_TOOLS`` minus the capability-expansion overlay (those tools are
+    deliberately opt-in through the bundled capability kits and force-stripped
+    from profile defaults on every sync). The single canonical form of the
+    "seed minus capability expansion" computation shared by the agent's
+    startup migration, the profile manager's lazy seeding, the reset endpoint,
+    and the init wizard (``setup/tool_seed.py`` delegates here). Returns a
+    fresh list each call.
+    """
+    return [t.name for t in SEED_TOOLS if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES]
+
+
+def fresh_default_thread_tool_names() -> list[str]:
+    """What a brand-new profile's ``default_thread_tools`` is seeded with.
+
+    Core seed plus the keyless web defaults
+    (``core/user_profile.DEFAULT_WEB_TOOL_NAMES``, which carries the decision
+    rationale; search and fetch stay init-decided families, NOT
+    ``SEED_TOOLS`` members), order-preserving dedup. This is the no-wizard
+    fresh-install default, and the wizard's default-checked family steps
+    reproduce exactly this outcome when accepted unchanged, so "never ran
+    init" and "skipped through init" agree (rule parity, 2026-08-30; pinned
+    by tests/test_setup_wizard_onboarding.py). Also what ``DELETE
+    /tools/defaults`` resets to.
+    """
+    from ..core.user_profile import DEFAULT_WEB_TOOL_NAMES
+
+    names = core_seed_tool_names()
+    for name in DEFAULT_WEB_TOOL_NAMES:
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def resolve_default_tool_names(default_thread_tools) -> list[str]:
@@ -1613,6 +1654,8 @@ def _derive_public_exports() -> list[str]:
         "filter_discoverable_catalog_tool_names",
         "SEED_TOOLS",
         "seed_tool_names",
+        "core_seed_tool_names",
+        "fresh_default_thread_tool_names",
         "resolve_default_tool_names",
         "static_tool_catalog",
     }
@@ -1936,6 +1979,7 @@ __all__ = [
     "copper_get_record",
     "copper_list_records",
     "copper_update_record",
+    "core_seed_tool_names",
     "crypto_generate_random",
     "crypto_hash_text",
     "crypto_hmac_text",
@@ -2029,6 +2073,7 @@ __all__ = [
     "filter_admin_only_tools",
     "filter_developer_only_tools",
     "filter_discoverable_catalog_tool_names",
+    "fresh_default_thread_tool_names",
     "freshdesk_create_contact",
     "freshdesk_create_ticket",
     "freshdesk_delete_ticket",

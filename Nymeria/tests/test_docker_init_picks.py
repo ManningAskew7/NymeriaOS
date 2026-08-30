@@ -98,15 +98,24 @@ def test_bootstrap_admin_adopts_env_tools_on_first_get_profile(monkeypatch, tmp_
     assert tools == ["read_file", "web_search_tavily", "image_gen_gemini"]
 
 
-def test_no_env_tools_leaves_default_thread_tools_unset(monkeypatch, tmp_path):
-    # No picks: get_profile must NOT seed default_thread_tools, leaving it for the
-    # agent's core-seed migration / the SEED_TOOLS fallback (unchanged behavior).
+def test_no_env_tools_seeds_fresh_install_defaults(monkeypatch, tmp_path):
+    # No picks: get_profile seeds the fresh-install default set (core seed +
+    # keyless web defaults) since 2026-08-30, so a no-wizard boot matches a
+    # skipped-through wizard (rule parity) and a mid-session-created account
+    # is never left waiting for the agent's startup sweep.
+    from nymeria.tools import fresh_default_thread_tool_names
+
     monkeypatch.delenv(INIT_DEFAULT_THREAD_TOOLS_ENV, raising=False)
     manager = UserProfileManager(tmp_path / "data")
 
     profile = manager.get_profile(BOOTSTRAP_USER_ID)
 
-    assert profile.tool_preferences.default_thread_tools is None
+    assert (
+        profile.tool_preferences.default_thread_tools
+        == fresh_default_thread_tool_names()
+    )
+    assert "web_search_ddgs" in profile.tool_preferences.default_thread_tools
+    assert "fetch_url_nymeria" in profile.tool_preferences.default_thread_tools
 
 
 def test_env_tools_only_apply_to_bootstrap_admin(monkeypatch, tmp_path):
@@ -115,8 +124,15 @@ def test_env_tools_only_apply_to_bootstrap_admin(monkeypatch, tmp_path):
 
     other = manager.get_profile("alice")
 
-    # A non-bootstrap user ignores the install-wide picks.
-    assert other.tool_preferences.default_thread_tools is None
+    # A non-bootstrap user ignores the install-wide picks and gets the plain
+    # fresh-install default instead.
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    assert (
+        other.tool_preferences.default_thread_tools
+        == fresh_default_thread_tool_names()
+    )
+    assert "web_search_tavily" not in other.tool_preferences.default_thread_tools
 
 
 def test_env_tools_are_one_shot_once_set(monkeypatch, tmp_path):

@@ -113,29 +113,19 @@ _SKILL_KIT_LABELS: dict[str, tuple[str, str]] = {
         "Hook management",
         "Create and manage lifecycle hooks that inject context on events.",
     ),
+    "workflow-authoring": (
+        "Workflow authoring",
+        "Author, test, and publish saved Python workflows that run unattended.",
+    ),
+    "browser-control": (
+        "Browser control",
+        "Drive the user's own logged-in Chrome via the Nymeria extension.",
+    ),
+    "cli-customization": (
+        "CLI customization",
+        "Reconfigure the terminal CLI status bars on the user's behalf.",
+    ),
 }
-
-# The curated default-checked kit set (widened 2026-06-12 to the six kits
-# existing then; hook-management added 2026-08-27). Deliberately a literal,
-# NOT derived from skill_kit_choices: newly bundled kits are offered but not
-# auto-checked, so bundling a kit is never silently a default-on decision
-# (users can still enable them globally in Settings or per thread).
-# workflow-authoring stays out deliberately (see skills.md); orchestrate is
-# internal and never offered here.
-_DEFAULT_CHECKED_KITS: tuple[str, ...] = (
-    "tool-management",
-    "skill-management",
-    "mcp-management",
-    "credential-management",
-    "callable-thread-builder",
-    "trigger-management",
-    "hook-management",
-)
-
-# Keyless web fetch default: extracts from pages with the configured primary LLM,
-# so it needs no separate key. Single source of truth for the full path's default
-# check and the quick path (see quick.QUICK_FETCH_DEFAULT).
-_DEFAULT_FETCH_URL = ["fetch_url_nymeria"]
 
 
 def _present(value: str, overrides: dict[str, tuple[str, str]], fallback_desc: str) -> FamilyChoice:
@@ -212,24 +202,45 @@ def skill_kit_choices() -> list[FamilyChoice]:
 
 
 def default_checked_skill_kits() -> list[str]:
-    """The curated default-on kit set (seven kits as of 2026-08-27).
+    """The curated default-on kit set, derived from the backend's own default.
 
-    Kits load their tools only on activation, so on-by-default is cheap. The
-    set stays decoupled from the offered set (``skill_kit_choices``): newly
-    bundled kits are offered, not auto-checked. Since 2026-08-27 the backend
-    fallback for profiles that never chose
-    (``user_profile.DEFAULT_GLOBAL_SKILLS``) carries the SAME kits in the
-    same order (its watermark keeps existing profiles unaffected); keep the
-    two aligned, or the wizard starts writing a redundant Docker init-seed
-    carrier (``docker_init_seed_env`` writes it only on a real difference).
-    ``self-improve`` is a guidance skill, not a kit, and is added on
-    separately by finalize seeding.
+    Single source of truth: ``core/user_profile.DEFAULT_GLOBAL_KITS`` (the
+    same list the backend seeds for profiles that never ran the wizard), so
+    the wizard's pre-checks and a no-wizard install can never drift apart,
+    and the Docker init-seed carrier (``docker_init_seed_env``, which writes
+    its skills var only on a real difference) stays silent on a no-picks
+    install. The set stays decoupled from the offered set
+    (``skill_kit_choices``): newly bundled kits are offered, not
+    auto-checked, and widening the defaults is a deliberate edit to the
+    backend constant. Guidance skills (``self-improve``,
+    ``nymeria-resources``) are not kits and are added separately by finalize
+    seeding. Import is function-local to keep the setup package import-light.
     """
-    return list(_DEFAULT_CHECKED_KITS)
+    from ..core.user_profile import DEFAULT_GLOBAL_KITS
+
+    return list(DEFAULT_GLOBAL_KITS)
+
+
+def default_checked_web_search() -> list[str]:
+    """The default-checked web-search pick, from the backend's
+    ``DEFAULT_WEB_SEARCH_TOOLS`` (core/user_profile.py, the same constant the
+    backend seeds for profiles that never ran the wizard, so a
+    skipped-through wizard and a no-wizard install agree). One keyless
+    backend on every hosting shape since 2026-08-30 (rationale on the
+    constant): SearXNG remains offered, and picking it still deploys the
+    sidecar, it is just no longer pre-checked.
+    """
+    from ..core.user_profile import DEFAULT_WEB_SEARCH_TOOLS
+
+    return list(DEFAULT_WEB_SEARCH_TOOLS)
 
 
 def default_checked_fetch_url() -> list[str]:
-    return list(_DEFAULT_FETCH_URL)
+    """The default-checked fetch pick (``DEFAULT_FETCH_URL_TOOLS``): the
+    keyless built-in fetcher, which extracts with the configured primary LLM."""
+    from ..core.user_profile import DEFAULT_FETCH_URL_TOOLS
+
+    return list(DEFAULT_FETCH_URL_TOOLS)
 
 
 __all__ = [
@@ -239,5 +250,6 @@ __all__ = [
     "image_gen_choices",
     "skill_kit_choices",
     "default_checked_skill_kits",
+    "default_checked_web_search",
     "default_checked_fetch_url",
 ]

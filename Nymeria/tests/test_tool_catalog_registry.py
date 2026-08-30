@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1260
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1259
 
 
 def test_catalog_key_equals_tool_name():
@@ -115,7 +115,7 @@ def test_seed_tool_names_match_baseline():
 
 
 def test_seed_tools_count_matches_baseline():
-    assert len(T.SEED_TOOLS) == len(BASELINE_SEED_NAMES) == 15
+    assert len(T.SEED_TOOLS) == len(BASELINE_SEED_NAMES) == 16
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +326,7 @@ BASELINE_SEED_NAMES = [
     "slash_command",
     "run_tools_in_order",
     "tool_invoke",
+    "spawn_thread",
 ]
 
 BASELINE_ADMIN_ONLY = [
@@ -1380,7 +1381,6 @@ BASELINE_CATALOG_NAMES = [
     "slack_post_message",
     "slack_search_messages",
     "slack_update_message",
-    "spawn_thread",
     "splunk_create_search_job",
     "splunk_get_search_job",
     "splunk_get_search_results",

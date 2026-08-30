@@ -415,3 +415,61 @@ def test_skill_write_and_edit_are_optional_with_metadata():
         assert meta.category == ToolCategory.CUSTOM
         assert meta.security_level == SecurityLevel.MODERATE
         assert meta.default_enabled is False
+
+
+# --- default global skill set structural gate (2026-08-30) -------------------
+
+
+def test_default_global_skills_ship_bundled_and_bind_cleanly():
+    """Every default-on global skill must actually work on a fresh install,
+    for non-admin users too: it ships bundled, is not internal, guidance
+    skills bind nothing, kits bind only resolvable non-admin tools, and the
+    combined index lines fit the skill-index budget with room to spare.
+    """
+    from nymeria.config.settings import Settings
+    from nymeria.core.user_profile import (
+        DEFAULT_GLOBAL_GUIDANCE_SKILLS,
+        DEFAULT_GLOBAL_KITS,
+        DEFAULT_GLOBAL_SKILLS,
+    )
+    from nymeria.skills.meta_tool import AVAILABLE_SKILLS_CHAR_BUDGET
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES, static_tool_catalog
+
+    bundled = SkillManager._scan_dir(Settings().bundled_skills_dir, scope="bundled")
+    catalog = static_tool_catalog()
+
+    for name in DEFAULT_GLOBAL_SKILLS:
+        assert name in bundled, f"default skill {name} does not ship bundled"
+        assert not bundled[name].is_internal, f"default skill {name} is internal"
+
+    for name in DEFAULT_GLOBAL_GUIDANCE_SKILLS:
+        skill = bundled[name]
+        assert not skill.is_skill_kit, f"guidance skill {name} binds tools"
+
+    for name in DEFAULT_GLOBAL_KITS:
+        kit = bundled[name]
+        assert kit.is_skill_kit, f"default kit {name} is not a kit"
+        for tool_name in kit.required_tools:
+            assert tool_name in catalog, (
+                f"kit {name} requires unknown tool {tool_name}"
+            )
+            assert tool_name not in ADMIN_ONLY_TOOL_NAMES, (
+                f"default-on kit {name} binds admin-only {tool_name}, which "
+                "would fail activation for every non-admin user"
+            )
+        for nested in kit.required_skills:
+            assert nested in bundled, f"kit {name} nests unknown skill {nested}"
+            for tool_name in bundled[nested].required_tools:
+                assert tool_name in catalog, (
+                    f"kit {name} nests {nested} requiring unknown {tool_name}"
+                )
+                assert tool_name not in ADMIN_ONLY_TOOL_NAMES, (
+                    f"kit {name} nests {nested} binding admin-only {tool_name}"
+                )
+
+    # One index line per enabled skill, all within half the shared budget so
+    # user-authored skills keep room (see core-toolset-plan.md "Cost model").
+    combined = sum(
+        len(bundled[name].description or "") for name in DEFAULT_GLOBAL_SKILLS
+    )
+    assert combined < AVAILABLE_SKILLS_CHAR_BUDGET / 2

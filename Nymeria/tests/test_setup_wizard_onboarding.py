@@ -135,7 +135,17 @@ def test_seeded_tool_names_unions_built_families_and_ignores_placeholders():
         "image_gen_openai",
         "image_gen_fal",
     ]
-    assert seeded_tool_names(WizardState()) == []  # nothing chosen -> empty
+    # Nothing chosen at all (no step ran, no flags): the keyless web defaults
+    # fall back in, matching what the interactive steps would pre-check and
+    # what a no-wizard install seeds (rule parity, 2026-08-30).
+    assert seeded_tool_names(WizardState()) == [
+        "web_search_ddgs",
+        "fetch_url_nymeria",
+    ]
+    # An explicit empty pick (key present) is a decision and stays empty.
+    assert seeded_tool_names(
+        WizardState(extras={"web_search": [], "fetch_url": []})
+    ) == []
 
 
 def test_default_thread_tools_unions_core_seed_with_picks():
@@ -151,33 +161,56 @@ def test_default_thread_tools_unions_core_seed_with_picks():
         }
     )
     result = default_thread_tools_for_state(state)
-    # Core comes first, then the picks; deduped and order-preserving.
+    # Core comes first, then the picks; deduped and order-preserving. The
+    # undecided fetch family falls back to the keyless default (tavily
+    # returns links only, so the fetch dependency matters here).
     assert result[: len(core)] == core
-    assert result[len(core):] == ["web_search_tavily", "image_gen_gemini"]
+    assert result[len(core):] == [
+        "web_search_tavily",
+        "fetch_url_nymeria",
+        "image_gen_gemini",
+    ]
     assert len(result) == len(set(result))  # no duplicates
-    # No picks -> exactly the core seed.
-    assert default_thread_tools_for_state(WizardState()) == core
+    # No picks -> exactly the fresh-install default (core + keyless web),
+    # identical to what a no-wizard boot seeds (rule parity, 2026-08-30).
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    assert default_thread_tools_for_state(WizardState()) == (
+        fresh_default_thread_tool_names()
+    )
+    assert default_thread_tools_for_state(WizardState()) == core + [
+        "web_search_ddgs",
+        "fetch_url_nymeria",
+    ]
 
 
 def test_selected_global_skills_leads_with_self_improve_and_appends_picks():
     from nymeria.setup.state import WizardState
     from nymeria.setup.tool_seed import selected_global_skills_for_state
 
-    # Explicit picks: self-improve first, then the chosen kits, order-preserving.
+    # Explicit picks: the guidance skills first (self-improve and
+    # nymeria-resources, never offered in the kit multi-select), then the
+    # chosen kits, order-preserving.
     state = WizardState(extras={"skill_kits": ["mcp-management", "tool-management"]})
     assert selected_global_skills_for_state(state) == [
         "self-improve",
+        "nymeria-resources",
         "mcp-management",
         "tool-management",
     ]
-    # No picks recorded (step skipped): default to self-improve plus every
-    # offered bundled kit (widened 2026-06-12 from the curated four).
+    # No picks recorded (step skipped): the guidance skills plus the whole
+    # default-checked kit set, which must reproduce DEFAULT_GLOBAL_SKILLS
+    # exactly (order included) so the Docker carrier stays silent.
     from nymeria.setup import family_catalog
+    from nymeria.core.user_profile import DEFAULT_GLOBAL_SKILLS
 
-    assert selected_global_skills_for_state(WizardState()) == [
+    no_picks = selected_global_skills_for_state(WizardState())
+    assert no_picks == [
         "self-improve",
+        "nymeria-resources",
         *family_catalog.default_checked_skill_kits(),
     ]
+    assert no_picks == DEFAULT_GLOBAL_SKILLS
 
 
 def test_required_backend_credentials_handles_url_keyless_and_primary_key():
@@ -273,10 +306,11 @@ def test_family_catalog_skill_kits_discovered_live_and_default_checked():
 
     offered = {c.value for c in family_catalog.skill_kit_choices()}
     default_checked = family_catalog.default_checked_skill_kits()
-    # The curated default-on set: the six kits existing as of 2026-06-12
-    # plus hook-management (2026-08-27), deliberately a literal decoupled
-    # from discovery, so a newly bundled kit is offered but NOT auto-checked
-    # (user decision; default-on stays a per-kit call).
+    # The curated default-on set, derived since 2026-08-30 from the backend's
+    # DEFAULT_GLOBAL_KITS single source (still a deliberate literal decoupled
+    # from discovery, so a newly bundled kit is offered but NOT auto-checked;
+    # widened 2026-08-30 with workflow-authoring and browser-control, while
+    # cli-customization stays opt-in).
     assert default_checked == [
         "tool-management",
         "skill-management",
@@ -285,17 +319,28 @@ def test_family_catalog_skill_kits_discovered_live_and_default_checked():
         "callable-thread-builder",
         "trigger-management",
         "hook-management",
+        "workflow-authoring",
+        "browser-control",
     ]
+    assert "cli-customization" not in default_checked
     # Every default-checked kit is actually offered (discovered live).
     assert set(default_checked) <= offered
-    # The backend fallback carries the same kits as the curated set (they
-    # were aligned 2026-08-27; the subset assertion keeps them from drifting
-    # apart again).
-    assert {s for s in DEFAULT_GLOBAL_SKILLS if s != "self-improve"} <= set(
-        default_checked
+    # The wizard's checked set IS the backend fallback's kit portion, by
+    # derivation since 2026-08-30 (single source of truth; this pins the
+    # derivation so the two can never drift apart again).
+    from nymeria.core.user_profile import (
+        DEFAULT_GLOBAL_GUIDANCE_SKILLS,
+        DEFAULT_GLOBAL_KITS,
     )
-    # self-improve is a guidance skill, not a selectable kit.
-    assert "self-improve" not in offered
+
+    assert default_checked == DEFAULT_GLOBAL_KITS
+    assert DEFAULT_GLOBAL_SKILLS == [
+        *DEFAULT_GLOBAL_GUIDANCE_SKILLS,
+        *DEFAULT_GLOBAL_KITS,
+    ]
+    # Guidance skills (self-improve, nymeria-resources) bind no tools and are
+    # not selectable kits, so the wizard never offers them.
+    assert not (set(DEFAULT_GLOBAL_GUIDANCE_SKILLS) & offered)
     # Discovery is drift-proof: it surfaces bundled kits beyond the legacy four.
     assert offered  # non-empty even if the scan path changes
 

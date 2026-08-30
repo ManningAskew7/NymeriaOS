@@ -26,9 +26,31 @@ def _choices(family_choices) -> list[Choice]:
     return [Choice(c.value, c.label, c.description) for c in family_choices]
 
 
+# Family -> default-checked pick, the single map behind the interactive steps'
+# pre-checks AND the absent-key fallback in seeded_tool_names (rule parity
+# with a no-wizard install, 2026-08-30). image_gen deliberately has no entry:
+# every provider needs a key, so nothing is pre-checked.
+_FAMILY_DEFAULTS = {
+    "web_search": family_catalog.default_checked_web_search,
+    "fetch_url": family_catalog.default_checked_fetch_url,
+}
+
+
 def _extras_list(step_id: str):
+    """get_initial/store pair for a family multi-select's extras entry.
+
+    get_initial returns this run's stored pick when the key is present, else
+    the family's default-checked pick from ``_FAMILY_DEFAULTS`` (empty for
+    families without one), matching what finalize's absent-key fallback
+    seeds.
+    """
+
     def get_initial(state: WizardState) -> list[str]:
-        return list(state.extras.get(step_id, []))
+        stored = state.extras.get(step_id)
+        if isinstance(stored, list):
+            return list(stored)
+        default = _FAMILY_DEFAULTS.get(step_id)
+        return default() if default else []
 
     def store(state: WizardState, value: list[str]) -> None:
         state.extras[step_id] = list(value)
@@ -68,15 +90,24 @@ def _fetch_url_warning(state: WizardState) -> str | None:
 
 
 def make_web_search_step() -> Step:
-    """Real multi-select over the built web_search_* backends (Section B)."""
+    """Real multi-select over the built web_search_* backends (Section B).
+
+    The keyless ddgs backend is default-checked (rule parity with a no-wizard
+    install, see ``_FAMILY_DEFAULTS``), so accepting the step never leaves an
+    install searchless; keyed backends and the self-hosted SearXNG sidecar
+    are deliberate upgrades from there.
+    """
     get_initial, store = _extras_list("web_search")
+
     return multi_select_step(
         step_id="web_search",
         title="Web search backends",
         note=(
-            "Pick the web search tools for your default toolset (all six are "
-            "built and saved to your default thread tools). Every backend "
-            "except Perplexity returns links only, so add a web fetch backend next."
+            "Pick the web search tools for your default toolset (saved to your "
+            "default thread tools). The keyless DDGS metasearch is on by "
+            "default and needs no setup; keyed backends give higher quality. "
+            "Every backend except Perplexity returns links only, so keep a web "
+            "fetch backend on the next screen."
         ),
         choices=_choices(family_catalog.web_search_choices()),
         get_initial=get_initial,
@@ -91,13 +122,7 @@ def make_fetch_url_step() -> Step:
     configured primary LLM, so it needs no separate key and is a safe default
     (the quick path seeds the same one, see `quick.QUICK_FETCH_DEFAULT`).
     """
-    _, store = _extras_list("fetch_url")
-
-    def get_initial(state: WizardState) -> list[str]:
-        stored = state.extras.get("fetch_url")
-        if isinstance(stored, list):
-            return list(stored)
-        return family_catalog.default_checked_fetch_url()
+    get_initial, store = _extras_list("fetch_url")
 
     return multi_select_step(
         step_id="fetch_url",
@@ -229,12 +254,22 @@ def seeded_tool_names(state: WizardState) -> list[str]:
     resolve to real tool names today; the placeholder families contribute nothing
     until their suites land. Shared by the review screen and finalize seeding
     (`tool_seed.default_thread_tools_for_state`) so they agree on one source.
+
+    A family whose extras key is ABSENT (the step never ran and no flag was
+    passed, e.g. a non-interactive run) falls back to its default-checked
+    pick, matching what the interactive step would pre-check and what a
+    no-wizard install seeds (rule parity, 2026-08-30). Key-present-but-empty
+    means the user deliberately picked nothing and stays empty; hydrate
+    materializes every family key on reconfigure, so an existing install's
+    deliberate no-search choice is never overridden.
     """
     names: list[str] = []
     for family in ("web_search", "fetch_url", "image_gen"):
         value = state.extras.get(family)
         if isinstance(value, list):
             names.extend(str(item) for item in value)
+        elif family not in state.extras and family in _FAMILY_DEFAULTS:
+            names.extend(_FAMILY_DEFAULTS[family]())
     return names
 
 

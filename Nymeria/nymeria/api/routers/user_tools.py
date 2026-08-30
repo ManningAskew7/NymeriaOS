@@ -196,14 +196,16 @@ def create_user_tools_router(
         user_id: str,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Reset all tool preferences to defaults (the built-in seed set)."""
+        """Reset all tool preferences to the fresh-install default set."""
         require_same_user_or_admin_fn(user, user_id)
-        from ...tools import seed_tool_names
+        from ...tools import fresh_default_thread_tool_names
 
         agent = get_agent_fn()
 
         with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.default_thread_tools = seed_tool_names()
+            profile.tool_preferences.default_thread_tools = (
+                fresh_default_thread_tool_names()
+            )
             profile.tool_preferences.tool_configs.clear()
             profile.tool_preferences.custom_descriptions.clear()
             profile.updated_at = utc_now()
