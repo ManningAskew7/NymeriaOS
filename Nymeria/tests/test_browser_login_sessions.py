@@ -290,8 +290,41 @@ def test_an_ending_announces_to_desktop_and_extension_exactly_once() -> None:
     assert stop["data"]["args"]["tab_id"] == 7
     assert stop["data"]["args"]["session_id"] == ended["data"]["session_id"]
     assert stop["data"]["command_id"].startswith("bcmd_")
+    # An unpinned session (no client_id) keeps the legacy all-browsers stop.
+    assert "_target_client_id" not in stop["data"]
     # Neither announce may carry what the screen showed.
     assert _SECRET_PIXELS not in json.dumps(published, default=str)
+
+
+def test_a_pinned_sessions_stop_announce_routes_to_its_own_browser() -> None:
+    """A session pinned to a browser (single-browser routing) stamps its
+    ended-announce ``login_session_stop`` with that browser's client_id, so
+    the delivery filter hands the stop to the browser the session ran in
+    and no other browser sees a command it was never part of."""
+    published: list = []
+
+    async def run() -> None:
+        reg = BrowserLoginSessionRegistry()
+        session, _ = reg.start(
+            session_id=new_login_session_id(),
+            user_id="u1",
+            thread_id="t1",
+            tab_id=7,
+            url="https://accounts.google.com/signin",
+            client_id="nymeria-browser-desk1111",
+        )
+        session.mark_ended(REASON_COMPLETED)
+
+    with _capture_bus(published):
+        asyncio.run(run())
+
+    stop = next(
+        e
+        for e in published
+        if e["event_type"] == "browser_command"
+        and e["data"].get("command_type") == "login_session_stop"
+    )
+    assert stop["data"]["_target_client_id"] == "nymeria-browser-desk1111"
 
 
 def test_every_ending_path_rides_the_same_announce() -> None:

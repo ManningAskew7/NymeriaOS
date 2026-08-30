@@ -78,9 +78,7 @@ def _resolve_user_default_profile(user_id: str) -> Optional[str]:
         agent = get_current_agent()
         if agent is None:
             return None
-        profile_manager = getattr(agent, "user_profile_manager", None) or getattr(
-            agent, "profile_manager", None,
-        )
+        profile_manager = getattr(agent, "profile_manager", None)
         if profile_manager is None:
             return None
         prof = profile_manager.get_profile(user_id)

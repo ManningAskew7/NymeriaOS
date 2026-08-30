@@ -77,7 +77,6 @@ def fake_env(tmp_path: Path, monkeypatch):
     agent = SimpleNamespace(
         thread_config_manager=thread_config_manager,
         profile_manager=profile_manager,
-        user_profile_manager=profile_manager,
     )
     def fake_get_current_agent():
         return agent

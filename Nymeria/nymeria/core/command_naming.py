@@ -57,6 +57,10 @@ SANCTIONED_LEAF_TOKENS: dict[str, str] = {
     "repeat": "todos recurrence verb: set or clear the recurrence interval",
     # Domain verbs where the generic word would lie
     "switch": "threads and providers are switched, not set",
+    "default": (
+        "the account-wide default browser (browser family): show, set, and "
+        "clear in one leaf, beside 'switch' which is the per-thread routing"
+    ),
     "save": "memories are saved (memory family)",
     "search": "semantic search (memory, skills)",
     "limit": "memory char-limit setting",

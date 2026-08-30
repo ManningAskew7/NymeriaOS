@@ -1135,6 +1135,74 @@ def register_default_commands(service: "CommandService") -> None:
         ),
     )
     service.register(
+        "browser list",
+        description="List the connected browsers and which one commands drive",
+        category="Tools",
+        aliases=("browser_list",),
+        params=(),
+    )
+    service.register(
+        "browser switch",
+        description="Route this thread's browser commands to one browser",
+        category="Tools",
+        aliases=("browser_switch",),
+        mutates_state=True,
+        examples=("/browser switch desktop", "/browser switch clear"),
+        params=(
+            CommandParam(
+                "browser",
+                required=True,
+                description=(
+                    "Which browser: label, id, or unique fragment; 'clear' "
+                    "removes this thread's override"
+                ),
+            ),
+        ),
+    )
+    # The account-wide default is the USER's to set (ratified in the
+    # single-browser-routing pass): the agent's own switch surface is the
+    # per-thread chrome_target tool, so it may not reach this through the
+    # slash_command seam either.
+    service.register(
+        "browser default",
+        description="Show or set the account-wide default browser for commands",
+        category="Tools",
+        aliases=("browser_default",),
+        mutates_state=True,
+        agent_allowed=False,
+        examples=("/browser default headless-rig", "/browser default clear"),
+        params=(
+            CommandParam(
+                "browser",
+                required=False,
+                description=(
+                    "Which browser: label, id, or unique fragment; 'clear' "
+                    "unsets it; omit to show the current default"
+                ),
+            ),
+        ),
+    )
+    service.register(
+        "browser rename",
+        description="Name a browser so it is easy to pick",
+        category="Tools",
+        aliases=("browser_rename",),
+        mutates_state=True,
+        examples=("/browser rename 1a2b3c4d desktop",),
+        params=(
+            CommandParam(
+                "browser",
+                required=True,
+                description="The browser to name: current label, id, or unique fragment",
+            ),
+            CommandParam(
+                "label",
+                required=False,
+                description="The new name; omit to remove the current name",
+            ),
+        ),
+    )
+    service.register(
         "tools",
         description="Show the tools enabled on this thread",
         category="Tools",

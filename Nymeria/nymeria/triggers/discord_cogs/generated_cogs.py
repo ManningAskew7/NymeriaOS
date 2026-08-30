@@ -402,6 +402,41 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @browser_group.command(
+        name="default",
+        description="Show or set the account-wide default browser for commands",
+    )
+    @app_commands.describe(
+        browser="Which browser: label, id, or unique fragment; 'clear' unsets it; omit to show the current default",
+    )
+    async def cmd_browser_default(
+        self,
+        interaction: discord.Interaction,
+        browser: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        if browser is not None:
+            parts.append(shlex.quote(browser))
+        await self.bot._send_backend_command(
+            interaction,
+            "browser default",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @browser_group.command(
+        name="list",
+        description="List the connected browsers and which one commands drive",
+    )
+    async def cmd_browser_list(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self.bot._send_backend_command(
+            interaction,
+            "browser list",
+            require_admin=False,
+        )
+
+    @browser_group.command(
         name="login",
         description="Open a login window to sign the agent's browser into a site by hand",
     )
@@ -419,6 +454,54 @@ class GeneratedCommandsCog(commands.Cog):
         await self.bot._send_backend_command(
             interaction,
             "browser login",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @browser_group.command(
+        name="rename",
+        description="Name a browser so it is easy to pick",
+    )
+    @app_commands.describe(
+        browser="The browser to name: current label, id, or unique fragment",
+        label="The new name; omit to remove the current name",
+    )
+    async def cmd_browser_rename(
+        self,
+        interaction: discord.Interaction,
+        browser: str,
+        label: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(browser))
+        if label is not None:
+            parts.append(shlex.quote(label))
+        await self.bot._send_backend_command(
+            interaction,
+            "browser rename",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @browser_group.command(
+        name="switch",
+        description="Route this thread's browser commands to one browser",
+    )
+    @app_commands.describe(
+        browser="Which browser: label, id, or unique fragment; 'clear' removes this thread's override",
+    )
+    async def cmd_browser_switch(
+        self,
+        interaction: discord.Interaction,
+        browser: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(browser))
+        await self.bot._send_backend_command(
+            interaction,
+            "browser switch",
             args=" ".join(parts),
             require_admin=False,
         )
@@ -1903,7 +1986,11 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "background clear",
     "background set",
     "background set-url",
+    "browser default",
+    "browser list",
     "browser login",
+    "browser rename",
+    "browser switch",
     "context",
     "doctor auth",
     "doctor model",
@@ -1975,7 +2062,11 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "background clear": "LLM",
     "background set": "LLM",
     "background set-url": "LLM",
+    "browser default": "Tools",
+    "browser list": "Tools",
     "browser login": "Tools",
+    "browser rename": "Tools",
+    "browser switch": "Tools",
     "context": "Status",
     "doctor auth": "System",
     "doctor model": "System",

@@ -160,21 +160,58 @@ def test_pending_count_tracks_register_and_resolve() -> None:
 
 
 def test_register_stamps_the_turn_dispatch_ledger() -> None:
-    """Registering a command IS the "this turn drove the browser" fact (#191):
-    the pop answers True exactly once, then False until the next dispatch."""
+    """Registering a command IS the "this turn drove the browser" fact (#191),
+    and since the single-browser-routing pass the ledger names WHICH browsers:
+    the pop hands back the turn's target set exactly once, then empty until
+    the next dispatch. A target-less register (legacy callers) stamps the
+    empty-string sentinel, whose release publishes unstamped."""
     async def run() -> None:
         coord = _make_coord()
-        assert coord.pop_turn_dispatched("u1", "t1") is False
+        assert coord.pop_turn_targets("u1", "t1") == set()
         coord.register(
             command_id="bcmd_led_1",
             user_id="u1",
             thread_id="t1",
             command_type="act",
+            target_client_id="nymeria-browser-desk1111",
         )
-        assert coord.pop_turn_dispatched("u1", "t1") is True
-        assert coord.pop_turn_dispatched("u1", "t1") is False
+        coord.register(
+            command_id="bcmd_led_2",
+            user_id="u1",
+            thread_id="t1",
+            command_type="act",
+        )
+        assert coord.pop_turn_targets("u1", "t1") == {
+            "nymeria-browser-desk1111",
+            "",
+        }
+        assert coord.pop_turn_targets("u1", "t1") == set()
 
     asyncio.run(run())
+
+
+def test_dispatch_target_records_arm_the_switch_marker_once() -> None:
+    """The switch-refusal state (single-browser routing): every dispatch
+    records the thread's browser (read back by the login pin and reload
+    note), a change arms the one-shot switch marker with the previous
+    browser, and the marker pops exactly once. Only tab-addressed
+    dispatches pop it (the tools side), so a tab-less command between the
+    switch and the next tab-addressed one cannot eat the refusal."""
+    coord = _make_coord()
+    assert coord.last_dispatch_target("u1", "t1") is None
+    coord.note_dispatch_target("u1", "t1", "browser-A")
+    assert coord.last_dispatch_target("u1", "t1") == "browser-A"
+    # Same browser again: no switch, no marker.
+    coord.note_dispatch_target("u1", "t1", "browser-A")
+    assert coord.pop_switch_marker("u1", "t1") is None
+    # A dispatch on another browser IS the switch fact, popped once.
+    coord.note_dispatch_target("u1", "t1", "browser-B")
+    assert coord.last_dispatch_target("u1", "t1") == "browser-B"
+    assert coord.pop_switch_marker("u1", "t1") == "browser-A"
+    assert coord.pop_switch_marker("u1", "t1") is None
+    # Other threads are untouched.
+    assert coord.last_dispatch_target("u1", "t2") is None
+    assert coord.pop_switch_marker("u1", "t2") is None
 
 
 def test_release_publishes_only_for_a_turn_that_drove_the_browser(monkeypatch) -> None:
@@ -223,6 +260,37 @@ def test_release_publishes_only_for_a_turn_that_drove_the_browser(monkeypatch) -
         assert len(published) == 1
 
     asyncio.run(run())
+
+
+def test_release_covers_browsers_named_only_by_live_leases(monkeypatch) -> None:
+    """A thread's live tab leases name browsers it drove even when the
+    popped ledger is empty (a crashed earlier turn's next turn can pop the
+    ledger while the leases live on): the turn-end release still reaches
+    those browsers, stamped for each."""
+    import nymeria.core.browser_command_coordinator as mod
+    import nymeria.core.event_bus as event_bus
+    from nymeria.core.browser_drive_leases import get_browser_drive_leases
+
+    published: list[dict] = []
+    monkeypatch.setattr(
+        event_bus, "publish_autonomous_event", lambda **kw: published.append(kw)
+    )
+    leases = get_browser_drive_leases()
+    leases.reset_for_tests()
+    try:
+
+        async def run() -> None:
+            leases.claim(
+                user_id="u1", client_id="browser-A", tab_id=5, thread_id="t1"
+            )
+            assert mod.release_browser_session("u1", "t1") is True
+            assert len(published) == 1
+            assert published[0]["event_type"] == "browser_session_release"
+            assert published[0]["data"]["_target_client_id"] == "browser-A"
+
+        asyncio.run(run())
+    finally:
+        leases.reset_for_tests()
 
 
 def test_release_swallows_a_publish_failure(monkeypatch) -> None:

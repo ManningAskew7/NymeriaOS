@@ -636,3 +636,56 @@ def test_autonomous_sse_push_latency_beats_the_poll_interval():
     assert elapsed < 0.9, (
         f"frame took {elapsed:.3f}s: delivery is poll-bound, not doorbell-woken"
     )
+
+
+# -- single-browser routing: targeted events reach only their browser -------
+
+
+def _targeted_command(target: str) -> AutonomousEvent:
+    return AutonomousEvent(
+        event_type="browser_command",
+        thread_id="thread-1",
+        user_id="alice",
+        data={
+            "command_id": "cmd-2",
+            "command_type": "tabs",
+            "args": {"action": "list"},
+            "_target_client_id": target,
+        },
+    )
+
+
+def _first_frame_for_targeted(client_id: str, target: str) -> str:
+    queue: Queue = Queue()
+    queue.put_nowait(_targeted_command(target))
+    queue.put_nowait(_marker())
+    frame, _bus = asyncio.run(
+        _next_sse_data(
+            queue=queue,
+            event_bus=EventBus(),
+            user_id="alice",
+            firehose=False,
+            client_id=client_id,
+        )
+    )
+    return frame
+
+
+def test_targeted_command_reaches_the_target_browser_without_the_marker_key():
+    frame = _first_frame_for_targeted(
+        "nymeria-browser-abc123", "nymeria-browser-abc123"
+    )
+    assert '"type": "browser_command"' in frame
+    # The routing marker is backend-internal: stripped from the wire.
+    assert "_target_client_id" not in frame
+
+
+def test_targeted_command_skips_every_other_connected_browser():
+    """The #282 fix at the delivery layer: a second extension on the same
+    account receives NOTHING for a command routed elsewhere, so it can
+    neither execute it nor race the result."""
+    frame = _first_frame_for_targeted(
+        "nymeria-browser-other99", "nymeria-browser-abc123"
+    )
+    assert '"content": "marker"' in frame
+    assert "browser_command" not in frame

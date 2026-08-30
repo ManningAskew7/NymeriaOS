@@ -608,3 +608,55 @@ def test_an_ended_session_leaves_the_listing(env) -> None:
     listing = client.get("/browser-login/sessions", headers=_auth(alice)).json()
 
     assert listing["sessions"] == []
+
+
+def test_input_is_stamped_with_the_sessions_pinned_browser(env, monkeypatch) -> None:
+    """A pinned session's keystrokes carry the target marker, so the stream
+    filter hands them ONLY to the browser the human is signing into."""
+    client, alice, _bob, _admin = env
+
+    async def start():
+        return get_browser_login_registry().start(
+            session_id=new_login_session_id(),
+            user_id="alice",
+            thread_id="thread-alice",
+            tab_id=7,
+            url="https://accounts.google.com/signin",
+            client_id="nymeria-browser-pinned01",
+        )
+
+    session, _future = client.portal.call(start)
+    published: list = []
+    import nymeria.api.routers.browser_login as router_mod
+
+    monkeypatch.setattr(
+        router_mod, "publish_autonomous_event", lambda **kw: published.append(kw)
+    )
+    resp = client.post(
+        f"/browser-login/{session.session_id}/input",
+        headers=_auth(alice),
+        json=_key_event("s"),
+    )
+
+    assert resp.status_code == 200
+    assert published[0]["data"]["_target_client_id"] == "nymeria-browser-pinned01"
+
+
+def test_input_for_an_unpinned_session_is_not_stamped(env, monkeypatch) -> None:
+    """Legacy sessions (no pinned browser) keep the pre-routing shape."""
+    client, alice, _bob, _admin = env
+    session, _future = _start_session(client)
+    published: list = []
+    import nymeria.api.routers.browser_login as router_mod
+
+    monkeypatch.setattr(
+        router_mod, "publish_autonomous_event", lambda **kw: published.append(kw)
+    )
+    resp = client.post(
+        f"/browser-login/{session.session_id}/input",
+        headers=_auth(alice),
+        json=_key_event("s"),
+    )
+
+    assert resp.status_code == 200
+    assert "_target_client_id" not in published[0]["data"]

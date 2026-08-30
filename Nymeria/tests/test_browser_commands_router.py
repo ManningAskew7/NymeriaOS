@@ -230,3 +230,103 @@ def test_result_admin_can_resolve_other_user(env) -> None:
     resolved = asyncio.run(run())
     assert resolved["ok"] is True
     assert resolved["data"]["by"] == "admin"
+
+
+# ---------- single-browser routing: only the target may resolve ----------
+
+
+def test_result_from_a_non_target_client_is_ignored(env) -> None:
+    """A stale second instance (the #282 shape) POSTing a result for a
+    command that was routed to another browser must not resolve it."""
+    client, _agent, alice_token, _bob_token, _admin_token = env
+
+    async def register() -> str:
+        command_id = new_command_id()
+        get_browser_command_coordinator().register(
+            command_id=command_id,
+            user_id="alice",
+            thread_id="thread-alice",
+            command_type="navigate",
+            target_client_id="nymeria-browser-target01",
+        )
+        return command_id
+
+    command_id = asyncio.run(register())
+    try:
+        resp = client.post(
+            f"/browser-commands/{command_id}/result",
+            headers={
+                **_auth(alice_token),
+                "X-Nymeria-Client-Id": "nymeria-browser-stale999",
+            },
+            json={"ok": True, "status": "success", "data": {}},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["delivered"] is False
+        # The command is still pending for the real target.
+        assert get_browser_command_coordinator().get(command_id) is not None
+    finally:
+        get_browser_command_coordinator().discard(command_id)
+
+
+def test_result_from_the_target_client_resolves(env) -> None:
+    client, _agent, alice_token, _bob_token, _admin_token = env
+
+    async def run() -> dict:
+        coord = get_browser_command_coordinator()
+        command_id = new_command_id()
+        future = coord.register(
+            command_id=command_id,
+            user_id="alice",
+            thread_id="thread-alice",
+            command_type="navigate",
+            target_client_id="nymeria-browser-target01",
+        )
+        result_box: dict = {}
+
+        def post_result() -> None:
+            result_box["resp"] = client.post(
+                f"/browser-commands/{command_id}/result",
+                headers={
+                    **_auth(alice_token),
+                    "X-Nymeria-Client-Id": "nymeria-browser-target01",
+                },
+                json={"ok": True, "status": "success", "data": {}},
+            )
+
+        threading.Thread(target=post_result, daemon=True).start()
+        return await asyncio.wait_for(future, timeout=3)
+
+    resolved = asyncio.run(run())
+    assert resolved["ok"] is True
+
+
+def test_result_without_a_client_header_still_resolves(env) -> None:
+    """Pre-header extension builds only ever receive commands the delivery
+    filter routed to them, so an absent header is accepted, not refused."""
+    client, _agent, alice_token, _bob_token, _admin_token = env
+
+    async def run() -> dict:
+        coord = get_browser_command_coordinator()
+        command_id = new_command_id()
+        future = coord.register(
+            command_id=command_id,
+            user_id="alice",
+            thread_id="thread-alice",
+            command_type="navigate",
+            target_client_id="nymeria-browser-target01",
+        )
+        result_box: dict = {}
+
+        def post_result() -> None:
+            result_box["resp"] = client.post(
+                f"/browser-commands/{command_id}/result",
+                headers=_auth(alice_token),
+                json={"ok": True, "status": "success", "data": {}},
+            )
+
+        threading.Thread(target=post_result, daemon=True).start()
+        return await asyncio.wait_for(future, timeout=3)
+
+    resolved = asyncio.run(run())
+    assert resolved["ok"] is True
