@@ -8,9 +8,14 @@ near-identical bot launchers.
 from __future__ import annotations
 
 import argparse
+import os
 import signal
+import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Callable
+
+import pytest
 
 import run
 
@@ -70,6 +75,10 @@ def test_dispatch_resolves_runner_through_module_namespace(monkeypatch):
     called: dict[str, object] = {}
     monkeypatch.setattr(run, "run_api", lambda args: called.setdefault("api", args))
     monkeypatch.setattr(run, "validate_config", lambda *a, **k: None)
+    # This test is about dispatch, not startup: stub the dotenv load that
+    # main() performs since #294, so it does not merge the host's real
+    # deployment config mid-test.
+    monkeypatch.setattr(run, "_load_environment", lambda: None)
     monkeypatch.setattr(sys, "argv", ["run.py", "api"])
 
     run.main()
@@ -139,3 +148,79 @@ def test_install_exit_handlers_hard_exit(monkeypatch):
     run._install_exit_handlers("bye", hard_exit=True)
     registered[signal.SIGTERM](signal.SIGTERM, None)
     assert exits == [0]
+
+
+# ---------------------------------------------------------------------------
+# Import-time environment side effects (#294)
+# ---------------------------------------------------------------------------
+
+
+_IMPORT_PROBE = """
+import os, sys
+
+sys.path.insert(0, sys.argv[1])
+import run
+
+print("AFTER-IMPORT", os.environ.get("NYMERIA_294_IMPORT_PROBE", "<unset>"))
+run._load_environment()
+print("AFTER-LOAD", os.environ.get("NYMERIA_294_IMPORT_PROBE", "<unset>"))
+"""
+
+
+def test_importing_run_does_not_load_the_deployment_env(tmp_path):
+    """Importing ``run`` must not reconfigure the interpreter (#294).
+
+    ``_load_environment`` merges the deployment dotenv with ``override=True``.
+    As an import side effect that reached every importer, including pytest,
+    which imports test modules during COLLECTION: the operator's real
+    ``.env.docker`` landed in ``os.environ`` before the suite's first test and
+    silently overrode 65 Settings fields.
+
+    Asserts both halves, so neither deleting the call nor deleting the loader
+    passes: the import is inert, and the loader still works when called.
+    """
+    (tmp_path / ".env").write_text(
+        "NYMERIA_294_IMPORT_PROBE=leaked\n", encoding="utf-8"
+    )
+    repo_root = Path(run.__file__).resolve().parent
+
+    result = subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE, str(repo_root)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        # Inherit, overriding only NYMERIA_PROJECT_ROOT, which is the one thing
+        # this test needs to control: it points run.py's dotenv resolution at
+        # the probe root instead of this checkout. A hand-built minimal env
+        # would not start a child interpreter on Windows (no SystemRoot), and
+        # the probe variable is absent from the parent anyway. Same shape as
+        # tests/test_cli_startup_imports.py's subprocess probes.
+        env={**os.environ, "NYMERIA_PROJECT_ROOT": str(tmp_path)},
+    )
+
+    detail = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr[-3000:]}"
+    assert result.returncode == 0, detail
+    assert "AFTER-IMPORT <unset>" in result.stdout, detail
+    # Guard against a vacuous pass: the loader must actually read that file.
+    assert "AFTER-LOAD leaked" in result.stdout, detail
+
+
+def test_main_loads_the_deployment_env_before_parsing_args(monkeypatch):
+    """The deferred load still happens on the real entry path (#294).
+
+    An unparseable argv would make ``main()`` raise ``SystemExit`` from
+    ``parse_args``; seeing the loader's sentinel instead proves the load ran,
+    and ran before argument parsing (hence before any subcommand).
+    """
+
+    class _Loaded(Exception):
+        pass
+
+    def _sentinel() -> None:
+        raise _Loaded
+
+    monkeypatch.setattr(run, "_load_environment", _sentinel)
+    monkeypatch.setattr(sys, "argv", ["run.py", "--not-a-real-flag"])
+
+    with pytest.raises(_Loaded):
+        run.main()

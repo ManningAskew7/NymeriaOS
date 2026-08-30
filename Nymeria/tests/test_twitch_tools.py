@@ -43,12 +43,23 @@ def _clear_twitch_caches():
 
 
 def _configure_env(monkeypatch, **overrides):
-    """Standard env-config shape: refresh-capable bot creds + channel."""
+    """Standard env-config shape: refresh-capable bot creds + channel.
+
+    Every key the module reads is listed, including the ones this shape wants
+    UNSET (``None`` deletes). A credential a case does not name must mean
+    "not configured", never "whatever the ambient environment happens to
+    carry": the broadcaster pair was previously unlisted, so a leaked
+    ``TWITCH_BROADCASTER_REFRESH_TOKEN`` silently sent the two
+    broadcaster-token tests down the mint path (backlog #294).
+    """
     values = {
         "TWITCH_CLIENT_ID": "cid",
         "TWITCH_CLIENT_SECRET": "csecret",
+        "TWITCH_BOT_ACCESS_TOKEN": None,
         "TWITCH_BOT_REFRESH_TOKEN": "rtok",
         "TWITCH_BOT_USER_ID": "111",
+        "TWITCH_BROADCASTER_TOKEN": None,
+        "TWITCH_BROADCASTER_REFRESH_TOKEN": None,
         "TWITCH_CHANNEL": "silk",
         **overrides,
     }
@@ -387,6 +398,39 @@ def test_broadcaster_tool_uses_broadcaster_token(monkeypatch):
     assert poll["headers"]["Authorization"] == "Bearer caster-tok"
     users = [c for c in calls if c["url"] == f"{HELIX}/users"][0]
     assert users["headers"]["Authorization"] == "Bearer bot-tok"
+
+
+def test_broadcaster_role_ignores_credentials_the_case_did_not_configure(monkeypatch):
+    """Regression for #294: ambient broadcaster creds must not leak into a case.
+
+    The two tests above resolve their credentials from the process
+    environment, and previously named only the keys they wanted SET. A
+    ``TWITCH_BROADCASTER_REFRESH_TOKEN`` present for any other reason (here,
+    set explicitly; in the original incident, merged in from the operator's
+    real ``.env.docker`` when pytest imported ``run`` during collection) beat
+    the static token and sent the call down the mint path, so the tool
+    reported a transport error instead of the setup hint.
+    """
+    from nymeria.tools import twitch as tools
+
+    monkeypatch.setenv("TWITCH_BROADCASTER_REFRESH_TOKEN", "ambient-refresh")
+    monkeypatch.setenv("TWITCH_BROADCASTER_TOKEN", "ambient-static")
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch)
+    calls = _fake_transport(monkeypatch, _standard_handler)
+
+    result = tools.twitch_create_poll.func(title="Q?", choices="Yes|No", config=None)
+
+    assert "Broadcaster token not configured" in result
+    # Minting from the ambient refresh token IS the failure mode. The bot-role
+    # mint (rtok, for the broadcaster-id lookup) is expected and must not be
+    # confused for it, so match on the grant this test planted.
+    assert not [
+        call
+        for call in calls
+        if call["url"] == TOKEN_URL
+        and (call["form_data"] or {}).get("refresh_token") == "ambient-refresh"
+    ]
 
 
 # ---------------------------------------------------------------------------
