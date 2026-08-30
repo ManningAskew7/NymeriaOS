@@ -1,18 +1,24 @@
 ---
 name: callable-thread-builder
-description: Design, create, invoke, and maintain callable Nymeria helper threads.
+description: Design, create, invoke, and maintain callable Nymeria helper
+  threads, and organize them into callable teams (create/rename teams, move
+  threads between them) that scope which callables see each other. Load this
+  to build a specialist helper thread, wire up a delegated workflow, or
+  restructure the team bubbles your callables live in.
 allowed-tools: Read
 metadata:
   nymeria:
     required_tools:
       - spawn_thread
+      - team_manage
     tool_ttl: 2h
 ---
 
-# Callable Thread Builder
+# Callable Thread & Team Builder
 
 Use this skill when the user wants a reusable Nymeria helper thread, specialist
-agent, delegated workflow, or callable tool backed by a thread.
+agent, delegated workflow, or callable tool backed by a thread, or wants their
+callable threads organized into teams.
 
 ## Workflow
 
@@ -30,8 +36,27 @@ agent, delegated workflow, or callable tool backed by a thread.
    config and preserve user-authored instructions unless the user asked for a
    rewrite.
 
+## Teams
+
+Callable teams are isolation bubbles in BOTH directions: a teamed thread sees
+only same-team callables, and an unteamed thread sees only unteamed callables
+("no team" is itself a bubble). Use that to keep specialist crews from
+polluting each other's tool lists.
+
+- `team_manage` is the management surface: `list`, `show`, `create`,
+  `rename`, `describe`, `add_thread`, `remove_thread`, `delete`. Teams are
+  referenced by id or name; threads by id or callable name. Own-user scope.
+- A thread spawned by `spawn_thread` inherits the SPAWNING thread's team.
+  Override with `team=` on the spawn (`team="none"` spawns an unteamed child
+  from a teamed parent).
+- Before restructuring, `team_manage(action="list")` then `show` the affected
+  team: moving a thread changes what every member can call, so say what
+  visibility changes before doing a bulk move the user did not explicitly
+  spell out.
+
 ## Output
 
-Report the spawned thread id, callable tool name, purpose, enabled tools, and
-how the user should refer to it in future tasks. If creation fails, preserve the
+Report the spawned thread id, callable tool name, purpose, enabled tools, team
+(if any), and how the user should refer to it in future tasks. For team
+changes, report the resulting membership. If creation fails, preserve the
 error details and do not claim the callable exists.
