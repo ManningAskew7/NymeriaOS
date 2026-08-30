@@ -141,47 +141,183 @@ def _build_readiness(settings: Any) -> ReadinessResponse:
     return ReadinessResponse(status=status, checks=checks)
 
 
+def _restart_child_env(settings: Any) -> dict[str, str]:
+    """The environment the restarted image starts from: ours, dotenv merged over.
+
+    Re-merging the dotenv files is what makes a restart APPLY a config-file
+    edit: the running process holds the values it booted with, and they outrank
+    the dotenv source, so without this pass a restart would faithfully
+    reproduce the stale config. This is the mechanism the settings applier
+    points at when it declines to apply a hand-edit itself
+    (`api/routers/settings.py::_sync_updated_env_vars`).
+
+    Every file read is individually guarded, and the whole pass is
+    belt-and-braces: the restarted image runs `run.py::_load_environment`,
+    which re-merges the same three files in the same order with
+    `override=True`. So a file this cannot read must never abort the restart.
+    `run.py` swallows `UnicodeDecodeError` at its own call site for exactly the
+    condition that motivates this (a non-UTF-8 byte in a password, a Notepad
+    UTF-16 BOM), and aborting here would be worse than skipping: it would
+    strand a process that has already begun shutting down.
+    """
+    from dotenv import dotenv_values
+
+    from ...config.settings import get_env_file_paths
+
+    child_env = os.environ.copy()
+    try:
+        env_paths = get_env_file_paths(settings.project_root)
+    except Exception:  # noqa: BLE001 - a bad project_root must not block a restart
+        logger.warning("Could not resolve env files for restart", exc_info=True)
+        return child_env
+    for env_path in env_paths:
+        try:
+            if not env_path.exists():
+                continue
+            values = dotenv_values(env_path)
+        except (OSError, UnicodeDecodeError, ValueError):
+            logger.warning(
+                "Skipping unreadable env file during restart: %s", env_path,
+                exc_info=True,
+            )
+            continue
+        for key, value in values.items():
+            if key and value is not None:
+                child_env[key] = value
+    return child_env
+
+
+def _spawn_and_exit(exec_argv: list[str], child_env: dict[str, str]) -> None:
+    """Restart by spawning a detached copy and exiting. Windows + last resort.
+
+    This is what the whole function used to do, and it is broken under any
+    supervisor (see `restart_api_process`). It survives here for Windows, where
+    `os.execv` goes through the CRT and creates a process with a NEW pid
+    anyway, so the in-place guarantee does not hold and the desktop shell's job
+    object depends on the current shape.
+
+    It is also the fallback if `execve` raises. That branch is belt-and-braces
+    rather than a real second chance: both end in the same syscall with the
+    same command and environment, so almost anything that fails the exec
+    (ENOENT, EACCES, E2BIG) fails the spawn too. It costs nothing, since the
+    helper has to exist for Windows regardless.
+
+    `exec_argv` comes from `service_install.resolve_exec_argv`, NOT from
+    `[sys.executable] + sys.argv`. That matters most here, because Windows has
+    only this path and Windows is where the frozen build lives
+    (`nymeria-backend.spec` builds a single .exe): under PyInstaller
+    `sys.executable == sys.argv[0]`, so the naive form spawns
+    `[exe, exe, "api"]`, run.py's subparser reads the exe path as the
+    subcommand, and the replacement dies on SystemExit(2) without ever
+    serving. The resolver's frozen branch exists precisely for that.
+    """
+    import subprocess
+
+    # env-gate: full-copy - re-exec of the API process itself during a
+    # self-restart. The child IS this service and must come up with identical
+    # configuration. A scrubbed environment here is a broken backend, not a
+    # hardened one.
+    subprocess.Popen(
+        exec_argv,
+        env=child_env,
+        creationflags=(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if sys.platform == "win32" else 0
+        ),
+        start_new_session=(sys.platform != "win32"),
+    )
+    os._exit(0)
+
+
 def restart_api_process(agent: Any, settings: Any) -> None:
     """Schedule an API server restart on the event loop.
 
     Used by both the REST endpoint and the central command service.
+
+    Restarts IN PLACE via ``os.execve``: same pid, same cgroup, same PID
+    namespace, same parent. That is load-bearing rather than tidy, because
+    every way this service is supervised keys on the process EXITING, and the
+    previous shape (spawn a detached copy, then ``os._exit(0)``) always exited
+    (#300):
+
+    - Under systemd the default ``KillMode=control-group`` SIGTERMs the
+      replacement, which ``start_new_session=True`` does not escape (a session
+      is not a cgroup), and ``Restart=on-failure`` then declines to restart a
+      clean exit 0. Measured result: the unit ends ``inactive (dead)`` and the
+      backend is gone until someone with shell access starts it, which on a
+      slim install is the deployment the user reaches THROUGH that backend.
+    - In a container the exiting process is the PID-namespace init (or tini's
+      only child under ``init: true``, which amounts to the same thing), so the
+      kernel tears the namespace down and takes the replacement with it. The
+      service returns only because the compose files set a restart policy that
+      re-runs the command; with ``restart: no`` it stays dead.
+
+    Replacing the image sidesteps all of it without detecting anything, and
+    fixes units already installed in the field without regenerating them. The
+    listening socket does not block the rebind: Python marks descriptors
+    non-inheritable (PEP 446), so it closes on exec.
+
+    Two consequences worth knowing before changing this:
+
+    - The command is rebuilt by `service_install.resolve_exec_argv`, NOT by
+      `[sys.executable] + sys.argv`, which is wrong for a `python -m` launch
+      (argv[0] is the module file, which cannot be re-run as a script) and for
+      a frozen build. Getting that wrong would not look like a crash: the exec
+      would succeed and the new image would die at startup, silently falling
+      back to being rescued by the supervisor policy this is meant to
+      sidestep.
+    - Child processes now OUTLIVE the restart (MCP stdio servers, background
+      bash jobs, Claude Code bridge runs). They never used to, but nothing in
+      this code killed them either: the OS did, via the container's namespace
+      teardown or systemd's cgroup kill, i.e. via the very bug this fixes.
+      They are now reparented to nothing (same pid) and unowned by the new
+      image, so they run on and are never reaped. Backlog #303 owns the
+      decision about what SHOULD happen to them.
     """
-    import subprocess
 
     async def _do_restart():
         await asyncio.sleep(0.5)
+
+        # Everything that can fail happens BEFORE the ticker stops. Stopping it
+        # writes a clean-shutdown record and takes down scheduled TODOs,
+        # trigger polling and the sweeps, so a preparation error that aborted
+        # after that point would leave a live API whose scheduler is dead and
+        # whose shutdown record lies, while the caller was told it was
+        # restarting.
+        from ...service_install import resolve_exec_argv
+
+        child_env = _restart_child_env(settings)
+        exec_argv = resolve_exec_argv(sys.argv[1:])
 
         ticker = getattr(agent, "_ticker", None)
         if ticker:
             ticker.stop()
 
-        from dotenv import dotenv_values
-        from ...config.settings import get_env_file_paths
+        if sys.platform == "win32":
+            _spawn_and_exit(exec_argv, child_env)
+            return
 
-        child_env = os.environ.copy()
-        project_root = settings.project_root
-        for env_path in get_env_file_paths(project_root):
-            if not env_path.exists():
-                continue
-            for key, value in dotenv_values(env_path).items():
-                if key and value is not None:
-                    child_env[key] = value
+        # Outside the try: a flush failure (a restarted journald closing the
+        # pipe, say) is not an exec failure and must not be reported as one.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:  # noqa: BLE001 - best-effort before the image goes
+                pass
 
-        # env-gate: full-copy - re-exec of the API process itself during a
-        # self-restart. The child IS this service and must come up with
-        # identical configuration; the loop above re-merges dotenv over the
-        # copy precisely so a restart picks up config edits. A scrubbed
-        # environment here is a broken backend, not a hardened one.
-        subprocess.Popen(
-            [sys.executable] + sys.argv,
-            env=child_env,
-            creationflags=(
-                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                if sys.platform == "win32" else 0
-            ),
-            start_new_session=(sys.platform != "win32"),
-        )
-        os._exit(0)
+        # Nothing after this line runs: the image is replaced in place.
+        try:
+            # env-gate: full-copy - the replacement IS this service and must
+            # come up with identical configuration. Not a child: this is the
+            # same pid continuing as a new image, so a scrubbed environment
+            # here is a broken backend, not a hardened one.
+            os.execve(exec_argv[0], exec_argv, child_env)
+        except Exception:
+            logger.exception(
+                "In-place restart failed; falling back to spawn-and-exit, which "
+                "a supervisor may not bring back (#300)"
+            )
+            _spawn_and_exit(exec_argv, child_env)
 
     asyncio.create_task(_do_restart())
 

@@ -42,18 +42,28 @@ from pathlib import Path
 
 NYMERIA_ROOT = Path(__file__).resolve().parent.parent / "nymeria"
 
-# Callables that start a child process, keyed by module. Per-module rather than
-# one flat set of names: ``asyncio.run`` is not a spawn but shares a name with
-# ``subprocess.run``, and a flat set reports every ``asyncio.run(...)`` in the
-# tree as a leaking subprocess. ``os.exec*``/``os.spawn*`` are absent on
-# purpose: exec replaces the current image and takes no env argument, so the
-# only such site (exec_sandbox.py) needs no gate entry.
+# Callables that hand an environment to a new program image, keyed by module.
+# Per-module rather than one flat set of names: ``asyncio.run`` is not a spawn
+# but shares a name with ``subprocess.run``, and a flat set reports every
+# ``asyncio.run(...)`` in the tree as a leaking subprocess.
+#
+# The ``os`` entries are the env-taking exec/spawn forms only. They used to be
+# excluded on the reasoning that "exec replaces the current image and takes no
+# env argument", which was wrong twice over: ``execve``/``execvpe``/``spawnve``
+# all take one, and the API's in-place self-restart (#300) now hands a
+# full-copy environment to its own replacement image. The bare forms
+# (``execv``, ``execvp``) inherit ``os.environ`` rather than being handed one,
+# so there is no env argument for a reviewer to check and nothing for this gate
+# to say about them.
 SPAWN_ATTRS_BY_MODULE: dict[str, frozenset[str]] = {
     "subprocess": frozenset({
         "run", "Popen", "call", "check_call", "check_output",
     }),
     "asyncio": frozenset({
         "create_subprocess_exec", "create_subprocess_shell",
+    }),
+    "os": frozenset({
+        "execve", "execvpe", "spawnve", "spawnvpe", "posix_spawn",
     }),
 }
 
@@ -113,18 +123,42 @@ def _spawn_name(node: ast.Call) -> str | None:
     return None
 
 
+# The ``os`` exec/spawn forms take their environment POSITIONALLY, unlike every
+# ``subprocess`` entry point. Index of that argument per function, so the gate
+# reads the environment those calls actually supply instead of reporting every
+# one of them as a silent inheritance and training people to slap an
+# ``env-gate: inherit`` marker on a call that inherits nothing.
+_POSITIONAL_ENV_INDEX: dict[str, int] = {
+    "os.execve": 2,       # execve(path, argv, env)
+    "os.execvpe": 2,      # execvpe(file, argv, env)
+    "os.spawnve": 3,      # spawnve(mode, path, argv, env)
+    "os.spawnvpe": 3,     # spawnvpe(mode, file, argv, env)
+    "os.posix_spawn": 3,  # posix_spawn(path, argv, env, ...)
+}
+
+
 def _env_argument(node: ast.Call) -> ast.expr | None:
-    """The expression passed as ``env=``, or None if the call passes none.
+    """The environment expression this call supplies, or None if it supplies none.
 
     ``env=None`` counts as passing none, because that is exactly what it means
     to ``subprocess``: the child inherits. Reading it as "an environment was
     supplied" would let a spawn opt out of the gate by writing the default.
+
+    For the ``os`` exec/spawn forms the environment is a positional argument
+    (see ``_POSITIONAL_ENV_INDEX``); a keyword still wins if one is given, so
+    both spellings are read the same way.
     """
     for kw in node.keywords:
         if kw.arg == "env":
             if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                 return None
             return kw.value
+    index = _POSITIONAL_ENV_INDEX.get(_spawn_name(node) or "")
+    if index is not None and len(node.args) > index:
+        arg = node.args[index]
+        if isinstance(arg, ast.Constant) and arg.value is None:
+            return None
+        return arg
     return None
 
 
