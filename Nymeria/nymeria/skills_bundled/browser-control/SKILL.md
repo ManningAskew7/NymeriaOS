@@ -28,6 +28,7 @@ metadata:
       - chrome_await_login
       - chrome_cancel_login
       - chrome_target
+      - chrome_browsers
     tool_ttl: 2h
 ---
 
@@ -47,8 +48,11 @@ chosen, calls refuse and hand you the roster: pick with
 `chrome_target(browser=...)` and SAY which browser you picked and why, in the
 same reply. `chrome_target()` with no arguments shows the current resolution
 any time. Only the user can change the account-wide default (`/browser
-default`); your switches are per-thread. After a switch, tab ids from the
-old browser are dead: list tabs before acting. If a tab refuses because
+default`); your switches are per-thread. `chrome_browsers` is the fleet
+view (every known browser, connected or not) and where you NAME one
+(`action="rename"`), so rosters read as "desktop" and "rig" instead of raw
+ids; naming never moves any thread's target. After a switch, tab ids from
+the old browser are dead: list tabs before acting. If a tab refuses because
 another conversation is driving it, that is a real concurrent task: use your
 own tab, never fight over theirs.
 

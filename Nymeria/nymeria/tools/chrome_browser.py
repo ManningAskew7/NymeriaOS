@@ -88,6 +88,7 @@ from ..core.browser_targets import (
     resolve_browser_ref,
     resolve_target,
     roster_lines,
+    set_browser_label,
     set_thread_target,
     thread_target,
 )
@@ -4956,6 +4957,80 @@ async def chrome_target(
     return f"{_fence(body)}{_outside_fence(body, note=note, extra=outcome)}"
 
 
+@tool
+async def chrome_browsers(
+    action: str = "list",
+    browser: Optional[str] = None,
+    label: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Manage the account's browser fleet: list every known browser, name one.
+
+    An account can have several Nymeria browser extensions connected (a
+    desktop Chrome, a headless rig, another machine), each with a
+    persistent id. This tool manages that FLEET; which browser THIS
+    THREAD's commands drive is chrome_target's job, not this one's.
+
+    action="list" (default): one row per browser known this process (id,
+        label, connected state, streams, version, connect/disconnect
+        ages), plus the account default, so the ownership picture is
+        complete. Disconnected browsers stay listed with their age.
+    action="rename": name (or unname) one browser so it is easy to pick
+        in chrome_target and /browser commands. browser: which one, by
+        label, id, or unique fragment. label: the new name (plain text,
+        one line, up to 60 characters); OMIT it to remove the current
+        name. Renaming never moves any thread's target: targets store the
+        id, labels are display names on top.
+
+    Fails with the roster when `browser` matches nothing or several
+    browsers; nothing changes on a failed call.
+    """
+    user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
+    verb = (action or "list").strip().lower()
+    outcome = ""
+    if verb == "rename":
+        wanted = (browser or "").strip()
+        if not wanted:
+            return (
+                "[Error]: rename needs `browser`: which browser to name, "
+                "by label, id, or unique fragment."
+            )
+        client_id, error = resolve_browser_ref(user_id, wanted)
+        if error:
+            return f"[Error]: {error}"
+        assert client_id is not None
+        new_label = (label or "").strip() or None
+        set_error = set_browser_label(user_id, client_id, new_label)
+        if set_error:
+            return f"[Error]: {set_error}"
+        handle = describe_browser(user_id, client_id)
+        outcome = (
+            f"[Browser named: {handle}.]"
+            if new_label
+            else f"[Name removed; the browser shows as {handle} now.]"
+        )
+    elif verb != "list":
+        return (
+            f"[Error]: Unknown action '{action}'. chrome_browsers supports "
+            "'list' and 'rename'."
+        )
+    labels = browser_labels(user_id)
+    data: dict[str, Any] = {
+        "account_default": account_default_target(user_id),
+        "browsers": [
+            _browser_row(record, labels.get(record.client_id))
+            for record in chrome_browser_roster(user_id)
+        ],
+    }
+    body, note = _cap(
+        _format_result({"ok": True, "data": data}),
+        thread_id=thread_id,
+        prefix="chrome-browsers",
+    )
+    return f"{_fence(body)}{_outside_fence(body, note=note, extra=outcome)}"
+
+
 CHROME_BROWSER_TOOLS = [
     chrome_tabs,
     chrome_navigate,
@@ -4975,14 +5050,17 @@ CHROME_BROWSER_TOOLS = [
     chrome_await_login,
     chrome_cancel_login,
     chrome_target,
+    chrome_browsers,
 ]
 
 #: What the browser-control kit binds: the whole working surface, all
-#: eighteen tools, diagnostics and the escape hatch included (the
+#: nineteen tools, diagnostics and the escape hatch included (the
 #: scoped-tools principle: a kit carries the tools its domain needs).
 #: ``chrome_target`` joined in the single-browser-routing pass: with more
 #: than one extension connected per account, the thread's driving browser
-#: is chosen, never broadcast (#282).
+#: is chosen, never broadcast (#282); ``chrome_browsers`` (fleet list +
+#: rename) followed it so labels are a first-class tool capability, never
+#: a slash_command dependency.
 #: ``chrome_dialog`` joined in the #169 pass, which made it a working tool
 #: (Page ownership: dialogs raised while driving are held and answerable);
 #: ``chrome_reload_extension`` joined 2026-08-16 (the dev loop's remote
@@ -5008,6 +5086,7 @@ CHROME_KIT_TOOL_NAMES = (
     "chrome_await_login",
     "chrome_cancel_login",
     "chrome_target",
+    "chrome_browsers",
 )
 
 
@@ -5032,6 +5111,8 @@ __all__ = [
     "chrome_request_login",
     "chrome_await_login",
     "chrome_cancel_login",
+    "chrome_target",
+    "chrome_browsers",
     "start_login_handoff",
 ]
 

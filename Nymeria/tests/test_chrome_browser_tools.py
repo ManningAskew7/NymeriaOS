@@ -36,6 +36,7 @@ from nymeria.tools.chrome_browser import (
     CHROME_BROWSER_TOOLS,
     CHROME_KIT_TOOL_NAMES,
     chrome_act,
+    chrome_browsers,
     chrome_cdp,
     chrome_console,
     chrome_dialog,
@@ -170,7 +171,7 @@ def _ok(data: dict) -> dict:
 # ---------- surface shape ----------
 
 
-def test_surface_is_eighteen_tools_and_the_kit_binds_all_of_them() -> None:
+def test_surface_is_nineteen_tools_and_the_kit_binds_all_of_them() -> None:
     names = {t.name for t in CHROME_BROWSER_TOOLS}
     assert names == {
         "chrome_tabs",
@@ -191,15 +192,18 @@ def test_surface_is_eighteen_tools_and_the_kit_binds_all_of_them() -> None:
         "chrome_await_login",
         "chrome_cancel_login",
         "chrome_target",
+        "chrome_browsers",
     }
     # #167 put the whole working surface in the kit; #169 completed it
     # (chrome_dialog joined once Page ownership made it a working tool);
     # chrome_reload_extension joined 2026-08-16 (remote dev-loop refresh);
     # chrome_health joined in the #188 pass (one-call tab health read);
     # the login-handoff trio joined in the browser-login pass;
-    # chrome_target joined in the single-browser-routing pass (#282).
+    # chrome_target joined in the single-browser-routing pass (#282), and
+    # chrome_browsers (fleet list + rename) followed it so labels are a
+    # tool capability, never a slash_command dependency.
     assert set(CHROME_KIT_TOOL_NAMES) == names
-    assert len(CHROME_KIT_TOOL_NAMES) == 18
+    assert len(CHROME_KIT_TOOL_NAMES) == 19
 
 
 def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
@@ -7046,6 +7050,106 @@ def test_chrome_target_switch_refused_while_a_login_handoff_is_live(
 
     out = asyncio.run(run())
     assert "[Error]" in out and "login handoff is live" in out
+
+
+# ---------- chrome_browsers: the fleet-management tool ----------
+#
+# The agent's first-class surface for browser labels (rename) and the fleet
+# view: without it, naming a browser would require the slash_command
+# fallback tool to be bound, which it often is not.
+
+
+def test_chrome_browsers_lists_the_fleet_with_labels_and_default(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    agent.profile_manager.profile.set_browser_preference(
+        "labels", {_DESK_ID: "desktop"}
+    )
+    agent.profile_manager.profile.set_browser_preference("default_target", _DESK_ID)
+    _connect_browser(_DESK_ID, version="0.27.0")
+    _connect_browser(_RIG_ID)
+
+    out = asyncio.run(chrome_browsers.ainvoke({}, config=_config()))
+
+    assert '"label": "desktop"' in out
+    assert "rigbbbbb" in out
+    assert f'"account_default": "{_DESK_ID}"' in out
+
+
+def test_chrome_browsers_rename_sets_and_removes_the_label(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+
+    named = asyncio.run(
+        chrome_browsers.ainvoke(
+            {"action": "rename", "browser": "deskaaaa", "label": "desktop"},
+            config=_config(),
+        )
+    )
+    labels = agent.profile_manager.profile.get_browser_preferences()["labels"]
+    assert labels == {_DESK_ID: "desktop"}
+    assert "Browser named" in named and "desktop" in named
+
+    removed = asyncio.run(
+        chrome_browsers.ainvoke(
+            {"action": "rename", "browser": "desktop"}, config=_config()
+        )
+    )
+    labels = agent.profile_manager.profile.get_browser_preferences()["labels"]
+    assert labels == {}
+    assert "Name removed" in removed
+
+
+def test_chrome_browsers_rename_never_moves_a_thread_target(monkeypatch) -> None:
+    """Labels are display names on top of ids: naming a browser must not
+    retarget any thread (targets store the client_id, not the label)."""
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+    asyncio.run(chrome_target.ainvoke({"browser": "deskaaaa"}, config=_config()))
+
+    asyncio.run(
+        chrome_browsers.ainvoke(
+            {"action": "rename", "browser": "deskaaaa", "label": "renamed"},
+            config=_config(),
+        )
+    )
+
+    assert agent.thread_config_manager.saved["t1"].browser_target == _DESK_ID
+
+
+def test_chrome_browsers_refuses_bad_refs_actions_and_oversize_labels(
+    monkeypatch,
+) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+
+    unknown = asyncio.run(
+        chrome_browsers.ainvoke(
+            {"action": "rename", "browser": "nosuch", "label": "x"},
+            config=_config(),
+        )
+    )
+    assert "[Error]" in unknown and "No browser matches" in unknown
+
+    missing = asyncio.run(
+        chrome_browsers.ainvoke({"action": "rename"}, config=_config())
+    )
+    assert "[Error]" in missing and "browser" in missing
+
+    oversize = asyncio.run(
+        chrome_browsers.ainvoke(
+            {"action": "rename", "browser": "deskaaaa", "label": "x" * 200},
+            config=_config(),
+        )
+    )
+    assert "[Error]" in oversize and "60" in oversize
+
+    bogus = asyncio.run(chrome_browsers.ainvoke({"action": "explode"}, config=_config()))
+    assert "[Error]" in bogus and "explode" in bogus
+
+    assert agent.profile_manager.profile.get_browser_preferences()["labels"] == {}
 
 
 # ---------- the /browser routing subcommands ----------
