@@ -42,8 +42,8 @@ def test_format_env_value_quotes_special_chars():
 
 def test_parse_env_value_inverts_format():
     # parse(format(x)) == x for the cases format produces: plain, base64, and the
-    # quoted/escaped special-char path. This is the property _sync_process_env relies
-    # on so a hot-reloaded value never carries literal quotes.
+    # quoted/escaped special-char path. This is the property _sync_updated_env_vars
+    # relies on so a hot-reloaded value never carries literal quotes.
     for value in (
         "gpt-5.5",
         "k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u=",

@@ -4,7 +4,7 @@ import asyncio
 import difflib
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Optional
 
@@ -606,21 +606,41 @@ def serialize_env_var(
     }
 
 
-def _sync_process_env(new_lines: list[str], mapped_env_vars: set[str]) -> None:
-    """Sync mapped dotenv values into os.environ after a settings update.
+def _sync_updated_env_vars(produced: Sequence[tuple[str, str]]) -> None:
+    """Export the env vars THIS update wrote into ``os.environ``.
 
-    The written line may carry a quoted RHS (``format_env_value`` quotes
-    special-char values), so the value is un-quoted via ``parse_env_value`` before
-    it reaches ``os.environ``. Otherwise the env source (which outranks the dotenv
-    source) would feed the hot-reloaded Settings a value wrapped in literal quotes.
+    Needed because ``os.environ`` outranks the dotenv source in
+    ``Settings.settings_customise_sources``: without this, a value already in
+    the process would shadow the line just written, and the hot-reloaded
+    Settings would keep serving the old one.
+
+    ``produced`` carries values already run through ``format_env_value``, which
+    quotes special-character values, so each is un-quoted via
+    ``parse_env_value`` on the way in. Otherwise the env source would feed
+    Settings a value wrapped in literal quotes.
+
+    Scoped to what this request changed, never the whole merged file (#299).
+    A file key the caller did not name has no stale-shadow problem to solve,
+    and exporting it writes PROCESS-WIDE state the request was never asked to
+    touch: os.environ is read directly (not only through Settings) by tool and
+    provider code, it is never garbage-collected, and the graph rebuild,
+    ``restart_required``, the ``updated`` list and the #157 agent-write owner
+    alert all key off the named fields, so a wide export lands changes none of
+    them account for.
+
+    What this scoping does NOT do, and cannot: the ``get_settings_fn()``
+    reload below builds a fresh ``Settings``, whose dotenv source FILLS GAPS
+    under the env source. So a file key absent from ``os.environ`` (added to
+    the file after startup, or popped by ``run.py``'s slim/fat pins) still
+    reaches the reloaded Settings no matter how this export is scoped. That is
+    a property of the settings source chain, not of this function; every
+    ``get_settings.cache_clear()`` in the codebase has it. Restarting is what
+    applies a config-file edit properly:
+    ``api/routers/system.py::restart_api_process`` re-merges the dotenv files
+    over the inherited environment precisely so a restart picks those up.
     """
-    for line in new_lines:
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, _, val = line.partition("=")
-            key = key.strip()
-            if key in mapped_env_vars:
-                os.environ[key] = parse_env_value(val)
+    for key, formatted_value in produced:
+        os.environ[key] = parse_env_value(formatted_value)
 
 
 def _clear_settings_cache(get_settings_fn: Callable[[], Any]) -> None:
@@ -804,11 +824,8 @@ def apply_server_settings_update(
         for name, value in updates_dict.items()
         if name in env_mapping
     ] + extra_env_pairs
-    new_lines = write_env_file(env_path, produced, merge=True)
-    _sync_process_env(
-        new_lines,
-        set(env_mapping.values()) | {var for var, _ in extra_env_pairs},
-    )
+    write_env_file(env_path, produced, merge=True)
+    _sync_updated_env_vars(produced)
 
     _clear_settings_cache(get_settings_fn)
     new_settings = get_settings_fn()

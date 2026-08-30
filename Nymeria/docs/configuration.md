@@ -16,9 +16,25 @@ packaged setup, or create `.env` manually for a lighter source-checkout setup.
 ## Runtime Settings Updates
 
 Admins can update mapped server settings at runtime with `PATCH /settings`.
-The endpoint writes the selected dotenv file, syncs mapped values into
-`os.environ`, clears the cached `Settings` object, assigns the refreshed
+The endpoint writes the selected dotenv file, exports the values it just wrote
+into `os.environ` (needed because the environment outranks the dotenv file when
+`Settings` reloads), clears the cached `Settings` object, assigns the refreshed
 settings to the live agent, and returns `restart_required`.
+
+The export is scoped to the fields the request named, so a `PATCH` never
+rewrites the process environment for settings it was not asked to change.
+
+Editing a dotenv file directly is still not a supported way to change a
+running server, and it half-applies in a way that is hard to diagnose. A
+hand-edit to a key the process already holds with a NON-EMPTY value is
+shadowed by the environment and does not apply at all. A hand-edit is picked
+up by the next `Settings` reload when the key is absent from the environment,
+blank there (an empty value is treated as unset, which is what every
+`${VAR:-}` compose expansion produces), or was deliberately cleared by the
+runtime. Even then it applies only partially: the agent's compiled graph is
+not rebuilt for it and `restart_required` does not report it. Restart the API
+to apply dotenv edits (the restart re-merges the dotenv files over the
+inherited environment for exactly this reason).
 
 The following settings are applied to future graph builds immediately and also
 clear/rebuild the current default graph caches:
