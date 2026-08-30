@@ -467,10 +467,11 @@ def test_noninteractive_writes_backend_keys_and_seeds_default_tools(monkeypatch,
     assert "fetch_url_nymeria" in default_tools
     # ...alongside the always-on core seed.
     assert "bash_execute" in default_tools and "memory_read" in default_tools
-    # The chosen capability kits seed enabled_global_skills, always led by the
-    # self-improve guidance skill.
+    # The chosen capability kits seed enabled_global_skills, always led by
+    # the guidance skills (self-improve, nymeria-resources).
     assert profile["enabled_global_skills"] == [
         "self-improve",
+        "nymeria-resources",
         "tool-management",
         "mcp-management",
     ]
@@ -558,9 +559,10 @@ def test_docker_shape_carries_init_picks_in_env_docker(monkeypatch, tmp_path):
     # Picked optional backends ride alongside the always-on core seed.
     assert "web_search_tavily" in tools and "image_gen_gemini" in tools
     assert "bash_execute" in tools and "memory_read" in tools
-    # Skills: self-improve plus exactly the picked kits, order preserved.
+    # Skills: the guidance pair plus exactly the picked kits, order preserved.
     assert lines[INIT_ENABLED_GLOBAL_SKILLS_ENV].split(":") == [
         "self-improve",
+        "nymeria-resources",
         "tool-management",
         "mcp-management",
     ]

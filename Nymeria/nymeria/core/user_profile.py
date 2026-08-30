@@ -55,20 +55,35 @@ LEGACY_TOOL_RENAMES: Dict[str, Union[str, List[str]]] = {
     "auth_manage": ["auth_inspect", "auth_cleanup", "auth_bindings"],
 }
 
-# self-improve (the text-only capability-expansion guidance skill) plus the
-# focused, default-on capability kits it routes to. All ship bundled in
+# Default-on global skills: the text-only guidance skills plus the focused,
+# default-on capability kits they route to. All ship bundled in
 # skills_bundled/. Each is index-only until activated, so enabling them by
-# default costs only description chars per thread. Widened 2026-08-27 with
-# the trigger/hook management kits and the callable-thread builder so new
-# profiles start with the full management toolkit; the migration watermark
-# means existing profiles keep their current list. orchestrate stays out:
-# it is internal (driven by /orchestrate, not user activation). ORDER is
-# pinned to the wizard's carrier ("self-improve" + the
-# ``family_catalog._DEFAULT_CHECKED_KITS`` order): ``docker_init_seed_env``
-# writes its skills carrier only when the wizard picks DIFFER from this
-# list, so a no-picks install must compare equal, order included.
-DEFAULT_GLOBAL_SKILLS: List[str] = [
+# default costs only description chars per thread. This is the SINGLE SOURCE
+# OF TRUTH for the default set: the wizard's default-checked kit list and its
+# always-seeded guidance pair both derive from these constants
+# (setup/family_catalog.py, setup/tool_seed.py), so widening the defaults is
+# one edit here. The kit list stays a deliberate literal, never derived from
+# the bundled dir: bundling a kit must never silently be a default-on
+# decision. Widened 2026-08-27 (trigger/hook management, callable-thread
+# builder) and 2026-08-30 (workflow-authoring, browser-control,
+# nymeria-resources); the migration watermark means existing profiles keep
+# their current list. Stays out: cli-customization (opt-in, CLI-surface
+# specific), orchestrate (internal, driven by /orchestrate), regression-noop
+# (test fixture). ORDER is pinned to the wizard's carrier (guidance skills
+# first, then the kit order): ``docker_init_seed_env`` writes its skills
+# carrier only when the wizard picks DIFFER from this list, so a no-picks
+# install must compare equal, order included.
+
+# Guidance skills bind no tools (``is_skill_kit`` false), so the wizard's kit
+# multi-select never offers them; they are seeded unconditionally beside the
+# picked kits and are opted out later via Settings, not at init.
+DEFAULT_GLOBAL_GUIDANCE_SKILLS: List[str] = [
     "self-improve",
+    "nymeria-resources",
+]
+
+# The curated default-on kit set (the wizard default-checks exactly these).
+DEFAULT_GLOBAL_KITS: List[str] = [
     "tool-management",
     "skill-management",
     "mcp-management",
@@ -76,6 +91,34 @@ DEFAULT_GLOBAL_SKILLS: List[str] = [
     "callable-thread-builder",
     "trigger-management",
     "hook-management",
+    "workflow-authoring",
+    "browser-control",
+]
+
+DEFAULT_GLOBAL_SKILLS: List[str] = [
+    *DEFAULT_GLOBAL_GUIDANCE_SKILLS,
+    *DEFAULT_GLOBAL_KITS,
+]
+
+# The keyless web defaults seeded on top of the core tool seed for any profile
+# that never ran the wizard, and default-checked by the wizard's family steps,
+# so "skipped init" and "no init at all" produce the same tool set (rule
+# parity, decided 2026-08-30). Search first, then fetch, matching the wizard's
+# family order. ddgs is the sole search default on every shape: the 2026-08-30
+# head-to-head (tmp/ddgs-vs-searxng-report.md, findings preserved in
+# docs/private/plans/core-toolset-plan.md) measured the shipped SearXNG
+# sidecar effectively dead from datacenter IPs (every classic engine blocks
+# self-identified requests) while ddgs's engine rotation + browser
+# impersonation went 13/13 with zero failures on the same IP. SearXNG stays an
+# offered wizard pick (deploying its sidecar), just not the default. These are
+# ordinary family members of ``default_thread_tools``, deliberately NOT
+# ``SEED_TOOLS`` members: search/fetch remain init-decided families the user
+# can swap by toggle.
+DEFAULT_WEB_SEARCH_TOOLS: List[str] = ["web_search_ddgs"]
+DEFAULT_FETCH_URL_TOOLS: List[str] = ["fetch_url_nymeria"]
+DEFAULT_WEB_TOOL_NAMES: List[str] = [
+    *DEFAULT_WEB_SEARCH_TOOLS,
+    *DEFAULT_FETCH_URL_TOOLS,
 ]
 
 
@@ -123,7 +166,10 @@ class ToolPreferences(BaseModel):
         default=None,
         description=(
             "Tool names that new threads inherit by default. "
-            "None = not yet initialized (will be populated from SEED_TOOLS on first use). "
+            "None = not yet initialized; the lazy profile migration "
+            "materializes it with the fresh-install default "
+            "(tools.fresh_default_thread_tool_names) on the next get_profile, "
+            "so a loaded profile effectively never carries None. "
             "Empty list = no tools. "
             "Can include both core and optional tool names."
         )
@@ -162,7 +208,13 @@ class ToolPreferences(BaseModel):
         return False
 
     def reset_to_defaults(self) -> None:
-        """Reset all tool preferences to defaults (re-init from SEED_TOOLS)."""
+        """Reset all tool preferences to defaults.
+
+        Setting ``default_thread_tools = None`` hands the list back to the
+        lazy profile migration, which re-seeds the fresh-install default
+        (``tools.fresh_default_thread_tool_names()``) on the next
+        ``get_profile``.
+        """
         self.default_thread_tools = None
         self.tool_configs.clear()
         self.custom_descriptions.clear()
@@ -506,25 +558,31 @@ class UserProfileManager:
         return profile
 
     def _migrate_default_thread_tools(self, profile: UserProfile) -> UserProfile:
-        """One-time seed of the Docker bootstrap admin's `default_thread_tools`.
+        """One-time seed of an unset `default_thread_tools`.
 
-        The host wizard cannot write the container's `/data` volume, so for the
-        Docker single-container shape it carried the bootstrap admin's picked default
-        tools in `.env.docker` (contract in `config/init_seed_env.py`). This applies
-        them the first time that profile is created inside the container, reaching
-        parity with a local install where `finalize.seed_bootstrap_profile` wrote them
-        host-side. It runs on the same lazy `get_profile` path that first materializes
-        the profile, so a genuine first boot adopts them (the agent's
-        `_migrate_tool_preferences` runs before the profile exists and so cannot).
+        Two sources, in priority order:
 
-        Scoped to the bootstrap admin and one-shot: only fires while
-        `default_thread_tools` is unset, so a restart, a recreate against the same
-        volume, or a later Settings edit never re-applies. Every other profile (and a
-        no-pick install) leaves `default_thread_tools` unset here for the agent's
-        core-seed migration / the `SEED_TOOLS` fallback to handle unchanged.
-        Best-effort: the env reader never raises; `migrate_tool_names` applies the
-        `LEGACY_TOOL_RENAMES` + order-preserving dedup, so a hand-edited var cannot
-        persist a stale alias or duplicate (the wizard-written value is already clean).
+        1. Bootstrap admin on a Docker single-container first boot: the host
+           wizard cannot write the container's `/data` volume, so it carried the
+           picked default tools in `.env.docker` (contract in
+           `config/init_seed_env.py`); when present they win, reaching parity
+           with a local install where `finalize.seed_bootstrap_profile` wrote
+           them host-side.
+        2. Everyone else (any profile that never ran a wizard, including
+           accounts created while the backend is already running): the fresh
+           install default, ``tools.fresh_default_thread_tool_names()`` (core
+           seed plus the keyless web defaults), so a no-wizard profile matches
+           a skipped-through wizard (rule parity, 2026-08-30). Before this the
+           generic case waited for the agent's startup-time
+           ``_migrate_tool_preferences`` sweep and got no web tools at all.
+
+        Runs on the lazy `get_profile` path and one-shot: only fires while
+        `default_thread_tools` is unset, so a restart, a recreate against the
+        same volume, or a later Settings edit never re-applies (no backfill:
+        existing profiles keep their list). Best-effort: the env reader never
+        raises; `migrate_tool_names` applies the `LEGACY_TOOL_RENAMES` +
+        order-preserving dedup, so a hand-edited var cannot persist a stale
+        alias or duplicate (the wizard-written value is already clean).
         """
         if profile.tool_preferences.default_thread_tools is not None:
             return profile
@@ -532,23 +590,24 @@ class UserProfileManager:
         from .accounts import BOOTSTRAP_USER_ID
         from ..config.init_seed_env import init_default_thread_tools_from_env
 
-        if profile.user_id != BOOTSTRAP_USER_ID:
-            return profile
-        init_picks = init_default_thread_tools_from_env()
-        if not init_picks:
-            return profile
+        seed: Optional[List[str]] = None
+        if profile.user_id == BOOTSTRAP_USER_ID:
+            seed = init_default_thread_tools_from_env() or None
+        if seed is None:
+            from ..tools import fresh_default_thread_tool_names
+
+            seed = fresh_default_thread_tool_names()
 
         lock = self._get_lock(profile.user_id)
         with lock:
             if profile.tool_preferences.default_thread_tools is not None:
                 return profile
-            profile.tool_preferences.default_thread_tools = migrate_tool_names(init_picks)
+            profile.tool_preferences.default_thread_tools = migrate_tool_names(seed)
             profile.updated_at = utc_now()
             try:
                 self.save_profile(profile)
                 logger.info(
-                    "Seeded default_thread_tools for bootstrap admin %s from init "
-                    "picks (%d tools)",
+                    "Seeded default_thread_tools for %s (%d tools)",
                     profile.user_id,
                     len(profile.tool_preferences.default_thread_tools),
                 )

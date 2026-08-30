@@ -210,3 +210,62 @@ def test_run_doctor_returns_nonzero_for_failures(monkeypatch) -> None:
     )
 
     assert doctor.run_doctor(argparse.Namespace(skip_llm_test=True)) == 1
+
+
+# --- web search default-toolset check (2026-08-30) ---------------------------
+
+
+def _write_profile(data_dir: Path, default_thread_tools) -> None:
+    profile_dir = data_dir / "users" / "default"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    import json
+
+    (profile_dir / "profile.json").write_text(
+        json.dumps(
+            {
+                "user_id": "default",
+                "tool_preferences": {"default_thread_tools": default_thread_tools},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_web_search_check_passes_on_fresh_install_defaults(tmp_path: Path) -> None:
+    # No profile on disk: the fresh-install defaults apply (keyless ddgs +
+    # nymeria fetch), which pass with upgrade guidance rather than a warning.
+    settings = FakeSettings(data_dir=tmp_path / "data")
+    result = doctor._check_web_search(settings)
+    assert result.status == "pass"
+    assert "web_search_ddgs" in result.detail
+
+
+def test_web_search_check_warns_when_defaults_have_no_search(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    _write_profile(data_dir, ["bash_execute", "fetch_url_nymeria"])
+    result = doctor._check_web_search(FakeSettings(data_dir=data_dir))
+    assert result.status == "warn"
+    assert "no web_search_" in result.detail
+
+
+def test_web_search_check_warns_on_link_only_search_without_fetch(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    _write_profile(data_dir, ["bash_execute", "web_search_tavily"])
+    result = doctor._check_web_search(FakeSettings(data_dir=data_dir))
+    assert result.status == "warn"
+    assert "fetch_url" in result.detail
+    # Perplexity is self-sufficient: no fetch needed, no warning.
+    _write_profile(data_dir, ["bash_execute", "web_search_perplexity"])
+    ok = doctor._check_web_search(FakeSettings(data_dir=data_dir))
+    assert ok.status == "pass"
+    assert ok.detail == "web_search_perplexity"
+
+
+def test_web_search_check_is_wired_into_settings_checks(tmp_path: Path) -> None:
+    results: list[doctor.CheckResult] = []
+    doctor._append_settings_checks(
+        results,
+        FakeSettings(data_dir=tmp_path / "data"),
+        argparse.Namespace(skip_llm_test=True),
+    )
+    assert any(result.name == "Web search" for result in results)

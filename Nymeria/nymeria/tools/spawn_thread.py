@@ -22,7 +22,6 @@ The tool exposes three ergonomic knobs over the raw thread config:
 It only exposes the *append* path for system prompts
 (ThreadConfig.instructions); it cannot replace soul.md.
 """
-from .registry import ToolGroup, register_tool_group
 
 import logging
 import os
@@ -1420,8 +1419,13 @@ def _invoke_spawned(
             agent.unregister_callable_invocation(parent_thread_id, child_thread_id)
 
 
+# Kept as a named list for the category metadata mapping
+# (metadata._CATEGORY_GROUPS) and existing imports; deliberately NOT
+# registered as a catalog ToolGroup: spawn_thread was promoted into
+# ``SEED_TOOLS`` (2026-08-30, per core-toolset-plan Section A), and the seed
+# and catalog sets stay disjoint (see tools/__init__.py). One transient
+# exception: an in-session ``reload_all`` keeps the pre-removal group in the
+# reload-surviving registry (tools/registry.py #277), so seed and catalog
+# briefly both carry spawn_thread until the next real restart; harmless, the
+# catalog object wins the merge.
 SPAWN_THREAD_TOOLS = [spawn_thread]
-
-
-# Register this tool family for catalog auto-discovery (backlog #51).
-register_tool_group(ToolGroup(name="spawn_thread", tools=tuple(SPAWN_THREAD_TOOLS)))

@@ -4145,67 +4145,45 @@ class NymeriaAgent:
             self.todo_manager.migrate_unscoped_todos(user_id)
 
     def _migrate_tool_preferences(self) -> None:
-        """Auto-migrate: populate default_thread_tools from SEED_TOOLS if not yet set.
+        """Startup normalization sweep over every profile's default_thread_tools.
 
-        For users with existing enabled_overrides (old system), incorporate them
-        into the default_thread_tools list, then the old fields are ignored via
-        extra='ignore' on ToolPreferences.
+        Loading each profile through ``get_profile`` triggers the profile
+        manager's lazy seeding (``_migrate_default_thread_tools``: the
+        fresh-install default, ``fresh_default_thread_tool_names()``), so by
+        the time a profile reaches this loop the list is always set; this
+        sweep only normalizes it in place (the legacy ``web_search`` ->
+        ``web_search_perplexity`` rename, capability-expansion strip, dedup).
+
+        History: this method used to seed unset profiles itself and fold the
+        ancient pre-2026 ``enabled_overrides`` field into the seeded list.
+        The lazy seeding made that branch unreachable, and it was deleted
+        rather than kept as dead code (2026-08-30): a pre-2026 profile
+        restored onto a current backend gets the stock fresh defaults and its
+        ``enabled_overrides`` are dropped (the field is already ignored via
+        extra='ignore' on ToolPreferences), which the no-backfill posture
+        accepts.
         """
-        from ..tools import SEED_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
+        from ..tools import CAPABILITY_EXPANSION_TOOL_NAMES
 
         for user_id in self.profile_manager.list_users():
             profile = self.profile_manager.get_profile(user_id)
-            if profile.tool_preferences.default_thread_tools is not None:
-                current = set(profile.tool_preferences.default_thread_tools)
-                # web_search was renamed to web_search_perplexity and moved into
-                # the opt-in WEB_SEARCH_SERVICE_TOOLS group. Rename in place so
-                # users who had web search enabled by default keep it (now as an
-                # opt-in tool) and no orphaned "web_search" entry remains.
-                updated = list(dict.fromkeys(
-                    ("web_search_perplexity" if name == "web_search" else name)
-                    for name in profile.tool_preferences.default_thread_tools
-                    if name not in CAPABILITY_EXPANSION_TOOL_NAMES
-                ))
-                if set(updated) != current:
-                    profile.tool_preferences.default_thread_tools = updated
-                    self.profile_manager.save_profile(profile)
-                    logger.info(
-                        "Normalized default_thread_tools for user %s "
-                        "(web_search -> web_search_perplexity, stripped capability expansion)",
-                        user_id,
-                    )
-                continue  # Already migrated
-
-            # Start with all core tools
-            default_names = [
-                t.name for t in SEED_TOOLS
-                if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES
-            ]
-
-            # Check raw data for old enabled_overrides to incorporate
-            profile_path = self.profile_manager._get_profile_path(user_id)
-            if profile_path.exists():
-                try:
-                    import json
-                    with open(profile_path, "r", encoding="utf-8") as f:
-                        raw = json.load(f)
-                    old_overrides = raw.get("tool_preferences", {}).get("enabled_overrides", {})
-                    if old_overrides:
-                        for tool_name, enabled in old_overrides.items():
-                            if not enabled and tool_name in default_names:
-                                default_names.remove(tool_name)
-                            elif enabled and tool_name not in default_names:
-                                default_names.append(tool_name)
-                        logger.info(f"Migrated enabled_overrides for user {user_id} into default_thread_tools")
-                except Exception:
-                    logger.warning("Best-effort migration of enabled_overrides failed", exc_info=True)
-
-            # Normalize any legacy web_search reference carried over from old
-            # enabled_overrides (renamed to web_search_perplexity, now opt-in).
-            default_names = list(dict.fromkeys(
-                "web_search_perplexity" if n == "web_search" else n
-                for n in default_names
+            if profile.tool_preferences.default_thread_tools is None:
+                continue  # lazy seeding failed to persist; nothing to normalize
+            current = set(profile.tool_preferences.default_thread_tools)
+            # web_search was renamed to web_search_perplexity and moved into
+            # the opt-in WEB_SEARCH_SERVICE_TOOLS group. Rename in place so
+            # users who had web search enabled by default keep it (now as an
+            # opt-in tool) and no orphaned "web_search" entry remains.
+            updated = list(dict.fromkeys(
+                ("web_search_perplexity" if name == "web_search" else name)
+                for name in profile.tool_preferences.default_thread_tools
+                if name not in CAPABILITY_EXPANSION_TOOL_NAMES
             ))
-            profile.tool_preferences.default_thread_tools = default_names
-            self.profile_manager.save_profile(profile)
-            logger.info(f"Initialized default_thread_tools for user {user_id} ({len(default_names)} tools)")
+            if set(updated) != current:
+                profile.tool_preferences.default_thread_tools = updated
+                self.profile_manager.save_profile(profile)
+                logger.info(
+                    "Normalized default_thread_tools for user %s "
+                    "(web_search -> web_search_perplexity, stripped capability expansion)",
+                    user_id,
+                )

@@ -235,23 +235,29 @@ that each bind their tools (ttl 2h) only when activated:
 | `skill-management` | `skill_manage`, `skill_write`, `skill_edit` | find/install/create/edit Skills and Skill Kits |
 | `mcp-management` | `manage_mcp` | find/install/test/manage MCP servers (ships with the single `manage_mcp` tool today) |
 | `credential-management` | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` | request/inspect/clean up credentials (binds these auth tools on activation, like the other capability kits) |
-| `workflow-authoring` | `tool_create`, `workflow_info` | author/test/publish nym-SDK workflow tools (the cookbook: economics, the approve/continuation idiom, delivery targets, cross-run state). NOT default-on; discovered via skill search or `/kit workflow-authoring` |
+| `workflow-authoring` | `tool_create`, `workflow_info` | author/test/publish nym-SDK workflow tools (the cookbook: economics, the approve/continuation idiom, delivery targets, cross-run state). Default-on since 2026-08-30 (authoring is safe to surface; execution stays behind the admin approval gate) |
 
-Nymeria initializes `self-improve` and the default kit set (the four
-capability kits above plus `trigger-management`, `hook-management`, and
-`callable-thread-builder` since 2026-08-27; `DEFAULT_GLOBAL_SKILLS` in
-`core/user_profile.py`) in each user profile's `enabled_global_skills` list
-once, so they are on by default for new threads and their tools load lazily
-on activation. The Settings → Skills "Enable
+Nymeria initializes the default set (`DEFAULT_GLOBAL_SKILLS` in
+`core/user_profile.py`: the guidance pair `self-improve` +
+`nymeria-resources`, the five capability kits above, plus
+`trigger-management`, `hook-management`, `callable-thread-builder`, and
+`browser-control`; widened 2026-08-27 and again 2026-08-30) in each user
+profile's `enabled_global_skills` list once, so they are on by default for
+new threads and their tools load lazily on activation. `cli-customization`
+stays opt-in (CLI-surface specific). The Settings → Skills "Enable
 globally" checkbox is the source of truth: unticking one removes it from the
 user's default thread skill set and Nymeria will not silently re-add it.
 
-Note for kit authors: the setup wizard default-checks a curated kit set
-(seven kits as of 2026-08-27; `workflow-authoring` deliberately excluded).
-A newly bundled kit is offered in the wizard but NOT auto-checked; users can enable it globally in Settings → Skills or per
-thread. Widen the curated list (`default_checked_skill_kits` in
-`setup/family_catalog.py`) only as a deliberate per-kit decision, and mark a
-kit `internal: true` to hide it from the wizard entirely.
+Note for kit authors: the setup wizard's default-checked kit set DERIVES
+from `DEFAULT_GLOBAL_KITS` in `core/user_profile.py` (single source of
+truth since 2026-08-30; `default_checked_skill_kits` in
+`setup/family_catalog.py` is the derivation, pinned by a parity test). A
+newly bundled kit is offered in the wizard but NOT auto-checked; users can
+enable it globally in Settings → Skills or per thread. Widen the backend
+constant only as a deliberate per-kit decision (a structural test gates
+that every default kit ships bundled, is not internal, and binds no
+admin-only tools), and mark a kit `internal: true` to hide it from the
+wizard entirely.
 
 Activate `Skill(name="self-improve")` for the operating philosophy, then the
 matching kit for the work: inspect existing capabilities, enable

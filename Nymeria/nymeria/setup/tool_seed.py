@@ -24,14 +24,15 @@ if TYPE_CHECKING:
 def core_seed_tool_names() -> list[str]:
     """The seed tools every new thread's default set starts with.
 
-    Mirrors ``NymeriaAgent._migrate_tool_preferences`` (``core/agent.py``) so an
-    admin seeded at init matches a normally-migrated user for the core portion.
-    Imported lazily to keep the setup package importable without the heavy tools
+    Delegates to the canonical ``tools.core_seed_tool_names`` (shared with the
+    backend's own profile seeding) so an admin seeded at init matches a
+    normally-migrated user for the core portion by construction. Imported
+    lazily to keep the setup package importable without the heavy tools
     package (the wizard chrome must load fast).
     """
-    from ..tools import SEED_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
+    from ..tools import core_seed_tool_names as _core_seed_tool_names
 
-    return [t.name for t in SEED_TOOLS if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES]
+    return _core_seed_tool_names()
 
 
 def default_thread_tools_for_state(state: "WizardState") -> list[str]:
@@ -65,11 +66,15 @@ def docker_init_seed_env(state: "WizardState") -> dict[str, str]:
     ``config/init_seed_env.py`` for the contract and the container-side readers).
 
     Returns ONLY the vars that DIFFER from the backend's own first-boot defaults
-    (``core_seed_tool_names()`` for tools, ``DEFAULT_GLOBAL_SKILLS`` for skills),
-    so the container's normal core-seed and default-skill migrations run
-    unchanged where they agree. Since 2026-08-27 the wizard's curated
-    default (``default_checked_skill_kits``) and the backend fallback carry
-    the same list, so a no-picks install writes NO skills carrier; the
+    (``fresh_default_thread_tool_names()`` for tools, since 2026-08-30 the
+    container's no-carrier seeding includes the keyless web defaults;
+    ``DEFAULT_GLOBAL_SKILLS`` for skills), so the container's normal seeding
+    and default-skill migrations run unchanged where they agree. An explicit
+    empty family pick (e.g. ``--web-search none``) therefore WRITES the
+    carrier: absence of the search tool is a deviation from the container's
+    own default and must override it. Since 2026-08-30 the wizard's default-checked
+    kits DERIVE from the backend constant (``default_checked_skill_kits``),
+    so a no-picks install writes NO skills carrier by construction; the
     carrier appears only when the user unticks or adds kits. When a var is
     written it holds the exact list `seed_bootstrap_profile` would have
     written on the host, keeping the two seeding paths in agreement.
@@ -80,10 +85,11 @@ def docker_init_seed_env(state: "WizardState") -> dict[str, str]:
         format_init_name_list,
     )
     from ..core.user_profile import DEFAULT_GLOBAL_SKILLS
+    from ..tools import fresh_default_thread_tool_names
 
     out: dict[str, str] = {}
     tools = default_thread_tools_for_state(state)
-    if tools != core_seed_tool_names():
+    if tools != fresh_default_thread_tool_names():
         out[INIT_DEFAULT_THREAD_TOOLS_ENV] = format_init_name_list(tools)
     skills = selected_global_skills_for_state(state)
     if skills != DEFAULT_GLOBAL_SKILLS:
@@ -92,16 +98,19 @@ def docker_init_seed_env(state: "WizardState") -> dict[str, str]:
 
 
 def selected_global_skills_for_state(state: "WizardState") -> list[str]:
-    """``enabled_global_skills`` to seed: the self-improve guidance skill plus the
+    """``enabled_global_skills`` to seed: the guidance skills plus the
     init-chosen capability kits.
 
-    ``self-improve`` is always included (the text-only routing/guidance skill that
-    the backend also defaults on); the chosen ``*-management`` kits follow.
-    Order-preserving dedup.
+    The guidance skills (``DEFAULT_GLOBAL_GUIDANCE_SKILLS``: self-improve and
+    nymeria-resources, text-only, never offered in the kit multi-select) are
+    always included; the chosen kits follow. Order-preserving dedup, guidance
+    first, so a no-picks run reproduces ``DEFAULT_GLOBAL_SKILLS`` exactly
+    (order included, see ``docker_init_seed_env``).
     """
+    from ..core.user_profile import DEFAULT_GLOBAL_GUIDANCE_SKILLS
     from .steps.placeholders import seeded_global_skills
 
-    names = ["self-improve"]
+    names = list(DEFAULT_GLOBAL_GUIDANCE_SKILLS)
     for name in seeded_global_skills(state):
         if name not in names:
             names.append(name)

@@ -648,8 +648,15 @@ def test_wizard_pilot_web_search_multiselect_seeds_real_backend():
         return state
 
     state = asyncio.run(drive())
-    assert state.extras["web_search"] == ["web_search_perplexity"]
-    assert seeded_tool_names(state) == ["web_search_perplexity"]
+    # ddgs arrives pre-checked (the keyless default since 2026-08-30), so the
+    # toggle ADDS perplexity beside it; the undecided fetch family falls back
+    # to its keyless default in the seeded names.
+    assert state.extras["web_search"] == ["web_search_ddgs", "web_search_perplexity"]
+    assert seeded_tool_names(state) == [
+        "web_search_ddgs",
+        "web_search_perplexity",
+        "fetch_url_nymeria",
+    ]
 
 
 def test_wizard_pilot_fetch_url_multiselect_defaults_nymeria_on():
@@ -672,7 +679,8 @@ def test_wizard_pilot_fetch_url_multiselect_defaults_nymeria_on():
 
     state = asyncio.run(drive())
     assert state.extras["fetch_url"] == ["fetch_url_nymeria"]
-    assert seeded_tool_names(state) == ["fetch_url_nymeria"]
+    # The undecided web-search family falls back to its keyless default.
+    assert seeded_tool_names(state) == ["web_search_ddgs", "fetch_url_nymeria"]
 
 
 def test_wizard_pilot_image_gen_multiselect_seeds_real_backend():
@@ -697,7 +705,12 @@ def test_wizard_pilot_image_gen_multiselect_seeds_real_backend():
 
     state = asyncio.run(drive())
     assert state.extras["image_gen"] == ["image_gen_openai"]
-    assert seeded_tool_names(state) == ["image_gen_openai"]
+    # Both undecided web families fall back to their keyless defaults.
+    assert seeded_tool_names(state) == [
+        "web_search_ddgs",
+        "fetch_url_nymeria",
+        "image_gen_openai",
+    ]
 
 
 def test_wizard_pilot_backend_keys_step_collects_key():

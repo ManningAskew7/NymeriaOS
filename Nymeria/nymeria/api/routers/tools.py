@@ -372,12 +372,19 @@ def create_tools_router(
         user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Reset default tools to the built-in seed set (SEED_TOOLS)."""
-        from ...tools import seed_tool_names
+        """Reset default tools to the fresh-install default set.
+
+        ``fresh_default_thread_tool_names()``: the core seed (capability-
+        expansion names stripped, unlike the raw ``seed_tool_names()`` this
+        wrote before 2026-08-30, which produced a set no fresh install ever
+        had) plus the keyless web defaults, i.e. exactly what a brand-new
+        profile is seeded with.
+        """
+        from ...tools import fresh_default_thread_tool_names
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
-        profile.tool_preferences.default_thread_tools = seed_tool_names()
+        profile.tool_preferences.default_thread_tools = fresh_default_thread_tool_names()
         agent.profile_manager.save_profile(profile)
 
         agent._rebuild_default_graphs()

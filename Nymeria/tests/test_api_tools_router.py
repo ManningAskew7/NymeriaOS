@@ -255,6 +255,42 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
     assert agent.default_graph_rebuilds == 1
 
 
+def test_reset_default_tools_restores_fresh_install_set(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """DELETE /tools/defaults writes exactly what a brand-new profile is
+    seeded with: capability-expansion names stripped (before 2026-08-30 the
+    raw seed leaked them, producing a set no fresh install ever had) and the
+    keyless web defaults included.
+    """
+    from nymeria.tools import (
+        CAPABILITY_EXPANSION_TOOL_NAMES,
+        fresh_default_thread_tool_names,
+    )
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    profile = agent.profile_manager.get_profile("owner")
+    cap_expansion = sorted(CAPABILITY_EXPANSION_TOOL_NAMES)[0]
+    profile.tool_preferences.default_thread_tools = ["bash_execute", cap_expansion]
+    agent.profile_manager.save_profile(profile)
+
+    response = client.delete(
+        "/tools/defaults", headers=api_client_builder.auth(token)
+    )
+
+    expected = fresh_default_thread_tool_names()
+    assert response.status_code == 200
+    assert response.json()["default_tools"] == sorted(expected)
+    saved = agent.profile_manager.get_profile(
+        "owner"
+    ).tool_preferences.default_thread_tools
+    assert saved == expected
+    assert cap_expansion not in saved
+    assert "web_search_ddgs" in saved and "fetch_url_nymeria" in saved
+
+
 def test_default_tools_accepts_split_auth_manager_legacy_name(
     tmp_path: Path,
     api_client_builder,

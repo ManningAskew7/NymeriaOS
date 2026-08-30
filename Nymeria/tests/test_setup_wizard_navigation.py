@@ -189,6 +189,7 @@ def test_apply_quick_defaults_seeds_keyless_fetch_and_local_rag():
 
     assert selected_global_skills_for_state(state) == [
         "self-improve",
+        "nymeria-resources",
         *family_catalog.default_checked_skill_kits(),
     ]
 
@@ -373,12 +374,14 @@ def test_quick_hosting_defaults_reseed_on_hosting_change():
     assert state.extras["tts"] == "kokoro"
     assert state.extras["stt"] == "faster-whisper"
 
-    # Going back and picking Docker re-resolves: the sidecar-backed SearXNG
-    # replaces ddgs, and the in-process voice seeds are retired (the slim
-    # image has no voice engines).
+    # Going back and picking Docker: the search default is shape-independent
+    # since 2026-08-30 (ddgs everywhere; the SearXNG-on-Docker default was
+    # dropped after the head-to-head, see DEFAULT_WEB_TOOL_NAMES), while the
+    # in-process voice seeds are retired (the slim image has no voice
+    # engines).
     state.hosting = HostingOption.DOCKER
     apply_quick_hosting_defaults(state)
-    assert state.extras["web_search"] == ["web_search_searxng"]
+    assert state.extras["web_search"] == ["web_search_ddgs"]
     assert "tts" not in state.extras
     assert "stt" not in state.extras
 

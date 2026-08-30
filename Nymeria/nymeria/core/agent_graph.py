@@ -985,7 +985,17 @@ def get_graph_for_user_impl(
         todo_list.get_active_todos_for_thread(thread_id) if thread_id
         else todo_list.get_active_todos()
     )
-    has_tool_prefs = profile.tool_preferences.default_thread_tools is not None
+    # "Customized" means the list differs from the stock fresh-install default:
+    # since 2026-08-30 the lazy profile migration materializes the list for
+    # every profile, so a bare is-not-None test would be always-True and this
+    # no-customization fast path would be dead for the very users it serves.
+    from ..tools import fresh_default_thread_tool_names
+
+    has_tool_prefs = (
+        profile.tool_preferences.default_thread_tools is not None
+        and profile.tool_preferences.default_thread_tools
+        != fresh_default_thread_tool_names()
+    )
     has_thread_config = bool(
         thread_id and agent.thread_config_manager.get_config(thread_id)
     )

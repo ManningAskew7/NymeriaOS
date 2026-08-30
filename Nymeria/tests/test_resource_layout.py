@@ -1027,6 +1027,11 @@ _INDIRECT_DATA_DIR_CHILDREN = {
     "workflow_id": "per-workflow trace dir",
     "SLIM_SERVICE_TOKEN_FILENAME": "imported constant, resolved at its own site",
     "BOOTSTRAP_TOKEN_FILENAME": "imported constant, resolved at its own site",
+    "BOOTSTRAP_USER_ID": (
+        "imported constant ('default'): doctor's web-search check reads the "
+        "bootstrap admin's profile.json raw (read-only diagnostic; the "
+        "users/ store itself is classified)"
+    ),
     "entry.name": "snapshot restore, iterating archive members",
     "f'.pre-restore-{stamp}'": "snapshot restore, pre-restore safety copy",
     "f'.snapshot-restore-{stamp}'": "snapshot restore, staging dir",

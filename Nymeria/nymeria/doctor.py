@@ -95,6 +95,7 @@ def _append_settings_checks(
     results.extend(
         [
             _check_data_dir(settings),
+            _check_web_search(settings),
             _check_llm(settings, skip=bool(getattr(args, "skip_llm_test", False))),
             _check_database(settings),
             _check_redis(settings),
@@ -180,6 +181,64 @@ def _check_data_dir(settings: Any) -> CheckResult:
     except OSError as exc:
         return CheckResult("Data dir", "fail", f"{data_dir} is not writable: {exc}")
     return CheckResult("Data dir", "pass", f"{data_dir} (writable)")
+
+
+def _check_web_search(settings: Any) -> CheckResult:
+    """Web capability of the default toolset: search present, fetch dependency met.
+
+    Reads the bootstrap admin's ``default_thread_tools`` straight from
+    ``profile.json`` (no UserProfileManager, which would side-effect a fresh
+    install by seeding the profile); an absent or unset profile means the
+    fresh-install defaults apply, whose web portion is
+    ``DEFAULT_WEB_TOOL_NAMES``. Warns when the defaults carry no web search at
+    all, or a link-only backend without a fetch tool (search results would be
+    unreadable); the deliberate keyless ddgs default passes with upgrade
+    guidance rather than warning on every fresh install.
+    """
+    import json
+
+    from .core.accounts import BOOTSTRAP_USER_ID
+    from .core.user_profile import DEFAULT_WEB_TOOL_NAMES
+
+    names = None
+    try:
+        profile_path = (
+            Path(settings.data_dir) / "users" / BOOTSTRAP_USER_ID / "profile.json"
+        )
+        if profile_path.exists():
+            raw = json.loads(profile_path.read_text(encoding="utf-8"))
+            names = (raw.get("tool_preferences") or {}).get("default_thread_tools")
+    except Exception:  # noqa: BLE001 - diagnostics must not crash on a bad profile
+        names = None
+    if not isinstance(names, list):
+        names = list(DEFAULT_WEB_TOOL_NAMES)
+    search = [n for n in names if isinstance(n, str) and n.startswith("web_search_")]
+    fetch = [n for n in names if isinstance(n, str) and n.startswith("fetch_url_")]
+    if not search:
+        return CheckResult(
+            "Web search",
+            "warn",
+            "no web_search_* tool in the default toolset, so new threads cannot "
+            "search the web; enable one in Settings -> Tools or rerun `nymeria init`",
+        )
+    link_only = [n for n in search if n != "web_search_perplexity"]
+    if link_only and not fetch:
+        return CheckResult(
+            "Web search",
+            "warn",
+            f"{', '.join(sorted(search))} returns links only and no fetch_url_* "
+            "tool is in the defaults, so results are unreadable; add "
+            "fetch_url_nymeria (keyless) in Settings -> Tools",
+        )
+    if search == ["web_search_ddgs"]:
+        return CheckResult(
+            "Web search",
+            "pass",
+            "web_search_ddgs (keyless scraped-engine default) works with no "
+            "setup; a keyed backend (Perplexity, Tavily, Brave) or a "
+            "self-hosted SearXNG upgrades quality",
+        )
+    return CheckResult("Web search", "pass", ", ".join(sorted(search)))
 
 
 def _check_llm(settings: Any, *, skip: bool) -> CheckResult:
