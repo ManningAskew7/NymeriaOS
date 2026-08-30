@@ -119,6 +119,12 @@ def write_env_file(
     the caller. The returned lines let callers sync ``os.environ`` afterward.
     ``drop`` keys are removed on merge unless re-produced (see
     :func:`merge_env_lines`); ignored on a fresh write.
+
+    The returned list is the file's FINAL contents, not the lines this call
+    changed. No production caller consumes it (only tests do): `PATCH
+    /settings` deliberately syncs ``os.environ`` from its own produced pairs
+    instead, because syncing from this return exported every mapped key the
+    file happened to contain (#299).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if merge:

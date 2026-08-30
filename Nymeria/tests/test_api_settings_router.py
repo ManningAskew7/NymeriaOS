@@ -1332,6 +1332,78 @@ def test_patch_settings_hot_reloads_env_and_rebuilds_graphs(
     assert agent.graph_rebuilds == ["sync", "async"]
 
 
+def test_patch_settings_leaves_env_vars_the_request_did_not_name(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # #299: the export is scoped to what THIS request wrote, never the whole
+    # merged file. TWITCH_CHANNEL is a mapped patchable key, so a whole-file
+    # re-export overwrites the value the live process deliberately holds with
+    # whatever the file happens to say. The reason that matters is the very
+    # next line of the applier: the settings cache is cleared, so a reloaded
+    # Settings believes anything smuggled into os.environ here.
+    (tmp_path / ".env").write_text(
+        "LLM_MODEL=old-model\nTWITCH_CHANNEL=from-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TWITCH_CHANNEL", "pinned-in-process")
+    # LLM_MODEL is the key this request DOES write, registered so the applier's
+    # os.environ write is reverted at teardown (the file's convention; conftest
+    # layer 3 would also catch it at the next test's setup).
+    monkeypatch.setenv("LLM_MODEL", "old-model")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_model": "new-model"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["llm_model"]
+    assert os.environ["LLM_MODEL"] == "new-model"
+    assert os.environ["TWITCH_CHANNEL"] == "pinned-in-process"
+    # Narrowing the EXPORT must not narrow the merge-WRITE: untouched file
+    # lines are still preserved verbatim.
+    assert "TWITCH_CHANNEL=from-file" in (tmp_path / ".env").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_patch_settings_does_not_resurrect_env_vars_absent_from_the_process(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # The other half of #299. run.py's slim and fat-CLI shapes POP keys out of
+    # os.environ while leaving them in the env file (REDIS_URL), and a
+    # whole-file re-export put the popped key back. Scope note, because
+    # run.py's own comment overstates it and this assertion must not be read as
+    # more than it is: popping REDIS_URL does not by itself keep the process
+    # off the cross-process bus, since the dotenv source refills
+    # `Settings.redis_url` on any reload (see `_sync_updated_env_vars`). The
+    # gate is `redis_enabled and redis_url` in core/event_bus.py, held by the
+    # REDIS_ENABLED=false pin. What is pinned here is narrower and still worth
+    # pinning: a PATCH must not write process-wide env state for a key it was
+    # never asked to touch.
+    (tmp_path / ".env").write_text(
+        "LLM_MODEL=old-model\nREDIS_URL=redis://from-file:6379/0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_MODEL", "old-model")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_model": "new-model"},
+    )
+
+    assert response.status_code == 200
+    assert os.environ["LLM_MODEL"] == "new-model"
+    assert "REDIS_URL" not in os.environ
+
+
 def test_patch_settings_updates_existing_config_env_for_packaged_runtime(
     tmp_path: Path,
     monkeypatch,
@@ -2200,12 +2272,12 @@ def test_patch_settings_s3_credential_writes_aws_env_var(tmp_path: Path, monkeyp
     # The S3 fields map to AWS SDK names (the override table), and the Settings model
     # now reads them back from the same names. End-to-end: PATCHing s3_access_key_id
     # must land as AWS_ACCESS_KEY_ID in the env file, not S3_ACCESS_KEY_ID.
-    # setenv (not delenv) so the os.environ writes the applier makes are reverted on
-    # teardown and cannot leak into other tests that load real Settings. _sync_process_env
-    # re-syncs EVERY mapped var present in the merged file, so the seeded LLM_MODEL line
-    # is written to os.environ too and must also be registered for cleanup.
+    # setenv (not delenv) so the os.environ write the applier makes is reverted on
+    # teardown and cannot leak into other tests that load real Settings. Only the
+    # var this request actually writes needs that: the export is scoped to the
+    # request's own changes (#299), so the seeded LLM_MODEL line below is written
+    # to the FILE and never to os.environ.
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "")
-    monkeypatch.setenv("LLM_MODEL", "keep")
     monkeypatch.delenv("S3_ACCESS_KEY_ID", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("LLM_MODEL=keep\n", encoding="utf-8")
