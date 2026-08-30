@@ -102,8 +102,9 @@ _SKILL_KIT_LABELS: dict[str, tuple[str, str]] = {
         "Request, inspect, and clean up service credentials and connections.",
     ),
     "callable-thread-builder": (
-        "Callable thread builder",
-        "Build callable threads: specialist threads other threads use as tools.",
+        "Callable thread & team builder",
+        "Build callable threads (specialist threads used as tools) and "
+        "organize them into callable teams.",
     ),
     "trigger-management": (
         "Trigger management",
