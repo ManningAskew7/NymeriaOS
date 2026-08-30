@@ -46,6 +46,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BUDGETS = {
     "CLAUDE.md": 2200,
     "Nymeria/CLAUDE.md": 3175,
+    "Nymeria/nymeria/CLAUDE.md": 450,
     "nymeria-desktop/CLAUDE.md": 600,
     "nymeria-mobile/CLAUDE.md": 300,
     "Nymeria/docs/private/security/CLAUDE.md": 1200,
@@ -57,6 +58,7 @@ BUDGETS = {
 GUIDE_BASES = {
     "CLAUDE.md": ["", "Nymeria/docs"],
     "Nymeria/CLAUDE.md": ["", "Nymeria", "Nymeria/nymeria", "Nymeria/docs"],
+    "Nymeria/nymeria/CLAUDE.md": ["", "Nymeria", "Nymeria/nymeria", "Nymeria/docs"],
     "nymeria-desktop/CLAUDE.md": ["", "nymeria-desktop", "nymeria-desktop/src/lib"],
     "nymeria-mobile/CLAUDE.md": ["", "nymeria-mobile", "nymeria-mobile/src/lib"],
     "Nymeria/docs/private/security/CLAUDE.md": [
