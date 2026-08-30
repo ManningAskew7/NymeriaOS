@@ -2512,7 +2512,7 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
 ---
 
-### Chrome Extension Tools (12)
+### Chrome Extension Tools (18)
 
 Drive the user's REAL, logged-in Chrome through the Nymeria browser extension.
 Defined in `tools/chrome_browser.py`. Distinct from the `browser_*` tools
@@ -2543,7 +2543,8 @@ surface, diagnostics and the escape hatch included):
 | `chrome_dialog` | `(tab_id, action, prompt_text?)` | Answer the JS dialog standing on a tab being driven (#169). The extension owns `Page` for the life of each attach, so dialogs raised while driving are held for the agent: alerts auto-acknowledged and reported, confirm/prompt/beforeunload standing with a named message and a grace deadline, dismissed automatically if nobody answers. Cannot answer a dialog raised while no command was driving the tab (ownership is not retroactive; measured). |
 | `chrome_health` | `(tab_id?)` | One side-effect-free read answering "is this tab healthy". Called with NO tab_id it is a CONNECTION PROBE (#223) answered from backend records with nothing dispatched: whether an extension stream is subscribed, the announced build and its age, and the disconnect age with a recycle-window hint; the result states it proves subscription, never execution (an API restart wipes the in-process record, so a probe right after a deploy honestly reads unknown until the extension resubscribes). With a tab_id (#188, the QA operator's top ask): which extension build EXECUTED the command (#216; when the build is too old to report it, a note falls back to the version announced at the last SSE subscribe and says that is the weaker claim), the tab itself, attach/capture state and buffer counts with the lapse duration, standing/recently-resolved dialogs and intercepted file choosers, in-flight or failed navigation, last main-frame HTTP status (grant-gated; absent means unknown), held/minted refs, when the tab was last driven, and the delivery-evidence pair: `input_swallowed`, the last action whose trusted input was provably discarded (suppression has no readable flag, so this is observed evidence, cleared when input provably flows again), and its positive twin `input_ok` (#202), the last PROVEN delivery with age, action, the URL it was proven under, and `on_current_url` judging DOCUMENT identity (true = same URL and no page load committed since the proof; false is common and usually good news, a navigating click proven on the page it was sent from; omitted across a worker recycle, where identity is unknowable). Normally at most one of the pair appears. Local reads only: it never attaches, and it answers under a standing dialog or a hung renderer. `worker_recycled_since_drive` discloses when an MV3 recycle reset the worker-scoped facts (refs survive, #179). |
 | `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the wedge enables (`Fetch`/`Debugger`, which nothing consumes, and `Page.enable`, whose ownership the extension already holds with an answering policy); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
-| `chrome_reload_extension` | `()` | Dev-loop helper: the extension reloads its own code from disk (`chrome.runtime.reload()`), replacing the manual refresh click at chrome://extensions after a pull+rebuild. Acks first (reporting `version_before`), reloads ~2.5s later, then the tool waits (bounded) for the reloaded worker's resubscribe and appends `version_after` (the extension announces its manifest version when subscribing), closing the deploy-verification loop; a missing reconnect is reported honestly instead. Driven tabs are released and in-flight commands lost, so it runs alone, never in a batch. A build that fails to load strands the extension until a manual reload. |
+| `chrome_reload_extension` | `()` | Dev-loop helper: the extension reloads its own code from disk (`chrome.runtime.reload()`), replacing the manual refresh click at chrome://extensions after a pull+rebuild. Acks first (reporting `version_before`), reloads ~2.5s later, then the tool waits (bounded) for the reloaded worker's resubscribe and appends `version_after` (the extension announces its manifest version when subscribing), closing the deploy-verification loop; a missing reconnect is reported honestly instead. The wait keys on the reloaded browser's OWN stream, so another connected browser's routine resubscribe never passes as this one's return. Driven tabs are released and in-flight commands lost, so it runs alone, never in a batch. A build that fails to load strands the extension until a manual reload. |
+| `chrome_target` | `(browser?)` | Which browser this thread drives, and the per-thread switch. No arguments: the current resolution and the full roster (label, id, connected state, version). With `browser` (a label, id, or unique fragment): sets THIS THREAD's target; `"clear"` removes the override. Switches are narrated to the user by instruction, tab ids do not survive one (the first tab-addressed call after a switch is refused once, naming the switch), and a switch is refused while a login handoff is live on the thread. The account-wide default is user-only (`/browser default`; the agent surface is refused there). |
 
 **Dialogs and the file chooser (#169):** `Page` is enabled on every debugger
 attach, deliberately. Dialogs raised while the agent drives are answered by
@@ -2567,6 +2568,37 @@ waiting out the timeout; orphans are swept at `ORPHAN_TTL_SECONDS` (90s), and
 every tool's own wait is derived from that constant so no command can be
 reported orphaned while the extension is still working on it.
 
+**Single-browser routing (the #282 fix):** several browsers can run the
+extension on one account (a desktop Chrome, a headless rig, another
+machine), each with a persistent per-profile client id, and every command
+routes to exactly ONE of them. Resolution (`core/browser_targets.py`):
+`ThreadConfig.browser_target` > the account default
+(`UserProfile.preferences['browser']['default_target']`, user-set via
+`/browser default`) > auto when exactly one browser is connected; with
+several connected and nothing chosen, dispatch refuses with the roster
+instead of guessing. Delivery is enforced per-subscriber in the SSE
+generator (an internal `_target_client_id` stamp, stripped from the wire,
+matched against each stream's client id, correct across the Redis relay),
+and the result endpoint ignores a POST whose `X-Nymeria-Client-Id` is not
+the command's target, so a stale second instance can neither execute nor
+resolve a command (double execution and non-deterministic tab namespaces
+were measured live before this). A configured-but-offline target fails
+naming itself and listing the connected alternatives, never falling back
+silently; the tab-free `chrome_health` probe lists the whole roster; labels
+are managed with `/browser rename` and the roster with `/browser list`.
+Login handoffs pin to the browser they started on: the operator's
+keystrokes and the session's ended-announce stop command are stamped for
+that browser alone, and retargeting the session's thread (or the account
+default) mid-login is refused.
+
+**Per-tab drive leases:** one thread drives one tab at a time
+(`core/browser_drive_leases.py`). Every tab-addressed dispatch claims (or
+refreshes) the tab for its thread, and the tab a command hands back (create,
+switch) is leased to that thread on arrival; a dispatch against a tab
+another thread holds refuses fast, naming the holder, with nothing sent.
+Leases end at the holder's turn end or after the 120s idle TTL, matched to
+the extension's own detach linger.
+
 **Session lifetime (#191):** the extension holds the tab's debugger attach
 (Chrome's "being debugged" banner) across the agent's think-pauses instead
 of detaching after a 10s idle, because each detach/re-attach reflowed the
@@ -2576,7 +2608,12 @@ captures. Two layers: a renewable hold in the extension (the safety net,
 event the backend publishes at the turn-end DONE seam
 (`core/browser_command_coordinator.release_browser_session`, called from
 `core/agent.py`'s observe fire points) for any turn that dispatched a
-browser command, which drops idle holds the moment the agent answers. A
+browser command, which drops idle holds the moment the agent answers. The
+release is stamped for each browser the turn actually drove, and it is
+SUPPRESSED for a browser where another thread still holds live drive
+leases (the extension drops idle holds per-browser, so publishing would
+release that thread's tabs mid-task); the suppressed browser falls back to
+the hold's own timeout. A
 lost release degrades to the hold's timeout, never a stuck banner. The
 VIEWPORT staleness class is closed on the extension side (DOM staleness at
 an unchanged viewport remains the agent's own re-read discipline): each capture

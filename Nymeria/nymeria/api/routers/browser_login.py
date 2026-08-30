@@ -173,16 +173,23 @@ def create_browser_login_router(
         next screencast frame, which is the real acknowledgement.
         """
         session = _owned_session(session_id, user)
+        data = {
+            "session_id": session.session_id,
+            "tab_id": session.tab_id,
+            "events": [event.model_dump(exclude_none=True) for event in body.events],
+        }
+        if session.client_id:
+            # Keystrokes go ONLY to the browser the session is pinned to:
+            # the stream-side target filter drops the event for every other
+            # connected extension. (Legacy sessions without a pin degrade to
+            # the old all-extensions delivery.)
+            data["_target_client_id"] = session.client_id
         publish_autonomous_event(
             event_type="browser_login_input",
             thread_id=session.thread_id,
             user_id=session.user_id,
             task_id="",
-            data={
-                "session_id": session.session_id,
-                "tab_id": session.tab_id,
-                "events": [event.model_dump(exclude_none=True) for event in body.events],
-            },
+            data=data,
         )
         return LoginInputAck(dispatched=len(body.events), session_active=True)
 

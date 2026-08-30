@@ -19,10 +19,12 @@ or both:
 
 Surface shape: each tool carries the schema weight its scoped purpose needs,
 no more and no less, and the ``browser-control`` kit binds the whole working
-surface (``CHROME_KIT_TOOL_NAMES``), all thirteen tools, diagnostics included
+surface (``CHROME_KIT_TOOL_NAMES``), diagnostics included
 (``chrome_dialog`` joined in the #169 pass, which made it a working tool;
 ``chrome_reload_extension`` joined 2026-08-16 as the dev loop's remote
-refresh).
+refresh; ``chrome_target`` joined in the single-browser-routing pass, which
+routes every command to ONE selected browser instead of broadcasting to all
+connected extensions, #282).
 One deliberate exception in kind: ``chrome_cdp`` is bound but LAST RESORT,
 with the credential-grade and wedge-grade methods refused by
 ``_cdp_refusal``. The wire underneath is unchanged, one command per round
@@ -76,11 +78,28 @@ from ..core.browser_login_sessions import (
     get_browser_login_registry,
     new_login_session_id,
 )
+from ..core.browser_drive_leases import LeaseHolder, get_browser_drive_leases
+from ..core.browser_targets import (
+    CLEAR_WORDS,
+    REASON_AMBIGUOUS,
+    account_default_target,
+    browser_labels,
+    describe_browser,
+    resolve_browser_ref,
+    resolve_target,
+    roster_lines,
+    set_thread_target,
+    thread_target,
+)
 from ..core.chrome_subscribers import (
+    BrowserRecord,
+    chrome_browser_disconnect_age,
+    chrome_browser_roster,
     chrome_connect_count,
     chrome_disconnect_age,
     chrome_extension_version,
     chrome_last_connect_age,
+    is_chrome_browser_connected,
     is_chrome_connected,
 )
 from ..core.event_bus import publish_autonomous_event
@@ -397,63 +416,104 @@ _RECONNECT_POLL_S = 0.5
 _PROCESS_START = time.monotonic()
 
 
-async def _await_reconnect(user_id: str) -> Optional[str]:
-    """Hold a dispatch through the extension's recycle window.
+# Outcomes of ``_await_connection``. The wait/boot-hold arithmetic is the
+# subtle half of the reconnect hold and lives ONCE; the two callers own
+# only their error copy.
+_WAIT_CONNECTED = "connected"
+_WAIT_NEVER = "never"  # settled process, no disconnect stamp
+_WAIT_BOOT_TIMEOUT = "boot_timeout"  # young-process hold expired unanswered
+_WAIT_DROP_TIMEOUT = "drop_timeout"  # recycle-grace hold expired unanswered
+_WAIT_LONG_GONE = "long_gone"  # disconnected beyond the grace window
 
-    Returns ``None`` when a subscriber is (or becomes) available, or the
-    ``[Error]: ...`` string to hand back. Never waits for a user with no
-    disconnect history on a settled process: the first-run "connect your
-    extension" experience stays instant. A YOUNG process (see
-    ``_PROCESS_START``) is the one exception, because there a missing
-    stamp is as likely a wiped registry as a missing extension.
+
+async def _await_connection(
+    is_connected: Callable[[], bool],
+    disconnect_age: Callable[[], Optional[float]],
+    log_subject: str,
+) -> tuple[str, float, float]:
+    """Hold a dispatch through a connection's recycle window.
+
+    Returns ``(outcome, age, waited)``: ``age`` is the entry-time
+    disconnect age (or process age on a boot hold), ``waited`` how long
+    the hold actually ran. Never waits when there is no disconnect stamp
+    on a settled process (``_WAIT_NEVER``: the first-run experience stays
+    instant); a YOUNG process (see ``_PROCESS_START``) is the one
+    exception, because there a missing stamp is as likely a wiped
+    registry as a missing connection.
     """
-    if is_chrome_connected(user_id):
-        return None
-    age = chrome_disconnect_age(user_id)
+    if is_connected():
+        return _WAIT_CONNECTED, 0.0, 0.0
+    age = disconnect_age()
     boot_hold = False
     if age is None:
         boot_age = time.monotonic() - _PROCESS_START
         if boot_age > _RECONNECT_GRACE_S:
             # Re-check before failing: a subscriber can land between the
             # entry check and the stamp read.
-            return None if is_chrome_connected(user_id) else (
-                "[Error]: No Nymeria browser extension connected for this user. "
-                "Open the extension popup and click Connect."
-            )
+            outcome = _WAIT_CONNECTED if is_connected() else _WAIT_NEVER
+            return outcome, 0.0, 0.0
         boot_hold = True
         age = boot_age
-    if age <= _RECONNECT_GRACE_S:
-        # One absolute deadline, computed from the entry-time age: a fresh
-        # disconnect stamped mid-wait must not extend the hold.
-        logger.info(
-            "chrome dispatch holding for extension reconnect (user=%s, %s %.1fs)",
-            user_id,
-            "process age" if boot_hold else "disconnect age",
-            age,
+    if age > _RECONNECT_GRACE_S:
+        return _WAIT_LONG_GONE, age, 0.0
+    # One absolute deadline, computed from the entry-time age: a fresh
+    # disconnect stamped mid-wait must not extend the hold.
+    logger.info(
+        "chrome dispatch holding for %s reconnect (%s %.1fs)",
+        log_subject,
+        "process age" if boot_hold else "disconnect age",
+        age,
+    )
+    started = time.monotonic()
+    deadline = started + (_RECONNECT_GRACE_S - age)
+    while time.monotonic() < deadline:
+        await asyncio.sleep(
+            min(_RECONNECT_POLL_S, max(0.0, deadline - time.monotonic()))
         )
-        started = time.monotonic()
-        deadline = started + (_RECONNECT_GRACE_S - age)
-        while time.monotonic() < deadline:
-            await asyncio.sleep(
-                min(_RECONNECT_POLL_S, max(0.0, deadline - time.monotonic()))
-            )
-            if is_chrome_connected(user_id):
-                return None
-        if is_chrome_connected(user_id):
-            return None
-        waited = time.monotonic() - started
-        if boot_hold:
-            # The hold was anchored on OUR restart, not on a measured drop:
-            # saying "the extension dropped" would assert a fact nobody has.
-            return (
-                "[Error]: The backend restarted "
-                f"{int(round(age + waited))}s ago and no browser extension "
-                "has connected since. If Chrome is open the extension "
-                "normally re-subscribes within a minute of a backend "
-                "restart, so retry once shortly; if this repeats, the user "
-                "may not have the extension running: ask them to open the "
-                "extension popup and click Connect."
-            )
+        if is_connected():
+            return _WAIT_CONNECTED, age, time.monotonic() - started
+    if is_connected():
+        return _WAIT_CONNECTED, age, time.monotonic() - started
+    waited = time.monotonic() - started
+    return (
+        _WAIT_BOOT_TIMEOUT if boot_hold else _WAIT_DROP_TIMEOUT,
+        age,
+        waited,
+    )
+
+
+async def _await_reconnect(user_id: str) -> Optional[str]:
+    """Hold a dispatch through the extension's recycle window.
+
+    Returns ``None`` when a subscriber is (or becomes) available, or the
+    ``[Error]: ...`` string to hand back. The wait semantics live in
+    :func:`_await_connection`; this wrapper owns the any-subscriber copy.
+    """
+    outcome, age, waited = await _await_connection(
+        lambda: is_chrome_connected(user_id),
+        lambda: chrome_disconnect_age(user_id),
+        f"extension (user={user_id})",
+    )
+    if outcome == _WAIT_CONNECTED:
+        return None
+    if outcome == _WAIT_NEVER:
+        return (
+            "[Error]: No Nymeria browser extension connected for this user. "
+            "Open the extension popup and click Connect."
+        )
+    if outcome == _WAIT_BOOT_TIMEOUT:
+        # The hold was anchored on OUR restart, not on a measured drop:
+        # saying "the extension dropped" would assert a fact nobody has.
+        return (
+            "[Error]: The backend restarted "
+            f"{int(round(age + waited))}s ago and no browser extension "
+            "has connected since. If Chrome is open the extension "
+            "normally re-subscribes within a minute of a backend "
+            "restart, so retry once shortly; if this repeats, the user "
+            "may not have the extension running: ask them to open the "
+            "extension popup and click Connect."
+        )
+    if outcome == _WAIT_DROP_TIMEOUT:
         current_age = chrome_disconnect_age(user_id)
         dropped_s = int(round(current_age if current_age is not None else age + waited))
         return (
@@ -472,6 +532,158 @@ async def _await_reconnect(user_id: str) -> Optional[str]:
         "repeats, ask the user to open the extension popup and click "
         "Connect."
     )
+
+
+def _connected_alternatives_line(user_id: str, exclude: str) -> str:
+    """Name the OTHER connected browsers in a target-offline error, so the
+    refusal hands over the escape route instead of a dead end."""
+    others = [
+        describe_browser(user_id, record.client_id)
+        for record in chrome_browser_roster(user_id)
+        if record.connected and record.client_id != exclude
+    ]
+    if not others:
+        return "No other browser is connected either."
+    return (
+        f"Connected right now: {', '.join(others)}. Switch this thread with "
+        "chrome_target, or the user can pick with /browser."
+    )
+
+
+async def _await_target(user_id: str, client_id: str) -> Optional[str]:
+    """Hold a dispatch for the SELECTED browser through its recycle window.
+
+    The per-browser twin of :func:`_await_reconnect`, keyed on this
+    browser's own connect/disconnect stamps: another browser being up must
+    not satisfy a wait for this one (routing never falls back silently).
+    Returns ``None`` when the browser is (or becomes) connected, else the
+    ``[Error]: ...`` string naming it and the connected alternatives.
+    """
+    outcome, age, waited = await _await_connection(
+        lambda: is_chrome_browser_connected(user_id, client_id),
+        lambda: chrome_browser_disconnect_age(user_id, client_id),
+        f"target (user={user_id}, target={client_id[:24]})",
+    )
+    if outcome == _WAIT_CONNECTED:
+        return None
+    handle = describe_browser(user_id, client_id)
+    if outcome == _WAIT_NEVER:
+        return (
+            f"[Error]: The selected browser ({handle}) is not connected. "
+            + _connected_alternatives_line(user_id, client_id)
+        )
+    if outcome in (_WAIT_BOOT_TIMEOUT, _WAIT_DROP_TIMEOUT):
+        return (
+            f"[Error]: The selected browser ({handle}) "
+            + (
+                "has not reconnected since the backend restarted"
+                if outcome == _WAIT_BOOT_TIMEOUT
+                else "dropped its connection"
+            )
+            + f" and did not return within the {int(round(waited))}s this "
+            "command waited (a routine service-worker recycle reconnects "
+            "within a minute, so retry once shortly). "
+            + _connected_alternatives_line(user_id, client_id)
+        )
+    return (
+        f"[Error]: The selected browser ({handle}) disconnected "
+        f"{int(age // 60)}m ago and has not returned. "
+        + _connected_alternatives_line(user_id, client_id)
+    )
+
+
+def _ambiguous_target_error(user_id: str) -> str:
+    """Several browsers connected, nothing selected: refuse, never guess.
+
+    Guessing (or the old broadcast) is the #282 incident: every connected
+    browser executed every command. The refusal carries the roster so the
+    fix is one call away.
+    """
+    lines = "; ".join(roster_lines(user_id)) or "none"
+    return (
+        "[Error]: More than one browser is connected on this account and no "
+        "target is chosen, so nothing was sent (commands route to exactly "
+        f"ONE browser). Known browsers: {lines}. Set this thread's target "
+        "with chrome_target(browser=...) and tell the user which you "
+        "picked, or the user can set an account default with /browser "
+        "default."
+    )
+
+
+def _switch_refusal(
+    *, user_id: str, thread_id: str, target: str, args: dict[str, Any]
+) -> Optional[str]:
+    """Refuse ONE tab-addressed command after the thread's target changed.
+
+    Tab ids are minted per browser and do not survive a target switch; the
+    first tab-addressed dispatch after one is therefore aimed with a stale
+    id from the previous browser. The refusal names the switch (upgrading
+    what would otherwise surface as a bare "No tab with given id"). The
+    tracking state lives on the command coordinator (core, so a tools
+    hot-reload cannot forget a switch): every dispatch records its target
+    (arming the marker on a change, because tab ids are learned from
+    tab-less listings too), while only a TAB-ADDRESSED dispatch consumes
+    the marker, so a tab-less command in between (a tab listing is the
+    prescribed recovery) cannot eat the refusal. A popped marker equal to
+    the current target means the thread switched away and back with no
+    tab work in between: those ids are live again, nothing to refuse. The
+    pop lands before the refusal, so a retry proceeds: refuse once, never
+    wedge.
+    """
+    if not thread_id:
+        return None
+    coord = get_browser_command_coordinator()
+    coord.note_dispatch_target(user_id, thread_id, target)
+    tab_id = args.get("tab_id")
+    if not isinstance(tab_id, int) or isinstance(tab_id, bool):
+        return None
+    previous = coord.pop_switch_marker(user_id, thread_id)
+    if previous is None or previous == target:
+        return None
+    return (
+        "[Error]: This thread's browser target switched from "
+        f"{describe_browser(user_id, previous)} to "
+        f"{describe_browser(user_id, target)} since its last browser "
+        f"command, and tab ids do not survive a switch: tab {tab_id} "
+        "belongs to the previous browser, so nothing was sent. List tabs "
+        "to get ids in the new browser and continue with those. This "
+        "refusal happens once per switch; the same call retried now goes "
+        "to the new browser."
+    )
+
+
+def _lease_refusal(tab_id: int, holder: LeaseHolder) -> str:
+    return (
+        f"[Error]: Tab {tab_id} is being driven by another conversation "
+        f"right now (thread {holder.thread_id}; its claim lapses in "
+        f"{int(holder.seconds_remaining)}s if it goes idle, or when its "
+        "turn ends). Nothing was sent: two conversations driving one tab "
+        "interleave their inputs and corrupt both tasks. Work in a tab of "
+        "your own (chrome_tabs create), or wait and retry."
+    )
+
+
+def _lease_created_tab(
+    result: dict[str, Any], *, user_id: str, target: str, thread_id: str
+) -> None:
+    """Claim the tab a successful command handed back (create, switch).
+
+    Driving is claiming: the tab payload in a result means this thread is
+    now working that tab, so the lease starts here rather than on its next
+    dispatch, closing the gap where a second thread grabs a just-created
+    tab. Best-effort: a claim that loses a race is simply not taken.
+    """
+    if not thread_id or not target:
+        return
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return
+    tab = data.get("tab")
+    tab_id = tab.get("id") if isinstance(tab, dict) else None
+    if isinstance(tab_id, int) and not isinstance(tab_id, bool):
+        get_browser_drive_leases().claim(
+            user_id=user_id, client_id=target, tab_id=tab_id, thread_id=thread_id
+        )
 
 
 # The two command types that RUN a login session. They are the only ones
@@ -532,15 +744,62 @@ async def _run(
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
 
-    connect_error = await _await_reconnect(user_id)
-    if connect_error is not None:
-        return None, connect_error
+    # Single-browser routing: resolve WHICH browser this command goes to
+    # (thread override > account default > auto when exactly one is
+    # connected), refuse when several are connected and nothing is chosen,
+    # and wait out the selected browser's own recycle window. Broadcast was
+    # the #282 incident: every connected browser executed every command.
+    resolution = resolve_target(user_id, thread_id)
+    if resolution.client_id is None and resolution.reason != REASON_AMBIGUOUS:
+        # Nothing connected: the legacy any-subscriber wait keeps the
+        # first-run fail-fast and the recycle-grace behaviors, then the
+        # ladder re-runs against whatever arrived.
+        connect_error = await _await_reconnect(user_id)
+        if connect_error is not None:
+            return None, connect_error
+        resolution = resolve_target(user_id, thread_id)
+    if resolution.client_id is None:
+        if resolution.reason == REASON_AMBIGUOUS:
+            return None, _ambiguous_target_error(user_id)
+        return None, (
+            "[Error]: No Nymeria browser extension connected for this user. "
+            "Open the extension popup and click Connect."
+        )
+    target = resolution.client_id
+    offline_error = await _await_target(user_id, target)
+    if offline_error is not None:
+        return None, offline_error
+
+    switch_error = _switch_refusal(
+        user_id=user_id, thread_id=thread_id, target=target, args=args
+    )
+    if switch_error is not None:
+        return None, switch_error
 
     login_block = _login_session_block(
         command_type=command_type, args=args, user_id=user_id
     )
     if login_block is not None:
         return None, login_block
+
+    # Per-tab drive lease: one thread drives one tab at a time. Login
+    # session start/stop are exempt (the session registry is their own
+    # exclusion). thread_id is never empty in practice (the config reader
+    # coerces a missing thread to "default", so even a user-typed /browser
+    # command claims leases as the default thread, released at its next
+    # turn end or by the 120s TTL); the guard is defensive only.
+    tab_id = args.get("tab_id")
+    if (
+        thread_id
+        and command_type not in _LOGIN_SESSION_COMMANDS
+        and isinstance(tab_id, int)
+        and not isinstance(tab_id, bool)
+    ):
+        holder = get_browser_drive_leases().claim(
+            user_id=user_id, client_id=target, tab_id=tab_id, thread_id=thread_id
+        )
+        if holder is not None:
+            return None, _lease_refusal(tab_id, holder)
 
     timeout_s = _timeout_for(command_type, timeout_override)
     command_id = new_command_id()
@@ -551,6 +810,7 @@ async def _run(
         thread_id=thread_id,
         command_type=command_type,
         metadata=args,
+        target_client_id=target,
     )
     publish_autonomous_event(
         event_type="browser_command",
@@ -562,6 +822,10 @@ async def _run(
             "command_type": command_type,
             "args": args,
             "timeout_seconds": timeout_s,
+            # Stripped from the wire payload (underscore key); read by the
+            # per-subscriber delivery filter so only the target browser's
+            # stream is served this command.
+            "_target_client_id": target,
         },
     )
     try:
@@ -588,6 +852,7 @@ async def _run(
         raise
     if not isinstance(result, dict):
         return None, f"[Error]: Malformed browser result for '{command_type}'."
+    _lease_created_tab(result, user_id=user_id, target=target, thread_id=thread_id)
     return result, None
 
 
@@ -3772,7 +4037,37 @@ def _health_notes(data: dict[str, Any], *, announced: Optional[str] = None) -> s
     return "\n".join(lines)
 
 
-def _connection_probe_note(*, connected: bool, disconnect_age: Optional[float]) -> str:
+def _browser_row(record: BrowserRecord, label: Optional[str]) -> dict[str, Any]:
+    """One roster row for the tab-free probe's ``browsers`` list.
+
+    Sparse on purpose (absent means not-applicable, mirroring the other
+    probe fields): ``streams`` appears only when a browser briefly holds
+    more than one stream (a reconnect overlap), ``disconnect_age_s`` only
+    for a disconnected row.
+    """
+    row: dict[str, Any] = {
+        "client_id": record.client_id,
+        "connected": record.connected,
+    }
+    if label:
+        row["label"] = label
+    if record.version:
+        row["version"] = record.version
+    if record.streams > 1:
+        row["streams"] = record.streams
+    if record.last_connect_age_s is not None:
+        row["connect_age_s"] = round(record.last_connect_age_s, 1)
+    if not record.connected and record.last_disconnect_age_s is not None:
+        row["disconnect_age_s"] = round(record.last_disconnect_age_s, 1)
+    return row
+
+
+def _connection_probe_note(
+    *,
+    connected: bool,
+    disconnect_age: Optional[float],
+    connected_browsers: int = 0,
+) -> str:
     """The tab-free probe's honesty lines, all our own text (#223).
 
     The standing line carries the load-bearing caveat: the registry proves a
@@ -3790,6 +4085,14 @@ def _connection_probe_note(*, connected: bool, disconnect_age: Optional[float]) 
         "extension and leave its stream up while every command fails. Pass a "
         "tab_id for the health check that proves execution.]"
     ]
+    if connected_browsers > 1:
+        lines.append(
+            f"[{connected_browsers} distinct browsers are connected on this "
+            "account (the payload's browsers list names them). Commands "
+            "route to exactly ONE: this thread's target if set, else the "
+            "account default. With neither set, chrome_* calls refuse until "
+            "a target is chosen (chrome_target, or the /browser command).]"
+        )
     if not connected:
         if disconnect_age is not None and disconnect_age <= _RECONNECT_GRACE_S:
             lines.append(
@@ -3852,12 +4155,22 @@ def _connection_probe_result(user_id: str, thread_id: str) -> str:
     disconnect_age = chrome_disconnect_age(user_id)
     if not connected and disconnect_age is not None:
         data["disconnect_age_s"] = round(disconnect_age, 1)
+    roster = chrome_browser_roster(user_id)
+    if roster:
+        labels = browser_labels(user_id)
+        data["browsers"] = [
+            _browser_row(record, labels.get(record.client_id)) for record in roster
+        ]
     body, note = _cap(
         _format_result({"ok": True, "data": data}),
         thread_id=thread_id,
         prefix="chrome-health",
     )
-    extra = _connection_probe_note(connected=connected, disconnect_age=disconnect_age)
+    extra = _connection_probe_note(
+        connected=connected,
+        disconnect_age=disconnect_age,
+        connected_browsers=sum(1 for record in roster if record.connected),
+    )
     return f"{_fence(body)}{_outside_fence(body, note=note, extra=extra)}"
 
 
@@ -3877,7 +4190,10 @@ async def chrome_health(
     entirely from the backend's own records, nothing is sent to the extension,
     so it works before any tab exists and cannot disturb driving state. It
     reports whether an extension event stream is subscribed, the build it
-    announced, and how long ago; that proves subscription, NOT execution (the
+    announced, and how long ago, plus a ``browsers`` roster listing EVERY
+    known browser on the account (label, id, connected state, version) when
+    more than one Chrome runs the extension; which one commands drive is
+    chrome_target's job. The probe proves subscription, NOT execution (the
     result says so), so use it to poll for a connection or a new build after a
     deploy without paying a reload, and pass a tab_id when you need proof that
     commands execute.
@@ -4105,11 +4421,24 @@ async def chrome_reload_extension(
     never inside chrome_batch.
     """
     user_id = get_user_id(config)
-    connects_before = chrome_connect_count(user_id)
+    thread_id = get_thread_id(config)
     out = await _dispatch(command_type="reload_extension", args={}, config=config)
     if out.startswith("[Error]"):
         return out
-    return out + await _reload_reconnect_note(user_id, connects_before)
+    # The reload fires ~2.5 seconds AFTER this ack, so counts read here
+    # still predate the reloaded worker's resubscribe. The dispatch just
+    # recorded which browser it went to; watching THAT browser's own row is
+    # what keeps another browser's routine recycle from passing as this
+    # one's return (the false success would name the wrong build).
+    target = get_browser_command_coordinator().last_dispatch_target(
+        user_id, thread_id
+    )
+    if target is not None:
+        record = _roster_record(user_id, target)
+        connects_before = record.connects if record is not None else 0
+    else:
+        connects_before = chrome_connect_count(user_id)
+    return out + await _reload_reconnect_note(user_id, target, connects_before)
 
 
 # How long the reload tool waits for the reloaded worker's resubscribe.
@@ -4119,18 +4448,46 @@ async def chrome_reload_extension(
 _RELOAD_RECONNECT_S = 20.0
 
 
-async def _reload_reconnect_note(user_id: str, connects_before: int) -> str:
+def _roster_record(user_id: str, client_id: str) -> Optional[BrowserRecord]:
+    """One browser's roster row, or None when it has never been seen."""
+    for record in chrome_browser_roster(user_id):
+        if record.client_id == client_id:
+            return record
+    return None
+
+
+async def _reload_reconnect_note(
+    user_id: str, client_id: Optional[str], connects_before: int
+) -> str:
     """One appended line owning the post-reload outcome.
 
-    A NEW stream (connect count moved) is the fact worth reporting: the old
-    worker's stream survives the ack window, so mere connectedness proves
-    nothing about the reload. The version rides along; it only changes when
-    the manifest was bumped, so sameness is normal, not a failed deploy.
+    A NEW stream on the RELOADED browser (its own connect count moved) is
+    the fact worth reporting: the old worker's stream survives the ack
+    window, so mere connectedness proves nothing about the reload, and
+    with several browsers connected another browser's stream landing must
+    not pass as this one's return. The version rides along; it only
+    changes when the manifest was bumped, so sameness is normal, not a
+    failed deploy. A caller that cannot name the reloaded browser
+    (``client_id`` None) degrades to the user-level aggregates, the
+    pre-routing check.
     """
+
+    def _reconnected() -> tuple[bool, Optional[str]]:
+        if client_id is None:
+            if chrome_connect_count(user_id) > connects_before and is_chrome_connected(
+                user_id
+            ):
+                return True, chrome_extension_version(user_id)
+            return False, None
+        record = _roster_record(user_id, client_id)
+        if record is not None and record.connects > connects_before and record.connected:
+            return True, record.version
+        return False, None
+
     deadline = time.monotonic() + _RELOAD_RECONNECT_S
     while time.monotonic() < deadline:
-        if chrome_connect_count(user_id) > connects_before and is_chrome_connected(user_id):
-            version = chrome_extension_version(user_id)
+        arrived, version = _reconnected()
+        if arrived:
             named = f" version_after: {version}." if version else (
                 " (it did not announce a version; it may predate version reporting)."
             )
@@ -4286,6 +4643,20 @@ async def start_login_handoff(
             )
         tab_id = created
     session_id = new_login_session_id()
+    # Pin the session to the browser it runs in: the login-input relay
+    # stamps its keystrokes with this id so they reach only that browser.
+    # The pin is the browser this thread last DISPATCHED to (the tab-create
+    # above recorded it; a caller-supplied tab_id came from that same
+    # browser's earlier dispatches), not a fresh resolve, so the pin cannot
+    # diverge from where the tab actually lives. The resolve fallback
+    # covers a thread that has never dispatched (then the start command
+    # below resolves the same ladder). Once the session registers, target
+    # switches on this thread are refused (_login_session_guard), which
+    # closes the remaining window.
+    coordinator = get_browser_command_coordinator()
+    session_client_id = coordinator.last_dispatch_target(
+        user_id, thread_id
+    ) or resolve_target(user_id, thread_id).client_id
     try:
         session, _future = registry.start(
             session_id=session_id,
@@ -4293,6 +4664,7 @@ async def start_login_handoff(
             thread_id=thread_id,
             tab_id=tab_id,
             url=label,
+            client_id=session_client_id,
         )
     except LoginSessionConflictError as conflict:
         # Lost the claim to a concurrent starter. Close the tab this call
@@ -4494,6 +4866,96 @@ async def chrome_cancel_login(
     return _login_json(outcome)
 
 
+@tool
+async def chrome_target(
+    browser: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Which browser this thread's chrome_* commands drive; switch it here.
+
+    More than one Nymeria browser extension can be connected on one account
+    (personal desktop Chrome, a headless rig, another machine). Every
+    command routes to exactly ONE: this thread's target if set, else the
+    account default, else automatically when exactly one is connected.
+
+    Call with no arguments to see the current resolution and every known
+    browser (label, id, connected state, version). Pass ``browser`` (a
+    label, an id, or a unique fragment of either) to set THIS THREAD's
+    target, or "clear" to remove the override and fall back to the account
+    default. Only the user can change the account default (/browser
+    default), so never present a thread switch as account-wide.
+
+    Switching is consequential: ALWAYS tell the user which browser you
+    switched to and why, in the same reply. Tab ids do not survive a
+    switch (they belong to the browser that minted them), so list tabs
+    after switching; the first tab-addressed call after a switch is
+    refused once as a guard. A switch is refused while a human login
+    handoff is live on this thread: finish or cancel it first.
+
+    Fails with the roster when the named browser matches nothing or
+    several browsers; nothing changes on a failed call.
+    """
+    user_id = get_user_id(config)
+    thread_id = get_thread_id(config)
+
+    wanted = (browser or "").strip()
+    outcome = ""
+    if wanted:
+        # thread_id is never empty here: the config reader coerces a
+        # missing thread to "default", so a genuinely thread-less
+        # invocation (a one-shot tool_invoke) sets the DEFAULT thread's
+        # target, which is that context's thread for every other tool too.
+        if wanted.casefold() in CLEAR_WORDS:
+            error = set_thread_target(user_id, thread_id, None)
+            if error:
+                return f"[Error]: {error}"
+            outcome = (
+                "[Thread browser override cleared: commands now follow the "
+                "account default, or auto-target when exactly one browser "
+                "is connected.]"
+            )
+        else:
+            client_id, error = resolve_browser_ref(user_id, wanted)
+            if error:
+                return f"[Error]: {error}"
+            assert client_id is not None
+            set_error = set_thread_target(user_id, thread_id, client_id)
+            if set_error:
+                return f"[Error]: {set_error}"
+            handle = describe_browser(user_id, client_id)
+            connected_note = (
+                ""
+                if is_chrome_browser_connected(user_id, client_id)
+                else " That browser is NOT currently connected; commands "
+                "will fail until it connects."
+            )
+            outcome = (
+                f"[This thread now drives {handle}.{connected_note} Tell "
+                "the user about the switch in your reply. Tab ids from the "
+                "previous browser are invalid now: list tabs before acting "
+                "on one.]"
+            )
+
+    resolution = resolve_target(user_id, thread_id)
+    labels = browser_labels(user_id)
+    data: dict[str, Any] = {
+        "thread_target": thread_target(thread_id) if thread_id else None,
+        "account_default": account_default_target(user_id),
+        "resolved": resolution.client_id,
+        "resolved_via": resolution.source or resolution.reason,
+        "browsers": [
+            _browser_row(record, labels.get(record.client_id))
+            for record in chrome_browser_roster(user_id)
+        ],
+    }
+    body, note = _cap(
+        _format_result({"ok": True, "data": data}),
+        thread_id=thread_id,
+        prefix="chrome-target",
+    )
+    return f"{_fence(body)}{_outside_fence(body, note=note, extra=outcome)}"
+
+
 CHROME_BROWSER_TOOLS = [
     chrome_tabs,
     chrome_navigate,
@@ -4512,11 +4974,15 @@ CHROME_BROWSER_TOOLS = [
     chrome_request_login,
     chrome_await_login,
     chrome_cancel_login,
+    chrome_target,
 ]
 
 #: What the browser-control kit binds: the whole working surface, all
-#: seventeen tools, diagnostics and the escape hatch included (the
+#: eighteen tools, diagnostics and the escape hatch included (the
 #: scoped-tools principle: a kit carries the tools its domain needs).
+#: ``chrome_target`` joined in the single-browser-routing pass: with more
+#: than one extension connected per account, the thread's driving browser
+#: is chosen, never broadcast (#282).
 #: ``chrome_dialog`` joined in the #169 pass, which made it a working tool
 #: (Page ownership: dialogs raised while driving are held and answerable);
 #: ``chrome_reload_extension`` joined 2026-08-16 (the dev loop's remote
@@ -4541,6 +5007,7 @@ CHROME_KIT_TOOL_NAMES = (
     "chrome_request_login",
     "chrome_await_login",
     "chrome_cancel_login",
+    "chrome_target",
 )
 
 

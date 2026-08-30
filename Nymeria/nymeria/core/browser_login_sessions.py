@@ -118,6 +118,13 @@ class BrowserLoginSession:
     #: and the agent's result line, never used to route anything.
     url: str
     future: asyncio.Future
+    #: Which browser the session runs in (the persistent extension
+    #: client_id resolved at start). The login-input relay stamps its
+    #: events with it so keystrokes reach ONLY this browser, and the
+    #: target-switch guard reads it to refuse retargeting mid-login.
+    #: None on legacy callers; those degrade to unstamped (all-browser)
+    #: input events, the pre-routing shape.
+    client_id: Optional[str] = None
     created_at: float = field(default_factory=time.monotonic)
 
     state: str = STATE_ACTIVE
@@ -248,17 +255,27 @@ class BrowserLoginSession:
                 task_id="",
                 data=self.snapshot(),
             )
+            stop_data: dict = {
+                "command_id": new_command_id(),
+                "command_type": "login_session_stop",
+                "args": {"tab_id": self.tab_id, "session_id": self.session_id},
+                "timeout_seconds": LOGIN_SESSION_STOP_TIMEOUT_SECONDS,
+            }
+            if self.client_id:
+                # Route the stop to the one browser the session ran in
+                # (underscore key: read by the per-subscriber delivery
+                # filter, stripped from the wire). Unstamped it would land
+                # on every connected browser; the stop is idempotent, but
+                # a foreign browser must not see commands it was never
+                # part of. An unpinned session (no target resolvable at
+                # start) keeps the all-browsers broadcast.
+                stop_data["_target_client_id"] = self.client_id
             publish_autonomous_event(
                 event_type="browser_command",
                 thread_id=self.thread_id,
                 user_id=self.user_id,
                 task_id="",
-                data={
-                    "command_id": new_command_id(),
-                    "command_type": "login_session_stop",
-                    "args": {"tab_id": self.tab_id, "session_id": self.session_id},
-                    "timeout_seconds": LOGIN_SESSION_STOP_TIMEOUT_SECONDS,
-                },
+                data=stop_data,
             )
         except Exception:  # noqa: BLE001 - an ending must never fail to end
             logger.debug(
@@ -460,6 +477,7 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
         thread_id: str,
         tab_id: int,
         url: str,
+        client_id: Optional[str] = None,
     ) -> tuple[BrowserLoginSession, asyncio.Future]:
         """Register a session and return it with the agent's await future.
 
@@ -483,6 +501,7 @@ class BrowserLoginSessionRegistry(FutureRendezvous[BrowserLoginSession]):
             tab_id=tab_id,
             url=url,
             future=future,
+            client_id=client_id,
         )
         session.bind_loop(loop)
         with self._lock:

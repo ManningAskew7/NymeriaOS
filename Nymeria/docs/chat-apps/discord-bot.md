@@ -278,11 +278,15 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/env get <key>` | Show one environment variable. Admin only. |
 | `/env set <key> <value>` | Write one environment variable. Admin only. |
 
-### Browser login (`/browser`)
+### Browser (`/browser`)
 
 | Command | Description |
 |---------|-------------|
 | `/browser login <url>` | Open a login window in Nymeria Desktop where you sign the agent's browser into a site by hand (up to 10 minutes). What you type there never reaches the agent, and the agent stays out of that tab until you finish. Needs the desktop app open somewhere to drive the login. |
+| `/browser list` | List the connected browsers (label, id, state) and which one commands drive. |
+| `/browser switch <browser>` | Route this channel's browser commands to one browser (label, id, or unique fragment; `clear` removes the override). |
+| `/browser default <browser>` | Show or set the account-wide default browser; `clear` unsets it. User-only: the agent cannot change the account default. |
+| `/browser rename <browser> [label]` | Name a browser so it is easy to pick; omit the label to remove the name. |
 
 ### Tools (`/tools`)
 

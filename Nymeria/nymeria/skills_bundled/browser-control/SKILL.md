@@ -27,6 +27,7 @@ metadata:
       - chrome_request_login
       - chrome_await_login
       - chrome_cancel_login
+      - chrome_target
     tool_ttl: 2h
 ---
 
@@ -35,6 +36,21 @@ metadata:
 You are driving the user's REAL browser, signed in as them, and they can watch
 you do it. That is the whole point: you can finish things that need to be them.
 It is also why the rules below are not optional.
+
+## When more than one browser is connected
+
+An account can have several browsers connected (their desktop Chrome, a
+headless rig, another machine), each running the extension. Your commands go
+to exactly ONE: this thread's target if set, else the account default, else
+automatically when only one is connected. With several connected and nothing
+chosen, calls refuse and hand you the roster: pick with
+`chrome_target(browser=...)` and SAY which browser you picked and why, in the
+same reply. `chrome_target()` with no arguments shows the current resolution
+any time. Only the user can change the account-wide default (`/browser
+default`); your switches are per-thread. After a switch, tab ids from the
+old browser are dead: list tabs before acting. If a tab refuses because
+another conversation is driving it, that is a real concurrent task: use your
+own tab, never fight over theirs.
 
 ## The loop
 

@@ -20,7 +20,11 @@ from nymeria.core import chrome_subscribers
 from nymeria.core.browser_command_coordinator import (
     ORPHAN_TTL_SECONDS,
 )
-from nymeria.core.browser_command_coordinator import get_browser_command_coordinator
+from nymeria.core.browser_command_coordinator import (
+    get_browser_command_coordinator,
+    release_browser_session,
+)
+from nymeria.core.browser_drive_leases import get_browser_drive_leases
 from nymeria.core.browser_login_sessions import (
     get_browser_login_registry,
     new_login_session_id,
@@ -45,6 +49,7 @@ from nymeria.tools.chrome_browser import (
     chrome_reload_extension,
     chrome_screenshot,
     chrome_tabs,
+    chrome_target,
 )
 
 # A 1x1 PNG, so the screenshot path has real bytes to decode.
@@ -64,14 +69,19 @@ def isolate_state(monkeypatch):
     """
     import nymeria.core.browser_command_coordinator as coord_mod
 
+    # The fresh coordinator also resets the switch-tracking state
+    # (_thread_targets/_tab_targets), which moved onto it in the
+    # single-browser-routing pass.
     monkeypatch.setattr(coord_mod, "_coordinator", None)
     monkeypatch.setattr(chrome_browser_module, "_PROCESS_START", time.monotonic() - 10_000)
     set_event_bus(EventBus())
     chrome_subscribers.reset_for_tests()
     reset_login_sessions()
+    get_browser_drive_leases().reset_for_tests()
     yield
     chrome_subscribers.reset_for_tests()
     reset_login_sessions()
+    get_browser_drive_leases().reset_for_tests()
 
 
 @pytest.fixture
@@ -160,7 +170,7 @@ def _ok(data: dict) -> dict:
 # ---------- surface shape ----------
 
 
-def test_surface_is_seventeen_tools_and_the_kit_binds_all_of_them() -> None:
+def test_surface_is_eighteen_tools_and_the_kit_binds_all_of_them() -> None:
     names = {t.name for t in CHROME_BROWSER_TOOLS}
     assert names == {
         "chrome_tabs",
@@ -180,14 +190,16 @@ def test_surface_is_seventeen_tools_and_the_kit_binds_all_of_them() -> None:
         "chrome_request_login",
         "chrome_await_login",
         "chrome_cancel_login",
+        "chrome_target",
     }
     # #167 put the whole working surface in the kit; #169 completed it
     # (chrome_dialog joined once Page ownership made it a working tool);
     # chrome_reload_extension joined 2026-08-16 (remote dev-loop refresh);
     # chrome_health joined in the #188 pass (one-call tab health read);
-    # the login-handoff trio joined in the browser-login pass.
+    # the login-handoff trio joined in the browser-login pass;
+    # chrome_target joined in the single-browser-routing pass (#282).
     assert set(CHROME_KIT_TOOL_NAMES) == names
-    assert len(CHROME_KIT_TOOL_NAMES) == 17
+    assert len(CHROME_KIT_TOOL_NAMES) == 18
 
 
 def test_chrome_tools_are_browser_category_and_cdp_is_sensitive() -> None:
@@ -793,8 +805,14 @@ def test_reload_reports_the_version_that_reconnected(monkeypatch) -> None:
     async def run() -> str:
         async def resubscribe_later() -> None:
             await asyncio.sleep(0.2)
+            # The reloaded worker announces the SAME persistent browser
+            # identity on a fresh stream, which is what the per-browser
+            # check keys on.
             chrome_subscribers.add_chrome_subscriber(
-                user_id="u1", subscriber_id="nymeria-browser-new", version="9.9.9"
+                user_id="u1",
+                subscriber_id="nymeria-browser-new-stream",
+                version="9.9.9",
+                client_id="nymeria-browser-u1",
             )
 
         resub = asyncio.create_task(resubscribe_later())
@@ -832,6 +850,35 @@ def test_reload_does_not_read_the_old_stream_as_the_new_build(monkeypatch) -> No
     assert "has NOT reconnected" in out
     assert "chrome://extensions" in out
     assert "version_after" not in out
+
+
+def test_reload_ignores_another_browsers_stream_and_reports_its_own(monkeypatch) -> None:
+    """With several browsers connected, the reloaded browser's OWN new
+    stream is the reconnect fact: another browser's routine recycle landing
+    inside the wait must not pass as this one's return, or a stranded
+    build reads as a success naming the wrong browser's version."""
+    _shrink_reload_wait(monkeypatch, wait=0.4)
+    monkeypatch.setattr(_targets_mod(), "thread_target", lambda tid: _DESK_ID)
+    _connect_browser(_DESK_ID, version="0.25.0")
+    _connect_browser(_RIG_ID, version="0.26.0")
+
+    async def run() -> str:
+        async def other_browser_recycles() -> None:
+            await asyncio.sleep(0.1)
+            _connect_browser(_RIG_ID, version="9.9.9")
+
+        other = asyncio.create_task(other_browser_recycles())
+        resolver = asyncio.create_task(
+            _resolve_next(_ok({"reloading": True, "version_before": "0.25.0"}))
+        )
+        out = await chrome_reload_extension.ainvoke({}, config=_config())
+        await other
+        await resolver
+        return out
+
+    out = asyncio.run(run())
+    assert "has NOT reconnected" in out
+    assert "9.9.9" not in out
 
 
 def test_subscriber_registry_tracks_version_and_connect_count() -> None:
@@ -6649,3 +6696,432 @@ def test_concurrent_login_starts_yield_one_session_and_close_the_losers_tab(
     started = _of_type(events, "browser_login_started")
     assert len(started) == 1
     assert started[0]["data"]["session_id"] == winner["session_id"]
+
+
+# ---------- single-browser routing (#282) ----------
+#
+# More than one extension can be connected on one account; every command
+# routes to exactly ONE resolved browser (thread override > account default >
+# auto-single > refuse). These pin the dispatch-level behaviors; the state
+# layers (roster, ladder, leases) are pinned in test_browser_targets.py.
+
+_DESK_ID = "nymeria-browser-deskaaaa-1111-4111-8111-111111111111"
+_RIG_ID = "nymeria-browser-rigbbbbb-2222-4222-8222-222222222222"
+
+
+def _connect_browser(client_id: str, *, user_id: str = "u1", version=None) -> None:
+    chrome_subscribers.add_chrome_subscriber(
+        user_id=user_id,
+        subscriber_id=f"stream-{client_id[16:24]}-{version or 'v'}",
+        version=version,
+        client_id=client_id,
+    )
+
+
+def _run_tool(tool, args: dict, config: RunnableConfig | None = None) -> str:
+    """Invoke expecting NO dispatch (refusal paths): no resolver, no connect."""
+    return asyncio.run(tool.ainvoke(args, config=config or _config()))
+
+
+def _invoke_routed(
+    tool,
+    args: dict,
+    payload: dict,
+    config: RunnableConfig | None = None,
+    capture: list | None = None,
+):
+    """Like ``_invoke`` but WITHOUT the implicit default _connect(), so a
+    test controls exactly which browsers are on the roster."""
+
+    async def run():
+        resolver = asyncio.create_task(_resolve_next(payload, capture))
+        result = await tool.ainvoke(args, config=config or _config())
+        await resolver
+        return result
+
+    return asyncio.run(run())
+
+
+def _targets_mod():
+    import nymeria.core.browser_targets as targets_mod
+
+    return targets_mod
+
+
+def test_two_browsers_and_no_selection_refuse_fast_and_dispatch_nothing() -> None:
+    """Several connected + nothing chosen = refuse with the roster. Guessing
+    (or the old broadcast) is how every command executed twice in #282."""
+    _connect_browser(_DESK_ID, version="0.25.0")
+    _connect_browser(_RIG_ID, version="0.26.0")
+
+    out = _run_tool(chrome_tabs, {"action": "list"})
+
+    assert "More than one browser is connected" in out
+    assert "deskaaaa" in out and "rigbbbbb" in out
+    assert "chrome_target" in out and "/browser" in out
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_single_browser_auto_targets_and_stamps_the_event(monkeypatch) -> None:
+    """Exactly one browser connected: today's UX is unchanged, and the
+    published event carries the routing marker for the delivery filter."""
+    _connect_browser(_DESK_ID)
+    with _capture_events(monkeypatch) as events:
+        out = _invoke_routed(chrome_tabs, {"action": "list"}, _ok({"tabs": []}))
+
+    assert "[Error]" not in out
+    commands = [e for e in events if e["event_type"] == "browser_command"]
+    assert len(commands) == 1
+    assert commands[0]["data"]["_target_client_id"] == _DESK_ID
+
+
+def test_thread_override_routes_to_that_browser(monkeypatch) -> None:
+    monkeypatch.setattr(_targets_mod(), "thread_target", lambda tid: _RIG_ID)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+    with _capture_events(monkeypatch) as events:
+        _invoke_routed(chrome_tabs, {"action": "list"}, _ok({"tabs": []}))
+
+    commands = [e for e in events if e["event_type"] == "browser_command"]
+    assert commands[0]["data"]["_target_client_id"] == _RIG_ID
+
+
+def test_offline_selected_browser_errors_naming_it_and_the_alternatives(
+    monkeypatch,
+) -> None:
+    """A configured target that is not connected fails NAMING it, listing
+    what is connected, and never silently falls back to another browser."""
+    monkeypatch.setattr(_targets_mod(), "thread_target", lambda tid: _RIG_ID)
+    _connect_browser(_DESK_ID)
+
+    out = _run_tool(chrome_read_page, {"tab_id": 3})
+
+    assert "[Error]" in out and "rigbbbbb" in out
+    assert "not connected" in out
+    assert "deskaaaa" in out  # the escape route is handed over
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_target_switch_refuses_one_tab_addressed_command_then_proceeds(
+    monkeypatch,
+) -> None:
+    """Tab ids do not survive a switch: the first tab-addressed dispatch
+    after one is refused naming the switch (upgrading the bare no-tab error
+    the #282 incident produced), and the retry goes through."""
+    _connect_browser(_DESK_ID)
+    _invoke_routed(chrome_tabs, {"action": "list"}, _ok({"tabs": []}))
+
+    _connect_browser(_RIG_ID)
+    monkeypatch.setattr(_targets_mod(), "thread_target", lambda tid: _RIG_ID)
+    refused = _run_tool(chrome_read_page, {"tab_id": 3})
+    assert "switched from" in refused and "deskaaaa" in refused and "rigbbbbb" in refused
+    assert "nothing was sent" in refused.lower()
+    assert get_browser_command_coordinator().pending_count() == 0
+
+    retried = _invoke_routed(chrome_read_page, {"tab_id": 3}, _ok({"snapshot": "hi"}))
+    assert "switched from" not in retried
+
+
+def test_switch_refusal_survives_tab_less_commands_in_between(monkeypatch) -> None:
+    """The stale-tab refusal is consumed by the first TAB-ADDRESSED dispatch
+    only: a tab-less command after the switch (a tab listing is the
+    prescribed recovery) must not eat it, or a remembered stale id can
+    collide with a real tab in the new browser and drive the wrong tab."""
+    _connect_browser(_DESK_ID)
+    _invoke_routed(chrome_read_page, {"tab_id": 3}, _ok({"snapshot": "a"}))
+
+    _connect_browser(_RIG_ID)
+    monkeypatch.setattr(_targets_mod(), "thread_target", lambda tid: _RIG_ID)
+    listed = _invoke_routed(chrome_tabs, {"action": "list"}, _ok({"tabs": []}))
+    assert "switched from" not in listed
+
+    refused = _run_tool(chrome_read_page, {"tab_id": 3})
+    assert "switched from" in refused
+    assert get_browser_command_coordinator().pending_count() == 0
+
+
+def test_switch_away_and_back_with_no_dispatch_in_between_refuses_nothing(
+    monkeypatch,
+) -> None:
+    """A target flipped to another browser and back with NO dispatch under
+    it never arms the stale-tab guard: the thread only ever dispatched to
+    one browser, so its tab ids were never stale."""
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+    targets = _targets_mod()
+    monkeypatch.setattr(targets, "thread_target", lambda tid: _DESK_ID)
+    _invoke_routed(chrome_read_page, {"tab_id": 3}, _ok({"snapshot": "a"}))
+
+    # The user flips the thread to the rig and back; nothing is dispatched
+    # while it points there.
+    monkeypatch.setattr(targets, "thread_target", lambda tid: _RIG_ID)
+    monkeypatch.setattr(targets, "thread_target", lambda tid: _DESK_ID)
+
+    out = _invoke_routed(chrome_read_page, {"tab_id": 3}, _ok({"snapshot": "b"}))
+    assert "switched from" not in out
+
+
+def test_tab_driven_by_another_thread_refuses_until_its_turn_ends() -> None:
+    _connect_browser(_DESK_ID)
+    cfg_a = _config(thread_id="tA")
+    cfg_b = _config(thread_id="tB")
+    _invoke_routed(chrome_read_page, {"tab_id": 3}, _ok({"snapshot": "x"}), config=cfg_a)
+
+    refused = _run_tool(chrome_read_page, {"tab_id": 3}, config=cfg_b)
+    assert "another conversation" in refused and "tA" in refused
+    assert get_browser_command_coordinator().pending_count() == 0
+
+    release_browser_session("u1", "tA")
+    freed = _invoke_routed(
+        chrome_read_page, {"tab_id": 3}, _ok({"snapshot": "x"}), config=cfg_b
+    )
+    assert "another conversation" not in freed
+
+
+def test_created_tab_is_leased_to_its_creator() -> None:
+    """The lease starts when the tab payload comes back, not on the next
+    dispatch, so a second thread cannot grab a just-created tab."""
+    _connect_browser(_DESK_ID)
+    _invoke_routed(
+        chrome_tabs,
+        {"action": "create", "url": "https://example.com"},
+        _ok({"tab": {"id": 42, "url": "https://example.com"}}),
+        config=_config(thread_id="tA"),
+    )
+
+    refused = _run_tool(chrome_read_page, {"tab_id": 42}, config=_config(thread_id="tB"))
+    assert "another conversation" in refused and "tA" in refused
+
+
+def test_turn_end_release_targets_only_the_driven_browser_and_defers_to_live_leases(
+    monkeypatch,
+) -> None:
+    """Two halves of the #191 release under routing: the event is stamped
+    for the browser the turn drove, and it is SUPPRESSED while another
+    thread still drives that browser (the extension drops idle holds
+    per-browser, so publishing would release the other thread's tabs)."""
+    _connect_browser(_DESK_ID)
+    with _capture_events(monkeypatch) as events:
+        _invoke_routed(
+            chrome_read_page, {"tab_id": 3}, _ok({"snapshot": "x"}),
+            config=_config(thread_id="tA"),
+        )
+        _invoke_routed(
+            chrome_read_page, {"tab_id": 4}, _ok({"snapshot": "x"}),
+            config=_config(thread_id="tB"),
+        )
+
+        assert release_browser_session("u1", "tB") is False
+        assert [e for e in events if e["event_type"] == "browser_session_release"] == []
+
+        assert release_browser_session("u1", "tA") is True
+        releases = [e for e in events if e["event_type"] == "browser_session_release"]
+        assert len(releases) == 1
+        assert releases[0]["data"]["_target_client_id"] == _DESK_ID
+
+
+def test_probe_lists_every_browser_with_its_own_version(monkeypatch) -> None:
+    """The #282 masking regression at the probe: two simultaneously
+    subscribed builds are DISTINGUISHABLE, and the multi-connection note
+    names the routing rule."""
+    _connect_browser(_DESK_ID, version="0.25.0")
+    _connect_browser(_RIG_ID, version="0.26.0")
+
+    out = asyncio.run(chrome_health.ainvoke({}, config=_config()))
+
+    assert "0.25.0" in out and "0.26.0" in out
+    assert "deskaaaa" in out and "rigbbbbb" in out
+    assert "distinct browsers are connected" in out
+
+
+class _StubThreadConfigs:
+    def __init__(self):
+        self.saved: dict = {}
+
+    def get_config(self, thread_id):
+        return self.saved.get(thread_id)
+
+    def save_config(self, config):
+        self.saved[config.thread_id] = config
+        return True
+
+
+def _stub_target_agent(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from nymeria.core.user_profile import UserProfile
+
+    class _Profiles:
+        def __init__(self):
+            self.profile = UserProfile(user_id="u1")
+
+        def get_profile(self, user_id):
+            return self.profile
+
+        @contextmanager
+        def atomic_update(self, user_id="default"):
+            yield self.profile
+
+    agent = SimpleNamespace(
+        thread_config_manager=_StubThreadConfigs(),
+        profile_manager=_Profiles(),
+    )
+    monkeypatch.setattr(_targets_mod(), "_agent", lambda: agent)
+    return agent
+
+
+def test_chrome_target_reports_the_resolution_and_roster(monkeypatch) -> None:
+    _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID, version="0.27.0")
+
+    out = asyncio.run(chrome_target.ainvoke({}, config=_config()))
+
+    assert "deskaaaa" in out
+    assert '"resolved_via": "auto"' in out
+
+
+def test_chrome_target_switches_the_thread_by_fragment_and_narrates(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+
+    out = asyncio.run(chrome_target.ainvoke({"browser": "rigbbbbb"}, config=_config()))
+
+    assert agent.thread_config_manager.saved["t1"].browser_target == _RIG_ID
+    assert "now drives" in out and "rigbbbbb" in out
+    assert "Tell the user" in out
+    assert "list tabs" in out.lower()
+
+
+def test_chrome_target_clear_falls_back_to_the_ladder(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    asyncio.run(chrome_target.ainvoke({"browser": "deskaaaa"}, config=_config()))
+
+    out = asyncio.run(chrome_target.ainvoke({"browser": "clear"}, config=_config()))
+
+    assert agent.thread_config_manager.saved["t1"].browser_target is None
+    assert "cleared" in out
+
+
+def test_chrome_target_warns_when_switching_to_a_disconnected_browser(
+    monkeypatch,
+) -> None:
+    _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+    chrome_subscribers.remove_chrome_subscriber(f"stream-{_RIG_ID[16:24]}-v")
+
+    out = asyncio.run(chrome_target.ainvoke({"browser": "rigbbbbb"}, config=_config()))
+
+    assert "NOT currently connected" in out
+
+
+def test_chrome_target_refuses_an_ambiguous_or_unknown_reference(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+
+    ambiguous = asyncio.run(
+        chrome_target.ainvoke({"browser": "nymeria-browser"}, config=_config())
+    )
+    unknown = asyncio.run(chrome_target.ainvoke({"browser": "nosuch"}, config=_config()))
+
+    assert "[Error]" in ambiguous and "ambiguous" in ambiguous
+    assert "[Error]" in unknown and "No browser matches" in unknown
+    assert agent.thread_config_manager.saved == {}
+
+
+def test_chrome_target_switch_refused_while_a_login_handoff_is_live(
+    monkeypatch,
+) -> None:
+    _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+
+    async def run():
+        _hold(7, user_id="u1", thread_id="t1")
+        return await chrome_target.ainvoke({"browser": "rigbbbbb"}, config=_config())
+
+    out = asyncio.run(run())
+    assert "[Error]" in out and "login handoff is live" in out
+
+
+# ---------- the /browser routing subcommands ----------
+
+
+def test_browser_list_command_reports_roster_and_resolution(monkeypatch) -> None:
+    _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID, version="0.27.0")
+    svc, ctx = _command_ctx()
+
+    result = asyncio.run(svc.execute(ctx, "/browser list", api=object()))
+
+    assert result.success is True
+    assert "deskaaaa" in result.markdown
+    assert "Commands drive" in result.markdown
+
+
+def test_browser_switch_command_sets_and_clears_the_thread_target(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+    svc, ctx = _command_ctx()
+
+    async def run():
+        set_result = await svc.execute(ctx, "/browser switch rigbbbbb", api=object())
+        cleared = await svc.execute(ctx, "/browser switch clear", api=object())
+        return set_result, cleared
+
+    set_result, cleared = asyncio.run(run())
+    assert set_result.success is True and "rigbbbbb" in set_result.markdown
+    assert cleared.success is True and "cleared" in cleared.markdown
+    assert agent.thread_config_manager.saved["t1"].browser_target is None
+
+
+def test_browser_default_command_shows_sets_and_is_user_only(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    _connect_browser(_RIG_ID)
+    svc, ctx = _command_ctx()
+
+    async def run():
+        unset = await svc.execute(ctx, "/browser default", api=object())
+        set_result = await svc.execute(ctx, "/browser default deskaaaa", api=object())
+        shown = await svc.execute(ctx, "/browser default", api=object())
+        return unset, set_result, shown
+
+    unset, set_result, shown = asyncio.run(run())
+    assert "No account default" in unset.markdown
+    assert set_result.success is True
+    prefs = agent.profile_manager.profile.get_browser_preferences()
+    assert prefs["default_target"] == _DESK_ID
+    assert "deskaaaa" in shown.markdown
+
+    # The account-wide default is the USER's: the agent actor is refused
+    # (its own switch surface is the per-thread chrome_target tool).
+    from nymeria.core.command_service import CommandContext
+
+    agent_ctx = CommandContext(
+        user_id="u1", thread_id="t1", source="agent", is_admin=True
+    )
+    refused = asyncio.run(
+        svc.execute(agent_ctx, "/browser default rigbbbbb", api=object())
+    )
+    assert refused.success is False
+    assert prefs["default_target"] == _DESK_ID
+
+
+def test_browser_rename_command_labels_a_browser(monkeypatch) -> None:
+    agent = _stub_target_agent(monkeypatch)
+    _connect_browser(_DESK_ID)
+    svc, ctx = _command_ctx()
+
+    result = asyncio.run(
+        svc.execute(ctx, "/browser rename deskaaaa desktop", api=object())
+    )
+
+    assert result.success is True and "desktop" in result.markdown
+    labels = agent.profile_manager.profile.get_browser_preferences()["labels"]
+    assert labels == {_DESK_ID: "desktop"}

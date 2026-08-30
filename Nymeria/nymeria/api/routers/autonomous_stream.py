@@ -225,6 +225,31 @@ async def _generate_autonomous_sse_events(
                         )
                     continue
 
+                # Single-browser routing: an event stamped with a target
+                # client_id is delivered ONLY to the stream whose client_id
+                # matches. Stamped at publish (chrome_browser._run, the
+                # session release, the login-input relay); the `_` prefix
+                # keeps the marker off the wire payload. This filter sits
+                # HERE, per-subscriber in the stream-hosting process, so it
+                # is identical in both bus shapes (events that crossed the
+                # Redis relay land in the same per-subscriber queues this
+                # generator drains). Broadcast-to-all was the #282 incident:
+                # every connected browser executed every command.
+                target = event.data.get("_target_client_id")
+                if target and target != client_id:
+                    filtered_count = bump(filtered_kind_counts, event.event_type)
+                    if should_log_stream_event_sample(event.event_type, filtered_count):
+                        logger.info(
+                            "[AUTONOMOUS SSE] filter subscriber=%s reason=not_target "
+                            "type=%s count=%d client_id=%s thread=%s",
+                            subscriber_id[:8],
+                            event.event_type,
+                            filtered_count,
+                            client_id[:8] if client_id else "none",
+                            event.thread_id,
+                        )
+                    continue
+
                 origin = event.data.get("_origin_client_id")
                 if origin and client_id and origin == client_id:
                     filtered_count = bump(filtered_origin_counts, event.event_type)
@@ -366,6 +391,7 @@ def create_autonomous_stream_router(
                 user_id=stream_user_id,
                 subscriber_id=subscriber_id,
                 version=client_version,
+                client_id=client_id,
             )
         logger.info(
             "[AUTONOMOUS SSE] subscriber_connect subscriber=%s user=%s firehose=%s "

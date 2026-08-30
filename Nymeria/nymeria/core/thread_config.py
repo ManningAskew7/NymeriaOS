@@ -280,6 +280,14 @@ class ThreadConfig(BaseModel):
     # overrides the user's default_notification_profile preference for this
     # thread. None means "use the user-level default".
     notification_profile: Optional[str] = Field(default=None, max_length=120)
+    # Which browser this thread's chrome_* commands route to: the persistent
+    # extension client_id (nymeria-browser-<uuid>) of one connected browser.
+    # None inherits the account default
+    # (UserProfile.preferences['browser']['default_target']), else the
+    # auto/refuse ladder in core/browser_targets.py. Stored as the id, never
+    # a label: labels are display names and may be renamed without moving
+    # the target.
+    browser_target: Optional[str] = Field(default=None, max_length=200)
     # Optional per-thread notepad character limit. None inherits the global
     # MEMORY_CHAR_LIMIT setting.
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)

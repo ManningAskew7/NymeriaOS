@@ -265,6 +265,19 @@ DEFAULT_NOTIFICATION_PREFERENCES = {
 }
 
 
+# Default browser-extension preferences (stored in UserProfile.preferences
+# under the 'browser' key). ``labels`` maps a browser's persistent extension
+# client_id (``nymeria-browser-<uuid>``) to a human name ("desktop",
+# "headless rig"); ``default_target`` is the client_id chrome_* commands
+# route to when a thread has no ``ThreadConfig.browser_target`` override.
+# Durable user data, unlike the in-process connection registry
+# (core/chrome_subscribers.py), which only knows who is connected right now.
+DEFAULT_BROWSER_PREFERENCES = {
+    "labels": {},
+    "default_target": None,
+}
+
+
 class UserProfile(BaseModel):
     """User profile containing memories and preferences."""
 
@@ -451,6 +464,22 @@ class UserProfile(BaseModel):
         if "notifications" not in self.preferences:
             self.preferences["notifications"] = {}
         self.preferences["notifications"][key] = value
+        self.updated_at = utc_now()
+
+    def get_browser_preferences(self) -> Dict[str, Any]:
+        """Browser-extension preferences, with defaults applied.
+
+        ``labels``: persistent extension client_id -> human label.
+        ``default_target``: the client_id chrome_* commands route to when the
+        thread carries no ``browser_target`` override (None = unset).
+        """
+        prefs = self.preferences.get("browser", {})
+        return {**DEFAULT_BROWSER_PREFERENCES, **prefs}
+
+    def set_browser_preference(self, key: str, value: Any) -> None:
+        if "browser" not in self.preferences:
+            self.preferences["browser"] = {}
+        self.preferences["browser"][key] = value
         self.updated_at = utc_now()
 
 

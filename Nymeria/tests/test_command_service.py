@@ -3783,9 +3783,11 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # 146 after the /goal subsystem was deleted, taking its eight commands
     # with it; the executable count is untouched because all eight were
     # chat_stream, so none of them ever dispatched here. 148 after the
-    # browser-login pass added the /browser family: root overview + login.)
-    assert len(service._commands) == 148
-    assert sum(cmd.executable for cmd in service._commands.values()) == 139
+    # browser-login pass added the /browser family: root overview + login.
+    # 152 after the single-browser-routing pass grew that family by
+    # list + switch + default + rename, all executable.)
+    assert len(service._commands) == 152
+    assert sum(cmd.executable for cmd in service._commands.values()) == 143
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"

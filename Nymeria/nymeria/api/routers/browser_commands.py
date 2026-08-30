@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from ...core.accounts import AuthenticatedUser
 from ...core.browser_command_coordinator import get_browser_command_coordinator
@@ -35,6 +35,7 @@ def create_browser_commands_router(
         command_id: str,
         body: BrowserCommandResult,
         user: AuthenticatedUser = Depends(verify_api_key),
+        x_nymeria_client_id: str | None = Header(None),
     ) -> BrowserCommandAck:
         coord = get_browser_command_coordinator()
         command = coord.get(command_id)
@@ -54,6 +55,29 @@ def create_browser_commands_router(
             # Mirrors credential_prompts.py:98-104 — never leak existence to
             # another user.
             raise HTTPException(status_code=404, detail="Command not found")
+
+        if (
+            command.target_client_id
+            and x_nymeria_client_id
+            and x_nymeria_client_id != command.target_client_id
+        ):
+            # Single-browser routing, result side: only the browser the
+            # command was sent to may resolve it. The delivery filter should
+            # make this unreachable; when it fires anyway, the sender is a
+            # browser that received the command some other way, and the
+            # measured shape is a STALE second instance (#282) racing the
+            # real one. A missing header is accepted: pre-header extension
+            # builds only ever see commands the filter already routed to
+            # them.
+            logger.warning(
+                "browser_command_result from non-target client for %s "
+                "(type=%s, target=%.24s, sender=%.24s): ignored",
+                command_id,
+                command.command_type,
+                command.target_client_id,
+                x_nymeria_client_id,
+            )
+            return BrowserCommandAck(received=True, delivered=False)
 
         payload: dict[str, Any] = {
             "ok": body.ok,
