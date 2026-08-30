@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,70 @@ from nymeria.triggers import api as api_module  # noqa: E402
 # the dotenv fallthrough. Composes with the suite-wide `clear_settings_cache`
 # fixture below.
 _Settings.model_config["env_file"] = ()
+
+# Suite hermeticity, layer 3: pin the process environment itself.
+#
+# Layers 1 and 2 make every Settings() resolve from real env vars only. That
+# is a hole, not a floor: anything writing to `os.environ` between here and a
+# test defeats both, because real env vars are exactly what is left. The
+# measured case (backlog #294) was `run.py`, whose import-time
+# `load_dotenv(..., override=True)` merged the operator's real `.env.docker`
+# into the process during COLLECTION, since two test modules import `run` at
+# module scope. 65 of that file's 72 keys map to Settings fields, so most of
+# the suite silently ran against live deployment config on any machine with a
+# populated checkout, and the only visible symptom was two Twitch tests that
+# read as an xdist flake. Production code under test writes env too (backlog
+# #299).
+#
+# So snapshot the environment here, while it is still clean (conftest is
+# imported before any test module), and restore it before every test. Real
+# shell exports are part of the snapshot and keep their normal precedence:
+# this guarantees only that no test inherits another's writes, whenever those
+# happened.
+#
+# A HOOK rather than an autouse fixture, deliberately. Autouse fixtures of one
+# scope are ordered by registration, which pytest builds from `dir()`, i.e.
+# ALPHABETICALLY: as a fixture named `pristine_process_env` this ran LAST of
+# the four here (measured with `--setup-show`), after `clear_settings_cache`
+# and both `_offline_*` fixtures. Nothing breaks today because none of them
+# touch `os.environ`, but the guarantee would have been the reverse of the one
+# written above, and the next env-touching fixture whose name sorts earlier
+# would have inherited the previous test's leak in silence. `tryfirst` on
+# `pytest_runtest_setup` runs before `item.setup()`, so it precedes every
+# fixture regardless of name and scope, including module- and class-scoped
+# ones set up during a test's setup phase.
+_PRISTINE_ENV = dict(os.environ)
+
+# pytest rewrites PYTEST_CURRENT_TEST per phase and pops it UNGUARDED at
+# teardown, so deleting it here would be a KeyError waiting on a hook-ordering
+# change. It is absent from the snapshot only because the snapshot predates
+# the first test.
+_PYTEST_OWNED_ENV = frozenset({"PYTEST_CURRENT_TEST"})
+
+
+def _restore_pristine_env() -> None:
+    """Reset ``os.environ`` to the snapshot taken at conftest import.
+
+    Applies the key-level difference rather than `clear()` + `update()`: the
+    common case is no difference at all, and a blanket rewrite would reissue
+    `unsetenv`/`putenv` for every key of every test while briefly unsetting
+    PYTEST_CURRENT_TEST.
+    """
+    for key in [
+        key
+        for key in os.environ
+        if key not in _PRISTINE_ENV and key not in _PYTEST_OWNED_ENV
+    ]:
+        del os.environ[key]
+    for key, value in _PRISTINE_ENV.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Layer 3: start every test from the pre-collection environment."""
+    _restore_pristine_env()
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -218,7 +283,9 @@ def clear_settings_cache():
 
 
 @pytest.fixture
-def api_client_builder(monkeypatch: pytest.MonkeyPatch) -> ApiTestClientBuilder:
+def api_client_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[ApiTestClientBuilder]:
     api_module._reset_auth_failure_rate_limiter_for_tests()
     yield ApiTestClientBuilder(monkeypatch)
     api_module._reset_auth_failure_rate_limiter_for_tests()

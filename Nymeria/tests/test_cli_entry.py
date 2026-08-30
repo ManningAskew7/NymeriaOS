@@ -208,8 +208,16 @@ def test_apply_fat_runtime_env_forces_sqlite_and_redis_off(monkeypatch):
 
 def _run_main_capturing_cli_env(monkeypatch, argv, env_key):
     """Run main() for a cli argv with run_cli/validate_config stubbed, returning
-    the value of ``env_key`` in os.environ as seen by run_cli. Snapshots and
-    restores the process env so the pin cannot leak into the rest of the suite.
+    the value of ``env_key`` in os.environ as seen by run_cli.
+
+    ``_load_environment`` is stubbed with them: since #294 moved it out of
+    import scope into ``main()``, it runs AFTER this test's ``monkeypatch``
+    calls, and ``override=True`` would let a real ``.env.docker`` beat the very
+    pin under test (the shipped ``.env.docker.example`` carries ``API_PORT``).
+    That the loader runs, and runs first, is covered by
+    ``tests/test_run_command_dispatch.py``. The env snapshot below is now
+    belt-and-braces for this test's own tail; conftest layer 3 owns suite-level
+    leakage.
     """
     import os
     import sys
@@ -223,6 +231,7 @@ def _run_main_capturing_cli_env(monkeypatch, argv, env_key):
 
     monkeypatch.setattr(run_module, "run_cli", fake_run_cli)
     monkeypatch.setattr(run_module, "validate_config", lambda *a, **k: None)
+    monkeypatch.setattr(run_module, "_load_environment", lambda: None)
     monkeypatch.setattr(sys, "argv", argv)
 
     saved_env = os.environ.copy()
@@ -312,9 +321,13 @@ def test_slim_main_early_env_pin_resolves_config_port(monkeypatch):
 
     monkeypatch.setenv("API_PORT", "8010")
     monkeypatch.setattr(run_module, "run_slim", fake_run_slim)
+    # Stubbed because main() now loads the deployment dotenv with override=True
+    # (#294), which would beat the API_PORT pin this test is asserting on.
+    monkeypatch.setattr(run_module, "_load_environment", lambda: None)
     monkeypatch.setattr(sys, "argv", ["run.py", "slim"])
     # The early pin rewrites several env vars (DATABASE_BACKEND, REDIS_*,
-    # NYMERIA_API_URL); snapshot and restore so nothing leaks into the suite.
+    # NYMERIA_API_URL); snapshot and restore so nothing leaks into the rest of
+    # this test. Suite-level leakage is conftest layer 3's job.
     saved_env = os.environ.copy()
     try:
         run_module.main()

@@ -48,7 +48,20 @@ from dotenv import load_dotenv
 
 
 def _load_environment() -> None:
-    """Load environment files relative to project root, overriding inherited values."""
+    """Load environment files relative to project root, overriding inherited values.
+
+    Called from ``main()``, NOT at import time. This writes the whole
+    deployment config into ``os.environ`` with ``override=True``, so an
+    import-time call makes merely importing this module reconfigure the
+    interpreter. That is a side effect no importer wants and none can undo:
+    it defeated the test suite's dotenv hermeticity for every run on a
+    developer machine with a populated checkout, because two test modules
+    import ``run`` at module scope and pytest imports them during COLLECTION,
+    before the first test runs (backlog #294). Keep the call inside ``main()``:
+    every real launch path (``python run.py ...`` and the ``cli_entry``
+    console script, which calls ``run.main()``) goes through it, and nothing
+    at this module's scope reads settings or the environment.
+    """
     project_root = _project_root
 
     # Load base config first, then package-user config and docker overrides if
@@ -60,10 +73,6 @@ def _load_environment() -> None:
             load_dotenv(project_root / filename, override=True)
         except UnicodeDecodeError:
             pass
-
-
-# Load environment variables before importing settings/users of os.environ
-_load_environment()
 
 
 _SERVICE_TOKEN_REQUIRED_COMMANDS = {
@@ -1818,6 +1827,10 @@ _FULL_VALIDATION_COMMANDS = frozenset(
 
 def main() -> None:
     """Main entry point."""
+    # First, before anything reads settings: every subcommand below, and every
+    # module they import, expects the deployment .env merged into os.environ.
+    # Deliberately here rather than at import time (see _load_environment).
+    _load_environment()
     _suppress_runtime_dependency_warnings()
     parser = build_parser()
     args = parser.parse_args()
