@@ -143,9 +143,9 @@ vault and use `${credential:...}` if you need it this session.
 
 **Applying an env-file edit properly means restarting the API.** That is a
 deployment-level action you cannot take yourself and should not treat as
-free: it drops in-flight turns and streams, and on some deployment shapes it
-needs the user at a terminal. Say what you changed, say a restart is needed
-to apply it, and let the user pick the moment.
+free: it replaces the running process, so in-flight turns and open streams
+end. Say what you changed, say a restart is needed to apply it, and let the
+user pick the moment.
 
 ## Weight of a raw edit
 

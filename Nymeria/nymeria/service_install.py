@@ -10,7 +10,13 @@ current systemd/launchd guidance, 2026-06):
 
 - Restart on crash only (`Restart=on-failure`, launchd
   `KeepAlive={SuccessfulExit: false}`): restart-on-everything fights
-  deliberate stops. On Linux, start-rate limits park a misconfigured
+  deliberate stops. NOTE (#300): the API's own `/restart api` no longer
+  depends on this policy either way. It replaces its process image in place
+  (`api/routers/system.py::restart_api_process`), so the unit never sees an
+  exit and never restarts. It used to spawn a copy and exit, which this
+  policy correctly declined to restart, leaving the backend dead. `Type=exec`
+  stays safe under an in-place restart; `Type=notify` would need the new
+  image to re-send READY=1, and `Type=forking` would break outright. On Linux, start-rate limits park a misconfigured
   backend in `failed` instead of crash-looping forever; launchd has no
   give-up limit, only its default 10s respawn throttle, so a broken
   config on macOS retries indefinitely (the install therefore refuses
@@ -126,29 +132,38 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 # --- shared helpers ----------------------------------------------------------
 
 
-def resolve_exec_argv() -> list[str]:
-    """The absolute-path command the service should run: the slim backend.
+def resolve_exec_argv(args: Sequence[str] = ("slim",)) -> list[str]:
+    """The absolute-path command that re-runs this entry point with ``args``.
 
     Mirrors finalize's foreground-start pattern so source checkouts
     (`python3 run.py ...`) and installed console scripts (`nymeria ...`)
-    both produce a unit that outlives the install shell.
+    both produce a command that outlives the install shell.
+
+    Two callers, same problem. The service install bakes it into a unit or
+    plist and wants the default (the slim backend). The API's in-place
+    self-restart (`api/routers/system.py::restart_api_process`) passes its OWN
+    `sys.argv[1:]` to re-run whatever this process was started as. Both need
+    the branches below rather than a bare `[sys.executable] + sys.argv`, which
+    is wrong for a `-m` launch and for a frozen build.
     """
+    tail = list(args)
     if getattr(sys, "frozen", False):
-        return [sys.executable, "slim"]
+        # sys.executable IS the app, so argv[0] must not be repeated after it.
+        return [sys.executable, *tail]
     # A `python -m pkg.mod` launch sets argv[0] to the module's FILE path,
     # which cannot be re-run as a script (relative imports fail at once),
     # so reproduce the -m invocation instead of trusting argv[0].
     main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
     if main_spec is not None and getattr(main_spec, "name", None):
         module = main_spec.name.removesuffix(".__main__")
-        return [sys.executable, "-m", module, "slim"]
+        return [sys.executable, "-m", module, *tail]
     script = Path(os.path.abspath(sys.argv[0]))
     if script.is_file():
-        return [sys.executable, str(script), "slim"]
+        return [sys.executable, str(script), *tail]
     console_script = shutil.which("nymeria")
     if console_script:
-        return [console_script, "slim"]
-    return [sys.executable, "-m", "nymeria.cli_entry", "slim"]
+        return [console_script, *tail]
+    return [sys.executable, "-m", "nymeria.cli_entry", *tail]
 
 
 # Path fragments that mark throwaway environments (uvx / pipx run caches):
