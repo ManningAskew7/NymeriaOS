@@ -2512,7 +2512,7 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
 ---
 
-### Chrome Extension Tools (18)
+### Chrome Extension Tools (19)
 
 Drive the user's REAL, logged-in Chrome through the Nymeria browser extension.
 Defined in `tools/chrome_browser.py`. Distinct from the `browser_*` tools
@@ -2545,6 +2545,7 @@ surface, diagnostics and the escape hatch included):
 | `chrome_cdp` | `(tab_id, method, params?)` | Raw DevTools Protocol, classified SENSITIVE (a kit activation warns) and taught as LAST RESORT. A method denylist, enforced backend-side and mirrored in the extension, refuses the one-call credential reads (cookies, site storage), the page-context script-execution routes (including `Page.reload`, whose script parameter injects into every frame: reload with `chrome_tabs`), and the wedge enables (`Fetch`/`Debugger`, which nothing consumes, and `Page.enable`, whose ownership the extension already holds with an answering policy); everything else (Emulation, DOM, CSS, Tracing...) goes through, fenced like every other JSON result. |
 | `chrome_reload_extension` | `()` | Dev-loop helper: the extension reloads its own code from disk (`chrome.runtime.reload()`), replacing the manual refresh click at chrome://extensions after a pull+rebuild. Acks first (reporting `version_before`), reloads ~2.5s later, then the tool waits (bounded) for the reloaded worker's resubscribe and appends `version_after` (the extension announces its manifest version when subscribing), closing the deploy-verification loop; a missing reconnect is reported honestly instead. The wait keys on the reloaded browser's OWN stream, so another connected browser's routine resubscribe never passes as this one's return. Driven tabs are released and in-flight commands lost, so it runs alone, never in a batch. A build that fails to load strands the extension until a manual reload. |
 | `chrome_target` | `(browser?)` | Which browser this thread drives, and the per-thread switch. No arguments: the current resolution and the full roster (label, id, connected state, version). With `browser` (a label, id, or unique fragment): sets THIS THREAD's target; `"clear"` removes the override. Switches are narrated to the user by instruction, tab ids do not survive one (the first tab-addressed call after a switch is refused once, naming the switch), and a switch is refused while a login handoff is live on the thread. The account-wide default is user-only (`/browser default`; the agent surface is refused there). |
+| `chrome_browsers` | `(action?, browser?, label?)` | Fleet management, distinct from `chrome_target`'s per-thread routing by design (one mental model each). `action="list"` (default): every browser known this process, connected or not, with label, id, state, version, ages, plus the account default. `action="rename"`: name (or, with `label` omitted, unname) one browser so rosters and refusals read as "desktop"/"rig" instead of raw ids; labels are display names over the stored ids, so renaming never moves any thread's target. This is the agent's first-class labels surface: `/browser rename` is the human twin over the same writer, and no browser capability depends on the slash_command fallback tool. |
 
 **Dialogs and the file chooser (#169):** `Page` is enabled on every debugger
 attach, deliberately. Dialogs raised while the agent drives are answered by
@@ -2585,7 +2586,8 @@ resolve a command (double execution and non-deterministic tab namespaces
 were measured live before this). A configured-but-offline target fails
 naming itself and listing the connected alternatives, never falling back
 silently; the tab-free `chrome_health` probe lists the whole roster; labels
-are managed with `/browser rename` and the roster with `/browser list`.
+and the fleet view are `chrome_browsers` for the agent, `/browser
+rename` and `/browser list` for the human, over the same state.
 Login handoffs pin to the browser they started on: the operator's
 keystrokes and the session's ended-announce stop command are stamped for
 that browser alone, and retargeting the session's thread (or the account

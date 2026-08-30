@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1262 tools found.**
+**1263 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -174,6 +174,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `chrome_act` | `nymeria/tools/chrome_browser.py` | Do one thing to a Chrome page: click, type, choose, scroll, drag, wait. |
 | `chrome_await_login` | `nymeria/tools/chrome_browser.py` | Wait for a login handoff to end and learn how it ended. |
 | `chrome_batch` | `nymeria/tools/chrome_browser.py` | Run several browser commands in one round trip. |
+| `chrome_browsers` | `nymeria/tools/chrome_browser.py` | Manage the account's browser fleet: list every known browser, name one. |
 | `chrome_cancel_login` | `nymeria/tools/chrome_browser.py` | End a live login handoff early, before the user finishes. |
 | `chrome_cdp` | `nymeria/tools/chrome_browser.py` | Raw Chrome DevTools Protocol call. LAST RESORT. |
 | `chrome_console` | `nymeria/tools/chrome_browser.py` | Read console messages and uncaught exceptions from a Chrome tab. |
