@@ -50,6 +50,9 @@ class FakeSettings:
     notification_level = "none"
     scheduler_failure_alert_after = 2
     scheduler_failure_pause_after = 5
+    trigger_failure_alert_after = 2
+    trigger_failure_pause_after = 5
+    trigger_failure_alert_cooldown_minutes = 0
 
 
 class FakeAgent:
@@ -645,31 +648,411 @@ def _fire_succeeding(manager, trigger, monkeypatch):
     manager.fire_action(trigger, {}, executor, "owner")
 
 
-def test_trigger_action_failures_degrade_health_and_alert_once(
+def test_trigger_action_failures_alert_then_pause(
     tmp_path, monkeypatch, trigger_alerts
 ):
+    """#264 behaviors 1 + 2: alert once at the alert threshold, auto-pause
+    at the pause threshold.
+
+    Supersedes the pre-#264 pin (one alert on the health transition into
+    "failing", nothing else ever). The action plane no longer sends that
+    transition alert: it would be the second of three notifications for one
+    broken trigger. The health LABELS still move exactly as before.
+    """
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+
+    _fire_failing(manager, trigger, monkeypatch)
+    assert trigger_alerts == []  # one failure is not an episode
+
+    _fire_failing(manager, trigger, monkeypatch)
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.action_failures == 2
+    assert stored.consecutive_errors == 2
+    assert stored.health_status == "degraded"
+    assert "kaput" in (stored.last_error or "")
+    assert stored.auto_paused_at is None  # alerting is not stopping
+    assert len(trigger_alerts) == 1
+    assert "[TRIGGER ALERT]" in trigger_alerts[0]["message"]
+    assert "Mail sweep" in trigger_alerts[0]["message"]
+
+    # Failures 3 and 4 are inside the same episode: no further alerts.
+    for _ in range(2):
+        _fire_failing(manager, trigger, monkeypatch)
+    assert len(trigger_alerts) == 1
+
+    # The fifth crosses the pause threshold.
+    _fire_failing(manager, trigger, monkeypatch)
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.action_failures == 5
+    assert stored.health_status == "failing"
+    assert stored.auto_paused_at is not None
+    assert stored.enabled is True  # the policy never touches the user's toggle
+    assert len(trigger_alerts) == 2
+    assert "[TRIGGER PAUSED]" in trigger_alerts[1]["message"]
+    assert "resume" in trigger_alerts[1]["message"].lower()
+
+
+def test_paused_trigger_does_not_stack_a_second_pause_or_alert(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """A fire already in flight when the pause landed must not re-pause.
+
+    The poll loop and the webhook route both refuse a paused trigger, so
+    the only way to reach _record_action_health while paused is that race.
+    """
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    for _ in range(5):
+        _fire_failing(manager, trigger, monkeypatch)
+    paused_at = _get_trigger(manager, trigger.id).auto_paused_at
+    assert paused_at is not None
+    assert len(trigger_alerts) == 2
+
+    _fire_failing(manager, trigger, monkeypatch)
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at == paused_at  # not re-stamped
+    assert len(trigger_alerts) == 2  # and not re-alerted
+
+
+def test_trigger_action_success_ends_the_episode(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behavior 6: a success resets the streak, so the next failure
+    starts counting from one rather than resuming mid-episode."""
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+
+    for _ in range(4):
+        _fire_failing(manager, trigger, monkeypatch)
+    assert _get_trigger(manager, trigger.id).action_failures == 4
+    assert len(trigger_alerts) == 1
+
+    _fire_succeeding(manager, trigger, monkeypatch)
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.action_failures == 0
+    assert stored.consecutive_errors == 0
+    assert stored.health_status == "healthy"
+
+    # Four more failures would have paused a trigger mid-episode; from a
+    # clean streak they only re-alert.
+    for _ in range(4):
+        _fire_failing(manager, trigger, monkeypatch)
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at is None
+    assert len(trigger_alerts) == 2
+
+
+def test_trigger_policy_thresholds_of_zero_disable_each_stage(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behavior 8: 0 disables that stage, matching #154's knobs."""
+    import nymeria.config as config_pkg
+
+    settings = FakeSettings()
+    settings.trigger_failure_alert_after = 0
+    settings.trigger_failure_pause_after = 0
+    monkeypatch.setattr(config_pkg, "get_settings", lambda: settings)
+
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    for _ in range(8):
+        _fire_failing(manager, trigger, monkeypatch)
+
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.action_failures == 8
+    assert stored.auto_paused_at is None
+    assert trigger_alerts == []
+
+
+def test_a_flapping_trigger_alerts_once_then_falls_under_the_cooldown(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """A trigger that fails twice, succeeds, and repeats never reaches the
+    pause threshold (each success resets the streak), so without a cooldown
+    it would alert once per episode forever on external destinations that
+    deliberately bypass the in-app notification level.
+    """
+    import nymeria.config as config_pkg
+
+    settings = FakeSettings()
+    settings.trigger_failure_alert_cooldown_minutes = 180
+    monkeypatch.setattr(config_pkg, "get_settings", lambda: settings)
+
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+
+    for _ in range(4):  # four flap cycles
+        _fire_failing(manager, trigger, monkeypatch)
+        _fire_failing(manager, trigger, monkeypatch)
+        _fire_succeeding(manager, trigger, monkeypatch)
+
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at is None  # it never reaches the pause count
+    assert len(trigger_alerts) == 1  # and it only spoke once
+
+    # The stamp is NOT cleared by the successes, which is what makes the
+    # cooldown survive a flap at all.
+    assert stored.last_policy_alert_at is not None
+
+    # A resume is a fresh start: the next episode may speak again.
+    manager.resume_trigger("owner", trigger.id)
+    assert _get_trigger(manager, trigger.id).last_policy_alert_at is None
+    _fire_failing(manager, trigger, monkeypatch)
+    _fire_failing(manager, trigger, monkeypatch)
+    assert len(trigger_alerts) == 2
+
+
+def test_the_pause_alert_is_never_suppressed_by_the_cooldown(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """A pause is terminal: the owner has to be told the trigger stopped,
+    even moments after an episode alert."""
+    import nymeria.config as config_pkg
+
+    settings = FakeSettings()
+    settings.trigger_failure_alert_cooldown_minutes = 180
+    monkeypatch.setattr(config_pkg, "get_settings", lambda: settings)
+
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+
+    for _ in range(5):
+        _fire_failing(manager, trigger, monkeypatch)
+
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at is not None
+    assert len(trigger_alerts) == 2  # the episode alert AND the pause alert
+    assert "[TRIGGER PAUSED]" in trigger_alerts[1]["message"]
+
+
+def test_a_batch_stops_firing_once_it_crosses_the_pause_threshold(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """A per-event batch must not keep acting after the policy said stop.
+
+    Non-agent_prompt actions fire once per event, so a batch can cross the
+    threshold part-way. Firing the rest would act past the pause, overshoot
+    the count the pause reports, and let a late success in the same batch
+    zero the streak (reporting "auto-paused after 0 failed actions").
+    """
+    import nymeria.config as config_pkg
+
+    settings = FakeSettings()
+    settings.trigger_failure_pause_after = 3
+    monkeypatch.setattr(config_pkg, "get_settings", lambda: settings)
+
+    manager = TriggerManager(tmp_path)
+    trigger = TriggerDefinition(
+        id="trig-batch",
+        name="Feed fanout",
+        source_type="webhook",
+        source_config={},
+        action=TriggerAction(
+            type="notify", config={"message_template": "New: {title}"}
+        ),
+        thread_id="trig-thread",
+        enabled=True,
+    )
+    with manager.atomic_update("owner") as store:
+        store.triggers.append(trigger)
+
+    fired: list[dict] = []
+
+    def _boom(*a, **kw):
+        fired.append(kw)
+        raise RuntimeError("notify down")
+
+    monkeypatch.setattr(manager, "_fire_notify", _boom)
+    monkeypatch.setattr(manager, "_publish_trigger_error", lambda *a, **kw: None)
+
+    events = [{"title": f"item {i}"} for i in range(10)]
+    manager.fire_action_batch(trigger, events, object(), "owner")
+
+    stored = _get_trigger(manager, "trig-batch")
+    assert stored.auto_paused_at is not None
+    # Exactly the threshold: it stopped on the fire that paused it, and the
+    # reported count is the one that actually caused the pause.
+    assert stored.action_failures == 3
+    assert len(fired) == 3
+
+
+def test_unpersisted_failure_drives_no_alert_and_no_pause(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behavior 9: unpersisted state must not drive policy.
+
+    The #247 delivery policy states the rule (delivery_accounting.py): a
+    streak that could not be saved reports 0 and the alert/pause branches
+    no-op. Here the same outcome comes from atomic_update raising on a
+    failed save, which leaves _record_action_health through its except
+    before any alert is sent, and discards the mutated store (the manager
+    re-reads from disk, it holds no cache). Either way an owner must never
+    be told a trigger was paused when the pause did not survive.
+    """
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    for _ in range(4):
+        _fire_failing(manager, trigger, monkeypatch)
+    assert len(trigger_alerts) == 1  # the episode alert landed while saves worked
+
+    monkeypatch.setattr(manager, "_save", lambda store: False)
+
+    # The fire that would have crossed the pause threshold.
+    _fire_failing(manager, trigger, monkeypatch)
+
+    assert len(trigger_alerts) == 1  # no pause alert for a pause that did not persist
+    monkeypatch.undo()
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at is None
+    assert stored.action_failures == 4  # the increment did not survive either
+
+
+def test_alert_threshold_of_zero_is_silent_while_pause_still_fires(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behavior 8, alert half. Separated from the both-zero case so the
+    alert guard is pinned on its own: with both at 0 the equality test is
+    unreachable anyway, so that case cannot tell a working guard from a
+    missing one."""
+    import nymeria.config as config_pkg
+
+    settings = FakeSettings()
+    settings.trigger_failure_alert_after = 0
+    settings.trigger_failure_pause_after = 3
+    monkeypatch.setattr(config_pkg, "get_settings", lambda: settings)
+
     manager = TriggerManager(tmp_path)
     trigger = _add_action_trigger(manager)
 
     for _ in range(2):
         _fire_failing(manager, trigger, monkeypatch)
-    stored = _get_trigger(manager, trigger.id)
-    assert stored.consecutive_errors == 2
-    assert stored.health_status == "degraded"
-    assert "kaput" in (stored.last_error or "")
-    assert trigger_alerts == []
+    assert trigger_alerts == []  # no episode alert at any count
 
-    for _ in range(3):
+    _fire_failing(manager, trigger, monkeypatch)
+    assert _get_trigger(manager, trigger.id).auto_paused_at is not None
+    assert len(trigger_alerts) == 1  # the pause still speaks
+    assert "[TRIGGER PAUSED]" in trigger_alerts[0]["message"]
+
+
+def test_paused_trigger_is_skipped_by_the_poll_loop(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behavior 3: a paused trigger's SOURCE is never checked.
+
+    Load-bearing beyond "it does not fire": an Outlook check tags mail read
+    before its action ever runs (#265), so a paused trigger that still
+    polled would keep consuming and dropping events.
+
+    Pause threshold 2, deliberately BELOW the health machinery's own
+    "failing" threshold of 5. At 2 failures the trigger is only "degraded",
+    so the pre-existing failing-backoff does not skip it and the pause is
+    the sole reason the poll passes it over. Pausing at 5 would leave this
+    test green even with the pause check deleted, because the backoff would
+    be doing the skipping (measured: it was).
+    """
+    import nymeria.config as config_pkg
+
+    settings = FakeSettings()
+    settings.trigger_failure_pause_after = 2
+    monkeypatch.setattr(config_pkg, "get_settings", lambda: settings)
+
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    source = _wire_source(monkeypatch, _QuietSource())
+
+    manager.check_triggers("owner")
+    assert source.checks == 1  # healthy: polled
+
+    for _ in range(2):
         _fire_failing(manager, trigger, monkeypatch)
     stored = _get_trigger(manager, trigger.id)
-    assert stored.consecutive_errors == 5
-    assert stored.health_status == "failing"
-    assert len(trigger_alerts) == 1
-    assert "Mail sweep" in trigger_alerts[0]["message"]
+    assert stored.auto_paused_at is not None
+    assert stored.health_status == "degraded"  # NOT failing: no backoff here
 
-    # Still failing on the sixth: no second alert for the same episode.
-    _fire_failing(manager, trigger, monkeypatch)
-    assert len(trigger_alerts) == 1
+    for _ in range(3):
+        assert manager.check_triggers("owner") == []
+    assert source.checks == 1  # paused: not polled again
+
+
+def test_resume_clears_the_pause_and_the_whole_failure_history(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behaviors 12 + 15: resume is the repair verb, and it leaves the
+    user's own enable toggle alone."""
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    source = _wire_source(monkeypatch, _QuietSource())
+    for _ in range(5):
+        _fire_failing(manager, trigger, monkeypatch)
+
+    summary = manager.resume_trigger("owner", trigger.id)
+    assert summary is not None
+    assert summary["was_paused"] is True
+    assert summary["action_failures"] == 5
+
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at is None
+    assert stored.action_failures == 0
+    assert stored.consecutive_errors == 0
+    assert stored.health_status == "healthy"
+    assert stored.last_error is None
+    assert stored.last_error_kind is None
+    assert stored.enabled is True
+
+    manager.check_triggers("owner")
+    assert source.checks == 1  # polling again
+
+
+def test_resume_clears_health_on_a_failing_but_unpaused_trigger(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behavior 13: the incident's own recovery step. A trigger whose
+    cause you already fixed sat at failing/N and kept skipping 9 of 10
+    polls; before resume existed, hand-editing the store was the only way
+    to clear it."""
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    _wire_source(monkeypatch, _BrokenSource())
+    for _ in range(5):
+        manager.check_triggers("owner")
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.health_status == "failing"
+    assert stored.auto_paused_at is None  # source plane never pauses
+
+    summary = manager.resume_trigger("owner", trigger.id)
+    assert summary is not None
+    assert summary["was_paused"] is False
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.consecutive_errors == 0
+    assert stored.health_status == "healthy"
+
+
+def test_resume_on_an_unknown_trigger_reports_nothing_cleared(tmp_path):
+    """#264 behavior 14: the caller can tell 'repaired' from 'no such
+    trigger' rather than getting a cheerful no-op."""
+    manager = TriggerManager(tmp_path)
+    assert manager.resume_trigger("owner", "nope-123") is None
+
+
+def test_source_failures_never_auto_pause(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#264 behavior 7, the ratified plane split: a source outage backs off
+    and self-heals, so a long outage must never end with a stopped trigger
+    the owner has to resume by hand."""
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    _wire_source(monkeypatch, _BrokenSource())
+
+    for _ in range(40):
+        manager.check_triggers("owner")
+
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.health_status == "failing"
+    assert stored.consecutive_errors >= 5
+    assert stored.auto_paused_at is None
+    assert stored.action_failures == 0  # the action plane never moved
 
 
 def test_trigger_batched_agent_turn_failure_feeds_health(
@@ -706,6 +1089,9 @@ def test_trigger_batched_agent_turn_failure_feeds_health(
 
     stored = _get_trigger(manager, trigger.id)
     assert stored.consecutive_errors == 1
+    # The POLICY counter, not just the health label: this batched
+    # agent-turn site is the incident-shaped one.
+    assert stored.action_failures == 1
     assert "turn died" in (stored.last_error or "")
 
 
@@ -768,7 +1154,12 @@ def test_action_streak_survives_successful_source_polls(
     stored = _get_trigger(manager, trigger.id)
     assert stored.consecutive_errors == 5
     assert stored.health_status == "failing"
-    assert len(trigger_alerts) == 1
+    # #264 behavior 11: the ACTION streak is the policy's counter and the
+    # successful source polls did not touch it either, so it reached the
+    # pause threshold. Two alerts: the episode alert, then the pause.
+    assert stored.action_failures == 5
+    assert stored.auto_paused_at is not None
+    assert len(trigger_alerts) == 2
 
 
 def test_source_streak_still_heals_on_source_success(
@@ -836,6 +1227,12 @@ def test_trigger_alert_failure_does_not_break_the_fire(
 
     stored = _get_trigger(manager, trigger.id)
     assert stored.health_status == "failing"
+    # The property that matters most under a broken alert plane: the PAUSE
+    # still landed. An alert sender that raises must not cost the trigger
+    # its stop, or a dead notification channel silently restores the
+    # unbounded-consumption behavior #264 exists to end.
+    assert stored.auto_paused_at is not None
+    assert stored.action_failures == 5
     executions = manager.get_executions("owner")
     assert len(executions) == 5
 

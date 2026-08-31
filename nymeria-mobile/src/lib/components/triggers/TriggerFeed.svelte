@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { isTriggerRunning, triggersStore } from '$lib/stores/triggers.svelte';
   import TriggerItem from './TriggerItem.svelte';
   import TriggerSetupWizard from './TriggerSetupWizard.svelte';
   import TriggerHistoryPanel from './TriggerHistoryPanel.svelte';
@@ -40,8 +40,20 @@
       : triggersStore.triggers
   );
 
-  const activeTriggers = $derived(filteredTriggers.filter(t => t.enabled));
-  const pausedTriggers = $derived(filteredTriggers.filter(t => !t.enabled));
+  // Grouped by what the backend will actually do, not by the enable switch: a
+  // trigger the failure policy auto-paused is still `enabled`, and listing it
+  // under Active would promise fires that never come.
+  //
+  // Three groups rather than two, because one "Paused" heading would have to
+  // cover both "you switched this off" and "Nymeria stopped this", and only
+  // the second needs a decision. The groups are disjoint and exhaustive; a
+  // trigger the user switched off reads as Disabled whether or not it also
+  // carries a pause stamp, since its own switch is the nearer explanation.
+  const autoPausedTriggers = $derived(
+    filteredTriggers.filter(t => t.enabled && !!t.auto_paused_at)
+  );
+  const activeTriggers = $derived(filteredTriggers.filter(isTriggerRunning));
+  const disabledTriggers = $derived(filteredTriggers.filter(t => !t.enabled));
 
   function handleEdit(trigger: Trigger) {
     editTarget = trigger;
@@ -93,6 +105,29 @@
       {/if}
     </div>
   {:else}
+    <!-- Auto-paused first: the only group that asks the user for a decision,
+         and empty on a healthy list, so the usual order is unchanged. -->
+    {#if autoPausedTriggers.length > 0}
+      <div class="trigger-group">
+        <h3 class="group-label section-label">
+          <span class="label-text">Auto-paused</span>
+          <span class="count attention">{autoPausedTriggers.length}</span>
+        </h3>
+        <div class="group-items">
+          {#each autoPausedTriggers as trigger, i (trigger.id)}
+            <TriggerItem
+              {trigger}
+              onEdit={handleEdit}
+              onHistory={handleTest}
+              animationDelay={i * 30}
+              threadTitle={threadTitleMap && trigger.thread_id ? threadTitleMap[trigger.thread_id] : undefined}
+              onNavigateToThread={onNavigateToThread && trigger.thread_id ? () => onNavigateToThread!(trigger.thread_id) : undefined}
+            />
+          {/each}
+        </div>
+      </div>
+    {/if}
+
     {#if activeTriggers.length > 0}
       <div class="trigger-group">
         <h3 class="group-label section-label">
@@ -114,14 +149,14 @@
       </div>
     {/if}
 
-    {#if pausedTriggers.length > 0}
+    {#if disabledTriggers.length > 0}
       <div class="trigger-group">
         <h3 class="group-label section-label">
-          <span class="label-text">Paused</span>
-          <span class="count">{pausedTriggers.length}</span>
+          <span class="label-text">Disabled</span>
+          <span class="count">{disabledTriggers.length}</span>
         </h3>
         <div class="group-items">
-          {#each pausedTriggers as trigger, i (trigger.id)}
+          {#each disabledTriggers as trigger, i (trigger.id)}
             <TriggerItem
               {trigger}
               onEdit={handleEdit}
@@ -263,6 +298,13 @@
 
   .count.highlight {
     background: var(--accent-secondary, var(--accent-primary));
+    color: var(--bg-base);
+  }
+
+  /* Amber count on the auto-paused group: the same cue the row chip uses, so
+     the heading and the rows under it tell one story. */
+  .count.attention {
+    background: var(--warning);
     color: var(--bg-base);
   }
 

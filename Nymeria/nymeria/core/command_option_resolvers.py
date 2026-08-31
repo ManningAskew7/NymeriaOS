@@ -470,8 +470,17 @@ async def resolve_triggers(executor: "_CommandExecutor") -> list[dict[str, Any]]
         if not trigger_id:
             continue
         action = getattr(trigger, "action", None)
+        # "paused" outranks enabled/disabled (#264): an auto-paused trigger
+        # is still `enabled` and still does nothing. This resolver feeds the
+        # missing-arg picker AND Discord autocomplete for `/triggers resume`,
+        # so it is the list a user reads to choose WHICH trigger to repair;
+        # labelling a stopped one "enabled" there defeats the verb.
+        if getattr(trigger, "auto_paused_at", None) is not None:
+            state = "paused"
+        else:
+            state = "enabled" if getattr(trigger, "enabled", False) else "disabled"
         meta_parts = [
-            "enabled" if getattr(trigger, "enabled", False) else "disabled",
+            state,
             str(getattr(trigger, "source_type", "") or ""),
             str(getattr(action, "type", "") or ""),
         ]

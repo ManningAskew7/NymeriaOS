@@ -27,6 +27,13 @@
 
   let confirmDelete = $state(false);
   let toggling = $state(false);
+  let resuming = $state(false);
+  let resumeError = $state<string | null>(null);
+
+  // The backend's auto-pause policy stops a trigger whose action keeps failing
+  // and leaves `enabled` alone, so the toggle below still reads "on" while
+  // nothing polls or fires. This flag is what the row must show instead.
+  const autoPaused = $derived(!!trigger.auto_paused_at);
 
   const sourceInfo = $derived<TriggerSourceInfo | undefined>(
     triggersStore.sources[trigger.source_type]
@@ -67,6 +74,20 @@
     confirmDelete = false;
   }
 
+  // Clears the pause and the failure history in one call. The store swaps in
+  // the returned trigger, so this whole note leaves with it.
+  async function handleResume() {
+    resuming = true;
+    resumeError = null;
+    try {
+      await triggersStore.resumeTrigger(trigger.id);
+    } catch (e) {
+      resumeError = humanizeErrorText(e, { action: 'resume', resource: 'the trigger' });
+    } finally {
+      resuming = false;
+    }
+  }
+
   async function handleTest() {
     testing = true;
     testResult = null;
@@ -88,6 +109,17 @@
     trigger.health_status === 'healthy' ? 'var(--success)'
     : trigger.health_status === 'degraded' ? 'var(--warning)'
     : 'var(--error)'
+  );
+
+  // "Nymeria stopped this trigger after 3 failed actions, 2h ago." Naming
+  // Nymeria is the point: the row must not read as the user's own off switch.
+  // The stamp is lowercased so the "Just now" branch reads as part of the
+  // sentence; formatTimeAgo's "Never" branch is unreachable here, this only
+  // renders when the stamp exists.
+  const pauseSummary = $derived(
+    `Nymeria stopped this trigger after ${trigger.action_failures} ` +
+      `failed ${trigger.action_failures === 1 ? 'action' : 'actions'}, ` +
+      `${formatTimeAgo(trigger.auto_paused_at).toLowerCase()}.`
   );
 </script>
 
@@ -114,6 +146,22 @@
         <span class="fire-count">{trigger.fire_count}x</span>
         <span class="last-fired">{formatTimeAgo(trigger.last_fired)}</span>
       </div>
+      {#if autoPaused}
+        <div class="pause-note">
+          <span class="paused-chip">
+            <Icon name="pause" size={9} />
+            <span>Auto-paused</span>
+          </span>
+          <span class="pause-text">{pauseSummary}</span>
+          <button class="resume-btn" onclick={handleResume} disabled={resuming} type="button">
+            <Icon name={resuming ? 'loading' : 'play'} size={11} />
+            <span>{resuming ? 'Resuming…' : 'Resume'}</span>
+          </button>
+          {#if resumeError}
+            <span class="pause-error" role="alert">{resumeError}</span>
+          {/if}
+        </div>
+      {/if}
       {#if trigger.last_error && trigger.health_status !== 'healthy'}
         <div class="error-hint">{trigger.last_error}</div>
       {/if}
@@ -276,6 +324,73 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* --- Auto-pause (the failure policy stopped this trigger) ---
+     Amber and pause-marked so it never reads as the user's own off switch
+     (dimmed row, struck-through name) or as the plain health dot: those say
+     what a trigger IS, this says the system took it out of service. Wraps
+     rather than truncates, since the count and the fix are the whole point. */
+  .pause-note {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    margin-top: 3px;
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .paused-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 38%, transparent);
+  }
+
+  .pause-text {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-secondary);
+  }
+
+  .pause-error {
+    flex-basis: 100%;
+    color: var(--error);
+  }
+
+  .resume-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    min-height: 26px;
+    padding: 3px 9px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated-2);
+    color: var(--text-primary);
+    border: 1px solid var(--glass-border);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .resume-btn:active:not(:disabled) {
+    background: color-mix(in srgb, var(--bg-elevated-2) 75%, var(--accent-primary));
+    border-color: var(--accent-primary);
+  }
+
+  .resume-btn:disabled {
+    opacity: 0.55;
   }
 
   .test-result {

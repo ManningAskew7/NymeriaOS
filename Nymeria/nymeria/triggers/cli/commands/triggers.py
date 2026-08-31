@@ -29,7 +29,7 @@ async def _handle_triggers_root(
 ) -> CommandResult:
     if args:
         return CommandResult.failed(
-            "Usage: /triggers list|create|edit|enable|disable|history|test|delete",
+            "Usage: /triggers list|create|edit|enable|disable|resume|history|test|delete",
             error_code="usage_error",
         )
     return await _handle_triggers_list(context, [])
@@ -112,6 +112,38 @@ async def _handle_triggers_edit(
             level="success",
         ),
         payload={"trigger_id": trigger_id, "updated": tuple(sorted(patch))},
+    )
+
+
+async def _handle_triggers_resume(
+    context: CommandContext,
+    args: list[str],
+) -> CommandResult:
+    if not args:
+        return CommandResult.failed(
+            "Usage: /triggers resume <id>", error_code="usage_error"
+        )
+    trigger_id = args[0]
+    try:
+        resumed = await call_client_user_scoped(
+            context, "resume_trigger", trigger_id
+        )
+    except CommandClientMethodUnavailable as exc:
+        return unsupported_transport_result(
+            "/triggers resume", method_name=exc.method_name
+        )
+
+    await context.dispatch({"type": "triggers_updated"})
+    note = ""
+    if not mapping_get(resumed, "enabled", True):
+        note = " It is still disabled, so it will not run until enabled."
+    return CommandResult.completed(
+        CommandMessage(
+            f"Resumed trigger: "
+            f"{compact_id(mapping_get(resumed, 'id', trigger_id))}.{note}",
+            level="success",
+        ),
+        payload={"trigger_id": trigger_id},
     )
 
 
@@ -367,15 +399,25 @@ def _parse_trigger_patch(args: Sequence[str]) -> tuple[dict[str, Any], str]:
             patch["action_config"] = parsed
         elif key == "action_type":
             patch["action_type"] = value
+        elif key in {"thread", "thread_id"}:
+            # Re-point at another thread (#266). The REST route applies the
+            # same thread-access check create does, so a caller cannot aim a
+            # trigger at a thread they do not own.
+            patch["thread_id"] = value
         else:
             return {}, f"Unsupported trigger field: {key}"
     return patch, ""
 
 
 def _format_triggers(triggers: Sequence[Mapping[str, Any]]) -> list[str]:
-    lines = ["Triggers", "  ID        Enabled  Health     Source       Name"]
+    lines = ["Triggers", "  ID        State    Health     Source       Name"]
     for trigger in triggers:
-        enabled = "yes" if trigger.get("enabled") else "no"
+        # "paused" outranks the enabled flag: an auto-paused trigger is still
+        # enabled and still does nothing, so printing "yes" would misreport it.
+        if trigger.get("auto_paused_at"):
+            enabled = "paused"
+        else:
+            enabled = "yes" if trigger.get("enabled") else "no"
         lines.append(
             f"  {compact_id(trigger.get('id')):<8}  {enabled:<7}  "
             f"{compact_id(trigger.get('health_status'), width=9):<9}  "
@@ -561,6 +603,13 @@ def register(registry: CommandRegistry) -> None:
                 description="Disable a trigger",
                 usage="disable <id>",
                 handler=_handle_triggers_disable,
+                category="Automation",
+            ),
+            "resume": Command(
+                name="resume",
+                description="Clear a trigger's auto-pause and failure history",
+                usage="resume <id>",
+                handler=_handle_triggers_resume,
                 category="Automation",
             ),
             "history": Command(

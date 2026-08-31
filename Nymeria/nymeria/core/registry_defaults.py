@@ -1596,6 +1596,14 @@ def register_default_commands(service: "CommandService") -> None:
         params=(_TRIGGER_ID_PARAM,),
     )
     service.register(
+        "triggers resume",
+        description="Clear a trigger's auto-pause and failure history",
+        category="Automation",
+        aliases=("triggers_resume",),
+        mutates_state=True,
+        params=(_TRIGGER_ID_PARAM,),
+    )
+    service.register(
         "triggers delete",
         description="Delete an event trigger permanently",
         category="Automation",

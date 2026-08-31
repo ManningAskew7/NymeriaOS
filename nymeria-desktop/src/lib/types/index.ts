@@ -2698,6 +2698,13 @@ export interface Trigger {
   consecutive_errors: number;
   last_error: string | null;
   health_status: TriggerHealthStatus;
+  // Consecutive failed ACTION fires (the source polled fine, the action blew
+  // up). The backend auto-pause policy counts these, not `consecutive_errors`.
+  action_failures: number;
+  // Set when that policy stopped the trigger. Non-null means it no longer
+  // polls or fires even though `enabled` is still true, so any UI that reads
+  // only `enabled` will misreport it. Cleared by POST /triggers/{id}/resume.
+  auto_paused_at: string | null;
 }
 
 export interface TriggerCreateRequest {
@@ -2720,6 +2727,9 @@ export interface TriggerUpdateRequest {
   action_config?: Record<string, unknown>;
   conditions?: TriggerCondition[];
   cooldown_seconds?: number;
+  // Re-point the trigger at a different thread. The PATCH schema rejects keys
+  // it does not know, so this interface has to mirror it field for field.
+  thread_id?: string;
 }
 
 export interface TriggerExecution {

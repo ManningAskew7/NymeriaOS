@@ -97,10 +97,37 @@ class TriggerDefinition(BaseModel):
     last_error_at: Optional[datetime] = Field(default=None)
     last_error_kind: Optional[Literal["source", "action"]] = Field(default=None)
     health_status: Literal["healthy", "degraded", "failing"] = Field(default="healthy")
+    # Action-failure policy (#264), PARALLEL to consecutive_errors and never
+    # shared with it. Two reasons, both forced rather than stylistic:
+    # `consecutive_errors` counts backed-off polls as well as errors (see the
+    # backoff in check_triggers, deliberate), so no honest threshold can be
+    # read off it; and it is fed by BOTH planes, while auto-pause is an
+    # action-plane verdict only (a source outage self-heals, so pausing on it
+    # would stop triggers that would have recovered). Reset by an action
+    # success or an explicit resume; never touched by the source plane or the
+    # backoff. Same rule as the #247 delivery streak, see
+    # core/delivery_accounting.py.
+    action_failures: int = Field(default=0)
+    # When the #264 policy last spoke about this trigger. A trigger that
+    # FLAPS (fail, fail, succeed, repeat) never reaches the pause threshold
+    # because each success resets the streak, so without this it would alert
+    # once per episode forever, on external destinations that deliberately
+    # bypass the in-app notification level. NOT reset by a success (that is
+    # the flap), only by an explicit resume.
+    last_policy_alert_at: Optional[datetime] = Field(default=None)
+    # Set when the policy gave up on this trigger. Distinct from `enabled`,
+    # which stays purely the user's own toggle, so a paused trigger can be
+    # told apart from one the user switched off (and re-enabling never
+    # silently resumes a trigger the system stopped). Cleared only by
+    # resume_trigger().
+    auto_paused_at: Optional[datetime] = Field(default=None)
     # Pending events deferred because the thread was busy
     pending_events: List[dict] = Field(default_factory=list)
 
-    @field_validator("last_fired", "created_at", "last_error_at")
+    @field_validator(
+        "last_fired", "created_at", "last_error_at", "auto_paused_at",
+        "last_policy_alert_at",
+    )
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
         if value is None:
@@ -150,6 +177,35 @@ class TriggerStore(BaseModel):
         return None
 
 
+def describe_resume(trigger_id: str, summary: dict) -> str:
+    """One copy of the resume outcome copy for every surface.
+
+    Resume is idempotent, so the honest message depends on what was
+    actually there: a pause, a stale failing streak, or nothing. The
+    agent tool and the slash command both render this; keeping two
+    hand-written copies in step was not going to happen.
+    """
+    if summary["was_paused"]:
+        head = (
+            f"Resumed trigger {trigger_id} after "
+            f"{summary['action_failures']} failed action(s)."
+        )
+    elif summary["previous_health"] != "healthy":
+        head = (
+            f"Trigger {trigger_id} was not paused; cleared its "
+            f"{summary['previous_health']} health "
+            f"({summary['consecutive_errors']} error(s)), so it polls at "
+            f"full rate again."
+        )
+    else:
+        head = f"Trigger {trigger_id} was already healthy; nothing to clear."
+    if not summary["enabled"]:
+        # Resume is orthogonal to the user's toggle, so say so rather
+        # than let the caller assume the trigger is now running.
+        head += " It is still DISABLED, so it will not run until enabled."
+    return head
+
+
 def _apply_health_outcome(
     trigger: TriggerDefinition,
     error: Optional[str],
@@ -159,10 +215,15 @@ def _apply_health_outcome(
 ) -> bool:
     """Apply one source-check or action outcome to the shared health fields.
 
-    The ONE copy of the thresholds for BOTH writers (``check_triggers`` for
-    source checks, ``_record_action_health`` for action fires), so the
-    documented rule (one owner alert on the transition into "failing") holds
-    no matter which plane crosses. Returns True on that transition.
+    The ONE copy of the health LABEL thresholds for both writers
+    (``check_triggers`` for source checks, ``_record_action_health`` for
+    action fires). Returns True on the transition into "failing".
+
+    That transition drives an owner alert on the SOURCE plane only. The
+    action plane stopped using it when the #264 policy landed: that plane
+    alerts and auto-pauses off its own ``action_failures`` counter, and
+    firing this alert too would make three notifications for one broken
+    trigger. See ``_record_action_health``.
 
     Reset scoping (#154): a successful source check must NOT heal an
     action-failure streak (see the field comment on
@@ -441,6 +502,53 @@ class TriggerManager:
 
         return True
 
+    def resume_trigger(self, user_id: str, trigger_id: str) -> Optional[dict]:
+        """Clear a trigger's auto-pause AND its whole failure history (#264).
+
+        The repair verb. Before this existed there was no surface anywhere
+        that could reset trigger health, so a trigger whose cause you had
+        already fixed stayed "failing" and kept skipping 9 of 10 polls (the
+        backoff in ``check_triggers``) until an action happened to succeed,
+        and hand-editing the store file was the only way out.
+
+        Resume is EXPLICIT, never inferred from another field being written:
+        #154 infers its TODO resume from "schedule set while paused" and
+        backlog #249 already filed that inference as a defect.
+
+        Deliberately does NOT touch ``enabled``: pause and the user's own
+        toggle are orthogonal, so resuming a trigger the user had also
+        switched off must not switch it back on.
+
+        Returns a summary of what was cleared (for honest caller copy), or
+        None when no such trigger exists.
+        """
+        with self.atomic_update(user_id) as store:
+            trigger = store.get_trigger(trigger_id)
+            if trigger is None:
+                return None
+            summary = {
+                "was_paused": trigger.auto_paused_at is not None,
+                "action_failures": trigger.action_failures,
+                "consecutive_errors": trigger.consecutive_errors,
+                "previous_health": trigger.health_status,
+                "enabled": trigger.enabled,
+            }
+            trigger.auto_paused_at = None
+            trigger.action_failures = 0
+            trigger.last_policy_alert_at = None
+            trigger.consecutive_errors = 0
+            trigger.health_status = "healthy"
+            trigger.last_error = None
+            trigger.last_error_at = None
+            trigger.last_error_kind = None
+        logger.info(
+            "Trigger %s resumed (was_paused=%s, cleared %d action failures)",
+            trigger_id,
+            summary["was_paused"],
+            summary["action_failures"],
+        )
+        return summary
+
     def delete_trigger(self, user_id: str, trigger_id: str) -> bool:
         """Remove a trigger permanently."""
         with self.atomic_update(user_id) as store:
@@ -619,6 +727,15 @@ class TriggerManager:
             now = utc_now()
             for trigger in store.triggers:
                 if not trigger.enabled:
+                    continue
+
+                # Auto-paused by the #264 action-failure policy: the whole
+                # point is that it stops ACTING and stops CONSUMING, so this
+                # short-circuits the source check too (an Outlook check tags
+                # mail read before its action ever runs, backlog #265).
+                # Distinct from `enabled` so the user's own toggle keeps its
+                # meaning; cleared only by resume_trigger().
+                if trigger.auto_paused_at is not None:
                     continue
 
                 # Cooldown check
@@ -899,8 +1016,28 @@ class TriggerManager:
             return
 
         if len(events) == 1 or trigger.action.type != "agent_prompt":
-            for event in events:
+            for index, event in enumerate(events):
                 self.fire_action(trigger, event, agent, user_id)
+                # A per-event batch can cross the #264 pause threshold
+                # part-way through, and the pause is a verdict about THIS
+                # trigger's action: firing the rest of the batch anyway
+                # would keep acting after the policy said stop, overshoot
+                # `action_failures` past the count that caused the pause,
+                # and let a late success in the same batch zero the streak
+                # (reporting "auto-paused after 0 failed actions"). Re-read
+                # rather than trust the in-memory copy: the pause is
+                # written to the store by _record_action_health, and in
+                # Docker another process may have written it.
+                if index + 1 < len(events):
+                    live = self.get_trigger(user_id, trigger.id)
+                    if live is None or live.auto_paused_at is not None:
+                        logger.info(
+                            "[TRIGGER] %s auto-paused mid-batch; dropping %d "
+                            "remaining event(s)",
+                            trigger.id,
+                            len(events) - index - 1,
+                        )
+                        return
             return
 
         # Batch agent_prompt: render each event with the template, then
@@ -1254,13 +1391,30 @@ class TriggerManager:
         copy shared with the source-check site); the kind-scoped reset there
         keeps every poll cycle's successful source check from zeroing an
         action-failure streak. The existing failing-trigger backoff in
-        ``check_triggers`` governs action-failure episodes too. On the
-        transition INTO "failing", one owner alert goes out (once per
-        episode; success resets). Fault-isolated: health bookkeeping must
-        never break a fire.
+        ``check_triggers`` governs action-failure episodes too.
+
+        This is also where the #264 action-failure POLICY runs: alert once at
+        ``trigger_failure_alert_after``, auto-pause at
+        ``trigger_failure_pause_after``. The policy drives off
+        ``action_failures``, never ``consecutive_errors`` (see that field's
+        comment: the shared counter also counts backed-off polls, so a
+        threshold on it means nothing).
+
+        The action plane deliberately does NOT send the
+        ``_send_failing_alert`` transition alert any more: with the policy
+        live it would be the second of three notifications for one broken
+        trigger (policy alert at 2, transition at 5, pause at 5). The policy
+        alert fires earlier and says more. The SOURCE plane keeps it, since
+        no pause policy governs that plane.
+
+        Unpersisted state must not drive policy: ``atomic_update`` raises
+        when the save fails, so a failed write leaves via the except below
+        with no alert sent and no pause claimed. Fault-isolated: health
+        bookkeeping must never break a fire.
         """
         try:
-            entered_failing = False
+            verdict: Optional[str] = None
+            count = 0
             trigger_name = trigger_id
             thread_id = f"trigger-{trigger_id}"
             last_error = ""
@@ -1270,19 +1424,151 @@ class TriggerManager:
                 )
                 if trigger is None:
                     return
-                entered_failing = _apply_health_outcome(
-                    trigger, error, utc_now(), kind="action"
-                )
+                now = utc_now()
+                _apply_health_outcome(trigger, error, now, kind="action")
+
+                if error is None:
+                    # A successful fire ends the episode. The pause marker is
+                    # not cleared here: a paused trigger cannot fire, so the
+                    # only way to reach this branch while paused is a fire
+                    # that was already in flight when the pause landed, and
+                    # that must not silently un-pause it.
+                    trigger.action_failures = 0
+                else:
+                    trigger.action_failures += 1
+                    count = trigger.action_failures
+                    verdict = self._action_failure_verdict(trigger, count)
+                    if verdict == "pause":
+                        trigger.auto_paused_at = now
+                    if verdict is not None:
+                        trigger.last_policy_alert_at = now
+
                 trigger_name = trigger.name
                 thread_id = trigger.thread_id or f"trigger-{trigger_id}"
                 last_error = trigger.last_error or ""
-            if entered_failing:
-                self._send_failing_alert(
-                    user_id, trigger_id, trigger_name, thread_id, last_error
+
+            # Alerts go out AFTER the store lock releases: the sender does
+            # network and store work of its own (same discipline as
+            # check_triggers' newly_failing loop).
+            if verdict == "pause":
+                logger.warning(
+                    "Trigger %s auto-paused after %d consecutive action "
+                    "failures",
+                    trigger_id,
+                    count,
+                )
+                self._send_action_policy_alert(
+                    user_id,
+                    trigger_id,
+                    trigger_name,
+                    thread_id,
+                    last_error,
+                    count,
+                    paused=True,
+                )
+            elif verdict == "alert":
+                self._send_action_policy_alert(
+                    user_id,
+                    trigger_id,
+                    trigger_name,
+                    thread_id,
+                    last_error,
+                    count,
+                    paused=False,
                 )
         except Exception:
             logger.warning(
                 "Failed to record action health for trigger %s",
+                trigger_id,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _action_failure_verdict(
+        trigger: TriggerDefinition, count: int
+    ) -> Optional[str]:
+        """Decide what this action failure earns: "pause", "alert" or nothing.
+
+        Pause wins over alert when both thresholds are crossed at once (the
+        #154 ordering). Either threshold at 0 disables that stage.
+        """
+        if trigger.auto_paused_at is not None:
+            # Already paused: a fire that was in flight when the pause landed
+            # must not stack a second pause or a second alert.
+            return None
+        from ..config import get_settings
+
+        settings = get_settings()
+        alert_after = max(0, int(getattr(settings, "trigger_failure_alert_after", 2)))
+        pause_after = max(0, int(getattr(settings, "trigger_failure_pause_after", 5)))
+        if pause_after and count >= pause_after:
+            # Never suppressed: a pause is terminal and the owner has to
+            # know the trigger stopped.
+            return "pause"
+        if alert_after and count == alert_after:
+            cooldown = max(
+                0,
+                int(getattr(settings, "trigger_failure_alert_cooldown_minutes", 180)),
+            )
+            last = trigger.last_policy_alert_at
+            if cooldown and last is not None:
+                age = (utc_now() - ensure_aware_utc(last)).total_seconds()
+                if age < cooldown * 60:
+                    return None
+            return "alert"
+        return None
+
+    def _send_action_policy_alert(
+        self,
+        user_id: str,
+        trigger_id: str,
+        trigger_name: str,
+        thread_id: str,
+        last_error: str,
+        count: int,
+        *,
+        paused: bool,
+    ) -> None:
+        """Owner alert for the #264 action-failure policy. Never raises."""
+        try:
+            from ..config import get_settings
+            from .notification_dispatch import send_owner_alert
+
+            if paused:
+                message = (
+                    f"[TRIGGER PAUSED] Trigger \"{trigger_name}\" "
+                    f"({trigger_id}) was auto-paused after {count} "
+                    f"consecutive failed actions, so it has stopped running "
+                    f"and stopped consuming events. Last error: "
+                    f"{last_error}. Fix the cause, then resume it with "
+                    f"/triggers resume {trigger_id}."
+                )
+            else:
+                settings = get_settings()
+                pause_after = max(
+                    0, int(getattr(settings, "trigger_failure_pause_after", 5))
+                )
+                pause_note = (
+                    f" It auto-pauses after {pause_after} consecutive "
+                    f"failures." if pause_after else ""
+                )
+                message = (
+                    f"[TRIGGER ALERT] Trigger \"{trigger_name}\" "
+                    f"({trigger_id}) has failed its action {count} times in "
+                    f"a row. Last error: {last_error}.{pause_note} Manage it "
+                    f"with /triggers."
+                )
+
+            send_owner_alert(
+                message,
+                get_settings(),
+                user_id=user_id,
+                thread_id=thread_id,
+                task_id=f"trigger-{trigger_id}",
+            )
+        except Exception:
+            logger.warning(
+                "Action-policy alert failed for trigger %s",
                 trigger_id,
                 exc_info=True,
             )

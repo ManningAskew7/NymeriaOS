@@ -46,6 +46,13 @@
   let testing = $state(false);
   let confirmDelete = $state(false);
   let toggling = $state(false);
+  let resuming = $state(false);
+  let resumeError = $state<string | null>(null);
+
+  // The backend's auto-pause policy stops a trigger whose action keeps failing
+  // and leaves `enabled` alone, so the switch below still reads "on" while
+  // nothing polls or fires. This flag is what the row must show instead.
+  const autoPaused = $derived(!!trigger.auto_paused_at);
 
   const sourceInfo = $derived<TriggerSourceInfo | undefined>(
     triggersStore.sources[trigger.source_type]
@@ -189,6 +196,16 @@
         : 'Failing'
   );
 
+  // Same relative wording as formatTimeAgo minus its "Never fired" branch,
+  // lowercased so the "Just now" branch reads inside the sentence below.
+  const pausedAgo = $derived(
+    trigger.auto_paused_at ? formatTimeAgo(trigger.auto_paused_at).toLowerCase() : ''
+  );
+
+  const failureCount = $derived(
+    `${trigger.action_failures} failed ${trigger.action_failures === 1 ? 'action' : 'actions'}`
+  );
+
   // Index of the first character that wasn't visible in the collapsed state.
   // Characters before this index render instantly; characters at/after it
   // cascade in via the letter-by-letter animation.
@@ -252,6 +269,21 @@
       await triggersStore.updateTrigger(trigger.id, { enabled: !trigger.enabled });
     } finally {
       toggling = false;
+    }
+  }
+
+  // Clears the pause and the failure history in one call. The store swaps in
+  // the returned trigger, so the badge and this banner leave together.
+  async function handleResume(e: Event) {
+    e.stopPropagation();
+    resuming = true;
+    resumeError = null;
+    try {
+      await triggersStore.resumeTrigger(trigger.id);
+    } catch (err) {
+      resumeError = humanizeErrorText(err, { action: 'resume', resource: 'the trigger' });
+    } finally {
+      resuming = false;
     }
   }
 
@@ -332,6 +364,14 @@
           {/if}
         </span>
         {#if !expanded}
+          <!-- Collapsed rows carry the pause as a chip; expanding swaps it for
+               the banner below, which explains it and offers the fix. -->
+          {#if autoPaused}
+            <span class="paused-chip" data-tooltip="Stopped after repeated action failures">
+              <Icon name="pause" size={10} />
+              <span>Auto-paused</span>
+            </span>
+          {/if}
           <span
             class="source-chip"
             data-source={trigger.source_type}
@@ -424,6 +464,31 @@
         </span>
       {/if}
     </div>
+
+    {#if autoPaused}
+      <div class="pause-banner">
+        <Icon name="pause" size={12} />
+        <div class="pause-copy">
+          <span class="pause-title">Nymeria stopped this trigger after {failureCount}</span>
+          <span class="pause-sub">
+            {pausedAgo ? `Paused ${pausedAgo}. ` : ''}It will not poll or fire until you
+            resume it.
+          </span>
+          {#if resumeError}
+            <span class="pause-error" role="alert">{resumeError}</span>
+          {/if}
+        </div>
+        <button
+          class="resume-btn"
+          onclick={handleResume}
+          disabled={resuming}
+          type="button"
+        >
+          <Icon name={resuming ? 'loading' : 'play'} size={12} />
+          <span>{resuming ? 'Resuming…' : 'Resume'}</span>
+        </button>
+      </div>
+    {/if}
 
     <!-- Meta stats -->
     <div class="meta-row">
@@ -987,9 +1052,78 @@
     user-select: none;
   }
 
+  /* --- Auto-pause (the failure policy stopped this trigger) ---
+     Amber and pause-marked so it never reads as the neutral source chip, as
+     the user's own off switch, or as the plain health dot: those say what a
+     trigger IS, this says the system took it out of service. */
+  .paused-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-2xs);
+    flex-shrink: 0;
+    padding: var(--spacing-2xs) var(--spacing-xs);
+    font-size: var(--font-size-3xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.45;
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 38%, transparent);
+    border-radius: var(--radius-md);
+  }
+
+  .pause-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pause-title {
+    font-weight: 600;
+  }
+
+  .pause-sub {
+    color: var(--text-secondary);
+  }
+
+  .pause-error {
+    margin-top: var(--spacing-2xs);
+    color: var(--error);
+  }
+
+  .resume-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    flex-shrink: 0;
+    padding: var(--spacing-xs) var(--spacing-sm-plus);
+    font-size: var(--font-size-2xs);
+    font-weight: 600;
+    color: var(--text-primary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .resume-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--bg-elevated) 78%, var(--accent-primary));
+    border-color: var(--accent-primary);
+  }
+
+  .resume-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   /* --- Banners --- */
   .error-banner,
-  .test-banner {
+  .test-banner,
+  .pause-banner {
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-xs);
@@ -1004,6 +1138,16 @@
     color: var(--error);
     background: color-mix(in srgb, var(--error) 10%, transparent);
     border-color: color-mix(in srgb, var(--error) 30%, transparent);
+  }
+
+  /* Centred rather than top-aligned: this banner is a row of copy plus its
+     Resume button, not a single wrapped line like the two above. */
+  .pause-banner {
+    align-items: center;
+    gap: var(--spacing-sm);
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 30%, transparent);
   }
 
   .error-banner span {

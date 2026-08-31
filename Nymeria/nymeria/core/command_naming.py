@@ -72,6 +72,13 @@ SANCTIONED_LEAF_TOKENS: dict[str, str] = {
         "'set' (the caller names no value) and not 'restart' (the process "
         "survives, in-flight turns and streams with it)"
     ),
+    "resume": (
+        "triggers family: clear an auto-pause and the failure history "
+        "behind it. Not 'enable' (that is the user's own toggle and a "
+        "separate axis: an auto-paused trigger is still enabled) and not "
+        "'clear' (which would read as clearing the trigger itself, beside "
+        "'delete')"
+    ),
     "issue": "tokens are issued",
     "revoke": "tokens are revoked",
     "branch": "thread branching",

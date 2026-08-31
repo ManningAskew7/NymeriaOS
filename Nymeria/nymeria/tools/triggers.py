@@ -18,6 +18,7 @@ from ..core.trigger_manager import (
     TriggerCondition,
     TriggerManager,
     _safe_format,
+    describe_resume,
 )
 from .utils import get_effective_thread_id, get_user_id
 
@@ -221,6 +222,11 @@ def _trigger_list(
     triggers = manager.get_triggers(user_id)
 
     if enabled_only:
+        # Filters on `enabled` (the user's own toggle), NOT on whether the
+        # trigger is currently running: an auto-paused trigger is one the
+        # user did not switch off, so hiding it here would hide exactly the
+        # broken triggers this filter's user most needs to see. Each row
+        # says PAUSED, so nothing is misreported by keeping it.
         triggers = [t for t in triggers if t.enabled]
 
     if current_thread_only:
@@ -237,7 +243,13 @@ def _trigger_list(
 
     lines = [f"Triggers ({len(triggers)} total):"]
     for t in triggers:
-        status = "ON" if t.enabled else "OFF"
+        # PAUSED outranks ON in this label on purpose: an auto-paused
+        # trigger is still `enabled`, so showing it as ON would report a
+        # trigger that cannot run as one that does.
+        if t.auto_paused_at is not None:
+            status = "PAUSED"
+        else:
+            status = "ON" if t.enabled else "OFF"
         last = t.last_fired.strftime("%Y-%m-%d %H:%M") if t.last_fired else "never"
         lines.append(
             f"  [{t.id}] {status} | {t.name}\n"
@@ -245,6 +257,13 @@ def _trigger_list(
             f"Fired: {t.fire_count}x (last: {last})\n"
             f"    Thread: {t.thread_id} | Health: {t.health_status}"
         )
+        if t.auto_paused_at is not None:
+            lines.append(
+                f"    Auto-paused after {t.action_failures} failed action(s)"
+                f"{' (still enabled)' if t.enabled else ' (also disabled)'}: "
+                f"fix the cause, then trigger_config(action=\"resume\", "
+                f"trigger_id=\"{t.id}\")"
+            )
         if t.cooldown_seconds:
             lines.append(f"    Cooldown: {t.cooldown_seconds}s")
         if t.conditions:
@@ -270,6 +289,13 @@ def _trigger_update(
 ) -> str:
     """Update an existing trigger's configuration or enable/disable it.
 
+    Deliberately has NO thread_id: re-pointing a trigger at another thread
+    is authenticated-surface only (REST/CLI), where the caller's thread
+    access can be checked. ``_trigger_create`` withholds the same argument
+    for the same reason, auto-binding to the current thread instead: an
+    unguarded bind lets a trigger be aimed at a guessed shared-channel
+    thread and fired through the unauthenticated webhook route.
+
     Args:
         trigger_id: The 8-char trigger ID.
         name: New display name (optional).
@@ -281,7 +307,6 @@ def _trigger_update(
         conditions: New filter conditions (optional). Pass an empty list []
             to clear all conditions. Each condition is a dict with keys:
             field, operator, value, case_sensitive.
-
     Returns:
         Success or error message.
     """
@@ -332,6 +357,29 @@ def _trigger_update(
             parts.append(f"Conditions: {len(kwargs.get('conditions', []))} filter(s)")
         return " ".join(parts)
     return f"[Error]: Trigger '{trigger_id}' not found."
+
+
+def _trigger_resume(
+    trigger_id: str,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """Clear a trigger's auto-pause and its failure history.
+
+    Args:
+        trigger_id: The 8-char trigger ID to resume.
+
+    Returns:
+        Success or error message.
+    """
+    user_id = get_user_id(config)
+    manager = _get_trigger_manager()
+
+    summary = manager.resume_trigger(user_id, trigger_id)
+    if summary is None:
+        return f"[Error]: Trigger '{trigger_id}' not found."
+
+    return f"[Success]: {describe_resume(trigger_id, summary)}"
 
 
 def _trigger_delete(
@@ -408,7 +456,12 @@ def _inspect_detail(manager: TriggerManager, user_id: str, trigger_id: str) -> s
     if trigger is None:
         return f"[Error]: Trigger '{trigger_id}' not found."
 
-    status = "ENABLED" if trigger.enabled else "DISABLED"
+    # PAUSED outranks ENABLED, same rule as the list view: an auto-paused
+    # trigger is still `enabled` and still does nothing.
+    if trigger.auto_paused_at is not None:
+        status = "PAUSED"
+    else:
+        status = "ENABLED" if trigger.enabled else "DISABLED"
     last = trigger.last_fired.strftime("%Y-%m-%d %H:%M:%S") if trigger.last_fired else "never"
     created = trigger.created_at.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -429,12 +482,36 @@ def _inspect_detail(manager: TriggerManager, user_id: str, trigger_id: str) -> s
         for c in trigger.conditions:
             cs = " (case-sensitive)" if c.case_sensitive else ""
             lines.append(f"    - {c.field} {c.operator} '{c.value}'{cs}")
+    if trigger.auto_paused_at is not None:
+        paused = trigger.auto_paused_at.strftime("%Y-%m-%d %H:%M")
+        lines.append(
+            f"  Auto-paused {paused} after {trigger.action_failures} failed "
+            f"action(s)"
+            f"{' (still enabled)' if trigger.enabled else ' (also disabled)'}: "
+            f"fix the cause, then trigger_config(action=\"resume\", "
+            f"trigger_id=\"{trigger.id}\")"
+        )
+    elif trigger.action_failures:
+        from ..config import get_settings
+
+        lines.append(
+            f"  Action failures: {trigger.action_failures} (auto-pauses at "
+            f"{get_settings().trigger_failure_pause_after})"
+        )
     if trigger.pending_events:
         lines.append(f"  Pending events: {len(trigger.pending_events)}")
     if trigger.last_error:
-        error_time = trigger.last_error_at.strftime("%Y-%m-%d %H:%M") if trigger.last_error_at else "?"
-        lines.append(f"  Last error ({error_time}): {trigger.last_error}")
-        lines.append(f"  Consecutive errors: {trigger.consecutive_errors}")
+        # Name the PLANE on both counters. They count different things
+        # (polling vs the action that ran), so an unlabelled pair reads as a
+        # contradiction: "auto-paused after 5 failed actions" sitting beside
+        # "consecutive errors: 0" is honest but unreadable. Measured on a
+        # live probe, where a reader took it for a bug.
+        if trigger.last_error_at:
+            stamp = trigger.last_error_at.strftime("%Y-%m-%d %H:%M")
+            lines.append(f"  Last error ({stamp}): {trigger.last_error}")
+        else:
+            lines.append(f"  Last error: {trigger.last_error}")
+        lines.append(f"  Consecutive source errors: {trigger.consecutive_errors}")
     return "\n".join(lines)
 
 
@@ -570,16 +647,23 @@ def trigger_config(
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """Create, update, or delete event triggers.
+    """Create, update, delete, or resume event triggers.
 
     Use action="create" for a new trigger, action="update" to change one,
-    and action="delete" to remove one. Triggers auto-bind to the current
-    thread. Use trigger_info(action="sources") before creating when you need
-    source config fields or template variables.
+    action="delete" to remove one, and action="resume" to restart one that
+    was auto-paused after repeated failures. Triggers auto-bind to the
+    current thread. Use trigger_info(action="sources") before creating when
+    you need source config fields or template variables.
+
+    A trigger whose action keeps failing is auto-paused: it stops polling
+    and stops firing, while its enabled flag stays as the user left it. So
+    "enabled" alone does not mean a trigger is running; check the paused
+    state in trigger_info(action="list"). Fix whatever it was failing on
+    BEFORE resuming, or it will simply pause again.
 
     Args:
-        action: "create", "update", or "delete".
-        trigger_id: Required for update/delete.
+        action: "create", "update", "delete", or "resume".
+        trigger_id: Required for update/delete/resume.
         name: Trigger display name.
         source_type: Event source type for create, such as "webhook".
         action_type: "agent_prompt", "notify", or "create_todo".
@@ -636,7 +720,12 @@ def trigger_config(
             return "[Error]: delete requires trigger_id."
         return _trigger_delete(trigger_id=trigger_id, config=config)
 
-    return "[Error]: action must be one of: create, update, delete."
+    if action_key == "resume":
+        if not trigger_id:
+            return "[Error]: resume requires trigger_id."
+        return _trigger_resume(trigger_id=trigger_id, config=config)
+
+    return "[Error]: action must be one of: create, update, delete, resume."
 
 
 @tool

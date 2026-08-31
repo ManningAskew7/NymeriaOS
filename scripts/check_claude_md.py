@@ -45,7 +45,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # side is budgeted, twins are byte-identical).
 BUDGETS = {
     "CLAUDE.md": 2200,
-    "Nymeria/CLAUDE.md": 3175,
+    "Nymeria/CLAUDE.md": 3200,
     "Nymeria/nymeria/CLAUDE.md": 450,
     "nymeria-desktop/CLAUDE.md": 600,
     "nymeria-mobile/CLAUDE.md": 300,

@@ -4627,17 +4627,45 @@ class _CommandExecutor(
         lines = [
             f"Triggers: {len(triggers)} total",
             "",
-            "| ID | Status | Source | Action | Name |",
-            "|---|---|---|---|---|",
+            "| ID | Status | Health | Source | Action | Name |",
+            "|---|---|---|---|---|---|",
         ]
+        paused_ids: list[str] = []
         for t in sorted(triggers, key=lambda item: item.id):
-            status = "enabled" if t.enabled else "disabled"
+            # "paused" outranks enabled/disabled: an auto-paused trigger is
+            # still `enabled` and still does nothing, so reporting it as
+            # enabled would be the lie this listing exists to avoid (#264).
+            if t.auto_paused_at is not None:
+                status = "paused"
+                paused_ids.append(t.id)
+                health = f"{t.health_status} ({t.action_failures} fails)"
+            else:
+                status = "enabled" if t.enabled else "disabled"
+                health = t.health_status
             action_type = getattr(t.action, "type", "?") if t.action else "?"
             lines.append(
-                f"| `{t.id}` | {status} | {t.source_type} | {action_type} "
-                f"| {table_cell(t.name)} |"
+                f"| `{t.id}` | {status} | {health} | {t.source_type} "
+                f"| {action_type} | {table_cell(t.name)} |"
+            )
+        if paused_ids:
+            lines.append("")
+            lines.append(
+                f"{len(paused_ids)} auto-paused after repeated action "
+                f"failures, so not running. Fix the cause, then "
+                f"`/triggers resume <id>`."
             )
         return "\n".join(lines)
+
+    async def _cmd_triggers_resume(self, bound: BoundArgs) -> str | CommandOutput:
+        trigger_id = str(bound.get("trigger_id") or "")
+        manager = self._trigger_manager()
+        summary = manager.resume_trigger(self.user_id, trigger_id)
+        if summary is None:
+            return command_error(f"Trigger '{trigger_id}' not found.")
+
+        from .trigger_manager import describe_resume
+
+        return command_success(describe_resume(trigger_id, summary))
 
     async def _cmd_triggers_enable(self, bound: BoundArgs) -> str | CommandOutput:
         return await self._set_trigger_enabled(bound, enabled=True)
