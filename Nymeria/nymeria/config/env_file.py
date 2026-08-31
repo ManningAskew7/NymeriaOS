@@ -15,11 +15,14 @@ read/overlay/append/atomic-write mechanics.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Sequence
+
+logger = logging.getLogger(__name__)
 
 
 def format_env_value(value: str | bool | None) -> str:
@@ -68,11 +71,23 @@ def merge_env_lines(
     """Overlay ``produced`` ``(KEY, formatted_value)`` pairs onto existing lines.
 
     Existing comments, blank lines, and untouched keys are kept verbatim and in
-    place; a produced key replaces only its value where it first appears;
-    produced keys not already present are appended in order. Values in
+    place; a produced key's value is replaced where it FIRST appears and any
+    later duplicate lines for that key are REMOVED, so exactly one line for it
+    survives; produced keys not already present are appended in order. Values in
     ``produced`` are assumed already formatted (see :func:`format_env_value`);
     this function never formats. The line parse splits on the first ``=`` and
     strips, so leading-whitespace and spaced ``KEY = value`` lines match.
+
+    Collapsing duplicates rather than preserving them is deliberate (#301).
+    Every reader of these files takes the LAST occurrence of a key
+    (python-dotenv, the pydantic dotenv source, ``run.py::_load_environment``,
+    the restart re-merge in ``api/routers/system.py``), so a preserved duplicate
+    leaves the writer and every reader disagreeing about which line is live: the
+    write reports success, the running process serves the new value, and the
+    next restart silently reverts to the old one. Deleting a line from a file
+    the user owns is the cost, taken knowingly: the deleted line is the one this
+    write supersedes, and each removal is logged with its key (never its value).
+    ``drop`` already removed every occurrence, so both paths now agree.
 
     ``drop`` keys have their existing lines REMOVED instead of preserved. This is
     for keys whose absence from ``produced`` means "retired", not "unchanged"
@@ -83,12 +98,16 @@ def merge_env_lines(
     produced_map = dict(produced)
     drop_keys = {key for key in drop if key not in produced_map}
     seen: set[str] = set()
+    collapsed: dict[str, int] = {}
     out: list[str] = []
     for raw_line in existing_lines:
         stripped = raw_line.strip()
         if stripped and not stripped.startswith("#") and "=" in stripped:
             key = stripped.split("=", 1)[0].strip()
-            if key in produced_map and key not in seen:
+            if key in produced_map:
+                if key in seen:
+                    collapsed[key] = collapsed.get(key, 0) + 1
+                    continue
                 out.append(f"{key}={produced_map[key]}")
                 seen.add(key)
                 continue
@@ -99,6 +118,14 @@ def merge_env_lines(
         if key not in seen:
             out.append(f"{key}={value}")
             seen.add(key)
+    for key, count in collapsed.items():
+        logger.warning(
+            "Removed %d duplicate line(s) for %s while writing an env file: "
+            "dotenv readers take the last occurrence, so keeping them would "
+            "revert this write at the next restart (#301)",
+            count,
+            key,
+        )
     return out
 
 

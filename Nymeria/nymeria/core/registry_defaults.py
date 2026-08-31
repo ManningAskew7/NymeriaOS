@@ -1005,6 +1005,24 @@ def register_default_commands(service: "CommandService") -> None:
         params=_SETTING_WRITE_PARAMS,
     )
     service.register(
+        "settings reload",
+        description="Re-read the config files and apply what changed",
+        category="Settings",
+        aliases=("settings_reload", "config_reload", "config reload"),
+        # Same gate as `settings set`: this applies whatever the file now says,
+        # provider credentials included, and it is the one route by which an
+        # agent-written env file reaches the running process.
+        requires_admin=True,
+        mutates_state=True,
+        danger_level="dangerous",
+        note=(
+            "Applies out-of-band edits to .env/config.env/.env.docker without "
+            "restarting. Boot-captured settings still need /restart api; the "
+            "outcome says which."
+        ),
+        params=(),
+    )
+    service.register(
         "env",
         description="Show environment variables",
         category="Settings",

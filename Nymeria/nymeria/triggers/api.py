@@ -885,6 +885,10 @@ def create_api_app(
     app.router.add_event_handler("shutdown", _close_provider_http_pools)
     app.router.add_event_handler("shutdown", _stop_agent_ticker)
     app.router.add_event_handler("shutdown", _drain_observe_hooks)
+    # Registered LAST on purpose: it kills child processes, and a hook's
+    # `run_command` child cut off mid-flight would make the observe-plane drain
+    # above report a failure it caused itself.
+    _register_child_teardown_lifecycle(app)
 
     @app.middleware("http")
     async def _request_id_context(request: Request, call_next):
@@ -1705,6 +1709,36 @@ def _register_resource_map_startup(app: FastAPI) -> None:
             )
 
     app.router.add_event_handler("startup", _write_map)
+
+
+def _register_child_teardown_lifecycle(app: FastAPI) -> None:
+    """When this process goes away, so does the work it spawned (#303).
+
+    The same teardown the self-restart runs, for the same reason and with the
+    same scope. Nothing else kills these children: they are spawned with
+    ``start_new_session=True``, so a terminal Ctrl-C never reaches them, and on
+    an unsupervised run (a dev machine, `nymeria slim`) a background job would
+    otherwise outlive the backend with nobody left to collect its output or
+    fire its completion turn. The supervised shapes were only ever covered by
+    the OS doing this for us.
+
+    Runs on a worker thread: the teardown is synchronous and waits on process
+    groups, so up to a second per job plus the MCP shutdown's own timeouts.
+    That is fine just before an exec, where the loop is about to be replaced
+    anyway, and not fine here, where uvicorn is still draining.
+    """
+
+    import asyncio
+
+    async def _terminate_child_processes() -> None:
+        from ..core.child_teardown import terminate_owned_children
+
+        try:
+            await asyncio.to_thread(terminate_owned_children)
+        except Exception:  # noqa: BLE001 - never block the remaining handlers
+            logger.exception("Child-process teardown failed during API shutdown")
+
+    app.router.add_event_handler("shutdown", _terminate_child_processes)
 
 
 def _register_tool_index_warm_lifecycle(app: FastAPI) -> None:

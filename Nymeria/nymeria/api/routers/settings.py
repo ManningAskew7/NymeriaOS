@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import ValidationError
 
 from ...config import Settings
 from ...config.llm_providers import (
@@ -25,7 +26,11 @@ from ...config.llm_providers import (
     resolve_provider_base_url,
 )
 from ...config.env_file import format_env_value, parse_env_value, write_env_file
-from ...config.settings import get_env_file_paths, get_env_write_path
+from ...config.settings import (
+    get_env_file_paths,
+    get_env_write_path,
+    load_env_files_into_environ,
+)
 from ...config.model_capabilities import (
     list_all_models,
     max_reasoning_effort,
@@ -52,6 +57,7 @@ from ...core.llm_provider_utils import (
 )
 from ...vendor.react_agent.providers import resolve_max_output_tokens
 from ..schemas.settings import (
+    AGENT_WRITE_BLOCKED_SETTINGS,
     HIDDEN_CONFIG_SETTINGS,
     resolve_settings_field_name,
     server_settings_env_mapping,
@@ -628,16 +634,17 @@ def _sync_updated_env_vars(produced: Sequence[tuple[str, str]]) -> None:
     alert all key off the named fields, so a wide export lands changes none of
     them account for.
 
-    What this scoping does NOT do, and cannot: the ``get_settings_fn()``
-    reload below builds a fresh ``Settings``, whose dotenv source FILLS GAPS
-    under the env source. So a file key absent from ``os.environ`` (added to
-    the file after startup, or popped by ``run.py``'s slim/fat pins) still
-    reaches the reloaded Settings no matter how this export is scoped. That is
-    a property of the settings source chain, not of this function; every
-    ``get_settings.cache_clear()`` in the codebase has it. Restarting is what
-    applies a config-file edit properly:
-    ``api/routers/system.py::restart_api_process`` re-merges the dotenv files
-    over the inherited environment precisely so a restart picks those up.
+    This export is now the ONLY way a file value reaches the reloaded
+    ``Settings``. It used to be half the story: the dotenv source sat under the
+    env source and FILLED GAPS, so a file key absent from ``os.environ`` (added
+    to the file after startup, blank there, or popped by ``run.py``'s slim/fat
+    pins) reached the reloaded Settings no matter how this export was scoped.
+    #302 closed that by dropping ``env_file`` from ``Settings.model_config``:
+    the files are materialized into ``os.environ`` once at boot, so a running
+    process is authoritative and a reload is deterministic. Applying a
+    config-file edit is now an explicit act, ``POST /settings/reload`` or a
+    restart (``api/routers/system.py::restart_api_process`` re-merges the dotenv
+    files over the inherited environment for the restart case).
     """
     for key, formatted_value in produced:
         os.environ[key] = parse_env_value(formatted_value)
@@ -858,6 +865,147 @@ def apply_server_settings_update(
         "updated": list(updates_dict.keys()),
         "restart_required": needs_restart,
         "warnings": warnings,
+    }
+
+
+def reload_settings_from_env_files(
+    *,
+    settings: Settings,
+    agent: Any,
+    get_settings_fn: Callable[[], Any],
+    blocked_settings: frozenset[str] = frozenset(),
+) -> dict:
+    """Re-read the deployment's env files and apply whatever changed.
+
+    The supported way to pick up an out-of-band config-file edit without
+    restarting. A running process is authoritative (#302): the files are
+    materialized into ``os.environ`` once at boot and never consulted again, so
+    an edit does nothing at all until something asks for it. This is that ask,
+    and the asking is the point: the previous shape applied file edits by
+    accident, partially, on whatever unrelated request happened to clear the
+    settings cache next.
+
+    The same apply pipeline as :func:`apply_server_settings_update` minus the
+    write: reload the files (registered shape pins re-applied, so slim's removed
+    ``REDIS_URL`` cannot come back), clear the settings cache, re-bind the
+    agent, rebuild the graph when an LLM/tool/credential field moved, and report
+    ``restart_required`` for the boot-captured keys.
+
+    The response names WHICH fields moved and never their values: this reads a
+    file holding provider credentials and the credential-vault key.
+
+    TRANSACTIONAL, which the write path does not have to be. `PATCH /settings`
+    validates values it was handed BEFORE writing anything; a reload cannot,
+    because it does not know what the file says until it has read it into the
+    process. So it reads, then either commits or rolls the environment back:
+
+    - An invalid value would otherwise brick the deployment. Every
+      `get_settings()` raises once a bad value is in the environment, including
+      the one behind `verify_api_key`, so the API would answer 500 to
+      everything and neither this endpoint nor `/restart api` could be reached
+      to undo it. Measured with `TWITCH_BUFFER_SIZE=10` against its `ge=50`.
+    - `blocked_settings` is the #157 carve-out (`AGENT_WRITE_BLOCKED_SETTINGS`),
+      passed by the command layer when the caller is not a human. Env files sit
+      outside the file-tool secrets denylist, so without this an agent could
+      write `HOOKS_ENABLED=false` and apply it here, routing around the block
+      that stops it doing so via `/settings set`.
+
+    A caller that does not know what changed until after the reload cannot gate
+    beforehand, so the gate runs on the computed diff and reverts.
+
+    One thing it deliberately does NOT do: a key REMOVED from the file keeps
+    its current value. `load_dotenv` only sets what it finds, and so does the
+    restart's own re-merge, so removal is not an expressible edit either way.
+    """
+    # Enumerate over the Settings CONTRACT, not over whatever object was
+    # injected: the field set is what "a server setting" means, and a missing
+    # attribute reads as None on both sides, so it can never look like a change.
+    field_names = tuple(Settings.model_fields)
+    before = {name: getattr(settings, name, None) for name in field_names}
+    environ_before = dict(os.environ)
+
+    def _rollback() -> None:
+        os.environ.clear()
+        os.environ.update(environ_before)
+        _clear_settings_cache(get_settings_fn)
+
+    loaded = load_env_files_into_environ(settings.project_root, force=True)
+
+    try:
+        _clear_settings_cache(get_settings_fn)
+        new_settings = get_settings_fn()
+    except Exception as exc:  # noqa: BLE001 - re-raised below, never swallowed
+        # Broad on purpose: the failure mode being prevented is a process left
+        # unable to build its own settings, so ANY failure here has to restore
+        # the environment before it propagates. A bad value is the expected
+        # case and answers 400; anything else is a genuine fault and keeps its
+        # own traceback, now on a process that still works.
+        _rollback()
+        if not isinstance(exc, ValidationError):
+            raise
+        first = exc.errors()[0]
+        field = ".".join(str(part) for part in first.get("loc", ())) or "a setting"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The config files hold an invalid value for {field}: "
+                f"{first.get('msg', 'invalid value')}. Nothing was applied; "
+                "fix the file and reload again."
+            ),
+        ) from exc
+
+    changed = sorted(
+        name
+        for name in field_names
+        if getattr(new_settings, name, None) != before[name]
+    )
+
+    refused = blocked_settings & set(changed)
+    if refused:
+        _rollback()
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Reloading would change {', '.join(sorted(refused))}, which "
+                "control the gating machinery and cannot be changed from an "
+                "agent turn. Nothing was applied. Ask the user to reload."
+            ),
+        )
+
+    agent.settings = new_settings
+
+    rebuild = _GRAPH_REBUILD_FIELDS & set(changed)
+    if rebuild:
+        agent._rebuild_default_graphs()
+        logger.info("Reloaded graph settings from the env files: %s", rebuild)
+
+    # Wider than the PATCH register, deliberately. `_RESTART_REQUIRED_KEYS` was
+    # curated for the ~600 keys a PATCH can write; a reload can move ANY
+    # Settings field, including ones no settings write can reach (`api_port`,
+    # `database_backend`, `sqlite_path`, CORS). Nothing was ever designed to
+    # hot-apply those, so a reload that moves one has to say restart.
+    changed_set = set(changed)
+    patchable = set(server_settings_env_mapping())
+    needs_restart = bool(
+        (_restart_required_keys() & changed_set) or (changed_set - patchable)
+    )
+    file_count = len(loaded)
+    if not changed:
+        message = f"Reloaded {file_count} env file(s); no settings changed"
+    else:
+        message = (
+            f"Reloaded {file_count} env file(s); {len(changed)} setting(s) changed"
+            + (
+                " (some changes require /restart api to take effect)"
+                if needs_restart
+                else ""
+            )
+        )
+    return {
+        "message": message,
+        "changed": changed,
+        "files": [str(path) for path in loaded],
+        "restart_required": needs_restart,
     }
 
 
@@ -1861,6 +2009,33 @@ def create_settings_router(
             settings=settings,
             agent=get_agent_fn(),
             get_settings_fn=get_settings_fn,
+        )
+
+    @router.post("/settings/reload")
+    async def reload_server_settings(
+        gate_agent_writes: bool = Query(
+            False,
+            description=(
+                "Refuse the reload if it would change a setting an agent may "
+                "not write (#157). Set by the command layer for a non-human "
+                "caller; the API itself has no actor of its own."
+            ),
+        ),
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """Re-read the env files and apply what changed, without restarting.
+
+        Admin-only for the same reason as `PATCH /settings`: this applies
+        whatever the file now says, provider credentials included.
+        """
+        return reload_settings_from_env_files(
+            settings=settings,
+            agent=get_agent_fn(),
+            get_settings_fn=get_settings_fn,
+            blocked_settings=(
+                AGENT_WRITE_BLOCKED_SETTINGS if gate_agent_writes else frozenset()
+            ),
         )
 
     @router.get("/settings/env")

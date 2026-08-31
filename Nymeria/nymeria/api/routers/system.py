@@ -266,13 +266,13 @@ def restart_api_process(agent: Any, settings: Any) -> None:
       would succeed and the new image would die at startup, silently falling
       back to being rescued by the supervisor policy this is meant to
       sidestep.
-    - Child processes now OUTLIVE the restart (MCP stdio servers, background
-      bash jobs, Claude Code bridge runs). They never used to, but nothing in
-      this code killed them either: the OS did, via the container's namespace
-      teardown or systemd's cgroup kill, i.e. via the very bug this fixes.
-      They are now reparented to nothing (same pid) and unowned by the new
-      image, so they run on and are never reaped. Backlog #303 owns the
-      decision about what SHOULD happen to them.
+    - Child processes would OUTLIVE the restart, since the pid survives and the
+      new image inherits none of the registries or watcher threads that owned
+      them. Nothing in this code ever killed them; the OS did, via the
+      container's namespace teardown or systemd's cgroup kill, i.e. via the
+      very bug this fixes. `core/child_teardown.terminate_owned_children` now
+      does it deliberately instead (#303), so a self-restart severs tracked
+      work rather than stranding it.
     """
 
     async def _do_restart():
@@ -292,6 +292,23 @@ def restart_api_process(agent: Any, settings: Any) -> None:
         ticker = getattr(agent, "_ticker", None)
         if ticker:
             ticker.stop()
+
+        # Kill what this process spawned before it stops being this process.
+        # Restores what every restart did before the in-place change, when the
+        # OS did it for us via the namespace teardown or the cgroup kill (#303).
+        #
+        # Placed after the ticker stop rather than with the fallible preparation
+        # above, which means it is PAST the point of no return: the scheduler is
+        # already down and the caller has already been told the service is
+        # restarting. So it must not be able to raise, and the guard here is the
+        # enforcement of that, not a restatement of the teardown's own promise.
+        # Losing a child is bad; losing the restart is worse.
+        from ...core.child_teardown import terminate_owned_children
+
+        try:
+            terminate_owned_children()
+        except Exception:  # noqa: BLE001 - never strand a restart in progress
+            logger.exception("Child-process teardown failed during restart")
 
         if sys.platform == "win32":
             _spawn_and_exit(exec_argv, child_env)
@@ -461,8 +478,12 @@ def create_system_router(
         ``background_jobs`` covers detached bash jobs, which hold no lock
         by design. All-zero means a restart severs no tracked work (the
         Claude Code bridge's detached runs have no registry and are the
-        one documented exception). Any authenticated caller gets the
-        counts; ``busy_threads`` detail (thread ids, holder labels) is
+        one documented exception). Read "severs" literally: a restart
+        TERMINATES the background jobs this counts, on the self-restart
+        path as well as under a supervisor, so a non-zero count is work
+        that will be killed rather than work that will be waited for
+        (`core/child_teardown.py`, #303). Any authenticated caller gets
+        the counts; ``busy_threads`` detail (thread ids, holder labels) is
         cross-user metadata and is included for admins only.
         """
         # Same defensive shape as thread_overview: a partially initialized

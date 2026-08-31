@@ -145,3 +145,29 @@ def test_create_api_app_registers_no_watchdog_lifecycle(
         assert not hasattr(app.state, "slim_watchdog_worker")
         assert not hasattr(app.state, "slim_watchdog_task")
         assert not hasattr(app.state, "slim_watchdog_client")
+
+
+def test_child_teardown_is_the_apps_last_shutdown_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kill the children AFTER the observe-hook drain, never before (#303).
+
+    Both are shutdown handlers and they run in registration order. A hook's
+    ``run_command`` child cut off mid-flight would make the drain above report
+    a failure the teardown itself caused, so the teardown is registered last on
+    purpose and this pins the order rather than the comment saying so.
+    """
+    settings = _slim_settings(tmp_path)
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        api_module, "_register_frontend_routes", lambda app, frontend_dir: None
+    )
+    _patch_slim_mcp_lifecycle(monkeypatch)
+
+    app = api_module.create_api_app(_FakeAgent(tmp_path))
+
+    names = [getattr(fn, "__name__", "") for fn in app.router.on_shutdown]
+    assert "_terminate_child_processes" in names
+    assert names.index("_terminate_child_processes") > names.index(
+        "_drain_observe_hooks"
+    )

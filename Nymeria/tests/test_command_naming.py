@@ -333,6 +333,7 @@ def test_leading_single_token_aliases_snapshot() -> None:
         "restart.api": "restart_api",
         "settings": "settings_show",
         "settings.get": "settings_get",
+        "settings.reload": "settings_reload",
         "settings.set": "settings_set",
         "skills.disable": "skills_disable",
         "skills.enable": "skills_enable",

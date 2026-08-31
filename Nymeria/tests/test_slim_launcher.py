@@ -72,6 +72,42 @@ def test_apply_slim_runtime_env_forces_sqlite_and_redis_off(
     assert settings.scheduler_active_execution_stale_minutes == 10
 
 
+def test_slim_shape_pins_survive_a_later_env_file_load(
+    slim_run, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The shape wins over the file, no matter how often the file is re-read.
+
+    A slim launch REMOVES ``REDIS_URL`` and forces sqlite, but the env file it
+    booted from still says otherwise, so every later read of that file is a
+    chance to undo it and put a single-process install back on a cross-process
+    bus it has no worker for. Before #302 the file was re-read constantly (the
+    dotenv source ran under every settings reload); now it is re-read only on
+    an explicit ``POST /settings/reload``, which is exactly why the pins are
+    REGISTERED rather than just applied once at launch.
+    """
+    import os
+
+    (tmp_path / ".env").write_text(
+        "REDIS_URL=redis://from-file:6379/0\nDATABASE_BACKEND=postgres\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REDIS_URL", "redis://from-file:6379/0")
+    monkeypatch.setenv("DATABASE_BACKEND", "postgres")
+
+    slim_run._apply_slim_runtime_env(
+        host="127.0.0.1", port=8000, data_dir=str(tmp_path)
+    )
+    assert "REDIS_URL" not in os.environ
+
+    from nymeria.config import settings as settings_mod
+
+    loaded = settings_mod.load_env_files_into_environ(tmp_path, force=True)
+
+    assert loaded == [tmp_path / ".env"]
+    assert "REDIS_URL" not in os.environ
+    assert os.environ["DATABASE_BACKEND"] == "sqlite"
+
+
 def test_apply_slim_runtime_env_custom_port_updates_url(
     slim_run, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -47,7 +47,14 @@ class _FakeSettings:
 
 
 class _RestartHarness:
-    """Fakes for the three process-level calls, so nothing actually restarts."""
+    """Fakes for the process-level calls, so nothing actually restarts.
+
+    The child teardown is faked for the same reason as the rest: the real one
+    reaps with ``waitpid(-1)``, which in a test process would collect whatever
+    subprocess another test happens to own. Its own behavior is covered in
+    `test_child_teardown.py`; what belongs here is that the restart CALLS it,
+    and when.
+    """
 
     def __init__(self) -> None:
         self.events: list[str] = []
@@ -55,8 +62,11 @@ class _RestartHarness:
         self.popen_calls: list[dict[str, Any]] = []
         self.exit_calls: list[int] = []
         self.execve_error: Exception | None = None
+        self.teardown_error: Exception | None = None
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import nymeria.core.child_teardown as teardown_mod
+
         def fake_execve(path, argv, env):
             self.events.append("execve")
             self.execve_calls.append((path, list(argv), dict(env)))
@@ -72,9 +82,16 @@ class _RestartHarness:
             self.events.append("exit")
             self.exit_calls.append(code)
 
+        def fake_teardown():
+            self.events.append("children-terminated")
+            if self.teardown_error is not None:
+                raise self.teardown_error
+            return {"bash_jobs": 0, "reaped": 0}
+
         monkeypatch.setattr(os, "execve", fake_execve)
         monkeypatch.setattr(os, "_exit", fake_exit)
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(teardown_mod, "terminate_owned_children", fake_teardown)
 
 
 async def _run_restart(agent: Any, settings: Any) -> None:
@@ -167,7 +184,7 @@ async def test_restart_stops_the_ticker_before_replacing_the_image(
     await _run_restart(agent, _FakeSettings(tmp_path))
 
     assert agent._ticker.stopped is True
-    assert harness.events == ["ticker-stopped", "execve"]
+    assert harness.events == ["ticker-stopped", "children-terminated", "execve"]
 
 
 @pytest.mark.asyncio
@@ -183,7 +200,13 @@ async def test_restart_falls_back_to_spawning_when_exec_fails(
 
     await _run_restart(_FakeAgent(harness.events), _FakeSettings(tmp_path))
 
-    assert harness.events == ["ticker-stopped", "execve", "popen", "exit"]
+    assert harness.events == [
+        "ticker-stopped",
+        "children-terminated",
+        "execve",
+        "popen",
+        "exit",
+    ]
     assert harness.exit_calls == [0]
 
 
@@ -266,3 +289,69 @@ async def test_restart_does_not_stop_the_ticker_before_it_can_succeed(
 
     assert agent._ticker.stopped is False, "a failed restart must not kill the ticker"
     assert harness.events == []
+
+
+@pytest.mark.asyncio
+async def test_restart_terminates_its_children_before_replacing_the_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #303. The in-place restart keeps the pid, so nothing tears these down any
+    # more: the container namespace teardown and systemd's cgroup kill that used
+    # to do it were consequences of the exit that #300 removed. A background
+    # bash job left running would finish into nothing (no completion prompt, no
+    # turn, output nobody reads) and zombie against a pid that no longer dies.
+    #
+    # Ordering: after the ticker stop, because it is not fallible preparation
+    # and must not sit ahead of anything that could still abort the restart;
+    # before the exec, because nothing after the exec runs at all.
+    harness = _RestartHarness()
+    harness.install(monkeypatch)
+
+    await _run_restart(_FakeAgent(harness.events), _FakeSettings(tmp_path))
+
+    assert harness.events.index("children-terminated") < harness.events.index("execve")
+    assert harness.events.index("ticker-stopped") < harness.events.index(
+        "children-terminated"
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_still_happens_when_the_child_teardown_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Teardown is best-effort by contract and sits AFTER the point of no return
+    # (the ticker is already stopped), so a failure here must never strand a
+    # process that has begun shutting down. Belt and braces: the teardown
+    # guards every step internally too.
+    harness = _RestartHarness()
+    harness.teardown_error = RuntimeError("a wedged child")
+    harness.install(monkeypatch)
+
+    await _run_restart(_FakeAgent(harness.events), _FakeSettings(tmp_path))
+
+    assert harness.execve_calls, "a teardown failure must not cancel the restart"
+
+
+@pytest.mark.asyncio
+async def test_windows_spawn_and_exit_path_also_terminates_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows gets a new pid, so the OS does not clean up either: DETACHED_PROCESS
+    # children survive the parent exiting. The teardown sits ahead of the platform
+    # branch so both shapes sever the same work.
+    import nymeria.service_install as service_install
+
+    # Same dodge as the sibling Windows test: the real resolver calls
+    # `shutil.which`, whose win32 branch reaches `_winapi` and cannot run here.
+    monkeypatch.setattr(
+        service_install,
+        "resolve_exec_argv",
+        lambda args=("slim",): ["/frozen/nymeria.exe", *args],
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    harness = _RestartHarness()
+    harness.install(monkeypatch)
+
+    await _run_restart(_FakeAgent(harness.events), _FakeSettings(tmp_path))
+
+    assert harness.events == ["ticker-stopped", "children-terminated", "popen", "exit"]

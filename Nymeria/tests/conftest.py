@@ -18,18 +18,27 @@ from fastapi.testclient import TestClient
 # would silently point the whole suite at another instance's config.env.
 os.environ["NYMERIA_PROJECT_ROOT"] = str(Path(__file__).resolve().parents[1])
 
-from nymeria.config.settings import Settings as _Settings  # noqa: E402
+from nymeria.config.settings import (  # noqa: E402
+    reset_env_loading_state_for_tests as _reset_env_loading_state,
+    suppress_env_file_loading as _suppress_env_file_loading,
+)
 from nymeria.triggers import api as api_module  # noqa: E402
 
-# Suite hermeticity, layer 2: with the root pinned, the dotenv chain still
-# reads any repo-local .env / config.env / .env.docker (a stray .env.docker is
-# exactly why `_offline_tool_search_singleton` below exists). pydantic-settings
-# resolves `env_file` from model_config per instantiation, so emptying it here
-# makes every Settings() the suite builds resolve from real env vars and field
-# defaults only. Real env vars keep their normal precedence; this only removes
-# the dotenv fallthrough. Composes with the suite-wide `clear_settings_cache`
+# Suite hermeticity, layer 2: with the root pinned, the checkout's own .env /
+# config.env / .env.docker are still sitting there to be read (a stray
+# .env.docker is exactly why `_offline_tool_search_singleton` below exists), and
+# reading them is how the suite ends up running against live operator config
+# (#294).
+#
+# Since #302 those files reach Settings through ONE materializing call
+# (`load_env_files_into_environ`, made at boot by run.py and idempotently by
+# `get_settings()`), so suppressing that call is the whole defense: no
+# `Settings()` and no `cache_clear()` anywhere in the suite can pull the
+# checkout's files into `os.environ`. Real env vars keep their normal
+# precedence; a test that WANTS a file names its own project_root (tmp_path),
+# which stays served. Composes with the suite-wide `clear_settings_cache`
 # fixture below.
-_Settings.model_config["env_file"] = ()
+_suppress_env_file_loading()
 
 # Suite hermeticity, layer 3: pin the process environment itself.
 #
@@ -92,8 +101,16 @@ def _restore_pristine_env() -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Layer 3: start every test from the pre-collection environment."""
+    """Layer 3: start every test from the pre-collection environment.
+
+    Layer 3b, same idea one level up: drop the env-load flag and any runtime
+    shape pins a previous test registered. Those live in module state that
+    outlives a test, and a pin re-applied into a later test's environment is
+    exactly the cross-test leak layer 3 exists to prevent (measured: a slim
+    launcher test's API_HOST/PORT pins reappearing inside a fat-CLI test).
+    """
     _restore_pristine_env()
+    _reset_env_loading_state()
 
 
 @pytest.fixture(autouse=True, scope="session")
