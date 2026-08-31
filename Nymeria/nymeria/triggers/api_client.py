@@ -1590,6 +1590,16 @@ class NymeriaAPIClient:
             act_as=user_id,
         )
 
+    async def resume_trigger(
+        self, trigger_id: str, user_id: str = "default"
+    ) -> dict:
+        """Clear a trigger's auto-pause and its failure history (#264)."""
+        return await self._post(
+            f"/triggers/{_path_param(trigger_id)}/resume",
+            params={"user_id": user_id},
+            act_as=user_id,
+        )
+
     async def delete_trigger(
         self, trigger_id: str, user_id: str = "default"
     ) -> dict:

@@ -28,6 +28,8 @@ export class TriggersApi extends SkillsApi {
       consecutive_errors: (item.consecutive_errors || 0) as number,
       last_error: (item.last_error as string) || null,
       health_status: (item.health_status || 'healthy') as Trigger['health_status'],
+      action_failures: (item.action_failures || 0) as number,
+      auto_paused_at: (item.auto_paused_at as string) || null,
     };
   }
   async getTriggers(userId?: string): Promise<Trigger[]> {
@@ -69,6 +71,27 @@ export class TriggersApi extends SkillsApi {
       method: 'PATCH',
       headers: this.getHeaders(),
       body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return this.triggerFromResponse(data);
+  }
+  /**
+   * Lift a backend auto-pause: clears `auto_paused_at` plus the whole failure
+   * history (action failures, health counters, last error). It deliberately
+   * leaves `enabled` alone, so resuming a trigger the user also switched off
+   * still leaves it switched off.
+   */
+  async resumeTrigger(triggerId: string, userId?: string): Promise<Trigger> {
+    const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
+    const response = await fetch(`${this.getBaseUrl()}/triggers/${triggerId}/resume?${params}`, {
+      method: 'POST',
+      headers: this.getHeaders()
     });
 
     if (!response.ok) {

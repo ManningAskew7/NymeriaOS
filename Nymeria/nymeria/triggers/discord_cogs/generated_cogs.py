@@ -1971,6 +1971,38 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @triggers_group.command(
+        name="resume",
+        description="Clear a trigger's auto-pause and failure history",
+    )
+    @app_commands.describe(
+        trigger_id="Event trigger id",
+    )
+    async def cmd_triggers_resume(
+        self,
+        interaction: discord.Interaction,
+        trigger_id: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(trigger_id))
+        await self.bot._send_backend_command(
+            interaction,
+            "triggers resume",
+            args=" ".join(parts),
+            require_admin=False,
+        )
+
+    @cmd_triggers_resume.autocomplete("trigger_id")
+    async def _ac_triggers_resume_trigger_id(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await AUTOCOMPLETE_RESOLVERS["triggers"](
+            self.bot, interaction, current
+        )
+
     @usage_group.command(
         name="session",
         description="Show session-wide (cumulative) token usage for this thread",
@@ -2055,6 +2087,7 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "triggers enable",
     "triggers history",
     "triggers list",
+    "triggers resume",
     "usage session",
 )
 
@@ -2132,5 +2165,6 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "triggers enable": "Automation",
     "triggers history": "Automation",
     "triggers list": "Automation",
+    "triggers resume": "Automation",
     "usage session": "Status",
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,7 +21,14 @@ def _make_trigger(
     action_type: str = "send_message",
     enabled: bool = True,
     thread_id: str = "thread-1",
+    health_status: str = "healthy",
+    consecutive_errors: int = 0,
+    action_failures: int = 0,
+    auto_paused_at: Any = None,
 ) -> SimpleNamespace:
+    # Health and #264 policy fields are part of every real TriggerDefinition,
+    # so the fake carries them too: a double that omits them lets a listing
+    # that reads them pass here and fail in production.
     return SimpleNamespace(
         id=trigger_id,
         name=name or trigger_id,
@@ -28,6 +36,10 @@ def _make_trigger(
         enabled=enabled,
         thread_id=thread_id,
         action=SimpleNamespace(type=action_type),
+        health_status=health_status,
+        consecutive_errors=consecutive_errors,
+        action_failures=action_failures,
+        auto_paused_at=auto_paused_at,
     )
 
 
@@ -39,6 +51,7 @@ class _FakeTriggerManager:
         self.executions: dict[str, list[dict[str, Any]]] = {}
         self.deletion_log: list[tuple[str, str]] = []
         self.executions_cleared: list[tuple[str, tuple[str, ...]]] = []
+        self.resume_calls: list[tuple[str, str]] = []
 
     def get_triggers(self, user_id: str) -> list[SimpleNamespace]:
         return list(self.store.get(user_id, {}).values())
@@ -51,6 +64,29 @@ class _FakeTriggerManager:
         for key, value in kwargs.items():
             setattr(trigger, key, value)
         return True
+
+    def resume_trigger(self, user_id: str, trigger_id: str) -> dict | None:
+        """Record the call and return a summary; do NOT reimplement the clear.
+
+        A double that re-does the work under test verifies itself: an
+        earlier version of this fake silently diverged from the real
+        manager (it forgot to clear `last_error*`), and the tests stayed
+        green. What the command layer owns is calling this once with the
+        right id and rendering the summary honestly, so that is all these
+        tests assert. `TriggerManager.resume_trigger`'s own state contract
+        is pinned in tests/test_scheduled_failure_policy.py.
+        """
+        self.resume_calls.append((user_id, trigger_id))
+        trigger = self.store.get(user_id, {}).get(trigger_id)
+        if trigger is None:
+            return None
+        return {
+            "was_paused": trigger.auto_paused_at is not None,
+            "action_failures": trigger.action_failures,
+            "consecutive_errors": trigger.consecutive_errors,
+            "previous_health": trigger.health_status,
+            "enabled": trigger.enabled,
+        }
 
     def delete_trigger(self, user_id: str, trigger_id: str) -> bool:
         triggers = self.store.get(user_id, {})
@@ -136,7 +172,96 @@ def test_triggers_list_renders_table(patched_manager) -> None:
     assert result.success is True, result.markdown
     assert "Webhook A" in result.markdown
     assert "Cron B" in result.markdown
-    assert "| ID | Status | Source | Action | Name |" in result.markdown
+    assert "| ID | Status | Health | Source | Action | Name |" in result.markdown
+
+
+def test_triggers_list_shows_auto_paused_apart_from_enabled(
+    patched_manager,
+) -> None:
+    """#264 behavior 19. An auto-paused trigger is still `enabled`, so a
+    listing that prints only the toggle would report a trigger that cannot
+    run as one that does."""
+    patched_manager(_FakeTriggerManager(triggers=[
+        _make_trigger("healthy1", name="Fine"),
+        _make_trigger(
+            "stopped1",
+            name="Broken watcher",
+            enabled=True,
+            health_status="failing",
+            action_failures=5,
+            auto_paused_at=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+        ),
+    ]))
+
+    result = run(CommandService().execute(_ctx(), "/triggers list"))
+
+    assert result.success is True, result.markdown
+    row = next(
+        line for line in result.markdown.splitlines() if "Broken watcher" in line
+    )
+    assert "paused" in row
+    assert "enabled" not in row  # the toggle must not be what this row says
+    assert "5 fails" in row
+    # And the reader is told how to undo it.
+    assert "/triggers resume" in result.markdown
+
+    healthy_row = next(
+        line for line in result.markdown.splitlines() if "Fine" in line
+    )
+    assert "enabled" in healthy_row
+    assert "paused" not in healthy_row
+
+
+def test_triggers_resume_clears_the_pause(patched_manager) -> None:
+    """#264 behavior 12 on the slash surface."""
+    manager = _FakeTriggerManager(triggers=[
+        _make_trigger(
+            "stopped1",
+            health_status="failing",
+            action_failures=5,
+            consecutive_errors=5,
+            auto_paused_at=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+        ),
+    ])
+    patched_manager(manager)
+
+    result = run(CommandService().execute(_ctx(), "/triggers resume stopped1"))
+
+    assert result.success is True, result.markdown
+    assert "5 failed action" in result.markdown
+    assert manager.resume_calls == [("alice", "stopped1")]
+
+
+def test_triggers_resume_says_so_when_the_trigger_is_still_disabled(
+    patched_manager,
+) -> None:
+    """#264 behavior 15: resume never touches the user's toggle, so it must
+    not let the caller believe the trigger is now running."""
+    manager = _FakeTriggerManager(triggers=[
+        _make_trigger(
+            "stopped1",
+            enabled=False,
+            health_status="failing",
+            action_failures=5,
+            auto_paused_at=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+        ),
+    ])
+    patched_manager(manager)
+
+    result = run(CommandService().execute(_ctx(), "/triggers resume stopped1"))
+
+    assert result.success is True, result.markdown
+    assert "still disabled" in result.markdown.lower()
+    assert manager.resume_calls == [("alice", "stopped1")]
+
+
+def test_triggers_resume_reports_an_unknown_trigger(patched_manager) -> None:
+    patched_manager(_FakeTriggerManager())
+
+    result = run(CommandService().execute(_ctx(), "/triggers resume nope"))
+
+    assert result.success is False
+    assert "not found" in result.markdown
 
 
 def test_triggers_list_filters_enabled_only(patched_manager) -> None:
@@ -330,6 +455,6 @@ def test_triggers_root_lists_and_guides_a_typo(patched_manager) -> None:
     assert typo.success is False
     assert "Unexpected argument `histry`" in typo.markdown
     assert "Did you mean `/triggers history`" in typo.markdown
-    assert "Valid subcommands: delete, disable, enable, history, list." in typo.markdown
+    assert "Valid subcommands: delete, disable, enable, history, list, resume." in typo.markdown
     assert "Usage: `/triggers`." in typo.markdown
     assert "See `/help triggers`." in typo.markdown

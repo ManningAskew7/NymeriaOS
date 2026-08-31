@@ -154,6 +154,14 @@ _RESTART_REQUIRED_KEYS: frozenset[str] = frozenset({
     "todo_staleness_minutes",
     "watchdog_interval_minutes",
     "watchdog_enabled",
+    # Same split (#264): the trigger action-failure policy reads these
+    # through get_settings(), which is lru_cached PER PROCESS. In Docker the
+    # poll-driven fires happen in the WORKER while this PATCH lands in the
+    # API, so a hot PATCH would apply to webhook fires and silently not to
+    # polled ones.
+    "trigger_failure_alert_after",
+    "trigger_failure_pause_after",
+    "trigger_failure_alert_cooldown_minutes",
 })
 
 
@@ -248,6 +256,9 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "interactive_admission_wait_seconds",
         "todo_staleness_minutes",
         "todo_auto_archive_days",
+        "trigger_failure_alert_after",
+        "trigger_failure_pause_after",
+        "trigger_failure_alert_cooldown_minutes",
         "activity_retention_hours",
     ),
     "Voice": (

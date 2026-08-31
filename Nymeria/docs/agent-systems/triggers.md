@@ -16,7 +16,7 @@ Event-driven automations that react to external events  -  webhooks, emails, RSS
 
 **Thread binding**  -  every trigger is bound to exactly one thread. When the agent creates a trigger, it auto-binds to the current conversation thread. API-created triggers can specify `thread_id` explicitly, or leave it empty to get a dedicated `trigger-{id}` thread.
 
-**Health**  -  automatic tracking of source AND action errors (one shared counter). 2 consecutive failures → `degraded`, 5 → `failing` with exponential backoff (only retries every 10th cycle) plus a one-time owner alert. Resets to `healthy` on success.
+**Health**  -  automatic tracking of source AND action errors (one shared counter). 2 consecutive failures → `degraded`, 5 → `failing` with exponential backoff (only retries every 10th cycle). Resets to `healthy` on success. Repeated ACTION failures additionally alert the owner and then AUTO-PAUSE the trigger, which stops it polling and firing while leaving `enabled` alone; `/triggers resume <id>` clears it.
 
 **Busy-thread deferral**  -  for `agent_prompt` actions, poll-sourced triggers check if the target thread is busy (non-blocking lock check). If busy, events are stored in `pending_events` and retried next cycle. No thread-pool slots are blocked. Webhook triggers bypass this  -  they POST to `/chat` which queues on the lock naturally.
 
@@ -339,10 +339,87 @@ action-failure streak (source checks succeed on every poll cycle, which
 would otherwise zero the action streak before it could reach a threshold);
 a successful action fire heals either, since it proves the whole pipeline
 works. Health status and last error are visible in the UI and API
-responses. On the transition into `failing` (from either plane), the owner
-gets one alert (in-app plus the external destinations of their default
-notification profile); it fires once per episode, since only the scoped
-success resets the counter.
+responses. On the transition into `failing`, a SOURCE-plane episode sends
+the owner one alert (in-app plus the external destinations of their default
+notification profile), once per episode, since only the scoped success
+resets the counter.
+
+### The action-failure policy: alert, then stop
+
+Health labels alone never stopped anything: a trigger firing into a broken
+action stayed enabled and kept consuming events indefinitely (backlog #264,
+measured at 16 days and 89 consumed-and-dropped emails on a real Outlook
+watcher). The ACTION plane is therefore governed by a policy on its own
+counter, `action_failures`:
+
+| Threshold | Setting (0 disables) | What happens |
+|---|---|---|
+| alert | `TRIGGER_FAILURE_ALERT_AFTER` (default 2) | One owner alert naming the trigger, the streak and the last error |
+| pause | `TRIGGER_FAILURE_PAUSE_AFTER` (default 5) | `auto_paused_at` is stamped and a second alert says it gave up |
+| alert cooldown | `TRIGGER_FAILURE_ALERT_COOLDOWN_MINUTES` (default 180) | Suppresses repeat ALERTS for one trigger inside the window; the pause alert is never suppressed |
+
+`action_failures` is deliberately separate from `consecutive_errors`: the
+shared counter also counts backed-off polls while failing (that is what
+makes the backoff lapse), so it reads far higher than the real failure
+count and no honest threshold can sit on it.
+
+An auto-paused trigger is skipped by the poll loop entirely, so its source
+is never checked and it consumes nothing, and its webhook fire endpoint
+answers 409. The `/triggers/{id}/test` dry run still works, which is how
+you verify a repair before resuming.
+
+**Coverage gap worth knowing.** The policy counts failures recorded by
+`fire_action`/`fire_action_batch`, which is the POLL path. A webhook
+trigger with an `agent_prompt` action fires through a different route
+(`POST /triggers/fire/{id}` relays into `POST /chat`) that records an
+execution row and no action health, so that combination never accumulates
+`action_failures` and can never reach either threshold on its own. The 409
+gate above still applies once such a trigger is paused by some other
+means, but nothing will pause it automatically.
+
+Neither threshold releases a trigger that is already paused: setting
+`TRIGGER_FAILURE_PAUSE_AFTER=0` stops future auto-pauses and leaves
+existing ones to be resumed explicitly. And with BOTH knobs at 0 the
+action plane is fully silent, since the policy replaced the old
+failing-transition alert on that plane.
+
+**Auto-pause is not `enabled`.** The user's toggle is untouched, so a paused
+trigger still reports `enabled: true` while doing nothing: clients must read
+`auto_paused_at` to know whether a trigger actually runs. Re-enabling does
+not resume it, and resuming does not enable it.
+
+SOURCE failures never auto-pause. An outage (a token expiring, an API down)
+usually self-heals, and the backoff already covers it; stopping the trigger
+would leave one to resume by hand every time a feed blipped. The cost of
+that choice is that a permanently dead source alerts once and then polls
+quietly forever.
+
+### Resuming
+
+`POST /triggers/{id}/resume` (agent: `trigger_config(action="resume")`; CLI
+and chat: `/triggers resume <id>`) clears the pause marker, the action
+streak, the health counters and the last error in one act. Use it after
+fixing whatever the trigger was failing on, or it will simply pause again.
+
+It is also the repair for a trigger that is merely `failing` rather than
+paused: before it existed, a trigger whose cause you had already fixed kept
+skipping 9 of 10 polls until an action happened to succeed, and editing
+`data/triggers/<user>.json` by hand was the only way to clear it.
+
+Resume is explicit, never inferred from some other field being written. It
+also clears the alert cooldown, so a repaired trigger that fails again
+speaks immediately rather than waiting out a window from its last episode.
+
+**Known hazard on the repair path (backlog #249).** `check_triggers` holds
+the whole trigger store in memory across every source's network check and
+then writes it back whole, and the trigger store is written by two
+processes in the Docker shape (the worker polls, the API serves resume and
+CRUD). So a resume that lands while a poll is mid-flight can be reverted by
+the worker's stale write: the call answers 200 and the trigger stays
+paused. Retrying works, and any listing shows the true state. This is
+pre-existing and applies equally to enable/disable/delete; it is recorded
+here because resume is the repair verb, so this is where a user meets
+it.
 
 ## Chat-Bot Emoji Reaction Triggers
 

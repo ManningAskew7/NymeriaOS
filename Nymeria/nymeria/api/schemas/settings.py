@@ -873,6 +873,16 @@ class ServerSettingsUpdate(BaseModel):
     watchdog_enabled: Optional[bool] = None
     watchdog_interval_minutes: Optional[int] = None
     todo_staleness_minutes: Optional[int] = None
+    # Trigger action-failure policy (#264). Patchable so the keys are
+    # discoverable through the config surface, but RESTART-REQUIRED for the
+    # same reason as the watchdog knobs above: get_settings() is lru_cached
+    # per process and Docker polls triggers in the worker, so a PATCH here
+    # reaches only this process. Listed in _RESTART_REQUIRED_KEYS.
+    trigger_failure_alert_after: Optional[int] = Field(default=None, ge=0, le=100)
+    trigger_failure_pause_after: Optional[int] = Field(default=None, ge=0, le=1000)
+    trigger_failure_alert_cooldown_minutes: Optional[int] = Field(
+        default=None, ge=0, le=10080
+    )
     activity_retention_hours: Optional[int] = None
     max_concurrent_interactive: Optional[int] = Field(default=None, ge=0)
     interactive_admission_wait_seconds: Optional[float] = Field(

@@ -360,6 +360,7 @@ Telegram, the GUIs, the agent).
 | `/triggers list` | List trigger sources and their state. |
 | `/triggers enable <trigger_id>` | Enable a trigger. |
 | `/triggers disable <trigger_id>` | Disable a trigger. |
+| `/triggers resume <trigger_id>` | Restart a trigger auto-paused after repeated failures, clearing its failure history. Does not change whether it is enabled. |
 | `/triggers delete <trigger_id>` | Delete a trigger. |
 | `/triggers history [trigger_id]` | Show recent trigger firings. |
 | `/fallback status` | Show consent state: switch mode, holds, and this channel's active swap. |

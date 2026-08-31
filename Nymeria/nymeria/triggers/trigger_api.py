@@ -8,7 +8,7 @@ import logging
 from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import Settings, get_settings
 from ..core.accounts import AuthenticatedUser
@@ -58,6 +58,15 @@ class TriggerCreateRequest(BaseModel):
 
 
 class TriggerUpdateRequest(BaseModel):
+    # extra="forbid" so a key this schema does not know fails loudly (#266).
+    # Pydantic's extra="ignore" default dropped unknown keys at the parse, so
+    # a PATCH naming one answered 200 with a full echo and changed nothing.
+    # The caller that actually hit this is the agent: nymeria_update_trigger
+    # forwards an LLM-authored dict verbatim, and a trigger listing
+    # round-tripped into an update body carries exactly the keys this schema
+    # used to lack.
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = None
     enabled: Optional[bool] = None
     source_config: Optional[dict] = None
@@ -67,6 +76,15 @@ class TriggerUpdateRequest(BaseModel):
     action_config: Optional[dict] = None
     conditions: Optional[List[TriggerConditionRequest]] = None
     cooldown_seconds: Optional[int] = None
+    thread_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Re-point the trigger at a different thread. The natural repair "
+            "when a bound thread is dead or has been branched; deleting a "
+            "thread DELETES its triggers, so re-point before deleting the "
+            "old one."
+        ),
+    )
 
 
 class TriggerResponse(BaseModel):
@@ -86,6 +104,11 @@ class TriggerResponse(BaseModel):
     consecutive_errors: int = 0
     last_error: Optional[str] = None
     health_status: str = "healthy"
+    # #264. `enabled` alone no longer tells a client whether this trigger
+    # will run: an auto-paused trigger is still enabled and still does
+    # nothing, so a UI that renders only the toggle would misreport it.
+    action_failures: int = 0
+    auto_paused_at: Optional[str] = None
 
     @classmethod
     def from_definition(cls, t: TriggerDefinition) -> "TriggerResponse":
@@ -106,6 +129,10 @@ class TriggerResponse(BaseModel):
             consecutive_errors=t.consecutive_errors,
             last_error=t.last_error,
             health_status=t.health_status,
+            action_failures=t.action_failures,
+            auto_paused_at=(
+                t.auto_paused_at.isoformat() if t.auto_paused_at else None
+            ),
         )
 
 
@@ -483,6 +510,26 @@ def create_trigger_router(
             kwargs["enabled"] = body.enabled
         if body.cooldown_seconds is not None:
             kwargs["cooldown_seconds"] = body.cooldown_seconds
+        if body.thread_id is not None:
+            if not body.thread_id.strip():
+                # An empty string would skip the access check below and then
+                # be re-assigned a fresh `trigger-<uuid>` by the store's
+                # backfill on the next load, silently orphaning whatever
+                # thread the trigger was bound to.
+                raise HTTPException(
+                    status_code=400,
+                    detail="thread_id cannot be empty; omit it to leave the binding unchanged",
+                )
+            # Same gate as create_trigger, and load-bearing for the same
+            # reason: without it, re-pointing is that check in two steps.
+            # Create a trigger on a thread you legitimately own (passes the
+            # create gate), then PATCH it onto a guessed
+            # ``discord_<g>_<c>`` / ``telegram_-<id>`` / ``twitch_<c>`` ID
+            # and fire it through the unauthenticated
+            # ``/triggers/fire/{id}`` endpoint.
+            if body.thread_id and require_thread_access_fn is not None:
+                require_thread_access_fn(user, body.thread_id)
+            kwargs["thread_id"] = body.thread_id
         if body.conditions is not None:
             kwargs["conditions"] = [
                 TriggerCondition(
@@ -531,6 +578,36 @@ def create_trigger_router(
             raise HTTPException(status_code=404, detail="Trigger not found after update")
         return TriggerResponse.from_definition(trigger)
 
+    @router.post("/{trigger_id}/resume", response_model=TriggerResponse)
+    async def resume_trigger(
+        trigger_id: str,
+        user_id: str = Query(default="default"),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """Clear a trigger's auto-pause and its failure history (#264).
+
+        The repair verb: use it after fixing whatever the trigger was
+        failing on. Clears the auto-pause marker, the action-failure streak
+        and the health counters in one act, so a repaired trigger polls at
+        full rate again instead of staying on the failing backoff.
+
+        Leaves ``enabled`` alone: resuming a trigger you had also switched
+        off does not switch it back on.
+        """
+        user_id = user.id  # Override any client-claimed ?user_id=
+        manager = _get_manager()
+
+        summary = manager.resume_trigger(user_id, trigger_id)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="Trigger not found")
+
+        trigger = manager.get_trigger(user_id, trigger_id)
+        if trigger is None:
+            raise HTTPException(
+                status_code=404, detail="Trigger not found after resume"
+            )
+        return TriggerResponse.from_definition(trigger)
+
     @router.delete("/{trigger_id}", status_code=204)
     async def delete_trigger(
         trigger_id: str,
@@ -545,8 +622,15 @@ def create_trigger_router(
         if not ok:
             raise HTTPException(status_code=404, detail="Trigger not found")
 
-        # Clean up orphaned thread metadata
-        if trigger and trigger.thread_id:
+        # Clean up orphaned thread metadata, but ONLY for the throwaway
+        # thread this trigger created for itself. A trigger can be BOUND to
+        # a thread it does not own, at create time and (since #266) by
+        # re-pointing, and #266's own guidance is to re-point before
+        # deleting the old thread: deleting the trigger afterwards would
+        # then strip the title/platform/pin row off a real chat thread that
+        # outlives it.
+        owns_thread = bool(trigger and trigger.thread_id.startswith("trigger-"))
+        if trigger and trigger.thread_id and owns_thread:
             try:
                 agent = get_agent_fn()
                 agent.thread_metadata_manager.delete_thread(user_id, trigger.thread_id)
@@ -647,6 +731,20 @@ def create_trigger_router(
 
         if not trigger.enabled:
             raise HTTPException(status_code=409, detail="Trigger is disabled")
+
+        # Auto-paused (#264) is a separate refusal from disabled: the policy
+        # stopped this trigger, not the user. A webhook fire is autonomous
+        # action on an external clock, so the pause governs it exactly as it
+        # governs the poll loop.
+        if trigger.auto_paused_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Trigger is auto-paused after "
+                    f"{trigger.action_failures} consecutive failed actions. "
+                    f"Resume it with /triggers resume {trigger_id}."
+                ),
+            )
 
         if trigger.source_type != "webhook":
             raise HTTPException(status_code=400, detail="Trigger is not a webhook source")

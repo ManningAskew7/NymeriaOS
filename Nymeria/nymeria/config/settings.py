@@ -1684,6 +1684,42 @@ class Settings(BaseSettings):
             "auto-pause."
         ),
     )
+    trigger_failure_alert_after: int = Field(
+        default=2,
+        ge=0,
+        le=100,
+        description=(
+            "Consecutive failed ACTION fires of a trigger before the owner is "
+            "alerted once. Deliberately separate from the scheduler keys "
+            "above: a trigger's failures accrue per event batch, not per "
+            "time slot, so the two policies run on different clocks. 0 "
+            "disables the alert."
+        ),
+    )
+    trigger_failure_pause_after: int = Field(
+        default=5,
+        ge=0,
+        le=1000,
+        description=(
+            "Consecutive failed ACTION fires of a trigger before it is "
+            "auto-paused, stopping both its polling and its webhook fires "
+            "until it is resumed (/triggers resume). Source-check failures "
+            "never auto-pause a trigger; they back off and self-heal. 0 "
+            "disables auto-pause."
+        ),
+    )
+    trigger_failure_alert_cooldown_minutes: int = Field(
+        default=180,
+        ge=0,
+        le=10080,
+        description=(
+            "Minimum minutes between action-failure ALERTS for one trigger. "
+            "A flapping trigger (fails, succeeds, fails) resets its streak "
+            "every time and so never reaches the pause threshold, which "
+            "without this would alert once per episode forever. The PAUSE "
+            "alert is never suppressed. 0 disables the cooldown."
+        ),
+    )
     # Context Management Settings
     context_management: Literal["auto_compact", "sliding_window", "none"] = Field(
         default="auto_compact",

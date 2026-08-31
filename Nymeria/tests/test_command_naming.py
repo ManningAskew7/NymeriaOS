@@ -372,6 +372,7 @@ def test_leading_single_token_aliases_snapshot() -> None:
         "triggers.enable": "triggers_enable",
         "triggers.history": "triggers_history",
         "triggers.list": "triggers_list",
+        "triggers.resume": "triggers_resume",
         "usage": "tokens",
         "usage.session": "usage_session",
     }

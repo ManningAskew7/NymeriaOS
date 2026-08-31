@@ -4659,7 +4659,20 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-Accepts any subset of: `name`, `enabled`, `source_config`, `action_type`, `action_config`, `conditions`, `cooldown_seconds`.
+Accepts any subset of: `name`, `enabled`, `source_config`, `action_type`, `action_config`, `conditions`, `cooldown_seconds`, `thread_id`.
+
+`thread_id` re-points the trigger at another thread, gated by the same thread-access check as create. Deleting a thread DELETES its triggers, so re-point before deleting the old one.
+
+Unknown keys are REJECTED with 422 and nothing is applied, including when one rides along with a valid key. The schema previously dropped them silently, answering 200 for a write that never happened (backlog #266).
+
+### Resume Trigger
+
+```http
+POST /triggers/{trigger_id}/resume
+Authorization: Bearer <token>
+```
+
+Clears an auto-pause (`auto_paused_at`) and the whole failure history: the action streak, the health counters and the last error. Returns the updated trigger. Leaves `enabled` alone, so resuming a trigger the user also switched off leaves it switched off. Also the way to clear health on a trigger that is `failing` but not paused, which otherwise keeps skipping 9 of 10 polls until an action succeeds.
 
 ### Delete Trigger
 

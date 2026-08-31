@@ -16,6 +16,18 @@ import type {
   TriggerTestResult,
 } from '$lib/types';
 
+/**
+ * Will the backend actually poll and fire this trigger?
+ *
+ * `enabled` alone stopped answering that when the auto-pause policy landed: a
+ * trigger stopped after repeated action failures keeps `enabled: true` and
+ * carries an `auto_paused_at` stamp instead. Every count, grouping and label
+ * that means "live" goes through here so none of them overstate it.
+ */
+export function isTriggerRunning(trigger: Trigger): boolean {
+  return trigger.enabled && !trigger.auto_paused_at;
+}
+
 function createTriggersStore() {
   // State
   let triggers = $state<Trigger[]>([]);
@@ -89,6 +101,15 @@ function createTriggersStore() {
     return updated;
   }
 
+  // Lift a backend auto-pause. The response is the repaired trigger, so the
+  // row is replaced from it rather than reloaded: the badge, the failure count
+  // and the health status all settle in one paint.
+  async function resumeTrigger(id: string): Promise<Trigger> {
+    const resumed = await api.resumeTrigger(id);
+    triggers = triggers.map(t => t.id === id ? resumed : t);
+    return resumed;
+  }
+
   async function deleteTrigger(id: string): Promise<void> {
     await api.deleteTrigger(id);
     triggers = triggers.filter(t => t.id !== id);
@@ -144,15 +165,19 @@ function createTriggersStore() {
     get error() { return error; },
     get sourcesError() { return sourcesError; },
 
-    get enabledCount() { return triggers.filter(t => t.enabled).length; },
-    get activeTriggers() { return triggers.filter(t => t.enabled); },
-    get pausedTriggers() { return triggers.filter(t => !t.enabled); },
+    get enabledCount() { return triggers.filter(isTriggerRunning).length; },
+    get activeTriggers() { return triggers.filter(isTriggerRunning); },
+    // Everything that is not running, for either reason: switched off by the
+    // user OR auto-paused by the policy. Surfaces that show the two causes
+    // apart (the feed's groups) split them themselves.
+    get pausedTriggers() { return triggers.filter(t => !isTriggerRunning(t)); },
 
     threadTriggers,
     loadTriggers,
     loadSources,
     createTrigger,
     updateTrigger,
+    resumeTrigger,
     deleteTrigger,
     testTrigger,
     getExecutions,
