@@ -24,17 +24,44 @@ settings to the live agent, and returns `restart_required`.
 The export is scoped to the fields the request named, so a `PATCH` never
 rewrites the process environment for settings it was not asked to change.
 
-Editing a dotenv file directly is still not a supported way to change a
-running server, and it half-applies in a way that is hard to diagnose. A
-hand-edit to a key the process already holds with a NON-EMPTY value is
-shadowed by the environment and does not apply at all. A hand-edit is picked
-up by the next `Settings` reload when the key is absent from the environment,
-blank there (an empty value is treated as unset, which is what every
-`${VAR:-}` compose expansion produces), or was deliberately cleared by the
-runtime. Even then it applies only partially: the agent's compiled graph is
-not rebuilt for it and `restart_required` does not report it. Restart the API
-to apply dotenv edits (the restart re-merges the dotenv files over the
-inherited environment for exactly this reason).
+If a key appears on more than one line in the file, the write collapses those
+lines to one (keeping the first position, and logging the key it tidied).
+Every reader of a dotenv file takes the LAST occurrence, so preserving a
+duplicate would let a write report success, serve the new value, and then
+revert at the next restart.
+
+A running server is authoritative about its own configuration. The dotenv
+files are read once, at startup, and merged into the process environment;
+`Settings` itself declares no `env_file`, so nothing re-reads a config file
+behind the process's back. Editing a dotenv file therefore changes nothing
+until you ask for it, which is deliberate: the alternative half-applied edits
+on whatever unrelated request happened to reload settings next, with no graph
+rebuild and no `restart_required`.
+
+Two supported ways to apply a hand-edit:
+
+- `POST /settings/reload` (or `/settings reload`), admin-only. Re-reads the
+  files, applies what changed, rebuilds the agent graph when a graph-sensitive
+  setting moved, and returns the list of `changed` field names plus
+  `restart_required`. Field names only: the file holds provider credentials
+  and the credential-vault key, so values are never echoed back. In-flight
+  turns and open streams are unaffected. All-or-nothing: if the files hold a
+  value `Settings` rejects, the reload restores the previous environment and
+  answers 400 rather than leaving a server that can no longer build its own
+  settings. An agent-issued reload additionally refuses (403, nothing applied)
+  when it would change a setting an agent may not write, currently
+  `HOOKS_ENABLED`, so writing an env file is not a way around that block.
+- `POST /system/restart` (or `/restart api`). The restart re-merges the dotenv
+  files over the inherited environment, so it applies everything, including
+  the settings that are captured at startup and cannot be hot-applied.
+
+Values a runtime shape pins are never overridden by a file on either path: for
+example `nymeria slim` removes `REDIS_URL` so the process cannot reach a
+cross-process event bus, and a reload will not put it back.
+
+Neither path can UNSET a key: both only apply what they find, so deleting a
+line leaves the running value in place. Set the key to the value you want
+instead.
 
 The following settings are applied to future graph builds immediately and also
 clear/rebuild the current default graph caches:

@@ -44,9 +44,6 @@ else:
     _project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(_project_root))
 
-from dotenv import load_dotenv
-
-
 def _load_environment() -> None:
     """Load environment files relative to project root, overriding inherited values.
 
@@ -61,18 +58,34 @@ def _load_environment() -> None:
     every real launch path (``python run.py ...`` and the ``cli_entry``
     console script, which calls ``run.main()``) goes through it, and nothing
     at this module's scope reads settings or the environment.
-    """
-    project_root = _project_root
 
-    # Load base config first, then package-user config and docker overrides if
-    # present.
-    # override=True ensures restarts pick up latest .env values even when
-    # the parent process has stale exported environment variables.
-    for filename in (".env", "config.env", ".env.docker"):
-        try:
-            load_dotenv(project_root / filename, override=True)
-        except UnicodeDecodeError:
-            pass
+    The read itself lives in ``config.settings.load_env_files_into_environ``,
+    the ONE place env files are materialized into a process (#302). This is the
+    boot call; ``get_settings()`` makes the same call idempotently for an entry
+    point that never comes through here. Nothing re-reads them afterwards, so
+    the running process is authoritative until something explicitly reloads.
+    """
+    from nymeria.config.settings import load_env_files_into_environ
+
+    load_env_files_into_environ(_project_root, force=True)
+
+
+def _pin_runtime_env(pins: "dict[str, Optional[str]]") -> None:
+    """Apply a shape's env pins, and register them so a reload re-applies them.
+
+    Registering matters as much as setting. These are shape INVARIANTS (slim is
+    not allowed to reach a cross-process bus, whatever the env file says), and
+    before #302 they held only until something re-read the files: the dotenv
+    settings source filled gaps under ``os.environ``, so a popped ``REDIS_URL``
+    came straight back on the next settings reload.
+
+    A ``None`` value means the key must stay ABSENT. Deliberately unguarded: if
+    this import fails the shape is unpinned, and a slim launch silently talking
+    to Postgres and Redis is worse than a loud failure on a broken install.
+    """
+    from nymeria.config.settings import register_runtime_pins
+
+    register_runtime_pins(pins)
 
 
 _SERVICE_TOKEN_REQUIRED_COMMANDS = {
@@ -569,22 +582,25 @@ def _apply_slim_runtime_env(
     loopback_host = _slim_loopback_host(host)
     base_url = f"http://{loopback_host}:{port}"
 
-    os.environ["DATABASE_BACKEND"] = "sqlite"
-    os.environ["REDIS_ENABLED"] = "false"
-    # Clearing REDIS_URL prevents the API from initializing the cross-process
-    # event bus even if .env.docker has set one for the regular api command.
-    os.environ.pop("REDIS_URL", None)
-    os.environ["API_HOST"] = host
-    os.environ["API_PORT"] = str(port)
-    os.environ["NYMERIA_API_URL"] = base_url
+    pins: dict[str, Optional[str]] = {
+        "DATABASE_BACKEND": "sqlite",
+        "REDIS_ENABLED": "false",
+        # Removing REDIS_URL prevents the API from initializing the cross-process
+        # event bus even if .env.docker has set one for the regular api command.
+        "REDIS_URL": None,
+        "API_HOST": host,
+        "API_PORT": str(port),
+        "NYMERIA_API_URL": base_url,
+    }
     if data_dir:
-        os.environ["NYMERIA_DATA_DIR"] = data_dir
+        pins["NYMERIA_DATA_DIR"] = data_dir
     if missed_work_policy:
-        os.environ["SCHEDULER_MISSED_WORK_POLICY"] = missed_work_policy
+        pins["SCHEDULER_MISSED_WORK_POLICY"] = missed_work_policy
     if active_execution_stale_minutes is not None:
-        os.environ["SCHEDULER_ACTIVE_EXECUTION_STALE_MINUTES"] = str(
+        pins["SCHEDULER_ACTIVE_EXECUTION_STALE_MINUTES"] = str(
             active_execution_stale_minutes
         )
+    _pin_runtime_env(pins)
 
     # If settings were loaded earlier (e.g. by `_load_environment()` callers
     # or argparse imports), reset the cache so the slim overrides take effect.
@@ -622,11 +638,16 @@ def _apply_fat_runtime_env() -> None:
     already loaded. Callers skip this entirely when the user passes
     ``--keep-db-backend`` to deliberately share the configured backend.
     """
-    os.environ["DATABASE_BACKEND"] = "sqlite"
-    os.environ["REDIS_ENABLED"] = "false"
-    # Clearing REDIS_URL prevents any settings consumer from reaching the
-    # cross-process bus even if .env.docker set one for the regular api command.
-    os.environ.pop("REDIS_URL", None)
+    _pin_runtime_env(
+        {
+            "DATABASE_BACKEND": "sqlite",
+            "REDIS_ENABLED": "false",
+            # Removing REDIS_URL prevents any settings consumer from reaching
+            # the cross-process bus even if .env.docker set one for the regular
+            # api command.
+            "REDIS_URL": None,
+        }
+    )
 
     # If settings were loaded earlier (e.g. by `_load_environment()` callers or
     # argparse imports), reset the cache so the fat overrides take effect.

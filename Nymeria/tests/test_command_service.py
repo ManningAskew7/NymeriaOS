@@ -76,6 +76,9 @@ class FakeCommandApi:
             },
         ]
         self.thread_teams: list[dict[str, Any]] = []
+        # What a `/settings reload` reports as moved; settable so a test can
+        # model a reload that touched a #157-sensitive key.
+        self.reload_changed: list[str] = ["llm_model"]
 
     async def close(self) -> None:
         self.closed = True
@@ -389,6 +392,23 @@ class FakeCommandApi:
     async def update_settings(self, *, user_id: str | None = None, **kwargs) -> dict[str, Any]:
         self.calls.append(("update_settings", (), {"user_id": user_id, **kwargs}))
         return {"updated": list(kwargs), "restart_required": False}
+
+    async def reload_settings(
+        self, *, user_id: str | None = None, gate_agent_writes: bool = False
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "reload_settings",
+                (),
+                {"user_id": user_id, "gate_agent_writes": gate_agent_writes},
+            )
+        )
+        return {
+            "message": "Reloaded 1 env file(s); 1 setting(s) changed",
+            "changed": list(self.reload_changed),
+            "files": ["/tmp/.env"],
+            "restart_required": False,
+        }
 
     async def update_thread_config(
         self,
@@ -1731,7 +1751,7 @@ def test_settings_get_and_set_delegate_to_config_handlers() -> None:
     unknown = _run_command(api, "/settings frobnicate")
     assert unknown.success is False
     assert "Unexpected argument `frobnicate`" in unknown.markdown
-    assert "Valid subcommands: get, set." in unknown.markdown
+    assert "Valid subcommands: get, reload, set." in unknown.markdown
     assert "Usage: `/settings`" in unknown.markdown
 
 
@@ -3189,6 +3209,64 @@ def test_restart_api_requires_admin(
     assert restarted == [True]
 
 
+def test_settings_reload_requires_admin_and_reports_what_moved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/settings reload is the command spelling of POST /settings/reload (#302).
+
+    Gated like `settings set`, because it applies whatever the config file now
+    says, and it is the one route by which an agent-written env file reaches
+    the running process.
+    """
+    import nymeria.core.agent as agent_module
+    import nymeria.api.routers.settings as settings_mod
+
+    fake_agent = _FakeAgent()
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: fake_agent)
+
+    non_admin_ctx = CommandContext(
+        user_id="alice",
+        thread_id=None,
+        actor="user",
+        surface="cli",
+        is_admin=False,
+    )
+    refused = run(CommandService().execute(non_admin_ctx, "/settings reload"))
+    assert refused.success is False
+    assert "requires an admin" in refused.markdown.lower()
+
+    def fake_reload(*, settings, agent, get_settings_fn, blocked_settings=frozenset()):
+        return {
+            "message": "Reloaded 1 env file(s); 2 setting(s) changed",
+            "changed": ["llm_model", "redis_url"],
+            "files": ["/tmp/.env"],
+            "restart_required": True,
+        }
+
+    monkeypatch.setattr(settings_mod, "reload_settings_from_env_files", fake_reload)
+
+    admin_agent = _FakeAgent()
+    admin_agent.accounts_repo = _FakeAccountsRepo(default_role="admin")
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: admin_agent)
+
+    admin_ctx = CommandContext(
+        user_id="alice",
+        thread_id=None,
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+    result = run(CommandService().execute(admin_ctx, "/settings reload"))
+
+    assert result.success is True
+    assert "llm_model" in result.markdown
+    assert "redis_url" in result.markdown
+    # A boot-captured key moved, so the outcome must say the value is live in
+    # Settings and dead where it counts until a restart. Same honesty a write
+    # owes, on the path that never had a `restart_required` verdict before.
+    assert "/restart api" in result.markdown
+
+
 def test_restart_api_flat_alias_resolves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3785,9 +3863,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # chat_stream, so none of them ever dispatched here. 148 after the
     # browser-login pass added the /browser family: root overview + login.
     # 152 after the single-browser-routing pass grew that family by
-    # list + switch + default + rename, all executable.)
-    assert len(service._commands) == 152
-    assert sum(cmd.executable for cmd in service._commands.values()) == 143
+    # list + switch + default + rename, all executable. 153 with
+    # `settings reload`, the #302 config-reload command.)
+    assert len(service._commands) == 153
+    assert sum(cmd.executable for cmd in service._commands.values()) == 144
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -8047,6 +8126,104 @@ def test_agent_cannot_write_gate_disabling_settings() -> None:
     )
     assert human.success is True
     assert [c for c in api.calls if c[0] == "update_settings"]
+
+
+def test_agent_reload_carries_the_gate_and_a_refusal_reads_as_a_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/settings reload` is the other way an agent could disable the gate.
+
+    An env file is outside the file-tool secrets denylist, so an agent can
+    write HOOKS_ENABLED=false into one and then ask the process to apply it,
+    which is the same write the test above blocks, taking a different door. The
+    command layer cannot pre-check it (nobody knows what the file says until it
+    is read), so it ships the gate WITH the request and the applier rolls back.
+    """
+    from fastapi import HTTPException
+
+    import nymeria.api.routers.settings as settings_mod
+    from nymeria.api.schemas.settings import AGENT_WRITE_BLOCKED_SETTINGS
+
+    seen: list[frozenset[str]] = []
+
+    def fake_reload(*, settings, agent, get_settings_fn, blocked_settings=frozenset()):
+        seen.append(blocked_settings)
+        if blocked_settings:
+            raise HTTPException(
+                status_code=403,
+                detail="Reloading would change hooks_enabled, which control ...",
+            )
+        return {
+            "message": "Reloaded 1 env file(s); 1 setting(s) changed",
+            "changed": ["hooks_enabled"],
+            "files": ["/tmp/.env"],
+            "restart_required": False,
+        }
+
+    monkeypatch.setattr(settings_mod, "reload_settings_from_env_files", fake_reload)
+    import nymeria.core.agent as agent_module
+
+    admin_agent = _FakeAgent()
+    admin_agent.accounts_repo = _FakeAccountsRepo(default_role="admin")
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: admin_agent)
+
+    refused = run(CommandService().execute(_agent_ctx(), "/settings reload"))
+
+    assert seen == [AGENT_WRITE_BLOCKED_SETTINGS]
+    assert refused.success is False
+    assert "hooks_enabled" in refused.markdown
+
+    # The same file, the same command, asked for by a human: no gate, applied.
+    admin_human = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+    allowed = run(CommandService().execute(admin_human, "/settings reload"))
+
+    assert seen[-1] == frozenset()
+    assert allowed.success is True
+    assert "hooks_enabled" in allowed.markdown
+
+
+def test_agent_reload_that_moves_a_sensitive_key_alerts_the_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reload is not a write, but it applies one, so it owes the same alert.
+
+    Values are never echoed on this path, unlike the write alert: it never had
+    them in hand, and the file it read holds provider credentials and the vault
+    key.
+    """
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    api = FakeCommandApi()
+    api.reload_changed = ["nymeria_public_url", "llm_model"]
+
+    result = run(CommandService().execute(_agent_ctx(), "/settings reload", api=api))
+
+    assert result.success is True
+    assert len(alerts) == 1
+    assert "nymeria_public_url" in alerts[0]
+    # llm_model moved too but is not on the sensitive register: one alert,
+    # naming only what the register covers.
+    assert "llm_model" not in alerts[0]
+
+    # A human reloading the same file alerts nobody, same as a human write.
+    alerts.clear()
+    human = run(CommandService().execute(_ctx(), "/settings reload", api=api))
+    assert human.success is True
+    assert alerts == []
 
 
 def test_agent_settings_alert_failure_never_blocks_the_write(

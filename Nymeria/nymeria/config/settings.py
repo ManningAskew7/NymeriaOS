@@ -5,11 +5,13 @@ Every env var here is documented for users in ``docs/configuration.md``
 Keep the two in sync when adding or changing a setting.
 """
 
+import logging
 import os
 import sys
+import threading
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Mapping, Optional, Tuple
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +25,8 @@ from .llm_providers import (
     provider_requires_api_key,
     resolve_provider_api_key,
 )
+
+logger = logging.getLogger(__name__)
 
 
 _PROJECT_ROOT_MARKERS: Tuple[Tuple[str, ...], ...] = (
@@ -121,6 +125,151 @@ def get_env_write_path(project_root: Path | None = None) -> Path:
     return root / "config.env"
 
 
+# --- boot-time env-file materialization (#302) -------------------------------
+#
+# The env files are read into ``os.environ`` ONCE, at boot, by
+# ``load_env_files_into_environ`` below, and ``Settings`` carries no
+# ``env_file`` of its own. The dotenv source stays in the chain so an explicit
+# ``Settings(_env_file=...)`` still works (``doctor.py`` uses it to inspect a
+# DIFFERENT project root), but by default it has nothing to read.
+#
+# Before this, ``env_file`` was baked into ``model_config`` and the dotenv
+# source sat UNDER the env source, where it FILLED GAPS rather than being
+# shadowed. Any key the process did not hold non-empty was served from the FILE
+# on every settings reload: an out-of-band file edit half-applied with no graph
+# rebuild and no ``restart_required``, and a key the runtime deliberately popped
+# (slim's ``REDIS_URL``) came straight back. The process is authoritative once
+# started, so "what is this deployment running" has exactly one answer, and
+# applying a file edit is an explicit act (``POST /settings/reload``, or a
+# restart).
+
+_env_files_loaded = False
+_env_file_loading_suppressed = False
+_env_load_lock = threading.RLock()
+_runtime_pins: dict[str, Optional[str]] = {}
+
+
+def register_runtime_pins(pins: Mapping[str, Optional[str]]) -> None:
+    """Record env keys the runtime SHAPE owns, which a config file may not set.
+
+    ``run.py`` pins a handful of keys when it launches a shape: slim forces
+    SQLite and REMOVES ``REDIS_URL`` so the process cannot reach a cross-process
+    bus; the fat CLI does the same for its transport. Those pins used to hold
+    only because they were written after the one dotenv load, which was never
+    the whole story: the dotenv settings source filled gaps under ``os.environ``
+    forever, so any settings reload served ``REDIS_URL`` back from the file
+    (#302). Registering them here re-applies them after every load instead.
+
+    A value of ``None`` means "this key must stay ABSENT", which is the only way
+    to express a deliberate removal: an empty string is a different statement
+    and ``_NonEmptyEnvSource`` treats it as unset anyway.
+
+    Applies only the pins it is HANDED, never the whole accumulated set. One
+    process registers one shape, so the distinction is invisible in production,
+    but re-applying everything would let a second registration resurrect a
+    first's pins, which is the same "wrote process-wide state nobody asked for"
+    shape as #299. Re-applying everything belongs after a LOAD, which is the
+    only moment a file can have overwritten a pin.
+    """
+    with _env_load_lock:
+        _runtime_pins.update(pins)
+        _apply_pins(pins)
+
+
+def _apply_runtime_pins() -> None:
+    _apply_pins(_runtime_pins)
+
+
+def _apply_pins(pins: Mapping[str, Optional[str]]) -> None:
+    for key, value in pins.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def suppress_env_file_loading() -> None:
+    """Make the default-root load a permanent no-op, for test hermeticity.
+
+    The test suite must never materialize the checkout's real ``.env`` /
+    ``config.env`` / ``.env.docker`` into ``os.environ``: that is backlog #294,
+    where an import-time ``load_dotenv(override=True)`` silently ran the whole
+    suite against live operator config. ``tests/conftest.py`` calls this at
+    import, before the first ``get_settings()``, so no test can pull the
+    checkout's files in even by clearing the settings cache.
+
+    Scoped to OTHER installs only: a caller that names a ``project_root``
+    somewhere else is taking responsibility for the files it reads (a test
+    pointing at ``tmp_path``, ``doctor`` inspecting another install), and is
+    still served. Naming THIS checkout's root is not an escape hatch, because
+    the caller that would name it is not aware it is doing so:
+    ``Settings.project_root`` is a property returning the global, so every
+    ``settings.project_root`` argument in the codebase resolves to the default
+    chain by another name. There is no un-suppress.
+    """
+    global _env_file_loading_suppressed
+    with _env_load_lock:
+        _env_file_loading_suppressed = True
+
+
+def reset_env_loading_state_for_tests() -> None:
+    """Drop the load flag and the registered pins, for test isolation.
+
+    Deliberately does NOT clear the suppression flag: that one is the suite's
+    hermeticity guarantee (#294) and must survive every test.
+    """
+    global _env_files_loaded
+    with _env_load_lock:
+        _env_files_loaded = False
+        _runtime_pins.clear()
+
+
+def load_env_files_into_environ(
+    project_root: Optional[Path] = None, *, force: bool = False
+) -> List[Path]:
+    """Merge the deployment's env files into ``os.environ``. Returns what loaded.
+
+    The ONE place env files are read into the process. ``override=True``, so the
+    file beats an inherited value, which is what ``run.py`` has always done and
+    what makes a restart apply a config-file edit.
+
+    Idempotent by default: the first call wins and later ones are no-ops, so a
+    ``get_settings()`` after boot can never undo a runtime pin applied since
+    (``run.py`` pops ``REDIS_URL`` for slim AFTER loading the files). ``force``
+    is the explicit reload path, and re-applies the registered pins afterwards
+    so a file can never reintroduce what a shape removed.
+
+    Every file is guarded individually and a failure is skipped, not raised: a
+    non-UTF-8 byte in a password or a Notepad UTF-16 BOM must not stop a process
+    from starting on the rest of its configuration.
+    """
+    global _env_files_loaded
+    with _env_load_lock:
+        if _env_file_loading_suppressed and (
+            project_root is None or Path(project_root) == PROJECT_ROOT
+        ):
+            return []
+        if _env_files_loaded and not force:
+            return []
+
+        from dotenv import load_dotenv
+
+        loaded: List[Path] = []
+        for path in get_env_file_paths(project_root):
+            try:
+                if not path.exists():
+                    continue
+                load_dotenv(path, override=True)
+            except (OSError, UnicodeDecodeError, ValueError):
+                logger.warning("Skipping unreadable env file: %s", path, exc_info=True)
+                continue
+            loaded.append(path)
+
+        _env_files_loaded = True
+        _apply_runtime_pins()
+        return loaded
+
+
 class _NonEmptyEnvSource(EnvSettingsSource):
     """
     Env settings source that treats empty-string values as missing.
@@ -141,7 +290,10 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=tuple(str(path) for path in get_env_file_paths(PROJECT_ROOT)),
+        # No `env_file` on purpose (#302): the files are materialized into
+        # os.environ once at boot by `load_env_files_into_environ`, so a running
+        # process never re-reads them behind its own back. `env_file_encoding`
+        # still applies to a caller that passes `_env_file=` explicitly.
         env_file_encoding="utf-8",
         extra="ignore",
         # Keep field-name construction working for the aliased S3 fields (env reads
@@ -158,6 +310,10 @@ class Settings(BaseSettings):
         dotenv_settings,
         file_secret_settings,
     ):
+        # `dotenv_settings` stays in the chain but reads nothing unless a caller
+        # passes `_env_file=` (doctor, inspecting another project root). The
+        # deployment's own files reach Settings through os.environ instead, so
+        # they cannot fill gaps under it after boot (#302).
         return (
             init_settings,
             _NonEmptyEnvSource(settings_cls),
@@ -2225,5 +2381,16 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Get cached settings instance."""
+    """Get the cached settings instance, materializing env files on first use.
+
+    The load is idempotent, so this is a no-op on every path that went through
+    ``run.py`` (which loads them before applying its shape pins) and the safety
+    net for one that did not: a library import, a bare script, an embedded use.
+
+    After boot the process is authoritative. Clearing this cache re-reads
+    ``os.environ`` and never the files, so a reload cannot half-apply a config
+    file edit behind the caller's back (#302); applying one is an explicit act,
+    via ``POST /settings/reload`` or a restart.
+    """
+    load_env_files_into_environ()
     return Settings()

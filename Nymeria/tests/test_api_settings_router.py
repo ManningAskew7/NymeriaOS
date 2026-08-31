@@ -11,9 +11,11 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, Field
 
 from nymeria.config.model_capabilities import get_context_limit, get_model_defaults
 from nymeria.config.settings import DEFAULT_LLM_FALLBACK_MODELS
+from nymeria.api.schemas.settings import server_settings_env_mapping
 from nymeria.core.accounts import AccountsRepo
 from nymeria.triggers import api as api_module
 
@@ -49,6 +51,13 @@ class FakeSettings:
     dynamic_tool_binding: bool = False
     sequential_tool_execution: bool = False
     hooks_enabled: bool = True
+    # Carries a REAL constraint (see _TwitchBufferSize below), so the reload
+    # path's invalid-value branch is reachable: in production the thing that
+    # raises is `Settings()` itself, which this dataclass is standing in for.
+    twitch_buffer_size: int = 500
+    # Deliberately NOT in the writable settings surface, so a reload can move a
+    # field no PATCH could ever have written (#302 restart reporting).
+    api_port: int = 8000
     llm_use_model_defaults: bool = False
     llm_base_url: str | None = None
     llm_context_length: int | None = None
@@ -208,6 +217,17 @@ class FakeSettings:
         )
 
 
+class _TwitchBufferSize(BaseModel):
+    """Mirrors the real `Settings.twitch_buffer_size` bound (ge=50, le=5000).
+
+    A pydantic model rather than a hand-rolled check so the failure raised is
+    the real `ValidationError` the settings router branches on, with a real
+    field name in its `loc`.
+    """
+
+    twitch_buffer_size: int = Field(ge=50, le=5000)
+
+
 class FakeSettingsProvider:
     def __init__(self, settings: FakeSettings):
         self.settings = settings
@@ -255,6 +275,12 @@ class FakeSettingsProvider:
                 self.settings.llm_fallback_models,
             ),
             tts_provider=os.environ.get("TTS_PROVIDER", self.settings.tts_provider),
+            # A restart-required key, so a reload's `restart_required` verdict
+            # can be exercised end to end (#302) and not just at the registry.
+            embedding_provider=os.environ.get(
+                "EMBEDDING_PROVIDER",
+                self.settings.embedding_provider,
+            ),
             compact_threshold=env_float(
                 "COMPACT_THRESHOLD",
                 self.settings.compact_threshold,
@@ -315,6 +341,17 @@ class FakeSettingsProvider:
                 "HOOKS_ENABLED",
                 self.settings.hooks_enabled,
             ),
+            # The one field here that VALIDATES rather than just parses, and
+            # the reason is the reload path: `POST /settings/reload` cannot
+            # check a value before it is in `os.environ`, so it applies, sees
+            # the construction fail, and rolls back. A dataclass never fails to
+            # construct, so without this the rollback branch is untestable.
+            twitch_buffer_size=_TwitchBufferSize(
+                twitch_buffer_size=env_int(
+                    "TWITCH_BUFFER_SIZE", self.settings.twitch_buffer_size
+                )
+            ).twitch_buffer_size,
+            api_port=env_int("API_PORT", self.settings.api_port),
         )
 
 
@@ -1376,15 +1413,15 @@ def test_patch_settings_does_not_resurrect_env_vars_absent_from_the_process(
 ):
     # The other half of #299. run.py's slim and fat-CLI shapes POP keys out of
     # os.environ while leaving them in the env file (REDIS_URL), and a
-    # whole-file re-export put the popped key back. Scope note, because
-    # run.py's own comment overstates it and this assertion must not be read as
-    # more than it is: popping REDIS_URL does not by itself keep the process
-    # off the cross-process bus, since the dotenv source refills
-    # `Settings.redis_url` on any reload (see `_sync_updated_env_vars`). The
-    # gate is `redis_enabled and redis_url` in core/event_bus.py, held by the
-    # REDIS_ENABLED=false pin. What is pinned here is narrower and still worth
-    # pinning: a PATCH must not write process-wide env state for a key it was
-    # never asked to touch.
+    # whole-file re-export put the popped key back. The scope note this
+    # carried is now obsolete: the dotenv source used to refill
+    # `Settings.redis_url` on any reload whatever this endpoint did, which is
+    # why the pin also needed REDIS_ENABLED=false to hold the
+    # `redis_enabled and redis_url` gate in core/event_bus.py. #302 closed
+    # that (the process stops reading env files after boot, and slim REGISTERS
+    # the pin so no reload can undo it), so this assertion now means what it
+    # says. What is pinned here: a PATCH must not write process-wide env state
+    # for a key it was never asked to touch.
     (tmp_path / ".env").write_text(
         "LLM_MODEL=old-model\nREDIS_URL=redis://from-file:6379/0\n",
         encoding="utf-8",
@@ -1402,6 +1439,277 @@ def test_patch_settings_does_not_resurrect_env_vars_absent_from_the_process(
     assert response.status_code == 200
     assert os.environ["LLM_MODEL"] == "new-model"
     assert "REDIS_URL" not in os.environ
+
+
+# -- #302: POST /settings/reload ------------------------------------------
+#
+# A running process is authoritative: the env files are read once at boot and
+# never consulted again, so an out-of-band edit does nothing until something
+# asks for it. This is that ask, and the asking is the point. Previously an
+# edit applied by accident, partially, on whatever unrelated request happened
+# to clear the settings cache next.
+
+
+def _settle(provider: FakeSettingsProvider) -> None:
+    """Bring the fake settings in line with the ambient environment first.
+
+    `FakeSettingsProvider.cache_clear` re-derives its fields from `os.environ`,
+    so on a developer machine that exports e.g. OPENAI_API_KEY the FIRST clear
+    reads as a change even when nothing moved. Settling makes a reload's
+    reported diff describe the file edit under test and nothing about whoever
+    is running the suite. Only these tests need it: every other test here
+    asserts on `updated`, which comes from the request rather than a diff.
+    """
+    provider.cache_clear()
+
+
+def test_reload_applies_a_file_edit_and_names_what_moved(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("LLM_MODEL=booted\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_MODEL", "booted")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text("LLM_MODEL=edited-by-hand\n", encoding="utf-8")
+
+    response = client.post("/settings/reload", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] == ["llm_model"]
+    assert body["restart_required"] is False
+    assert provider.settings.llm_model == "edited-by-hand"
+    # Re-bound, not merely re-read: the agent must not keep serving the old one.
+    assert agent.settings.llm_model == "edited-by-hand"
+    # An LLM field moved, so the compiled graph is rebuilt for it. The half the
+    # old implicit path never did, which is why it applied to the settings
+    # object while every turn kept running the booted model.
+    assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_reload_does_not_rebuild_the_graph_for_a_non_graph_field(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("TTS_PROVIDER=none\n", encoding="utf-8")
+    monkeypatch.setenv("TTS_PROVIDER", "none")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text("TTS_PROVIDER=openai\n", encoding="utf-8")
+
+    response = client.post("/settings/reload", headers=_auth(token))
+
+    assert response.json()["changed"] == ["tts_provider"]
+    assert agent.graph_rebuilds == []
+
+
+def test_reload_reports_a_restart_for_boot_captured_keys(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # The honesty half. These keys are captured by subsystems at startup (the
+    # event bus, the checkpointer, the ticker), so the value is live in Settings
+    # and dead everywhere that matters until a restart. Saying nothing here
+    # would be the same half-applied lie the implicit path told.
+    (tmp_path / ".env").write_text("EMBEDDING_PROVIDER=openai\n", encoding="utf-8")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text("EMBEDDING_PROVIDER=cohere\n", encoding="utf-8")
+
+    body = client.post("/settings/reload", headers=_auth(token)).json()
+
+    assert "embedding_provider" in body["changed"]
+    assert body["restart_required"] is True
+    assert "/restart api" in body["message"]
+
+
+def test_reload_names_a_changed_secret_without_echoing_it(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # This reads a file holding provider credentials and the vault key, so the
+    # response is field names only. A reload that reported values would put a
+    # rotated API key into every command transcript that ran it.
+    secret = "sk-rotated-secret-value"
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-old\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-old")
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text(f"OPENAI_API_KEY={secret}\n", encoding="utf-8")
+
+    response = client.post("/settings/reload", headers=_auth(token))
+
+    assert "openai_api_key" in response.json()["changed"]
+    assert secret not in response.text
+
+
+def test_reload_with_nothing_changed_says_so_and_rebuilds_nothing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("LLM_MODEL=booted\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_MODEL", "booted")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+
+    body = client.post("/settings/reload", headers=_auth(token)).json()
+
+    assert body["changed"] == []
+    assert body["restart_required"] is False
+    assert agent.graph_rebuilds == []
+
+
+def test_reload_survives_an_env_file_it_cannot_decode(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # A non-UTF-8 byte in a password must not turn a reload into a 500; the
+    # readable files still apply.
+    (tmp_path / ".env").write_bytes(b"LLM_MODEL=\xff\xfe-not-utf8\n")
+    (tmp_path / "config.env").write_text("LLM_MODEL=from-readable\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_MODEL", "booted")
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+
+    response = client.post("/settings/reload", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert provider.settings.llm_model == "from-readable"
+
+
+def test_reload_rolls_the_environment_back_when_a_file_value_is_invalid(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # The reload is TRANSACTIONAL, and this is why. A reload cannot validate
+    # before it applies (it does not know what the file says until the file is
+    # in os.environ), so a single out-of-range value would otherwise leave a
+    # process that can no longer build its own Settings: every get_settings()
+    # raises, including the one behind the auth dependency, so the API 500s on
+    # everything and neither this endpoint nor /restart api can be reached to
+    # undo it. One bad character in a hand-edited file, deployment down.
+    (tmp_path / ".env").write_text("LLM_MODEL=booted\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_MODEL", "booted")
+    monkeypatch.delenv("TWITCH_BUFFER_SIZE", raising=False)
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text(
+        "LLM_MODEL=edited-by-hand\nTWITCH_BUFFER_SIZE=10\n", encoding="utf-8"
+    )
+
+    response = client.post("/settings/reload", headers=_auth(token))
+
+    assert response.status_code == 400
+    assert "twitch_buffer_size" in response.json()["detail"].lower()
+    # Nothing applied: not the invalid key and not the VALID one beside it.
+    assert "TWITCH_BUFFER_SIZE" not in os.environ
+    assert os.environ["LLM_MODEL"] == "booted"
+    assert provider.settings.llm_model == "booted"
+    # The agent was never re-bound and its graph never rebuilt: a rolled-back
+    # reload leaves no half-applied state behind it either.
+    assert agent.settings is None
+    assert agent.graph_rebuilds == []
+    # And the process still works, which is the whole point.
+    assert client.get("/settings/env", headers=_auth(token)).status_code == 200
+    assert client.post("/settings/reload", headers=_auth(token)).status_code == 400
+
+
+def test_reload_refuses_to_move_a_gate_setting_for_an_agent_caller(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # #157 says a non-human caller cannot write the gating master switches, and
+    # `/settings set hooks_enabled false` enforces it. Env files are outside the
+    # file-tool secrets denylist, so an agent can write HOOKS_ENABLED=false to
+    # one; without this gate, reloading applies it and the block is a formality.
+    # The refusal is whole-reload, and it reverts: the harmless key beside it
+    # must not land either.
+    (tmp_path / ".env").write_text(
+        "HOOKS_ENABLED=true\nLLM_MODEL=booted\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HOOKS_ENABLED", "true")
+    monkeypatch.setenv("LLM_MODEL", "booted")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text(
+        "HOOKS_ENABLED=false\nLLM_MODEL=edited-by-agent\n", encoding="utf-8"
+    )
+
+    refused = client.post(
+        "/settings/reload?gate_agent_writes=true", headers=_auth(token)
+    )
+
+    assert refused.status_code == 403
+    assert "hooks_enabled" in refused.json()["detail"]
+    assert provider.settings.hooks_enabled is True
+    assert provider.settings.llm_model == "booted"
+    assert os.environ["HOOKS_ENABLED"] == "true"
+
+    # The same file, reloaded by a human, applies: the gate is about WHO asked,
+    # not about the file.
+    allowed = client.post("/settings/reload", headers=_auth(token))
+
+    assert allowed.status_code == 200
+    assert provider.settings.hooks_enabled is False
+    assert provider.settings.llm_model == "edited-by-agent"
+
+
+def test_reload_gate_lets_an_agent_change_ordinary_settings(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # The gate is the #157 carve-out, not a ban on agents reloading: asking the
+    # assistant to pick up a config edit is the ordinary way this gets used, so
+    # only the blocked register refuses.
+    (tmp_path / ".env").write_text("LLM_MODEL=booted\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_MODEL", "booted")
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text("LLM_MODEL=edited-by-agent\n", encoding="utf-8")
+
+    response = client.post(
+        "/settings/reload?gate_agent_writes=true", headers=_auth(token)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["changed"] == ["llm_model"]
+    assert provider.settings.llm_model == "edited-by-agent"
+
+
+def test_reload_says_restart_for_a_field_no_settings_write_can_reach(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # `_RESTART_REQUIRED_KEYS` was curated for the keys a PATCH can write. A
+    # reload can move any Settings field at all, including ones deliberately
+    # absent from the writable surface (api_port, database_backend, CORS), and
+    # nothing was ever built to hot-apply those. Reporting restart_required
+    # false for them would be the same half-applied lie #302 exists to end.
+    (tmp_path / ".env").write_text("API_PORT=8000\n", encoding="utf-8")
+    monkeypatch.setenv("API_PORT", "8000")
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+    _settle(provider)
+    (tmp_path / ".env").write_text("API_PORT=8123\n", encoding="utf-8")
+
+    body = client.post("/settings/reload", headers=_auth(token)).json()
+
+    assert "api_port" in body["changed"]
+    assert "api_port" not in server_settings_env_mapping()
+    assert body["restart_required"] is True
+
+
+def test_reload_is_admin_only(tmp_path: Path, monkeypatch):
+    # Same gate as PATCH /settings: this applies whatever the file now says,
+    # provider credentials included.
+    client, agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    user_token = agent.accounts_repo.issue_token("alice")
+
+    response = client.post("/settings/reload", headers=_auth(user_token))
+
+    assert response.status_code == 403
 
 
 def test_patch_settings_updates_existing_config_env_for_packaged_runtime(

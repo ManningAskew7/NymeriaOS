@@ -14,13 +14,24 @@ from nymeria.triggers.api import _validate_cors_settings
 
 def test_suite_hermeticity_pins_root_and_disables_dotenv_chain():
     # Pins the conftest hermeticity mechanism (backlog #101 entry 20): a
-    # model_config refactor or conftest reshuffle that silently re-opens the
-    # ambient-instance leak must fail here, not resurface as RAG-default
-    # failures on multi-instance hosts.
+    # refactor or conftest reshuffle that silently re-opens the ambient-instance
+    # leak must fail here, not resurface as RAG-default failures on
+    # multi-instance hosts.
+    #
+    # The MECHANISM moved with #302. `Settings` no longer declares an
+    # `env_file` at all (the files are materialized into `os.environ` once, at
+    # boot), so blanking that key is no longer what stops the checkout's real
+    # `.env.docker` reaching the suite. `suppress_env_file_loading()` is, and it
+    # covers the default chain however it is spelled.
     import os
     from pathlib import Path
 
-    assert Settings.model_config.get("env_file") == ()
+    from nymeria.config import settings as settings_mod
+
+    assert not Settings.model_config.get("env_file")
+    assert settings_mod.load_env_files_into_environ() == []
+    assert settings_mod.load_env_files_into_environ(settings_mod.PROJECT_ROOT) == []
+
     pinned_root = Path(os.environ["NYMERIA_PROJECT_ROOT"]).resolve()
     assert pinned_root == Path(__file__).resolve().parents[1]
 

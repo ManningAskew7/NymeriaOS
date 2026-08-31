@@ -188,6 +188,7 @@ EXPECTED_ROUTES = [
     ('/settings/llm/test', ('POST',)),
     ('/settings/llm/test-suite', ('POST',)),
     ('/settings/rag/catalog', ('GET',)),
+    ('/settings/reload', ('POST',)),
     ('/settings/system-prompt', ('DELETE',)),
     ('/settings/system-prompt', ('GET',)),
     ('/settings/system-prompt', ('PUT',)),

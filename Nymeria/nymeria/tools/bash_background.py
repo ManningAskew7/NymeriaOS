@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import tempfile
 import threading
 import time
@@ -19,6 +20,8 @@ MAX_COMPLETED_JOBS = 128
 SOURCE = "background_bash"
 # Age after which orphaned bash spill files in the system temp dir are swept.
 STALE_OUTPUT_AGE_SECONDS = 7 * 24 * 3600
+# Grace between SIGTERM and SIGKILL when terminating a job's process group.
+KILL_GRACE_SECONDS = 1.0
 
 
 @dataclass
@@ -105,9 +108,119 @@ def get_registry() -> BackgroundBashRegistry:
 def reset_registry_for_tests() -> None:
     """Drop the registry singleton for test isolation."""
 
-    global _registry
+    global _registry, _shutting_down
     with _registry_lock:
         _registry = None
+        _shutting_down = False
+
+
+# Set once the process is going away (a restart or a clean shutdown), so a
+# watcher whose job dies under the teardown signal does not try to start an
+# autonomous completion turn into a process that is being replaced. Same
+# reload-survivable idiom as the registry above (#277).
+_shutting_down: bool = globals().get("_shutting_down") or False
+
+
+def begin_shutdown() -> None:
+    """Stop submitting completion prompts: this process is going away."""
+
+    global _shutting_down
+    _shutting_down = True
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def kill_process_group(pid: int) -> bool:
+    """Best-effort SIGTERM->SIGKILL of a job's whole process group, by pid.
+
+    Background jobs are launched with a new session, so the pid is the group
+    leader and ``killpg(pid)`` reaps everything it spawned. Takes a pid rather
+    than a ``Popen`` because the registry is all a caller has after a reload,
+    and because the teardown path runs where the handles have already gone.
+    Never raises.
+    """
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(pid)
+        except (ProcessLookupError, OSError):
+            return False
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            return False
+        end = time.monotonic() + KILL_GRACE_SECONDS
+        while time.monotonic() < end:
+            if not pid_alive(pid):
+                return True
+            time.sleep(0.05)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass  # group exited during the grace window; TERM already succeeded
+        return True
+    # Windows / no process groups: single-process best effort.
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def terminate_running_jobs(deadline: float | None = None) -> list[int]:
+    """Terminate every running background job. Returns the pids signalled.
+
+    Called when the API process is going away. The registry is process-local
+    and the watcher threads go with it, so a job left running would finish into
+    nothing: no completion prompt, no autonomous turn, output in a temp file
+    nobody reads, and a zombie against a pid that (since the in-place restart)
+    no longer dies. Killing them makes a restart a clean sever again, which is
+    what the OS used to do for us via the container teardown or the cgroup kill
+    (#303). Never raises.
+
+    ``deadline`` is a ``time.monotonic()`` stamp after which no further job is
+    signalled. Each kill costs up to ``KILL_GRACE_SECONDS``, so a deployment
+    with many jobs could otherwise hold a restart open for as long as it has
+    jobs. Stopping early leaves a job alive, which is the same outcome as
+    before this existed; blocking the restart is worse.
+    """
+    begin_shutdown()
+    signalled: list[int] = []
+    try:
+        records = get_registry().records()
+    except Exception:  # noqa: BLE001 - teardown must never fail the caller
+        logger.warning("Could not read the background job registry", exc_info=True)
+        return signalled
+    for record in records:
+        if record.status != "running":
+            continue
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.warning(
+                "Child teardown ran out of time; %s and any later job were left "
+                "running",
+                record.id,
+            )
+            break
+        try:
+            if kill_process_group(record.pid):
+                signalled.append(record.pid)
+        except Exception:  # noqa: BLE001 - one bad job must not stop the rest
+            logger.warning(
+                "Failed to terminate background bash job %s (pid %s)",
+                record.id,
+                record.pid,
+                exc_info=True,
+            )
+    return signalled
 
 
 def open_output_files(job_id: str) -> tuple[str, str, Any, Any]:
@@ -192,6 +305,15 @@ def spawn_watcher(record: BackgroundJobRecord, proc) -> None:
 def _watch(record: BackgroundJobRecord, proc) -> None:
     exit_code = proc.wait()
     get_registry().mark_completed(record.id, exit_code)
+    if _shutting_down:
+        # The job died under the teardown that is replacing this process. An
+        # autonomous turn started now would be cut off mid-stream by the exec,
+        # having already written checkpoints and published events.
+        logger.info(
+            "Skipping completion prompt for job %s: the process is shutting down",
+            record.id,
+        )
+        return
     refreshed = get_registry().get(record.id) or record
     try:
         _submit_completion_prompt(refreshed)

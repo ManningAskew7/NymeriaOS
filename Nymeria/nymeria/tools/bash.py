@@ -692,8 +692,8 @@ def _launch_tracked_background(
         "A completion notification will be submitted to this thread when the "
         "process exits. To check on it in the meantime, bind and use the "
         "bash_job tool (action=status/log/kill). Temp files are swept after a "
-        "few days. If the backend process restarts first, no completion "
-        "notification will be sent."
+        "few days. If the backend stops or restarts first, the job is "
+        "terminated with it and no completion notification is sent."
     )
 
 

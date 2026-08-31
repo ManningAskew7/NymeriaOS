@@ -67,6 +67,11 @@ SANCTIONED_LEAF_TOKENS: dict[str, str] = {
     "read": "notepad value-container trio read/write/clear",
     "write": "notepad value-container trio",
     "get": "settings/env key access, the universal config pairing",
+    "reload": (
+        "settings family: re-read the config files and apply what moved. Not "
+        "'set' (the caller names no value) and not 'restart' (the process "
+        "survives, in-flight turns and streams with it)"
+    ),
     "issue": "tokens are issued",
     "revoke": "tokens are revoked",
     "branch": "thread branching",

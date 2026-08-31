@@ -132,7 +132,10 @@ happens before the thread lock is taken, so this covers that gap).
 `background_jobs` counts running detached background bash jobs, which hold
 no thread lock by design. All-zero means a restart severs no tracked work;
 the one documented exception is detached Claude Code bridge runs, which
-have no registry and are not counted.
+have no registry and are not counted. Read "severs" literally: the
+background jobs counted here are TERMINATED by a restart or a shutdown,
+on the self-restart path as well as under a supervisor, so a non-zero
+count is work that will be killed rather than waited for.
 
 Any authenticated caller gets the counts. `busy_threads` (thread ids,
 holder labels, held duration) is cross-user metadata and is populated only
@@ -2297,6 +2300,74 @@ Links, Proofpoint urldefense).
 **Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override. Credential values are accepted in the request but are not returned by `GET /settings` or the update response; the admin env listing masks secret values.
 
 Native optional tools prefer saved credentials from the user/system credential vault. The same settings endpoint can still manage deployment-wide fallback env fields for integrations, including `DHL_API_KEY`, `ONFLEET_API_KEY`, `PHANTOMBUSTER_API_KEY`, `WEBFLOW_ACCESS_TOKEN`, `LEMLIST_API_KEY`, `SENDY_API_KEY`, `EMELIA_API_KEY`, `AFFINITY_API_KEY`, `KEAP_ACCESS_TOKEN`, `MAGENTO_ACCESS_TOKEN`, `UNLEASHED_API_KEY`, `DRIFT_ACCESS_TOKEN`, `OKTA_ACCESS_TOKEN`, `MAUTIC_BASE_URL`, `RUNDECK_BASE_URL`, `RUNDECK_TOKEN`, `KOBOTOOLBOX_API_TOKEN`, `KOBOTOOLBOX_BASE_URL`, `QUICKBOOKS_ACCESS_TOKEN`, `QUICKBOOKS_REALM_ID`, `XERO_ACCESS_TOKEN`, `XERO_TENANT_ID`, `MICROSOFT_GRAPH_ACCESS_TOKEN`, and `MICROSOFT_GRAPH_BASE_URL`; see `tools.md` for the exact provider and field names.
+
+---
+
+### Reload Settings From The Config Files
+
+```http
+POST /settings/reload?gate_agent_writes=false
+Authorization: Bearer <admin-token>
+```
+
+Re-reads the deployment's dotenv files and applies what changed, without
+restarting. Takes no body.
+
+A running server is authoritative about its own configuration: the files are
+read once at startup and never consulted again, so an out-of-band edit (a
+hand-edit, or an agent writing the file) does nothing until this endpoint or a
+restart applies it. That is deliberate. Before it, such an edit half-applied on
+whatever unrelated request happened to reload settings next, reaching the
+settings object while the compiled graph kept the old value and nothing
+reported a restart was needed.
+
+**Response:**
+```json
+{
+  "message": "Reloaded 1 env file(s); 2 setting(s) changed (some changes require /restart api to take effect)",
+  "changed": ["llm_model", "embedding_provider"],
+  "files": ["/opt/NymeriaOS/Nymeria/.env"],
+  "restart_required": true
+}
+```
+
+`changed` is field NAMES only. The files hold provider credentials and the
+credential-vault key, so no value is ever echoed back. A graph-sensitive change
+(the same set `PATCH /settings` rebuilds for) rebuilds the agent graph here too.
+
+`restart_required` covers the `PATCH /settings` register plus every field
+outside the writable settings surface. A reload can move settings no write can
+reach (`API_PORT`, `DATABASE_BACKEND`, `SQLITE_PATH`, the CORS list); nothing
+hot-applies those, so moving one always reports `true`.
+
+The reload is all-or-nothing. It cannot check a value before applying it (the
+value is not known until the file is in the process), so it applies, then either
+commits or restores the previous environment:
+
+- **400** if the files hold a value `Settings` rejects. Nothing is applied. Without
+  this a single out-of-range number would leave a server that cannot construct
+  its own settings, so every request including this one answers 500 and the only
+  way back is a manual file edit plus a restart.
+- **403** if `gate_agent_writes=true` and the reload would change a setting an
+  agent may not write (currently `HOOKS_ENABLED`). Nothing is applied. The flag
+  is set by the command layer for a non-human caller: the API has no actor of
+  its own, and `/settings reload` is otherwise a way to apply an env-file edit
+  that `/settings set` would refuse.
+
+A key REMOVED from a file keeps its current value, on this path and across a
+restart alike: the loader only sets what it finds. Set it to the value you want
+rather than deleting the line.
+
+Values a runtime shape pins are never overridden by a file: `nymeria slim`
+removes `REDIS_URL` so the process cannot reach a cross-process event bus, and
+a reload will not put it back. An env file that cannot be read or decoded is
+skipped rather than failing the request; `files` lists what was actually read.
+
+Admin-only, and unaffected by in-flight turns: unlike a restart, a reload ends
+no turn and drops no stream.
+
+---
+
 
 ---
 

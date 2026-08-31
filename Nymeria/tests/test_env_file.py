@@ -7,7 +7,10 @@ atomic-0600 guarantees are covered here once rather than in each caller.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 from nymeria.config.env_file import (
     format_env_value,
@@ -81,9 +84,39 @@ def test_merge_env_lines_tolerates_spaced_lines_and_empty_existing():
     assert merge_env_lines([], [("A", "1"), ("B", "2")]) == ["A=1", "B=2"]
 
 
-def test_merge_env_lines_replaces_only_first_occurrence():
-    out = merge_env_lines(["DUP=1", "DUP=2"], [("DUP", "x")])
-    assert out == ["DUP=x", "DUP=2"]
+def test_merge_env_lines_collapses_duplicate_keys_to_one_line(caplog):
+    # #301. Every reader of these files takes the LAST occurrence of a key
+    # (python-dotenv, the pydantic dotenv source, run.py's boot load, the
+    # restart re-merge), so preserving a later duplicate leaves the writer and
+    # every reader disagreeing about which line is live: the write reports
+    # success, the process serves the new value, and the next restart silently
+    # reverts. Exactly one line survives, at the first occurrence, and unrelated
+    # lines between the duplicates are untouched.
+    existing = ["DUP=secret-one", "# a comment between them", "KEEP=me", "DUP=secret-two"]
+    with caplog.at_level(logging.WARNING, logger="nymeria.config.env_file"):
+        out = merge_env_lines(existing, [("DUP", "x")])
+    assert out == ["DUP=x", "# a comment between them", "KEEP=me"]
+    # Removing a line from a file the user owns is announced rather than silent,
+    # and named by KEY only: the line removed may hold a secret.
+    assert "DUP" in caplog.text
+    assert "secret-one" not in caplog.text
+    assert "secret-two" not in caplog.text
+
+
+def test_merge_env_lines_collapses_however_many_duplicates_there_are(caplog):
+    with caplog.at_level(logging.WARNING, logger="nymeria.config.env_file"):
+        assert merge_env_lines(["K=1", "K=2", "K=3"], [("K", "final")]) == ["K=final"]
+    # One warning per key, carrying the count, not one per removed line.
+    assert len(caplog.records) == 1
+    assert "2" in caplog.text
+
+
+def test_merge_env_lines_without_duplicates_says_nothing(caplog):
+    # The collapse is the exceptional path: an ordinary write must not log.
+    with caplog.at_level(logging.WARNING, logger="nymeria.config.env_file"):
+        out = merge_env_lines(["K=old", "OTHER=1"], [("K", "new")])
+    assert out == ["K=new", "OTHER=1"]
+    assert caplog.records == []
 
 
 def test_merge_env_lines_drop_removes_retired_keys():
@@ -135,3 +168,46 @@ def test_write_env_file_merge_missing_file_appends_all(tmp_path: Path):
     lines = write_env_file(path, [("A", "1")], merge=True)
     assert lines == ["A=1"]
     assert path.read_text(encoding="utf-8") == "A=1\n"
+
+
+def test_write_env_file_merge_reads_back_as_written_over_a_duplicated_key(
+    tmp_path: Path,
+):
+    # The property the whole of #301 exists for, asserted through the real
+    # reader rather than the line list: after a merge write, a dotenv parse of
+    # the file returns what the writer intended, whatever shape the file was in.
+    # Before the collapse this file read back as "old", so `PATCH /settings`
+    # reported success, served "new" until the next restart, and then reverted.
+    path = tmp_path / ".env"
+    path.write_text("LLM_MODEL=old\n# note\nLLM_MODEL=old\n", encoding="utf-8")
+
+    write_env_file(path, [("LLM_MODEL", "new")], merge=True)
+
+    assert dotenv_values(path) == {"LLM_MODEL": "new"}
+    assert path.read_text(encoding="utf-8") == "LLM_MODEL=new\n# note\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_env_file_merge_collapses_a_duplicated_vault_key(tmp_path: Path):
+    # The highest-consequence instance of #301, and the one the item missed:
+    # `snapshot restore --write-env` writes the credential-vault Fernet key
+    # through this same writer (`core/snapshot.py`). Landing it on a dead
+    # duplicate line meant the restore reported success and the restored vault
+    # could not be decrypted, because every reader still saw the OLD key.
+    fernet = "k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u="
+    path = tmp_path / "config.env"
+    path.write_text(
+        "NYMERIA_SECRETS_KEY=stale-key-one\n"
+        "# left over from a hand edit\n"
+        "NYMERIA_SECRETS_KEY=stale-key-two\n",
+        encoding="utf-8",
+    )
+
+    write_env_file(
+        path, [("NYMERIA_SECRETS_KEY", format_env_value(fernet))], merge=True
+    )
+
+    assert dotenv_values(path) == {"NYMERIA_SECRETS_KEY": fernet}
+    # The base64url key must also survive unquoted, the other property this
+    # file already pins for the Fernet case.
+    assert f"NYMERIA_SECRETS_KEY={fernet}" in path.read_text(encoding="utf-8")

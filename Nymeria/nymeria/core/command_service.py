@@ -1038,6 +1038,16 @@ class CommandHttpClient:
     async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
         return await self._patch("/settings", json=kwargs, act_as=user_id)
 
+    async def reload_settings(
+        self, *, user_id: Optional[str] = None, gate_agent_writes: bool = False
+    ) -> dict:
+        return await self._post(
+            "/settings/reload",
+            json={},
+            params={"gate_agent_writes": gate_agent_writes},
+            act_as=user_id,
+        )
+
     async def test_llm_provider_config(
         self,
         request: dict,
@@ -1986,6 +1996,37 @@ class CommandBackendClient:
             # keys, invalid values, a provider with no key slot); forward those
             # as the user-facing status. Anything else is a genuine fault and
             # propagates to the dispatcher's logger.exception handler.
+            _raise_http_status(exc.status_code, str(exc.detail))
+
+    async def reload_settings(
+        self, *, user_id: Optional[str] = None, gate_agent_writes: bool = False
+    ) -> dict:
+        self._require_admin()
+        from fastapi import HTTPException
+
+        from ..api.routers.settings import reload_settings_from_env_files
+        from ..api.schemas.settings import AGENT_WRITE_BLOCKED_SETTINGS
+
+        # Same shared-applier discipline as update_settings above: the reload
+        # pipeline (file re-read, validation, rollback, cache clear, agent
+        # re-bind, graph rebuild, restart reporting) lives with the route so
+        # this path cannot drift.
+        try:
+            return reload_settings_from_env_files(
+                settings=self._settings(),
+                agent=self.agent,
+                get_settings_fn=self.settings_fn,
+                blocked_settings=(
+                    AGENT_WRITE_BLOCKED_SETTINGS
+                    if gate_agent_writes
+                    else frozenset()
+                ),
+            )
+        except HTTPException as exc:
+            # 400 (the files hold an invalid value) and 403 (the reload would
+            # move a gate setting from an agent turn) are both user-actionable
+            # and already rolled back; the HTTP shape answers them with a
+            # status, so the in-process shape must not answer with a traceback.
             _raise_http_status(exc.status_code, str(exc.detail))
 
     async def test_llm_provider_config(
@@ -6135,6 +6176,33 @@ class _CommandExecutor(
         result = await self.api.update_settings(user_id=self.user_id, **{key: parsed})
         return self._render_settings_write(key, parsed, result, old_value)
 
+    async def _cmd_settings_reload(self, bound: BoundArgs) -> str | CommandOutput:
+        # A reload cannot be gated the way `/settings set` is: the caller does
+        # not know what the file says until it has been read. So the gate ships
+        # with the request and the applier reverts, but the axis is the same
+        # #157 one, and keyed the same conservative way (`!= "user"`).
+        result = await self.api.reload_settings(
+            user_id=self.user_id, gate_agent_writes=self.actor != "user"
+        )
+        changed = list(result.get("changed") or [])
+        self._alert_agent_settings_reload(changed)
+
+        files = list(result.get("files") or [])
+        read = f"Read {len(files)} env file(s)." if files else "No env files found."
+        if not changed:
+            return command_success(f"{read} Nothing changed.")
+        listed = ", ".join(changed[:20]) + (
+            f", and {len(changed) - 20} more" if len(changed) > 20 else ""
+        )
+        body = f"{read} {len(changed)} setting(s) changed: {listed}"
+        if result.get("restart_required"):
+            # Same honesty as a write: the value is live in Settings, but the
+            # subsystem that consumes it captured its copy at boot.
+            return command_warning(
+                f"{body}\nSome of these need /restart api to take effect."
+            )
+        return command_success(body)
+
     def _agent_settings_write_block(self, key: str) -> CommandOutput | None:
         """Gate-integrity carve-out (#157) for the GLOBAL master switches.
 
@@ -6194,16 +6262,10 @@ class _CommandExecutor(
     def _alert_agent_settings_write(self, key: str, value: Any, old_value: Any) -> None:
         """One owner alert for one agent-issued sensitive-settings write (#157).
 
-        send_owner_alert is deliberately not silenceable by thread
-        notification levels and never raises, but it does SYNCHRONOUS
-        network I/O (per-destination 30s timeouts), and this seam runs on
-        the API event loop, so dispatch is fire-and-forget on the default
-        executor (asyncio.run and the API lifespan both drain it on
-        shutdown). The inner closure carries its own try/except: an alert is
-        containment, not a gate, and must never fail the write it reports
-        on. Secret-named values (old and new) are withheld from the message;
+        Secret-named values (old and new) are withheld from the message;
         non-secret URL values are echoed as pasted, so a URL embedding
-        userinfo reaches the owner's external channels verbatim.
+        userinfo reaches the owner's external channels verbatim. Delivery
+        mechanics live in `_dispatch_owner_alert`.
         """
         try:
             from ..api.routers.settings import _is_secret_setting_key
@@ -6218,40 +6280,83 @@ class _CommandExecutor(
                     else f" (was {old_value})"
                 )
             surface = self.surface or "unknown surface"
-            message = (
+            self._dispatch_owner_alert(
                 f"An agent changed server setting {key} to {shown}{was} "
                 f"via {surface} on thread {self.thread_id or 'unknown'}. "
                 "Review with /env show and revert with /env set if this was "
-                "not expected."
+                "not expected.",
+                context=key,
             )
-            user_id = self.user_id
-            thread_id = self.thread_id
-
-            def _dispatch() -> None:
-                try:
-                    from ..config import get_settings
-                    from .notification_dispatch import send_owner_alert
-
-                    send_owner_alert(
-                        message,
-                        get_settings(),
-                        user_id=user_id,
-                        thread_id=thread_id,
-                    )
-                except Exception as e:  # noqa: BLE001 - never fail the write
-                    logger.error(
-                        "Agent settings-write alert failed for %s: %s", key, e
-                    )
-
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # Sync context: the established worker-side calling shape.
-                _dispatch()
-            else:
-                loop.run_in_executor(None, _dispatch)
         except Exception as e:  # noqa: BLE001 - never fail the write
             logger.error("Agent settings-write alert failed for %s: %s", key, e)
+
+    def _alert_agent_settings_reload(self, changed: list[str]) -> None:
+        """Owner alert when an AGENT-issued config reload moved a sensitive key.
+
+        A reload is not a write, but an agent that can ``file_write`` an env
+        file can then apply it with ``/settings reload``, which is exactly the
+        route that would otherwise carry no #157 alert at all. One alert per
+        reload rather than per key: the keys moved together, by one act.
+
+        Values are never echoed here, unlike the write alert. This path never
+        had them in hand (it applies whatever the file already said) and the
+        file it read holds provider credentials and the vault key.
+        """
+        if self.actor != "agent" or not changed:
+            return
+        try:
+            from ..api.schemas.settings import AGENT_WRITE_ALERT_SETTINGS
+
+            applied = sorted(set(changed) & AGENT_WRITE_ALERT_SETTINGS)
+            if not applied:
+                return
+            surface = self.surface or "unknown surface"
+            self._dispatch_owner_alert(
+                "An agent reloaded the server config files via "
+                f"{surface} on thread {self.thread_id or 'unknown'}, which "
+                f"changed: {', '.join(applied)}. Values are not shown here; "
+                "review with /env show and revert with /env set if this was "
+                "not expected.",
+                context=",".join(applied),
+            )
+        except Exception as e:  # noqa: BLE001 - never fail the reload
+            logger.error("Agent settings-reload alert failed: %s", e)
+
+    def _dispatch_owner_alert(self, message: str, *, context: str) -> None:
+        """Fire-and-forget one owner alert (#157). Shared by write and reload.
+
+        ``send_owner_alert`` is deliberately not silenceable by thread
+        notification levels and never raises, but it does SYNCHRONOUS network
+        I/O (per-destination 30s timeouts), and this seam runs on the API event
+        loop, so dispatch goes to the default executor (asyncio.run and the API
+        lifespan both drain it on shutdown). The inner closure carries its own
+        try/except: an alert is containment, not a gate, and must never fail
+        the operation it reports on.
+        """
+        user_id = self.user_id
+        thread_id = self.thread_id
+
+        def _dispatch() -> None:
+            try:
+                from ..config import get_settings
+                from .notification_dispatch import send_owner_alert
+
+                send_owner_alert(
+                    message,
+                    get_settings(),
+                    user_id=user_id,
+                    thread_id=thread_id,
+                )
+            except Exception as e:  # noqa: BLE001 - never fail the caller
+                logger.error("Owner alert failed for %s: %s", context, e)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Sync context: the established worker-side calling shape.
+            _dispatch()
+        else:
+            loop.run_in_executor(None, _dispatch)
 
     def _render_settings_write(
         self, key: str, parsed: Any, result: dict, old_value: Any = None

@@ -1181,6 +1181,18 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @settings_group.command(
+        name="reload",
+        description="Re-read the config files and apply what changed",
+    )
+    async def cmd_settings_reload(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self.bot._send_backend_command(
+            interaction,
+            "settings reload",
+            require_admin=True,
+        )
+
+    @settings_group.command(
         name="set",
         description="Change a server setting",
     )
@@ -2018,6 +2030,7 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "prune",
     "sequential-tools",
     "settings get",
+    "settings reload",
     "settings set",
     "skills disable",
     "skills enable",
@@ -2094,6 +2107,7 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "prune": "Thread",
     "sequential-tools": "Tools",
     "settings get": "Settings",
+    "settings reload": "Settings",
     "settings set": "Settings",
     "skills disable": "Skills",
     "skills enable": "Skills",

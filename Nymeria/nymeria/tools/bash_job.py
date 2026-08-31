@@ -14,18 +14,20 @@ from .registry import ToolGroup, register_tool_group
 
 import logging
 import os
-import signal
 import time
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from .bash_background import BackgroundJobRecord, get_registry
+from .bash_background import (
+    BackgroundJobRecord,
+    get_registry,
+    kill_process_group,
+)
 
 logger = logging.getLogger(__name__)
 
-_KILL_GRACE_SECONDS = 1.0
 _LOG_TAIL_BYTES = 65536
 
 
@@ -141,7 +143,7 @@ def _log(record: BackgroundJobRecord, lines: int) -> str:
 def _kill(record: BackgroundJobRecord) -> str:
     if record.status != "running":
         return f"Job {record.id} is already {record.status} (exit_code={record.exit_code})."
-    ok = _kill_process_group(record.pid)
+    ok = kill_process_group(record.pid)
     if ok:
         return (
             f"Sent termination to job {record.id} (pid {record.pid}) and its "
@@ -151,51 +153,6 @@ def _kill(record: BackgroundJobRecord) -> str:
         f"Job {record.id} (pid {record.pid}) could not be signalled; it may have "
         "already exited. Check status."
     )
-
-
-def _kill_process_group(pid: int) -> bool:
-    """Best-effort SIGTERM->SIGKILL of the job's whole process group by pid.
-
-    Background jobs are launched with a new session, so the pid is the group
-    leader and ``killpg(pid)`` reaps everything it spawned. Never raises.
-    """
-    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-        try:
-            pgid = os.getpgid(pid)
-        except (ProcessLookupError, OSError):
-            return False
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            return False
-        end = time.monotonic() + _KILL_GRACE_SECONDS
-        while time.monotonic() < end:
-            if not _pid_alive(pid):
-                return True
-            time.sleep(0.05)
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass  # group exited during the grace window; TERM already succeeded
-        return True
-    # Windows / no process groups: single-process best effort.
-    try:
-        os.kill(pid, signal.SIGTERM)
-        return True
-    except (ProcessLookupError, OSError):
-        return False
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
 
 
 def _tail_lines(path: str, count: int) -> str:

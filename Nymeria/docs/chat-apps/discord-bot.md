@@ -274,6 +274,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/show-settings` | Show all server settings: LLM config, context management, system flags. Hand-written: `/settings` is a group on Discord, so the readout needs its own name. |
 | `/settings get <key>` | Get a specific setting value (e.g., `llm_model`, `context_management`). |
 | `/settings set <key> <value>` | Update a server setting. Auto-parses booleans, numbers, and `none`. Admin only. |
+| `/settings reload` | Re-read the config files and apply what changed, without restarting. Reports which settings moved and whether a restart is still needed. Admin only. |
 | `/env show` | List environment variables by category, with secrets masked. Admin only. |
 | `/env get <key>` | Show one environment variable. Admin only. |
 | `/env set <key> <value>` | Write one environment variable. Admin only. |

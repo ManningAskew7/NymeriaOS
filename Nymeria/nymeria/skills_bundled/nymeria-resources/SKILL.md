@@ -118,34 +118,36 @@ changed, tells you whether a restart is still required, and alerts the owner
 on the egress-shaped keys. A few global switches are refused on an agent's
 turn by design: ask rather than routing around them.
 
-**A raw edit to an env file half-applies, and the halves are the opposite of
-what you would guess:**
+**A raw edit to an env file changes nothing until you ask for it.** The files
+are read once, at startup; the running process is authoritative from then on,
+and nothing re-reads a config file behind its own back. So an edit is inert,
+predictably, rather than half-applied in a way you cannot see. Two ways to
+apply one:
 
-- A key the process already holds with a NON-EMPTY value is shadowed. The
-  environment outranks the file, so the edit does nothing at all until a
-  restart. After a normal start that is every key the file had at boot.
-- A key that is absent from the environment, blank there, or cleared by the
-  runtime IS picked up by the next settings reload, but only into the settings
-  object. The compiled graph is not rebuilt for it and nothing reports that a
-  restart is needed.
-- So a read-back that agrees with your edit proves nothing: `/env get` can
-  report a new model while every turn still runs the old one.
+- `/settings reload` re-reads the files and applies what moved, without
+  ending in-flight turns. It answers with the field names that changed and
+  whether any of them still need a restart. Admin-only.
+- A restart applies everything, including the settings captured at startup.
 
-**Never append a second line for a key that already exists.** The writer
-updates a key's first occurrence and dotenv readers take the last, so an
-appended line leaves the two disagreeing and the change reverts at the next
-restart. Edit the existing line.
+A runtime shape's own pins survive both (slim removes `REDIS_URL` so it cannot
+reach a cross-process bus, and a reload will not put it back).
+
+**Edit a key's existing line rather than appending a second one.** Every
+reader takes the LAST occurrence, so while both lines exist a raw read-back
+shows you the bottom one, not the top one. The writer collapses a duplicated
+key to a single line on its next write, so an appended line self-heals rather
+than silently reverting, but only once something writes that key.
 
 **A key you just added to the file is not in the environment yet**, so
 `${env:NEW_VAR}` in an MCP server or custom tool will not resolve until a
-restart (the MCP path substitutes empty, a custom tool raises). Put it in the
-vault and use `${credential:...}` if you need it this session.
+reload or restart (the MCP path substitutes empty, a custom tool raises). Put
+it in the vault and use `${credential:...}` if you need it this session.
 
-**Applying an env-file edit properly means restarting the API.** That is a
-deployment-level action you cannot take yourself and should not treat as
-free: it replaces the running process, so in-flight turns and open streams
-end. Say what you changed, say a restart is needed to apply it, and let the
-user pick the moment.
+**A restart is not free, and is not yours to take.** It replaces the running
+process: in-flight turns and open streams end, and background jobs the backend
+started are terminated with it. Prefer `/settings reload` when it suffices,
+and when a restart is genuinely needed, say what you changed, say why a
+reload will not cover it, and let the user pick the moment.
 
 ## Weight of a raw edit
 
