@@ -41,6 +41,35 @@ A non-empty shared `secret` is required for public webhook fire requests. Fire v
 
 Template variables: any keys in the POST body, plus `{fired_at}`, `{source_ip}`, `{trigger_id}`, `{trigger_name}`.
 
+### Secrets in source config
+
+A source declares which of its config fields hold credentials with
+`secret: true` in its config schema (today `webhook.secret`,
+`slack.bot_token`, and `http_poll.headers`, whose VALUES are arbitrary
+`Authorization` headers). Those are **fingerprinted on every read**: the
+agent's `trigger_info` detail view, the REST read model, and both GUIs get
+the first 4 and last 3 characters, never the full value. Enough to check
+which secret is configured, useless to replay.
+
+Two consequences worth knowing:
+
+- **A fingerprint is not a secret.** Saving an untouched field back is safe:
+  an incoming value equal to the fingerprint of the stored one is treated as
+  unchanged, and the update SAYS SO rather than answering a bare "updated",
+  so a caller can tell "my new secret was saved" from "the fingerprint I sent
+  was ignored" without firing the webhook to find out. A fingerprint copied
+  into a NEW trigger is refused with a 400 instead: create has no stored
+  value to compare against, so it cannot tell a copy from a real secret, and
+  storing one would turn an 11-character string from a transcript into a live
+  credential.
+- **There is no reveal.** Triggers are owner-scoped and an agent acts as the
+  owner, so an owner-only reveal would gate nothing. If a secret is lost, set
+  a new one and update whatever calls the webhook.
+
+Masking is on RENDERING only. The store still holds the plaintext, because
+the anonymous fire route derives a webhook's OWNER by matching the secret it
+was given against stored secrets.
+
 ### Outlook Email
 
 | Field | Type | Required | Description |
@@ -65,6 +94,14 @@ Requires Microsoft OAuth (shares Microsoft Graph infrastructure).
 
 Template variables: `{title}`, `{link}`, `{summary}`, `{author}`, `{published}`, `{feed_title}`.
 
+`{published}` falls back across feed dialects: `published`, then `updated`,
+then `created`. Atom REQUIRES `<updated>` and makes `<published>` optional
+(GitHub's releases, commits, and tags feeds all omit `<published>`), and
+feedparser does not alias one onto the other, so reading `published` alone
+delivered a blank date on those feeds. `fetch_url_nymeria` previews a feed
+through the same reader, so what the preview shows is what the trigger
+delivers.
+
 RSS polling uses Nymeria's HTTP egress policy, so loopback, private, link-local,
 metadata, and blocked-domain targets are rejected unless explicitly allowed by
 the operator. Dependency: `feedparser` (included in requirements).
@@ -75,7 +112,7 @@ the operator. Dependency: `feedparser` (included in requirements).
 |-------|------|----------|-------------|
 | `url` | string | yes | URL to monitor |
 | `method` | string | no | HTTP method (default: `GET`) |
-| `headers` | object | no | Custom request headers |
+| `headers` | object (secret values) | no | Custom request headers; values are fingerprinted on read |
 | `fire_on` | string | no | When to fire: `change`, `status_code`, `contains`, `always` (default: `change`) |
 | `expected_status` | integer | no | Status code to match (for `status_code` mode) |
 | `contains_text` | string | no | Text to search for (for `contains` mode) |
@@ -356,7 +393,7 @@ counter, `action_failures`:
 |---|---|---|
 | alert | `TRIGGER_FAILURE_ALERT_AFTER` (default 2) | One owner alert naming the trigger, the streak and the last error |
 | pause | `TRIGGER_FAILURE_PAUSE_AFTER` (default 5) | `auto_paused_at` is stamped and a second alert says it gave up |
-| alert cooldown | `TRIGGER_FAILURE_ALERT_COOLDOWN_MINUTES` (default 180) | Suppresses repeat ALERTS for one trigger inside the window; the pause alert is never suppressed |
+| alert cooldown | `TRIGGER_FAILURE_ALERT_COOLDOWN_MINUTES` (default 180) | Suppresses repeat ALERTS for one trigger inside the window; the pause alert is never suppressed. On the SOURCE plane the same window is the repeat interval for `[TRIGGER STILL FAILING]` |
 
 `action_failures` is deliberately separate from `consecutive_errors`: the
 shared counter also counts backed-off polls while failing (that is what
@@ -390,9 +427,21 @@ not resume it, and resuming does not enable it.
 
 SOURCE failures never auto-pause. An outage (a token expiring, an API down)
 usually self-heals, and the backoff already covers it; stopping the trigger
-would leave one to resume by hand every time a feed blipped. The cost of
-that choice is that a permanently dead source alerts once and then polls
-quietly forever.
+would leave one to resume by hand every time a feed blipped.
+
+Instead, a failing source REPEATS its alert. The crossing into `failing`
+sends `[TRIGGER FAILING]` as before, and while it stays failing each further
+failed poll sends `[TRIGGER STILL FAILING]` once
+`TRIGGER_FAILURE_ALERT_COOLDOWN_MINUTES` has elapsed since the last one, so a
+source that will never recover (a revoked token, a deleted mailbox, a retired
+endpoint) keeps reminding you rather than going silent. Setting that knob to
+`0` disables the reminder and restores one alert per episode. The reminder
+points at fixing or disabling, not resuming: resume clears health, and a
+genuinely dead source just fails its way back to `failing`.
+
+A trigger whose source type is not registered at all (its plugin removed from
+the build) is treated as a failing source rather than skipped, so it reports
+`failing` and alerts instead of sitting `healthy` and silent.
 
 ### Resuming
 

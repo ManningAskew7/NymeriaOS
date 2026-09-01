@@ -40,6 +40,7 @@ from ...config.model_capabilities import (
 )
 from ...core.accounts import AuthenticatedUser
 from ...core.llm_credentials import get_llm_provider_credential
+from ...core.secret_masking import mask_secret_value
 from ...core.llm_provider_test_suite import (
     ProviderTestSuiteOptions,
     run_provider_test_suite,
@@ -531,14 +532,6 @@ def serialize_server_settings(settings: Any) -> ServerSettingsResponse:
     )
 
 
-def _mask_value(val: str) -> str:
-    """Mask a secret value, showing first 4 and last 3 chars."""
-    s = str(val)
-    if len(s) <= 10:
-        return s[:2] + "..." + s[-1:] if len(s) > 3 else "***"
-    return s[:4] + "..." + s[-3:]
-
-
 def serialize_env_entries(settings: Any) -> dict:
     """Single source of truth for the masked env-var read model.
 
@@ -562,7 +555,7 @@ def serialize_env_entries(settings: Any) -> dict:
             is_secret = _is_secret_setting_key(key)
             display_val = None
             if val is not None:
-                display_val = _mask_value(str(val)) if is_secret else str(val)
+                display_val = mask_secret_value(str(val)) if is_secret else str(val)
             entries.append({
                 "name": key,
                 "env_var": env_var,
@@ -604,7 +597,7 @@ def serialize_env_var(
     if val is None:
         display_val = None
     elif is_secret and not reveal:
-        display_val = _mask_value(str(val))
+        display_val = mask_secret_value(str(val))
     else:
         display_val = str(val)
 

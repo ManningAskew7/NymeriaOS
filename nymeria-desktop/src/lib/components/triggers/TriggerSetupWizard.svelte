@@ -420,11 +420,21 @@
                       <input
                         id="cfg-{key}"
                         class="field-input"
-                        type={field.secret ? 'password' : 'text'}
+                        type={field.secret && field.type !== 'object' ? 'password' : 'text'}
                         placeholder={field.placeholder || ''}
                         value={String(sourceConfig[key] ?? '')}
                         oninput={(e) => { sourceConfig[key] = (e.target as HTMLInputElement).value; sourceConfig = sourceConfig; }}
                       />
+                    {/if}
+                    {#if field.secret && field.type !== 'object' && editTrigger}
+                      <!-- The prefilled value is a fingerprint, not the
+                           secret (#307). Saving it back unchanged is safe:
+                           the backend restores the stored value. -->
+                      <p class="field-hint">
+                        Shown as a fingerprint, not the stored value. Leave it
+                        as-is to keep the current secret; type a new one to
+                        replace it.
+                      </p>
                     {/if}
                   </div>
                 {/each}

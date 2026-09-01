@@ -91,7 +91,15 @@ class TriggerResponse(BaseModel):
     id: str
     name: str
     source_type: str
+    # Secret values are FINGERPRINTED here, never sent in full (#307). The
+    # source's own config schema declares which fields those are. Clients that
+    # prefill an edit form from this and POST the whole dict back get the
+    # stored secret preserved by `restore_unchanged_secrets` on the way in, so
+    # an ordinary save cannot overwrite a credential with its own mask.
     source_config: dict
+    # Which keys above were masked, so a client never has to guess by key name
+    # (the desktop trigger list used to carry its own substring heuristic).
+    source_config_secret_fields: List[str] = Field(default_factory=list)
     action: TriggerAction
     conditions: List[TriggerCondition] = Field(default_factory=list)
     enabled: bool
@@ -112,11 +120,18 @@ class TriggerResponse(BaseModel):
 
     @classmethod
     def from_definition(cls, t: TriggerDefinition) -> "TriggerResponse":
+        # Function-local like every other `.sources` import in this file:
+        # importing that package eagerly loads all six source plugins.
+        from .sources import redact_source_config, redacted_secret_keys
+
         return cls(
             id=t.id,
             name=t.name,
             source_type=t.source_type,
-            source_config=t.source_config,
+            source_config=redact_source_config(t.source_type, t.source_config),
+            source_config_secret_fields=redacted_secret_keys(
+                t.source_type, t.source_config
+            ),
             action=t.action,
             conditions=t.conditions,
             enabled=t.enabled,
@@ -398,6 +413,8 @@ def create_trigger_router(
         # downstream ``/chat`` route honors for shared channels).
         if body.thread_id and require_thread_access_fn is not None:
             require_thread_access_fn(user, body.thread_id)
+        from .sources import MaskedSecretRejected as _MaskedSecretRejected
+
         manager = _get_manager()
         if body.action_type == "run_workflow":
             binding_error = _run_workflow_binding_error(body.action_config)
@@ -405,17 +422,20 @@ def create_trigger_router(
                 raise HTTPException(status_code=400, detail=binding_error)
         action = TriggerAction(type=body.action_type, config=body.action_config)
 
-        trigger = manager.add_trigger(
-            user_id=user_id,
-            name=body.name,
-            source_type=body.source_type,
-            source_config=body.source_config,
-            action=action,
-            cooldown_seconds=body.cooldown_seconds,
-            enabled=body.enabled,
-            created_by="user",
-            thread_id=body.thread_id,
-        )
+        try:
+            trigger = manager.add_trigger(
+                user_id=user_id,
+                name=body.name,
+                source_type=body.source_type,
+                source_config=body.source_config,
+                action=action,
+                cooldown_seconds=body.cooldown_seconds,
+                enabled=body.enabled,
+                created_by="user",
+                thread_id=body.thread_id,
+            )
+        except _MaskedSecretRejected as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         if trigger is None:
             raise HTTPException(
@@ -547,12 +567,24 @@ def create_trigger_router(
             if existing is None:
                 raise HTTPException(status_code=404, detail="Trigger not found")
             from .sources import get_source
+
+            # Put back any secret the caller echoed as its own fingerprint
+            # BEFORE validating (#307): both GUI wizards prefill from the
+            # masked read model and POST the whole dict back, so without this
+            # a plain rename would write the mask over the live credential.
+            # Ordered before validate_config so the source validates the real
+            # value, not a mask that merely looks non-empty.
+            from .sources import restore_unchanged_secrets
+
+            incoming_config = restore_unchanged_secrets(
+                existing.source_type, body.source_config, existing.source_config
+            )
             source = get_source(existing.source_type)
             if source:
-                ok, msg = source.validate_config(body.source_config)
+                ok, msg = source.validate_config(incoming_config)
                 if not ok:
                     raise HTTPException(status_code=400, detail=f"Invalid source config: {msg}")
-            kwargs["source_config"] = body.source_config
+            kwargs["source_config"] = incoming_config
 
         if body.action_type is not None or body.action_config is not None:
             existing = manager.get_trigger(user_id, trigger_id)

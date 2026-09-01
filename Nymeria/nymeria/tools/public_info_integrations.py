@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.feed_fields import feed_entry_published
 from ..core.http_policy import (
     HTTPPolicyRedirectLimit,
     HTTPPolicyViolation,
@@ -500,7 +501,10 @@ def rss_feed_read(url: str, max_items: int = 20, ignore_ssl: bool = False) -> st
                 {
                     "title": entry.get("title"),
                     "link": entry.get("link"),
-                    "published": entry.get("published") or entry.get("updated"),
+                    # Shared with the rss trigger source and the
+                    # fetch_url_nymeria preview so all three feed readers
+                    # answer the same way about dates (#309).
+                    "published": feed_entry_published(entry) or None,
                     "author": entry.get("author"),
                     "summary": entry.get("summary"),
                 }

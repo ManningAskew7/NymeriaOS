@@ -11,7 +11,10 @@ Content-kind dispatch lives in `_extract_content` (PDF, HTML, feed, text, binary
 and is deliberately body-first: a declared media family is the only hard refusal,
 everything else earns a sniff. RSS/Atom bodies render through feedparser into the
 same six fields `triggers/sources/rss_source.py` emits per trigger event, so a
-feed previewed with this tool shows what a trigger watching it will receive.
+feed previewed with this tool shows what a trigger watching it will receive. That
+parity is enforced by SHARED CODE (`core/feed_fields.py`), not by two readers
+agreeing: it used to be the latter, and the two quietly disagreed about dates on
+any Atom feed (#309).
 feedparser was measured safe on hostile bodies before being used here (no
 external-entity resolution, entity-expansion bombs bounce); the dispatch order
 and that measurement are documented in
@@ -37,6 +40,7 @@ from urllib.parse import urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.feed_fields import feed_entry_field, feed_entry_published
 from ..core.http_policy import (
     HTTPPolicyRedirectLimit,
     HTTPPolicyViolation,
@@ -338,9 +342,14 @@ def _looks_like_feed(raw: bytes) -> bool:
 
 
 def _entry_field(entry, key: str) -> str:
-    """Read one feedparser entry field (they are dict-like AND attribute-style)."""
-    value = entry.get(key, "") if hasattr(entry, "get") else getattr(entry, key, "")
-    return str(value or "")
+    """Read one feedparser entry field, through the shared feed reader.
+
+    Shared with ``triggers/sources/rss_source.py`` via
+    ``core/feed_fields.py`` so the preview and the trigger cannot drift: the
+    parity this module's docstring promises is now a property of the code
+    rather than an agreement between two independent implementations (#309).
+    """
+    return feed_entry_field(entry, key)
 
 
 def _collapse(value: str) -> str:
@@ -352,8 +361,12 @@ def _render_feed(raw: bytes) -> tuple[str, str]:
 
     Emits the same six fields ``triggers/sources/rss_source.py`` puts in a trigger
     event (title, link, summary, author, published, feed_title) via the same
-    parser, so a feed previewed here shows exactly what an ``rss`` trigger's
-    conditions will match against, rather than something merely similar.
+    parser AND the same field reader (``core/feed_fields.py``), so a feed
+    previewed here shows exactly what an ``rss`` trigger's conditions will match
+    against, rather than something merely similar. ``published`` therefore falls
+    back to Atom's ``<updated>`` on both sides (#309); before that was shared,
+    each side read the field its own way and an Atom feed previewed blank while
+    the trigger delivered blank for a different reason.
 
     Returns ``("", "")`` when the body is not a feed at all, so the caller falls
     through to the raw-text path. The test is feedparser's ``version`` (the
@@ -386,7 +399,12 @@ def _render_feed(raw: bytes) -> tuple[str, str]:
     for i, entry in enumerate(entries, 1):
         lines.append(f"{i}. {_collapse(_entry_field(entry, 'title')) or '(untitled)'}")
         for key in ("link", "published", "author"):
-            value = _collapse(_entry_field(entry, key))
+            field = (
+                feed_entry_published(entry)
+                if key == "published"
+                else _entry_field(entry, key)
+            )
+            value = _collapse(field)
             if value:
                 lines.append(f"   {key + ':':<11}{value}")
         # Feed summaries are routinely HTML; strip it so the preview stays readable.
