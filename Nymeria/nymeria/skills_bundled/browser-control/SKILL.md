@@ -121,7 +121,10 @@ own tab, never fight over theirs.
    produce something observable (a row appears, a toast, a URL change), say
    so in the same call: `wait_for_text` / `wait_for_url` / `wait_for_ref`
    work on EVERY action, so "click and confirm the result" is one call, not
-   a click then a wait.
+   a click then a wait. To confirm a URL CHANGE, prefer `wait_for_url` (or
+   `wait_for_ref`): `wait_for_text` matches a substring already on the page
+   you started from just as readily as the destination's own words, so a
+   click that never navigated can still report the wait as met.
 5. **Read the result.** It is a verification payload, not an acknowledgement.
 6. Re-read the page when refs go stale, and only then.
 

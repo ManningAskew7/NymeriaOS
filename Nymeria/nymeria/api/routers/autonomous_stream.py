@@ -60,6 +60,21 @@ _KEEPALIVE_POLL_INTERVAL = max(
     1, round(_KEEPALIVE_INTERVAL_SECONDS / _QUEUE_POLL_INTERVAL_SECONDS)
 )
 
+# Session-lifecycle metadata from a browser-login handoff (session_id,
+# thread_id, tab_id, url, counters -- never frame bytes or keystrokes, which
+# ride the chrome-only browser_login_input) is OWNER-ONLY (#293): the HTTP
+# surface for the same feature denies admins outright with no
+# X-Nymeria-Act-As exemption, so the SSE firehose must not leak it to
+# admin/bot consumers either. Deliberately NOT a CHROME_ONLY_EVENT_TYPES
+# member: that gate's is_extension_stream check requires a chrome-extension
+# client_id, and desktop (the actual normal recipient of these two types on
+# its own, non-firehose stream) is not one -- adding them there would
+# silence desktop's own live-viewer raise/retract, not just the firehose.
+FIREHOSE_SUPPRESSED_EVENT_TYPES = frozenset(
+    {"browser_login_started", "browser_login_ended"}
+)
+
+
 def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
     if not authorization:
         return None
@@ -221,6 +236,19 @@ async def _generate_autonomous_sse_events(
                             filtered_count,
                             client_id[:8] if client_id else "none",
                             firehose,
+                            event.thread_id,
+                        )
+                    continue
+
+                if firehose and event.event_type in FIREHOSE_SUPPRESSED_EVENT_TYPES:
+                    filtered_count = bump(filtered_kind_counts, event.event_type)
+                    if should_log_stream_event_sample(event.event_type, filtered_count):
+                        logger.info(
+                            "[AUTONOMOUS SSE] filter subscriber=%s reason=owner_only_on_firehose "
+                            "type=%s count=%d thread=%s",
+                            subscriber_id[:8],
+                            event.event_type,
+                            filtered_count,
                             event.thread_id,
                         )
                     continue

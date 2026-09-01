@@ -632,9 +632,17 @@ def _outcome(
     never anything the page or the operator typed. This function is the
     only writer of that payload, so the "frames never reach the agent"
     property is one place to read and one place to test.
+
+    ``login_completed`` is whether the LOGIN itself finished (``reason ==
+    REASON_COMPLETED``), never whether a tool call succeeded: this function
+    has no "tool call" to speak of (it also feeds the TTL sweep and thread
+    abort, neither of which is one), so there is no ``ok`` field here.
+    ``tools/chrome_browser.py::_login_json`` is the layer that adds a
+    tool-call-success ``ok`` on top, uniformly, when it composes this into a
+    tool's JSON return (#291).
     """
     payload: dict[str, Any] = {
-        "ok": reason == REASON_COMPLETED,
+        "login_completed": reason == REASON_COMPLETED,
         "status": reason,
         "session_id": session.session_id,
         "tab_id": session.tab_id,

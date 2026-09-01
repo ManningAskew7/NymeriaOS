@@ -513,7 +513,7 @@ def test_done_ends_the_session_wakes_the_agent_and_frees_the_tab(env) -> None:
     assert resp.json()["state"] == STATE_ENDED
     assert resp.json()["end_reason"] == "completed"
     result = _agent_result(client, future)
-    assert result["ok"] is True
+    assert result["login_completed"] is True
     assert result["status"] == "completed"
     # And the agent may drive the tab again.
     assert get_browser_login_registry().active_for_tab("alice", 7) is None
@@ -530,7 +530,7 @@ def test_cancelling_reports_an_unsuccessful_outcome(env) -> None:
     )
 
     result = _agent_result(client, future)
-    assert result["ok"] is False
+    assert result["login_completed"] is False
     assert result["status"] == "cancelled"
 
 

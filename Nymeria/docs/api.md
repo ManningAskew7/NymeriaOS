@@ -1902,8 +1902,8 @@ The same stream also carries cross-client sync events used by open frontends:
 | `thread_rewound` | Trailing exchanges were removed via the rewind endpoint | `steps`, `removed`, optional `to_message_id` |
 | `queue_restored` | A user-initiated stop returned queued user prompts unprocessed; other open clients should restore their local queued copies to the composer. Suppressed for the originating client via `X-Nymeria-Client-Id`. | `count`, `prompts` (list of raw prompt texts) |
 | `thread_teams_changed` | Callable-team entities or membership changed (teams REST, config PATCH, `team_manage`, `nym.threads.configure` team=, a teamed spawn). The payload is a hint; clients refetch `GET /thread-teams`. | optional `team_id`, `reason` (`created`/`renamed`/`described`/`membership`/`updated`/`deleted`) |
-| `browser_login_started` | A browser login handoff opened; the desktop raises the live viewer (see "Browser Login Handoff API") | the session status object plus `origin` (`agent`/`command`) |
-| `browser_login_ended` | A login session ended by any path (operator button, agent cancel, TTL expiry, thread abort); every client retracts its viewer. Unknown session ids are ignored | the final session status object (`end_reason` set) |
+| `browser_login_started` | A browser login handoff opened; the desktop raises the live viewer (see "Browser Login Handoff API"). Owner-only: excluded from the admin firehose | the session status object plus `origin` (`agent`/`command`) |
+| `browser_login_ended` | A login session ended by any path (operator button, agent cancel, TTL expiry, thread abort); every client retracts its viewer. Unknown session ids are ignored. Owner-only: excluded from the admin firehose | the final session status object (`end_reason` set) |
 
 **Example Stream:**
 ```
@@ -3203,6 +3203,11 @@ desktop can raise and retract the viewer (see the sync-events table there):
 tool opened it, `command` for `/browser login`) and `browser_login_ended`
 (the final status; clients ignore unknown session ids, since a failed start
 can end a session that never announced started).
+
+Owner-only like the rest of this API: both events are excluded from the
+admin firehose (`X-Nymeria-Act-As: *`), even though the per-user filter is
+otherwise bypassed for firehose subscribers, so the same owner-only posture
+holds on the SSE side too.
 
 ---
 
