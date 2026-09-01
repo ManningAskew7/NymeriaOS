@@ -298,6 +298,30 @@ def get_workspace_dir() -> Path:
     return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
 
 
+def _attach_result_suffix(path: Path) -> tuple[str, str]:
+    """Build the ``attach=True`` addendum for ``path``: ``(tag, skip_note)``.
+
+    Exactly one of the two is non-empty. ``tag`` is the literal
+    ``"\\n[attach:<path>]"`` marker that ``core/agent_results.py`` and every
+    chat surface scan for to deliver a workspace file as a downloadable
+    attachment; ``skip_note`` explains why attach was skipped when ``path``
+    falls outside the workspace dir, the same boundary
+    ``extract_workspace_artifacts`` enforces on the consuming side (a marker
+    for a path outside it would be silently dropped there anyway, so this
+    tells the caller why up front instead of failing silently).
+
+    Shared by ``file_write``'s attach branch and ``file_read``'s, so the two
+    tools cannot drift on the boundary check or the message text.
+    """
+    workspace_dir = get_workspace_dir()
+    if path.is_relative_to(workspace_dir):
+        return f"\n[attach:{path}]", ""
+    return "", (
+        f"\n[Info]: Attachment skipped. Only files inside "
+        f"{workspace_dir} can be delivered to chat clients."
+    )
+
+
 def confine_file_tools_to_workspace() -> bool:
     """Return whether mutating file tools should reject paths outside workspace."""
     try:
@@ -544,6 +568,8 @@ def file_read(
     max_lines: Optional[int] = None,
     offset: Optional[int] = None,
     extraction_prompt: str = "",
+    attach: bool = False,
+    attach_only: bool = False,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> tuple[str, dict]:
     """
@@ -560,6 +586,42 @@ def file_read(
     grep, offset=810 with max_lines=90 reads lines 810-899. Windowed output
     is line-numbered, and those numbers feed file_edit's replace_range
     (start_line/end_line) directly.
+
+    Two flags deliver a file to the user as a downloadable chat attachment
+    (Telegram, Discord, desktop/mobile). Use one of them whenever the user
+    needs an actual FILE, not just its contents pasted into chat: after
+    generating a PDF/zip/spreadsheet/image with bash_execute or another
+    tool, after fetching or editing a file the user asked to be sent back,
+    or when re-sending something already on disk. Both are the SAFE way to
+    hand back an EXISTING file, including a binary one that some other tool
+    or a script wrote: file_read never writes, so unlike file_write's
+    attach (which OVERWRITES file_path with new `content` before sending
+    it) this can never truncate or corrupt a file it did not create. Both
+    require the file to be inside NYMERIA_WORKSPACE_DIR; a file elsewhere
+    cannot be delivered this way (write it under the workspace first, or
+    tell the user to attach it manually).
+
+    - attach=True: read the file AND deliver it, in one call. Use this when
+      you also need to see the content yourself, e.g. to verify a generated
+      report looks right, quote a line from it, or summarize it while also
+      handing it over. It even rescues a file that can't be shown as text
+      (too large, or not decodable in `encoding`, e.g. a PDF or image binary
+      you don't otherwise need to read): instead of erroring, it just skips
+      showing you the content and still delivers the file, since delivery
+      does not require a successful text decode.
+    - attach_only=True: deliver the file WITHOUT reading it at all (no
+      decode attempt, no image handling, no size cap) — just a short
+      confirmation plus the attachment marker. Use this whenever you do NOT
+      need to inspect the content yourself: it is the cheap, default choice
+      for "just send the user this file", and for a large file it saves
+      the (potentially very large) token cost of reading the whole thing
+      into your context for no reason. For example: you just ran a script
+      that wrote a report.pdf and the user only needs the PDF, not you
+      reading it; or the user says "send me that CSV again" and you already
+      know what it contains. Prefer this over attach=True unless you have a
+      concrete reason to also see the content.
+
+    Passing both is not an error: attach_only wins and no content is read.
 
     Args:
         file_path: Absolute or relative path to the file. Relative paths
@@ -582,6 +644,14 @@ def file_read(
             first; the result is tagged with the model that produced it.
             Ignored for images. With offset, extraction reads the raw window
             (no line numbers).
+        attach: Also deliver the file to the user as a downloadable chat
+            attachment (default False). See above; only files inside
+            NYMERIA_WORKSPACE_DIR can be delivered.
+        attach_only: Deliver the file without reading its content at all
+            (default False). See above; takes priority over attach and every
+            other argument (encoding/max_lines/offset/extraction_prompt are
+            ignored), and only files inside NYMERIA_WORKSPACE_DIR can be
+            delivered.
 
     Returns:
         File contents as plain text, or a loaded-image note (with the image
@@ -591,9 +661,28 @@ def file_read(
         extraction_prompt is used, the extracted text ends with
         "[Extracted by <model>]", which grows an output-limit clause when the
         extraction model was cut mid-answer (the tail may be missing).
+        With attach=True on a file inside the workspace, the result ends with
+        an "[attach:<path>]" marker (a binary or oversized file that would
+        otherwise error instead returns "[Success]: ... attached ..." with
+        the marker); outside the workspace it ends with
+        "[Info]: Attachment skipped. ...", and the original content/error is
+        unchanged. With attach_only=True on a file inside the workspace, the
+        result is just "[Success]: '<name>' (<size> bytes) attached for
+        delivery." plus the marker, with no file content anywhere in the
+        return; outside the workspace it is "[Error]: Cannot attach ...".
         Errors: "[Error]: <reason>".
     """
     logger.info(f"Reading file: {file_path}")
+
+    # Bound outside the try (with harmless defaults) purely so the
+    # UnicodeDecodeError handler below, which can only actually run once all
+    # four are set for real, does not read as possibly-unbound to a type
+    # checker that (correctly, in general) can't prove an exception won't
+    # land between two statements in the try block.
+    path: Path = Path(file_path)
+    file_size = 0
+    attach_tag = ""
+    attach_note = ""
 
     try:
         path = resolve_tool_path(file_path)
@@ -614,6 +703,26 @@ def file_read(
 
         file_size = path.stat().st_size
 
+        if attach_only:
+            # Deliberately short-circuits before any of the read machinery
+            # below (image sniff, decode, size cap): the whole point is to
+            # never spend context on the file's content, only on the fact
+            # that it exists and where it will be delivered.
+            tag, skip_note = _attach_result_suffix(path)
+            if tag:
+                return (
+                    f"[Success]: '{path.name}' ({file_size} bytes) attached "
+                    f"for delivery.{tag}",
+                    {},
+                )
+            return f"[Error]: Cannot attach '{path.name}'.{skip_note}", {}
+
+        # Both empty unless attach=True; exactly one is non-empty when it is.
+        # Computed once, up front, so every return point below (success,
+        # image, or the two "can't show as text" failures this flag turns
+        # into a success) can just append it.
+        attach_tag, attach_note = _attach_result_suffix(path) if attach else ("", "")
+
         # Cheap magic-byte peek: route image files to the vision path before
         # attempting a text decode.
         head = b""
@@ -625,25 +734,45 @@ def file_read(
         if sniff_image_mime(head, str(path)) is not None:
             image_result = _read_image(path, file_size, config)
             if image_result is not None:
-                return image_result
+                image_content, image_artifact = image_result
+                return image_content + attach_tag + attach_note, image_artifact
             # else: not actually a decodable image, fall through to text read.
 
         # Text read
         max_size = 10 * 1024 * 1024  # 10 MB
         if file_size > max_size:
-            return f"[Error]: File too large ({file_size} bytes). Max size is {max_size} bytes.", {}
+            if attach_tag:
+                return (
+                    f"[Success]: '{path.name}' is {file_size} bytes, too large "
+                    f"to read as text (max {max_size} bytes), but it has been "
+                    f"attached for delivery.{attach_tag}",
+                    {},
+                )
+            return (
+                f"[Error]: File too large ({file_size} bytes). "
+                f"Max size is {max_size} bytes.{attach_note}",
+                {},
+            )
 
         if offset is not None and offset < 1:
-            return f"[Error]: offset must be a 1-based line number (got {offset}).", {}
+            return (
+                f"[Error]: offset must be a 1-based line number (got {offset})."
+                f"{attach_tag}{attach_note}",
+                {},
+            )
         if max_lines is not None and max_lines < 0:
-            return f"[Error]: max_lines must be non-negative (got {max_lines}).", {}
+            return (
+                f"[Error]: max_lines must be non-negative (got {max_lines})."
+                f"{attach_tag}{attach_note}",
+                {},
+            )
 
         if offset is not None:
             raw, numbered, window_error = _line_window(
                 path.read_bytes(), offset, max_lines, encoding
             )
             if window_error is not None:
-                return f"[Error]: {window_error}", {}
+                return f"[Error]: {window_error}{attach_tag}{attach_note}", {}
             assert raw is not None and numbered is not None
             content = raw  # raw un-numbered window, used for extraction
         else:
@@ -667,15 +796,35 @@ def file_read(
 
             extracted, model, cut = run_extraction(content, extraction_prompt)
             if extracted.startswith("[Error]:"):
-                return extracted, {}
-            return f"{extracted}\n\n{extraction_attribution(model, cut)}", {}
+                return extracted + attach_tag + attach_note, {}
+            return (
+                f"{extracted}\n\n{extraction_attribution(model, cut)}"
+                f"{attach_tag}{attach_note}",
+                {},
+            )
 
         if numbered is not None:
-            return numbered, {}
-        return content, {}
+            return numbered + attach_tag + attach_note, {}
+        return content + attach_tag + attach_note, {}
 
     except UnicodeDecodeError:
-        return f"[Error]: Cannot decode file as {encoding}. Try a different encoding.", {}
+        if attach_tag:
+            return (
+                f"[Success]: '{path.name}' ({file_size} bytes) is not "
+                f"decodable as {encoding} text (likely a binary file), but it "
+                f"has been attached for delivery.{attach_tag}",
+                {},
+            )
+        msg = f"[Error]: Cannot decode file as {encoding}. Try a different encoding."
+        if attach_note:
+            msg += attach_note
+        elif not attach:
+            msg += (
+                " If this is a binary file (PDF, zip, image, etc.), pass "
+                "attach=True to deliver it to the user as a chat attachment "
+                "instead of reading its text."
+            )
+        return msg, {}
 
     except PermissionError:
         return f"[Error]: Permission denied reading: {file_path}", {}
@@ -701,6 +850,13 @@ def file_write(
 
     Use this tool to create or modify text files on the filesystem.
     Set attach=True to send the file to the user in chat (Telegram/Discord) after writing.
+    attach=True still WRITES first: it overwrites file_path with content (or
+    appends, if append=True) before delivering it, even if the file already
+    existed with different content. To hand back an EXISTING file unmodified
+    (for example a PDF or other binary a script just generated), use
+    file_read(file_path=..., attach_only=True) instead (or attach=True if
+    you also want to see the content yourself): file_read never writes, so
+    it cannot truncate or corrupt the file the way this can.
 
     Args:
         file_path: Absolute or relative path to the file. Relative paths
@@ -709,7 +865,11 @@ def file_write(
         encoding: File encoding (default utf-8)
         create_directories: Create parent directories if they don't exist (default True)
         append: Append to file instead of overwriting (default False)
-        attach: Send the written file to the user as a downloadable attachment (default False)
+        attach: Send the written file to the user as a downloadable attachment
+            after writing it (default False). This writes content to
+            file_path FIRST, so it is only for content the agent is
+            authoring now; it is the wrong tool for delivering a file that
+            already exists (see above).
 
     Returns:
         "[Success]: Wrote N characters to <path>" (or "Appended").
@@ -798,14 +958,8 @@ def file_write(
         logger.debug(f"{action} {len(content)} characters to {file_path}")
         result = f"[Success]: {action} {len(content)} characters to {file_path}"
         if attach:
-            workspace_dir = get_workspace_dir()
-            if path.is_relative_to(workspace_dir):
-                result += f"\n[attach:{path}]"
-            else:
-                result += (
-                    f"\n[Info]: Attachment skipped. Only files inside "
-                    f"{workspace_dir} can be delivered to chat clients."
-                )
+            tag, skip_note = _attach_result_suffix(path)
+            result += tag or skip_note
         return result
 
     except PermissionError:

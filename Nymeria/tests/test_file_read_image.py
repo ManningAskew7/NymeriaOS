@@ -184,3 +184,6 @@ def test_non_image_binary_uses_text_path(tmp_path, monkeypatch):
     content, artifact = file_read.func(str(path), config=_CFG)
     assert content.startswith("[Error]")  # not decodable as text, never an image
     assert artifact == {}
+    # The error names the real fix (attach=True) instead of only blaming the
+    # encoding; test_file_read_attach.py covers attach=True actually working.
+    assert "attach=True" in content

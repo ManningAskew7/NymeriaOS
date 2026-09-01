@@ -1128,7 +1128,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `trello_list_cards` | `nymeria/tools/productivity_service_integrations.py` | List Trello cards in a list. |
 | `trello_search` | `nymeria/tools/productivity_service_integrations.py` | Search Trello boards and cards. |
 | `trello_update_card` | `nymeria/tools/productivity_service_integrations.py` | Update a Trello card. |
-| `trigger_config` | `nymeria/tools/triggers.py` | Create, update, or delete event triggers. |
+| `trigger_config` | `nymeria/tools/triggers.py` | Create, update, delete, or resume event triggers. |
 | `trigger_info` | `nymeria/tools/triggers.py` | List or inspect event triggers and trigger source types. |
 | `twilio_get_message` | `nymeria/tools/messaging_delivery_service_integrations.py` | Get a Twilio message by SID. |
 | `twilio_list_messages` | `nymeria/tools/messaging_delivery_service_integrations.py` | List Twilio messages. |
