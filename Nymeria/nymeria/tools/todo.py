@@ -192,9 +192,11 @@ def nym_todo(
     Args:
         todo_id: 8-char TODO ID (omit to create a new TODO)
         task: Task description (required for create, optional for update)
-        scheduled_for: Future wake time. Relative durations accept any positive
-            number of seconds/minutes/hours/days/weeks, e.g. "45s", "17m",
-            "3h", "2d", "1w". Absolute times accept "YYYY-MM-DD HH:MM",
+        scheduled_for: Future wake time (required for create, optional for
+            update). Every TODO needs a wake time; there is no unscheduled/
+            reference mode. Relative durations accept any positive number of
+            seconds/minutes/hours/days/weeks, e.g. "45s", "17m", "3h", "2d",
+            "1w". Absolute times accept "YYYY-MM-DD HH:MM",
             "YYYY-MM-DDTHH:MM", or ISO datetimes with timezone.
         status: "pending", "in_progress", or "done"
         notes: Additional notes (max 1000 chars)
