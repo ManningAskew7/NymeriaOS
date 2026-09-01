@@ -7,6 +7,16 @@ secondary model that reads the page and returns only what an `extraction_prompt`
 asks for. Hosted members (fetch_url_firecrawl, ...) land later as separate
 opt-in tools for the cases free extraction cannot match.
 
+Content-kind dispatch lives in `_extract_content` (PDF, HTML, feed, text, binary)
+and is deliberately body-first: a declared media family is the only hard refusal,
+everything else earns a sniff. RSS/Atom bodies render through feedparser into the
+same six fields `triggers/sources/rss_source.py` emits per trigger event, so a
+feed previewed with this tool shows what a trigger watching it will receive.
+feedparser was measured safe on hostile bodies before being used here (no
+external-entity resolution, entity-expansion bombs bounce); the dispatch order
+and that measurement are documented in
+`docs/agent-systems/tools.md` under `fetch_url_nymeria`.
+
 The fetch is gated by the shared HTTP egress policy (core/http_policy.py): the
 agent supplies an arbitrary URL, so every request and redirect hop is validated
 against the SSRF rules (no loopback / private / link-local / metadata targets)
@@ -47,6 +57,30 @@ _USER_AGENT = "Nymeria/1.0 (web fetch; autonomous personal assistant)"
 
 _EXTRACT_FORMATS = {"markdown", "text"}
 
+# Content classification. Acceptance is STRUCTURAL rather than an allowlist of
+# exact types: servers invent types freely, and a feed refused for its spelling
+# is worse than a body sniff. Declared media families are the only hard "no".
+_TEXT_TYPES = {"application/xml", "application/json", "application/javascript"}
+_BINARY_FAMILIES = ("image/", "audio/", "video/", "font/", "model/")
+_FEED_ROOT_RE = re.compile(rb"<\s*(rss|feed|rdf:RDF)[\s>]", re.IGNORECASE)
+# Generous enough to clear an XML declaration plus a stylesheet processing
+# instruction or licence comment, which routinely precede a feed's root element.
+_FEED_HEAD_BYTES = 4096
+_FEED_SUMMARY_CHARS = 300
+_TEXT_SNIFF_BYTES = 4096
+_TEXT_PRINTABLE_RATIO = 0.90
+
+
+class _ExtractionError(Exception):
+    """An extraction failure, rendered as the tool's ``[Error]:`` string.
+
+    Signalled by exception rather than by returning a magic string prefix: the
+    tool now returns raw document bodies for many more content types, and a
+    fetched document that happens to BEGIN with "[Error]:" would otherwise be
+    mistaken for a failure. Caught at the `_fetch_and_render` boundary so the
+    tool keeps its contract of returning failures rather than raising them.
+    """
+
 
 # --- fetch --------------------------------------------------------------------
 
@@ -75,10 +109,6 @@ class _Fetched:
         self.content = content
         self.url = url
         self.encoding = encoding
-
-    @property
-    def text(self) -> str:
-        return self.content.decode(self.encoding or "utf-8", errors="replace")
 
 
 def _fetch_one(url: str, *, timeout: float = 25.0):
@@ -136,8 +166,13 @@ def _fetch_one(url: str, *, timeout: float = 25.0):
         # prior httpx path did) and let errors="replace" cover the rare exception.
         ctype = response.headers.get("content-type", "")
         encoding = response.encoding if "charset=" in ctype.lower() else None
+        # Lowercase the header keys: copying requests' CaseInsensitiveDict into a
+        # plain dict PRESERVES the server's casing, so downstream lookups of
+        # "content-type" silently miss (httpx, which this module first used,
+        # normalized instead). This is the one place a client response becomes a
+        # _Fetched, so it is the only place that needs to know.
         fetched = _Fetched(
-            headers=dict(response.headers),
+            headers={k.lower(): v for k, v in response.headers.items()},
             content=b"".join(chunks),
             url=final_url,
             encoding=encoding,
@@ -235,53 +270,225 @@ def _extract_html(html: str, extract: str) -> str:
     return primary
 
 
-def _extract_content(response, extract: str) -> str:
-    """Dispatch on Content-Type. Returns extracted text or a ``[Error]:`` string."""
+def _is_textual_type(content_type: str) -> bool:
+    """True for text/*, the RFC 6839 structured suffixes, and known text types.
+
+    The ``+xml``/``+json`` suffixes are what make this structural: they cover
+    application/rss+xml, application/atom+xml, application/ld+json and every
+    vendor spelling nobody thought to enumerate.
+    """
+    return (
+        content_type.startswith("text/")
+        or content_type.endswith(("+xml", "+json"))
+        or content_type in _TEXT_TYPES
+    )
+
+
+def _decode(raw: bytes, encoding=None) -> str:
+    """Decode a body, tolerating a charset label Python does not know.
+
+    requests copies the header's charset VERBATIM, so a server sending
+    `charset=foobar` hands us an unusable encoding name. Without this guard the
+    decode raises LookupError straight out of the tool, breaking its contract of
+    returning failures rather than raising them.
+    """
+    try:
+        return raw.decode(encoding or "utf-8", errors="replace")
+    except (LookupError, TypeError):
+        return raw.decode("utf-8", errors="replace")
+
+
+def _looks_like_text(raw: bytes, encoding=None) -> bool:
+    """Sniff a body whose declared type says nothing useful.
+
+    Text when it carries no NULs and decodes as mostly printable. The server's
+    declared charset is honoured when it gave one, so a legacy-encoded page
+    (latin-1, Shift-JIS) is not written off as binary just for failing to be
+    UTF-8. Replacement characters count AGAINST the body, so binary holding a
+    little ASCII does not pass, while one from a multibyte character straddling
+    the sample edge is lost in the ratio. Unicode whitespace counts as printable
+    (NBSP and friends are not `isprintable()`, and real prose is full of them).
+
+    Residual: an undeclared legacy encoding still reads as binary. Rare enough
+    to prefer over guessing, since guessing risks dumping real binary as text.
+    """
+    sample = raw[:_TEXT_SNIFF_BYTES]
+    if not sample:
+        return True  # an empty body is not binary
+    if b"\x00" in sample:
+        return False
+    decoded = _decode(sample, encoding)
+    printable = sum(1 for ch in decoded if ch.isprintable() or ch.isspace())
+    undecodable = decoded.count("�")
+    return (printable - undecodable) / len(decoded) >= _TEXT_PRINTABLE_RATIO
+
+
+def _looks_like_feed(raw: bytes) -> bool:
+    """True when the document's ROOT element is a feed root (rss/feed/rdf:RDF).
+
+    Scans only the head, and only ahead of any ``<html``, so an HTML page that
+    merely links or discusses a feed cannot match.
+    """
+    head = raw[:_FEED_HEAD_BYTES]
+    match = _FEED_ROOT_RE.search(head)
+    if not match:
+        return False
+    html_at = head.lower().find(b"<html")
+    return html_at == -1 or html_at > match.start()
+
+
+def _entry_field(entry, key: str) -> str:
+    """Read one feedparser entry field (they are dict-like AND attribute-style)."""
+    value = entry.get(key, "") if hasattr(entry, "get") else getattr(entry, key, "")
+    return str(value or "")
+
+
+def _collapse(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _render_feed(raw: bytes) -> tuple[str, str]:
+    """Render an RSS/Atom body as a compact item list. Returns ``(body, feed_title)``.
+
+    Emits the same six fields ``triggers/sources/rss_source.py`` puts in a trigger
+    event (title, link, summary, author, published, feed_title) via the same
+    parser, so a feed previewed here shows exactly what an ``rss`` trigger's
+    conditions will match against, rather than something merely similar.
+
+    Returns ``("", "")`` when the body is not a feed at all, so the caller falls
+    through to the raw-text path. The test is feedparser's ``version`` (the
+    detected feed FORMAT), never the entry count: a sitemap and arbitrary XML
+    both report ``""``, while a valid but currently empty feed still reports
+    ``rss20``/``atom10`` and is worth saying so about. An empty feed is a real
+    answer for someone about to point a trigger at it, and burying that under
+    raw markup is how a trigger ends up watching a feed that never fires.
+
+    feedparser is handed the raw bytes so the feed's own XML declaration governs
+    its decoding.
+    """
+    import feedparser
+
+    parsed = feedparser.parse(raw)
+    version = str(getattr(parsed, "version", "") or "")
+    if not version:
+        return "", ""
+
+    meta = parsed.feed if isinstance(parsed.feed, dict) else {}
+    feed_title = _collapse(str(meta.get("title", "") or ""))
+    entries = getattr(parsed, "entries", None) or []
+    if not entries:
+        return (
+            f"[This {version} feed parsed correctly but currently has no entries. "
+            f'extract="text" returns the raw feed XML]'
+        ), feed_title
+
+    lines: list[str] = []
+    for i, entry in enumerate(entries, 1):
+        lines.append(f"{i}. {_collapse(_entry_field(entry, 'title')) or '(untitled)'}")
+        for key in ("link", "published", "author"):
+            value = _collapse(_entry_field(entry, key))
+            if value:
+                lines.append(f"   {key + ':':<11}{value}")
+        # Feed summaries are routinely HTML; strip it so the preview stays readable.
+        summary = _collapse(_strip_tags(_entry_field(entry, "summary")))
+        if len(summary) > _FEED_SUMMARY_CHARS:
+            summary = summary[:_FEED_SUMMARY_CHARS].rstrip() + "..."
+        if summary:
+            lines.append(f"   {'summary:':<11}{summary}")
+        lines.append("")
+
+    count = len(entries)
+    lines.append(
+        f"[{count} item{'s' if count != 1 else ''}; "
+        f'extract="text" returns the raw feed XML]'
+    )
+    return "\n".join(lines).strip(), feed_title
+
+
+def _render_html(raw: bytes, response, extract: str) -> tuple[str, str]:
+    """Extract an HTML body and its ``<title>``. Returns ``(body, title)``."""
+    html_text = _decode(raw, response.encoding)
+    body = _extract_html(html_text, extract)
+    if not body:
+        raise _ExtractionError(
+            "[Error]: Could not extract readable content (the page may require "
+            "JavaScript; try a hosted fetch provider)."
+        )
+    try:
+        title = _extract_title(html_text)
+    except Exception:  # noqa: BLE001 - a missing title must never fail the fetch
+        title = ""
+    return body, title
+
+
+def _extract_content(response, extract: str) -> tuple[str, str]:
+    """Dispatch on Content-Type, falling back to body sniffing.
+
+    Returns ``(body, title)`` and raises `_ExtractionError` on failure. Header
+    lookups here rely on the lowercased keys ``_fetch_one`` normalizes to.
+    """
     content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
     raw = response.content[:_MAX_FETCH_BYTES]
+    safe_url = _redact_url(str(response.url))
+    if not raw:
+        raise _ExtractionError(f"[Error]: Empty response body from {safe_url}.")
+
+    # A declared media family is the only hard refusal; everything else earns a
+    # look at the body rather than an "unsupported type" dead end.
+    declared_binary = content_type.startswith(_BINARY_FAMILIES)
+    sniffable = not declared_binary and not _is_textual_type(content_type)
 
     # Detect PDFs by content-type, magic bytes, or .pdf extension. Many servers
     # send PDFs as application/octet-stream or binary/octet-stream, so the
     # content-type alone is not reliable; the "%PDF-" header is definitive.
     url_path = str(response.url).split("?", 1)[0].lower()
-    is_pdf = (
-        "pdf" in content_type
-        or b"%PDF-" in raw[:1024]
-        or url_path.endswith(".pdf")
-    )
-    if is_pdf:
+    if "pdf" in content_type or b"%PDF-" in raw[:1024] or url_path.endswith(".pdf"):
         try:
             text = _extract_pdf(raw)
         except Exception as e:  # noqa: BLE001
             logger.error("PDF extraction failed: %s", e, exc_info=True)
-            return f"[Error]: Could not read PDF: {e}"
-        return text or "[Error]: PDF contained no extractable text (it may be scanned images)."
-
-    is_html = "html" in content_type or (
-        not content_type and b"<html" in raw[:2000].lower()
-    )
-    if is_html:
-        try:
-            html_text = raw.decode(response.encoding or "utf-8", errors="replace")
-        except (LookupError, TypeError):
-            html_text = raw.decode("utf-8", errors="replace")
-        body = _extract_html(html_text, extract)
-        if not body:
-            return (
-                "[Error]: Could not extract readable content (the page may require "
-                "JavaScript; try a hosted fetch provider)."
+            raise _ExtractionError(f"[Error]: Could not read PDF: {e}") from e
+        if not text:
+            raise _ExtractionError(
+                "[Error]: PDF contained no extractable text (it may be scanned images)."
             )
-        return body
+        return text, ""
 
-    if content_type.startswith("text/") or content_type in {
-        "application/json",
-        "application/xml",
-        "application/atom+xml",
-        "application/rss+xml",
-    }:
-        return raw.decode(response.encoding or "utf-8", errors="replace").strip()
+    # Declared HTML resolves before the feed check, so a real page is never
+    # rendered as a feed; sniffed HTML resolves after it, because a feed is XML.
+    if "html" in content_type:
+        return _render_html(raw, response, extract)
 
-    return f"[Error]: Unsupported content type '{content_type or 'unknown'}' for {response.url}"
+    # Feeds. The declared type is not enough on its own: hnrss and many others
+    # serve RSS as a generic application/xml, so anything not declared binary
+    # also gets the root-element sniff.
+    feed_claimed = "rss" in content_type or "atom" in content_type
+    if feed_claimed or (not declared_binary and _looks_like_feed(raw)):
+        if extract == "text":
+            return _decode(raw, response.encoding).strip(), ""   # raw-feed escape hatch
+        try:
+            feed_body, feed_title = _render_feed(raw)
+        except Exception as e:  # noqa: BLE001 - a parser failure is not fatal
+            logger.debug("feed render failed for %s: %s", safe_url, e)
+            feed_body, feed_title = "", ""
+        if feed_body:
+            return feed_body, feed_title
+        # Not a feed after all. A type that CLAIMED to be one has just disproven
+        # itself (a 404 page served as application/rss+xml is the common case),
+        # so stop trusting it and let the body decide what this is.
+        if feed_claimed:
+            sniffable = True
+
+    if sniffable and b"<html" in raw[:2000].lower():
+        return _render_html(raw, response, extract)
+
+    if _is_textual_type(content_type) or (sniffable and _looks_like_text(raw, response.encoding)):
+        return _decode(raw, response.encoding).strip(), ""
+
+    raise _ExtractionError(
+        f"[Error]: Binary content ('{content_type or 'no content-type'}', "
+        f"{len(raw)} bytes) at {safe_url}; nothing readable to extract."
+    )
 
 
 # --- rendering ----------------------------------------------------------------
@@ -352,17 +559,17 @@ def _fetch_and_render(
     if error is not None or response is None:
         return error or f"[Error]: Fetch failed for {url}"
 
-    body = _extract_content(response, extract)
-    if body.startswith("[Error]:"):
-        return body
-
-    title = ""
-    content_type = (response.headers.get("content-type") or "").lower()
-    if "html" in content_type:
-        try:
-            title = _extract_title(response.text)
-        except Exception:  # noqa: BLE001
-            title = ""
+    # _extract_content owns content-kind dispatch and produces the title with the
+    # body, so there is exactly one place that decides what a response IS. This
+    # is also the boundary where extraction failures become the tool's returned
+    # [Error]: string, so nothing from extraction can escape as a raised error.
+    try:
+        body, title = _extract_content(response, extract)
+    except _ExtractionError as e:
+        return str(e)
+    except Exception as e:  # noqa: BLE001 - the tool contract is to RETURN failures
+        logger.error("content extraction failed for %s: %s", _redact_url(url), e, exc_info=True)
+        return f"[Error]: Could not extract content from {_redact_url(url)}: {type(e).__name__}"
 
     if extraction_prompt.strip():
         extracted, model, cut = run_extraction(body, extraction_prompt)
@@ -399,19 +606,28 @@ def fetch_url_nymeria(
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
-    Fetch a web page or PDF by URL and return its readable content.
+    Fetch a web page, PDF, RSS/Atom feed, or text document by URL.
 
-    Free, in-process fetch with boilerplate removal. Best for static and
-    server-rendered pages, articles, docs, and PDFs. JavaScript-only pages may
-    return little content (a hosted fetch provider handles those). Use a
-    web_search_* tool to find URLs, then this tool to read them.
+    Returns the readable content. Free, in-process fetch with boilerplate removal. Best for static and
+    server-rendered pages, articles, docs, PDFs, feeds, and text formats like
+    JSON, XML, CSV and plain text. JavaScript-only pages may return little
+    content (a hosted fetch provider handles those). Use a web_search_* tool to
+    find URLs, then this tool to read them.
+
+    RSS and Atom feeds are rendered as a numbered item list carrying each entry's
+    title, link, published date, author and summary. Those are the same fields an
+    "rss" trigger's conditions match against, so fetching a feed shows what a
+    trigger watching it will actually receive: check a feed here before writing
+    conditions against it, rather than guessing at the titles.
 
     Args:
         url: Single URL to fetch.
         urls: Multiple URLs separated by " | " (pipe), or by commas between full
               http(s) URLs. Takes precedence over url. Each is fetched
               independently. Max 10 per call.
-        extract: "markdown" (default, preserves structure) or "text" (plain prose).
+        extract: "markdown" (default, preserves structure) or "text" (plain
+                 prose; on an RSS/Atom feed this returns the raw feed XML instead
+                 of the rendered item list).
         extraction_prompt: Leave empty to return the full readable page. Provide
                  a prompt (e.g. "pricing tiers and limits") and a secondary LLM
                  reads the page and returns only what the prompt asks for,
@@ -434,7 +650,7 @@ def fetch_url_nymeria(
         sections separated by "=== URL N/M: <url> ===" headers. When a page
         exceeds max_length, the preview ends with the saved file path for the
         full text. Failures are returned as "[Error]: <reason>" strings (blocked,
-        HTTP code, timeout, unsupported type, or could-not-extract), never raised.
+        HTTP code, timeout, binary content, or could-not-extract), never raised.
     """
     if urls.strip():
         # Split on pipes, or on a comma only when the next token is a full http(s)

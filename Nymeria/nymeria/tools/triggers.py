@@ -93,7 +93,9 @@ def _trigger_create(
         action_config: Action-specific configuration dict.
             agent_prompt: {"prompt_template": "..."}
             notify: {"message_template": "...", "platform": "auto"}
-            create_todo: {"task_template": "..."}
+            create_todo: {"task_template": "...", "scheduled_for": "..."}.
+            scheduled_for is optional (e.g. "1h" or "2026-09-02 09:00");
+            omitting it creates a plain unscheduled reference TODO.
             run_workflow: {"workflow_id": "...", "params": {...}}. The raw
             event dict is passed as the workflow's 'event' parameter when
             its signature declares one; the workflow must be approved and
@@ -667,7 +669,11 @@ def trigger_config(
         name: Trigger display name.
         source_type: Event source type for create, such as "webhook".
         action_type: "agent_prompt", "notify", or "create_todo".
-        action_config: Action config dict, such as {"prompt_template": "..."}.
+        action_config: Action config dict. agent_prompt: {"prompt_template":
+            "..."}. notify: {"message_template": "...", "platform": "auto"}.
+            create_todo: {"task_template": "...", "scheduled_for": "..."} --
+            scheduled_for is optional (e.g. "1h" or "2026-09-02 09:00");
+            omitting it creates a plain unscheduled reference TODO.
         source_config: Source-specific config dict.
         cooldown_seconds: Minimum seconds between firings.
         conditions: Optional filter conditions; [] clears conditions on update.

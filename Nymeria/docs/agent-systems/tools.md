@@ -19,7 +19,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 4e | `web_search_brave` | Web Search | SAFE | Opt-in | Ranked-source web search via Brave's independent index; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4f | `web_search_searxng` | Web Search | SAFE | Opt-in | Keyless metasearch via a self-hosted SearXNG instance; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group (a wizard pick deploys the sidecar) |
 | 4g | `web_search_ddgs` | Web Search | SAFE | Default | Keyless in-process metasearch via the ddgs library (no key, no instance); catalog member seeded into fresh profiles' defaults on every shape (2026-08-30) |
-| 4h | `fetch_url_nymeria` | Web Search | SAFE | Default | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional `extraction_prompt` LLM step; catalog member seeded into fresh profiles' defaults |
+| 4h | `fetch_url_nymeria` | Web Search | SAFE | Default | Free, SSRF-gated page fetch + readable extraction (markdown/PDF/RSS-Atom/text), optional `extraction_prompt` LLM step; catalog member seeded into fresh profiles' defaults |
 | 5 | `consult` | Core | SAFE | Opt-in | Ask Gemini for a second opinion (OpenRouter); enable per-thread (was a seed default, now optional) |
 | 6 | `memory_add` | Profile | SAFE | On | Add a memory (additive only). `scope="global"` sets one keyed user-profile fact; `scope="thread"` appends to the per-thread notepad. Empty content is a no-op; clear or remove via `memory_edit`. |
 | 7 | `memory_edit` | Profile | SAFE | On | Find/replace within an existing memory; owns clearing/removing. Empty `replace` deletes the matched text; empty `find` rewrites/clears the whole notepad or deletes the named global key. |
@@ -580,7 +580,38 @@ The fetch is gated by the shared HTTP egress policy (`core/http_policy.py`): the
 agent supplies an arbitrary URL, so every request and redirect hop is validated
 against the SSRF rules (no loopback, private, link-local, or metadata targets)
 with DNS pinning. Content is extracted with Trafilatura (primary, emits markdown)
-and a readability-lxml + markdownify fallback; PDFs go through pypdf.
+and a readability-lxml + markdownify fallback; PDFs go through pypdf; RSS and
+Atom feeds go through feedparser.
+
+**Content-kind dispatch** (`_extract_content`) is body-first, because declared
+content types are unreliable in both directions: servers send PDFs as
+`application/octet-stream` and RSS as a generic `application/xml`. The order is
+PDF (type, `%PDF-` magic, or `.pdf` path), declared HTML, feed, sniffed HTML,
+declared-textual, sniffed text, then refusal. Acceptance is structural rather
+than an allowlist of exact spellings: `text/*`, any RFC 6839 structured suffix
+(`+xml`, `+json`, so every vendor type is covered), and the known
+`application/{xml,json,javascript}` family. A type that says nothing useful
+(absent, `octet-stream`, unrecognized) earns a body sniff and is returned when it
+decodes as mostly-printable UTF-8. Only a declared media family (`image/`,
+`audio/`, `video/`, `font/`, `model/`) or a body that sniffs as binary is
+refused, and that refusal names the type and size.
+
+**Feeds** render as a numbered item list carrying each entry's `title`, `link`,
+`published`, `author` and `summary`, with the feed's own title as the result
+header. Those are deliberately the same six fields `triggers/sources/rss_source.py`
+puts in a trigger event, produced by the same parser, so previewing a feed with
+this tool shows what an `rss` trigger watching it will actually receive: check a
+feed here before writing conditions against it. `extract="text"` returns the raw
+feed XML instead. A valid feed with no entries currently in it says so explicitly
+rather than returning markup, since "this feed is empty" is the answer someone
+wiring a trigger needs. Feed detection needs both a feed root element and a
+format feedparser recognizes, so a sitemap, arbitrary XML, or an HTML error page
+mis-served as `application/rss+xml` falls through to its actual content instead
+of being announced as an empty feed.
+
+feedparser was measured against hostile bodies before being used on this path
+(the fetched body is attacker-controlled): it resolves no external entities (an
+XXE canary stays literal) and shrugs off entity-expansion bombs.
 
 ```python
 fetch_url_nymeria(url: str = "", urls: str = "", extract: str = "markdown", extraction_prompt: str = "", max_length: int = 8000)
@@ -589,13 +620,13 @@ fetch_url_nymeria(url: str = "", urls: str = "", extract: str = "markdown", extr
 **Parameters (agent-controlled):**
 - `url` (`str`): Single URL to fetch
 - `urls` (`str`): Multiple URLs separated by `" | "` (pipe) or commas; takes precedence over `url`, max 10 per call
-- `extract` (`str`): `"markdown"` (default, preserves structure) or `"text"` (plain prose)
+- `extract` (`str`): `"markdown"` (default, preserves structure) or `"text"` (plain prose; on an RSS/Atom feed, the raw feed XML instead of the rendered item list)
 - `extraction_prompt` (`str`): Leave empty to return the full readable page. Provide a prompt (e.g. `"pricing tiers and limits"`) and a secondary LLM reads the page and returns only what the prompt asks for, instead of the full text. Best for large pages; skip it for small ones. The LLM sees the cleaned page up to ~30k tokens; the result is tagged `[Extracted by <model>]`
 - `max_length` (`int`): Max characters of content returned (clamped 500-50000, default 8000); long pages are truncated when `extraction_prompt` is empty
 
-Hard defaults (not exposed): granular httpx timeouts (connect 10s, read 25s), an honest `User-Agent`, a 10 MB fetch guard, redirect handling and DNS pinning via the egress policy, and the extraction cascade order.
+Hard defaults (not exposed): a 25s requests timeout applied to both the connect and read phases, an honest `User-Agent`, a 10 MB fetch guard enforced while streaming (so a lying or absent `Content-Length` cannot beat it), redirect handling and DNS pinning via the egress policy, and the extraction cascade order.
 
-**Returns:** A short header (title, source URL, redirect note) followed by the content. Batch mode adds `=== URL N/M: <url> ===` headers. Failures are returned as `[Error]: <reason>` strings (blocked by egress policy, HTTP code, timeout, unsupported content type, or could-not-extract), never raised.
+**Returns:** A short header (title, source URL, redirect note) followed by the content. Batch mode adds `=== URL N/M: <url> ===` headers. Failures are returned as `[Error]: <reason>` strings (blocked by egress policy, HTTP code, timeout, binary content, or could-not-extract), never raised.
 
 **Extraction step:** when `extraction_prompt` is non-empty, a secondary model reads the cleaned page (up to ~30k tokens) and returns only what the prompt asks for, isolated from the live SSE transcript, and the result is tagged with the model that produced it. The model is resolved from the global `background` model tier (`llm_background_model`, with an optional `llm_background_base_url` override; env `LLM_BACKGROUND_MODEL` / `LLM_BACKGROUND_BASE_URL`; also set via the `/background` command). A small local model works well (no tool calling needed). When unset, it falls back to the main agent model. The same step and tier back `file_read`'s `extraction_prompt` (shared `nymeria/tools/llm_extract.py`).
 
@@ -1946,7 +1977,7 @@ trigger_config(
 - `action_config` (`dict`): Action-specific configuration:
   - `agent_prompt`: `{"prompt_template": "...", "thread_id": "optional"}`
   - `notify`: `{"message_template": "...", "platform": "auto"}`
-  - `create_todo`: `{"task_template": "..."}`
+  - `create_todo`: `{"task_template": "...", "scheduled_for": "optional"}` -  `scheduled_for` accepts a relative duration or absolute time; omit it to create a plain unscheduled reference TODO. See [`triggers.md`](triggers.md#create_todo).
   - Templates support `{variable}` interpolation from event data.
 - `source_config` (`Optional[dict]`, default `None`): Source-specific config (e.g., `{"secret": "mykey"}` for webhooks)
 - `cooldown_seconds` (`int`, default `0`): Minimum seconds between trigger firings

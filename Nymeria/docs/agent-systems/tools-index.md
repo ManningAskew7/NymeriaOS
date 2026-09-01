@@ -347,7 +347,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `facebook_graph_get_node` | `nymeria/tools/community_publishing_service_integrations.py` | Get a Facebook Graph node or list one of its edges. |
 | `facebook_page_create_post` | `nymeria/tools/community_publishing_service_integrations.py` | Create a Facebook Page feed post. |
 | `facebook_page_list_accounts` | `nymeria/tools/community_publishing_service_integrations.py` | List Facebook pages/accounts available to the authenticated user. |
-| `fetch_url_nymeria` | `nymeria/tools/web_fetch.py` | Fetch a web page or PDF by URL and return its readable content. |
+| `fetch_url_nymeria` | `nymeria/tools/web_fetch.py` | Fetch a web page, PDF, RSS/Atom feed, or text document by URL. |
 | `file_edit` | `nymeria/tools/file_edit.py` | Precisely edit an existing text file with exact, all-or-nothing operations. |
 | `file_read` | `nymeria/tools/filesystem.py` | Read the contents of a file, including images. |
 | `file_write` | `nymeria/tools/filesystem.py` | Write content to a file. |
