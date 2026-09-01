@@ -175,17 +175,22 @@ def _trigger_create(
         ),
         config=action_config,
     )
-    trigger = manager.add_trigger(
-        user_id=user_id,
-        name=name,
-        source_type=source_type,
-        source_config=source_config or {},
-        action=action,
-        cooldown_seconds=cooldown_seconds,
-        created_by="agent",
-        thread_id=thread_id,
-        conditions=condition_objects,
-    )
+    from ..triggers.sources import MaskedSecretRejected
+
+    try:
+        trigger = manager.add_trigger(
+            user_id=user_id,
+            name=name,
+            source_type=source_type,
+            source_config=source_config or {},
+            action=action,
+            cooldown_seconds=cooldown_seconds,
+            created_by="agent",
+            thread_id=thread_id,
+            conditions=condition_objects,
+        )
+    except MaskedSecretRejected as e:
+        return f"[Error]: {e}"
 
     if trigger is None:
         return "[Error]: Failed to create trigger (at trigger limit, or internal error)."
@@ -352,9 +357,30 @@ def _trigger_update(
     if not kwargs:
         return "[Error]: No updates specified."
 
+    # Name any secret we are about to KEEP rather than overwrite, so the
+    # answer distinguishes "your new secret was saved" from "the fingerprint
+    # you echoed was discarded". Computed before the write, since the restore
+    # itself happens inside update_trigger.
+    kept_secrets: list[str] = []
+    if isinstance(kwargs.get("source_config"), dict):
+        from ..triggers.sources import unchanged_secret_keys
+
+        existing = manager.get_trigger(user_id, trigger_id)
+        if existing is not None:
+            kept_secrets = unchanged_secret_keys(
+                existing.source_type,
+                kwargs["source_config"],
+                existing.source_config,
+            )
+
     ok = manager.update_trigger(user_id, trigger_id, **kwargs)
     if ok:
         parts = [f"[Success]: Trigger {trigger_id} updated."]
+        if kept_secrets:
+            parts.append(
+                f"({', '.join(kept_secrets)} unchanged: you sent the "
+                f"fingerprint, so the stored value was kept.)"
+            )
         if conditions is not None:
             parts.append(f"Conditions: {len(kwargs.get('conditions', []))} filter(s)")
         return " ".join(parts)
@@ -467,11 +493,21 @@ def _inspect_detail(manager: TriggerManager, user_id: str, trigger_id: str) -> s
     last = trigger.last_fired.strftime("%Y-%m-%d %H:%M:%S") if trigger.last_fired else "never"
     created = trigger.created_at.strftime("%Y-%m-%d %H:%M:%S")
 
+    # Secrets are fingerprinted, never printed (#307). This view is the
+    # ordinary answer to "why is my webhook rejecting me", so before this it
+    # dropped the shared secret that authenticates the public fire endpoint
+    # into the transcript, and from there into checkpoints, compaction
+    # summaries, the RAG index and any chat surface relaying the turn.
+    from ..triggers.sources import redact_source_config, redacted_secret_keys
+
+    masked_config = redact_source_config(trigger.source_type, trigger.source_config)
+    masked_keys = redacted_secret_keys(trigger.source_type, trigger.source_config)
+
     lines = [
         f"Trigger: {trigger.name} [{trigger.id}]",
         f"  Status: {status} | Health: {trigger.health_status}",
         f"  Source: {trigger.source_type}",
-        f"  Source config: {json.dumps(trigger.source_config)}",
+        f"  Source config: {json.dumps(masked_config)}",
         f"  Action: {trigger.action.type}",
         f"  Action config: {json.dumps(trigger.action.config)}",
         f"  Thread: {trigger.thread_id}",
@@ -514,6 +550,15 @@ def _inspect_detail(manager: TriggerManager, user_id: str, trigger_id: str) -> s
         else:
             lines.append(f"  Last error: {trigger.last_error}")
         lines.append(f"  Consecutive source errors: {trigger.consecutive_errors}")
+    if masked_keys:
+        # Say it plainly, because a fingerprint looks like a value. Without
+        # this line a reader can take `QA-C...1d0` for the secret itself and
+        # try to authenticate with it.
+        lines.append(
+            f"  Note: {', '.join(masked_keys)} shown as a fingerprint "
+            f"(first/last characters), not the real value, which is never "
+            f"displayed. To change one, set a new value."
+        )
     return "\n".join(lines)
 
 

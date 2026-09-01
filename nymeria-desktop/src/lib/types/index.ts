@@ -2685,7 +2685,11 @@ export interface Trigger {
   id: string;
   name: string;
   source_type: string;
+  // Secret values arrive FINGERPRINTED, never in full (#307). Save an
+  // untouched field back as-is and the backend restores the stored secret.
   source_config: Record<string, unknown>;
+  // Which keys above the backend masked. Authoritative: never guess by name.
+  source_config_secret_fields?: string[];
   action: TriggerAction;
   conditions: TriggerCondition[];
   enabled: boolean;

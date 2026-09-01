@@ -8,6 +8,7 @@ feedparser is not installed.
 import logging
 from typing import Any, Dict, List
 
+from ...core.feed_fields import feed_entry_field, feed_entry_published
 from .base import BaseTriggerSource
 from . import register_source
 
@@ -113,7 +114,11 @@ class RSSSource(BaseTriggerSource):
                 "link": self._get(entry, "link", ""),
                 "summary": self._get(entry, "summary", "")[:500],
                 "author": self._get(entry, "author", ""),
-                "published": self._get(entry, "published", ""),
+                # Falls back across feed dialects (#309): Atom makes
+                # <published> optional and <updated> required, so a
+                # published-only read delivered an empty date for every
+                # GitHub releases/commits/tags feed.
+                "published": feed_entry_published(entry),
                 "feed_title": feed_title,
             })
 
@@ -136,9 +141,7 @@ class RSSSource(BaseTriggerSource):
 
     @staticmethod
     def _get(entry, key: str, default: str = "") -> str:
-        if hasattr(entry, "get"):
-            return str(entry.get(key, default))
-        return str(getattr(entry, key, default))
+        return feed_entry_field(entry, key, default)
 
     @staticmethod
     def _basic_parse(text: str):

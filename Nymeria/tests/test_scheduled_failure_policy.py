@@ -26,6 +26,7 @@ from nymeria.core.trigger_manager import (
     TriggerDefinition,
     TriggerManager,
 )
+from nymeria.core.time_utils import utc_now
 from nymeria.core.turn_executor import LocalAgentExecutor
 from nymeria.core.user_profile import UserProfileManager
 from nymeria.core import notification_dispatch as dispatch_module
@@ -1266,3 +1267,199 @@ def test_pause_banner_with_brackets_strips_clean_on_resume(
     resumed = _get_todo(agent, todo.id)
     assert resumed.schedule_paused_at is None
     assert resumed.notes == "med instructions"  # no banner residue
+
+
+# --- #306: a permanently dead SOURCE keeps reminding ------------------------
+
+
+def _settings_with_cooldown(monkeypatch, minutes: int):
+    """Install FakeSettings with a real (non-zero) alert cooldown."""
+    import nymeria.config as config_pkg
+
+    settings = FakeSettings()
+    settings.trigger_failure_alert_cooldown_minutes = minutes
+    monkeypatch.setattr(config_pkg, "get_settings", lambda: settings)
+    return settings
+
+
+def _drive_to_failing(manager, monkeypatch):
+    """Take a trigger across the crossing into "failing" on the source plane."""
+    trigger = _add_action_trigger(manager)
+    broken = _wire_source(monkeypatch, _BrokenSource())
+    for _ in range(5):
+        manager.check_triggers("owner")
+    assert _get_trigger(manager, trigger.id).health_status == "failing"
+    return trigger, broken
+
+
+def test_a_dead_source_stays_quiet_within_the_cooldown(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """The ratified one-alert-per-episode behavior is unchanged in the short
+    run: a source failing for less than one cooldown says nothing further."""
+    _settings_with_cooldown(monkeypatch, 180)
+    manager = TriggerManager(tmp_path)
+    trigger, broken = _drive_to_failing(manager, monkeypatch)
+    assert len(trigger_alerts) == 1
+
+    checks_at_failing = broken.checks
+    for _ in range(20):
+        manager.check_triggers("owner")
+
+    assert broken.checks > checks_at_failing  # the backoff still lapses
+    assert len(trigger_alerts) == 1
+    assert _get_trigger(manager, trigger.id).auto_paused_at is None
+
+
+def test_a_dead_source_re_alerts_once_the_cooldown_elapses(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#306: a source that will never recover used to alert once and then
+    poll silently forever. It now repeats the reminder one cooldown apart,
+    with copy that reads as a reminder rather than as fresh news, and still
+    never auto-pauses (the ratified source-plane rule)."""
+    _settings_with_cooldown(monkeypatch, 180)
+    manager = TriggerManager(tmp_path)
+    trigger, _broken = _drive_to_failing(manager, monkeypatch)
+    assert len(trigger_alerts) == 1
+    assert "[TRIGGER FAILING]" in trigger_alerts[0]["message"]
+
+    # Four hours pass with the source still dead.
+    manager.update_trigger(
+        "owner",
+        trigger.id,
+        last_source_alert_at=utc_now() - timedelta(hours=4),
+    )
+    for _ in range(10):
+        manager.check_triggers("owner")
+
+    assert len(trigger_alerts) == 2
+    repeat = trigger_alerts[1]["message"]
+    assert "[TRIGGER STILL FAILING]" in repeat
+    assert "feed down" in repeat
+    # The repeat must not send the owner to `resume`: on a genuinely dead
+    # source that just fails its way straight back to "failing".
+    assert "resume" not in repeat
+    assert "disable" in repeat
+
+    # Still never paused, and the fresh stamp re-arms the next cooldown.
+    # The stamp is the SOURCE plane's own; the action plane's is untouched,
+    # so a source episode cannot swallow #264's action alert.
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at is None
+    assert stored.last_source_alert_at is not None
+    assert stored.last_policy_alert_at is None
+    for _ in range(10):
+        manager.check_triggers("owner")
+    assert len(trigger_alerts) == 2
+
+
+def test_a_zero_cooldown_restores_one_alert_per_episode(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """Zero disables the reminder rather than making it infinitely fast:
+    "re-alert every 0 minutes" has no sane reading, and zero already means
+    "disable this stage" on the action plane."""
+    _settings_with_cooldown(monkeypatch, 0)
+    manager = TriggerManager(tmp_path)
+    trigger, _broken = _drive_to_failing(manager, monkeypatch)
+
+    manager.update_trigger(
+        "owner",
+        trigger.id,
+        last_source_alert_at=utc_now() - timedelta(days=30),
+    )
+    for _ in range(20):
+        manager.check_triggers("owner")
+
+    assert len(trigger_alerts) == 1
+
+
+def test_an_unregistered_source_degrades_instead_of_reading_healthy(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """A trigger whose source plugin is gone from the build used to be
+    skipped with a log line and nothing else, so it sat reading "healthy",
+    fired nothing, and told nobody, forever. It is the one dead-source shape
+    that cannot recover on its own, so it must be visible."""
+    _settings_with_cooldown(monkeypatch, 180)
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    _wire_source(monkeypatch, None)
+
+    for _ in range(5):
+        manager.check_triggers("owner")
+
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.health_status == "failing"
+    assert stored.last_error_kind == "source"
+    assert "not registered" in (stored.last_error or "")
+    assert len(trigger_alerts) == 1
+    assert "[TRIGGER FAILING]" in trigger_alerts[0]["message"]
+
+
+def test_a_source_alert_does_not_consume_the_action_plane_cooldown(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """The two planes must not share an alert cooldown (#306 review finding).
+
+    Sharing `last_policy_alert_at` looks free because a failing source means
+    the action never runs. But the shared quantity is a THREE-HOUR WINDOW,
+    not an instant: a source can blip, recover, and then the action starts
+    failing well inside that window. #264's alert gate is
+    `count == alert_after` exactly, so a suppressed alert is DROPPED, not
+    delayed, and the owner loses the early warning entirely until the pause.
+    """
+    _settings_with_cooldown(monkeypatch, 180)
+    manager = TriggerManager(tmp_path)
+    trigger, _broken = _drive_to_failing(manager, monkeypatch)
+    assert len(trigger_alerts) == 1  # the source spoke
+
+    # The source recovers. Takes several cycles because a failing trigger
+    # only really polls every 10th one.
+    _wire_source(monkeypatch, _QuietSource())
+    for _ in range(10):
+        manager.check_triggers("owner")
+    assert _get_trigger(manager, trigger.id).health_status == "healthy"
+
+    # Now the ACTION fails twice, well inside the source alert's window.
+    _fire_failing(manager, trigger, monkeypatch)
+    _fire_failing(manager, trigger, monkeypatch)
+
+    # #264's early-warning alert must still arrive.
+    assert len(trigger_alerts) == 2
+    assert "[TRIGGER ALERT]" in trigger_alerts[1]["message"]
+
+
+def test_the_first_source_alert_never_says_still_failing(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """The action plane can drive health to "failing" on its own, so
+    `became_failing` alone cannot decide the wording: the first thing an
+    owner hears about a source must not be the word "STILL"."""
+    settings = _settings_with_cooldown(monkeypatch, 180)
+    # Auto-pause off, or the fifth action failure pauses the trigger and the
+    # poll loop stops visiting it at all, which is the #264 behavior and not
+    # what is under test here.
+    settings.trigger_failure_pause_after = 0
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+
+    # Drive health to "failing" purely through ACTION failures.
+    _wire_source(monkeypatch, _QuietSource())
+    for _ in range(5):
+        _fire_failing(manager, trigger, monkeypatch)
+    assert _get_trigger(manager, trigger.id).health_status == "failing"
+    before = len(trigger_alerts)
+
+    # The source now fails for the first time. Several cycles, because an
+    # already-failing trigger polls its source only every 10th one (the
+    # backoff reads the SHARED counter, which the action failures moved).
+    _wire_source(monkeypatch, _BrokenSource())
+    for _ in range(10):
+        manager.check_triggers("owner")
+
+    new_alerts = trigger_alerts[before:]
+    assert len(new_alerts) == 1
+    assert "[TRIGGER FAILING]" in new_alerts[0]["message"]
+    assert "STILL" not in new_alerts[0]["message"]

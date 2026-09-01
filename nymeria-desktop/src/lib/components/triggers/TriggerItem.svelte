@@ -120,16 +120,13 @@
     return clean.length > n ? clean.slice(0, n).trimEnd() + '…' : clean;
   }
 
-  function isSensitiveKey(key: string): boolean {
-    const k = key.toLowerCase();
-    return (
-      k.includes('secret') ||
-      k.includes('token') ||
-      k.includes('password') ||
-      k === 'api_key' ||
-      k.endsWith('_key')
-    );
-  }
+  // Which config keys the backend masked, from the backend (#307). This used
+  // to be a local key-name guess, a third rule alongside each source's own
+  // `secret` schema flag and the server renderer, keyed on nothing
+  // authoritative. The values below now arrive already fingerprinted, so this
+  // is only about labelling and about keeping a fingerprint out of the
+  // one-line summary, where it identifies nothing.
+  const secretFields = $derived(new Set(trigger.source_config_secret_fields ?? []));
 
   function stringifyValue(v: unknown): string {
     if (v === null || v === undefined || v === '') return '—';
@@ -155,7 +152,7 @@
     }
     // Generic: first non-empty, non-secret string/boolean field
     const entries = Object.entries(cfg).filter(
-      ([k, v]) => !isSensitiveKey(k) && v !== '' && v !== null && v !== undefined
+      ([k, v]) => !secretFields.has(k) && v !== '' && v !== null && v !== undefined
     );
     if (entries.length === 0) return 'Default configuration';
     const [k, v] = entries[0];
@@ -169,7 +166,10 @@
       .map(([k, v]) => ({
         key: k,
         label: fieldLabel(k),
-        value: isSensitiveKey(k) ? '••••••••' : stringifyValue(v),
+        // Already fingerprinted server-side; show it, because comparing a
+        // fingerprint is the whole point of the format.
+        value: stringifyValue(v),
+        secret: secretFields.has(k),
       }))
   );
 
@@ -554,7 +554,7 @@
           <dl class="config-grid">
             {#each configEntries as entry (entry.key)}
               <dt>{entry.label}</dt>
-              <dd>{entry.value}</dd>
+              <dd>{entry.value}{#if entry.secret}<span class="config-masked">masked</span>{/if}</dd>
             {/each}
           </dl>
         </div>
@@ -1246,6 +1246,20 @@
     font-size: var(--font-size-2xs);
     overflow-wrap: anywhere;
     min-width: 0;
+  }
+
+  /* A fingerprint looks like a value, so label it as one rather than let a
+     reader take it for the real secret. */
+  .config-masked {
+    margin-left: var(--space-2);
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-3xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .conditions-list {

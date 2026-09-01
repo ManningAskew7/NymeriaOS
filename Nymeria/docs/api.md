@@ -4636,6 +4636,20 @@ dict is passed as the workflow's `event` parameter when its signature
 declares one. A run that suspends on `nym.approve` counts as a successful
 fire; an error envelope records a failed execution.
 
+**Secrets in `source_config` are masked on every read.** A field a source
+declares `secret` in its config schema (today `webhook.secret`,
+`slack.bot_token`, `http_poll.headers` values) is returned as a fingerprint
+(first 4 and last 3 characters), never in full, on every endpoint that
+returns a trigger. The response also carries
+`source_config_secret_fields`, the list of keys that were masked, so a client
+never has to guess by key name.
+
+A PATCH may send a masked value straight back: a secret field whose incoming
+value equals the fingerprint of the stored one is treated as unchanged and
+the stored secret is kept. That is what lets an edit form prefill from a read
+and POST the whole `source_config` back without overwriting the credential.
+To change a secret, send the new value.
+
 ### List Triggers
 
 ```http
@@ -4669,6 +4683,8 @@ Accepts any subset of: `name`, `enabled`, `source_config`, `action_type`, `actio
 `thread_id` re-points the trigger at another thread, gated by the same thread-access check as create. Deleting a thread DELETES its triggers, so re-point before deleting the old one.
 
 Unknown keys are REJECTED with 422 and nothing is applied, including when one rides along with a valid key. The schema previously dropped them silently, answering 200 for a write that never happened (backlog #266).
+
+A `source_config` secret field echoed back as its own fingerprint is treated as unchanged (see Create Trigger).
 
 ### Resume Trigger
 

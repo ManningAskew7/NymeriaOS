@@ -121,11 +121,20 @@ class TriggerDefinition(BaseModel):
     # silently resumes a trigger the system stopped). Cleared only by
     # resume_trigger().
     auto_paused_at: Optional[datetime] = Field(default=None)
+    # #306, SOURCE plane only, and deliberately NOT `last_policy_alert_at`.
+    # Sharing that field looked free (a failing source means the action never
+    # runs, so the two planes rarely fail at once) but the quantity actually
+    # shared is a THREE-HOUR WINDOW, not an instant: a source blip that
+    # stamped it would then suppress the action plane's alert stage, and
+    # because that gate is `count == alert_after` exactly, the alert would be
+    # DROPPED rather than delayed. Nothing clears either stamp on recovery.
+    last_source_alert_at: Optional[datetime] = Field(default=None)
     # Pending events deferred because the thread was busy
     pending_events: List[dict] = Field(default_factory=list)
 
     @field_validator(
         "last_fired", "created_at", "last_error_at", "auto_paused_at",
+        "last_source_alert_at",
         "last_policy_alert_at",
     )
     @classmethod
@@ -250,6 +259,53 @@ def _apply_health_outcome(
     elif trigger.consecutive_errors >= 2:
         trigger.health_status = "degraded"
     return previous != "failing" and trigger.health_status == "failing"
+
+
+def _source_realert_due(trigger: TriggerDefinition, now: datetime) -> bool:
+    """Is a repeat alert due for a source that is still failing? (#306)
+
+    #264 gave the ACTION plane a two-stage alert-then-auto-pause policy, and
+    deliberately left the SOURCE plane never-pausing: a source outage usually
+    self-heals, so pausing would stop triggers a night's outage would have
+    returned by morning. The cost was that a source which will NEVER recover
+    (revoked token, deleted mailbox, retired endpoint) alerted exactly once on
+    the way into "failing" and then went quiet forever, which is #264's own
+    "still enabled after 850 errors" shape on the other plane.
+
+    So the source plane re-alerts on a TIME cooldown instead of pausing.
+    Deliberately time-based, not count-based: the backoff branch in
+    ``check_triggers`` increments ``consecutive_errors`` for SKIPPED cycles
+    too, so that counter reads "errors plus backed-off polls" and "every Nth
+    poll" and "every Nth real check" differ by a factor of ten. A clock does
+    not care, and this is only ever evaluated on a real, failed poll.
+
+    Keyed on ``last_source_alert_at``, its OWN field. Sharing the action
+    plane's ``last_policy_alert_at`` was tried and is wrong: the shared
+    quantity is a three-hour window rather than an instant, so a source blip
+    would suppress #264's action alert, and since that gate is
+    ``count == alert_after`` exactly, suppressed means DROPPED, not delayed.
+    """
+    if trigger.health_status != "failing":
+        return False
+    from ..config import get_settings
+
+    cooldown_minutes = getattr(
+        get_settings(), "trigger_failure_alert_cooldown_minutes", 180
+    )
+    # The cooldown doubles as the REPEAT INTERVAL here, so zero disables the
+    # reminder rather than enabling an infinitely fast one: "re-alert every 0
+    # minutes" has no sane reading, and on the action plane zero already means
+    # "disable this stage" (#264's threshold-of-zero rule). Setting it to zero
+    # therefore restores the pre-#306 behavior of one alert per episode.
+    if cooldown_minutes <= 0:
+        return False
+    if trigger.last_source_alert_at is None:
+        # A trigger already sitting in "failing" from before this shipped has
+        # no stamp, so it gets one catch-up alert and then falls into the
+        # normal cadence.
+        return True
+    elapsed = (now - ensure_aware_utc(trigger.last_source_alert_at)).total_seconds()
+    return elapsed >= cooldown_minutes * 60
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +521,25 @@ class TriggerManager:
             return None
 
         with self.atomic_update(user_id) as store:
+            # Refuse a fingerprint posing as a secret (#307). Update repairs
+            # this silently by comparing against the stored value; create has
+            # no stored value to compare against, so refusing is the only
+            # honest answer. Raised rather than returned so the caller can say
+            # WHY: both create surfaces answer a bare None with the same
+            # generic "check source_type and config".
+            from ..triggers.sources import (
+                MaskedSecretRejected,
+                masked_secret_collision,
+            )
+
+            collision = masked_secret_collision(
+                source_type,
+                source_config,
+                [t.source_config for t in store.triggers],
+            )
+            if collision is not None:
+                raise MaskedSecretRejected(collision)
+
             if len(store.triggers) >= store.MAX_TRIGGERS:
                 logger.warning(f"Trigger limit reached for user {user_id}")
                 return None
@@ -490,11 +565,35 @@ class TriggerManager:
         return trigger
 
     def update_trigger(self, user_id: str, trigger_id: str, **kwargs) -> bool:
-        """Update fields on an existing trigger."""
+        """Update fields on an existing trigger.
+
+        ``source_config`` is a WHOLE-DICT replace, so every caller that wants
+        to change one key has to resend the rest. Since #307 masks secrets on
+        every read, the only value a caller holds for a secret key is its
+        fingerprint, and resending that would write the mask over the live
+        credential. The restore therefore lives HERE, at the one seam every
+        writer passes through, rather than at each call site: the REST route
+        and the agent's ``trigger_config(action="update")`` both reach this,
+        and so will the next writer.
+
+        The REST route restores again on its own, earlier, because it has to
+        hand the REAL value to ``validate_config`` (a mask is a non-empty
+        string and would validate happily). Restoring twice is harmless: a
+        real secret never equals the mask of itself.
+        """
         with self.atomic_update(user_id) as store:
             trigger = store.get_trigger(trigger_id)
             if trigger is None:
                 return False
+
+            if isinstance(kwargs.get("source_config"), dict):
+                from ..triggers.sources import restore_unchanged_secrets
+
+                kwargs["source_config"] = restore_unchanged_secrets(
+                    trigger.source_type,
+                    kwargs["source_config"],
+                    trigger.source_config,
+                )
 
             for key, value in kwargs.items():
                 if hasattr(trigger, key) and key not in ("id", "created_at"):
@@ -535,6 +634,7 @@ class TriggerManager:
             }
             trigger.auto_paused_at = None
             trigger.action_failures = 0
+            trigger.last_source_alert_at = None
             trigger.last_policy_alert_at = None
             trigger.consecutive_errors = 0
             trigger.health_status = "healthy"
@@ -721,10 +821,36 @@ class TriggerManager:
         )
 
         results: List[Tuple[TriggerDefinition, List[dict]]] = []
-        newly_failing: List[TriggerDefinition] = []
+        # (trigger, is_repeat). A repeat is the #306 re-alert for a source that
+        # is still failing a cooldown later, and it reads differently.
+        newly_failing: List[Tuple[TriggerDefinition, bool]] = []
 
         with self.atomic_update(user_id) as store:
             now = utc_now()
+
+            def _record_source_failure(
+                trigger: TriggerDefinition, error: str
+            ) -> None:
+                """Apply one failed source poll and decide whether to alert."""
+                became_failing = _apply_health_outcome(
+                    trigger, error, now, kind="source"
+                )
+                if became_failing or _source_realert_due(trigger, now):
+                    # "Repeat" means we have alerted about THIS source before.
+                    # Judged on the stamp, not on `became_failing` alone: the
+                    # action plane can drive health to "failing" on its own,
+                    # and the first thing the owner hears about a source must
+                    # not be the word "STILL".
+                    is_repeat = (
+                        not became_failing
+                        and trigger.last_source_alert_at is not None
+                    )
+                    # Stamp on the FIRST alert too, not only on repeats:
+                    # without it the transition alert would be followed by a
+                    # re-alert on the very next real poll.
+                    trigger.last_source_alert_at = now
+                    newly_failing.append((trigger, is_repeat))
+
             for trigger in store.triggers:
                 if not trigger.enabled:
                     continue
@@ -761,17 +887,27 @@ class TriggerManager:
 
                 source = get_source(trigger.source_type)
                 if source is None:
-                    logger.warning(f"Source '{trigger.source_type}' not registered, skipping trigger {trigger.id}")
+                    # Feed it through the SAME health path as a failed poll
+                    # (#306). This used to log and `continue`, so a trigger
+                    # whose source plugin had been removed from the build sat
+                    # reading "healthy", fired nothing, and told nobody: a
+                    # third shape of quietly-dead source, and the one where
+                    # the trigger cannot possibly recover on its own.
+                    _record_source_failure(
+                        trigger,
+                        f"Source type '{trigger.source_type}' is not registered",
+                    )
+                    logger.warning(
+                        f"Source '{trigger.source_type}' not registered, "
+                        f"skipping trigger {trigger.id}"
+                    )
                     continue
 
                 try:
                     events = source.check(trigger.source_config, trigger.state, user_id)
                     _apply_health_outcome(trigger, None, now, kind="source")
                 except Exception as e:
-                    if _apply_health_outcome(
-                        trigger, str(e), now, kind="source"
-                    ):
-                        newly_failing.append(trigger)
+                    _record_source_failure(trigger, str(e))
                     logger.error(f"Source check failed for trigger {trigger.id}: {e}")
                     continue
 
@@ -833,13 +969,14 @@ class TriggerManager:
 
         # Alerts go out AFTER the store lock releases (the sender does
         # network/store work that must not run inside atomic_update).
-        for trigger in newly_failing:
+        for trigger, is_repeat in newly_failing:
             self._send_failing_alert(
                 user_id,
                 trigger.id,
                 trigger.name,
                 trigger.thread_id or f"trigger-{trigger.id}",
                 trigger.last_error or "",
+                repeat=is_repeat,
             )
 
         return results
@@ -1580,8 +1717,20 @@ class TriggerManager:
         trigger_name: str,
         thread_id: str,
         last_error: str,
+        repeat: bool = False,
     ) -> None:
-        """One owner alert for a trigger entering "failing", either plane.
+        """One owner alert for a failing SOURCE, first time or repeat (#306).
+
+        ``repeat`` distinguishes the crossing into "failing" from the
+        re-alerts that follow one cooldown apart while it stays there. They
+        need different copy: the first is news, the rest are a standing
+        reminder about something the owner has already been told about once,
+        and reusing the first wording would read as a fresh failure each time.
+
+        The repeat wording deliberately does NOT suggest ``resume``: resume
+        clears health, and on a source that is genuinely dead the trigger
+        simply fails its way back to "failing". Fix or disable are the two
+        answers that end it.
 
         Never raises (a broken alert plane must not break the poll loop or
         a fire).
@@ -1590,13 +1739,24 @@ class TriggerManager:
             from ..config import get_settings
             from .notification_dispatch import send_owner_alert
 
-            send_owner_alert(
-                (
+            if repeat:
+                message = (
+                    f"[TRIGGER STILL FAILING] Trigger \"{trigger_name}\" "
+                    f"({trigger_id}) is still failing its source checks and "
+                    f"is polling at a reduced rate. Last error: {last_error}. "
+                    f"This reminder repeats until you fix the cause or "
+                    f"disable it with /triggers."
+                )
+            else:
+                message = (
                     f"[TRIGGER FAILING] Trigger \"{trigger_name}\" "
                     f"({trigger_id}) keeps erroring and is now marked "
                     f"failing (checks back off). Last error: {last_error}. "
                     f"Manage it with /triggers."
-                ),
+                )
+
+            send_owner_alert(
+                message,
                 get_settings(),
                 user_id=user_id,
                 thread_id=thread_id,

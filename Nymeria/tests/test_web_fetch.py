@@ -576,17 +576,23 @@ def test_feed_parsing_resolves_no_external_entities(monkeypatch, tmp_path):
     assert str(canary) not in body
 
 
-def test_atom_without_published_shows_no_date(monkeypatch):
-    """Deliberate strict fidelity: feedparser does not alias <updated> onto
-    `published`, and neither does the rss trigger source, so the preview shows
-    the same blank a trigger's {published} variable would get rather than a
-    friendlier date the trigger will not have. Filed as a trigger-side gap."""
+def test_atom_without_published_falls_back_to_updated(monkeypatch):
+    """An Atom entry carrying only <updated> still shows a date (#309).
+
+    Atom REQUIRES <updated> and makes <published> optional (GitHub's
+    releases/commits/tags feeds all take that shape), and feedparser does not
+    alias one onto the other. This preview used to show no date at all, and
+    the rss trigger delivered an empty {published} to match: strict fidelity
+    to a bug on both sides. Both now read through
+    ``core/feed_fields.feed_entry_published``, so the preview shows the real
+    date AND still predicts what the trigger delivers.
+    """
     atom = _ATOM_FEED.replace(b"<published>", b"<updated>").replace(b"</published>", b"</updated>")
     f = _fetched(monkeypatch, content=atom, content_type="application/atom+xml")
     body, _title = web_fetch._extract_content(f, "markdown")
     assert "Atom Entry One" in body
-    assert "published:" not in body
-    assert "2026-08-31" not in body
+    assert "published:" in body
+    assert "2026-08-31" in body
 
 
 # --- single + batch render ----------------------------------------------------

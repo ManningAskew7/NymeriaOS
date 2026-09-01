@@ -412,12 +412,23 @@
                   oninput={(e) => handleSourceConfigChange(key, parseInt((e.target as HTMLInputElement).value) || undefined)}
                 />
               {:else}
+                <!-- `schema.secret` is the source's own declaration that this
+                     field holds a credential. This editor ignored it and
+                     rendered a webhook secret or a Slack bot_token in
+                     cleartext, while the other three trigger surfaces each
+                     did something different (#307). -->
                 <input
                   class="field-input"
-                  type="text"
+                  type={schema.secret && schema.type !== 'object' ? 'password' : 'text'}
                   value={(formSourceConfig[key] ?? '') as string}
                   oninput={(e) => handleSourceConfigChange(key, (e.target as HTMLInputElement).value || undefined)}
                 />
+              {/if}
+              {#if schema.secret && schema.type !== 'object'}
+                <p class="field-hint">
+                  Shown as a fingerprint, not the stored value. Leave it as-is
+                  to keep the current secret; type a new one to replace it.
+                </p>
               {/if}
             </div>
           {/each}

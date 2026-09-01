@@ -63,6 +63,12 @@ class HTTPPollSource(BaseTriggerSource):
             "required": False,
             "order": 3,
             "group": "Advanced",
+            # This is where an Authorization or X-Api-Key header lives, so its
+            # VALUES are credentials even though its name is not credential-ish
+            # (#307). The redactor masks a secret dict per value, keeping the
+            # header names visible, because those are what a reader debugging
+            # a poll actually needs.
+            "secret": True,
         },
         "fire_on": {
             "type": "string",
