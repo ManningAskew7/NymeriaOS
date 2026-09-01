@@ -95,7 +95,7 @@ class _Channel:
 def _message(guild_id: Optional[int], channel: _Channel) -> SimpleNamespace:
     return SimpleNamespace(
         id=888,
-        author=SimpleNamespace(id=42, bot=False),
+        author=SimpleNamespace(id=42, bot=False, display_name="Alice"),
         guild=SimpleNamespace(id=guild_id) if guild_id is not None else None,
         content="hello there",
         channel=channel,

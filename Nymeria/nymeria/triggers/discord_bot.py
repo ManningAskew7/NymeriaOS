@@ -131,6 +131,57 @@ async def fetch_channel_context(
         return ""
 
 
+def is_backend_command(text: str) -> bool:
+    """Does this message lead with a slash, so nothing may precede it?
+
+    The chat route intercepts a set of commands by FIRST TOKEN
+    (``api/routers/chat.py``: /compact, /resume, /quick, /done, /skill,
+    /kit, /orchestrate), so anything prepended hides the token mid-string
+    and the command is silently demoted to prose. The check is a LEADING
+    SLASH rather than that exact set, deliberately: the set lives in the
+    backend and grows there, and a copy here would drift silently back
+    into the bug. The cost is that a message merely starting with a slash
+    (a path, a subreddit) also forwards bare. Same predicate, and same
+    reason, as ``slack_bot.py``'s.
+    """
+    return text.lstrip().startswith("/")
+
+
+def sender_display_name(author: Any) -> str:
+    """The name to print for a message's author.
+
+    Server nickname / global display name, falling back to the username,
+    exactly as ``fetch_channel_context`` names prior speakers so the agent
+    sees ONE name per person.
+    """
+    return author.display_name or author.name
+
+
+def compose_incoming_prompt(
+    text: str,
+    *,
+    sender_name: str,
+    context: str = "",
+    is_dm: bool = False,
+) -> str:
+    """Compose what the backend receives for an incoming Discord question.
+
+    The channel-context block names prior speakers but not the person being
+    answered, which on a shared-account deployment
+    (``DISCORD_DEFAULT_ACCOUNT``) leaves the agent unable to tell who is
+    asking at all. The identity line sits between the context block and the
+    user's text so the live question still stands out from the history.
+
+    DMs are exempt: the conversation is 1:1 and the account already
+    identifies the sender.
+    """
+    if is_backend_command(text):
+        return text
+    if is_dm:
+        return f"{context}{text}"
+    return f"{context}[Message from {sender_name}]\n{text}"
+
+
 def describe_discord_send_error(e: Exception) -> str:
     """Actionable copy for a failed Discord send (#247).
 
@@ -978,13 +1029,16 @@ class NymeriaDiscordBot(_BotBase):
         is_dm = message.guild is None
         content = message.content
 
-        if is_dm:
+        if is_dm or self.respond_mode == "all":
             pass
-        elif self.respond_mode == "all":
-            pass
-        else:
-            if not self.user or self.user not in message.mentions:
-                return
+        elif not self.user or self.user not in message.mentions:
+            return
+
+        # Strip the bot's own mention in EVERY mode, not just the one where
+        # it is the trigger: the raw <@id> token means nothing to the agent,
+        # and while it leads the text it hides the first token of a backend
+        # command from is_backend_command below (and from the chat route).
+        if self.user:
             content = re.sub(rf"<@!?{self.user.id}>\s*", "", content).strip()
 
         attachments, attach_errors = await self._collect_attachments(message)
@@ -1015,14 +1069,23 @@ class NymeriaDiscordBot(_BotBase):
             await self._reject_unlinked(message)
             return
 
-        # Fetch recent channel messages as context (if enabled)
+        # Fetch recent channel messages as context (if enabled). Skipped for
+        # backend commands: the composer discards it there, so fetching is
+        # a wasted history call.
         context = ""
-        if self._context_enabled.get(message.channel.id, True):
+        if not is_backend_command(content) and self._context_enabled.get(
+            message.channel.id, True
+        ):
             bot_id = self.user.id if self.user else None
             context = await fetch_channel_context(
                 message.channel, before=message, bot_user_id=bot_id
             )
-        content_with_context = f"{context}{content}" if context else content
+        content_with_context = compose_incoming_prompt(
+            content,
+            sender_name=sender_display_name(message.author),
+            context=context,
+            is_dm=is_dm,
+        )
 
         await self._stream_to_channel(
             channel=message.channel,

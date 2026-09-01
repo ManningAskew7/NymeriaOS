@@ -8,7 +8,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ..discord_bot import make_thread_id, fetch_channel_context
+from ..discord_bot import (
+    compose_incoming_prompt,
+    fetch_channel_context,
+    is_backend_command,
+    make_thread_id,
+    sender_display_name,
+)
 
 if TYPE_CHECKING:
     from ..discord_bot import NymeriaDiscordBot
@@ -28,12 +34,22 @@ class ChatCog(commands.Cog):
         if user_id is None:
             return
         context = ""
-        if self.bot._context_enabled.get(interaction.channel_id, True):
+        if not is_backend_command(message) and self.bot._context_enabled.get(
+            interaction.channel_id, True
+        ):
             bot_id = self.bot.user.id if self.bot.user else None
             context = await fetch_channel_context(
                 interaction.channel, bot_user_id=bot_id
             )
-        message_with_context = f"{context}{message}" if context else message
+        # An /ask is an interaction, never a channel message, so it cannot
+        # appear in the context block: without this the agent has no way at
+        # all to tell who asked.
+        message_with_context = compose_incoming_prompt(
+            message,
+            sender_name=sender_display_name(interaction.user),
+            context=context,
+            is_dm=interaction.guild_id is None,
+        )
 
         async def _first(content: str) -> discord.Message:
             return await interaction.followup.send(content, wait=True)

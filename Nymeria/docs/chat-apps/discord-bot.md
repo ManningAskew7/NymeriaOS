@@ -230,7 +230,7 @@ surfaces.
 | `/restart [target]` | Restart the Discord bot (default) or API server (`/restart target:api`). Bot restarts close the Discord gateway and API client, then use Docker's restart policy; API restart uses the existing `POST /restart` endpoint. |
 | `/help` | List all available commands. |
 
-`/ask` also fetches the last ~10 channel messages as context (configurable, see `/channel-context`).
+`/ask` also fetches the last ~10 channel messages as context (configurable, see `/channel-context`) and labels the question with the asker's display name. See [Channel Context and Who Is Asking](#channel-context-and-who-is-asking).
 
 During streamed replies, Discord now surfaces compaction events instead of hiding them: `compacting` posts a short status line, `compacted` posts a "Context compacted" embed with a summary preview, and any resumed assistant output continues streaming normally after that embed.
 
@@ -502,18 +502,28 @@ When Nymeria writes a workspace file with `file_write(..., attach=True)`, the Di
 
 **Limits:** Discord's upload size limits still apply. If the generated file is too large or no longer exists, the bot logs the failure and the rest of the response continues normally.
 
-### Channel Context
+### Channel Context and Who Is Asking
 
-When enabled (default), the bot fetches the last ~10 non-bot messages from the channel and prepends them as context:
+Two separate things tell Nymeria what is going on in a channel, and they are toggled independently.
+
+When channel context is enabled (default), the bot fetches the last ~10 non-bot messages and prepends them. Independently of that toggle, every guild message is labelled with its sender's display name, so Nymeria can tell the history apart from the live question and knows who asked it:
 
 ```
---- Recent channel messages (for context) ---
+[Discord Channel Context: last 2 messages]
 [14:30] Alice: has anyone seen the deploy logs?
 [14:32] Bob: checking now
---- End of channel context ---
+[End of channel context]
+
+[Message from Alice]
+can you take a look?
 ```
 
-This helps Nymeria understand the ongoing conversation even when invoked via `/ask` rather than a direct @mention.
+The name is the sender's server nickname (falling back to their username), the same name the context block prints for them. The bot's own @mention is stripped before the message is composed, so it does not appear in what Nymeria receives. Turning channel context off drops the block but keeps the label.
+
+- The context block helps Nymeria follow the ongoing conversation even when invoked via `/ask` rather than a direct @mention.
+- The `[Message from ...]` label matters most on shared-account deployments (`DISCORD_DEFAULT_ACCOUNT`), where every sender in the server resolves to one Nymeria account, so the message text is the only thing that distinguishes one asker from another. An `/ask` is a slash-command interaction rather than a channel message, so it never appears in the context block either: without the label, Nymeria has no way at all to tell who asked.
+- **Direct messages are not labelled.** A DM is a 1:1 conversation and the account already identifies the sender.
+- **A message beginning with `/` is forwarded verbatim**, with neither the context block nor the label, and the bot's own @mention is stripped first so it cannot get in the way. Nymeria recognizes a chat-executed backend command (`/compact`, `/resume`, `/quick`, `/done`, `/skill`, `/kit`, `/orchestrate`) only when the command is the message's first token, so anything prepended to it would silently demote the command to ordinary prose. The check is a leading slash rather than that exact list, so a message that merely starts with a slash (a file path, a subreddit) is also forwarded bare.
 
 ## Model-Swap Consent (LLM Fallback)
 
