@@ -3075,7 +3075,16 @@ async def chrome_act(
         substring, an element present: a "@eN" ref or a "css=" selector), or
         once timeout_ms (default 5000) elapses. A met condition is positive
         evidence the action did what it was for ("waited_ms" times the wait
-        itself, nothing before it). On a bare action="wait" a met condition
+        itself, nothing before it) for wait_for_url and wait_for_ref: a URL
+        or element condition that becomes true AFTER dispatch reflects the
+        action's effect. wait_for_text is weaker: it is a plain substring
+        scan of whatever the page shows RIGHT NOW, so a phrase already on
+        the page you started from (nav chrome, a sidebar, the previous
+        screen) reports found: true instantly whether or not the action
+        navigated anywhere. To confirm a NAVIGATION, prefer wait_for_url or
+        wait_for_ref; reach for wait_for_text only for a phrase that
+        appears on the destination and nowhere on the page you are leaving.
+        On a bare action="wait" a met condition
         can carry "condition_met_before_wait": true, meaning it already held
         at the first check rather than appearing while you waited; a wait
         fused to an action never reports it, because that wait opens after
@@ -3704,7 +3713,11 @@ async def chrome_batch(
         wait_for_text / wait_for_url / wait_for_ref / timeout_ms spellings
         are accepted): a met condition confirms the step's outcome and the
         sequence continues, INCLUDING across the navigation the condition
-        implies (no continue_on_url_change needed for that step); an UNMET
+        implies (no continue_on_url_change needed for that step). Prefer
+        wait_for_url/wait_for_ref to confirm a navigation step: wait_for_text
+        matches a phrase already on the page before the step ran just as
+        readily as one that only appears on the destination, so it can
+        confirm a step that never navigated. An UNMET
         one stops the batch at that step, because a condition on a batched
         step is a gate: the remaining actions assumed a page state that
         never arrived. A step that leaves a page dialog standing also stops
@@ -4550,6 +4563,19 @@ _LOGIN_OUTCOME_LINES = {
 
 
 def _login_json(payload: dict[str, Any]) -> str:
+    """Compose the final tool-return JSON for the login trio.
+
+    ``ok`` here means the TOOL CALL succeeded: every call site is reached
+    only on that path (a dispatch/lookup failure returns a bare
+    ``"[Error]: ..."`` string instead, a different channel that never
+    touches this function). Forced True unconditionally, so it can never
+    drift from that meaning no matter what an inbound payload carries
+    (#291: it used to arrive as ``_outcome()``'s own ``ok``, which meant
+    "the LOGIN completed" and made a successful cancel or a non-completed
+    await outcome read as a failed tool call). Whether the login itself
+    completed is ``login_completed`` plus ``status``, never this field.
+    """
+    payload = {**payload, "ok": True}
     outcome_line = _LOGIN_OUTCOME_LINES.get(str(payload.get("status") or ""))
     if outcome_line and "message" not in payload:
         payload = {**payload, "message": outcome_line}
@@ -4746,7 +4772,6 @@ async def chrome_request_login(
     snapshot = snapshot or {}
     return _login_json(
         {
-            "ok": True,
             "status": "dispatched",
             "session_id": snapshot.get("session_id"),
             "tab_id": snapshot.get("tab_id"),
@@ -4786,6 +4811,12 @@ async def chrome_await_login(
     something reassuring and call this again to keep waiting. Outcomes
     stay readable for 15 minutes after a session ends; a finished login
     outlives that regardless, in the browser profile itself.
+
+    ok in the return reports whether THIS CALL succeeded (true whenever you
+    get a status back at all); it says nothing about whether the login
+    completed. Read status/login_completed for that: an expired, cancelled
+    or failed login still returns ok: true, because waiting for it and
+    learning the outcome is exactly what this call is for.
     """
     user_id = get_user_id(config)
     wait = max(
@@ -4802,7 +4833,6 @@ async def chrome_await_login(
         snapshot = payload or {}
         return _login_json(
             {
-                "ok": True,
                 "status": "active",
                 "session_id": sid,
                 "seconds_remaining": snapshot.get("seconds_remaining"),
@@ -4836,6 +4866,11 @@ async def chrome_cancel_login(
 
     session_id: which session to end. Omit it to end the user's one active
         session (only one can be open at a time).
+
+    ok in the return reports whether THIS CALL succeeded, not whether the
+    login completed: a cancel that took effect returns ok: true beside
+    status: "cancelled", because cancelling on request is success, not
+    failure. login_completed is false, as expected.
     """
     user_id = get_user_id(config)
     registry = get_browser_login_registry()

@@ -6439,8 +6439,31 @@ def test_await_login_returns_the_outcome_the_user_produced() -> None:
     sid, out = asyncio.run(run())
     result = json.loads(out)
     assert result["ok"] is True and result["status"] == "completed"
+    assert result["login_completed"] is True
     assert result["session_id"] == sid
     assert "resume driving" in result["message"]
+
+
+def test_await_login_ended_branch_reports_call_success_separately_from_login_completed() -> None:
+    """#291: a non-completed ending (cancelled, expired, aborted, failed)
+    must still read ok: true -- the CALL succeeded (it learned the
+    outcome), even though the LOGIN did not complete. Before the fix, this
+    branch's ok came straight from the outcome's own completion flag, so
+    an expired/cancelled/aborted/failed login read as a failed tool call."""
+
+    async def run():
+        session, _ = _hold(7)
+        sid = session.session_id
+        get_browser_login_registry().finish(sid, reason="cancelled")
+        return await chrome_await_login.ainvoke(
+            {"session_id": sid}, config=_config()
+        )
+
+    out = asyncio.run(run())
+    result = json.loads(out)
+    assert result["ok"] is True
+    assert result["login_completed"] is False
+    assert result["status"] == "cancelled"
 
 
 def test_await_login_reports_still_active_without_ending_anything(monkeypatch) -> None:
@@ -6458,6 +6481,7 @@ def test_await_login_reports_still_active_without_ending_anything(monkeypatch) -
 
     session, future, out = asyncio.run(run())
     result = json.loads(out)
+    assert result["ok"] is True
     assert result["status"] == "active"
     assert result["seconds_remaining"] > 0
     assert "again" in result["message"]
@@ -6491,6 +6515,10 @@ def test_cancel_login_defaults_to_the_users_active_session(monkeypatch) -> None:
 
         session, out = asyncio.run(run())
     result = json.loads(out)
+    # #291: a cancel that took effect is a SUCCESSFUL tool call, so ok is
+    # true here even though the login itself did not complete.
+    assert result["ok"] is True
+    assert result["login_completed"] is False
     assert result["status"] == "cancelled"
     assert result["session_id"] == session.session_id
     assert get_browser_login_registry().active_for_tab("u1", 7) is None
@@ -6529,7 +6557,32 @@ def test_cancel_login_after_the_end_reports_the_real_outcome() -> None:
 
     out = asyncio.run(run())
     result = json.loads(out)
+    assert result["ok"] is True
+    assert result["login_completed"] is True
     assert result["status"] == "completed"
+    assert "already ended" in result["message"]
+
+
+def test_cancel_login_after_a_non_completed_end_still_reports_ok_true() -> None:
+    """#291: the already-ended branch spreads the ORIGINAL outcome verbatim
+    (`{**done, "message": ...}`), so before the fix its `ok` followed the
+    original end reason -- a cancel arriving after the session had already
+    expired/cancelled/aborted/failed read as a failed tool call even though
+    the lookup itself worked fine."""
+
+    async def run():
+        session, _ = _hold(7)
+        sid = session.session_id
+        get_browser_login_registry().finish(sid, reason="expired")
+        return await chrome_cancel_login.ainvoke(
+            {"session_id": sid}, config=_config()
+        )
+
+    out = asyncio.run(run())
+    result = json.loads(out)
+    assert result["ok"] is True
+    assert result["login_completed"] is False
+    assert result["status"] == "expired"
     assert "already ended" in result["message"]
 
 

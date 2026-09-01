@@ -358,6 +358,67 @@ def test_browser_command_does_not_reach_the_admin_firehose():
     assert "browser_command" not in frame
 
 
+# -- browser_login_started/ended are owner-only, never on the firehose -----
+#
+# #293: session METADATA (login URL, session_id, thread_id, counters --
+# never frame bytes or keystrokes, those ride the chrome-only
+# browser_login_input) rode the firehose unfiltered because the two types
+# were never CHROME_ONLY. They are also NOT extension-only, unlike
+# browser_command: desktop's own non-firehose stream is the real, intended
+# recipient (it is what raises/retracts the live-login viewer), so these
+# tests pin BOTH halves: the owning user's own stream still gets the event,
+# and only a firehose subscriber loses it.
+
+
+def _login_lifecycle_event(event_type: str, *, user_id: str = "alice") -> AutonomousEvent:
+    return AutonomousEvent(
+        event_type=event_type,
+        thread_id="thread-1",
+        user_id=user_id,
+        data={
+            "session_id": "blogin_abc123",
+            "tab_id": 7,
+            "url": "https://accounts.google.com/signin",
+            "origin": "agent",
+        },
+    )
+
+
+def _first_frame_for_login_event(event_type: str, *, firehose: bool = False) -> str:
+    queue: Queue = Queue()
+    queue.put_nowait(_login_lifecycle_event(event_type))
+    queue.put_nowait(_marker())
+    frame, _bus = asyncio.run(
+        _next_sse_data(
+            queue=queue,
+            event_bus=EventBus(),
+            user_id="*" if firehose else "alice",
+            firehose=firehose,
+        )
+    )
+    return frame
+
+
+@pytest.mark.parametrize("event_type", ["browser_login_started", "browser_login_ended"])
+def test_browser_login_lifecycle_reaches_the_owning_users_own_stream(event_type):
+    # Guards the naive-fix trap: literally reusing CHROME_ONLY_EVENT_TYPES
+    # would require is_extension_stream, which desktop's client_id never
+    # satisfies, silencing desktop's own live-viewer raise/retract. This
+    # must stay green on both the unfixed AND the correctly-fixed code.
+    frame = _first_frame_for_login_event(event_type)
+
+    assert f'"type": "{event_type}"' in frame
+
+
+@pytest.mark.parametrize("event_type", ["browser_login_started", "browser_login_ended"])
+def test_browser_login_lifecycle_does_not_reach_the_admin_firehose(event_type):
+    frame = _first_frame_for_login_event(event_type, firehose=True)
+
+    # The marker queued BEHIND the login event is what arrives first.
+    assert '"content": "marker"' in frame
+    assert event_type not in frame
+
+
 def _session_release_frame_for(client_id: str | None) -> str:
     queue: Queue = Queue()
     queue.put_nowait(

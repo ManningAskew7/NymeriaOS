@@ -95,7 +95,7 @@ def test_finish_completed_wakes_the_agent_with_a_success_outcome() -> None:
         assert reg.finish(session.session_id, reason=REASON_COMPLETED) is True
         await asyncio.sleep(0)  # the wake is scheduled on the loop
         result = future.result()
-        assert result["ok"] is True
+        assert result["login_completed"] is True
         assert result["status"] == REASON_COMPLETED
         assert result["tab_id"] == 7
         assert session.state == STATE_ENDED
@@ -129,7 +129,7 @@ def test_finish_carries_an_optional_detail_line() -> None:
         )
         await asyncio.sleep(0)
         result = future.result()
-        assert result["ok"] is False
+        assert result["login_completed"] is False
         assert result["detail"] == "the extension could not start a screencast"
 
     asyncio.run(run())
@@ -477,7 +477,7 @@ def test_the_time_limit_ends_the_session_and_tells_the_agent() -> None:
         reg._sweep_once()
         await asyncio.sleep(0)
         result = future.result()
-        assert result["ok"] is False
+        assert result["login_completed"] is False
         assert result["status"] == REASON_EXPIRED
         assert session.state == STATE_ENDED
         # And the tab is handed back to the agent.
@@ -650,7 +650,8 @@ def test_await_outcome_returns_the_ending_now_or_later() -> None:
         status, outcome = await waiter
         assert status == "ended"
         assert outcome is not None
-        assert outcome["ok"] is True and outcome["detail"] == "user clicked finish"
+        assert outcome["login_completed"] is True
+        assert outcome["detail"] == "user clicked finish"
 
         # Awaiting again after the end reads the remembered outcome.
         status, again = await reg.await_outcome(sid, user_id="u1", timeout_seconds=1)
@@ -681,7 +682,7 @@ def test_await_outcome_timeout_reports_active_and_never_ends_the_login() -> None
         reg.finish(sid, reason=REASON_COMPLETED)
         status, outcome = await reg.await_outcome(sid, user_id="u1", timeout_seconds=1)
         assert status == "ended"
-        assert outcome is not None and outcome["ok"] is True
+        assert outcome is not None and outcome["login_completed"] is True
 
     asyncio.run(run())
 
