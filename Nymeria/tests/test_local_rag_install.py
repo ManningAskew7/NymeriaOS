@@ -436,3 +436,22 @@ def test_oserror_reports_failure(monkeypatch, force_missing, tty):
     console = _FakeConsole(answer="")
     _run(console)
     assert "could not run the installer" in console.text.lower()
+
+
+def test_docker_full_stack_hint_names_the_build_flag(monkeypatch, force_missing):
+    """The full stack has an image hook (the NYMERIA_LOCAL_RAG build arg), so its
+    hint names the flag write_config already wrote and the `--build` an existing
+    image needs, instead of the generic 'build an image' note."""
+    calls = []
+    monkeypatch.setattr(finalize_mod.subprocess, "run", lambda *a, **k: calls.append(a))
+    console = _FakeConsole()
+    finalize_mod._maybe_install_local_rag(
+        {"EMBEDDING_PROVIDER": "local"},
+        console,
+        for_docker=True,
+        full_stack=True,
+        non_interactive=False,
+    )
+    assert calls == []
+    assert f"{lri.DOCKER_LOCAL_RAG_ENV}=1" in console.text
+    assert "--build" in console.text

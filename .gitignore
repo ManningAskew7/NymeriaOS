@@ -159,3 +159,8 @@ initial-load.png
 # (e.g. a plan .md for a complex slice); these are never tracked.
 /tmp/
 /Nymeria/tmp
+
+# Wizard-generated per-host CLIProxy deployment (nymeria init writes the
+# proxy compose, config.yaml with the bcrypt-hashed management secret, the
+# plaintext MANAGEMENT_SECRET.txt, and OAuth auth files here). Never tracked.
+/Nymeria/cliproxy/

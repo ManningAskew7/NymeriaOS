@@ -215,3 +215,41 @@ def test_full_stack_compose_passes_init_pick_carriers_to_api_and_worker():
         assert env[INIT_ENABLED_GLOBAL_SKILLS_ENV] == (
             "${" + INIT_ENABLED_GLOBAL_SKILLS_ENV + ":-}"
         ), f"{service} must pass the skills carrier through with an inert default"
+
+
+def test_full_stack_compose_passes_every_wizard_rag_var_to_api_and_worker():
+    """Same delivery rule as the pick carriers, for the RAG config the wizard
+    writes: `.env.docker` reaches the api/worker ONLY through `${VAR}`
+    passthroughs in their `environment:` anchor. Before this pin the anchor
+    forwarded EMBEDDING_API_KEY/BASE_URL/MODEL but not EMBEDDING_PROVIDER,
+    EMBEDDING_DIMENSIONS or any RAG_RERANK_* line, so a local (granite + Ettin)
+    or Cohere/Gemini pick silently ran the OpenAI embedder with the wrong
+    width. Every key `rag_env_for_state` can emit, for every catalog
+    embedder x reranker, must be forwarded by both services."""
+    import yaml
+    from pathlib import Path
+    from nymeria.setup.rag_catalog import EMBEDDERS, RERANKERS, rag_env_for_state
+    from nymeria.setup.state import WizardState
+
+    wanted: set[str] = set()
+    for emb in EMBEDDERS:
+        for rer in RERANKERS:
+            state = WizardState(embedder=emb.id, reranker=rer.id)
+            state.rag_retrieval_mode = "vector"
+            wanted |= set(rag_env_for_state(state))
+    wanted.add("RAG_RERANK_API_KEY")  # the managed-reranker key rides optional_env
+    # Emitted only for a catalog reranker with onnx_file; none sets it today, so
+    # pin it explicitly rather than let the first such entry break the build.
+    wanted.add("RAG_RERANK_LOCAL_ONNX_FILE")
+    assert {"EMBEDDING_PROVIDER", "EMBEDDING_DIMENSIONS", "RAG_RERANK_PROVIDER"} <= wanted
+
+    compose_path = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    services = yaml.safe_load(compose_path.read_text(encoding="utf-8"))["services"]
+    for service in ("api", "worker"):
+        env = services[service]["environment"]
+        missing = sorted(k for k in wanted if k not in env)
+        assert not missing, f"{service} does not forward {missing} from .env.docker"
+        for key in wanted:
+            assert str(env[key]).startswith("${" + key + ":-"), (
+                f"{service}.{key} must interpolate from .env.docker with an inert default"
+            )

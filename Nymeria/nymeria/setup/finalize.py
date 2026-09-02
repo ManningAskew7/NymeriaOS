@@ -670,7 +670,11 @@ def finalize(
     # scoped jumps stay focused on their one setting.
     if scoped_section in (None, "embedder", "reranker"):
         _maybe_install_local_rag(
-            extra_env, console, for_docker=for_docker, non_interactive=non_interactive
+            extra_env,
+            console,
+            for_docker=for_docker,
+            full_stack=is_full_stack,
+            non_interactive=non_interactive,
         )
 
     if scoped_section is not None:
@@ -837,6 +841,14 @@ def write_config(
         # (slim `env_file:`, full-stack `--env-file` interpolation).
         if value:
             produced.append((env_var, _env_value(value)))
+    from .local_rag_install import DOCKER_LOCAL_RAG_ENV, requires_local_rag
+
+    if for_docker and full_stack_env and requires_local_rag(extra_env):
+        # Full stack + local embedder/reranker: sentence-transformers has to be
+        # baked into nymeria-full, and this flag is the compose build arg that
+        # does it (docker-compose.yml `x-nymeria-full-image` -> Dockerfile.full).
+        # There is no pip env to install into after the fact in a container.
+        produced.append((DOCKER_LOCAL_RAG_ENV, "1"))
 
     # For the carriers, absent-from-produced means "picks equal defaults", not
     # "unchanged": a Docker reconfigure must be able to retire a stale carrier,
@@ -850,7 +862,14 @@ def write_config(
             INIT_ENABLED_GLOBAL_SKILLS_ENV,
         )
 
-        drop_env = (INIT_DEFAULT_THREAD_TOOLS_ENV, INIT_ENABLED_GLOBAL_SKILLS_ENV)
+        # The local-RAG image flag follows the same rule: a reconfigure onto a
+        # hosted embedder retires it so the next rebuild goes back to the lean
+        # image; when the local pick is kept, the produced line wins.
+        drop_env = (
+            INIT_DEFAULT_THREAD_TOOLS_ENV,
+            INIT_ENABLED_GLOBAL_SKILLS_ENV,
+            DOCKER_LOCAL_RAG_ENV,
+        )
         if not image_version:
             # A clone-free root later reconfigured from a source checkout
             # retires the stale image-tag pin (the checkout composes never
@@ -1580,6 +1599,7 @@ def _maybe_install_local_rag(
     console: Console,
     *,
     for_docker: bool,
+    full_stack: bool = False,
     non_interactive: bool,
 ) -> None:
     """Make a selected local RAG stack runnable out of the box.
@@ -1598,6 +1618,7 @@ def _maybe_install_local_rag(
     common path. Voice is always an explicit, visible pick, so a hint suffices.
     """
     from .local_rag_install import (
+        DOCKER_LOCAL_RAG_ENV,
         build_install_command,
         local_rag_importable,
         manual_install_hint,
@@ -1608,6 +1629,21 @@ def _maybe_install_local_rag(
         return
 
     if for_docker:
+        if full_stack:
+            # write_config already wrote the build flag; say what it does and
+            # the one case `up -d` does not cover (an image built before the
+            # flag was set is reused as-is).
+            console.print(
+                "\n[yellow]The local RAG stack (granite + Ettin) runs in-process "
+                "via the sentence-transformers extra, which the lean default "
+                f"image omits. {DOCKER_LOCAL_RAG_ENV}=1 was written to "
+                ".env.docker so the compose build bakes it into nymeria-full "
+                "(CPU-only torch, roughly 1.5 GB more image). A first `up -d` "
+                "builds it in; a stack whose image already exists needs "
+                "`docker compose --env-file .env.docker up -d --build api worker` "
+                "once.[/yellow]"
+            )
+            return
         console.print(
             "\n[yellow]The local RAG stack (granite + Ettin) needs the "
             "sentence-transformers extra baked into the image; the default "

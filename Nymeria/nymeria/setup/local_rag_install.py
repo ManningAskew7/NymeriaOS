@@ -31,6 +31,12 @@ from typing import Mapping, Optional
 LOCAL_RAG_EXTRA = "local-rag"
 # The package that uv installs as the `nymeria` tool.
 PROJECT_NAME = "nymeriaos"
+# Full Docker stack: the extra has to be IN the image, so finalize writes this
+# flag to `.env.docker` and docker-compose.yml passes it to Dockerfile.full as a
+# build arg (`x-nymeria-full-image`). The single-container shapes have no such
+# hook yet and still get the generic hint.
+DOCKER_LOCAL_RAG_ENV = "NYMERIA_LOCAL_RAG"
+
 # Pin mirrors pyproject's local-rag extra; used for the plain-pip path, which adds
 # the dependency directly rather than reinstalling nymeriaos (so an editable
 # source checkout is not re-resolved from an index).

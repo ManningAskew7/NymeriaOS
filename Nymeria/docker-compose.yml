@@ -61,6 +61,13 @@ x-nymeria-full-image: &nymeria-full-image
   build:
     context: .
     dockerfile: Dockerfile.full
+    args:
+      # Bakes the local-rag extra (sentence-transformers + CPU torch) into the
+      # image when .env.docker sets NYMERIA_LOCAL_RAG=1 (`nymeria init` writes
+      # it for a local embedder/reranker pick). The inert default keeps the
+      # lean image. Changing it needs `up -d --build`: plain `up -d` reuses an
+      # existing image regardless of build args.
+      NYMERIA_LOCAL_RAG: ${NYMERIA_LOCAL_RAG:-0}
 
 x-nymeria-slim-image: &nymeria-slim-image
   image: nymeria-slim:local
@@ -250,6 +257,18 @@ services:
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      # The rest of the RAG config `nymeria init` writes (rag_catalog.rag_env_for_state).
+      # Defaults mirror config/settings.py so an unset line changes nothing; without
+      # these passthroughs a local/Cohere/Gemini pick ran the OpenAI embedder.
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-}
+      EMBEDDING_INPUT_TYPE: ${EMBEDDING_INPUT_TYPE:-}
+      RAG_RETRIEVAL_MODE: ${RAG_RETRIEVAL_MODE:-hybrid}
+      RAG_RERANK_ENABLED: ${RAG_RERANK_ENABLED:-false}
+      RAG_RERANK_PROVIDER: ${RAG_RERANK_PROVIDER:-llm}
+      RAG_RERANK_MODEL: ${RAG_RERANK_MODEL:-}
+      RAG_RERANK_API_KEY: ${RAG_RERANK_API_KEY:-}
+      RAG_RERANK_LOCAL_ONNX_FILE: ${RAG_RERANK_LOCAL_ONNX_FILE:-}
       MICROSOFT_MCP_CLIENT_ID: ${MICROSOFT_MCP_CLIENT_ID:-}
       # LLM Configuration
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}

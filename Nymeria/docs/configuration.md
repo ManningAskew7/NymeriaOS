@@ -890,6 +890,17 @@ reachable from the backend process.
 | `REDIS_PASSWORD` | required in Docker | Redis password used by the Compose Redis service and the generated `REDIS_URL`. Use a URL-safe value such as `openssl rand -hex 32`. |
 | `REDIS_URL` | - | Redis connection URL. Docker Compose generates `redis://:<REDIS_PASSWORD>@redis:6379/0`; local non-Docker development can use `redis://localhost:6379` if Redis auth is disabled. Startup logs redact credentials from this URL. |
 
+### Image Build Options (Docker Only)
+
+Build-time flags interpolated from `.env.docker` into the `api`/`worker`
+image build (`x-nymeria-full-image` in `docker-compose.yml`). Plain `up -d`
+reuses an existing image regardless of build args, so changing one needs
+`docker compose --env-file .env.docker up -d --build api worker`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NYMERIA_LOCAL_RAG` | `0` | `1` bakes the local-rag extra (sentence-transformers + CPU-only torch, roughly 1.5 GB) into `nymeria-full` so `EMBEDDING_PROVIDER=local` / `RAG_RERANK_PROVIDER=local` (granite + Ettin) load their models in the container. `nymeria init` writes it for a local pick and retires it on a reconfigure to a hosted embedder. |
+
 ### Container Resource Limits (Docker Only)
 
 The Compose stack caps each container's memory, CPU, and PID count as a safety

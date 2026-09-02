@@ -125,6 +125,20 @@ RUN pip3 install --no-cache-dir --break-system-packages playwright \
 # Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code || echo "Claude Code CLI installation skipped (may require auth)"
 
+# Optional local-RAG extra: the granite embedder and Ettin reranker run
+# in-process via sentence-transformers (which pulls torch). Off by default to
+# keep the image lean; `nymeria init` writes NYMERIA_LOCAL_RAG=1 to .env.docker
+# for a local embedder/reranker pick and docker-compose.yml passes it through
+# as this build arg. CPU-only torch index on purpose: the default index would
+# pull the multi-GB CUDA build. An already-built stack needs `up -d --build`
+# once (plain `up -d` never rebuilds an existing image for a changed arg).
+ARG NYMERIA_LOCAL_RAG=0
+RUN if [ "$NYMERIA_LOCAL_RAG" = "1" ]; then \
+        pip3 install --no-cache-dir --break-system-packages \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            "sentence-transformers>=3.0.0"; \
+    fi
+
 # Copy application code
 COPY --chown=nymeria:nymeria . .
 
