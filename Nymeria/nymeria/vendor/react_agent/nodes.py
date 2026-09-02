@@ -348,7 +348,14 @@ def _is_retryable_llm_error(exc: BaseException) -> bool:
         return False
 
     status_code = _extract_status_code(exc)
-    if status_code is not None:
+    # A status below 400 is no evidence about retryability: providers report
+    # a failure that happens after the stream opened as an error event riding
+    # the HTTP 200 the stream started with (Anthropic's mid-stream
+    # ``overloaded_error`` is the live case, backlog #315), and the SDK's
+    # status-keyed mapping then yields a bare status error carrying 200.
+    # Deciding on that status would return False before the marker checks
+    # ever ran, so fall through to them instead.
+    if status_code is not None and status_code >= 400:
         return status_code in _RETRYABLE_STATUS_CODES or status_code >= 500
 
     if any(
