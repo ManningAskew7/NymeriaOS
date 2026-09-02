@@ -143,6 +143,37 @@ def get_thread_id_or_none(config: Optional[RunnableConfig]) -> Optional[str]:
     return config.get("configurable", {}).get("thread_id") or None
 
 
+def ambient_thread_id() -> Optional[str]:
+    """Thread id of the tool call in progress, read from the runnable context.
+
+    LangGraph's ``ToolNode`` invokes every tool through ``BaseTool.invoke``,
+    which publishes the call's ``RunnableConfig`` in LangChain's
+    ``var_child_runnable_config`` contextvar for the duration of the call
+    (sync tools included: the executor hop copies the context). Code that
+    sits several helpers below a tool body and needs the calling thread, such
+    as the OAuth account pickers, reads it here instead of every request
+    helper re-plumbing ``config`` through its signature.
+
+    Returns ``None`` outside a runnable context (the worker ticker, the CLI,
+    tests), which callers treat as "no thread". An explicit thread id from
+    such a caller always wins over this ambient read.
+
+    The id returned is the EFFECTIVE thread (:func:`get_effective_thread_id`):
+    a dream shadow turn answers with its parent, the thread whose bindings
+    and configuration it is acting for, so a mailbox bound to the parent
+    stays reachable while the dream runs.
+    """
+    try:
+        from langchain_core.runnables.config import var_child_runnable_config
+
+        cfg = var_child_runnable_config.get()
+    except Exception:
+        return None
+    if not cfg or not get_thread_id_or_none(cfg):
+        return None
+    return get_effective_thread_id(cfg)
+
+
 def get_effective_thread_id(
     config: Optional[RunnableConfig],
     agent: Optional[Any] = None,

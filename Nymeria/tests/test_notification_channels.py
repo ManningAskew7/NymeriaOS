@@ -299,8 +299,9 @@ def test_teams_channel_passes_user_id_then_account_id(repo):
 
     captured = {}
 
-    def fake_token(user_id, account_id=None):
+    def fake_token(user_id, account_id=None, *, thread_id=None):
         captured["args"] = (user_id, account_id)
+        captured["thread_id"] = thread_id
         return "tok"
 
     with patch(
@@ -314,6 +315,10 @@ def test_teams_channel_passes_user_id_then_account_id(repo):
         )
 
     assert captured["args"] == ("alice", "acct-9")
+    # Teams deliberately does NOT pass the sending thread: the Microsoft token
+    # is shared with mail, but a thread's mail binding is not its Teams
+    # identity, so the explicit account is the whole selection.
+    assert captured["thread_id"] is None
     assert result.delivered_to == ["team"]
     # F3: Teams now goes through the screened egress helper, not raw httpx.
     assert send_mock.called
@@ -343,3 +348,39 @@ def test_email_outlook_uses_egress_policy(repo):
 
     assert result.delivered_to == ["mail"]
     assert send_mock.called
+
+
+def test_email_outlook_scopes_accounts_by_thread_and_reports_ambiguity(repo):
+    # The channel hands the sending thread to the Outlook token lookup, so a
+    # thread bound to one mailbox sends from that mailbox; when several are
+    # visible and nothing selects one, the picker's message is the error,
+    # not a generic "no account".
+    from nymeria.tools.auth_cache_utils import OAuthAccountSelectionError
+
+    repo.create_destination(
+        user_id="alice", name="mail", type="email_outlook",
+        config={"to": "person@example.com"},
+    )
+    repo.create_profile(
+        user_id="alice", name="default", destination_names=["mail"],
+    )
+    ctx = SendContext(user_id="alice", thread_id="t", settings=_settings())
+    seen = {}
+
+    def fake_token(user_id, account_id=None, *, thread_id=None):
+        seen["thread_id"] = thread_id
+        raise OAuthAccountSelectionError("Several Outlook accounts are connected: sales; beta.")
+
+    with patch(
+        "nymeria.tools.outlook_email.get_access_token", side_effect=fake_token,
+    ), patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+    ) as send_mock:
+        result = dispatch_to_profile(
+            message="hi", profile_name="default", ctx=ctx, repo=repo,
+        )
+
+    assert seen["thread_id"] == "t"
+    assert result.delivered_to == []
+    assert "Several Outlook accounts are connected" in result.errors["mail"]
+    assert not send_mock.called

@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, Tuple
@@ -175,9 +175,118 @@ class OAuthCacheSource:
     persist: Callable[[dict], None]
     has_vault_accounts: bool
     has_legacy_accounts: bool
+    # The accounts the calling thread may choose from. ``cache["accounts"]``
+    # always holds the FULL merged set (it is also the persist payload, so it
+    # must never be narrowed); ``accounts`` is the bound subset when a thread
+    # binding applied (``thread_bound``), else the same full set. Pickers read
+    # ``accounts``; refresh write-backs update ``cache["accounts"][aid]``.
+    accounts: dict = field(default_factory=dict)
+    thread_bound: bool = False
+
+
+class OAuthAccountSelectionError(RuntimeError):
+    """No single OAuth account can be chosen for this call.
+
+    The message is written for the agent: it names the visible accounts and
+    the two ways out (pass ``account_id``, or bind one account to the calling
+    thread with ``auth_bindings``). Request helpers catch it and return it as
+    their error string; autonomous callers (trigger sources) let it propagate
+    so the failure is recorded rather than silently skipped.
+    """
+
+
+def _account_listing(accounts: dict) -> str:
+    parts = []
+    for aid, account in accounts.items():
+        label = str(account.get("email") or "").strip()
+        cred_id = account.get(_VAULT_CRED_ID_KEY)
+        detail = ", ".join(
+            piece for piece in (label, f"credential {cred_id}" if cred_id else "") if piece
+        )
+        parts.append(f"{aid} ({detail})" if detail else str(aid))
+    return "; ".join(parts)
+
+
+def select_oauth_account(
+    accounts: dict,
+    account_id: Optional[str] = None,
+    *,
+    default_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    thread_bound: bool = False,
+    provider_label: str = "OAuth",
+) -> tuple[str, dict]:
+    """Pick one account from a resolved (possibly thread-filtered) view.
+
+    Order: explicit ``account_id`` (must be in the visible set) > configured
+    ``default_id`` when visible > the sole visible account. Anything else
+    raises :class:`OAuthAccountSelectionError`: several accounts with nothing
+    selecting between them is an error, never "the first one", because the
+    first one is whichever row happened to be created earlier and a send from
+    the wrong mailbox is one omitted argument away. A thread binding narrows
+    the visible set before this runs (see ``resolve_oauth_cache``), so a
+    thread bound to exactly one account never hits the ambiguous branch.
+    """
+    if not accounts:
+        raise OAuthAccountSelectionError(f"No authenticated {provider_label} account.")
+    if account_id:
+        account = accounts.get(account_id)
+        if account is None:
+            scope = "this thread" if thread_bound else "this user"
+            raise OAuthAccountSelectionError(
+                f"{provider_label} account '{account_id}' is not available to {scope}. "
+                f"Available: {_account_listing(accounts)}."
+            )
+        return account_id, account
+    if default_id and default_id in accounts:
+        return default_id, accounts[default_id]
+    if len(accounts) == 1:
+        return next(iter(accounts.items()))
+    listing = _account_listing(accounts)
+    if thread_bound:
+        raise OAuthAccountSelectionError(
+            f"This thread is bound to several {provider_label} accounts: {listing}. "
+            "Pass account_id explicitly."
+        )
+    target = f'target_id="{thread_id}"' if thread_id else "target_id=<this thread id>"
+    raise OAuthAccountSelectionError(
+        f"Several {provider_label} accounts are connected and none is selected for this "
+        f"thread: {listing}. Pass account_id explicitly, or bind one account to this "
+        f"thread so it becomes the thread's default: auth_bindings(operation=\"bind\", "
+        f'credential_id=<its credential id>, target_type="thread", {target}).'
+    )
 
 
 _VAULT_CRED_ID_KEY = "_vault_credential_id"
+# The row's ``allowed_targets`` list, carried on the account dict so the
+# resolver can apply thread bindings (an exact ``thread:<id>`` entry) without
+# a second vault read. Vault accounts never reach the legacy file, so the
+# sentinel never lands on disk.
+_VAULT_TARGETS_KEY = "_vault_allowed_targets"
+
+
+def thread_binding_target(thread_id: str) -> str:
+    """The ``allowed_targets`` entry that binds a credential to ``thread_id``.
+
+    Exact match only: ``thread:*`` and ``*`` are authorization (who may read
+    the plaintext), not a binding (which account a thread uses). Same
+    convention as the LLM-key resolver (``core/llm_credentials.py``).
+    """
+    return f"thread:{thread_id}"
+
+
+def bound_thread_ids(allowed_targets: Optional[Sequence[str]]) -> list[str]:
+    """Thread ids a credential is bound to, read from its ``allowed_targets``.
+
+    The inverse of :func:`thread_binding_target`: exact ``thread:<id>``
+    entries only, ``thread:*`` excluded. Sorted, de-duplicated.
+    """
+    threads = set()
+    for target in allowed_targets or []:
+        kind, _, ident = str(target).partition(":")
+        if kind == "thread" and ident and ident != "*":
+            threads.add(ident)
+    return sorted(threads)
 
 
 def _iso_to_epoch_seconds(value: Any) -> float:
@@ -269,12 +378,21 @@ def _resolve_provider_client_id(
     return None
 
 
-def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
+def _load_vault_oauth_cache(
+    user_id: str, provider: str, thread_id: Optional[str] = None
+) -> dict:
     """Read active vault ``oauth_token`` credentials for ``(user_id, provider)``.
 
-    Returns a legacy-shape ``{"accounts": {...}}`` dict, possibly empty.
-    Decryption failures are logged and the affected account is skipped so a
-    single bad row doesn't poison the whole read.
+    Returns a legacy-shape ``{"accounts": {...}}`` dict, possibly empty, plus
+    ``bound_unreadable``: ids of rows bound to ``thread_id`` whose secret
+    could not be read. Decryption failures are logged and the affected
+    account is skipped so a single bad row doesn't poison the whole read.
+
+    A row bound to ``thread_id`` is read under the ``thread:<id>`` target it
+    carries rather than ``native_tool:<provider>``, so an operator can lock a
+    mailbox to one thread by leaving ONLY the thread target on the row: that
+    thread still reads it, every other thread is denied at the vault and
+    never sees it.
     """
     try:
         from ..core.credential_vault import (
@@ -294,21 +412,25 @@ def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
         return {}
 
     accounts: dict[str, dict] = {}
+    bound_unreadable: list[str] = []
     for cred in all_creds:
         if cred.kind != "oauth_token" or cred.provider != provider or cred.status != "active":
             continue
         meta = cred.metadata or {}
+        bound_here = bool(thread_id) and thread_id in bound_thread_ids(cred.allowed_targets)
         # Vault credentials are gated by ``allowed_targets`` (e.g. ``native_tool:*``).
         # The resolver is the canonical native-tool reader; identify as such so
-        # the access check matches the policy stored on the row.
-        # The actor is the REQUESTING user, not `cred.owner_user_id`: comparing
-        # a record's owner against itself is a check that can never fail. The
-        # list above is already scoped by owner, so this is defence in depth,
-        # which is only worth anything if it can actually fire.
+        # the access check matches the policy stored on the row. A row bound
+        # to the calling thread is read under that binding instead (see the
+        # docstring). The actor is the REQUESTING user, not
+        # `cred.owner_user_id`: comparing a record's owner against itself is
+        # a check that can never fail. The list above is already scoped by
+        # owner, so this is defence in depth, which is only worth anything if
+        # it can actually fire.
         secret_kwargs = {
             "actor": user_id,
-            "target_type": "native_tool",
-            "target_id": provider,
+            "target_type": "thread" if bound_here else "native_tool",
+            "target_id": thread_id if bound_here else provider,
         }
         try:
             access_token = repo.get_secret_field(cred.id, "access_token", **secret_kwargs)
@@ -316,11 +438,15 @@ def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
             logger.warning(
                 "Vault oauth_token %s missing access_token; skipping", cred.id
             )
+            if bound_here:
+                bound_unreadable.append(cred.id)
             continue
         except Exception:
             logger.warning(
                 "Vault oauth_token %s decrypt failed; skipping", cred.id, exc_info=True
             )
+            if bound_here:
+                bound_unreadable.append(cred.id)
             continue
 
         refresh_token = ""
@@ -354,9 +480,24 @@ def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
             # consumption points below resolve rather than trust it.
             "token_uri": _resolve_provider_token_uri(provider),
             _VAULT_CRED_ID_KEY: cred.id,
+            _VAULT_TARGETS_KEY: list(cred.allowed_targets or []),
         }
 
-    return {"accounts": accounts} if accounts else {}
+    result: dict[str, Any] = {"accounts": accounts} if accounts else {}
+    if bound_unreadable:
+        result["bound_unreadable"] = bound_unreadable
+    return result
+
+
+def _thread_bound_accounts(vault_accounts: dict, thread_id: Optional[str]) -> dict:
+    """The subset of ``vault_accounts`` bound to ``thread_id`` (empty if none)."""
+    if not thread_id:
+        return {}
+    return {
+        aid: account
+        for aid, account in vault_accounts.items()
+        if thread_id in bound_thread_ids(account.get(_VAULT_TARGETS_KEY))
+    }
 
 
 def _persist_vault_oauth_account(user_id: str, account_id: str, account: dict) -> None:
@@ -466,6 +607,7 @@ def resolve_oauth_cache(
     provider: str,
     *,
     cache_filename: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> OAuthCacheSource:
     """Return an ``OAuthCacheSource`` merging vault + legacy account storage.
 
@@ -477,9 +619,19 @@ def resolve_oauth_cache(
     Vault accounts win on ``account_id`` collision. ``persist`` routes each
     account back to its origin: vault rows via ``upsert_credential``, legacy
     rows via ``save_token_cache``.
+
+    ``thread_id`` applies thread bindings: when any vault account carries the
+    exact ``thread:<thread_id>`` target, ``accounts`` on the returned source
+    holds ONLY those accounts (legacy-file accounts cannot carry a binding,
+    so they drop out too) and ``thread_bound`` is True. With no binding for
+    the thread, or no thread, ``accounts`` is the full merged set, as before.
+    ``cache`` is always the full set: it is the persist payload. The resolver
+    never guesses the thread: callers that run inside a tool pass
+    ``tools.utils.ambient_thread_id()``; autonomous callers pass what they
+    know; user-wide consumers pass nothing.
     """
     filename = _google_cache_filename(provider, cache_filename)
-    vault_cache = _load_vault_oauth_cache(user_id, provider)
+    vault_cache = _load_vault_oauth_cache(user_id, provider, thread_id)
     legacy_cache = load_token_cache(user_id, filename)
 
     merged: dict[str, Any] = dict(legacy_cache or {})
@@ -492,6 +644,19 @@ def resolve_oauth_cache(
     merged_accounts.update(vault_accounts)
     merged["accounts"] = merged_accounts
 
+    bound_accounts = _thread_bound_accounts(vault_accounts, thread_id)
+    thread_bound = bool(bound_accounts)
+    if thread_id and not thread_bound and vault_cache.get("bound_unreadable"):
+        # The thread IS bound, to rows whose secret could not be read. Falling
+        # back to the unbound view here would hand the thread every other
+        # account, which is the exact wrong-mailbox path the binding exists
+        # to close. Fail closed instead.
+        raise OAuthAccountSelectionError(
+            f"The {provider} account bound to this thread cannot be read "
+            f"(credential {', '.join(vault_cache['bound_unreadable'])}). Reconnect it "
+            "with request_credential, or rebind another account with auth_bindings."
+        )
+
     def _persist(updated_cache: dict) -> None:
         _persist_oauth_cache(user_id, filename, updated_cache)
 
@@ -500,6 +665,8 @@ def resolve_oauth_cache(
         persist=_persist,
         has_vault_accounts=bool(vault_accounts),
         has_legacy_accounts=bool(legacy_accounts),
+        accounts=bound_accounts if thread_bound else merged_accounts,
+        thread_bound=thread_bound,
     )
 
 
@@ -742,6 +909,7 @@ def get_google_credentials(
     *,
     cache_filename: Optional[str] = None,
     provider_display_name: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ):
     """Return valid Google OAuth credentials for a saved provider account.
 
@@ -749,6 +917,13 @@ def get_google_credentials(
     ``google_docs``. Vault-stored credentials (kind=oauth_token) win on
     account_id collision over the legacy file/legacy_cache path. Refreshes
     write back to whichever store the account originated from.
+
+    Account choice: explicit ``account_id`` > the account bound to the calling
+    thread (``thread_id``, or the ambient tool-call thread when omitted) > the
+    only connected account. Several connected accounts with none of those
+    selecting raise :class:`OAuthAccountSelectionError` rather than picking
+    the first. Returns ``None`` only when no account is connected or the
+    token cannot be refreshed.
     """
     try:
         from google.oauth2.credentials import Credentials
@@ -759,19 +934,23 @@ def get_google_credentials(
         )
         return None
 
-    source = resolve_oauth_cache(user_id, provider, cache_filename=cache_filename)
-    accounts = source.cache.get("accounts", {})
+    from .utils import ambient_thread_id
+
+    thread_id = thread_id or ambient_thread_id()
+    source = resolve_oauth_cache(
+        user_id, provider, cache_filename=cache_filename, thread_id=thread_id
+    )
+    accounts = source.accounts
     if not accounts:
         return None
 
-    if account_id:
-        aid = account_id
-        account = accounts.get(account_id)
-    else:
-        aid, account = next(iter(accounts.items()), (None, None))
-
-    if not aid or not account:
-        return None
+    aid, account = select_oauth_account(
+        accounts,
+        account_id,
+        thread_id=thread_id,
+        thread_bound=source.thread_bound,
+        provider_label=provider_display_name or provider,
+    )
 
     if not _google_scopes_are_satisfied(account, scopes):
         logger.info(
@@ -796,8 +975,8 @@ def get_google_credentials(
             else:
                 logger.error("%s token refresh failed: %s", display_name, reason)
             return None
-        accounts[aid] = account
-        source.cache["accounts"] = accounts
+        # Write back into the FULL set, never the (possibly narrowed) view.
+        source.cache["accounts"][aid] = account
         source.persist(source.cache)
 
     return Credentials(
@@ -843,14 +1022,17 @@ def google_api_request(
             "Run: pip install google-api-python-client google-auth-oauthlib"
         )
 
-    creds = get_google_credentials(
-        user_id,
-        provider,
-        scopes,
-        account_id=account_id,
-        cache_filename=cache_filename,
-        provider_display_name=api_label,
-    )
+    try:
+        creds = get_google_credentials(
+            user_id,
+            provider,
+            scopes,
+            account_id=account_id,
+            cache_filename=cache_filename,
+            provider_display_name=api_label,
+        )
+    except OAuthAccountSelectionError as e:
+        return False, str(e)
     if not creds:
         return False, (
             f"No authenticated Google account. Call "

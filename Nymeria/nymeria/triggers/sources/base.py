@@ -46,10 +46,16 @@ class BaseTriggerSource(ABC):
     requires_auth: Optional[str] = None
 
     @abstractmethod
-    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
+    def check(
+        self,
+        config: dict,
+        state: dict,
+        user_id: str = "",
+        thread_id: str | None = None,
+    ) -> List[dict]:
         """Check for new events.
 
-        Called by the polling loop (ticker).  Must be lightweight -- no LLM
+        Called by the polling loop (ticker).  Must be lightweight: no LLM
         calls, no expensive I/O unless truly necessary.
 
         Args:
@@ -59,6 +65,11 @@ class BaseTriggerSource(ABC):
             user_id: Owning Nymeria user. Required by sources that hit
                     per-user credential stores (outlook, teams). Default
                     ``""`` keeps sources that don't need it unchanged.
+            thread_id: The trigger's thread. Sources that resolve OAuth
+                    accounts pass it on so a credential bound to that thread
+                    (``auth_bindings``) is the one used. A plugin whose
+                    ``check`` predates this parameter is still polled, the
+                    old way, without it.
 
         Returns:
             List of event dicts (empty = no new events).  Each dict contains

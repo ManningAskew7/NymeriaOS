@@ -297,7 +297,7 @@ def outlook_get_attachments(
               Use this to avoid extracting irrelevant attachments you already
               know about (e.g. "logo.png, terms.pdf, disclaimer.html").
               Matching is case-insensitive and supports partial names.
-        account_id: Microsoft account ID (optional, uses first account if not specified)
+        account_id: Microsoft account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Extracted text content from all attachments, grouped by filename.

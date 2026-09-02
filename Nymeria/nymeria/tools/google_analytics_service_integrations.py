@@ -73,13 +73,16 @@ def _analytics_request(
     params: Optional[dict[str, Any]] = None,
     json_body: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, Any]:
-    creds = auth_utils.get_google_credentials(
-        user_id,
-        PROVIDER,
-        GOOGLE_ANALYTICS_SCOPES,
-        account_id=account_id,
-        provider_display_name="Google Analytics",
-    )
+    try:
+        creds = auth_utils.get_google_credentials(
+            user_id,
+            PROVIDER,
+            GOOGLE_ANALYTICS_SCOPES,
+            account_id=account_id,
+            provider_display_name="Google Analytics",
+        )
+    except auth_utils.OAuthAccountSelectionError as e:
+        return False, str(e)
     if not creds or not getattr(creds, "token", None):
         return False, (
             "No authenticated Google Analytics account. "

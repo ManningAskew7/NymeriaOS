@@ -9,7 +9,10 @@ account-selection helper plus no-op deletion (F13 steps 1+3).
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from nymeria.tools import outlook_email as oe
+from nymeria.tools.auth_cache_utils import OAuthAccountSelectionError
 
 
 
@@ -325,10 +328,12 @@ def test_select_account_explicit_present_returns_pair():
     assert oe._select_account(accounts, "B") == ("B", {"id": "B"})
 
 
-def test_select_account_explicit_absent_returns_id_with_none():
-    # An explicit id never falls back to default/first; the account is None.
+def test_select_account_explicit_absent_is_refused():
+    # An explicit id never falls back to default or another account; naming
+    # one outside the visible view is an error that says so.
     accounts = {"A": {"id": "A"}}
-    assert oe._select_account(accounts, "Z") == ("Z", None)
+    with pytest.raises(OAuthAccountSelectionError, match="'Z' is not available"):
+        oe._select_account(accounts, "Z")
 
 
 def test_select_account_uses_configured_default(monkeypatch):
@@ -337,29 +342,53 @@ def test_select_account_uses_configured_default(monkeypatch):
     assert oe._select_account(accounts) == ("B", {"id": "B"})
 
 
-def test_select_account_default_missing_falls_to_first(monkeypatch):
+def test_select_account_default_missing_with_several_accounts_refuses(monkeypatch):
     _patch_default(monkeypatch, "Z")  # configured but not in the cache
     accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
-    assert oe._select_account(accounts) == ("A", {"id": "A"})
+    with pytest.raises(OAuthAccountSelectionError, match="Several Outlook accounts"):
+        oe._select_account(accounts)
 
 
-def test_select_account_no_default_returns_first(monkeypatch):
+def test_select_account_no_default_with_several_accounts_refuses(monkeypatch):
+    # The old "first account" fallback is gone: with two mailboxes and nothing
+    # choosing between them, guessing is how mail leaves the wrong mailbox.
     _patch_default(monkeypatch, None)
     accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
-    assert oe._select_account(accounts) == ("A", {"id": "A"})
+    with pytest.raises(OAuthAccountSelectionError, match="Several Outlook accounts"):
+        oe._select_account(accounts)
 
 
-def test_select_account_settings_error_falls_to_first(monkeypatch):
+def test_select_account_single_account_needs_no_default(monkeypatch):
+    _patch_default(monkeypatch, None)
+    assert oe._select_account({"A": {"id": "A"}}) == ("A", {"id": "A"})
+
+
+def test_select_account_settings_error_only_drops_the_default(monkeypatch):
     def _boom():
         raise RuntimeError("settings unavailable")
 
     monkeypatch.setattr("nymeria.config.get_settings", _boom)
-    accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
-    assert oe._select_account(accounts) == ("A", {"id": "A"})
+    assert oe._select_account({"A": {"id": "A"}}) == ("A", {"id": "A"})
+    with pytest.raises(OAuthAccountSelectionError):
+        oe._select_account({"A": {"id": "A"}, "B": {"id": "B"}})
+
+
+def test_select_account_binding_beats_the_configured_default(monkeypatch):
+    # The thread's binding already narrowed the view to B; a global default of
+    # A cannot reach past it.
+    _patch_default(monkeypatch, "A")
+    view = {"B": {"id": "B"}}
+    assert oe._select_account(view, thread_id="t", thread_bound=True) == ("B", {"id": "B"})
 
 
 def _bind_cache(monkeypatch, accounts):
-    source = SimpleNamespace(cache={"accounts": dict(accounts)}, persist=lambda c: None)
+    cache = {"accounts": dict(accounts)}
+    source = SimpleNamespace(
+        cache=cache,
+        accounts=cache["accounts"],
+        persist=lambda c: None,
+        thread_bound=False,
+    )
     monkeypatch.setattr(oe.auth_utils, "resolve_oauth_cache", lambda *a, **k: source)
     return source
 
@@ -367,9 +396,11 @@ def _bind_cache(monkeypatch, accounts):
 def test_get_account_routes_through_select_account(monkeypatch):
     _patch_default(monkeypatch, None)
     _bind_cache(monkeypatch, {"A": {"id": "A"}, "B": {"id": "B"}})
-    assert oe.get_account("u1") == {"id": "A"}  # first
     assert oe.get_account("u1", "B") == {"id": "B"}  # explicit
-    assert oe.get_account("u1", "Z") is None  # explicit-missing
+    with pytest.raises(OAuthAccountSelectionError):
+        oe.get_account("u1")  # two accounts, nothing selecting
+    with pytest.raises(OAuthAccountSelectionError):
+        oe.get_account("u1", "Z")  # explicit-missing
 
 
 def test_get_account_empty_cache_returns_none(monkeypatch):

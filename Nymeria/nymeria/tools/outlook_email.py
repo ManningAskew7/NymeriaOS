@@ -19,7 +19,8 @@ from langchain_core.tools import InjectedToolArg, tool
 from ..core.http_policy import policy_http_client as _http_client
 from ..config.oauth_providers import MICROSOFT_TOKEN_URI
 from . import auth_cache_utils as auth_utils
-from .utils import get_user_id
+from .auth_cache_utils import OAuthAccountSelectionError
+from .utils import ambient_thread_id, get_user_id
 
 # Legacy Microsoft token cache filename. The new vault flow stores tokens under
 # provider="outlook" in the credentials table, but legacy files at
@@ -122,47 +123,74 @@ TOKEN_URL = MICROSOFT_TOKEN_URI
 
 
 def _select_account(
-    accounts: dict, account_id: Optional[str] = None
-) -> tuple[Optional[str], Optional[dict]]:
-    """Resolve which Microsoft account to use from a non-empty account cache.
+    accounts: dict,
+    account_id: Optional[str] = None,
+    *,
+    thread_id: Optional[str] = None,
+    thread_bound: bool = False,
+) -> tuple[str, dict]:
+    """Resolve which Microsoft account to use from a non-empty account view.
 
-    Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > first
-    account. Returns the ``(account_id, account)`` pair; ``account`` is ``None``
-    only when an explicit ``account_id`` is not present in ``accounts``.
+    Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > the
+    only visible account. ``accounts`` is the view ``resolve_oauth_cache``
+    returned for the calling thread, so a thread bound to one mailbox sees
+    exactly that mailbox here. Several visible accounts with none selected
+    raise ``OAuthAccountSelectionError`` (the shared picker's rules); so does
+    an explicit ``account_id`` outside the view.
     """
-    if account_id:
-        return account_id, accounts.get(account_id)
-
-    # Check for configured default account
+    default_id = None
     try:
         from ..config import get_settings
+
         default_id = get_settings().outlook_default_account_id
-        if default_id and default_id in accounts:
-            return default_id, accounts[default_id]
     except Exception:
         logger.debug("Failed to resolve default Outlook account from settings")
+    return auth_utils.select_oauth_account(
+        accounts,
+        account_id,
+        default_id=default_id,
+        thread_id=thread_id,
+        thread_bound=thread_bound,
+        provider_label="Outlook",
+    )
 
-    # Fallback to first account
-    return next(iter(accounts.items()), (None, None))
+
+def _resolve_outlook_source(user_id: str, thread_id: Optional[str]):
+    return auth_utils.resolve_oauth_cache(
+        user_id,
+        "outlook",
+        cache_filename=_OUTLOOK_CACHE_FILENAME,
+        thread_id=thread_id,
+    )
 
 
-def get_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict]:
+def get_account(
+    user_id: str,
+    account_id: Optional[str] = None,
+    *,
+    thread_id: Optional[str] = None,
+) -> Optional[dict]:
     """Get account info from cache.
 
-    Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > first account.
-    All reads are scoped to the Nymeria ``user_id``; another user's Microsoft
-    accounts are invisible. Vault-stored credentials win over legacy files on
-    account_id collision.
+    A binding for the calling thread (``thread_id``, or the ambient tool-call
+    thread) narrows the visible accounts first; then explicit account_id >
+    OUTLOOK_DEFAULT_ACCOUNT_ID setting > the only visible account. All reads
+    are scoped to the Nymeria ``user_id``; another user's Microsoft accounts
+    are invisible.
+    Vault-stored credentials win over legacy files on account_id collision.
+    Raises ``OAuthAccountSelectionError`` when several accounts are visible
+    and nothing selects between them.
     """
-    source = auth_utils.resolve_oauth_cache(
-        user_id, "outlook", cache_filename=_OUTLOOK_CACHE_FILENAME
-    )
-    accounts = source.cache.get("accounts", {})
+    thread_id = thread_id or ambient_thread_id()
+    source = _resolve_outlook_source(user_id, thread_id)
+    accounts = source.accounts
 
     if not accounts:
         return None
 
-    return _select_account(accounts, account_id)[1]
+    return _select_account(
+        accounts, account_id, thread_id=thread_id, thread_bound=source.thread_bound
+    )[1]
 
 
 def try_complete_pending_auth(user_id: str) -> bool:
@@ -255,39 +283,45 @@ def try_complete_pending_auth(user_id: str) -> bool:
     return False
 
 
-def get_access_token(user_id: str, account_id: Optional[str] = None) -> Optional[str]:
+def get_access_token(
+    user_id: str,
+    account_id: Optional[str] = None,
+    *,
+    thread_id: Optional[str] = None,
+) -> Optional[str]:
     """Get a valid access token for this Nymeria user, refreshing if needed.
 
     Vault-stored credentials (kind=oauth_token, provider=outlook) win over
     legacy ``microsoft.json`` files on account_id collision. Refreshes write
     back to whichever store the account originated from via the persist
     callback returned by ``resolve_oauth_cache``.
+
+    Account choice follows ``get_account`` (explicit > configured default >
+    the account bound to ``thread_id`` or the ambient tool-call thread > the
+    only connected account) and raises ``OAuthAccountSelectionError`` when
+    several accounts are visible and nothing selects between them. Returns
+    ``None`` only when no account is connected or the refresh fails.
     """
-    source = auth_utils.resolve_oauth_cache(
-        user_id, "outlook", cache_filename=_OUTLOOK_CACHE_FILENAME
-    )
-    cache = source.cache
-    accounts = cache.get("accounts", {})
+    thread_id = thread_id or ambient_thread_id()
+    source = _resolve_outlook_source(user_id, thread_id)
+    cache = source.cache  # the FULL set: the refresh write-back and persist payload
+    accounts = source.accounts  # the thread's view: what selection chooses from
 
     if not accounts:
         # Try to complete any pending auth first (legacy device-code flow only)
         if try_complete_pending_auth(user_id):
             # Reload via the resolver so we pick up either the freshly written
             # legacy account or, eventually, a vault row.
-            source = auth_utils.resolve_oauth_cache(
-                user_id, "outlook", cache_filename=_OUTLOOK_CACHE_FILENAME
-            )
+            source = _resolve_outlook_source(user_id, thread_id)
             cache = source.cache
-            accounts = cache.get("accounts", {})
+            accounts = source.accounts
 
         if not accounts:
             return None
 
-    # Find the account: explicit > configured default > first
-    aid, account = _select_account(accounts, account_id)
-
-    if not account:
-        return None
+    aid, account = _select_account(
+        accounts, account_id, thread_id=thread_id, thread_bound=source.thread_bound
+    )
 
     # Check if token is expired
     expires_at = account.get("expires_at", 0)
@@ -340,7 +374,10 @@ def graph_request(
     params: Optional[dict] = None,
 ) -> tuple[bool, Any]:
     """Make a Graph API request on behalf of ``user_id``."""
-    token = get_access_token(user_id, account_id)
+    try:
+        token = get_access_token(user_id, account_id)
+    except OAuthAccountSelectionError as e:
+        return False, str(e)
     if not token:
         return False, (
             "No authenticated account. Call "
@@ -440,7 +477,7 @@ def outlook_list_emails(
     List recent emails from Outlook.
 
     Args:
-        account_id: Microsoft account ID (optional, uses first account if not specified)
+        account_id: Microsoft account ID (optional; defaults to the thread's bound or only connected account)
         limit: Maximum number of emails to return (default 10, max 50)
         folder: Mail folder to list from (default "inbox"). Options: inbox, sentitems, drafts, deleteditems
         unread_only: If True, only show unread emails

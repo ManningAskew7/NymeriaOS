@@ -75,7 +75,13 @@ class SlackSource(BaseTriggerSource):
         },
     }
 
-    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
+    def check(
+        self,
+        config: dict,
+        state: dict,
+        user_id: str = "",
+        thread_id: str | None = None,
+    ) -> List[dict]:
         import httpx
 
         token = config["bot_token"]
