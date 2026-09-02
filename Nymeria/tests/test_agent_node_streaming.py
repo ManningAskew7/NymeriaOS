@@ -337,6 +337,106 @@ def test_llm_error_classification_ignores_unread_stream_response_body():
     assert nodes_module._is_retryable_llm_error(exc) is True
 
 
+def _anthropic_stream_error(status: int, error_type: str, message: str = "boom"):
+    """A real ``anthropic.APIStatusError`` as the SDK raises it mid-stream.
+
+    Anthropic reports a failure that happens after the stream opened as an
+    SSE ``error`` event on the HTTP 200 the stream started with, and the SDK
+    maps by response status, so a 200 falls to the bare ``APIStatusError``
+    with ``status_code == 200`` (backlog #315). The response needs a request
+    attached or the constructor raises.
+    """
+    import anthropic
+
+    body = {"type": "error", "error": {"type": error_type, "message": message}}
+    response = httpx.Response(
+        status,
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        json=body,
+    )
+    return anthropic.Anthropic(api_key="test")._make_status_error(
+        f"{body['error']}", body=body, response=response
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type", "retryable"),
+    [
+        # The #315 shape: overloaded mid-stream, reported on the 200.
+        (200, "overloaded_error", True),
+        # A 2xx is no evidence either way; the marker precedence still holds.
+        (200, "invalid_request_error", False),
+        # HTTP-level shapes are unchanged by the fix.
+        (529, "overloaded_error", True),
+        (400, "invalid_request_error", False),
+    ],
+)
+def test_llm_error_classification_reads_markers_behind_a_2xx_status(
+    status, error_type, retryable
+):
+    exc = _anthropic_stream_error(status, error_type)
+    assert exc.status_code == status
+    assert nodes_module._is_retryable_llm_error(exc) is retryable
+
+
+class _OverloadedOn200BeforeChunkModel(BaseChatModel):
+    """First call dies the way a live overloaded stream does; second streams."""
+
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "overloaded-on-200-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="sync"))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise _anthropic_stream_error(200, "overloaded_error", "Overloaded")
+        chunk = ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+        if run_manager:
+            await run_manager.on_llm_new_token("ok", chunk=chunk)
+        yield chunk
+
+
+def test_async_graph_retries_overloaded_error_streamed_on_a_200():
+    """A mid-stream overloaded_error on a 200 is retried, not raised (#315)."""
+    model = _OverloadedOn200BeforeChunkModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                custom_llm=model,
+                stream_max_retries=1,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    async def collect():
+        end_outputs = []
+        async for event in graph.astream_events(
+            {"messages": [HumanMessage(content="hi")]},
+            config={"configurable": {"thread_id": "overloaded-on-200-test"}},
+            version="v2",
+        ):
+            if event.get("event") == "on_chat_model_end":
+                output = event["data"].get("output")
+                end_outputs.append(getattr(output, "content", None))
+        return end_outputs
+
+    end_outputs = asyncio.run(collect())
+
+    assert model.calls == 2
+    assert end_outputs[-1] == "ok"
+
+
 def test_async_graph_uses_configured_fallback_after_primary_failure(monkeypatch):
     primary = _AlwaysFailBeforeChunkModel()
     fallback = _FallbackStreamingModel()
