@@ -307,7 +307,23 @@ already-seen tail), so the agent never needs to pull it.
   401. The bot's TwitchIO runtime refreshes its own tokens independently.
 - Heartbeats: the container healthcheck runs
   `python -m nymeria.core.service_health check twitch-bot`; healthy requires
-  live EventSub subscriptions, a reachable API, and the kill switch off.
+  the live `channel.chat.message` EventSub subscription specifically (not
+  just "some subscriptions"), a reachable API, and the kill switch off.
+  Heartbeat details name any tracked subscription that is missing.
+- Subscription watchdog: TwitchIO 3.3.x drops a subscription for good when
+  its re-create after a websocket reconnect fails (logged, no retry, no
+  event), which once left the bot deaf to chat for a week while ban/unban
+  events kept the old count-based heartbeat green. The bot now records every
+  subscription that succeeded at startup and, from the 15 s heartbeat loop
+  (plus a forced check 10 s after each socket welcome), re-issues any the
+  client no longer holds, at most once per 60 s, logging each repair; the
+  tick reports the loss first and repairs after it, so a repair reads
+  healthy on the following tick. A subscription that never succeeded (the
+  channel.moderate v2 403) is never retried, and a 409 ("already exists",
+  which TwitchIO swallows) is logged as a stale client view, not a repair.
+  Known gap: while TwitchIO is still backing off inside its own reconnect,
+  the old socket keeps its subscription list, so a minutes-long Twitch
+  outage reads healthy until the reconnect resolves.
 
 ## Configuration Reference
 
