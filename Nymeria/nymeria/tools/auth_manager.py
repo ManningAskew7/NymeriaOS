@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.credential_vault import get_credential_vault_repo
+from .auth_cache_utils import bound_thread_ids
 from .utils import get_user_id, is_admin
 
 
@@ -133,6 +134,10 @@ def _oauth_account_summary(records: list[Any]) -> list[dict[str, Any]]:
                     "provider": record.provider,
                     "account_id": account_id,
                     "emails": [],
+                    # Threads that resolve to this account by default; empty
+                    # means "visible to every unbound thread, subject to the
+                    # single-account rule".
+                    "bound_threads": [],
                     "credentials": [],
                     "active_count": 0,
                     "pending_count": 0,
@@ -140,6 +145,9 @@ def _oauth_account_summary(records: list[Any]) -> list[dict[str, Any]]:
                 },
             )
             row["emails"] = sorted(set(row["emails"] + _record_emails(record)))
+            row["bound_threads"] = sorted(
+                set(row["bound_threads"] + bound_thread_ids(record.allowed_targets))
+            )
             row["credentials"].append(
                 {
                     "id": record.id,

@@ -2925,6 +2925,8 @@ Microsoft tokens land in the credential vault as `kind=oauth_token` via the unif
 
 The agent connects Outlook by calling `request_credential(provider="outlook", kind="oauth")`. Outlook supports both `auth_code` (browser redirect, default when `NYMERIA_PUBLIC_URL` is set) and `device_code` (RFC 8628 short code, used automatically when `NYMERIA_PUBLIC_URL` is unset). To disconnect an Outlook account the user removes the credential from Settings → Connections or the agent calls `auth_cleanup(operation="disable", credential_id=...)`.
 
+**Account selection:** every tool takes an optional `account_id`. Omitted, the account bound to the calling thread is used (`auth_bindings(operation="bind", target_type="thread", target_id=<thread id>)` on the vault row), else the only connected account; with several connected and none bound, the call fails and lists them rather than guessing. `OUTLOOK_DEFAULT_ACCOUNT_ID` still selects among unbound accounts. Mechanics: [`credentials.md`](credentials.md), "Which account a call uses".
+
 **Email tools:**
 
 | Tool | Signature | Description |
@@ -2966,6 +2968,8 @@ Native Python Google Calendar API client. Defined in `tools/calendar.py`. Uses `
 **Authentication:**
 
 The agent connects Google Calendar by calling `request_credential(provider="google_calendar", kind="oauth")`. Tokens land in the vault as `kind=oauth_token`. Calendar API calls go through `tools/auth_cache_utils.get_google_credentials`, which performs a vault-first lookup with legacy file-cache fallback at `data/auth_tokens/<user_id>/google_calendar.json`. Token refresh writes the new access token back to the vault.
+
+**Account selection:** as for Outlook (thread binding, else the only connected account, else a fail-closed error listing the accounts; no configured-default setting on the Google side). Applies to every Google OAuth tool family (Calendar, Docs/Drive/Sheets, Workspace, Analytics, Business Profile).
 
 **Event tools:**
 

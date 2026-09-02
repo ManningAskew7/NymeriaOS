@@ -49,9 +49,12 @@ class TeamsSource(BaseTriggerSource):
     config_schema: Dict[str, Any] = {
         "account_id": {
             "type": "string",
-            "description": "Microsoft account ID; uses first authenticated account if omitted",
+            "description": (
+                "Microsoft account ID (from auth_inspect view=oauth_accounts); the only "
+                "connected account if omitted, required when several are connected"
+            ),
             "required": False,
-            "placeholder": "Leave empty for default account",
+            "placeholder": "Leave empty when one account is connected",
             "group": "Authentication",
             "order": 1,
         },
@@ -89,7 +92,13 @@ class TeamsSource(BaseTriggerSource):
         },
     }
 
-    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
+    def check(
+        self,
+        config: dict,
+        state: dict,
+        user_id: str = "",
+        thread_id: str | None = None,
+    ) -> List[dict]:
         from nymeria.tools.outlook_email import get_access_token, GRAPH_BASE
         import httpx
 
@@ -102,6 +111,9 @@ class TeamsSource(BaseTriggerSource):
         keyword_filter = config.get("keyword_filter")
         exclude_bots = config.get("exclude_bots", True)
 
+        # Deliberately no thread_id (see TeamsChannel): a thread's mail binding
+        # is not its Teams identity. Name the account explicitly; with several
+        # connected and none named the lookup fails closed.
         token = get_access_token(user_id, account_id)
         if not token:
             logger.debug("teams source: no authenticated account, skipping")

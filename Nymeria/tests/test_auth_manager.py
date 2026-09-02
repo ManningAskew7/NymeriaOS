@@ -857,3 +857,42 @@ def test_auth_write_update_reports_previous_provider_on_rename(tmp_path, monkeyp
     body = _write({"operation": "update", "credential_id": record.id, "name": "just a rename"})
     assert body["ok"] is True
     assert "previous_provider" not in body
+
+
+def test_auth_inspect_oauth_accounts_shows_thread_bindings(tmp_path, monkeypatch):
+    # A thread binding made through auth_bindings is visible on the account
+    # row, so a thread can see which mailbox it resolves to by default. The
+    # wildcard target is authorization, not a binding, and stays out.
+    repo = _setup(tmp_path, monkeypatch)
+
+    def _mint(account_id: str, email: str, targets: list[str]):
+        return repo.create_credential(
+            owner_type="user",
+            owner_user_id="alice",
+            name=email,
+            provider="outlook",
+            kind="oauth_token",
+            status="active",
+            account_label=email,
+            metadata={"account_id": account_id, "email": email},
+            allowed_targets=targets,
+            secret_fields={"access_token": "tok"},
+            created_by_user_id="alice",
+        )
+
+    sales = _mint("sales", "sales@_prv_a.example", ["native_tool:*", "thread:*"])
+    beta = _mint("beta", "beta@fa.example", ["native_tool:*"])
+    body = _bindings(
+        {
+            "operation": "bind",
+            "credential_id": beta.id,
+            "target_type": "thread",
+            "target_id": "thread-beta",
+        }
+    )
+    assert body["ok"] is True
+
+    rows = {row["account_id"]: row for row in _inspect({"view": "oauth_accounts"})["accounts"]}
+    assert rows["beta"]["bound_threads"] == ["thread-beta"]
+    assert rows["sales"]["bound_threads"] == []
+    assert sales.id in {c["id"] for c in rows["sales"]["credentials"]}

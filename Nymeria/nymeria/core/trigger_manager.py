@@ -8,6 +8,7 @@ Storage follows the same pattern as TodoManager: one JSON file per user
 in ``data_dir/triggers/``.
 """
 
+import inspect
 import json
 import logging
 import threading
@@ -213,6 +214,22 @@ def describe_resume(trigger_id: str, summary: dict) -> str:
         # than let the caller assume the trigger is now running.
         head += " It is still DISABLED, so it will not run until enabled."
     return head
+
+
+def _source_accepts_thread_id(source: Any) -> bool:
+    """Whether ``source.check`` takes the ``thread_id`` keyword.
+
+    Sources are hot-reloadable plugin files, so one authored against the
+    older ``check(config, state, user_id)`` contract may still be installed;
+    the poll loop keeps calling it the old way instead of failing every cycle.
+    """
+    try:
+        params = inspect.signature(source.check).parameters
+    except (TypeError, ValueError):
+        return False
+    return "thread_id" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _apply_health_outcome(
@@ -904,7 +921,22 @@ class TriggerManager:
                     continue
 
                 try:
-                    events = source.check(trigger.source_config, trigger.state, user_id)
+                    if _source_accepts_thread_id(source):
+                        events = source.check(
+                            trigger.source_config,
+                            trigger.state,
+                            user_id,
+                            thread_id=trigger.thread_id,
+                        )
+                    else:
+                        # Out-of-tree source plugin written before ``check``
+                        # grew ``thread_id`` (sources are hot-reloadable
+                        # files): poll it the old way. It cannot honour
+                        # per-thread credential bindings, which is the
+                        # documented cost of the legacy signature.
+                        events = source.check(
+                            trigger.source_config, trigger.state, user_id
+                        )
                     _apply_health_outcome(trigger, None, now, kind="source")
                 except Exception as e:
                     _record_source_failure(trigger, str(e))

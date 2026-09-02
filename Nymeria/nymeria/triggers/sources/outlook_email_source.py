@@ -73,9 +73,12 @@ class OutlookEmailSource(BaseTriggerSource):
     config_schema: Dict[str, Any] = {
         "account_id": {
             "type": "string",
-            "description": "Microsoft account ID; uses first authenticated account if omitted",
-            "required": False,
-            "placeholder": "Leave empty for default account",
+            "description": (
+                "Microsoft account ID (from auth_inspect view=oauth_accounts). Required; "
+                "must be visible to the trigger's thread: bound to it, or unbound"
+            ),
+            "required": True,
+            "placeholder": "e.g. name_at_example_com",
             "group": "Authentication",
             "order": 1,
         },
@@ -142,7 +145,13 @@ class OutlookEmailSource(BaseTriggerSource):
         },
     }
 
-    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
+    def check(
+        self,
+        config: dict,
+        state: dict,
+        user_id: str = "",
+        thread_id: str | None = None,
+    ) -> List[dict]:
         """Poll Graph API for new emails since last check.
 
         State keys persisted between calls:
@@ -164,8 +173,12 @@ class OutlookEmailSource(BaseTriggerSource):
         max_emails = min(config.get("max_emails", 5), 50)
         processed_category = config.get("processed_category", "Nymeria-Read")
 
-        # Get auth token -- fail gracefully if not authenticated
-        token = get_access_token(user_id, account_id)
+        # Get auth token -- fail gracefully if not authenticated. The trigger's
+        # thread scopes the visible accounts: an account_id outside that
+        # thread's binding raises OAuthAccountSelectionError, which propagates
+        # so the ticker records a source failure instead of polling the wrong
+        # mailbox or silently skipping.
+        token = get_access_token(user_id, account_id, thread_id=thread_id)
         if not token:
             logger.debug("outlook_email source: no authenticated account, skipping")
             return []

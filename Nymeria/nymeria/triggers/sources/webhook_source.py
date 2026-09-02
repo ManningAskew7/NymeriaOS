@@ -98,7 +98,13 @@ class WebhookSource(BaseTriggerSource):
             self._queues.setdefault(trigger_id, []).append(event)
             self._persist()
 
-    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
+    def check(
+        self,
+        config: dict,
+        state: dict,
+        user_id: str = "",
+        thread_id: str | None = None,
+    ) -> List[dict]:
         """Drain queued events for the trigger identified in *state*."""
         trigger_id = state.get("trigger_id", "")
         with self._lock:

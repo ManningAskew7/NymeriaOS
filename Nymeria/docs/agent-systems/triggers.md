@@ -74,7 +74,7 @@ was given against stored secrets.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `account_id` | string | yes | Microsoft account identifier |
+| `account_id` | string | yes | Microsoft account identifier. Must be visible to the trigger's thread: an account bound (`auth_bindings`, `thread:<id>`) to a different thread raises a selection error recorded as a source failure rather than being polled |
 | `folder` | string | no | Folder to monitor (default: `Inbox`) |
 | `from_filter` | string | no | Only match emails from this address |
 | `subject_filter` | string | no | Regex match on subject line |
@@ -134,7 +134,7 @@ Template variables: `{channel_name}`, `{author}`, `{content}`, `{message_url}`, 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `account_id` | string | yes | Microsoft account identifier |
+| `account_id` | string | yes | Microsoft account identifier. Must be visible to the trigger's thread: an account bound (`auth_bindings`, `thread:<id>`) to a different thread raises a selection error recorded as a source failure rather than being polled |
 | `team_id` | string | yes | Teams team ID |
 | `channel_id` | string | yes | Teams channel ID |
 | `keyword_filter` | string | no | Only match messages containing this text |

@@ -168,7 +168,7 @@ def calendar_list_calendars(account_id: Optional[str] = None, config: Annotated[
     Use this to discover which calendars are available before listing events.
 
     Args:
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         List of calendars with id, summary, and accessRole
@@ -215,7 +215,7 @@ def calendar_list_events(
         max_results: Maximum number of events to return (default: 10)
         time_min: Start time in ISO 8601 format (e.g., "2024-01-15T00:00:00Z")
         time_max: End time in ISO 8601 format (e.g., "2024-01-31T23:59:59Z")
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         List of events with their details (id, summary, start, end, etc.)
@@ -264,7 +264,7 @@ def calendar_get_event(
     Args:
         event_id: The ID of the event to retrieve
         calendar_id: Calendar ID containing the event (default: "primary")
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Full event details including description, attendees, location, etc.
@@ -298,7 +298,7 @@ def calendar_search_events(
         query: Search query string
         calendar_id: Calendar ID to search in (default: "primary")
         max_results: Maximum number of results (default: 10)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         List of matching events
@@ -356,7 +356,7 @@ def calendar_create_event(
         location: Optional event location
         attendees: Optional comma-separated list of attendee email addresses
         timezone: Optional timezone (e.g., "America/New_York"). Defaults to calendar's timezone.
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Created event details including the event ID
@@ -425,7 +425,7 @@ def calendar_update_event(
         end_time: New end time in ISO 8601 format
         description: New event description
         location: New event location
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Updated event details
@@ -479,7 +479,7 @@ def calendar_delete_event(
     Args:
         event_id: The ID of the event to delete
         calendar_id: Calendar ID containing the event (default: "primary")
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of deletion
@@ -511,7 +511,7 @@ def calendar_respond_to_event(
         event_id: The ID of the event to respond to
         response: Response status - one of: "accepted", "declined", "tentative"
         calendar_id: Calendar ID containing the event (default: "primary")
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of response
@@ -582,7 +582,7 @@ def calendar_get_freebusy(
         time_min: Start of time range in ISO 8601 format
         time_max: End of time range in ISO 8601 format
         calendars: Optional comma-separated list of calendar IDs. Defaults to primary calendar.
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Free/busy information showing busy time ranges
@@ -649,7 +649,7 @@ def calendar_list_colors(account_id: Optional[str] = None, config: Annotated[Run
     Returns the color palette that can be used when creating or updating events.
 
     Args:
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Available color IDs and their corresponding colors

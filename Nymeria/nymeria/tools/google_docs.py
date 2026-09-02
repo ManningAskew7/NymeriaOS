@@ -357,7 +357,7 @@ def google_docs_read(
         max_chars: Maximum characters to return (default: 50000)
         include_metadata: If True, include document end index and other metadata
                           in the response header (useful for subsequent insert operations)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Document content in the requested format
@@ -411,7 +411,7 @@ def google_docs_create(
     Args:
         title: Title for the new document
         folder_id: Optional Google Drive folder ID to place the document in
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Document ID, URL, and title of the created document
@@ -460,7 +460,7 @@ def google_docs_delete(
 
     Args:
         document_id: The Google Docs document ID or full URL
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the deletion
@@ -504,7 +504,7 @@ def google_docs_list(
     Args:
         query: Optional search query to filter documents by name/content
         max_results: Maximum number of results to return (default: 10, max: 50)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         List of matching Google Docs documents
@@ -574,7 +574,7 @@ def google_docs_write(
         insert_index: Optional. Insert content at this specific 1-based index instead of
                       appending. Use google_docs_read with format="json" or include_metadata=True
                       to find indices. Cannot be combined with mode="overwrite".
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Summary of what was written (character count, element types)
@@ -669,7 +669,7 @@ def google_docs_append_text(
     Args:
         document_id: The Google Docs document ID or full URL
         text: The text to append
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the append operation
@@ -727,7 +727,7 @@ def google_docs_insert_text(
         document_id: The Google Docs document ID or full URL
         text: The text to insert
         index: The 1-based character index where text should be inserted
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the insert operation
@@ -780,7 +780,7 @@ def google_docs_delete_range(
         document_id: The Google Docs document ID or full URL
         start_index: Start of the range to delete (inclusive)
         end_index: End of the range to delete (exclusive)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the delete operation
@@ -843,7 +843,7 @@ def google_docs_apply_text_style(
         font_size: Font size in points (e.g., 12, 14, 18)
         foreground_color: Text color as hex string (e.g., "#FF0000" for red)
         link_url: URL to create a hyperlink
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the style application
@@ -933,7 +933,7 @@ def google_docs_update_paragraph_style(
         end_index: End of the paragraph range (exclusive)
         heading_level: Heading level 0-6 (0 = normal text, 1 = HEADING_1, etc.)
         alignment: Text alignment. One of "START", "CENTER", "END", or "JUSTIFIED"
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the paragraph style update
@@ -1012,7 +1012,7 @@ def google_docs_insert_table(
         rows: Number of rows in the table
         columns: Number of columns in the table
         index: The 1-based character index where the table should be inserted
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the table insertion
@@ -1076,7 +1076,7 @@ def google_docs_write_table(
         rows: List of data rows, each a list of cell strings
         index: Optional 1-based index to insert at (default: end of document)
         bold_headers: Whether to bold the header row (default: True)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation with table dimensions
@@ -1218,7 +1218,7 @@ def google_docs_insert_page_break(
     Args:
         document_id: The Google Docs document ID or full URL
         index: The 1-based character index where the page break should be inserted
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the page break insertion
@@ -1274,7 +1274,7 @@ def google_docs_replace_text(
         clear_formatting: If True, reset the replaced text to default style.
                           Removes bold, italic, underline, color, font size, links
                           (default: False)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Number of replacements made
@@ -1353,7 +1353,7 @@ def google_docs_find_index(
     Args:
         document_id: The Google Docs document ID or full URL
         search_text: The text to search for (exact match, case-sensitive)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         List of matches with their start and end indices
@@ -1405,7 +1405,7 @@ def google_docs_table_update_cell(
         col: 1-based column number (1 = first column)
         text: New text to put in the cell (replaces existing content)
         table_index: Which table in the document (1 = first table, default: 1)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the cell update
@@ -1505,7 +1505,7 @@ def google_docs_table_append_row(
         document_id: The Google Docs document ID or full URL
         row_data: List of cell strings for the new row (one per column)
         table_index: Which table in the document to append to (1 = first table, default: 1)
-        account_id: Google account ID (optional, uses first account if not specified)
+        account_id: Google account ID (optional; defaults to the thread's bound or only connected account)
 
     Returns:
         Confirmation of the row append

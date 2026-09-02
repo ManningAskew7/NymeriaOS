@@ -44,8 +44,16 @@ class _StaticSource:
 
     def __init__(self, events: list[dict]) -> None:
         self._events = list(events)
+        self.seen_thread_ids: list[str | None] = []
 
-    def check(self, source_config: dict, state: dict, user_id: str = "") -> list[dict]:
+    def check(
+        self,
+        source_config: dict,
+        state: dict,
+        user_id: str = "",
+        thread_id: str | None = None,
+    ) -> list[dict]:
+        self.seen_thread_ids.append(thread_id)
         return list(self._events)
 
 
@@ -116,6 +124,9 @@ def test_busy_thread_enqueues_pending_prompts(tmp_path, isolated_queue, patched_
     # No fire_action call should happen for this trigger; check_triggers
     # returned no actionable (trigger, events) pairs.
     assert results == []
+    # The source is told which thread it polls for, so per-thread credential
+    # bindings (an Outlook mailbox bound to the trigger's thread) apply.
+    assert patched_sources["static"].seen_thread_ids == ["t1"]
 
     # Two prompts should be sitting in the queue under thread "t1".
     assert isolated_queue.size("t1") == 2
@@ -146,6 +157,43 @@ def test_idle_thread_returns_events_for_fire_action(tmp_path, isolated_queue, pa
     assert events == [{"body": "tick"}]
     # Nothing was queued -- the caller will fire_action_batch instead.
     assert isolated_queue.size("t-idle") == 0
+
+
+class _LegacySource:
+    """A source plugin authored before ``check`` grew ``thread_id``."""
+
+    def __init__(self, events: list[dict]) -> None:
+        self._events = list(events)
+        self.checks = 0
+
+    def check(self, source_config: dict, state: dict, user_id: str = "") -> list[dict]:
+        self.checks += 1
+        return list(self._events)
+
+
+def test_legacy_source_without_thread_id_is_still_polled(
+    tmp_path, isolated_queue, patched_sources
+):
+    """Sources are hot-reloadable plugin files, so one written against the
+    older ``check(config, state, user_id)`` contract must keep producing
+    events rather than failing every poll with a TypeError."""
+    legacy = _LegacySource([{"body": "old"}])
+    patched_sources["static"] = legacy
+
+    tm = TriggerManager(tmp_path)
+    user_id = "u1"
+    trigger = _make_trigger(thread_id="t-legacy")
+    with tm.atomic_update(user_id) as store:
+        store.triggers.append(trigger)
+
+    results = tm.check_triggers(user_id=user_id, agent=None)
+
+    assert legacy.checks == 1
+    assert [events for _, events in results] == [[{"body": "old"}]]
+    with tm.atomic_update(user_id) as store:
+        stored = store.triggers[0]
+    assert stored.consecutive_errors == 0
+    assert stored.last_error is None
 
 
 def test_atomic_update_skips_write_on_noop_poll(

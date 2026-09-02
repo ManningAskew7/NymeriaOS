@@ -380,6 +380,10 @@ The vault record written by both flows uses these conventions:
   displaying an endpoint that is not the one in use.
 - `allowed_targets`: default `["native_tool:*"]`, so any native Google or
   Outlook tool can read the token. Bind to a specific tool name to scope.
+  An exact `thread:<thread_id>` entry (what `auth_bindings(operation="bind",
+  target_type="thread", target_id=<thread_id>)` adds) additionally BINDS the
+  account to that thread for account selection, below; `thread:*` and `*`
+  are authorization only, never a binding.
 
 When a reconnect completes for the same provider account, Nymeria promotes the
 new prompt credential to active, carries over allowed targets and bindings from
@@ -397,6 +401,57 @@ back to whichever store the account originated from: vault rows go through
 `upsert_credential`, legacy rows through `save_token_cache`. The
 `_vault_credential_id` sentinel on each merged account routes the persist
 call to the correct store.
+
+### Which account a call uses (thread bindings, fail-closed selection)
+
+One user can hold several accounts for one provider (two Outlook mailboxes
+belonging to different organisations, say). Selection is per call:
+
+1. The resolver takes a `thread_id` (`resolve_oauth_cache(..., thread_id=)`).
+   When any vault account for the provider carries the exact
+   `thread:<thread_id>` target, `OAuthCacheSource.accounts` (what the picker
+   chooses from) holds ONLY the accounts bound to that thread and
+   `thread_bound` is True; legacy file accounts cannot carry a binding, so
+   they drop out of a bound view. `cache["accounts"]` stays the full merged
+   set: it is the persist payload, so a refresh through a bound view cannot
+   drop the accounts the view did not show. No binding for the thread means
+   the full set, as before. A bound row is read under its `thread:<id>`
+   target rather than `native_tool:*`, so leaving ONLY the thread target on
+   a row locks that mailbox to the thread: it reads it, every other thread
+   is denied at the vault and never sees it. A bound row whose secret cannot
+   be read raises instead of falling open to the other accounts.
+2. The shared picker `auth_cache_utils.select_oauth_account` then applies:
+   explicit `account_id` (must be in the view, else an error naming the
+   scope) > the configured default (`OUTLOOK_DEFAULT_ACCOUNT_ID`, Outlook
+   only, and only if it is in the view) > the sole visible account. Several
+   visible accounts with none of those selecting raise
+   `OAuthAccountSelectionError`, whose message lists the accounts (id,
+   email, credential id) and the two fixes: pass `account_id`, or bind one
+   account to the thread. There is no "first account" fallback any more; a
+   thread bound to one mailbox can never reach the other, and an unbound
+   thread with two mailboxes gets a loud error instead of a quiet guess.
+   Single-account users see no change.
+3. Tools learn their thread without plumbing: `tools/utils.py::
+   ambient_thread_id()` reads `configurable.thread_id` from LangChain's
+   runnable-context contextvar, which LangGraph's ToolNode sets for the
+   duration of every tool call (sync tools included), routed through
+   `get_effective_thread_id` so a dream shadow turn answers with its parent
+   (where the binding lives). `get_access_token`, `get_account`, and
+   `get_google_credentials` use it when no explicit `thread_id` is passed;
+   autonomous callers pass what they know (trigger sources receive
+   `thread_id` on `check()`, the `email_outlook` notification channel passes
+   `ctx.thread_id`); user-wide consumers such as the Gmail MCP export and
+   `/report` pass nothing and keep the full set. The Teams channel and Teams
+   trigger source share the Microsoft token but deliberately stay unbound: a
+   thread's mail binding is not its Teams identity, so they select by
+   explicit account and fail closed only when several exist and none is
+   named.
+
+Request helpers (`graph_request`, `google_api_request`, the direct Google
+callers) return the selection error as their error string; the Outlook
+trigger source lets it propagate so the ticker records a source failure
+rather than polling the wrong mailbox. `auth_inspect(view="oauth_accounts")`
+shows each account's `bound_threads`.
 
 ## Access Control
 

@@ -317,14 +317,25 @@ class TeamsChannel(_BaseChannel):
         if not team_id or not channel_id:
             return SendResult.error("Teams team_id / channel_id missing")
         try:
-            from ..tools.outlook_email import GRAPH_BASE, get_access_token
+            from ..tools.outlook_email import (
+                GRAPH_BASE,
+                OAuthAccountSelectionError,
+                get_access_token,
+            )
         except ImportError:
             return SendResult.error("outlook_email module unavailable")
 
         account_id = destination.config.get("account_id") or getattr(
             ctx.settings, "teams_account_id", None,
         )
-        token = get_access_token(ctx.user_id, account_id)
+        # Deliberately no thread_id: the Microsoft token is shared between mail
+        # and Teams, but a thread's MAIL binding is not its Teams identity.
+        # Teams picks by explicit account (destination or TEAMS_ACCOUNT_ID) and
+        # fails closed only when several accounts exist and none is named.
+        try:
+            token = get_access_token(ctx.user_id, account_id)
+        except OAuthAccountSelectionError as exc:
+            return SendResult.error(str(exc))
         if not token:
             return SendResult.error("No authenticated Microsoft account")
 
@@ -502,12 +513,19 @@ class EmailOutlookChannel(_BaseChannel):
         if not to_addr:
             return SendResult.error("Email 'to' missing")
         try:
-            from ..tools.outlook_email import GRAPH_BASE, get_access_token
+            from ..tools.outlook_email import (
+                GRAPH_BASE,
+                OAuthAccountSelectionError,
+                get_access_token,
+            )
         except ImportError:
             return SendResult.error("outlook_email module unavailable")
 
         account_id = destination.config.get("account_id") or None
-        token = get_access_token(ctx.user_id, account_id)
+        try:
+            token = get_access_token(ctx.user_id, account_id, thread_id=ctx.thread_id)
+        except OAuthAccountSelectionError as exc:
+            return SendResult.error(str(exc))
         if not token:
             return SendResult.error("No authenticated Outlook account")
 

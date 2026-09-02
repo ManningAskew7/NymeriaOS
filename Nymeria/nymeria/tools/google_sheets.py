@@ -15,6 +15,7 @@ from typing import Annotated, Any, Callable, List, Optional, Tuple
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .auth_cache_utils import OAuthAccountSelectionError
 from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -576,7 +577,10 @@ def google_sheets_append(
     if not data.strip():
         return "[Error]: data is required."
 
-    service = _get_sheets_service(user_id)
+    try:
+        service = _get_sheets_service(user_id)
+    except OAuthAccountSelectionError as e:
+        return f"[Error]: {e}"
     if not service:
         return (
             "[Error]: Google Sheets API not available. Call "
@@ -660,7 +664,10 @@ def google_sheets_update(
     if not column_updates.strip():
         return "[Error]: column_updates is required."
 
-    service = _get_sheets_service(user_id)
+    try:
+        service = _get_sheets_service(user_id)
+    except OAuthAccountSelectionError as e:
+        return f"[Error]: {e}"
     if not service:
         return (
             "[Error]: Google Sheets API not available. Call "
