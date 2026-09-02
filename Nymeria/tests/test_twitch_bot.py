@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 import pytest
 
 from nymeria.triggers.twitch_bot import (
+    CHAT_SUBSCRIPTION_TYPE,
     ChatBuffer,
     ChatMessage,
     NymeriaTwitchBot,
+    TrackedSubscription,
     chatter_can_ask,
     compose_ask_prompt,
     compose_pulse_prompt,
@@ -97,7 +99,11 @@ def make_bot(**overrides):
     bot._start_time = time.time()
     bot._pulse_task = None
     bot._health_task = None
+    bot._closing_down = False
     bot._background_tasks = set()
+    bot._tracked_subs = {}
+    bot._last_repair_at = 0.0
+    bot._reconcile_lock = asyncio.Lock()
     for key, value in overrides.items():
         setattr(bot, f"_{key}", value)
     return bot
@@ -557,18 +563,289 @@ async def test_stop_and_start_are_mod_gated(monkeypatch):
 
 def test_heartbeat_status_reflects_connection_api_and_kill_switch():
     bot = make_bot()
-    status, details = bot._heartbeat_status(2, api_ok=True)
+    live = {CHAT_SUBSCRIPTION_TYPE, "channel.ban"}
+    status, details = bot._heartbeat_status(live, api_ok=True)
     assert status == "ok" and details["stopped"] is False
+    assert details["subscription_count"] == 2
 
-    status, _ = bot._heartbeat_status(0, api_ok=True)
+    status, _ = bot._heartbeat_status(set(), api_ok=True)
     assert status == "unhealthy"  # no subscriptions
 
-    status, _ = bot._heartbeat_status(2, api_ok=False)
+    status, _ = bot._heartbeat_status(live, api_ok=False)
     assert status == "unhealthy"  # API unreachable
 
     bot._stopped = True
-    status, details = bot._heartbeat_status(2, api_ok=True)
+    status, details = bot._heartbeat_status(live, api_ok=True)
     assert status == "unhealthy" and details["stopped"] is True
+
+
+# ---------------------------------------------------------------------------
+# EventSub subscription watchdog (tmp/twitch-sub-watchdog-plan.md behaviors
+# 1-8): twitchio drops a subscription for good when its post-reconnect
+# re-create fails, so the bot reconciles its own record against the client.
+# ---------------------------------------------------------------------------
+
+
+def _live_subs(bot, *types):
+    """Make websocket_subscriptions() report exactly these EventSub types."""
+    bot.websocket_subscriptions = lambda: {
+        f"id-{i}": _duck(type=_duck(value=t)) for i, t in enumerate(types)
+    }
+
+
+async def _track(bot, sub_type, *, token_for):
+    """Record a subscription the way a successful startup subscribe does."""
+    factory = lambda: _duck(sub_type=sub_type)  # noqa: E731
+    await bot._subscribe_tracked(sub_type, factory, token_for=token_for, label=sub_type)
+
+
+def test_heartbeat_is_unhealthy_without_the_chat_subscription_even_with_others():
+    bot = make_bot()
+    for t in (CHAT_SUBSCRIPTION_TYPE, "channel.chat.message_delete", "channel.ban"):
+        bot._tracked_subs[t] = TrackedSubscription(lambda: None, "111", t)
+
+    status, details = bot._heartbeat_status({"channel.ban"}, api_ok=True)
+
+    assert status == "unhealthy"
+    assert details["client_connected"] is False
+    assert details["missing_subscriptions"] == [CHAT_SUBSCRIPTION_TYPE, "channel.chat.message_delete"]
+    assert details["subscription_count"] == 1
+
+
+def test_missing_moderation_subscription_is_named_but_not_unhealthy():
+    bot = make_bot()
+    for t in (CHAT_SUBSCRIPTION_TYPE, "channel.ban"):
+        bot._tracked_subs[t] = TrackedSubscription(lambda: None, "111", t)
+
+    status, details = bot._heartbeat_status({CHAT_SUBSCRIPTION_TYPE}, api_ok=True)
+
+    assert status == "ok"
+    assert details["missing_subscriptions"] == ["channel.ban"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reissues_only_the_missing_subscription_with_its_recipe():
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    await _track(bot, "channel.ban", token_for="999")
+    calls.clear()
+    _live_subs(bot, CHAT_SUBSCRIPTION_TYPE)  # ban vanished
+
+    still_missing = await bot._reconcile_subscriptions()
+
+    assert still_missing == []
+    assert len(calls) == 1
+    assert calls[0]["sub"].sub_type == "channel.ban"
+    assert calls[0]["token_for"] == "999" and calls[0]["as_bot"] is False
+    assert set(bot._tracked_subs) == {CHAT_SUBSCRIPTION_TYPE, "channel.ban"}
+
+    # Chat sub re-issue: bot token by token_for, never via as_bot (which
+    # would silently override token_for on commands.Bot).
+    _live_subs(bot, "channel.ban")
+    bot._last_repair_at = 0.0
+    calls.clear()
+    await bot._reconcile_subscriptions()
+    assert len(calls) == 1
+    assert calls[0]["sub"].sub_type == CHAT_SUBSCRIPTION_TYPE
+    assert calls[0]["token_for"] == "111" and calls[0]["as_bot"] is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_survives_a_failed_reissue_and_retries_after_the_interval():
+    import nymeria.triggers.twitch_bot as module
+
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    calls.clear()
+    _live_subs(bot)  # everything gone
+
+    async def reject(sub, **kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("session does not exist")
+
+    bot.subscribe_websocket = reject
+
+    assert await bot._reconcile_subscriptions() == [CHAT_SUBSCRIPTION_TYPE]
+    assert len(calls) == 1
+    assert CHAT_SUBSCRIPTION_TYPE in bot._tracked_subs  # still remembered for next time
+
+    # Inside the repair interval: reported missing, no new attempt.
+    assert await bot._reconcile_subscriptions() == [CHAT_SUBSCRIPTION_TYPE]
+    assert len(calls) == 1
+
+    # Interval elapsed: tries again.
+    bot._last_repair_at -= module.SUBSCRIPTION_REPAIR_INTERVAL_SECONDS + 1
+    assert await bot._reconcile_subscriptions() == [CHAT_SUBSCRIPTION_TYPE]
+    assert len(calls) == 2
+
+    # force (the post-welcome check) ignores the interval.
+    await bot._reconcile_subscriptions(force=True)
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_reconcile_never_retries_a_subscription_that_never_succeeded(monkeypatch):
+    eventsub = _stub_eventsub(monkeypatch)
+    bot = make_bot(broadcaster_token="btok", bot_user_id="111")
+    calls = _record_subscribe(bot, fail_types=(eventsub.ChannelModerateV2Subscription,))
+    await bot._subscribe_moderation_events()
+    assert "channel.moderate" not in bot._tracked_subs
+    assert set(bot._tracked_subs) == {"channel.ban", "channel.unban", "channel.chat.message_delete"}
+    calls.clear()
+    _live_subs(bot, "channel.ban", "channel.unban", "channel.chat.message_delete")
+
+    assert await bot._reconcile_subscriptions(force=True) == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_nothing_while_shutting_down():
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    calls.clear()
+    _live_subs(bot)
+    bot._closing_down = True
+
+    assert await bot._reconcile_subscriptions(force=True) == [CHAT_SUBSCRIPTION_TYPE]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_socket_welcome_schedules_a_forced_reconcile(monkeypatch):
+    """The post-welcome check is deferred (twitchio's own resubscribe runs
+    first) and ignores the repair interval."""
+    import nymeria.triggers.twitch_bot as module
+
+    monkeypatch.setattr(module, "WELCOME_RECONCILE_DELAY_SECONDS", 0)
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    calls.clear()
+    _live_subs(bot)
+    bot._last_repair_at = time.monotonic()  # a periodic pass would be rate-limited
+
+    await bot.event_websocket_welcome(_duck(session_id="s1"))
+
+    assert calls == []  # not inline
+    assert len(bot._background_tasks) == 1
+    await _drain(bot)
+    assert len(calls) == 1 and calls[0]["sub"].sub_type == CHAT_SUBSCRIPTION_TYPE
+
+
+def _live_list(bot):
+    """websocket_subscriptions() backed by a mutable list of types."""
+    live = []
+    bot.websocket_subscriptions = lambda: {
+        f"id-{i}": _duck(type=_duck(value=t)) for i, t in enumerate(live)
+    }
+    return live
+
+
+def _subscribe_into(calls, live, delay=0.0):
+    async def fake_subscribe(sub, **kwargs):
+        calls.append(kwargs)
+        if delay:
+            await asyncio.sleep(delay)  # connect + create in flight
+        live.append(sub.sub_type)
+        return {"data": [{"id": "new"}]}
+
+    return fake_subscribe
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_cycle_reports_then_repairs(monkeypatch):
+    """Tick 1 reports the loss honestly and re-issues; tick 2 reports ok."""
+    import nymeria.triggers.twitch_bot as module
+
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    calls.clear()
+    live = _live_list(bot)
+    bot.subscribe_websocket = _subscribe_into(calls, live)
+    written = []
+    monkeypatch.setattr(
+        module,
+        "write_service_heartbeat",
+        lambda service, status, details: written.append((status, details["missing_subscriptions"])),
+    )
+    ticks = []
+
+    async def stop_after_two(_seconds):
+        ticks.append(1)
+        if len(ticks) == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(module.asyncio, "sleep", stop_after_two)
+    with pytest.raises(asyncio.CancelledError):
+        await bot._health_heartbeat_loop()
+
+    assert len(calls) == 1
+    assert written == [("unhealthy", [CHAT_SUBSCRIPTION_TYPE]), ("ok", [])]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reconciles_issue_one_subscribe():
+    """Two overlapping passes (both sockets welcomed on one blip) must not
+    each open a socket: the orphan would double-deliver every event."""
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    calls.clear()
+    live = _live_list(bot)
+    bot.subscribe_websocket = _subscribe_into(calls, live, delay=0.01)
+
+    await asyncio.gather(
+        bot._reconcile_subscriptions(force=True), bot._reconcile_subscriptions(force=True)
+    )
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_409_is_not_reported_as_repaired_or_tracked():
+    """twitchio swallows a 409 and returns None; that is neither a success
+    for the watchdog nor a subscription worth tracking at startup."""
+    bot = make_bot()
+
+    async def already_exists(sub, **kwargs):
+        return None
+
+    bot.subscribe_websocket = already_exists
+
+    with pytest.raises(RuntimeError, match="409"):
+        await bot._subscribe_tracked("channel.ban", lambda: _duck(), token_for="999", label="ban")
+    assert bot._tracked_subs == {}
+
+    bot._tracked_subs[CHAT_SUBSCRIPTION_TYPE] = TrackedSubscription(lambda: _duck(), "111", "chat")
+    _live_subs(bot)
+    assert await bot._reconcile_subscriptions(force=True) == [CHAT_SUBSCRIPTION_TYPE]
+
+
+@pytest.mark.asyncio
+async def test_close_sets_the_shutdown_flag_before_unwinding(monkeypatch):
+    import nymeria.triggers.twitch_bot as module
+
+    closed = []
+
+    async def base_close(self, **options):
+        closed.append(True)
+
+    monkeypatch.setattr(module.commands.Bot, "close", base_close)
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    calls.clear()
+    _live_subs(bot)
+
+    await bot.close()
+
+    assert closed == [True] and bot._closing_down is True
+    assert await bot._reconcile_subscriptions(force=True) == [CHAT_SUBSCRIPTION_TYPE]
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -794,6 +1071,7 @@ def _record_subscribe(bot, fail_types=()):
         calls.append({"sub": sub, "as_bot": as_bot, "token_for": token_for})
         if isinstance(sub, fail_types):
             raise RuntimeError("subscription rejected")
+        return {"data": [{"id": f"sub-{len(calls)}"}]}
 
     bot.subscribe_websocket = fake_subscribe
     return calls

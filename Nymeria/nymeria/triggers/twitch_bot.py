@@ -42,7 +42,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
@@ -63,6 +63,30 @@ logger = logging.getLogger(__name__)
 
 #: Cap on the already-seen tail a thin-unseen !ask may carry.
 SEEN_TAIL_CAP = 25
+
+#: The one EventSub subscription the bot cannot work without.
+CHAT_SUBSCRIPTION_TYPE = "channel.chat.message"
+
+#: Minimum seconds between attempts to re-issue lost EventSub subscriptions.
+#: twitchio 3.3.x drops a subscription for good when its post-reconnect
+#: re-create fails (logged, no retry, no event), so the bot reconciles its
+#: own record against the client's live view; see _reconcile_subscriptions.
+SUBSCRIPTION_REPAIR_INTERVAL_SECONDS = 60
+
+#: Delay before the post-welcome reconcile: long enough for twitchio's own
+#: resubscribe pass (or the initial event_ready subscribes) to finish, so a
+#: subscription is not re-issued while its first create is still in flight.
+WELCOME_RECONCILE_DELAY_SECONDS = 10
+
+
+@dataclass
+class TrackedSubscription:
+    """An EventSub subscription that succeeded once, kept so it can be re-issued."""
+
+    factory: Callable[[], Any]
+    token_for: Optional[str]
+    label: str
+
 
 # Untrusted-content fence for chat-derived text, mirroring the
 # chrome_browser.py page-text treatment: the closing marker is neutralized
@@ -387,8 +411,17 @@ class NymeriaTwitchBot(_BotBase):
         self._stopped = False  # Kill switch: disables all agent prompts
         self._pulse_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
+        self._closing_down = False
         # Strong refs so fire-and-forget turn tasks are not GC'd mid-flight.
         self._background_tasks: set[asyncio.Task] = set()
+        # EventSub subscriptions that succeeded once, by type, so a lost one
+        # can be re-issued (watchdog in the heartbeat loop).
+        self._tracked_subs: Dict[str, TrackedSubscription] = {}
+        self._last_repair_at: float = 0.0
+        # Serializes repair passes: twitchio registers a new socket only after
+        # awaiting its connect, so two concurrent subscribes for one token can
+        # each open a socket and the orphan would double-deliver every event.
+        self._reconcile_lock = asyncio.Lock()
 
         # Register commands explicitly (TwitchIO v3 doesn't auto-discover from
         # subclass methods).
@@ -478,11 +511,15 @@ class NymeriaTwitchBot(_BotBase):
 
         if self._broadcaster_id:
             try:
-                subscription = twitchio.eventsub.ChatMessageSubscription(
-                    broadcaster_user_id=self._broadcaster_id,
-                    user_id=self._bot_user_id,
+                await self._subscribe_tracked(
+                    CHAT_SUBSCRIPTION_TYPE,
+                    lambda: twitchio.eventsub.ChatMessageSubscription(
+                        broadcaster_user_id=self._broadcaster_id,
+                        user_id=self._bot_user_id,
+                    ),
+                    token_for=self._bot_user_id,
+                    label="chat messages",
                 )
-                await self.subscribe_websocket(subscription, token_for=self._bot_user_id)
                 logger.info("Subscribed to chat messages for #%s", self._channel_name)
             except Exception as e:
                 logger.error("Failed to subscribe to chat events: %s", e, exc_info=True)
@@ -514,9 +551,18 @@ class NymeriaTwitchBot(_BotBase):
             return
         self._health_task = asyncio.create_task(self._health_heartbeat_loop())
 
-    def _heartbeat_status(self, subscription_count: int, api_ok: bool) -> tuple[str, dict]:
-        """Heartbeat status + details from the current connection state."""
-        client_connected = bool(self._broadcaster_id and subscription_count)
+    def _heartbeat_status(self, present_types: set[str], api_ok: bool) -> tuple[str, dict]:
+        """Heartbeat status + details from the current connection state.
+
+        Healthy means the CHAT subscription is live, not merely "some
+        subscriptions": a bot that still sees ban/unban events but lost
+        channel.chat.message is deaf, and that is exactly the state
+        twitchio's silent resubscribe drop leaves behind. Missing moderation
+        subscriptions are named in details (and repaired by the watchdog)
+        without flipping health, because those events are best-effort.
+        """
+        missing = sorted(t for t in self._tracked_subs if t not in present_types)
+        client_connected = bool(self._broadcaster_id and CHAT_SUBSCRIPTION_TYPE in present_types)
         healthy = client_connected and api_ok and not self._stopped
         return (
             "ok" if healthy else "unhealthy",
@@ -524,30 +570,150 @@ class NymeriaTwitchBot(_BotBase):
                 "client_connected": client_connected,
                 "api_ok": api_ok,
                 "broadcaster_resolved": self._broadcaster_id is not None,
-                "subscription_count": subscription_count,
+                "subscription_count": len(present_types),
+                "missing_subscriptions": missing,
                 "stopped": self._stopped,
             },
         )
 
     async def _health_heartbeat_loop(self) -> None:
-        """Publish health while EventSub subscriptions and the API are alive."""
+        """Publish health while EventSub subscriptions and the API are alive.
+
+        Doubles as the subscription watchdog: after each write, any tracked
+        subscription the client no longer holds is re-issued (rate-limited),
+        so a successful repair reads healthy on the next tick.
+        """
         while True:
             try:
-                subscriptions = self.websocket_subscriptions()
+                present = self._present_subscription_types()
                 try:
                     api_ok = bool(await self.api.health())
                 except Exception:
                     api_ok = False
-                status, details = self._heartbeat_status(len(subscriptions), api_ok)
+                status, details = self._heartbeat_status(present, api_ok)
                 write_service_heartbeat("twitch-bot", status=status, details=details)
+                # Repair AFTER the write: a Helix call has no client timeout,
+                # so a stuck one must not hold the heartbeat past staleness,
+                # and cancelling a subscribe mid-connect could orphan a socket.
+                await self._reconcile_subscriptions()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("Twitch health heartbeat failed", exc_info=True)
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
+    # -----------------------------------------------------------------
+    # EventSub subscription tracking + watchdog
+    # -----------------------------------------------------------------
+
+    async def _subscribe_tracked(
+        self,
+        sub_type: str,
+        factory: Callable[[], Any],
+        *,
+        token_for: Optional[str],
+        label: str,
+    ) -> None:
+        """subscribe_websocket plus the recipe to do it again.
+
+        Raises on failure (callers decide what a failure means); a
+        subscription that never succeeded is never tracked, so the watchdog
+        does not keep retrying a known-bad one (the 403 on channel.moderate
+        v2, for example). Always passes as_bot=False: on commands.Bot the
+        default True silently overrides token_for with bot_id, and for the
+        bot's own subscriptions token_for=bot_user_id is the same token.
+        """
+        response = await self.subscribe_websocket(factory(), as_bot=False, token_for=token_for)
+        if response is None:
+            # twitchio swallows a 409 (logged, returns None, records nothing):
+            # Twitch holds the subscription on this session but the client's
+            # view does not, so it must not be reported as repaired.
+            raise RuntimeError(
+                "Twitch reports the subscription already exists on this session (409); "
+                "the client's view is stale"
+            )
+        self._tracked_subs[sub_type] = TrackedSubscription(
+            factory=factory, token_for=token_for, label=label
+        )
+
+    def _present_subscription_types(self) -> set[str]:
+        """EventSub types the twitchio client currently holds on any socket."""
+        present: set[str] = set()
+        for data in self.websocket_subscriptions().values():
+            sub_type = getattr(data, "type", None)
+            # SubscriptionType enum on the real client; plain str is tolerated.
+            present.add(str(getattr(sub_type, "value", sub_type)))
+        return present
+
+    async def _reconcile_subscriptions(self, *, force: bool = False) -> List[str]:
+        """Re-issue tracked subscriptions the client no longer holds.
+
+        Returns the types still missing afterwards. Attempts are spaced by
+        SUBSCRIPTION_REPAIR_INTERVAL_SECONDS unless ``force`` (the
+        post-welcome check); each failure is logged and retried next time.
+        Twitch closes a socket left with no subscriptions and twitchio then
+        reconnects it, so a retry lands on a fresh session soon enough.
+        """
+        async with self._reconcile_lock:
+            present = self._present_subscription_types()
+            missing = [t for t in self._tracked_subs if t not in present]
+            if not missing or self._closing_down:
+                return missing
+            now = time.monotonic()
+            if not force and now - self._last_repair_at < SUBSCRIPTION_REPAIR_INTERVAL_SECONDS:
+                return missing
+            self._last_repair_at = now
+            return await self._reissue(missing)
+
+    async def _reissue(self, missing: List[str]) -> List[str]:
+        still_missing: List[str] = []
+        for sub_type in missing:
+            tracked = self._tracked_subs[sub_type]
+            try:
+                await self._subscribe_tracked(
+                    sub_type,
+                    tracked.factory,
+                    token_for=tracked.token_for,
+                    label=tracked.label,
+                )
+                logger.warning(
+                    "EventSub %s (%s) was missing for #%s; re-subscribed",
+                    sub_type,
+                    tracked.label,
+                    self._channel_name,
+                )
+            except Exception as e:
+                still_missing.append(sub_type)
+                logger.warning(
+                    "EventSub %s (%s) missing for #%s and re-subscribe failed (retry in %ss): %s",
+                    sub_type,
+                    tracked.label,
+                    self._channel_name,
+                    SUBSCRIPTION_REPAIR_INTERVAL_SECONDS,
+                    e,
+                )
+        return still_missing
+
+    async def event_websocket_welcome(self, payload: Any) -> None:
+        """An EventSub socket (re)connected: check the subscriptions shortly.
+
+        twitchio's own resubscribe pass runs right after this event and drops
+        any subscription whose re-create fails, so a delayed forced reconcile
+        catches that without waiting for the next repair window.
+        """
+
+        async def _check_after_resubscribe() -> None:
+            await asyncio.sleep(WELCOME_RECONCILE_DELAY_SECONDS)
+            try:
+                await self._reconcile_subscriptions(force=True)
+            except Exception:
+                logger.warning("Post-reconnect subscription check failed", exc_info=True)
+
+        self._spawn_background_task(_check_after_resubscribe())
+
     async def close(self, **options: Any) -> None:
         """Clean shutdown: unwind loops and in-flight turn tasks."""
+        self._closing_down = True
         for task in (self._pulse_task, self._health_task):
             if task and not task.done():
                 task.cancel()
@@ -645,11 +811,15 @@ class NymeriaTwitchBot(_BotBase):
 
         for label, token_for, moderator_id in v2_attempts:
             try:
-                sub = twitchio.eventsub.ChannelModerateV2Subscription(
-                    broadcaster_user_id=self._broadcaster_id,
-                    moderator_user_id=moderator_id,
+                await self._subscribe_tracked(
+                    "channel.moderate",
+                    lambda moderator_id=moderator_id: twitchio.eventsub.ChannelModerateV2Subscription(
+                        broadcaster_user_id=self._broadcaster_id,
+                        moderator_user_id=moderator_id,
+                    ),
+                    token_for=token_for,
+                    label=f"channel.moderate v2, {label} token",
                 )
-                await self.subscribe_websocket(sub, as_bot=False, token_for=token_for)
                 logger.info(
                     "Subscribed to channel.moderate v2 for #%s (using %s token)",
                     self._channel_name,
@@ -682,9 +852,7 @@ class NymeriaTwitchBot(_BotBase):
             ]
             for name, token_for, factory in fallback_subs:
                 try:
-                    await self.subscribe_websocket(
-                        factory(), as_bot=False, token_for=token_for
-                    )
+                    await self._subscribe_tracked(name, factory, token_for=token_for, label=name)
                     logger.info("Subscribed to %s for #%s", name, self._channel_name)
                 except Exception as e:
                     logger.warning("%s subscription failed: %s", name, e)
