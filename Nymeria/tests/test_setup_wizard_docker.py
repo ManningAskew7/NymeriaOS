@@ -625,3 +625,59 @@ def test_wizard_pilot_start_now_docker_defaults_to_start_and_can_switch():
     assert asyncio.run(drive(False)).next_action is NextAction.START_API_OPEN_FRONTEND
     # Arrow + space switches to print before Enter records it.
     assert asyncio.run(drive(True)).next_action is NextAction.PRINT_COMMANDS
+
+
+def test_full_stack_local_rag_pick_writes_image_opt_in(monkeypatch, tmp_path, capsys):
+    """A local embedder/reranker on Docker needs the local-rag extra IN THE IMAGE.
+    finalize writes `NYMERIA_LOCAL_RAG=1` to `.env.docker` (the compose build arg
+    that bakes it in) and the Docker hint names that flag plus the rebuild command
+    instead of a generic "build an image" note. `--quick` equips the local granite
+    + Ettin stack, which is the silent default most Docker installs land on."""
+    _stub_llm(monkeypatch)
+    from nymeria.setup import local_rag_install as lri
+
+    monkeypatch.setattr(lri, "local_rag_importable", lambda: False)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    args = [
+        "--provider", "anthropic", "--model", "claude-test-model",
+        "--api-key", "sk-ant-x", "--hosting", "docker", "--docker-stack", "full",
+        "--quick", "--root", str(root), "--non-interactive",
+    ]
+    assert setup_main(args) == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "EMBEDDING_PROVIDER") == "local"
+    assert _env_line(content, "NYMERIA_LOCAL_RAG") == "1"
+    out = capsys.readouterr().out
+    assert "NYMERIA_LOCAL_RAG=1" in out
+    assert "--build" in out
+
+
+def test_full_stack_hosted_rag_writes_no_image_opt_in(monkeypatch, tmp_path):
+    """No local pick, no build flag: the lean image stays the default, and a
+    reconfigure away from the local stack retires a stale flag. A scripted run
+    with no RAG pick lands the local quickstart default, so stand in a hosted
+    embedder at the one seam that decides it."""
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        finalize_mod,
+        "apply_quickstart_rag",
+        lambda state: setattr(state, "embedder", "value-openai-small"),
+    )
+    root = tmp_path / "checkout"
+    root.mkdir()
+    base = [
+        "--provider", "anthropic", "--model", "claude-test-model",
+        "--api-key", "sk-ant-x", "--hosting", "docker", "--docker-stack", "full",
+        "--root", str(root), "--non-interactive",
+    ]
+    assert setup_main(base) == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "EMBEDDING_PROVIDER") == "openai"
+    assert "NYMERIA_LOCAL_RAG" not in content
+    # Plant a stale flag as if an earlier run had picked the local stack, then
+    # reconfigure without it: the merge must drop the line.
+    env_path = root / ".env.docker"
+    env_path.write_text(content + "NYMERIA_LOCAL_RAG=1\n", encoding="utf-8")
+    assert setup_main(base) == 0
+    assert "NYMERIA_LOCAL_RAG" not in env_path.read_text(encoding="utf-8")

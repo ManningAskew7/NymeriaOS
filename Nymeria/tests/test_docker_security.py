@@ -484,3 +484,27 @@ def test_security_sensitive_dependency_floors_or_pins_are_bumped() -> None:
             f"{name} floor {effective_floor} is below the required security "
             f"floor {floor}"
         )
+
+
+def test_full_image_local_rag_opt_in_is_a_build_arg() -> None:
+    """The wizard's local RAG stack (granite + Ettin) runs in-process via the
+    optional local-rag extra, which the lean default image omits. The opt-in has
+    to reach the IMAGE, so it rides as a compose build arg interpolated from
+    `.env.docker` (`NYMERIA_LOCAL_RAG=1`, written by `nymeria init` for a local
+    pick) and Dockerfile.full installs the extra only when it is set. Pins both
+    halves so the flag cannot silently stop reaching the build."""
+    services = _load_compose("docker-compose.yml")["services"]
+    for service_name in ("api", "worker"):
+        args = services[service_name]["build"].get("args") or {}
+        assert args.get("NYMERIA_LOCAL_RAG") == "${NYMERIA_LOCAL_RAG:-0}", (
+            f"{service_name} must pass NYMERIA_LOCAL_RAG through as an inert-default build arg"
+        )
+    dockerfile = (ROOT / "Dockerfile.full").read_text(encoding="utf-8")
+    assert "ARG NYMERIA_LOCAL_RAG=0" in dockerfile
+    install = dockerfile[dockerfile.index("ARG NYMERIA_LOCAL_RAG=0"):]
+    assert 'if [ "$NYMERIA_LOCAL_RAG" = "1" ]' in install
+    assert "sentence-transformers" in install
+    # CPU-only torch: the default index would pull the multi-GB CUDA build.
+    assert "download.pytorch.org/whl/cpu" in install
+    # The slim (thin-client) image never carries the extra.
+    assert "sentence-transformers" not in (ROOT / "Dockerfile.slim").read_text(encoding="utf-8")

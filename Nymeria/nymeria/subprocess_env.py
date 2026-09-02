@@ -32,11 +32,16 @@ from collections.abc import Iterable
 # EVERY exec surface, not just the networked ones that used to opt them in.
 # On POSIX none of these are set, so including them here is a no-op there
 # (the scrubber only copies variables that actually exist): no platform
-# branch needed. None are secrets.
+# branch needed. None are secrets. The ProgramFiles trio is what the Windows
+# Docker CLI walks to find its plugins (%ProgramFiles%\Docker\cli-plugins);
+# without it the CLI has no `compose` subcommand (`docker compose up -d` dies
+# with "unknown shorthand flag: 'd' in -d") and every compose surface fails,
+# the wizard's CLIProxy deploy first.
 WINDOWS_RUNTIME_PASSTHROUGH: tuple[str, ...] = (
     "SystemRoot", "windir", "ComSpec", "PATHEXT", "SYSTEMDRIVE",
     "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-    "PROGRAMDATA", "TEMP", "TMP",
+    "PROGRAMDATA", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+    "TEMP", "TMP",
 )
 
 # The minimal, non-secret base a spawned child may inherit. Deliberately small:

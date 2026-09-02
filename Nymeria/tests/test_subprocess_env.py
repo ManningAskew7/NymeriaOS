@@ -126,3 +126,19 @@ def test_mcp_stdio_env_scrubbed_but_keeps_declared(monkeypatch):
     assert env.get("HTTPS_PROXY") == "http://proxy:3128"
     assert "NYMERIA_SECRETS_KEY" not in env
     assert "POSTGRES_URI" not in env
+
+
+def test_windows_program_dirs_ride_the_base_for_docker_plugin_discovery(monkeypatch):
+    r"""The Windows Docker CLI finds its plugins (compose, buildx) under
+    ``%ProgramFiles%\Docker\cli-plugins``; with ``ProgramFiles`` scrubbed the
+    CLI has no ``compose`` subcommand, so ``docker compose up -d`` fails with
+    ``unknown shorthand flag: 'd' in -d`` and the wizard's CLIProxy deploy dies
+    (seen on the Windows work instance, 2026-09-02). PROGRAMDATA alone does not
+    help: nothing is installed there."""
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
+    env = scrubbed_subprocess_env()
+    assert env.get("ProgramFiles") == r"C:\Program Files"
+    assert env.get("ProgramFiles(x86)") == r"C:\Program Files (x86)"
+    assert env.get("ProgramW6432") == r"C:\Program Files"
