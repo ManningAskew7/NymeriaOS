@@ -101,6 +101,7 @@ desktop.ini
 !.claude/settings.json
 !.claude/skills/
 !.claude/agents/
+!.claude/commands/
 !.claude/rules/
 .claude-backup/
 .playwright-mcp/
