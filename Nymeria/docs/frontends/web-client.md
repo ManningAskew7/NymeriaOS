@@ -15,6 +15,13 @@ The web client is the desktop app's SvelteKit build (adapter-static with an
 - Browser routes fall back to `index.html` (the SPA router takes over);
   API-shaped misses still 404 rather than swallowing errors.
 - Concrete API routes always win over frontend paths.
+- Every response carries a Content-Security-Policy whose `script-src` has no
+  `'unsafe-inline'`: the bundle's own inline scripts are admitted by sha256
+  hash, computed at startup from the `index.html` actually served, with CR
+  and CRLF folded to LF first. The browser hashes the parsed script text, not
+  the file bytes, so a bundle built from a CRLF checkout would otherwise have
+  every inline script (theme and preference pre-boot included) silently
+  blocked while the page still rendered.
 
 Because it is the same build, features arrive in the web client and the
 desktop app together. The differences are only where the desktop shell adds

@@ -3,6 +3,7 @@
   import { fly } from 'svelte/transition';
   import { TAB_FADE } from '$lib/utils/transitions';
   import { countChangedFields } from '$lib/utils/settingsDirty';
+  import { applyChatBubblePreference, readChatBubblePreference } from '$lib/utils/chatBubbles';
   import { configStore } from '$lib/stores/config.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
@@ -503,24 +504,20 @@
     resetLogoOpacityOs();
   }
 
-  // Chat bubble preference (off by default, on = restore the bubble look)
-  const CHAT_BUBBLES_KEY = 'nymeria_chat_bubbles';
-  function detectInitialBubbles(): boolean {
-    if (typeof localStorage === 'undefined') return false;
-    return localStorage.getItem(CHAT_BUBBLES_KEY) === 'on';
-  }
-  let showChatBubbles = $state(detectInitialBubbles());
+  // Chat bubble preference: on by default, only an explicit 'off' is stored
+  // (rule and rationale in utils/chatBubbles.ts; app.html's pre-boot script
+  // applies the same rule before first paint).
+  let showChatBubbles = $state(
+    readChatBubblePreference(typeof localStorage === 'undefined' ? undefined : localStorage)
+  );
 
   function handleChatBubblesChange(on: boolean) {
     showChatBubbles = on;
-    if (typeof document !== 'undefined') {
-      if (on) document.documentElement.setAttribute('data-chat-bubbles', 'on');
-      else document.documentElement.removeAttribute('data-chat-bubbles');
-    }
-    if (typeof localStorage !== 'undefined') {
-      if (on) localStorage.setItem(CHAT_BUBBLES_KEY, 'on');
-      else localStorage.removeItem(CHAT_BUBBLES_KEY);
-    }
+    applyChatBubblePreference(
+      on,
+      typeof document === 'undefined' ? undefined : document.documentElement,
+      typeof localStorage === 'undefined' ? undefined : localStorage
+    );
   }
 
   // Model metadata (reactive lookup based on current model ID). Every
