@@ -17,6 +17,7 @@ from nymeria.core.agent_prompt import (
     build_active_todos_section,
     build_full_system_prompt,
     build_user_profile_section,
+    get_memory_hash,
     get_time_context_for_agent,
 )
 
@@ -31,6 +32,7 @@ class _PromptHost:
         thread_config: Any = None,
         base_system_prompt: str = "SOUL",
         todos: Any = None,
+        role: str = "user",
     ) -> None:
         self._profile = profile
         self._thread_config = thread_config
@@ -42,6 +44,11 @@ class _PromptHost:
             get_config=lambda _tid: self._thread_config
         )
         self.settings = SimpleNamespace(data_dir=None)
+        # `get_memory_hash` folds the owner's role into the cache-freshness
+        # token (#327), so the host surface includes the account lookup.
+        self.accounts_repo = SimpleNamespace(
+            get_user_by_id=lambda _uid: SimpleNamespace(role=role)
+        )
         self._memory_indexes: dict = {}
 
     def _resolve_temporary_tools(self, tc: Any) -> set:
@@ -130,3 +137,40 @@ def test_get_time_context_for_agent_is_a_pure_host_free_leaf():
 
     assert isinstance(interactive, str) and interactive
     assert isinstance(autonomous, str) and autonomous
+
+
+def _hash_host(*, role: str) -> Any:
+    """A host whose profile carries the `tool_preferences` the hash reads.
+
+    The shared `_profile()` helper omits it: nothing in this file exercised
+    `get_memory_hash` before #327.
+    """
+    profile = SimpleNamespace(
+        memories=[],
+        personality_overrides={},
+        tool_preferences=SimpleNamespace(default_thread_tools=None),
+    )
+    return _PromptHost(profile=profile, role=role)
+
+
+def test_get_memory_hash_tracks_the_owner_role():
+    """#327: role is a cache-freshness input, proved on the fully typed host.
+
+    The graph cache checks this hash before it will rebuild, and only a rebuild
+    re-runs the role gate that strips admin-only tools. If two accounts that
+    differ ONLY in role hash the same, a demotion is served the graph compiled
+    while the account was still an admin.
+    """
+    as_admin = get_memory_hash(_hash_host(role="admin"), "u1", "")
+    as_user = get_memory_hash(_hash_host(role="user"), "u1", "")
+
+    assert as_admin != as_user
+
+
+def test_get_memory_hash_is_stable_for_an_unchanged_role():
+    # The over-correction guard: a term that varied per call would evict on
+    # every lookup and turn the cache off rather than keep it honest.
+    first = get_memory_hash(_hash_host(role="admin"), "u1", "")
+    second = get_memory_hash(_hash_host(role="admin"), "u1", "")
+
+    assert first == second

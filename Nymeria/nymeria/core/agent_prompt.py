@@ -56,6 +56,7 @@ class PromptHost(Protocol):
     profile_manager: Any
     todo_manager: Any
     thread_config_manager: Any
+    accounts_repo: Any
     settings: Any
     _memory_indexes: Any
     _base_system_prompt: str
@@ -203,6 +204,27 @@ def get_memory_hash(
     # For callable threads with custom system_prompt, skip memory/TODO/personality hash
     tc = host.thread_config_manager.get_config(thread_id) if thread_id else None
     live_temp_tools = sorted(host._resolve_temporary_tools(tc)) if tc else []
+
+    # The owner's ROLE is a freshness input like any other (#327). Graph build
+    # gates admin-only and developer-only tools by role, but that gate runs
+    # only on a cache MISS, so without this term a demotion left the compiled
+    # graph, and the tools bound into it, exactly as the account was before.
+    # Resolved through the same helper the gate uses so the two cannot drift on
+    # what a role is or how an unknown account defaults. Folding it here rather
+    # than invalidating at each role writer is deliberate: the cache cannot
+    # then be left stale by a writer that forgets, and there is already more
+    # than one writer.
+    #
+    # Scope: this is a TURN-BOUNDARY guarantee. A turn already in flight holds
+    # its graph reference (and, on the dynamic path, a bound list keyed by
+    # `tool_config_hash`, which omits role), so a demotion mid-turn is not seen
+    # until the next turn. Invalidating at the writer has exactly the same
+    # limitation, so this is a property of holding a compiled graph for a turn,
+    # not of where the fix lives.
+    from .agent_graph import _resolve_owner_role
+
+    role_str = f"|role:{_resolve_owner_role(host, user_id)}"
+
     if tc and tc.callable and tc.system_prompt:
         thread_config_str = (
             f"sp:{hash(tc.system_prompt or '')}"
@@ -216,7 +238,7 @@ def get_memory_hash(
             f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
         )
         skills_str = host._skills_fingerprint(user_id, thread_id)
-        return f"{hash(thread_config_str + skills_str)}"
+        return f"{hash(thread_config_str + skills_str + role_str)}"
 
     profile = host.profile_manager.get_profile(user_id)
     # Only include profile in hash if this thread injects it
@@ -258,7 +280,7 @@ def get_memory_hash(
 
     skills_str = host._skills_fingerprint(user_id, thread_id)
 
-    return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str + thread_config_str + skills_str)}"
+    return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str + thread_config_str + skills_str + role_str)}"
 
 
 def build_full_system_prompt(
