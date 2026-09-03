@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Personal AI assistant platform built on LangGraph, FastAPI, and local-first persistence."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 authors = [
   { name = "Manning Askew", email = "160990142+ManningAskew7@users.noreply.github.com" },
 ]
