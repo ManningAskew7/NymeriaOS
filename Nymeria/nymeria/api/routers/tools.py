@@ -135,6 +135,89 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
     }
 
 
+class DefaultToolsUpdateError(Exception):
+    """A rejected default-tools write, carrying the HTTP status it maps to.
+
+    Raised by :func:`apply_default_tools_update` so the one validation path can
+    serve both callers: the route re-raises it as an ``HTTPException``, while the
+    in-process command client renders ``detail`` as a command error.
+    """
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+def apply_default_tools_update(
+    agent: Any,
+    *,
+    user_id: str,
+    tool_names: list[str],
+    is_admin: bool,
+) -> dict:
+    """Single source of truth for the default-tools WRITE.
+
+    The twin of :func:`serialize_default_tools`, for the same reason: ``PUT
+    /tools/defaults`` and ``CommandBackendClient.set_default_tools`` must not
+    drift (the TurnExecutor two-shape invariant), and the role gates below are
+    the only thing standing between a non-admin and an admin-only tool on every
+    thread of the account.
+
+    ``is_admin`` must be derived from an authenticated identity (the caller's,
+    or the target's when writing another user's profile), never from a command
+    executor's ``is_admin`` attribute: the agent runs with that set to ``None``,
+    so an ``is_admin is False`` test would wave it through.
+    """
+    from ...core.user_profile import migrate_tool_names
+    from ...tools import (
+        ADMIN_ONLY_TOOL_NAMES,
+        SEED_TOOLS,
+        DEVELOPER_ONLY_TOOL_NAMES,
+        CATALOG_TOOLS,
+    )
+    from ...tools.metadata import MCP_SERVER_TOOL_METADATA
+
+    resolved = migrate_tool_names(list(tool_names))
+
+    known = (
+        {t.name for t in SEED_TOOLS}
+        | set(CATALOG_TOOLS.keys())
+        | set(MCP_SERVER_TOOL_METADATA.keys())
+    )
+    unknown = set(resolved) - known
+    if unknown:
+        raise DefaultToolsUpdateError(400, f"Unknown tools: {sorted(unknown)}")
+
+    if not is_admin:
+        blocked = ADMIN_ONLY_TOOL_NAMES.intersection(resolved)
+        if blocked:
+            raise DefaultToolsUpdateError(
+                403,
+                "Admin-only tools cannot be set as defaults by this "
+                f"user: {sorted(blocked)}",
+            )
+        blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(resolved)
+        if blocked:
+            raise DefaultToolsUpdateError(
+                403,
+                "Developer-only diagnostic tools cannot be set as "
+                f"defaults by this user: {sorted(blocked)}",
+            )
+
+    profile = agent.profile_manager.get_profile(user_id)
+    profile.tool_preferences.default_thread_tools = resolved
+    agent.profile_manager.save_profile(profile)
+
+    agent._rebuild_default_graphs()
+
+    return {
+        "status": "ok",
+        "default_tools": sorted(resolved),
+        "count": len(resolved),
+    }
+
+
 def create_tools_router(
     verify_api_key: Callable[..., Any],
     authed_user_id: Callable[..., Any],
@@ -314,58 +397,15 @@ def create_tools_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Set which tools new threads inherit by default."""
-        from ...core.user_profile import migrate_tool_names
-        from ...tools import (
-            ADMIN_ONLY_TOOL_NAMES,
-            SEED_TOOLS,
-            DEVELOPER_ONLY_TOOL_NAMES,
-            CATALOG_TOOLS,
-        )
-        from ...tools.metadata import MCP_SERVER_TOOL_METADATA
-
-        tool_names = migrate_tool_names(list(request.tool_names))
-
-        known = (
-            {t.name for t in SEED_TOOLS}
-            | set(CATALOG_TOOLS.keys())
-            | set(MCP_SERVER_TOOL_METADATA.keys())
-        )
-        unknown = set(tool_names) - known
-        if unknown:
-            raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
-
-        if user.role != "admin":
-            blocked = ADMIN_ONLY_TOOL_NAMES.intersection(tool_names)
-            if blocked:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Admin-only tools cannot be set as defaults by this "
-                        f"user: {sorted(blocked)}"
-                    ),
-                )
-            blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(tool_names)
-            if blocked:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Developer-only diagnostic tools cannot be set as "
-                        f"defaults by this user: {sorted(blocked)}"
-                    ),
-                )
-
-        agent = get_agent_fn()
-        profile = agent.profile_manager.get_profile(user_id)
-        profile.tool_preferences.default_thread_tools = tool_names
-        agent.profile_manager.save_profile(profile)
-
-        agent._rebuild_default_graphs()
-
-        return {
-            "status": "ok",
-            "default_tools": sorted(tool_names),
-            "count": len(tool_names),
-        }
+        try:
+            return apply_default_tools_update(
+                get_agent_fn(),
+                user_id=user_id,
+                tool_names=list(request.tool_names),
+                is_admin=user.role == "admin",
+            )
+        except DefaultToolsUpdateError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
     @router.delete("/tools/defaults")
     async def reset_default_tools(

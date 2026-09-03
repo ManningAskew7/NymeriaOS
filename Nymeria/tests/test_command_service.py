@@ -60,6 +60,12 @@ class FakeCommandApi:
         self.llm_provider = "openai"
         self.provider_test_result: dict[str, Any] = {"ok": True, "message": ""}
         self.thread_config = {"enabled_tools": [], "disabled_tools": [], "memory_char_limit": None}
+        # The account-wide default tool set behind `/tools enable ... global`.
+        # `default_tools_error` models the client's refusal (the admin-only and
+        # developer-only gates live below the command layer, in the one shared
+        # writer both TurnExecutor shapes call).
+        self.default_tools: list[str] = ["bash_execute"]
+        self.default_tools_error: str | BaseException | None = None
         self.threads: list[dict[str, Any]] = [
             {
                 "thread_id": "thread-1",
@@ -181,10 +187,22 @@ class FakeCommandApi:
         self.calls.append(("compact_thread", (thread_id,), {"user_id": user_id}))
         return {"messages_removed": 3, "messages_before": 8, "messages_after": 5}
 
+    async def set_default_tools(self, user_id: str, tool_names: list[str]) -> dict[str, Any]:
+        self.calls.append(("set_default_tools", (user_id, list(tool_names)), {}))
+        if self.default_tools_error is not None:
+            # A str models the in-process client (which raises ValueError with
+            # the detail); an exception instance models the HTTP client, whose
+            # refusal arrives wrapped in an HTTPStatusError.
+            if isinstance(self.default_tools_error, BaseException):
+                raise self.default_tools_error
+            raise ValueError(self.default_tools_error)
+        self.default_tools = list(tool_names)
+        return {"status": "ok", "default_tools": sorted(tool_names), "count": len(tool_names)}
+
     async def get_default_tools(self, user_id: str = "default") -> dict[str, Any]:
         self.calls.append(("get_default_tools", (user_id,), {}))
         return {
-            "default_tools": ["bash_execute"],
+            "default_tools": list(self.default_tools),
             "available_tools": [
                 {
                     "name": "bash_execute",
@@ -7327,12 +7345,179 @@ def test_tools_enable_requires_a_target_and_rejects_extras() -> None:
     missing = run(service.execute(_ctx(), "/tools enable", api=api))
     assert missing.success is False
     assert "Missing required argument: tool_or_category" in missing.markdown
-    assert "Usage: `/tools enable <tool_or_category>`" in missing.markdown
+    assert "Usage: `/tools enable <tool_or_category> [global|thread]`" in missing.markdown
 
+    # `web` is not a scope value, so the scope param does not swallow a stray
+    # third token: strict extras still answer with did-you-mean.
     extra = run(service.execute(_ctx(), "/tools enable browser web", api=api))
     assert extra.success is False
     assert "Unexpected argument `web`" in extra.markdown
     assert not [call for call in api.calls if call[0] == "update_thread_config"]
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_enable_global_writes_the_account_defaults_not_the_thread() -> None:
+    """#321: the account-wide arm every non-CLI surface was missing."""
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/tools enable browser global", api=api))
+
+    assert result.success is True, result.markdown
+    assert "every thread of this account" in result.markdown
+    assert ("set_default_tools", ("alice", ["bash_execute", "browser"]), {}) in api.calls
+    # The global arm must not touch this thread's own config.
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+def test_tools_disable_global_removes_from_the_account_defaults() -> None:
+    api = FakeCommandApi()
+    api.default_tools = ["bash_execute", "browser"]
+    result = run(CommandService().execute(_ctx(), "/tools disable browser global", api=api))
+
+    assert result.success is True, result.markdown
+    assert ("set_default_tools", ("alice", ["bash_execute"]), {}) in api.calls
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+def test_tools_enable_global_expands_a_category_account_wide() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/tools enable web global", api=api))
+
+    assert result.success is True, result.markdown
+    writes = [call for call in api.calls if call[0] == "set_default_tools"]
+    assert writes, "the category never reached the account-wide writer"
+    assert "browser" in writes[0][1][1]
+
+
+def test_tools_enable_global_surfaces_the_writers_refusal() -> None:
+    """The admin-only gate lives below the command layer; its text must survive.
+
+    The agent runs with ``is_admin=None``, so the gate deliberately is NOT a
+    handler check: the client applies it from its own authenticated identity and
+    the handler only renders what comes back.
+    """
+    api = FakeCommandApi()
+    api.default_tools_error = "Admin-only tools cannot be set as defaults by this user: ['bash_execute']"
+    result = run(CommandService().execute(_ctx(), "/tools enable browser global", api=api))
+
+    assert result.success is False
+    assert "Admin-only tools cannot be set as defaults" in result.markdown
+
+
+def test_tools_enable_without_a_thread_refuses_instead_of_going_global() -> None:
+    """Thread scope must never fall back to the account when there is no thread.
+
+    ``requires_thread`` came off the registration so the global arm can run on a
+    threadless surface. That makes this the guard: inferring global from a
+    missing thread would let one call rewrite every conversation at once.
+    """
+    api = FakeCommandApi()
+    ctx = CommandContext(user_id="alice", actor="user", surface="cli", is_admin=True)
+    result = run(CommandService().execute(ctx, "/tools enable browser", api=api))
+
+    assert result.success is False
+    assert "thread" in result.markdown.lower()
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+def test_tools_enable_global_is_reachable_by_the_agent() -> None:
+    """The item was filed by an agent hitting this gap, so the arm stays open.
+
+    Its safety does not come from the actor: an agent's ``is_admin`` is ``None``,
+    so an ``is_admin is False`` handler gate would wave it through anyway. The
+    role gates sit in the shared writer, keyed on the CLIENT'S authenticated
+    identity, which is why this call reaches the writer at all.
+    """
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="agent",
+        surface="agent",  # type: ignore[arg-type]
+    )
+    result = run(CommandService().execute(ctx, "/tools enable browser global", api=api))
+
+    assert result.success is True, result.markdown
+    assert ("set_default_tools", ("alice", ["bash_execute", "browser"]), {}) in api.calls
+
+
+def test_tools_enable_thread_scope_still_writes_only_the_thread() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/tools enable browser", api=api))
+
+    assert result.success is True, result.markdown
+    assert [call for call in api.calls if call[0] == "update_thread_config"]
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_enable_global_unknown_name_never_reaches_the_writer() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/tools enable no_such_tool global", api=api))
+
+    assert result.success is False
+    assert "Unknown tool or category 'no_such_tool'" in result.markdown
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_enable_global_is_a_no_op_when_already_a_default() -> None:
+    """No write at all, rather than a redundant whole-list replace."""
+    api = FakeCommandApi()
+    api.default_tools = ["bash_execute", "browser"]
+    enabled = run(CommandService().execute(_ctx(), "/tools enable browser global", api=api))
+
+    api_two = FakeCommandApi()
+    api_two.default_tools = ["bash_execute"]
+    disabled = run(
+        CommandService().execute(_ctx(), "/tools disable browser global", api=api_two)
+    )
+
+    assert enabled.success is True, enabled.markdown
+    assert disabled.success is True, disabled.markdown
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+    assert not [call for call in api_two.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_enable_global_renders_an_http_refusal_not_httpx_boilerplate() -> None:
+    """The HTTP client shape wraps the 403 detail in an HTTPStatusError.
+
+    Its ``str()`` is a sentence about the URL, so rendering the exception
+    directly would show the user a MDN link instead of the reason they were
+    refused. The dispatcher's own extractor is the one that reads `detail`.
+    """
+    api = FakeCommandApi()
+    detail = "Admin-only tools cannot be set as defaults by this user: ['claude_code']"
+    api.default_tools_error = httpx.HTTPStatusError(
+        "Client error '403 Forbidden' for url 'http://api.test/tools/defaults'",
+        request=httpx.Request("PUT", "http://api.test/tools/defaults"),
+        response=httpx.Response(403, json={"detail": detail}),
+    )
+    result = run(CommandService().execute(_ctx(), "/tools enable browser global", api=api))
+
+    assert result.success is False
+    assert detail in result.markdown
+    assert "developer.mozilla.org" not in result.markdown
+
+
+def test_command_http_client_set_default_tools_wire_shape(monkeypatch) -> None:
+    """PUT /tools/defaults, whole list in the body, act_as carrying identity.
+
+    act_as is the security-relevant half: the route derives admin-ness from the
+    identity behind it, so a wrong or missing value would have the server judge
+    the gates against the wrong account.
+    """
+    client = CommandHttpClient("http://api.test", "token", use_act_as=True)
+    calls: list[tuple[Any, ...]] = []
+
+    async def fake_put(path, json=None, params=None, act_as=None):
+        calls.append(("PUT", path, json, act_as))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(client, "_put", fake_put)
+    run(client.set_default_tools("alice", ["browser", "todo"]))
+
+    assert calls == [
+        ("PUT", "/tools/defaults", {"tool_names": ["browser", "todo"]}, "alice")
+    ]
 
 
 def test_tools_list_rejects_a_second_argument() -> None:

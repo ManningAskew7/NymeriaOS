@@ -843,6 +843,15 @@ class CommandHttpClient:
     ) -> Any:
         return await self._request("PATCH", path, json_body=json, params=params, act_as=act_as)
 
+    async def _put(
+        self,
+        path: str,
+        json: Optional[dict] = None,
+        params: Optional[dict] = None,
+        act_as: Optional[str] = None,
+    ) -> Any:
+        return await self._request("PUT", path, json_body=json, params=params, act_as=act_as)
+
     async def _delete(self, path: str, params: Optional[dict] = None, act_as: Optional[str] = None) -> Any:
         return await self._request("DELETE", path, params=params, act_as=act_as)
 
@@ -958,6 +967,16 @@ class CommandHttpClient:
 
     async def get_default_tools(self, user_id: str = "default") -> dict:
         return await self._get("/tools/defaults", params={"user_id": user_id}, act_as=user_id)
+
+    async def set_default_tools(self, user_id: str, tool_names: list[str]) -> dict:
+        # The route derives admin-ness from the authenticated identity behind
+        # act_as, so the admin-only/developer-only gates cannot be influenced by
+        # what the caller believes its own role to be.
+        return await self._put(
+            "/tools/defaults",
+            json={"tool_names": list(tool_names)},
+            act_as=user_id,
+        )
 
     async def get_tool_categories(self) -> dict:
         return await self._get("/tools/categories")
@@ -1599,6 +1618,32 @@ class CommandBackendClient:
         return serialize_default_tools(
             self.agent, user_id=target_user_id, role=self.user.role
         )
+
+    async def set_default_tools(self, user_id: str, tool_names: list[str]) -> dict:
+        # Shared write with PUT /tools/defaults, same reason as the read above.
+        # `is_admin` comes from THIS client's authenticated user, never from the
+        # command executor: an agent's `is_admin` is None, so a caller-supplied
+        # flag would let it past the admin-only gate.
+        from ..api.routers.tools import DefaultToolsUpdateError, apply_default_tools_update
+
+        target_user_id = self._checked_user_id(user_id)
+        # Judge the gates by whose profile is being written, matching the HTTP
+        # route, where act-as makes `is_admin` the TARGET's role. Same-user is
+        # the only reachable case through commands today, but keeping the two
+        # shapes on one rule is the entire point of sharing the writer.
+        is_admin = self.user.role == "admin"
+        if target_user_id != self.user.id:
+            record = self.agent.accounts_repo.get_user_by_id(target_user_id)
+            is_admin = getattr(record, "role", None) == "admin"
+        try:
+            return apply_default_tools_update(
+                self.agent,
+                user_id=target_user_id,
+                tool_names=list(tool_names),
+                is_admin=is_admin,
+            )
+        except DefaultToolsUpdateError as exc:
+            raise ValueError(exc.detail) from exc
 
     async def get_tool_categories(self) -> dict:
         from ..tools import filter_discoverable_catalog_tool_names
@@ -6489,13 +6534,15 @@ class _CommandExecutor(
 
     # ── Tools ─────────────────────────────────────────────────────────────
 
-    async def _resolve_tool_names(self, name: str):
+    async def _resolve_tool_names(self, name: str, defaults: dict | None = None):
+        # ``defaults`` lets a caller that already read /tools/defaults hand the
+        # payload in rather than pay for a second profile read.
         name_key = name.lower().strip().replace("-", "_")
         cat_data = await self.api.get_tool_categories()
         categories = cat_data.get("categories", {})
         if name_key in categories:
             return (categories[name_key], True, name_key, None)
-        data = await self.api.get_default_tools(self.user_id)
+        data = defaults if defaults is not None else await self.api.get_default_tools(self.user_id)
         available = data.get("available_tools", [])
         all_names = {t["name"] for t in available}
         if name_key in all_names:
@@ -6663,11 +6710,63 @@ class _CommandExecutor(
                 lines.append(f"  {mark} {tool_name}{tag}")
         return "\n".join(lines)
 
+    async def _set_default_tool_names(
+        self,
+        tool_names: list[str],
+        current: set[str],
+        *,
+        enable: bool,
+    ) -> str | None:
+        """Add or remove ``tool_names`` in the account's default tool set.
+
+        Read-modify-write, because the underlying write is a whole-list replace;
+        ``current`` is passed in so the caller's own defaults read is reused
+        rather than fetched twice. Returns the refusal text, or ``None`` on
+        success. The admin-only and developer-only gates live below this, in the
+        one writer both client shapes call, so this only has to RENDER them.
+        """
+        updated = current | set(tool_names) if enable else current - set(tool_names)
+        if updated == current:
+            return None
+        try:
+            await self.api.set_default_tools(self.user_id, sorted(updated))
+        except ValueError as exc:
+            # The in-process client's refusal; its message is already the detail.
+            return str(exc) or "Could not update the account-wide tool set."
+        except httpx.HTTPStatusError as exc:
+            # The HTTP shape wraps the same refusal in a status error, whose
+            # str() is httpx boilerplate about the URL, not the 403 the user
+            # needs to read. Anything else propagates so the dispatcher still
+            # logs it.
+            return http_error_detail(exc)
+        return None
+
     async def _cmd_tools_enable(self, bound: BoundArgs) -> str | CommandOutput:
+        name = str(bound.get("name") or "")
+        if bound.get("scope") == "global":
+            defaults = await self.api.get_default_tools(self.user_id)
+            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
+                name, defaults
+            )
+            if error:
+                return command_error(error)
+            write_error = await self._set_default_tool_names(
+                tool_names, set(defaults.get("default_tools", [])), enable=True
+            )
+            if write_error:
+                return command_error(write_error)
+            if is_category:
+                return command_success(
+                    f"Enabled category '{cat_name}' ({len(tool_names)} tools) "
+                    "on every thread of this account."
+                )
+            return command_success(
+                f"Enabled tool '{tool_names[0]}' on every thread of this account."
+            )
+
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        name = str(bound.get("name") or "")
         tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
         if error:
             return command_error(error)
@@ -6687,10 +6786,31 @@ class _CommandExecutor(
         return command_success(f"Enabled tool '{tool_names[0]}'.")
 
     async def _cmd_tools_disable(self, bound: BoundArgs) -> str | CommandOutput:
+        name = str(bound.get("name") or "")
+        if bound.get("scope") == "global":
+            defaults = await self.api.get_default_tools(self.user_id)
+            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
+                name, defaults
+            )
+            if error:
+                return command_error(error)
+            write_error = await self._set_default_tool_names(
+                tool_names, set(defaults.get("default_tools", [])), enable=False
+            )
+            if write_error:
+                return command_error(write_error)
+            if is_category:
+                return command_success(
+                    f"Removed category '{cat_name}' ({len(tool_names)} tools) "
+                    "from this account's defaults."
+                )
+            return command_success(
+                f"Removed tool '{tool_names[0]}' from this account's defaults."
+            )
+
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        name = str(bound.get("name") or "")
         tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
         if error:
             return command_error(error)

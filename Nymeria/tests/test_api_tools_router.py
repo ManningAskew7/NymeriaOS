@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
@@ -524,3 +525,107 @@ def test_tool_search_response_model_preserves_auth_fields(
     )
     if plain is not None:
         assert plain["auth_status"] is None
+
+
+def test_command_backend_set_default_tools_enforces_the_same_role_gates(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """#321 two-shape parity on the WRITE, and the gate the agent must not dodge.
+
+    ``PUT /tools/defaults`` and ``CommandBackendClient.set_default_tools`` share
+    one writer (``apply_default_tools_update``), so a non-admin is refused an
+    admin-only tool on BOTH shapes. The in-process shape is the one the agent
+    reaches through ``/tools enable <name> global``, and it derives admin-ness
+    from its own authenticated user rather than from the command executor, whose
+    ``is_admin`` is ``None`` for an agent.
+    """
+    from nymeria.core.command_service import CommandBackendClient, _CommandBackendUser
+
+    client, agent = _client(tmp_path, api_client_builder)
+    _create_user(agent, "owner")
+    _create_user(agent, "admin", role="admin")
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+
+    def backend(user_id: str, role: str) -> CommandBackendClient:
+        return CommandBackendClient(
+            agent,
+            user=_CommandBackendUser(id=user_id, role=role),
+            settings_fn=lambda: api_client_builder.settings(tmp_path),
+        )
+
+    with pytest.raises(ValueError, match="Admin-only tools"):
+        asyncio.run(
+            backend("owner", "user").set_default_tools(
+                "owner", [SEED_TOOLS[0].name, admin_only]
+            )
+        )
+    assert (
+        agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
+        != [SEED_TOOLS[0].name, admin_only]
+    )
+
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
+    with pytest.raises(ValueError, match="Developer-only diagnostic tools"):
+        asyncio.run(
+            backend("owner", "user").set_default_tools(
+                "owner", [SEED_TOOLS[0].name, developer_only]
+            )
+        )
+
+    with pytest.raises(ValueError, match="Unknown tools"):
+        asyncio.run(backend("owner", "user").set_default_tools("owner", ["no_such_tool"]))
+
+    # A non-admin cannot reach another account's profile at all: the access
+    # check runs before the writer, so nothing is validated on their behalf.
+    with pytest.raises(Exception):
+        asyncio.run(
+            backend("owner", "user").set_default_tools("admin", [SEED_TOOLS[0].name])
+        )
+
+    allowed = asyncio.run(
+        backend("admin", "admin").set_default_tools(
+            "admin", [SEED_TOOLS[0].name, admin_only]
+        )
+    )
+    assert allowed["default_tools"] == sorted([SEED_TOOLS[0].name, admin_only])
+    assert agent.profile_manager.get_profile(
+        "admin"
+    ).tool_preferences.default_thread_tools == [SEED_TOOLS[0].name, admin_only]
+    # The write has to reach live graphs, not just the profile on disk.
+    assert agent.default_graph_rebuilds == 1
+
+
+def test_command_backend_set_default_tools_judges_the_target_users_role(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """An admin writing someone else's defaults is gated by THEIR role.
+
+    The HTTP route reaches the same conclusion through act-as, where `is_admin`
+    is the target's role, so judging by the caller here would let an admin park
+    an admin-only tool in a non-admin's profile through one shape and not the
+    other. Sharing the writer is pointless if the two shapes feed it different
+    verdicts.
+    """
+    from nymeria.core.command_service import CommandBackendClient, _CommandBackendUser
+
+    _client_, agent = _client(tmp_path, api_client_builder)
+    _create_user(agent, "owner")
+    _create_user(agent, "admin", role="admin")
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+
+    admin_client = CommandBackendClient(
+        agent,
+        user=_CommandBackendUser(id="admin", role="admin"),
+        settings_fn=lambda: api_client_builder.settings(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="Admin-only tools"):
+        asyncio.run(
+            admin_client.set_default_tools("owner", [SEED_TOOLS[0].name, admin_only])
+        )
+    assert (
+        agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
+        != [SEED_TOOLS[0].name, admin_only]
+    )
