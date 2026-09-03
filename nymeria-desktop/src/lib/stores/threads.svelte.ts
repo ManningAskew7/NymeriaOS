@@ -1,9 +1,10 @@
-import type { Thread, ThreadPlatform, ThreadFolder, ThreadTeam, ThreadTeamApi, SortMode, OrganizationMode } from '$lib/types';
+import type { Thread, ThreadPlatform, ThreadFolder, ThreadTeam, ThreadTeamApi, SortMode } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
 import { debugLog } from '$lib/utils/debug';
 import { generateId } from '$lib/utils/ids';
 import { detectThreadPlatform, isPlatformNativeThreadId } from '$lib/utils/platform';
 import { bucketThreadsByDate, groupThreadsWithPinned, type ThreadDateGroup } from '$lib/utils/threadGrouping';
+import { buildThreadSections, type ThreadSections } from '$lib/utils/threadSections';
 import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 
 // localStorage keys are namespaced by the currently-connected user's id
@@ -14,13 +15,13 @@ const STORAGE_KEY_BASE = 'nymeria-threads';
 const CURRENT_THREAD_KEY_BASE = 'nymeria-current-thread';
 const FOLDERS_KEY_BASE = 'nymeria-thread-folders';
 const TEAM_UI_KEY_BASE = 'nymeria-thread-team-ui';
-const ORGANIZATION_MODE_KEY_BASE = 'nymeria-thread-organization-mode';
+// `nymeria-thread-organization-mode` (the retired folders/teams view toggle)
+// may still sit in old profiles' localStorage; it is simply never read.
 const SORT_MODE_KEY_BASE = 'nymeria-thread-sort-mode';
 const STORAGE_KEY = () => scopedKey(STORAGE_KEY_BASE);
 const CURRENT_THREAD_KEY = () => scopedKey(CURRENT_THREAD_KEY_BASE);
 const FOLDERS_KEY = () => scopedKey(FOLDERS_KEY_BASE);
 const TEAM_UI_KEY = () => scopedKey(TEAM_UI_KEY_BASE);
-const ORGANIZATION_MODE_KEY = () => scopedKey(ORGANIZATION_MODE_KEY_BASE);
 const SORT_MODE_KEY = () => scopedKey(SORT_MODE_KEY_BASE);
 
 // Guard against concurrent sync calls (e.g. Vite dev mode double-mount)
@@ -120,26 +121,6 @@ function saveTeamUi(teams: ThreadTeam[]): void {
   }
 }
 
-function loadOrganizationMode(): OrganizationMode {
-  if (typeof localStorage === 'undefined') return 'folders';
-  try {
-    const stored = localStorage.getItem(ORGANIZATION_MODE_KEY());
-    if (stored === 'folders' || stored === 'teams') return stored;
-  } catch (e) {
-    console.error('Failed to load organization mode:', e);
-  }
-  return 'folders';
-}
-
-function saveOrganizationMode(mode: OrganizationMode): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(ORGANIZATION_MODE_KEY(), mode);
-  } catch (e) {
-    console.error('Failed to save organization mode:', e);
-  }
-}
-
 function loadSortMode(): SortMode {
   if (typeof localStorage === 'undefined') return 'recent';
   try {
@@ -191,8 +172,13 @@ function createThreadsStore() {
   let activeThreadTasks = $state<Set<string>>(new Set());
   let folders = $state<ThreadFolder[]>(loadFolders());
   let threadTeams = $state<ThreadTeam[]>([]);
-  let organizationMode = $state<OrganizationMode>(loadOrganizationMode());
   let sortMode = $state<SortMode>(loadSortMode());
+
+  // Memoized: the sidebar reads it from several template sites per render
+  // and the builder allocates maps and sorts per call.
+  const threadSections = $derived.by(() =>
+    buildThreadSections({ threads, folders, teams: threadTeams })
+  );
 
   // Gates the UI on the first sync attempt so cached localStorage threads
   // don't render as authoritative before /me + syncFromBackend complete.
@@ -207,7 +193,6 @@ function createThreadsStore() {
     currentThreadId = loadCurrentThreadId(threads);
     folders = loadFolders();
     threadTeams = [];
-    organizationMode = loadOrganizationMode();
     sortMode = loadSortMode();
     // Re-arm the gate so the new user's first sync controls the sidebar.
     initialSyncDone = false;
@@ -226,6 +211,29 @@ function createThreadsStore() {
       }))
       .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
     saveTeamUi(threadTeams);
+    unfileTeamedThreads();
+  }
+
+  /**
+   * A thread in a team is listed under the team, never also under a folder,
+   * so folder membership is dropped for every teamed thread whenever the
+   * team list is (re)applied. Done here rather than at the two local join
+   * sites so joins made elsewhere (an agent spawning into a team, another
+   * client, a backend sync) cannot leave a folder holding a ghost member.
+   */
+  function unfileTeamedThreads(): void {
+    const teamed = new Set(threadTeams.flatMap((team) => team.threadIds));
+    if (teamed.size === 0) return;
+    let changed = false;
+    const next = folders.map((f) => {
+      const kept = f.threadIds.filter((id) => !teamed.has(id));
+      if (kept.length === f.threadIds.length) return f;
+      changed = true;
+      return { ...f, threadIds: kept };
+    });
+    if (!changed) return;
+    folders = next;
+    saveFolders(folders);
   }
 
   /**
@@ -239,8 +247,11 @@ function createThreadsStore() {
       .map((t) => t.id);
     if (spawnedIds.length === 0) return;
 
+    // A teamed spawn is listed under its team; filing it too would leave the
+    // folder holding a member the list never shows.
     const filedIds = new Set(folders.flatMap((f) => f.threadIds));
-    const unfiled = spawnedIds.filter((id) => !filedIds.has(id));
+    const teamedIds = new Set(threadTeams.flatMap((team) => team.threadIds));
+    const unfiled = spawnedIds.filter((id) => !filedIds.has(id) && !teamedIds.has(id));
     if (unfiled.length === 0) return;
 
     let spawnedFolder = folders.find((f) => f.name === SPAWNED_FOLDER_NAME);
@@ -317,15 +328,19 @@ function createThreadsStore() {
     get threadTeams() {
       return threadTeams;
     },
-    get organizationMode() {
-      return organizationMode;
-    },
     get sortMode() {
       return sortMode;
     },
+    /**
+     * The sidebar's grouped view: team and folder sections plus the loose
+     * threads, each thread in exactly one place (rules in threadSections.ts).
+     */
+    get threadSections(): ThreadSections {
+      return threadSections;
+    },
+    /** Threads in no folder and no team: the list's loose tail. */
     get unfiledThreads(): Thread[] {
-      const filedIds = new Set(folders.flatMap(f => f.threadIds));
-      return threads.filter(t => !filedIds.has(t.id));
+      return threadSections.loose;
     },
     get sortedUnfiledThreads(): Thread[] {
       const unfiled = this.unfiledThreads;
@@ -578,9 +593,11 @@ function createThreadsStore() {
       lastSyncError = null;
       try {
         const response = await api.listThreadsWithMetadata();
+        // Teams first: applying threads auto-files spawned ones into a
+        // folder, which must skip threads the backend already teamed.
+        await this.loadThreadTeams();
         // Backend is authoritative for the thread list, titles, and pins.
         this._applyBackendThreads(response.threads);
-        await this.loadThreadTeams();
       } catch (e) {
         lastSyncError = e instanceof Error ? e.message : String(e);
         console.warn('[Threads] Backend sync failed:', e);
@@ -672,11 +689,6 @@ function createThreadsStore() {
       saveSortMode(mode);
     },
 
-    setOrganizationMode(mode: OrganizationMode) {
-      organizationMode = mode;
-      saveOrganizationMode(mode);
-    },
-
     async loadThreadTeams() {
       try {
         const teams = await api.listThreadTeams();
@@ -686,6 +698,7 @@ function createThreadsStore() {
       }
     },
 
+    // Joining a team lifts a thread out of its folder (applyThreadTeams).
     async createThreadTeam(name: string, threadIds: string[]): Promise<ThreadTeam | null> {
       const team = await api.createThreadTeam({ name, thread_ids: threadIds });
       applyThreadTeams(await api.listThreadTeams());

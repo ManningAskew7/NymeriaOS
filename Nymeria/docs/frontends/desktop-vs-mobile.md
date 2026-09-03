@@ -280,7 +280,7 @@ Desktop: 1258 lines. Mobile: 145 lines. **Most divergent file.**
 
 | Feature | Desktop | Mobile |
 |---------|---------|--------|
-| **Folders / teams** | Folder CRUD plus a folder/team organization toggle; teams are backed by the callable-team API and can be created from multi-select | Not implemented |
+| **Folders / teams** | One thread list with team and folder sections (pinned folders, teams, other folders, then loose threads; a thread shows under its team if it has one, never twice); folders are client-side, teams are backed by the callable-team API; both created from multi-select, and the Folder action refuses teamed threads. Rules: `utils/threadSections.ts` | Not implemented |
 | **Multi-select** | Ctrl+Click, Shift+Click range | Not implemented |
 | **Bulk actions** | Bulk delete, bulk group | Not implemented |
 | **Sort modes** | 5 modes (recent, oldest, A-Z, tasks, active) | None (always recent) |

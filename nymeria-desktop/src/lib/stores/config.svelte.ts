@@ -81,7 +81,6 @@ const SCOPED_KEY_BASES = [
   'nymeria-current-thread',
   'nymeria-thread-folders',
   'nymeria-thread-team-ui',
-  'nymeria-thread-organization-mode',
   'nymeria-thread-sort-mode',
   'nymeria-ui',
   'nymeria-ui-mobile',
