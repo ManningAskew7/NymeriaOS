@@ -120,6 +120,9 @@ SOURCE_TRIGGER_LABELS = {
     "claude_code": "Claude Code",
     "hook_continuation": "Hook Continuation",
     "dream": "Dream",
+    # Harness-authored notices absorbed mid-turn (a kit's TTL lapsing while
+    # the turn ran; agent_tools.consume_tool_expiry_notice via route_after_tools).
+    "system": "System Notice",
 }
 
 

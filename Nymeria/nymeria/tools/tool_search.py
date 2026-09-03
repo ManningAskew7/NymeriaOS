@@ -129,15 +129,9 @@ class _ReloadDecision:
 
 
 def _format_remaining(expires_at: datetime) -> str:
-    delta = ensure_aware_utc(expires_at) - utc_now()
-    total = int(delta.total_seconds())
-    if total <= 0:
-        return "expired"
-    h, rem = divmod(total, 3600)
-    m, _ = divmod(rem, 60)
-    if h > 0:
-        return f"{h}h {m}m left"
-    return f"{m}m left"
+    from ..core.time_utils import format_remaining
+
+    return format_remaining(expires_at)
 
 
 def _short_desc(desc: str, max_len: int = 60) -> str:
@@ -525,14 +519,29 @@ def _classify_bindings(
     tc: "ThreadConfig",
     default_bound: Set[str],
     ttl_seconds: Optional[int],
+    *,
+    source: str = "tool_search",
+    skill_name: Optional[str] = None,
 ) -> _BindingDelta:
     """Classify each valid tool into the binding-delta buckets.
 
     Pure given its inputs: it builds local ``new_*`` sets from ``tc``'s current
     state without mutating ``tc`` (the caller writes ``tc`` and saves it, and
     rolls back from the ``original_*`` snapshots carried in the delta).
+
+    ``source``/``skill_name`` are stamped on every TTL entry this call writes
+    or refreshes (provenance for the expiry notice and the unbound-call
+    refusal): only kit activations pass ``skill_name``, so it is the ``kit``
+    field as-is, and a later direct refresh overwrites both.
     """
     from ..core.thread_config import TemporaryToolEntry
+
+    def _ttl_entry(enabled_at=None) -> TemporaryToolEntry:
+        expires_at = utc_now() + timedelta(seconds=ttl_seconds or 0)
+        kwargs = {"expires_at": expires_at, "source": source, "kit": skill_name}
+        if enabled_at is not None:
+            kwargs["enabled_at"] = enabled_at
+        return TemporaryToolEntry(**kwargs)
 
     newly_added: List[str] = []       # new binding written to enabled_tools/temporary_tools
     refreshed: List[str] = []         # TTL'd tool whose expires_at was pushed out
@@ -581,8 +590,7 @@ def _classify_bindings(
                 if ttl_seconds is None:
                     new_enabled.add(name)
                 else:
-                    expires_at = utc_now() + timedelta(seconds=ttl_seconds)
-                    new_temporary[name] = TemporaryToolEntry(expires_at=expires_at)
+                    new_temporary[name] = _ttl_entry()
             continue
 
         # -- Not disabled: priority-ordered classification --
@@ -607,10 +615,8 @@ def _classify_bindings(
                 new_enabled.add(name)
                 promoted.append(name)
             else:
-                expires_at = utc_now() + timedelta(seconds=ttl_seconds)
-                new_temporary[name] = TemporaryToolEntry(
-                    enabled_at=new_temporary[name].enabled_at,
-                    expires_at=expires_at,
+                new_temporary[name] = _ttl_entry(
+                    enabled_at=new_temporary[name].enabled_at
                 )
                 refreshed.append(name)
             continue
@@ -619,8 +625,7 @@ def _classify_bindings(
         if ttl_seconds is None:
             new_enabled.add(name)
         else:
-            expires_at = utc_now() + timedelta(seconds=ttl_seconds)
-            new_temporary[name] = TemporaryToolEntry(expires_at=expires_at)
+            new_temporary[name] = _ttl_entry()
         newly_added.append(name)
 
     # Bound-list anchoring for the model. In dynamic-binding mode the model
@@ -976,16 +981,25 @@ def bind_tools_for_thread(
     # for why classifying against raw SEED_TOOLS silently loses tools).
     default_bound = _default_bound_tools_for_user(agent, user_id)
 
-    delta = _classify_bindings(valid, tc, default_bound, ttl_seconds)
+    delta = _classify_bindings(
+        valid, tc, default_bound, ttl_seconds, source=source, skill_name=skill_name
+    )
 
     tc.enabled_tools = sorted(delta.new_enabled)
     tc.disabled_tools = sorted(delta.new_disabled)
     tc.temporary_tools = delta.new_temporary
+    # A bound tool has no lapse to report: its expiry record (the notice and
+    # refusal source) goes with the bind, whatever path bound it.
+    original_expired = dict(getattr(tc, "expired_tools", None) or {})
+    tc.expired_tools = {
+        name: rec for name, rec in original_expired.items() if name not in valid
+    }
 
     if not agent.thread_config_manager.save_config(tc):
         tc.enabled_tools = delta.original_enabled
         tc.disabled_tools = delta.original_disabled
         tc.temporary_tools = delta.original_temporary
+        tc.expired_tools = original_expired
         return _fail(
             "[Error]: Failed to save thread config.",
             ttl_key=ttl_key,

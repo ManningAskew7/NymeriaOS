@@ -125,18 +125,64 @@ class ActiveLLMFallback(BaseModel):
 class TemporaryToolEntry(BaseModel):
     """A tool enabled for this thread with a time-to-live.
 
-    Eviction is lazy: expired entries are filtered out at graph-build time
-    (see agent._build_graph_with_prompt) and the cleaned config is persisted
-    back. No background scheduler is required.
+    Eviction is lazy: ``agent_tools.resolve_temporary_tools`` filters expired
+    entries wherever the live set is resolved (graph build, the dynamic
+    resolver on EVERY model step, the prompt hash, the bind path), persists
+    the cleaned config and records each lapse as an ``ExpiredToolEntry`` so
+    the model can be told. No background scheduler is required.
+
+    ``source``/``kit`` describe the binding that set the CURRENT expiry: a
+    Skill Kit activation stamps ``source="skill_kit"`` and its name, a direct
+    ``tool_manage`` refresh overwrites both (the kit no longer owns the
+    window). Entries written before these fields existed carry None.
     """
 
     enabled_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
+    source: Optional[str] = Field(default=None, max_length=40)
+    kit: Optional[str] = None  # a skill name (KEBAB_NAME_RE, uncapped), never free text
 
     @field_validator("enabled_at", "expires_at")
     @classmethod
     def _datetimes_as_utc(cls, value: datetime) -> datetime:
         return ensure_aware_utc(value)
+
+
+# How long a lapse stays on record, and how many records a thread keeps. Past
+# either bound a record is dropped at the next eviction write; a tool that is
+# bound again drops its record immediately (``bind_tools_for_thread``).
+EXPIRED_TOOL_RECORD_DAYS = 7
+EXPIRED_TOOL_RECORD_LIMIT = 50
+
+
+class ExpiredToolEntry(BaseModel):
+    """What a TTL entry was when it lapsed, kept until the tool is bound again.
+
+    Two readers: the once-only expiry notice the model gets on its next prompt
+    (or at the next sub-turn boundary of a running turn), which flips
+    ``notified``; and the unbound-call refusal, which names the kit that bound
+    the tool and when it expired instead of recommending a dead path.
+    """
+
+    expired_at: datetime
+    enabled_at: Optional[datetime] = None
+    source: Optional[str] = Field(default=None, max_length=40)
+    kit: Optional[str] = None  # a skill name (KEBAB_NAME_RE, uncapped), never free text
+    notified: bool = False
+
+    @field_validator("expired_at", "enabled_at")
+    @classmethod
+    def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
+        return ensure_aware_utc(value) if value is not None else None
+
+    @classmethod
+    def from_temporary(cls, entry: TemporaryToolEntry) -> "ExpiredToolEntry":
+        return cls(
+            expired_at=entry.expires_at,
+            enabled_at=entry.enabled_at,
+            source=entry.source,
+            kit=entry.kit,
+        )
 
 
 class DreamingConfig(BaseModel):
@@ -199,6 +245,12 @@ class ThreadConfig(BaseModel):
     # existing callers — /threads/{id}/config, spawn_thread.py, tool_search
     # with ttl="permanent" — keep working against the simple List[str] schema.
     temporary_tools: Dict[str, TemporaryToolEntry] = Field(default_factory=dict)
+    # TTL entries that lapsed and have not been bound again since, keyed by
+    # tool name. Written by agent_tools.resolve_temporary_tools in the same
+    # save as the eviction; consumed (``notified`` flipped, never deleted) by
+    # agent_tools.consume_tool_expiry_notice; dropped when the tool is bound
+    # again or the record ages out (EXPIRED_TOOL_RECORD_DAYS / _LIMIT).
+    expired_tools: Dict[str, ExpiredToolEntry] = Field(default_factory=dict)
 
     @field_validator("disabled_tools", "enabled_tools", mode="before")
     @classmethod
@@ -209,7 +261,7 @@ class ThreadConfig(BaseModel):
             return migrate_tool_names([str(x) for x in v])
         return v
 
-    @field_validator("temporary_tools", mode="before")
+    @field_validator("temporary_tools", "expired_tools", mode="before")
     @classmethod
     def _migrate_legacy_temporary_tool_names(cls, v):
         if v is None:
@@ -360,6 +412,8 @@ class ThreadConfig(BaseModel):
         if self.enabled_tools:
             return True
         if self.temporary_tools:
+            return True
+        if self.expired_tools:
             return True
         if self.enabled_skills:
             return True

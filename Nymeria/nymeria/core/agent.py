@@ -495,6 +495,9 @@ class NymeriaAgent:
         # rebuild + resume (see _do_tool_reload). Capped at MAX_TOOL_RELOADS
         # per user turn to prevent runaway enable loops.
         self._pending_tool_reload: Dict[str, dict] = {}
+        # Thread ids whose TTL eviction happened since route_after_tools last
+        # looked: the mid-turn wake for the expiry notice (agent_tools).
+        self._tool_expiry_signal: set[str] = set()
         # Per-turn reload counter, written by astream/chat and read by
         # tool_search._enable/tool_manage to degrade gracefully once the cap is reached
         # (returns a plain string instead of Command(goto=END), letting the
@@ -2543,7 +2546,9 @@ class NymeriaAgent:
                     pending_batch = backend.drain(thread_id)
                     if not pending_batch:
                         break
-                    new_messages = build_queued_prompt_messages(pending_batch)
+                    new_messages = build_queued_prompt_messages(
+                        pending_batch, agent=self, thread_id=thread_id
+                    )
                     try:
                         # Patch a dangling repeated-tool-halt tail before
                         # injecting (see the astream drain loop for the full
@@ -2721,7 +2726,9 @@ class NymeriaAgent:
                         pending_batch = backend.drain(thread_id)
                         if not pending_batch:
                             break
-                    new_messages = build_queued_prompt_messages(pending_batch)
+                    new_messages = build_queued_prompt_messages(
+                        pending_batch, agent=self, thread_id=thread_id
+                    )
                     try:
                         # Patch a dangling repeated-tool-halt tail before
                         # injecting (see the astream drain loop); no-op on a
@@ -3642,7 +3649,9 @@ class NymeriaAgent:
                     # per-prompt visibility/history semantics survive
                     # the absorption (autonomous prompts stay
                     # internal=True; user prompts stay visible).
-                    new_messages = build_queued_prompt_messages(pending_batch)
+                    new_messages = build_queued_prompt_messages(
+                        pending_batch, agent=self, thread_id=thread_id
+                    )
 
                     try:
                         # A repeated-tool safety halt ends the drive with the

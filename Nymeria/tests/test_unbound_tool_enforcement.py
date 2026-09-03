@@ -50,12 +50,32 @@ def test_bound_tool_is_allowed():
 
 
 def test_unbound_tool_refused_strict():
+    from nymeria.tools.tool_invoke import tool_invoke
+
+    # Both remedies are BOUND here, so both are offered (#320: a remedy is
+    # named only when this thread can actually take it).
+    node = _dynamic_node(
+        [bnd_echo, unb_echo, tool_manage, tool_invoke],
+        [bnd_echo, tool_manage, tool_invoke],
+    )
+    msg = node._unbound_call_message(_call("unb_echo"), _STRICT)
+    assert msg is not None
+    assert msg.status == "error"
+    assert 'tool_invoke(name="unb_echo"' in msg.content
+    assert 'tool_manage(action="enable", tools=["unb_echo"]' in msg.content
+
+
+def test_unbound_tool_refused_strict_without_bound_remedies():
+    # Neither tool_manage nor tool_invoke is bound: the old copy recommended
+    # both anyway (a dead pointer when the tool-management kit itself lapsed,
+    # backlog #320); the refusal now says what the thread can do instead.
     node = _dynamic_node([bnd_echo, unb_echo], [bnd_echo])
     msg = node._unbound_call_message(_call("unb_echo"), _STRICT)
     assert msg is not None
     assert msg.status == "error"
-    assert "tool_invoke" in msg.content
-    assert "tool_manage" in msg.content
+    assert "tool_invoke(" not in msg.content
+    assert "tool_manage(" not in msg.content
+    assert "ask the user to run /tools enable unb_echo" in msg.content
 
 
 def test_unbound_tool_allowed_permissive_when_gates_pass():

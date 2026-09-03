@@ -154,9 +154,16 @@ tool NOT in its bound list would execute it ungated. `SafeToolNode` closes this:
 it stashes the thread's EFFECTIVE (gated, visible) tool-name set per batch from
 the resolver and, for a call whose tool exists but is not in that set:
 
-- Strict (default): refuses with an error redirecting the model to `tool_invoke`
-  (one-off) or `tool_manage` (bind). A truly unknown name (absent from the
-  superset too) still gets the parent's canonical "not a valid tool" error.
+- Strict (default): refuses with an error composed from what the thread can
+  actually do (`nodes.unbound_call_refusal`): if the tool's TTL lapsed on this
+  thread, the lead sentence names the Skill Kit (or `tool_manage`) that bound
+  it, the window, and when it expired; else, if an installed kit's
+  `required_tools` names it, the kit; and the remedies offered are only the
+  reachable ones (`Skill(name=<kit>)` when the meta-tool is bound, otherwise
+  the user's `/kit <kit>`; `tool_manage` when bound; `tool_invoke` when bound
+  AND the tool is not a protected management tool, which `tool_invoke` refuses).
+  A truly unknown name (absent from the superset too) still gets the parent's
+  canonical "not a valid tool" error.
 - Permissive (`allow_unbound_tool_calls=true`, dynamic binding only): applies the
   SAME deferred gates as `tool_invoke` and dispatches on pass, refuses on gate
   failure. This makes the direct unbound call a policy-equivalent twin of
@@ -388,17 +395,31 @@ and no longer than about one year (`365d` or `52w`).
 
 - **`enabled_tools: List[str]`**  -  Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_manage(ttl="never")` or `tool_manage(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
 
-- **`temporary_tools: Dict[str, TemporaryToolEntry]`**  -  TTL'd enablements, agent-managed. Each entry has `enabled_at` and `expires_at` timestamps. This is the new field.
+- **`temporary_tools: Dict[str, TemporaryToolEntry]`**  -  TTL'd enablements, agent-managed. Each entry has `enabled_at` and `expires_at` timestamps plus the provenance of the binding that set the current expiry: `source` (`skill_kit`, `tool_manage`, `slash_command`, ...) and `kit` (the Skill Kit name when a kit bound it). A direct `tool_manage` refresh overwrites both, so the kit no longer claims the window.
 
-Both fields are merged at graph-build time: `extra_names = (set(tc.enabled_tools) | live_temp) - disabled`.
+- **`expired_tools: Dict[str, ExpiredToolEntry]`**  -  TTL entries that lapsed and have not been bound again since (`expired_at`, `enabled_at`, `source`, `kit`, `notified`). Written by the eviction, cleared for a name by any bind of it, aged out after 7 days or past 50 records. Read by the expiry notice and the unbound-call refusal.
+
+The enabled fields are merged wherever the live set is resolved: `extra_names = (set(tc.enabled_tools) | live_temp) - disabled`.
 
 ### Lazy Eviction
 
-No background scheduler. At graph-build time, `_resolve_temporary_tools()` filters out expired entries and persists the cleaned config. A tool that was live when the graph was built stays callable for the whole invocation  -  no surprise mid-turn eviction.
+No background scheduler. `resolve_temporary_tools()` (`core/agent_tools.py`) filters out expired entries wherever the live set is resolved (graph build, the dynamic-binding resolver, the prompt hash, the bind path) and persists the cleaned config plus one `expired_tools` record per evicted entry. In dynamic-binding mode the resolver runs on EVERY model step and tool batch, so a TTL lapsing mid-turn IS evicted mid-turn: the tool leaves the bound list at the next step. That is not silent (next section).
+
+### Expiry Notices
+
+A lapse reaches the model three ways, all fed by `expired_tools`:
+
+- **Next prompt.** The turn-input build (`agent_streaming_input._apply_tool_expiry_notice`) folds a one-line `[System: Skill Kit <kit>'s tools expired at <time> (<ttl> TTL) and are no longer bound: <names>. Re-activate it with Skill(name="<kit>") (or /kit <kit>) for a fresh window. ...]` directly under the `[Time:]/[Trigger:]` block (kits first, then direct binds). It persists in the checkpoint like that block and is stripped from history views by the same reader (`agent_history.SYSTEM_NOTICE_PATTERN`), the raw message carrying it on `additional_kwargs["tool_expiry_notice"]`.
+- **Mid-turn.** An eviction inside a running turn flags the thread (`agent._tool_expiry_signal`); `route_after_tools` turns the flag into a `source="system"` pending prompt at the next sub-turn boundary, so the same text arrives through the queued-prompt absorb path (halt, drain, one internal `[Trigger: System Notice]` HumanMessage, re-drive). The `notified` flag on each record is the single once-only truth across both deliveries, and it flips at ABSORB (`build_queued_prompt_messages`), not at enqueue: a queued notice dropped before delivery (user stop, abort, inject failure, closing queue) is simply carried by the next prompt instead.
+- **A call to the expired tool** gets the kit-aware refusal described under Unbound-call enforcement.
+
+Humans see what the model saw: `/history` strips the line from the user bubble and re-emits it as a `system` entry with `kind: "tool_expiry_notice"` (placed before the prompt it rode on; the mid-turn form is that queued message itself, whitelisted in the internal-message filter so the sub-turn it introduced stays visible regardless of `show_autonomous_prompts`). Live clients get the mid-turn form from the `prompt_injected` event (`sources[i] == "system"`) and render the same card.
+
+`/tools list` and `tool_manage(action="status")` both print the remaining window of every live TTL'd tool.
 
 ### Sliding Renewal
 
-Calling `tool_manage(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at`. Calling with `ttl="never"` or `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`.
+Calling `tool_manage(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at` (and restamps the provenance to the caller). Calling with `ttl="never"` or `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`. Use does NOT refresh a TTL: a kit driven for three hours on a 2h window lapses mid-task and is announced, by design (developer call, 2026-09-03; refresh-on-use is an open option on backlog #232).
 
 ### Disable Preserves State
 
@@ -492,19 +513,27 @@ extra_names = (set(tc.enabled_tools) | live_temp) - disabled
 
 Tools are looked up in `SEED_TOOLS`, then `CATALOG_TOOLS`, then the tool registry (for MCP/custom tools).
 
-### TTL Eviction: `_resolve_temporary_tools()`  -  `core/agent.py`
+### TTL Eviction: `resolve_temporary_tools()`  -  `core/agent_tools.py`
 
 ```python
-def _resolve_temporary_tools(self, tc) -> set:
-    now = datetime.utcnow()
+def resolve_temporary_tools(agent, tc, *, persist=True) -> set:
+    now = utc_now()
     live = {name: entry for name, entry in tc.temporary_tools.items()
-            if entry.expires_at > now}
+            if ensure_aware_utc(entry.expires_at) > now}
     if len(live) != len(tc.temporary_tools):
-        # Log evicted tools, persist cleaned config
-        tc.temporary_tools = live
-        self.thread_config_manager.save_config(tc)
+        evicted = {name: entry for name, entry in tc.temporary_tools.items()
+                   if name not in live}
+        # Log, then (persist=True only): record each lapse on
+        # tc.expired_tools, save, and flag the thread for the mid-turn notice.
+        if persist:
+            tc.temporary_tools = live
+            record_tool_expiries(tc, evicted, now=now)
+            agent.thread_config_manager.save_config(tc)
+            agent._tool_expiry_signal.add(tc.thread_id)
     return set(live.keys())
 ```
+
+`persist=False` is the read-only variant (the thread overview): same live set, no write, no record, no flag. The agent facade `agent._resolve_temporary_tools(tc)` delegates here.
 
 ### History Filter: `get_conversation_history()`  -  `core/agent.py`
 
@@ -528,14 +557,27 @@ This matches the treatment of `autonomous_wakeup`. The AI messages from the seco
 ```python
 class TemporaryToolEntry(BaseModel):
     """A tool enabled for this thread with a time-to-live.
-    Eviction is lazy: expired entries are filtered out at graph-build time."""
-    enabled_at: datetime = Field(default_factory=datetime.utcnow)
+    Eviction is lazy: expired entries are filtered out wherever the live set
+    is resolved (graph build, the dynamic resolver on every model step)."""
+    enabled_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
+    source: Optional[str] = None   # "skill_kit" | "tool_manage" | ...
+    kit: Optional[str] = None      # the Skill Kit name when a kit bound it
+
+
+class ExpiredToolEntry(BaseModel):
+    """What a TTL entry was when it lapsed, kept until the tool is bound again."""
+    expired_at: datetime
+    enabled_at: Optional[datetime] = None
+    source: Optional[str] = None
+    kit: Optional[str] = None
+    notified: bool = False         # flipped once the model has been told
 ```
 
-The `temporary_tools` field on `ThreadConfig`:
+The fields on `ThreadConfig`:
 ```python
 temporary_tools: Dict[str, TemporaryToolEntry] = Field(default_factory=dict)
+expired_tools: Dict[str, ExpiredToolEntry] = Field(default_factory=dict)
 ```
 
 ### Metadata: `tools/metadata.py`

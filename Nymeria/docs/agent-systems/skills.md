@@ -75,6 +75,13 @@ metadata:
   tools, never the skill body, which stays in context until
   compaction/`/clear`/the sliding window evicts it regardless of TTL. It is
   ignored for skills that bind no tools.
+- When the TTL lapses the tools leave the thread's bound list (mid-turn too,
+  under dynamic binding) and the model is told once: a `[System: Skill Kit
+  <kit>'s tools expired at ... Re-activate it with Skill(name="<kit>") (or
+  /kit <kit>) ...]` line under the next prompt's metadata block, or at the
+  next sub-turn boundary of a running turn, and a call to a lapsed tool is
+  refused with the kit named. Use does not extend the window; re-activate
+  the kit for a fresh one. Mechanics: `tool-hot-loading.md`, "Expiry Notices".
 - `internal: true` under `metadata.nymeria` keeps a skill available to code
   paths that activate it by name (a slash-command intercept, a kit's
   `required_skills`) while hiding it from user-facing `/skill`, `/kit`,

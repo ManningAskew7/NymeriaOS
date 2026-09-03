@@ -59,6 +59,7 @@ from .command_params import (
 from .registry_defaults import register_default_commands
 from .time_utils import (
     ensure_aware_utc,
+    format_remaining,
     format_user_time_compact,
     parse_tool_ttl,
     utc_now,
@@ -365,17 +366,20 @@ def _client_for_context(ctx: "CommandContext") -> Any:
         return CommandHttpClient.from_service_token()
 
 
-def live_temporary_tools(thread_config: Optional[dict[str, Any]]) -> set[str]:
-    """The still-in-date Skill Kit / TTL'd tool names of a thread config.
+def temporary_tool_expiries(
+    thread_config: Optional[dict[str, Any]],
+) -> dict[str, datetime]:
+    """The still-in-date TTL'd tools of a thread config, with their expiry.
 
     Skill Kit tools live in ``temporary_tools``, NOT ``enabled_tools``. The
     graph folds the live (non-expired) ones into the bound tool list exactly
     like ``enabled_tools``, so every effective-tool-set view must count them
     too or an active Skill Kit's tools look absent on the thread. This is
-    THE one liveness computation: ``/tools list`` and the ``tools``
-    option resolver both call it; do not re-derive it inline.
+    THE one liveness computation (``live_temporary_tools`` is its name-only
+    view): ``/tools list`` and the ``tools`` option resolver both call it;
+    do not re-derive it inline.
     """
-    live: set[str] = set()
+    live: dict[str, datetime] = {}
     temp_raw = thread_config.get("temporary_tools") if thread_config else None
     if isinstance(temp_raw, dict):
         now = utc_now()
@@ -384,11 +388,17 @@ def live_temporary_tools(thread_config: Optional[dict[str, Any]]) -> set[str]:
             if not expires:
                 continue
             try:
-                if ensure_aware_utc(datetime.fromisoformat(expires)) > now:
-                    live.add(str(name))
+                expires_at = ensure_aware_utc(datetime.fromisoformat(expires))
             except (TypeError, ValueError):
                 continue
+            if expires_at > now:
+                live[str(name)] = expires_at
     return live
+
+
+def live_temporary_tools(thread_config: Optional[dict[str, Any]]) -> set[str]:
+    """Name-only view of :func:`temporary_tool_expiries`."""
+    return set(temporary_tool_expiries(thread_config))
 
 
 def http_error_detail(exc: httpx.HTTPStatusError, *, text_limit: int = 200) -> str:
@@ -6574,7 +6584,8 @@ class _CommandExecutor(
         tc = _optional_dict_result(tc)
         thread_extras: set[str] = _string_set_result(tc.get("enabled_tools")) if tc else set()
         thread_disabled: set[str] = _string_set_result(tc.get("disabled_tools")) if tc else set()
-        live_temp = live_temporary_tools(tc)
+        temp_expiries = temporary_tool_expiries(tc)
+        live_temp = set(temp_expiries)
         all_enabled = (default_names | thread_extras | live_temp) - thread_disabled
 
         lines = [f"Enabled Tools on this thread: {len(all_enabled)} active"]
@@ -6598,8 +6609,13 @@ class _CommandExecutor(
                 t = avail_by_name.get(name, {})
                 desc = (t.get("description") or "").split("\n")[0][:60]
                 # Flag TTL'd tools (e.g. Skill Kit required_tools) so they're
-                # not mistaken for permanent enables.
-                suffix = " [temporary/TTL]" if name in live_temp else ""
+                # not mistaken for permanent enables, and say when the window
+                # closes (a lapse is otherwise learned from a refused call).
+                suffix = (
+                    f" [temporary/TTL, {format_remaining(temp_expiries[name])}]"
+                    if name in temp_expiries
+                    else ""
+                )
                 if desc:
                     lines.append(f"  {name}: {desc}{suffix}")
                 else:

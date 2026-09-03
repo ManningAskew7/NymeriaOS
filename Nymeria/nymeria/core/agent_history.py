@@ -69,6 +69,14 @@ CONTEXT_PREFIX_PATTERN = re.compile(
 )
 
 
+# Harness notice inserted directly under the metadata block (a lapsed tool
+# TTL, agent_streaming_input._apply_tool_expiry_notice). Bracket-free inside
+# by construction (agent_tools.render_tool_expiry_notice), so the frame is
+# exact. Persists in the checkpoint like the block above; stripped from the
+# same readers.
+SYSTEM_NOTICE_PATTERN = re.compile(r"^\[System: [^\]]*\]\n\n")  # string start only
+
+
 # Regex to extract the timestamp string from the time context prefix.
 TIMESTAMP_EXTRACT_PATTERN = re.compile(
     r"^\[(?:Current )?Time:\s*(.+?)\s*\((\S+)\)\s*\]",
@@ -100,6 +108,7 @@ def strip_prompt_context(content: str) -> str:
     flush strip them here.
     """
     content = CONTEXT_PREFIX_PATTERN.sub("", content)
+    content = SYSTEM_NOTICE_PATTERN.sub("", content)
     content = HOOK_CONTEXT_PATTERN.sub("", content)
     return content
 
@@ -402,6 +411,20 @@ def _handle_human_history_message(
         }
         return
 
+    if msg.additional_kwargs.get("internal_type") == "tool_expiry_notice":
+        # Mid-turn form of the TTL notice (#320): the queued "system" prompt
+        # itself. Rendered as the typed card only; its [Trigger: System
+        # Notice] header stays in the checkpoint for the model.
+        ctx.flush_current_turn()
+        ctx.history.append(
+            _tool_expiry_notice_entry(
+                ctx,
+                str(msg.additional_kwargs.get("tool_expiry_notice") or ""),
+                ctx.timestamp_map.get(msg.id) if msg.id else None,
+            )
+        )
+        return
+
     if (
         ctx.include_hidden_anchors
         and not ctx.show_autonomous_prompts
@@ -413,6 +436,17 @@ def _handle_human_history_message(
         # (and exclude them from rewind/edit targets); live-attach viewers
         # trim after the stub exactly as they would after a visible anchor.
         ctx.flush_current_turn()
+        # A TTL notice prefixed to a hidden wakeup (TODO and trigger threads
+        # are where TTL'd kits live) still gets its card, before the stub.
+        wakeup_notice = str(msg.additional_kwargs.get("tool_expiry_notice") or "")
+        if wakeup_notice:
+            ctx.history.append(
+                _tool_expiry_notice_entry(
+                    ctx,
+                    wakeup_notice,
+                    ctx.timestamp_map.get(msg.id) if msg.id else None,
+                )
+            )
         stub: Dict[str, Any] = {
             "id": ctx.next_entry_id(),
             "role": "user",
@@ -425,11 +459,6 @@ def _handle_human_history_message(
         return
 
     ctx.flush_current_turn()
-
-    entry: Dict[str, Any] = {
-        "id": ctx.next_entry_id(),
-        "role": "user",
-    }
 
     raw_content, attachments = _parse_human_content(
         msg.content,
@@ -454,6 +483,28 @@ def _handle_human_history_message(
     )
     if note_text:
         raw_content = strip_fallback_note(msg, raw_content)
+
+    # Next-turn form of the TTL notice (#320): the [System: ...] line
+    # agent_streaming_input._apply_tool_expiry_notice inserted under the
+    # metadata block. Removed from the stamp here (not only via
+    # strip_prompt_context, which the show_prompt_metadata branch skips) and
+    # emitted as a typed card BEFORE the user entry: reading order matches
+    # the model's, and live-attach viewers trim everything after the anchor
+    # user entry, so a card placed after it would vanish until reload.
+    expiry_notice = str(
+        (getattr(msg, "additional_kwargs", None) or {}).get("tool_expiry_notice")
+        or ""
+    )
+    if expiry_notice:
+        raw_content = raw_content.replace(expiry_notice + "\n\n", "", 1)
+        ctx.history.append(_tool_expiry_notice_entry(ctx, expiry_notice, timestamp_iso))
+
+    # Allocated after the card so entry ids stay in list order (the counter
+    # is documented monotonic).
+    entry: Dict[str, Any] = {
+        "id": ctx.next_entry_id(),
+        "role": "user",
+    }
 
     if ctx.show_prompt_metadata:
         entry["content"] = raw_content
@@ -493,6 +544,26 @@ def _handle_human_history_message(
         if timestamp_iso:
             notice["timestamp"] = timestamp_iso
         ctx.history.append(notice)
+
+
+def _tool_expiry_notice_entry(
+    ctx: _HistoryFormatContext,
+    text: str,
+    timestamp_iso: Optional[str],
+) -> Dict[str, Any]:
+    """Typed ``tool_expiry_notice`` history entry (#320), shared by the
+    next-turn and mid-turn forms. ``content`` is the exact framed line the
+    model received, so the live ``prompt_injected`` path (which carries the
+    same string in ``prompts[i].text``) and history render identically."""
+    entry: Dict[str, Any] = {
+        "id": ctx.next_entry_id(),
+        "role": "system",
+        "kind": "tool_expiry_notice",
+        "content": text,
+    }
+    if timestamp_iso:
+        entry["timestamp"] = timestamp_iso
+    return entry
 
 
 def _fallback_notice_summary(note: Dict[str, Any]) -> str:
@@ -686,6 +757,14 @@ def _filter_internal_messages(
                     skip_until_next_human = False
                     continue
                 if internal_type == "tool_reload_resume":
+                    filtered_messages.append(msg)
+                    skip_until_next_human = False
+                    continue
+                if internal_type == "tool_expiry_notice":
+                    # Mid-turn TTL notice (#320): always shown as a typed
+                    # card, independent of show_autonomous_prompts. Falling
+                    # through to the generic branch would swallow the whole
+                    # sub-turn the notice introduced.
                     filtered_messages.append(msg)
                     skip_until_next_human = False
                     continue

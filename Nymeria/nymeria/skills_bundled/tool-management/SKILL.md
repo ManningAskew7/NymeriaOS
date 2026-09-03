@@ -73,6 +73,12 @@ Two ways to execute a tool that is not already on the thread:
 
 When unsure: one call now -> defer; several calls over a real task -> bind.
 
+This kit's own five tools are protected management tools: `tool_invoke` refuses
+them, so they can only ever be BOUND, and when this kit's TTL lapses they all
+go together. A `[System: Skill Kit tool-management's tools expired ...]` notice
+or a refusal naming this kit means re-activate it (`Skill(name="tool-management")`)
+for a fresh window; there is no deferred route back.
+
 ## Path 2: Build a New Tool
 
 Use this when no existing tool fits and the capability is a reusable API call or a

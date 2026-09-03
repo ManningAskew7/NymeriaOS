@@ -906,18 +906,27 @@
         // on ANOTHER client (or watched by a live-attach viewer) has no
         // local copy, so the local list alone would drop its user bubble.
         // The wire list is index-parallel with `sources`; only user-source
-        // prompts are user-visible (matches history filtering).
+        // prompts are user bubbles (matches history filtering), and a
+        // `system` entry (mid-turn tool-expiry notice, backlog #320) is
+        // the typed card. Autonomous sources render nothing here.
         const consumed = chatStore.consumeQueuedPrompts(data.count);
         chatStore.flushStreamingBuffers();
         chatStore.setLastMessageComplete();
         chatStore.clearActiveToolCalls();
         const sources = data.sources ?? [];
-        const wireTexts = data.prompts
-          ?.filter((p, i) => (sources[i] ?? 'user') === 'user' && p.text.trim())
-          .map((p) => p.text);
-        const texts = wireTexts ?? consumed.map((p) => p.content);
-        for (const text of texts) {
-          chatStore.addUserMessage(text);
+        if (data.prompts) {
+          data.prompts.forEach((p, i) => {
+            const source = sources[i] ?? 'user';
+            if (source === 'system') {
+              chatStore.addToolExpiryNotice(p.text);
+            } else if (source === 'user' && p.text.trim()) {
+              chatStore.addUserMessage(p.text);
+            }
+          });
+        } else {
+          for (const p of consumed) {
+            chatStore.addUserMessage(p.content);
+          }
         }
         chatStore.addAssistantMessage();
         break;

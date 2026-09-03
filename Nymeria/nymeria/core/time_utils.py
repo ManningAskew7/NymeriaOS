@@ -130,6 +130,23 @@ def parse_duration(duration_str: str) -> Optional[int]:
     return value * multipliers[unit]
 
 
+def format_remaining(expires_at: datetime) -> str:
+    """``"1h 5m left"`` / ``"12m left"`` / ``"expired"`` for a TTL instant.
+
+    Shared by ``tool_manage(action="status")`` and ``/tools list`` so the two
+    read surfaces spell a remaining window the same way.
+    """
+    delta = ensure_aware_utc(expires_at) - utc_now()
+    total = int(delta.total_seconds())
+    if total <= 0:
+        return "expired"
+    h, rem = divmod(total, 3600)
+    m, _ = divmod(rem, 60)
+    if h > 0:
+        return f"{h}h {m}m left"
+    return f"{m}m left"
+
+
 def parse_tool_ttl(raw: str) -> Tuple[str, Optional[int]]:
     """Parse a tool-binding TTL into a normalized key and seconds.
 

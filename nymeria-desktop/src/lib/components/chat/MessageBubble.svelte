@@ -532,6 +532,20 @@
     <div class="compaction-meta">{message.content}</div>
   </div>
 </div>
+{:else if message.kind === 'tool_expiry_notice'}
+<!-- TTL lapse (backlog #320): the exact [System: ...] line the model
+     received, from history (next-turn prefix) or a `system`-source
+     prompt_injected (mid-turn). Same card as the fallback notice; the
+     title carries the human framing so `content` needs no parsing. -->
+<div class="compaction-notice fallback-notice">
+  <div class="compaction-icon">
+    <Icon name="clock" size={18} />
+  </div>
+  <div class="compaction-body">
+    <div class="compaction-title">Tools expired</div>
+    <div class="compaction-meta">{message.content}</div>
+  </div>
+</div>
 {:else if !isHiddenMessage}
 <div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource} class:error={!isUser && message.status === 'error'}>
   <!--

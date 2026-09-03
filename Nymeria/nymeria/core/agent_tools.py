@@ -34,7 +34,7 @@ import logging
 import pkgutil
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..vendor.react_agent import ToolRegistry
 from .time_utils import ensure_aware_utc, utc_now
@@ -146,16 +146,21 @@ def invalidate_thread_config_cache(agent: "NymeriaAgent", thread_id: str) -> Non
 def resolve_temporary_tools(agent: "NymeriaAgent", tc, *, persist: bool = True) -> set:
     """Evict expired TTL'd tool entries, persist, and return the live set.
 
-    Runs at graph-build time. Tools that were live when the current graph was
-    built stay callable for the whole invocation, no surprise mid-turn
-    eviction.
+    Runs wherever the live set is resolved: graph build, the dynamic-binding
+    resolver (EVERY model step and tool batch, so a TTL lapsing mid-turn IS
+    evicted mid-turn), the prompt hash and the bind path. The lapse is not
+    silent: each evicted entry becomes an ``ExpiredToolEntry`` on the config
+    (the refusal copy and the expiry notice read it) and the thread is
+    flagged on ``agent._tool_expiry_signal`` so ``route_after_tools`` can
+    deliver the notice at the next sub-turn boundary of a running turn.
 
-    ``persist=False`` computes the same live set WITHOUT the eviction write,
-    for callers that only need to report what is live. Same idiom as
-    ``_require_thread_access(claim=False)`` and ``resolve_team_ref(adopt=False)``:
-    a read must not be a write. The read-only thread overview reaches this
-    through ``select_tools_for_graph`` and was rewriting the config file from a
-    stale snapshot on every CLI header repaint.
+    ``persist=False`` computes the same live set WITHOUT the eviction write
+    (and without the record or the signal), for callers that only need to
+    report what is live. Same idiom as ``_require_thread_access(claim=False)``
+    and ``resolve_team_ref(adopt=False)``: a read must not be a write. The
+    read-only thread overview reaches this through ``select_tools_for_graph``
+    and was rewriting the config file from a stale snapshot on every CLI
+    header repaint.
     """
     if tc is None or not getattr(tc, "temporary_tools", None):
         return set()
@@ -166,15 +171,219 @@ def resolve_temporary_tools(agent: "NymeriaAgent", tc, *, persist: bool = True) 
         if ensure_aware_utc(entry.expires_at) > now
     }
     if len(live) != len(tc.temporary_tools):
-        evicted = set(tc.temporary_tools) - set(live)
+        evicted = {
+            name: entry
+            for name, entry in tc.temporary_tools.items()
+            if name not in live
+        }
         logger.info(
             f"Thread {tc.thread_id}: TTL evicting {len(evicted)} tool(s): "
             f"{', '.join(sorted(evicted))}"
         )
         if persist:
             tc.temporary_tools = live
+            record_tool_expiries(tc, evicted, now=now)
             agent.thread_config_manager.save_config(tc)
+            signal = getattr(agent, "_tool_expiry_signal", None)
+            if isinstance(signal, set):
+                signal.add(tc.thread_id)
     return set(live.keys())
+
+
+def record_tool_expiries(tc, evicted: Dict[str, Any], *, now=None) -> None:
+    """Add the evicted entries to ``tc.expired_tools`` and age the map.
+
+    Records older than ``EXPIRED_TOOL_RECORD_DAYS`` are dropped, then the
+    newest ``EXPIRED_TOOL_RECORD_LIMIT`` are kept. A re-lapse of a name whose
+    old record is still on file replaces it (the newer window is the one the
+    model should hear about). Pure over ``tc``; the caller saves.
+    """
+    from .thread_config import ExpiredToolEntry
+
+    now = now or utc_now()
+    records = dict(getattr(tc, "expired_tools", None) or {})
+    for name, entry in evicted.items():
+        records[name] = ExpiredToolEntry.from_temporary(entry)
+    tc.expired_tools = _age_expired_records(records, now)
+
+
+def _age_expired_records(records: Dict[str, Any], now) -> Dict[str, Any]:
+    """Drop records past ``EXPIRED_TOOL_RECORD_DAYS``, keep the newest
+    ``EXPIRED_TOOL_RECORD_LIMIT``. Run at every eviction write AND at every
+    notice consume, so a thread whose kit lapsed once does not read as
+    customized forever on a record nothing else would ever prune."""
+    from datetime import timedelta
+
+    from .thread_config import EXPIRED_TOOL_RECORD_DAYS, EXPIRED_TOOL_RECORD_LIMIT
+
+    cutoff = now - timedelta(days=EXPIRED_TOOL_RECORD_DAYS)
+    aged = {
+        name: rec
+        for name, rec in records.items()
+        if ensure_aware_utc(rec.expired_at) > cutoff
+    }
+    if len(aged) > EXPIRED_TOOL_RECORD_LIMIT:
+        newest = sorted(
+            aged.items(),
+            key=lambda item: ensure_aware_utc(item[1].expired_at),
+            reverse=True,
+        )[:EXPIRED_TOOL_RECORD_LIMIT]
+        aged = dict(newest)
+    return aged
+
+
+# The rendered notice is bounded because ``expired_tools`` lives in the
+# agent-writable thread-config store, like every free-text config field that
+# reaches the prompt (the fallback note caps at 2000).
+TOOL_EXPIRY_NOTICE_CAP = 800
+_NOTICE_NAME_LIMIT = 10
+
+
+def _notice_names(names: List[str]) -> str:
+    shown = sorted(names)
+    if len(shown) > _NOTICE_NAME_LIMIT:
+        extra = len(shown) - _NOTICE_NAME_LIMIT
+        return ", ".join(shown[:_NOTICE_NAME_LIMIT]) + f" and {extra} more"
+    return ", ".join(shown)
+
+
+def expiry_ttl_text(record: Any) -> Optional[str]:
+    """``"1h"`` / ``"30m"`` / ``"2d"``: the window an expiry record lapsed from.
+
+    None when the record predates ``enabled_at`` or the window is not
+    positive. Shared by the notice and the unbound-call refusal.
+    """
+    enabled_at = getattr(record, "enabled_at", None)
+    if enabled_at is None:
+        return None
+    seconds = int(
+        (ensure_aware_utc(record.expired_at) - ensure_aware_utc(enabled_at))
+        .total_seconds()
+    )
+    if seconds <= 0:
+        return None
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    return f"{max(1, seconds // 60)}m"
+
+
+def _ttl_label(records: List[Any]) -> str:
+    """``" (1h TTL)"`` from the first record with a window, else ``""``."""
+    for rec in records:
+        ttl = expiry_ttl_text(rec)
+        if ttl:
+            return f" ({ttl} TTL)"
+    return ""
+
+
+def expiry_clock(dt) -> str:
+    """``"05:00 PM"`` when ``dt`` falls on today's date (the turn's own), else
+    the full ``format_user_time`` text: records live 7 days, and a bare clock
+    about last Friday read on Monday would mislead the model."""
+    from .time_utils import format_user_time
+
+    text = format_user_time(dt)
+    date, _sep, rest = text.partition(" at ")
+    today, _sep, _rest = format_user_time(utc_now()).partition(" at ")
+    return rest if rest and date == today else text
+
+
+def render_tool_expiry_notice(records: Dict[str, Any]) -> str:
+    """The one-line ``[System: ...]`` notice for a set of expiry records.
+
+    Grouped by kit (one sentence per kit, naming the recall path) with the
+    direct binds after. Bracket-free inside: tool and kit names are
+    identifiers, times come from ``format_user_time``, so the history strip
+    frame (``agent_history.SYSTEM_NOTICE_PATTERN``) is exact.
+    """
+    by_kit: Dict[str, List[str]] = {}
+    kit_records: Dict[str, List[Any]] = {}
+    direct: List[str] = []
+    direct_sources: set[str] = set()
+    for name, rec in records.items():
+        if rec.kit:
+            by_kit.setdefault(rec.kit, []).append(name)
+            kit_records.setdefault(rec.kit, []).append(rec)
+        else:
+            direct.append(name)
+            if rec.source:
+                direct_sources.add(rec.source)
+    parts: List[str] = []
+    for kit in sorted(by_kit):
+        recs = kit_records[kit]
+        latest = max(ensure_aware_utc(r.expired_at) for r in recs)
+        parts.append(
+            f"Skill Kit {kit}'s tools expired at {expiry_clock(latest)}{_ttl_label(recs)} "
+            f"and are no longer bound: {_notice_names(by_kit[kit])}. "
+            f'Re-activate it with Skill(name="{kit}") (or /kit {kit}) for a '
+            "fresh window."
+        )
+    if direct:
+        lead = "TTL also expired on" if parts else "TTL expired on"
+        via = (
+            f" (bound by {sorted(direct_sources)[0]})"
+            if len(direct_sources) == 1
+            else ""
+        )
+        parts.append(
+            f"{lead}: {_notice_names(direct)}{via}; re-bind with "
+            'tool_manage(action="enable", ...) if still needed.'
+        )
+    text = " ".join(parts)
+    if len(text) > TOOL_EXPIRY_NOTICE_CAP:
+        text = text[: TOOL_EXPIRY_NOTICE_CAP - 3].rstrip() + "..."
+    return f"[System: {text}]"
+
+
+def consume_tool_expiry_notice(
+    agent: "NymeriaAgent", thread_id: str, *, commit: bool = True
+) -> Optional[str]:
+    """Render the un-notified expiry records for this thread, mark them, or None.
+
+    Once-only across both delivery paths (the next prompt's prefix and the
+    mid-turn absorb): ``notified`` is the single truth. The flip persists
+    BEFORE the text is returned; a failed save withholds the notice for a
+    later attempt rather than risking it every turn. ``commit=False`` renders
+    without flipping (the mid-turn path enqueues on a peek and commits at
+    absorb, so a prompt dropped before delivery is never marked delivered).
+
+    Evicts first (``resolve_temporary_tools``), so a lapse between turns is
+    on record here whether or not a graph lookup already ran the resolver
+    this turn; and ages the record map, so notified records do not outlive
+    their 7 days on a thread that never evicts again.
+    """
+    if not thread_id:
+        return None
+    tc = agent.thread_config_manager.get_config(thread_id)
+    if tc is None:
+        return None
+    resolve_temporary_tools(agent, tc, persist=True)
+    records = getattr(tc, "expired_tools", None) or {}
+    if not records:
+        return None
+    aged = _age_expired_records(records, utc_now())
+    pending = {name: rec for name, rec in aged.items() if not rec.notified}
+    if not pending:
+        if len(aged) != len(records):
+            tc.expired_tools = aged
+            agent.thread_config_manager.save_config(tc)
+        return None
+    text = render_tool_expiry_notice(pending)
+    if not commit:
+        return text
+    for rec in pending.values():
+        rec.notified = True
+    tc.expired_tools = aged
+    if not agent.thread_config_manager.save_config(tc):
+        for rec in pending.values():
+            rec.notified = False
+        logger.warning(
+            "Thread %s: expiry notice withheld, thread config save failed", thread_id
+        )
+        return None
+    return text
 
 
 def load_custom_tools(

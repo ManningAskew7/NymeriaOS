@@ -503,7 +503,7 @@ fallback activation without mixing that status text into the assistant response.
 Autonomous streams handle the same event names in `stores/autonomous.svelte.ts`
 on both platforms.
 
-Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and the API service history mapper aligned for this flow.
+Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and the API service history mapper aligned for this flow. The same card family carries `fallback_notice` and `tool_expiry_notice` (the latter also pushed live from `prompt_injected` when `sources[i] === 'system'`, via `chatStore.addToolExpiryNotice`); keep the `MessageBubble.svelte` branches and the `prompt_injected` handlers (`MainPanel.svelte` / `ChatPanel.svelte`) aligned.
 
 TODO dashboard invalidation is also shared: live chat handlers and
 `stores/autonomous.svelte.ts` use `utils/todoTools.ts` to recognize TODO tool
