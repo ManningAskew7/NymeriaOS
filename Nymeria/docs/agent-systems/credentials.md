@@ -389,7 +389,10 @@ When a reconnect completes for the same provider account, Nymeria promotes the
 new prompt credential to active, carries over allowed targets and bindings from
 older duplicate rows, and disables stale same-account OAuth rows plus abandoned
 pending OAuth placeholders for that provider. Legacy token-cache rows for the
-same account are disabled once an active vault OAuth token replaces them.
+same account are disabled once an active vault OAuth token replaces them, and
+the row is deleted outright on the account's next refresh, when the vault wins
+the account_id collision and the legacy half of the write comes through empty
+(see the empty-payload rule below).
 
 Tools that consume OAuth tokens (`google_docs.get_credentials`,
 `calendar.py`, `outlook_email.py`, etc.) call
@@ -401,6 +404,16 @@ back to whichever store the account originated from: vault rows go through
 `upsert_credential`, legacy rows through `save_token_cache`. The
 `_vault_credential_id` sentinel on each merged account routes the persist
 call to the correct store.
+
+An empty payload reaching `save_token_cache` means "no cache", so it deletes the
+legacy row and the fallback file rather than storing an empty one. A payload
+counts as empty when it has no accounts and no other top-level key (an empty
+`accounts` key is bookkeeping; `pending_auth` alone is real content and is still
+written). This matters in both directions: storing an empty cache used to mint a
+`legacy_token_cache` credential with zero accounts that every credential surface
+rendered as a phantom account of its own, and the same write is what scrubs the
+superseded plaintext tokens when a mailbox moves from the legacy cache into the
+vault, so declining to write without deleting would strand them.
 
 ### Which account a call uses (thread bindings, fail-closed selection)
 

@@ -100,7 +100,36 @@ def load_token_cache(user_id: str, cache_filename: str) -> dict:
     return {}
 
 
+def _cache_carries_nothing(cache: dict) -> bool:
+    """True when ``cache`` holds no accounts and no other top-level state.
+
+    ``{"accounts": {}}`` counts as nothing, the same as ``{}``: an empty
+    ``accounts`` key is bookkeeping, not content. Any other key (``pending_auth``
+    is the live one) makes the payload real, with or without accounts.
+    """
+    return not {key: value for key, value in cache.items() if key != "accounts" or value}
+
+
 def save_token_cache(user_id: str, cache_filename: str, cache: dict) -> None:
+    """Persist a legacy token cache, treating an empty payload as no cache.
+
+    ``load_token_cache`` already returns ``{}`` for a missing cache, so a stored
+    empty cache and an absent row are indistinguishable on read. Writing one
+    anyway materialized a ``legacy_token_cache`` credential with zero accounts,
+    which every credential surface then rendered as an account of its own (a
+    phantom "Microsoft / Outlook" with no emails). Deleting instead of skipping
+    is deliberate: when a mailbox is reconnected through the vault, the vault row
+    wins the account_id collision and the stripped legacy half comes through here
+    empty, so this is also the path that scrubs the superseded legacy plaintext
+    tokens out of the store. That delete is a hard one, where a stale row left by
+    ``auth_cleanup`` is merely disabled; the previous behavior was worse than
+    either, resurrecting a disabled row with a blanked payload, since
+    ``upsert_legacy_cache`` writes no status and the vault defaults to active.
+    """
+    if _cache_carries_nothing(cache):
+        delete_token_cache(user_id, cache_filename)
+        return
+
     try:
         from ..core.credential_vault import get_credential_vault_repo
 
@@ -120,11 +149,16 @@ def save_token_cache(user_id: str, cache_filename: str, cache: dict) -> None:
 
 
 def delete_token_cache(user_id: str, cache_filename: str) -> bool:
-    """Delete a user's token cache file if it exists.
+    """Delete a user's token cache from the vault row and the file fallback.
 
-    Returns ``True`` when a file was removed, otherwise ``False``. The parent
+    Returns ``True`` when either store held something to remove. The parent
     directory is still created by ``cache_path``; leaving an empty per-user auth
     directory is harmless and keeps this helper simple.
+
+    Never raises. ``save_token_cache`` routes an empty payload here, so this sits
+    on the token-refresh path, where a caller treats any exception as "no token"
+    and re-authenticates: a locked file or a concurrent refresh winning the race
+    to the same unlink must not fail a refresh that already succeeded.
     """
     removed = False
     try:
@@ -134,11 +168,14 @@ def delete_token_cache(user_id: str, cache_filename: str) -> bool:
     except Exception:
         logger.debug("Credential vault token-cache delete unavailable", exc_info=True)
 
-    path = cache_path(user_id, cache_filename)
-    if not path.exists():
+    try:
+        path = cache_path(user_id, cache_filename)
+        existed = path.exists()
+        path.unlink(missing_ok=True)
+        return removed or existed
+    except OSError:
+        logger.debug("Failed to remove token cache file for %s", cache_filename, exc_info=True)
         return removed
-    path.unlink()
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -592,9 +629,11 @@ def _persist_oauth_cache(
         else:
             legacy_accounts[account_id] = account
 
-    # Always persist the legacy half so non-vault accounts (and other top-level
-    # keys like ``pending_auth``) survive a refresh. Strip the vault accounts
-    # so we don't store ciphertext-derived state in the legacy cache.
+    # Persist the legacy half so non-vault accounts (and other top-level keys
+    # like ``pending_auth``) survive a refresh. Strip the vault accounts so we
+    # don't store ciphertext-derived state in the legacy cache. When nothing is
+    # left, ``save_token_cache`` deletes the row rather than storing an empty
+    # cache, which would surface as an account with no accounts in it.
     legacy_cache = dict(cache)
     legacy_cache["accounts"] = legacy_accounts
     if not legacy_accounts:

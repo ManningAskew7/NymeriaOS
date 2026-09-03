@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
@@ -35,10 +36,15 @@ def vault_setup(tmp_path, monkeypatch):
     accounts = AccountsRepo(db_path)
     accounts.create_user("alice", "alice@example.com", "Alice")
 
-    # Force the vault repo singleton to point at our test DB.
+    # Force the vault repo singleton to point at our test DB. Patching the
+    # module's `get_credential_vault_repo` alone is not enough: modules that
+    # imported the symbol at import time (`tools/auth_manager.py` among them)
+    # hold their own reference and never see the swap, so the SINGLETON has to
+    # be replaced too. The global is `_vault_repo`; an earlier `_repo_instance`
+    # spelling here patched an attribute that has never existed.
     from nymeria.core import credential_vault as vault_module
-    monkeypatch.setattr(vault_module, "_repo_instance", None, raising=False)
     repo = CredentialVaultRepo(db_path)
+    monkeypatch.setattr(vault_module, "_vault_repo", repo)
     monkeypatch.setattr(vault_module, "get_credential_vault_repo", lambda db_path=None: repo)
 
     yield repo, tmp_path
@@ -592,3 +598,229 @@ def test_a_planted_legacy_cache_cannot_move_the_endpoint_the_api_refreshes_again
     assert creds is not None, "no credential was built, so this proved nothing"
     assert seen["token_uri"] == _GOOGLE_TOKEN_URI
     assert _ATTACKER_TOKEN_URI not in seen.values()
+
+
+# ---------------------------------------------------------------------------
+# #318: an empty legacy half must leave no row behind
+# ---------------------------------------------------------------------------
+
+
+def _legacy_rows(repo, user_id: str = "alice") -> list:
+    """Every legacy_token_cache row for ``user_id``, DISABLED ONES INCLUDED.
+
+    ``include_disabled`` is load-bearing: a disabled row still holds its
+    ``cache_json`` secret, and ``load_legacy_cache`` returns ``None`` for one, so
+    a helper that hid disabled rows would read identically whether the tokens
+    were deleted or merely deactivated, and the scrub assertions below would pass
+    against an implementation that left the plaintext in the vault.
+    """
+    return [
+        record
+        for record in repo.list_credentials(owner_user_id=user_id, include_disabled=True)
+        if record.kind == "legacy_token_cache"
+    ]
+
+
+def test_vault_only_refresh_leaves_no_phantom_legacy_account(vault_setup):
+    """A vault-only account must not mint a second, empty legacy account.
+
+    Field report (#318): after the first refresh past expiry,
+    ``auth_inspect view=oauth_accounts`` listed the real Outlook account AND a
+    ``legacy_token_cache`` row with no emails as separate accounts.
+    """
+    repo, _ = vault_setup
+    _mint_vault_oauth_token(
+        repo,
+        user_id="alice",
+        provider="outlook",
+        account_id="alice_at_example_com",
+        email="alice@example.com",
+        access_token="VAULT-OLD",
+    )
+
+    from nymeria.tools.auth_cache_utils import resolve_oauth_cache
+
+    source = resolve_oauth_cache("alice", "outlook", cache_filename="microsoft.json")
+    source.cache["accounts"]["alice_at_example_com"]["access_token"] = "VAULT-NEW"
+    source.persist(source.cache)
+
+    assert _legacy_rows(repo) == []
+
+    import json as _json
+
+    # Read it back through the surface the field report used. auth_manager
+    # imports the repo getter at import time, so this only reaches our test DB
+    # because the fixture replaces the vault SINGLETON, not just the getter.
+    from nymeria.tools.auth_manager import auth_inspect
+
+    body = _json.loads(
+        auth_inspect.invoke(
+            {"view": "oauth_accounts"},
+            config={"configurable": {"user_id": "alice", "thread_id": "t-318"}},
+        )
+    )
+    assert body["ok"] is True
+    account_ids = [row["account_id"] for row in body["accounts"]]
+    assert account_ids == ["alice_at_example_com"], body["accounts"]
+
+
+def test_persist_scrubs_a_legacy_row_superseded_by_a_vault_account(vault_setup):
+    """The vault wins an account_id collision, so the legacy tokens must go.
+
+    Deleting rather than skipping is the point: the pre-#318 behavior overwrote
+    the row with ``{}``, which scrubbed the superseded plaintext tokens. A guard
+    that merely declined to write would have left them in the vault forever.
+    """
+    repo, _ = vault_setup
+    from nymeria.tools.auth_cache_utils import (
+        load_token_cache,
+        resolve_oauth_cache,
+        save_token_cache,
+    )
+
+    save_token_cache(
+        "alice",
+        "microsoft.json",
+        {
+            "accounts": {
+                "alice_acct": {
+                    "email": "alice@example.com",
+                    "access_token": "SUPERSEDED-ACCESS",
+                    "refresh_token": "SUPERSEDED-REFRESH",
+                    "expires_at": time.time() + 3600,
+                }
+            }
+        },
+    )
+    assert len(_legacy_rows(repo)) == 1, "the legacy row was never created"
+
+    # Same account_id reconnected through the vault: the vault entry wins the
+    # merge, so the stripped legacy half comes through persist empty.
+    _mint_vault_oauth_token(
+        repo,
+        user_id="alice",
+        provider="outlook",
+        account_id="alice_acct",
+        email="alice@example.com",
+        access_token="VAULT-ACCESS",
+    )
+
+    legacy_row_id = _legacy_rows(repo)[0].id
+
+    source = resolve_oauth_cache("alice", "outlook", cache_filename="microsoft.json")
+    source.persist(source.cache)
+
+    # Gone, not merely deactivated: a disabled row keeps its cache_json, so
+    # asserting on the read alone would accept an implementation that leaves the
+    # superseded access and refresh tokens sitting in the vault.
+    assert _legacy_rows(repo) == []
+    assert repo.get_credential(legacy_row_id) is None
+    assert load_token_cache("alice", "microsoft.json") == {}
+
+    # A second refresh with the row already gone must be a no-op, not an error.
+    resolve_oauth_cache("alice", "outlook", cache_filename="microsoft.json").persist(source.cache)
+    assert _legacy_rows(repo) == []
+
+
+def test_save_token_cache_still_writes_a_payload_that_only_has_top_level_keys(vault_setup):
+    """The emptiness guard must not swallow an accountless-but-real cache.
+
+    ``pending_auth`` is the live example: ``_persist_oauth_cache`` pops
+    ``accounts`` when every account is vault-backed, and the remaining payload
+    still has to survive the refresh.
+    """
+    repo, _ = vault_setup
+    from nymeria.tools.auth_cache_utils import load_token_cache, save_token_cache
+
+    save_token_cache("alice", "microsoft.json", {"pending_auth": {"flow": "device"}})
+
+    assert load_token_cache("alice", "microsoft.json") == {"pending_auth": {"flow": "device"}}
+    assert len(_legacy_rows(repo)) == 1
+
+    # ... and it must still be written when an emptied accounts key rides along.
+    save_token_cache("alice", "microsoft.json", {"accounts": {}, "pending_auth": {"flow": "device"}})
+    assert load_token_cache("alice", "microsoft.json")["pending_auth"] == {"flow": "device"}
+
+
+def test_an_accounts_key_emptied_of_accounts_is_still_no_cache(vault_setup):
+    """``{"accounts": {}}`` must not mint a row either.
+
+    ``_persist_oauth_cache`` pops the key before calling, so today this shape
+    only reaches the writer from another caller; the writer states the invariant
+    in its own docstring, so it has to hold it on its own rather than depend on
+    one caller tidying up first.
+    """
+    repo, _ = vault_setup
+    from nymeria.tools.auth_cache_utils import save_token_cache
+
+    save_token_cache("alice", "microsoft.json", {"accounts": {}})
+
+    assert _legacy_rows(repo) == []
+
+
+def test_empty_payload_removes_the_file_in_the_no_vault_shape(vault_setup, monkeypatch):
+    """The file-fallback shape is where an empty payload deletes real plaintext.
+
+    Deployments without a usable vault keep tokens in the file cache, and that is
+    the branch the ``except Exception`` fallback exists for, so the delete has to
+    reach the file rather than only the vault row.
+    """
+    _, tmp_path = vault_setup
+    from nymeria.core import credential_vault as vault_module
+    from nymeria.tools.auth_cache_utils import load_token_cache, save_token_cache
+
+    monkeypatch.setattr(
+        vault_module,
+        "get_credential_vault_repo",
+        lambda db_path=None: (_ for _ in ()).throw(RuntimeError("vault unavailable")),
+    )
+
+    save_token_cache(
+        "alice",
+        "microsoft.json",
+        {"accounts": {"alice_acct": {"access_token": "PLAINTEXT-ON-DISK"}}},
+    )
+    path = tmp_path / "auth_tokens" / "alice" / "microsoft.json"
+    assert path.exists(), "the file fallback never wrote, so this proved nothing"
+
+    save_token_cache("alice", "microsoft.json", {})
+
+    assert not path.exists()
+    assert load_token_cache("alice", "microsoft.json") == {}
+
+
+def test_delete_token_cache_survives_an_unremovable_file(vault_setup, monkeypatch):
+    """A refresh must not fail because the cache file could not be unlinked.
+
+    ``save_token_cache`` routes empty payloads through ``delete_token_cache``,
+    and its callers read any exception as "no token" and re-authenticate. Before
+    #318 that helper had no production callers, so its bare ``unlink`` had never
+    been on a hot path.
+    """
+    _, tmp_path = vault_setup
+    from nymeria.core import credential_vault as vault_module
+    from nymeria.tools.auth_cache_utils import save_token_cache
+
+    # The file fallback is the only shape where a file is actually on disk for
+    # the unlink to trip over: the vault branch removes it on the way past.
+    monkeypatch.setattr(
+        vault_module,
+        "get_credential_vault_repo",
+        lambda db_path=None: (_ for _ in ()).throw(RuntimeError("vault unavailable")),
+    )
+    save_token_cache(
+        "alice",
+        "microsoft.json",
+        {"accounts": {"alice_acct": {"access_token": "TOK"}}},
+    )
+    path = tmp_path / "auth_tokens" / "alice" / "microsoft.json"
+    assert path.exists(), "no file was written, so the unlink below proves nothing"
+
+    def _refuse(self, missing_ok=False):
+        raise PermissionError("file is locked")
+
+    monkeypatch.setattr(Path, "unlink", _refuse)
+
+    # Must not raise: the caller reads any exception as "no token" and would
+    # send the user back through a full re-authentication.
+    save_token_cache("alice", "microsoft.json", {})
