@@ -257,34 +257,16 @@ def create_thread_config_router(
         if request.disabled_tools is not None and not request.clear_disabled_tools:
             tc.disabled_tools = request.disabled_tools
         if request.enabled_tools is not None and not request.clear_enabled_tools:
-            if user.role != "admin":
-                from ...tools import (
-                    ADMIN_ONLY_TOOL_NAMES,
-                    DEVELOPER_ONLY_TOOL_NAMES,
-                )
+            from ...tools import enabled_tools_role_error
 
-                blocked = ADMIN_ONLY_TOOL_NAMES.intersection(
-                    request.enabled_tools
-                )
-                if blocked:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=(
-                            "Admin-only tools cannot be enabled by this user: "
-                            f"{sorted(blocked)}"
-                        ),
-                    )
-                blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(
-                    request.enabled_tools
-                )
-                if blocked:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=(
-                            "Developer-only diagnostic tools cannot be enabled "
-                            f"by this user: {sorted(blocked)}"
-                        ),
-                    )
+            # Judges what this write ADDS, against the stored list (#326).
+            refusal = enabled_tools_role_error(
+                request.enabled_tools,
+                tc.enabled_tools,
+                user_role=user.role,
+            )
+            if refusal:
+                raise HTTPException(status_code=403, detail=refusal)
             tc.enabled_tools = request.enabled_tools
         if request.enabled_skills is not None and not request.clear_enabled_skills:
             tc.enabled_skills = request.enabled_skills

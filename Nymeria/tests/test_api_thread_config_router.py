@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
@@ -672,3 +674,257 @@ def test_thread_config_clear_active_fallback_reverts_and_latches_end_note(
     saved2 = agent.thread_config_manager.get_config(thread_id)
     assert saved2.active_llm_fallback is None
     assert saved2.pending_fallback_note == note
+
+
+def test_enabled_tools_gate_judges_what_the_patch_adds(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """#326: a now-gated name already on the thread must not brick every edit.
+
+    `enabled_tools` is a whole-list replace, so a caller changing one tool
+    resubmits the thread's whole set. Judging all of it meant an admin-only tool
+    left behind by a role demotion refused every later edit to that thread with
+    a 403 naming a tool the caller never touched.
+    """
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES, DEVELOPER_ONLY_TOOL_NAMES
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
+    headers = api_client_builder.auth(token)
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="t1", enabled_tools=[admin_only, developer_only])
+    )
+
+    kept = client.patch(
+        "/threads/t1/config",
+        headers=headers,
+        json={"enabled_tools": [admin_only, developer_only, SEED_TOOLS[0].name]},
+    )
+
+    assert kept.status_code == 200, kept.json()
+    stored = agent.thread_config_manager.get_config("t1").enabled_tools
+    # Retained, not dropped: the entry is inert (re-gated at graph build and
+    # again at by-name dispatch), and erasing it would lose the user's record.
+    assert admin_only in stored
+    assert SEED_TOOLS[0].name in stored
+
+
+def test_enabled_tools_gate_still_refuses_a_newly_added_gated_tool(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The half that makes #326's relaxation safe: additions keep every gate."""
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES, DEVELOPER_ONLY_TOOL_NAMES
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
+    headers = api_client_builder.auth(token)
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="t1", enabled_tools=[SEED_TOOLS[0].name])
+    )
+
+    admin_add = client.patch(
+        "/threads/t1/config",
+        headers=headers,
+        json={"enabled_tools": [SEED_TOOLS[0].name, admin_only]},
+    )
+    dev_add = client.patch(
+        "/threads/t1/config",
+        headers=headers,
+        json={"enabled_tools": [SEED_TOOLS[0].name, developer_only]},
+    )
+
+    assert admin_add.status_code == 403
+    assert admin_only in admin_add.json()["detail"]
+    assert dev_add.status_code == 403
+    assert "Developer-only" in dev_add.json()["detail"]
+    assert agent.thread_config_manager.get_config("t1").enabled_tools == [
+        SEED_TOOLS[0].name
+    ]
+
+
+def test_enabled_tools_gate_never_fires_for_an_admin(
+    tmp_path: Path,
+    api_client_builder,
+):
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES
+
+    settings = api_client_builder.settings(tmp_path)
+    agent = FakeAgent(tmp_path)
+    client, token = api_client_builder.authenticated_client(
+        agent,
+        settings,
+        user_id="boss",
+        email="boss@example.com",
+        display_name="Boss",
+        role="admin",
+    )
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+
+    response = client.patch(
+        "/threads/t1/config",
+        headers=api_client_builder.auth(token),
+        json={"enabled_tools": [admin_only]},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert agent.thread_config_manager.get_config("t1").enabled_tools == [admin_only]
+
+
+def test_enabled_tools_gate_is_identical_on_both_shapes(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """#326 two-shape parity: the in-process twin shares this router's gate.
+
+    `PATCH /threads/{id}/config` and `CommandBackendClient.update_thread_config`
+    carried byte-equivalent copies of the gate. They now call one function, and
+    this is what fails if either is re-inlined and the two drift.
+    """
+    from nymeria.core.command_service import CommandBackendClient, _CommandBackendUser
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    other_admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[1]
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="t1", enabled_tools=[admin_only])
+    )
+    agent.accounts_repo.claim_thread("t1", "owner")
+
+    backend = CommandBackendClient(
+        agent,
+        user=_CommandBackendUser(id="owner", role="user"),
+        settings_fn=lambda: api_client_builder.settings(tmp_path),
+    )
+
+    # Retaining the gated name the thread already had is allowed ...
+    asyncio.run(
+        backend.update_thread_config(
+            "t1",
+            user_id="owner",
+            enabled_tools=[admin_only, SEED_TOOLS[0].name],
+        )
+    )
+    stored = agent.thread_config_manager.get_config("t1").enabled_tools
+    assert admin_only in stored
+    assert SEED_TOOLS[0].name in stored
+
+    # ... but ADDING a second gated name is refused on this shape too, with the
+    # same STATUS and the same text the route answers. Comparing against the
+    # route's own response rather than a literal is the point: a hardcoded
+    # string would still pass if the two shapes drifted together.
+    import httpx
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        asyncio.run(
+            backend.update_thread_config(
+                "t1",
+                user_id="owner",
+                enabled_tools=[admin_only, other_admin_only],
+            )
+        )
+    route_refusal = client.patch(
+        "/threads/t1/config",
+        headers=api_client_builder.auth(token),
+        json={"enabled_tools": [admin_only, other_admin_only]},
+    )
+    assert route_refusal.status_code == 403
+    assert excinfo.value.response.status_code == route_refusal.status_code
+    assert excinfo.value.response.json()["detail"] == route_refusal.json()["detail"]
+    assert other_admin_only not in agent.thread_config_manager.get_config(
+        "t1"
+    ).enabled_tools
+
+    # The developer-only axis and the admin short-circuit, on the command shape.
+    from nymeria.tools import DEVELOPER_ONLY_TOOL_NAMES
+
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
+    with pytest.raises(httpx.HTTPStatusError) as dev_exc:
+        asyncio.run(
+            backend.update_thread_config(
+                "t1", user_id="owner", enabled_tools=[admin_only, developer_only]
+            )
+        )
+    assert "Developer-only" in dev_exc.value.response.json()["detail"]
+
+    admin_backend = CommandBackendClient(
+        agent,
+        user=_CommandBackendUser(id="owner", role="admin"),
+        settings_fn=lambda: api_client_builder.settings(tmp_path),
+    )
+    asyncio.run(
+        admin_backend.update_thread_config(
+            "t1", user_id="owner", enabled_tools=[admin_only, other_admin_only]
+        )
+    )
+    assert other_admin_only in agent.thread_config_manager.get_config("t1").enabled_tools
+
+
+def test_clear_enabled_tools_wins_over_the_gate_and_empties_the_list(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The guard the #326 delta silently depends on.
+
+    `clear_enabled_tools` empties `tc.enabled_tools` EARLIER in the same handler
+    than the gate reads it as the delta baseline. The two are kept mutually
+    exclusive only by the `and not request.clear_enabled_tools` condition; drop
+    it and a clear-plus-set request would diff against a list the clear had
+    already emptied, so every submitted name would count as added and a thread
+    holding a gated name could no longer be cleared. Nothing covered this field
+    at all before.
+    """
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    headers = api_client_builder.auth(token)
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="t1", enabled_tools=[admin_only, SEED_TOOLS[0].name])
+    )
+
+    cleared = client.patch(
+        "/threads/t1/config",
+        headers=headers,
+        json={"clear_enabled_tools": True, "enabled_tools": [admin_only]},
+    )
+
+    assert cleared.status_code == 200, cleared.json()
+    assert agent.thread_config_manager.get_config("t1").enabled_tools == []
+
+
+def test_an_empty_enabled_tools_list_erases_a_gated_name(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The one write that legitimately removes a retained gated entry.
+
+    An empty submission has an empty delta, so the gate allows it, and the
+    whole-list replace then drops the name. That is the escape hatch a
+    non-admin has, and it is why #326 is milder than its account-scope twin.
+    """
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="t1", enabled_tools=[admin_only])
+    )
+
+    emptied = client.patch(
+        "/threads/t1/config",
+        headers=api_client_builder.auth(token),
+        json={"enabled_tools": []},
+    )
+
+    assert emptied.status_code == 200, emptied.json()
+    assert agent.thread_config_manager.get_config("t1").enabled_tools == []

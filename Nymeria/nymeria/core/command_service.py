@@ -2322,27 +2322,18 @@ class CommandBackendClient:
             tc = ThreadConfig(thread_id=thread_id)
 
         if "enabled_tools" in kwargs and kwargs["enabled_tools"] is not None:
-            enabled_tools = list(kwargs["enabled_tools"])
-            if self.user.role != "admin":
-                from ..tools import (
-                    ADMIN_ONLY_TOOL_NAMES,
-                    DEVELOPER_ONLY_TOOL_NAMES,
-                )
+            from ..tools import enabled_tools_role_error
 
-                blocked = ADMIN_ONLY_TOOL_NAMES.intersection(enabled_tools)
-                if blocked:
-                    _raise_http_status(
-                        403,
-                        "Admin-only tools cannot be enabled by this user: "
-                        f"{sorted(blocked)}",
-                    )
-                blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(enabled_tools)
-                if blocked:
-                    _raise_http_status(
-                        403,
-                        "Developer-only diagnostic tools cannot be enabled by this user: "
-                        f"{sorted(blocked)}",
-                    )
+            enabled_tools = list(kwargs["enabled_tools"])
+            # Shared with PATCH /threads/{id}/config so the two shapes cannot
+            # drift; judges what this write ADDS, against the stored list.
+            refusal = enabled_tools_role_error(
+                enabled_tools,
+                tc.enabled_tools,
+                user_role=self.user.role,
+            )
+            if refusal:
+                _raise_http_status(403, refusal)
             tc.enabled_tools = enabled_tools
         if "disabled_tools" in kwargs and kwargs["disabled_tools"] is not None:
             tc.disabled_tools = list(kwargs["disabled_tools"])

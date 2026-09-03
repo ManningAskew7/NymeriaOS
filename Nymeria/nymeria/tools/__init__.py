@@ -1512,15 +1512,69 @@ def filter_admin_only_tools(
     ``ADMIN_ONLY_TOOL_NAMES`` are stripped into ``blocked``.
 
     This is the single chokepoint shared by tool_search, spawn_thread, the
-    REST gate at PATCH /threads/{id}/config, and the graph-build defense-
-    in-depth filter. Keeping the logic here means a future addition to the
-    admin-only set propagates everywhere.
+    thread ``enabled_tools`` gate (via :func:`enabled_tools_role_error`, which
+    both PATCH /threads/{id}/config and its in-process twin call), and the
+    graph-build defense-in-depth filter. Keeping the logic here means a future
+    addition to the admin-only set propagates everywhere.
     """
     names = set(tool_names)
     if user_role == "admin":
         return names, set()
     blocked = names & ADMIN_ONLY_TOOL_NAMES
     return names - blocked, blocked
+
+
+def enabled_tools_role_error(
+    submitted,
+    existing,
+    *,
+    user_role: str,
+) -> str | None:
+    """Refusal text for gated tools a write ADDS to a thread's ``enabled_tools``.
+
+    Returns ``None`` when the write is allowed. One function so the two writers
+    of that field, ``PATCH /threads/{thread_id}/config`` and the in-process
+    ``CommandBackendClient.update_thread_config``, cannot drift: they carried
+    byte-equivalent copies of this gate, which is the same two-shape hazard the
+    default-tools writer was extracted to remove.
+
+    Only what the write ADDS is judged (#326, the thread-scope twin of #325).
+    ``enabled_tools`` is a whole-list replace, so a caller changing one tool
+    resubmits the thread's whole set; judging all of it meant a name that had
+    since become gated (an admin-only tool left after a role demotion) refused
+    every later edit to that thread with an error naming a tool the caller never
+    touched. Retaining such a name is inert, because each way of reaching a tool
+    has its own gate: the BIND path is gated at graph build
+    (`agent_graph.py`, on ``enabled_tools | live temporary_tools``, in both the
+    static and the default dynamic binding mode, which resolves through the same
+    ``select_tools_for_graph``), and the UNBOUND by-name path is gated
+    separately in `core/tool_execution.py`. So the name can be listed but never
+    bound or called. These are disjoint paths with one gate each, not one path
+    gated twice.
+
+    ``user_role`` must come from an authenticated identity. Do not pass a
+    command executor's ``is_admin``: an agent's is ``None``, so a falsy test
+    would read as "not admin" only by luck and an identity test would not.
+    Anything that is not exactly ``"admin"`` fails closed.
+
+    Deliberately NO unknown-name check: adding one here would recreate the trap
+    #325 removed at account scope, and this route has never had one.
+    """
+    added = set(submitted) - set(existing or ())
+    # Route through the shared chokepoints rather than re-testing the frozensets,
+    # so a future change there (a third role tier, name normalization) reaches
+    # this gate too. Both already short-circuit for "admin".
+    _, blocked = filter_admin_only_tools(added, user_role)
+    if blocked:
+        return f"Admin-only tools cannot be enabled by this user: {sorted(blocked)}"
+    _, blocked = filter_developer_only_tools(added, user_role)
+    if blocked:
+        return (
+            "Developer-only diagnostic tools cannot be enabled by this "
+            f"user: {sorted(blocked)}"
+        )
+    return None
+
 
 # SEED_TOOLS: the code-level seed for each user's default_thread_tools (see the
 # module docstring). On by default for everyone, but NOT "all tools" and NOT a
