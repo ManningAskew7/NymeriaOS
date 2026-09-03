@@ -6789,13 +6789,30 @@ class _CommandExecutor(
         name = str(bound.get("name") or "")
         if bound.get("scope") == "global":
             defaults = await self.api.get_default_tools(self.user_id)
+            current = set(defaults.get("default_tools", []))
             tool_names, is_category, cat_name, error = await self._resolve_tool_names(
                 name, defaults
             )
             if error:
-                return command_error(error)
+                # A name that no longer resolves but IS in the account's
+                # defaults is exactly the one a user needs to remove (#325):
+                # an uninstalled catalog tool, or an MCP tool whose server
+                # left. Refusing it made the stale entry unremovable through
+                # any command. Removal only, never enable, and only for a name
+                # already on the list, so this cannot bind anything.
+                #
+                # The match is BYTE-EXACT on purpose, not the resolver's
+                # lower/dash normalization: the write subtracts the literal
+                # string, so a normalized match would report a tool removed
+                # while removing nothing. A stale name therefore has to be
+                # typed as stored; do not "tidy" this into normalized form.
+                literal = name.strip()
+                if literal in current:
+                    tool_names, is_category, cat_name, error = ([literal], False, None, None)
+                else:
+                    return command_error(error)
             write_error = await self._set_default_tool_names(
-                tool_names, set(defaults.get("default_tools", [])), enable=False
+                tool_names, current, enable=False
             )
             if write_error:
                 return command_error(write_error)

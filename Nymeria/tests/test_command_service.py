@@ -7520,6 +7520,53 @@ def test_command_http_client_set_default_tools_wire_shape(monkeypatch) -> None:
     ]
 
 
+def test_tools_disable_global_can_clear_a_name_that_no_longer_resolves() -> None:
+    """#325: the stale entry has to be removable, or the account is stuck.
+
+    An uninstalled catalog tool (or an MCP tool whose server left) still sits in
+    `default_thread_tools`, but no longer resolves, so the resolver refused the
+    one command that would have cleared it.
+    """
+    api = FakeCommandApi()
+    api.default_tools = ["bash_execute", "ghost_tool"]
+    result = run(
+        CommandService().execute(_ctx(), "/tools disable ghost_tool global", api=api)
+    )
+
+    assert result.success is True, result.markdown
+    assert ("set_default_tools", ("alice", ["bash_execute"]), {}) in api.calls
+
+
+def test_tools_disable_global_still_refuses_a_name_that_is_not_a_default() -> None:
+    """The escape hatch is scoped to names already on the list, nothing wider."""
+    api = FakeCommandApi()
+    api.default_tools = ["bash_execute"]
+    result = run(
+        CommandService().execute(_ctx(), "/tools disable ghost_tool global", api=api)
+    )
+
+    assert result.success is False
+    assert "Unknown tool or category 'ghost_tool'" in result.markdown
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_enable_global_never_accepts_an_unresolvable_name() -> None:
+    """The #325 hatch must not leak into enable, which shares the resolver.
+
+    Even with the name sitting in the defaults, enable has to keep refusing it:
+    accepting it there would be a bind path for a tool that no longer exists.
+    """
+    api = FakeCommandApi()
+    api.default_tools = ["bash_execute", "ghost_tool"]
+    result = run(
+        CommandService().execute(_ctx(), "/tools enable ghost_tool global", api=api)
+    )
+
+    assert result.success is False
+    assert "Unknown tool or category 'ghost_tool'" in result.markdown
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
 def test_tools_list_rejects_a_second_argument() -> None:
     api = FakeCommandApi()
     result = run(CommandService().execute(_ctx(), "/tools list enabled all", api=api))
