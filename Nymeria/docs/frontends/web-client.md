@@ -36,10 +36,17 @@ exchanged for a long-lived personal token). See the "First-run browser
 handoff" section in [agent-systems/accounts.md](../agent-systems/accounts.md).
 
 On every other path (Docker, headless installs, a second device or
-browser): open the backend URL, and the setup screen auto-fills the API URL
-from the serving origin once `/health` answers. Paste an account token (the
-bootstrap token from `<data_dir>/BOOTSTRAP_TOKEN.txt` on a first boot, or a
-token minted with `run.py users`), and you are in.
+browser): open the backend URL. The client probes the serving origin's
+`/health`, and because a page served by a Nymeria backend is standing in
+front of a deployment that already exists, it opens on a token-only sign-in
+(one field, Verify shows the account name and role, Sign in) instead of the
+full setup hub. Paste an account token (the bootstrap token from
+`<data_dir>/BOOTSTRAP_TOKEN.txt` on a first boot, or a token minted with
+`run.py users`), and you are in. "Open full setup" on that screen reaches the
+hub (backend URL field, provider, RAG and integration sections) for a fresh
+install or for pointing the app at a different server; the Tauri desktop app
+and a browser build not served by a backend open on the hub directly.
+Routing lives in `src/lib/utils/firstRun.ts`.
 
 ## What is desktop-only
 
