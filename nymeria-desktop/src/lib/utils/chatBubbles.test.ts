@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import appHtml from '../../app.html?raw';
 import {
   CHAT_BUBBLES_ATTR,
   CHAT_BUBBLES_KEY,
@@ -101,10 +101,10 @@ describe('app.html pre-boot script', () => {
   // The pre-boot block cannot import this util (plain script, runs before the
   // bundle), so pin its copy of the rule here: it must apply only 'off', and
   // never re-grow the old opt-in 'on' branch.
-  const html = readFileSync(new URL('../../app.html', import.meta.url), 'utf8');
+  const html: string = appHtml;
   const block = html
     .split('\n')
-    .filter((line) => line.includes(CHAT_BUBBLES_KEY) || line.includes(CHAT_BUBBLES_ATTR))
+    .filter((line: string) => line.includes(CHAT_BUBBLES_KEY) || line.includes(CHAT_BUBBLES_ATTR))
     .join('\n');
 
   it('reads the preference key and applies only the off state', () => {

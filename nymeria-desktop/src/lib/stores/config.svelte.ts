@@ -1,6 +1,7 @@
 import type { AccountIdentity, AppConfig, ThemeName } from '$lib/types';
 import { applyTheme } from '$lib/themes';
 import { secureGet, secureSet, secureDelete } from '$lib/services/secureStorage';
+import { runOriginProbe, type OriginProbe } from '$lib/utils/firstRun';
 
 const STORAGE_KEY = 'nymeria-config';
 // H-7: the live bearer token is persisted in the OS keychain under this key,
@@ -18,7 +19,12 @@ type HealthProbeResponse = {
 };
 
 function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
+  // `__TAURI_INTERNALS__` is always injected by the Tauri 2 shell;
+  // `__TAURI__` only with `app.withGlobalTauri`, which this app does not set
+  // (secureStorage.ts relies on the same distinction).
+  return (
+    typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+  );
 }
 
 async function detectBackendOrigin(): Promise<string | null> {
@@ -387,10 +393,34 @@ function createConfigStore() {
     return data;
   }
 
+  // Served-by-backend detection. Probed at most once per page load; the
+  // outcome drives first-open routing (utils/firstRun.ts): a page served by a
+  // Nymeria backend opens on the token-only sign-in instead of the install
+  // hub. 'skipped' under Tauri or without a window, where the probe is
+  // meaningless and the full hub is the only path.
+  let originProbe = $state<OriginProbe>('skipped');
+  let originProbePromise: Promise<string | null> | null = null;
+
+  // Read-only: the probe never writes config. Boot may run it before the
+  // keychain has hydrated the token, and a page served by backend A can be
+  // deliberately pointed at backend B (the connection switcher), so only the
+  // guarded autoDetectBackendOrigin below adopts the detected origin.
+  function probeServedOrigin(): Promise<string | null> {
+    if (originProbePromise) return originProbePromise;
+    if (typeof window === 'undefined' || isTauriRuntime()) {
+      originProbe = 'skipped';
+      return Promise.resolve(null);
+    }
+    originProbePromise = runOriginProbe(detectBackendOrigin, (state) => {
+      originProbe = state;
+    });
+    return originProbePromise;
+  }
+
   async function autoDetectBackendOrigin(): Promise<string | null> {
     if (setupCompleted && apiKey.trim().length > 0) return null;
 
-    const detected = await detectBackendOrigin();
+    const detected = await probeServedOrigin();
     if (!detected) return null;
 
     if (apiUrl !== detected) {
@@ -489,6 +519,10 @@ function createConfigStore() {
     signOut,
     updateIdentityDisplayName,
     autoDetectBackendOrigin,
+    get originProbe(): OriginProbe {
+      return originProbe;
+    },
+    probeServedOrigin,
     reset() {
       apiUrl = DEFAULT_API_URL;
       apiKey = DEFAULT_API_KEY;
@@ -500,6 +534,8 @@ function createConfigStore() {
       developerMode = false;
       identity = null;
       currentIdentityId = null;
+      originProbe = 'skipped';
+      originProbePromise = null;
       applyTheme('light');
       saveCurrentConfig();
     }

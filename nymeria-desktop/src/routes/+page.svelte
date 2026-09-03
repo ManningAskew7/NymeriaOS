@@ -25,6 +25,7 @@
   import { api, probeConnection } from '$lib/services/api.svelte';
   import { debugLog } from '$lib/utils/debug';
   import { createInitGate } from '$lib/utils/appInit';
+  import { firstRunSurface } from '$lib/utils/firstRun';
   import {
     extractTokenFromHash,
     consumeTokenHandoff,
@@ -49,6 +50,27 @@
   // a fragment, so this stays false and nothing changes.
   let consumingTokenHandoff = $state(
     typeof window !== 'undefined' && extractTokenFromHash(window.location.hash) !== null
+  );
+
+  // Served-by-backend detection for a client with no connection yet: decides
+  // whether first open is the token-only sign-in (page served by a Nymeria
+  // backend) or the full setup hub. Gated on the PERSISTED setupCompleted
+  // flag, not needsSetup: the keychain token hydrates asynchronously, so
+  // needsSetup reads true for every returning user at this point and would
+  // put a probe splash in front of each reload. A fresh browser and a
+  // signed-out one both have setupCompleted false. Runs alongside the token
+  // handoff so a failed handoff still lands on the right surface; the store
+  // makes it a no-op under Tauri.
+  if (typeof window !== 'undefined' && !configStore.setupCompleted) {
+    void configStore.probeServedOrigin();
+  }
+
+  const firstRun = $derived(
+    firstRunSurface({
+      needsSetup: configStore.needsSetup,
+      setupActive: onboardingStore.active,
+      probe: configStore.originProbe,
+    })
   );
 
   async function runTokenHandoff() {
@@ -354,10 +376,18 @@
       <Spinner size="lg" />
       <p>Connecting to your Nymeria server...</p>
     </div>
-  {:else if configStore.needsSetup || onboardingStore.active}
+  {:else if firstRun === 'probing'}
+    <!-- Origin probe in flight (bounded, 1.5s): hold a connecting state rather
+         than flashing the setup hub and swapping it for the sign-in card. -->
+    <div class="token-handoff" role="status">
+      <Spinner size="lg" />
+      <p>Checking this Nymeria server...</p>
+    </div>
+  {:else if firstRun === 'setup'}
     <!-- The onboarding surface arms onboardingStore.active as it mounts, so it
          stays up after the connection step flips needsSetup false; Finish or
-         Skip clears the flag and drops into the app shell. -->
+         Skip clears the flag and drops into the app shell. It opens on the
+         token-only sign-in when the page is served by a backend. -->
     <OnboardingSurface />
   {:else}
     <AppShell>

@@ -6,6 +6,7 @@
   import { onboardingStore } from '$lib/stores/onboarding.svelte';
   import { themes } from '$lib/themes';
   import { contextStrategyFromSettings } from '$lib/utils/onboardingSetup';
+  import { initialSetupView } from '$lib/utils/firstRun';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import ConnectSection from './ConnectSection.svelte';
@@ -25,7 +26,15 @@
     | 'integrations'
     | 'appearance';
 
-  let view = $state<'welcome' | 'hub'>('welcome');
+  // 'signin' is the token-only first open for a page served by its own
+  // backend (utils/firstRun.ts); the full welcome + hub stays one click away
+  // for a fresh install, and is the default everywhere else.
+  let view = $state<'signin' | 'welcome' | 'hub'>(
+    initialSetupView({
+      connected: configStore.isConfigured && !!configStore.identity,
+      probe: configStore.originProbe,
+    })
+  );
   let activeSection = $state<SectionId>('connect');
 
   let serverSettings = $state<ServerSettings | null>(null);
@@ -197,7 +206,7 @@
     <div class="brand">
       <img src="/wolfhead-transparent.png" alt="" class="brand-mark" />
       <span class="brand-name">Nymeria<span class="brand-os">OS</span></span>
-      <span class="brand-context">Setup</span>
+      <span class="brand-context">{view === 'signin' ? 'Sign in' : 'Setup'}</span>
     </div>
     {#if view === 'hub'}
       <Button variant="ghost" onclick={finish} disabled={!connected}
@@ -208,7 +217,27 @@
     {/if}
   </header>
 
-  {#if view === 'welcome'}
+  {#if view === 'signin'}
+    <main class="welcome">
+      <div class="welcome-inner signin-inner">
+        <h1>Sign in to NymeriaOS</h1>
+        <p class="welcome-sub">
+          This server is already set up. Paste the account token you were given and you are in;
+          nothing else is needed on this device.
+        </p>
+        <div class="signin-form">
+          <ConnectSection tokenOnly onConnected={finish} />
+        </div>
+        <div class="welcome-note signin-alt">
+          <span>Setting up a new server, or connecting this app somewhere else?</span>
+          <Button variant="ghost" size="sm" onclick={() => (view = 'welcome')}>
+            Open full setup
+            <Icon name="chevronRight" size={14} />
+          </Button>
+        </div>
+      </div>
+    </main>
+  {:else if view === 'welcome'}
     <main class="welcome">
       <div class="welcome-inner">
         <h1>Welcome to NymeriaOS</h1>
@@ -590,6 +619,28 @@
     background: var(--bg-elevated-2);
     padding: 1px 4px;
     border-radius: var(--radius-sm);
+  }
+
+  /* Sign-in (served-by-backend first open) ----------------------------- */
+
+  .signin-inner {
+    width: min(480px, calc(100% - 2 * var(--spacing-xl)));
+  }
+
+  .signin-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+  }
+
+  .signin-alt {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--spacing-xs) var(--spacing-sm);
+    margin-top: var(--spacing-xl);
+    padding-top: var(--spacing-lg);
+    border-top: 1px solid var(--border-subtle);
   }
 
   /* Hub --------------------------------------------------------------- */

@@ -15,9 +15,15 @@
   interface Props {
     /** Fired after the verified connection is adopted into configStore. */
     onConnected: () => void | Promise<void>;
+    /**
+     * Sign-in shape for a page served by its own backend: the URL is the
+     * page's origin (already in configStore from the origin probe) and only
+     * the account token is asked for.
+     */
+    tokenOnly?: boolean;
   }
 
-  let { onConnected }: Props = $props();
+  let { onConnected, tokenOnly = false }: Props = $props();
 
   let apiUrl = $state(
     configStore.apiUrl || import.meta.env.VITE_DEFAULT_API_URL || 'http://localhost:8000'
@@ -33,6 +39,7 @@
   let versionNote = $state<string | null>(null);
 
   const connected = $derived(configStore.isConfigured && !!configStore.identity);
+  let tokenInput = $state<HTMLInputElement | null>(null);
 
   onMount(() => {
     // Web-served UI: prefill the URL from the origin serving this page.
@@ -42,7 +49,19 @@
         apiUrl = detected;
       }
     });
+    // The sign-in shape exists to receive one paste; land the caret there.
+    if (tokenOnly) tokenInput?.focus();
   });
+
+  // Enter in the token field walks the same two steps as the buttons: verify
+  // first, then adopt once verified. Never skips the identity preview.
+  function onTokenKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (status === 'verified') void adopt();
+    else if (status !== 'testing' && status !== 'adopting' && apiUrl.trim() && apiKey.trim())
+      void verify();
+  }
 
   function resetVerification() {
     if (status === 'verified' || status === 'error') {
@@ -123,21 +142,23 @@
     this setup talks to this backend.
   </p>
 {:else}
-  <div class="sf-field">
-    <label class="sf-label" for="setup-api-url">Backend URL</label>
-    <input
-      id="setup-api-url"
-      class="sf-input"
-      type="text"
-      bind:value={apiUrl}
-      oninput={resetVerification}
-      placeholder="http://localhost:8000"
-      autocomplete="off"
-    />
-    <p class="sf-hint">
-      Where your NymeriaOS backend is running. http://localhost:8000 for a local install.
-    </p>
-  </div>
+  {#if !tokenOnly}
+    <div class="sf-field">
+      <label class="sf-label" for="setup-api-url">Backend URL</label>
+      <input
+        id="setup-api-url"
+        class="sf-input"
+        type="text"
+        bind:value={apiUrl}
+        oninput={resetVerification}
+        placeholder="http://localhost:8000"
+        autocomplete="off"
+      />
+      <p class="sf-hint">
+        Where your NymeriaOS backend is running. http://localhost:8000 for a local install.
+      </p>
+    </div>
+  {/if}
 
   <div class="sf-field">
     <label class="sf-label" for="setup-api-key">Account token</label>
@@ -145,16 +166,25 @@
       id="setup-api-key"
       class="sf-input"
       type="password"
+      bind:this={tokenInput}
       bind:value={apiKey}
       oninput={resetVerification}
+      onkeydown={onTokenKeydown}
       placeholder="nym_..."
       autocomplete="off"
     />
-    <p class="sf-hint">
-      On first run, use the bootstrap admin token from
-      <code>&lt;data_dir&gt;/BOOTSTRAP_TOKEN.txt</code>. Bootstrap tokens are upgraded to a
-      long-lived personal token automatically when you connect.
-    </p>
+    {#if tokenOnly}
+      <p class="sf-hint">
+        The <code>nym_...</code> token issued for your account by whoever runs this server.
+        A bootstrap token is upgraded to a long-lived personal one automatically.
+      </p>
+    {:else}
+      <p class="sf-hint">
+        On first run, use the bootstrap admin token from
+        <code>&lt;data_dir&gt;/BOOTSTRAP_TOKEN.txt</code>. Bootstrap tokens are upgraded to a
+        long-lived personal token automatically when you connect.
+      </p>
+    {/if}
   </div>
 
   <div class="sf-actions">
@@ -164,7 +194,7 @@
       disabled={status === 'testing' || status === 'adopting' || !apiUrl.trim() || !apiKey.trim()}
       loading={status === 'testing'}
     >
-      {status === 'testing' ? 'Verifying' : 'Verify connection'}
+      {status === 'testing' ? 'Verifying' : tokenOnly ? 'Verify token' : 'Verify connection'}
     </Button>
     <Button
       variant="primary"
@@ -172,7 +202,7 @@
       disabled={status !== 'verified' && status !== 'adopting'}
       loading={status === 'adopting'}
     >
-      {status === 'adopting' ? 'Connecting' : 'Use this connection'}
+      {status === 'adopting' ? 'Signing in' : tokenOnly ? 'Sign in' : 'Use this connection'}
     </Button>
   </div>
 
