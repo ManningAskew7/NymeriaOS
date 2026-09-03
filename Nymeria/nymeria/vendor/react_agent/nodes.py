@@ -3317,7 +3317,7 @@ def _auth_failure_guidance(tool_name: str, provider: str, status: str) -> str:
     return (
         "\n\n[Auth check]: This looks like an authentication failure. "
         f'Provider "{provider}", credential status: {status}. Next: {step}. '
-        'Skill(name="credential-management") has the full flow.'
+        'Skill(name="credential-management", ttl="1h") has the full flow.'
     )
 
 
@@ -4701,7 +4701,8 @@ def unbound_call_refusal(
     if kit:
         if "Skill" in effective:
             remedies.append(
-                f're-activate the kit for a fresh window with Skill(name="{kit}")'
+                f're-activate the kit for a fresh window with Skill(name="{kit}", '
+                'ttl="<window>")'
             )
         else:
             remedies.append(f"ask the user to run /kit {kit} to re-activate it")

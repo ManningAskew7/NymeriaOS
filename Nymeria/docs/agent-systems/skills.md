@@ -46,7 +46,7 @@ also declares Nymeria tool dependencies in `metadata.nymeria.required_tools`.
 
 A **Skill Kit** is a normal Agent Skill that also declares exact Nymeria tools
 to bind when the agent activates it. This keeps the default tool list thin:
-the agent first sees only the skill name/description, then `Skill(name=...)`
+the agent first sees only the skill name/description, then `Skill(name=..., ttl=...)`
 returns the instructions and temporarily binds the required tool schemas.
 
 Use `metadata.nymeria.required_tools`; do not use portable `allowed-tools` for
@@ -68,17 +68,23 @@ metadata:
 
 - `required_tools` must be exact Nymeria tool names. Categories, globs, and
   Anthropic-style `Bash(...)` patterns are not interpreted.
-- `tool_ttl` accepts `Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default is `2h`.
-- A custom TTL can override `tool_ttl` per activation: the agent passes
-  `Skill(name="<kit>", ttl="<value>")` and a user passes `/kit <name> <ttl>`
-  (see Slash-command activation). The override governs only the kit's bound
-  tools, never the skill body, which stays in context until
-  compaction/`/clear`/the sliding window evicts it regardless of TTL. It is
-  ignored for skills that bind no tools.
+- `tool_ttl` accepts `Nm`, `Nh`, `Nd`, `Nw`, or `permanent`/`never` (when
+  absent, `2h`). It is the kit author's SUGGESTED window, shown as
+  `suggested_ttl` in the agent's `<available_skills>` listing, and the default
+  only for the human `/kit <name> [ttl]` command and programmatic activation
+  (`spawn_thread(kit=...)`, workflow verbs, `/orchestrate`).
+- The agent's `Skill(name="<kit>", ttl="<value>")` call REQUIRES `ttl` and has
+  no default: a blank or invalid value refuses the activation outright
+  (nothing loaded, nothing bound; the refusal carries the format hint and the
+  kit's suggestion). The window governs only the kit's bound tools, never the
+  skill body, which stays in context until compaction/`/clear`/the sliding
+  window evicts it regardless of TTL. For a skill that binds no tools the
+  value is accepted and reported as ignored, and under `defer=true` it is
+  ignored.
 - When the TTL lapses the tools leave the thread's bound list (mid-turn too,
   under dynamic binding) and the model is told once: a `[System: Skill Kit
-  <kit>'s tools expired at ... Re-activate it with Skill(name="<kit>") (or
-  /kit <kit>) ...]` line under the next prompt's metadata block, or at the
+  <kit>'s tools expired at ... Re-activate it with Skill(name="<kit>",
+  ttl="<lapsed window>") (or /kit <kit>) ...]` line under the next prompt's metadata block, or at the
   next sub-turn boundary of a running turn, and a call to a lapsed tool is
   refused with the kit named. Use does not extend the window; re-activate
   the kit for a fresh one. Mechanics: `tool-hot-loading.md`, "Expiry Notices".
@@ -124,7 +130,7 @@ metadata:
     too, in ONE strict transaction with the outer kit's tools. One TTL (the
     kit's `tool_ttl` or the per-activation override) governs the whole union.
   - **defer=true**: nothing binds or activates; nested skills are listed as
-    name + description, loadable on demand via `Skill(name=...)`.
+    name + description, loadable on demand via `Skill(name=..., ttl=...)`.
 - Strict, no-partial-activation semantics extend to nesting: a
   `required_skills` name that is not installed, or a nested kit tool that
   fails validation, aborts the whole activation with nothing bound (the
@@ -266,7 +272,7 @@ that every default kit ships bundled, is not internal, and binds no
 admin-only tools), and mark a kit `internal: true` to hide it from the
 wizard entirely.
 
-Activate `Skill(name="self-improve")` for the operating philosophy, then the
+Activate `Skill(name="self-improve", ttl="1h")` for the operating philosophy, then the
 matching kit for the work: inspect existing capabilities, enable
 tools/skills/MCP servers when they already fit, discover/test APIs when needed,
 create reusable HTTP or Python tools through `tool_create`, then write or edit
@@ -285,12 +291,15 @@ Three layers:
    active skill. These live inside the `Skill` meta-tool's *description*
    field. Budget: ~100 tokens per skill, 15k chars total. No skill content is
    ever injected into `soul.md` or the thread instructions.
-2. **On activation:** when the agent calls `Skill(name=...)`, the full
-   `SKILL.md` body is returned as a `ToolMessage`. Lives in conversation
-   history only. For Skill Kits, an optional `ttl` argument
-   (`Skill(name=..., ttl="30m")`) sets a one-off lifetime for the kit's bound
-   tools for this activation; it does not change how long the body stays in
-   context.
+2. **On activation:** when the agent calls `Skill(name=..., ttl=...)`, the
+   full `SKILL.md` body is returned as a `ToolMessage`. Lives in
+   conversation history only. The required `ttl` (`Skill(name=...,
+   ttl="30m")`) is the lifetime of the kit's bound tools for this activation
+   (ignored, with a note, for a skill that binds none); it does not change
+   how long the body stays in context. The listing marks kits with
+   `binds="N tools" suggested_ttl="..."` so a cold model can tell a tool-
+   binding kit from an instruction-only skill, and the tool's preamble tells
+   it to activate a kit FIRST when a task falls in its area.
 3. **On demand:** `references/*.md` load only if the skill's body tells the
    agent to `file_read` them. `scripts/*` run only if the body tells the agent
    to use an enabled tool such as `bash_execute` for them. `assets/` are never auto-read.
@@ -321,8 +330,8 @@ schemas. This is the kit-level expression of defer-vs-bind, decided by usage:
 one-off use of the kit's tools defers; a multi-step task or future use binds
 with `ttl`, because a bound schema sits in the cached tools prefix the model
 reads as its tool grammar while a deferred one is prose in history, so binding
-calls more reliably. `defer` and `ttl` are mutually exclusive (passing both
-ignores `ttl`).
+calls more reliably. `ttl` is still required by the schema under
+`defer=true` and is ignored (the result says so).
 
 One exception to "binds nothing" (backlog #170): when the thread cannot call
 `tool_invoke` itself, the activation binds just `tool_invoke` on a
@@ -382,7 +391,7 @@ Implementation: the Skills HTTP routes are mounted from
 
 Capability-expansion tools are optional and normally arrive through the focused
 management kits, not through the default tool list. The skill tools below arrive
-through `Skill(name="skill-management")`:
+through `Skill(name="skill-management", ttl="2h")`:
 
 - `skill_manage(action='list'|'search'|'install'|'enable'|'disable'|'inspect'|'status'|'prune', ...)`
 - `list_installed_skills(scope='all'|'user'|'global'|'bundled')`

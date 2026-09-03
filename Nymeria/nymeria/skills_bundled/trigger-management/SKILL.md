@@ -1,6 +1,11 @@
 ---
 name: trigger-management
-description: Configure, inspect, test, and troubleshoot Nymeria triggers.
+description: Configure, inspect, test, and troubleshoot Nymeria triggers,
+  automations that fire on a schedule, an RSS/Atom feed, a webhook, email, or
+  chat activity. Load this when the user wants Nymeria to watch or poll
+  something and act when it changes, or asks why a trigger is silent or
+  failing. Not for a one-off reminder (nym_todo) or for in-turn hooks
+  (hook-management).
 allowed-tools: Read
 metadata:
   nymeria:

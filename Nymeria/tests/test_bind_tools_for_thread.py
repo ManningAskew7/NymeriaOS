@@ -152,7 +152,7 @@ def test_bad_ttl_returns_error(tmp_path):
     assert r.ok is False
     assert r.text == (
         "[Error]: Invalid tool TTL 'banana'. Format: Nm, Nh, Nd, Nw, or "
-        "'never'. Examples: 30m, 2h, 7d, 4w, never."
+        "'permanent' (alias 'never'). Examples: 30m, 2h, 7d, 4w, permanent."
     )
     assert r.ttl_key == "2h"
     assert r.ttl_seconds is None

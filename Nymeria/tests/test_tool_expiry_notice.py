@@ -349,7 +349,8 @@ def test_notice_groups_by_kit_then_direct_binds():
     assert "Skill Kit tool-management's tools expired at" in text
     assert "(1h TTL)" in text
     assert "no longer bound: tool_manage, tool_search." in text
-    assert 'Re-activate it with Skill(name="tool-management") (or /kit tool-management)' in text
+    # The recall example carries the lapsed window: Skill() has no default ttl.
+    assert 'Re-activate it with Skill(name="tool-management", ttl="1h") (or /kit tool-management)' in text
     assert "TTL also expired on: exa_search (bound by tool_manage); re-bind with tool_manage" in text
 
 
@@ -631,7 +632,7 @@ def test_refusal_names_the_expired_kit_and_the_recall_path():
 
     assert "'tool_search' is no longer bound on this thread" in text
     assert "Skill Kit 'tool-management' bound it with a 1h TTL that expired at" in text
-    assert 'Skill(name="tool-management")' in text
+    assert 'Skill(name="tool-management", ttl="<window>")' in text
     assert 'tool_manage(action="enable", tools=["tool_search"]' in text
     # Protected: the one-off route is never offered, and the reason is stated.
     assert "tool_invoke(" not in text
@@ -665,7 +666,7 @@ def test_refusal_names_an_installed_kit_that_provides_the_tool():
     )
     text = _refusal("chrome_act", effective={"Skill"}, agent=agent)
     assert "Skill Kit 'browser-control' provides it" in text
-    assert 'Skill(name="browser-control")' in text
+    assert 'Skill(name="browser-control", ttl="<window>")' in text
 
 
 def test_refusal_with_no_reachable_remedy_says_so():

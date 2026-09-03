@@ -288,7 +288,7 @@ def test_skill_meta_tool_nested_kit_binds_union_and_inlines_bodies(tmp_path: Pat
         skill_tool = create_skill_meta_tool(
             [outer], skill_manager=manager, user_id="user-a"
         )
-        result = skill_tool.func("outer-kit", tool_call_id="call-1", config=_CONFIG)
+        result = skill_tool.func("outer-kit", ttl="2h", tool_call_id="call-1", config=_CONFIG)
     finally:
         set_current_agent(None)
 
@@ -322,7 +322,7 @@ def test_skill_meta_tool_missing_nested_skill_is_strict(tmp_path: Path):
         skill_tool = create_skill_meta_tool(
             [broken], skill_manager=manager, user_id="user-a"
         )
-        result = skill_tool.func("broken-kit", tool_call_id="call-1", config=_CONFIG)
+        result = skill_tool.func("broken-kit", ttl="2h", tool_call_id="call-1", config=_CONFIG)
     finally:
         set_current_agent(None)
 
@@ -347,7 +347,7 @@ def test_skill_meta_tool_defer_lists_nested_names_only(tmp_path: Path):
             [outer], skill_manager=manager, user_id="user-a"
         )
         result = skill_tool.func(
-            "outer-kit", defer=True, tool_call_id="call-1", config=_CONFIG
+            "outer-kit", ttl="2h", defer=True, tool_call_id="call-1", config=_CONFIG
         )
     finally:
         set_current_agent(None)
@@ -373,7 +373,7 @@ def test_skill_meta_tool_defer_missing_nested_listed_not_fatal(tmp_path: Path):
             [broken], skill_manager=manager, user_id="user-a"
         )
         result = skill_tool.func(
-            "broken-kit", defer=True, tool_call_id="call-1", config=_CONFIG
+            "broken-kit", ttl="2h", defer=True, tool_call_id="call-1", config=_CONFIG
         )
     finally:
         set_current_agent(None)
@@ -381,6 +381,35 @@ def test_skill_meta_tool_defer_missing_nested_listed_not_fatal(tmp_path: Path):
     assert isinstance(result, str)
     assert "no-such-skill: (not installed" in result
     assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_skill_meta_tool_invalid_ttl_refuses_a_nested_kit_before_anything_binds(tmp_path: Path):
+    """The refusal runs after nested resolution and before the union bind, so
+    a bad ttl on the outer kit binds neither kit's tools."""
+    manager = _manager_with(
+        tmp_path,
+        {"outer-kit": OUTER_KIT_MD, "inner-kit": INNER_KIT_MD, "plain-skill": PLAIN_MD},
+    )
+    outer = manager.get("outer-kit")
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool(
+            [outer], skill_manager=manager, user_id="user-a"
+        )
+        listing = skill_tool.description
+        result = skill_tool.func(
+            "outer-kit", ttl="banana", tool_call_id="call-1", config=_CONFIG
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert result.startswith("[Skill activation refused: outer-kit]")
+    assert "[Nested skill:" not in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
+    assert 'name="outer-kit" binds="1 tool + nested kits"' in listing
 
 
 def test_skill_meta_tool_ttl_override_governs_whole_union(tmp_path: Path):
@@ -427,8 +456,8 @@ def test_skill_meta_tool_ttl_notice_for_skills_only_kit_with_no_tools(tmp_path: 
         set_current_agent(None)
 
     assert isinstance(result, str)
-    # The union is empty, so the ttl no-effect notice applies.
-    assert "no effect" in result
+    # The union is empty, so the ttl-ignored note applies.
+    assert "ttl ignored: this skill binds no tools" in result
     assert "[Nested skill: plain-skill (required by skills-only-kit)]" in result
     assert agent.thread_config_manager.get_config("thread-a") is None
 
@@ -1002,7 +1031,7 @@ def test_skill_meta_tool_defer_lists_template_schemas(tmp_path: Path):
             [kit], skill_manager=manager, user_id="user-a"
         )
         result = skill_tool.func(
-            "template-kit", defer=True, tool_call_id="call-1", config=_CONFIG
+            "template-kit", ttl="2h", defer=True, tool_call_id="call-1", config=_CONFIG
         )
     finally:
         set_current_agent(None)
@@ -1026,8 +1055,8 @@ def test_skill_meta_tool_registers_templates_on_activation(tmp_path: Path):
         skill_tool = create_skill_meta_tool(
             [kit], skill_manager=manager, user_id="user-a"
         )
-        result = skill_tool.func("template-kit", tool_call_id="call-1", config=_CONFIG)
-        again = skill_tool.func("template-kit", tool_call_id="call-2", config=_CONFIG)
+        result = skill_tool.func("template-kit", ttl="2h", tool_call_id="call-1", config=_CONFIG)
+        again = skill_tool.func("template-kit", ttl="2h", tool_call_id="call-2", config=_CONFIG)
     finally:
         set_current_agent(None)
 

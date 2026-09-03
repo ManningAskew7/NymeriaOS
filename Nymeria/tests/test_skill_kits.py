@@ -648,6 +648,7 @@ def test_skill_meta_tool_returns_command_when_skill_kit_queues_reload(tmp_path: 
         skill_tool = create_skill_meta_tool([skill])
         result = skill_tool.func(
             "hello-kit",
+            ttl="2h",
             tool_call_id="call-1",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
         )
@@ -657,6 +658,7 @@ def test_skill_meta_tool_returns_command_when_skill_kit_queues_reload(tmp_path: 
     assert isinstance(result, Command)
     messages = result.update["messages"]
     assert "Hello Kit" in messages[0].content
+    assert "(activation ttl 2h; kit suggests 30m)" in messages[0].content
     assert "Skill Kit reload queued" in messages[0].content
     assert messages[0].additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
     assert agent._pending_tool_reload["thread-a"]["source"] == "skill_kit"
@@ -670,12 +672,83 @@ def test_skill_meta_tool_plain_skill_returns_body_without_reload(tmp_path: Path)
 
     result = skill_tool.func(
         "plain-skill",
+        ttl="2h",
         tool_call_id="call-1",
         config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
     )
 
     assert isinstance(result, str)
     assert "Plain Skill" in result
+
+
+def test_skill_meta_tool_ttl_is_required_in_the_schema(tmp_path: Path):
+    """The agent call has no default window: the schema demands one."""
+    skill = load_skill_directory(_write_skill(tmp_path, "hello-kit", KIT_MD), scope="bundled")
+    assert skill is not None
+    skill_tool = create_skill_meta_tool([skill])
+
+    schema = skill_tool.args_schema.model_json_schema()  # type: ignore[union-attr]
+
+    assert set(schema["required"]) >= {"name", "ttl"}
+    assert "default" not in schema["properties"]["ttl"]
+    assert "Required" in schema["properties"]["ttl"]["description"]
+
+
+def test_skill_meta_tool_kit_without_a_ttl_is_refused(tmp_path: Path):
+    """A blank ttl on a kit loads nothing and binds nothing."""
+    skill = load_skill_directory(_write_skill(tmp_path, "hello-kit", KIT_MD), scope="bundled")
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool([skill])
+        result = skill_tool.func(
+            "hello-kit",
+            ttl="",
+            tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert result.startswith("[Skill activation refused: hello-kit]")
+    assert "Hello Kit" not in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_available_skills_listing_marks_kits_with_binds_and_suggested_ttl(tmp_path: Path):
+    kit = load_skill_directory(_write_skill(tmp_path, "hello-kit", KIT_MD), scope="bundled")
+    plain = load_skill_directory(_write_skill(tmp_path, "plain-skill", PLAIN_MD), scope="bundled")
+    assert kit is not None and plain is not None
+
+    description = create_skill_meta_tool([kit, plain]).description
+
+    assert '<skill name="hello-kit" binds="1 tool" suggested_ttl="30m">' in description
+    assert '<skill name="plain-skill">' in description
+    # The preamble leads with the load-it-first rule and no longer offers a default.
+    assert "activate that kit FIRST" in description
+    assert "when you omit it" not in description
+
+
+def test_bundled_kit_descriptions_carry_a_load_cue_and_stay_concise():
+    """Every bundled kit's description (all a cold model sees) must say WHEN
+    to load it and stay short enough for the listing budget. The cue is what
+    makes an agent reach for a kit unprompted; a bare verb list did not."""
+    import nymeria
+
+    bundled = Path(nymeria.__file__).parent / "skills_bundled"
+    kits = []
+    for skill_dir in sorted(p for p in bundled.iterdir() if p.is_dir()):
+        skill = load_skill_directory(skill_dir, scope="bundled")
+        assert skill is not None, f"{skill_dir.name}: frontmatter failed to load"
+        if skill.required_tools and not skill.is_internal:
+            kits.append(skill)
+    assert len(kits) >= 10
+    for kit in kits:
+        desc = " ".join(kit.description.split())
+        assert "Load this" in desc, f"{kit.name}: no 'Load this when ...' cue"
+        assert len(desc) <= 600, f"{kit.name}: description is {len(desc)} chars"
 
 
 def test_skill_meta_tool_required_tools_already_bound_returns_body(tmp_path: Path):
@@ -688,6 +761,7 @@ def test_skill_meta_tool_required_tools_already_bound_returns_body(tmp_path: Pat
         skill_tool = create_skill_meta_tool([skill], thread_tool_names=["bash_execute"])
         result = skill_tool.func(
             "bash-kit",
+            ttl="2h",
             tool_call_id="call-1",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
         )
@@ -715,6 +789,7 @@ def test_skill_meta_tool_reports_added_and_already_bound_required_tools(tmp_path
         skill_tool = create_skill_meta_tool([skill], thread_tool_names=["bash_execute"])
         result = skill_tool.func(
             "mixed-kit",
+            ttl="2h",
             tool_call_id="call-1",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
         )
@@ -751,6 +826,7 @@ def test_skill_meta_tool_binds_tool_present_only_in_superset_snapshot(tmp_path: 
         )
         result = skill_tool.func(
             "mixed-kit",
+            ttl="2h",
             tool_call_id="call-1",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
         )
@@ -794,9 +870,10 @@ def test_skill_meta_tool_custom_ttl_overrides_kit_default(tmp_path: Path):
     assert expires_at > datetime.now(timezone.utc) + timedelta(days=7)
 
 
-def test_skill_meta_tool_invalid_ttl_falls_back_to_kit_default(tmp_path: Path):
-    """An invalid agent-supplied ttl does not block activation: the kit's
-    tools bind at the default TTL and the result notes the fallback."""
+def test_skill_meta_tool_invalid_ttl_refuses_the_activation(tmp_path: Path):
+    """An invalid agent-supplied ttl refuses the whole activation: no body,
+    no binding, and the refusal carries the format hint plus the kit's
+    suggested window (there is no default to fall back to)."""
     skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
     skill = load_skill_directory(skill_dir, scope="bundled")
     assert skill is not None
@@ -813,19 +890,14 @@ def test_skill_meta_tool_invalid_ttl_falls_back_to_kit_default(tmp_path: Path):
     finally:
         set_current_agent(None)
 
-    content = (
-        result.update["messages"][0].content
-        if isinstance(result, Command)
-        else result
-    )
-    assert "Ignored ttl='banana'" in content
-    tc = agent.thread_config_manager.get_config("thread-a")
-    assert tc is not None
-    assert "hello_test" in tc.temporary_tools
-    expires_at = tc.temporary_tools["hello_test"].expires_at
-    assert expires_at is not None
-    # Fell back to the kit's 30m default, so it expires within the hour.
-    assert expires_at < datetime.now(timezone.utc) + timedelta(hours=1)
+    assert isinstance(result, str)
+    assert result.startswith("[Skill activation refused: hello-kit] Invalid tool TTL 'banana'")
+    assert "Format: Nm, Nh, Nd, Nw" in result
+    assert 'the kit suggests "30m"' in result
+    assert "Nothing was loaded or bound" in result
+    assert "Hello Kit" not in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
 
 
 def test_skill_meta_tool_ttl_on_plain_skill_reports_no_effect(tmp_path: Path):
@@ -845,8 +917,45 @@ def test_skill_meta_tool_ttl_on_plain_skill_reports_no_effect(tmp_path: Path):
 
     assert isinstance(result, str)
     assert "Plain Skill" in result
-    assert "no Skill Kit" in result
-    assert "no effect" in result
+    assert "ttl ignored: this skill binds no tools" in result
+
+
+def test_skill_meta_tool_blank_ttl_on_plain_skill_still_loads(tmp_path: Path):
+    """There is nothing a ttl could govern, so even a blank one loads the body."""
+    skill = load_skill_directory(_write_skill(tmp_path, "plain-skill", PLAIN_MD), scope="bundled")
+    assert skill is not None
+    skill_tool = create_skill_meta_tool([skill])
+
+    result = skill_tool.func(
+        "plain-skill",
+        ttl="",
+        tool_call_id="call-1",
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    assert isinstance(result, str)
+    assert "Plain Skill" in result and "refused" not in result
+    assert "ttl ignored: this skill binds no tools" in result
+
+
+def test_available_skills_listing_keeps_kit_attributes_when_over_budget(tmp_path: Path):
+    from nymeria.skills.meta_tool import _render_available_skills
+
+    kits = []
+    for i in range(40):
+        md = KIT_MD.replace("name: hello-kit", f"name: kit-{i:02d}").replace(
+            "description: Bind the hello test tool.",
+            "description: " + ("Bind the hello test tool. " * 30).strip(),
+        )
+        kit = load_skill_directory(_write_skill(tmp_path, f"kit-{i:02d}", md), scope="bundled")
+        assert kit is not None
+        kits.append(kit)
+
+    block = _render_available_skills(kits)
+
+    assert len(block) <= 15_000
+    assert block.count('binds="1 tool" suggested_ttl="30m"') == 40
+    assert "…" in block  # descriptions, not attributes, took the cut
 
 
 def test_skill_meta_tool_defer_binds_nothing_and_lists_schemas(tmp_path: Path):
@@ -860,6 +969,7 @@ def test_skill_meta_tool_defer_binds_nothing_and_lists_schemas(tmp_path: Path):
         skill_tool = create_skill_meta_tool([skill])
         result = skill_tool.func(
             "hello-kit",
+            ttl="2h",
             defer=True,
             tool_call_id="call-1",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
@@ -885,9 +995,11 @@ def test_skill_meta_tool_defer_ignores_ttl(tmp_path: Path):
     set_current_agent(agent)
     try:
         skill_tool = create_skill_meta_tool([skill])
+        # An INVALID ttl proves "ignored" rather than "validated then unused":
+        # the deferred load must still succeed.
         result = skill_tool.func(
             "hello-kit",
-            ttl="2h",
+            ttl="banana",
             defer=True,
             tool_call_id="call-1",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
@@ -896,7 +1008,9 @@ def test_skill_meta_tool_defer_ignores_ttl(tmp_path: Path):
         set_current_agent(None)
 
     assert isinstance(result, str)
-    assert "ttl was ignored" in result
+    assert "Hello Kit" in result
+    assert "ttl ignored: defer=true binds no tools" in result
+    assert "refused" not in result
     assert agent.thread_config_manager.get_config("thread-a") is None
 
 
@@ -908,6 +1022,7 @@ def test_skill_meta_tool_defer_plain_skill_is_noop(tmp_path: Path):
 
     result = skill_tool.func(
         "plain-skill",
+        ttl="banana",
         defer=True,
         tool_call_id="call-1",
         config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
@@ -967,16 +1082,14 @@ def _defer_agent(
     return agent
 
 
-def _defer_call(skill_name: str, skill, ttl=None):
+def _defer_call(skill_name: str, skill):
     skill_tool = create_skill_meta_tool([skill])
-    kwargs = {"defer": True}
-    if ttl is not None:
-        kwargs["ttl"] = ttl
     return skill_tool.func(
         skill_name,
+        ttl="2h",
+        defer=True,
         tool_call_id="call-1",
         config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
-        **kwargs,
     )
 
 
@@ -1291,6 +1404,7 @@ def test_skill_meta_tool_not_found_copy_points_to_install(tmp_path: Path):
 
     result = skill_tool.func(
         "no-such-skill",
+        ttl="2h",
         tool_call_id="call-1",
         config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
     )
@@ -1406,35 +1520,40 @@ def _load(tmp_path: Path, name: str, md: str):
 
 # ----- _resolve_effective_ttl -----
 
-def test_resolve_effective_ttl_kit_default_when_no_override(tmp_path: Path):
+def test_resolve_effective_ttl_kit_without_a_value_refuses(tmp_path: Path):
+    """No default: the kit's tool_ttl is a suggestion quoted in the refusal."""
     kit = _load(tmp_path, "hello-kit", KIT_MD)
     assert kit.tool_ttl == "30m"
-    effective, notice = _resolve_effective_ttl(kit, None)
-    assert effective == "30m"
-    assert notice == ""
+    for missing in (None, "", "   "):
+        effective, notice = _resolve_effective_ttl(kit, missing)
+        assert effective is None
+        assert notice.startswith("[Skill activation refused: hello-kit]")
+        assert 'the kit suggests "30m"' in notice
 
 
-def test_resolve_effective_ttl_valid_override_wins(tmp_path: Path):
+def test_resolve_effective_ttl_valid_value_wins(tmp_path: Path):
     kit = _load(tmp_path, "hello-kit", KIT_MD)
     effective, notice = _resolve_effective_ttl(kit, "4w")
     assert effective == "4w"
     assert notice == ""
 
 
-def test_resolve_effective_ttl_no_tools_reports_no_effect(tmp_path: Path):
+def test_resolve_effective_ttl_no_tools_reports_ignored(tmp_path: Path):
     plain = _load(tmp_path, "plain-skill", PLAIN_MD)
     effective, notice = _resolve_effective_ttl(plain, "2h")
-    # No required_tools -> the kit default is kept and the model is told the
-    # ttl had no effect.
+    # No required_tools -> nothing to refuse, the model is told the value
+    # was ignored (even an invalid one: there is nothing it could govern).
     assert effective == plain.tool_ttl
-    assert "no effect" in notice
+    assert notice == "[note] ttl ignored: this skill binds no tools."
+    assert _resolve_effective_ttl(plain, "banana")[0] == plain.tool_ttl
 
 
-def test_resolve_effective_ttl_invalid_falls_back_to_default(tmp_path: Path):
+def test_resolve_effective_ttl_invalid_value_refuses(tmp_path: Path):
     kit = _load(tmp_path, "hello-kit", KIT_MD)
     effective, notice = _resolve_effective_ttl(kit, "banana")
-    assert effective == "30m"
-    assert "Ignored ttl='banana'" in notice
+    assert effective is None
+    assert "Invalid tool TTL 'banana'" in notice
+    assert "Nothing was loaded or bound" in notice
 
 
 # ----- _allowed_tools_advisory -----

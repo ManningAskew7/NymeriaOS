@@ -35,6 +35,7 @@ from langgraph.types import Command
 
 from ..core.capability_usage import collect_stale_names, compute_prune_window
 from ..core.time_utils import (
+    TOOL_TTL_FORMAT_HINT,
     ensure_aware_utc,
     parse_tool_ttl,
     utc_now,
@@ -1533,10 +1534,7 @@ def _tool_manage_impl(
 
     if action == "enable":
         if ttl is None:
-            return (
-                "[Error]: ttl is required for enable. "
-                "Format: Nm, Nh, Nd, Nw, or 'never'."
-            )
+            return f"[Error]: ttl is required for enable. {TOOL_TTL_FORMAT_HINT}"
         return _enable(
             tools or [],
             category,

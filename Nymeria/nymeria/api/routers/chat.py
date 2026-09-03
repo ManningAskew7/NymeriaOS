@@ -969,7 +969,7 @@ def create_chat_router(
             message = (
                 f"[Orchestrator mode activated.] Goal to orchestrate: {rest}\n\n"
                 "Load the orchestrate skill kit (call "
-                '`Skill(name="orchestrate")`) to read the playbook, decompose '
+                '`Skill(name="orchestrate", ttl="24h")`) to read the playbook, decompose '
                 "the goal into tasks via `nym_todo`, present the task list to "
                 "the user for approval, then begin delegating to forked workers."
             )

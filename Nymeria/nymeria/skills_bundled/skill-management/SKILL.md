@@ -1,10 +1,11 @@
 ---
 name: skill-management
-description: Find, install, create, and edit Skills and Skill Kits. Use this skill
-  when a capability or workflow will come up again and should be saved as durable
-  instructions, optionally bundled with the Nymeria tools it needs, so future threads
-  do not rediscover the same setup. Load it to search and install existing skills, to
-  author a new Skill or Skill Kit, or to revise one that already exists.
+description: Find, install, create, and edit Skills and Skill Kits. Load this
+  when a capability or workflow will come up again and should be saved as
+  durable instructions, optionally bundled with the Nymeria tools it needs, so
+  future threads do not rediscover the setup, whether to search and install
+  existing skills, author a new Skill or Kit, or revise one. Not for a one-off
+  task, and not for unattended code routines (use workflow-authoring).
 metadata:
   nymeria:
     required_tools:
@@ -105,7 +106,7 @@ workflow; changing Nymeria's own codebase is a separate, admin-only path.
 - The user wants a persistent, isolated, re-invocable specialist ("my email
   manager") rather than inline instructions -> `callable-thread-builder`.
 - For the overall operating philosophy and when to create which artifact ->
-  `Skill(name="self-improve")`.
+  `Skill(name="self-improve", ttl="1h")`.
 
 ## Output
 

@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 
 TOOL_TTL_MAX_SECONDS = 365 * 24 * 60 * 60
 TOOL_TTL_FORMAT_HINT = (
-    "Format: Nm, Nh, Nd, Nw, or 'never'. "
-    "Examples: 30m, 2h, 7d, 4w, never."
+    "Format: Nm, Nh, Nd, Nw, or 'permanent' (alias 'never'). "
+    "Examples: 30m, 2h, 7d, 4w, permanent."
 )
 SCHEDULED_TIME_FORMAT_HINT = (
     "Use a future relative duration like '45s', '17m', '3h', '2d', or '1w', "

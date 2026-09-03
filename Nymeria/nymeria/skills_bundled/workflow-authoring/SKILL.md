@@ -1,10 +1,12 @@
 ---
 name: workflow-authoring
 description: Author, test, and publish nym-SDK workflows, saved Python routines
-  that chain tools, one-shot LLM calls, and sub-agent threads with plain code, run
-  unattended on schedules, triggers, and webhooks, and cost zero tokens unless a
-  step needs AI. Load this to codify a recurring routine (a poll, a briefing, a
-  cleanup) as a reusable workflow tool, or to add an approval checkpoint to one.
+  that chain tools, one-shot LLM calls, and sub-agent threads, run unattended
+  on schedules, triggers, and webhooks, and cost zero tokens unless a step
+  needs AI. Load this when the user wants a recurring routine (a poll, a
+  briefing, a cleanup) codified as a reusable workflow tool, or an approval
+  checkpoint added to one. Not for instructions the agent should follow live
+  (use skill-management).
 metadata:
   nymeria:
     required_tools:
@@ -286,7 +288,7 @@ return value is for run records, chaining, and the agent caller.
 - One reusable API call or pure helper -> `tool-management`.
 - Packaging instructions plus tools for reuse -> `skill-management`.
 - A credential the workflow's tools need -> `credential-management`.
-- Overall philosophy and artifact choice -> `Skill(name="self-improve")`.
+- Overall philosophy and artifact choice -> `Skill(name="self-improve", ttl="1h")`.
 
 ## Output
 
