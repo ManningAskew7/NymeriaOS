@@ -205,6 +205,25 @@ export function createChatStore() {
       return id;
     },
 
+    /**
+     * Mid-turn tool-expiry notice (backlog #320): a `system`-source prompt
+     * from `prompt_injected`, rendered as the same typed card `/history`
+     * emits (`kind: 'tool_expiry_notice'`), never as a user bubble.
+     */
+    addToolExpiryNotice(content: string): string {
+      const id = generateId();
+      const notice: Message = {
+        id,
+        role: 'system',
+        kind: 'tool_expiry_notice',
+        content,
+        timestamp: new Date(),
+        status: 'complete'
+      };
+      messages = [...messages, notice];
+      return id;
+    },
+
     addCommandResult(
       commandInput: string,
       content: string,

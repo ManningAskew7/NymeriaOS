@@ -82,6 +82,57 @@ def _apply_pending_fallback_note(
         )
 
 
+def _apply_tool_expiry_notice(
+    agent: "NymeriaAgent", thread_id: str, human_msg: HumanMessage
+) -> None:
+    """Fold the once-only tool-expiry notice into this turn's human message.
+
+    A kit's TTL lapsing between turns is explained to the model on its next
+    prompt (``agent_tools.consume_tool_expiry_notice``: records flip to
+    notified, so the mid-turn absorb path and this one never both deliver
+    it). The line sits directly UNDER the ``[Time:]/[Trigger:]`` block when
+    the message carries one (the block itself stays byte-identical, so its
+    strip frame and goldens are untouched) and at the head otherwise; history
+    strips it via ``agent_history.SYSTEM_NOTICE_PATTERN``. Text content only:
+    a block-list (image) message keeps the notice in its leading text block.
+    Never raises: a fault leaves the records for a later turn.
+    """
+    try:
+        from .agent_history import CONTEXT_PREFIX_PATTERN
+        from .agent_tools import consume_tool_expiry_notice
+
+        text = consume_tool_expiry_notice(agent, thread_id)
+        if not text:
+            return
+        insert = f"{text}\n\n"
+
+        def _with_notice(body: str) -> str:
+            match = CONTEXT_PREFIX_PATTERN.match(body)
+            if match:
+                return body[: match.end()] + insert + body[match.end():]
+            return insert + body
+
+        content = human_msg.content
+        if isinstance(content, list):
+            # prepare_astream_input always leads a block list with the text
+            # block, so the notice lands there; a list with no text block
+            # (not a shape this module builds) is left alone.
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    block["text"] = _with_notice(str(block.get("text") or ""))
+                    break
+            else:
+                return
+        else:
+            human_msg.content = _with_notice(str(content or ""))
+        human_msg.additional_kwargs["tool_expiry_notice"] = text
+    except Exception:  # noqa: BLE001 - the notice is best-effort, never turn-fatal
+        logger.warning(
+            "tool expiry notice could not be applied for thread %s",
+            thread_id, exc_info=True,
+        )
+
+
 def _sniff_data_url_image_mime(data_url: str) -> Optional[str]:
     """Return a RELABELABLE image MIME this payload's BYTES claim, or ``None``.
 
@@ -260,6 +311,7 @@ def prepare_astream_input(
             human_msg.additional_kwargs["attachments"] = meta
         if user_message_id:
             human_msg.id = user_message_id
+        _apply_tool_expiry_notice(agent, thread_id, human_msg)
         _apply_pending_fallback_note(agent, thread_id, human_msg)
         return {"messages": [human_msg]}, context_summary_for_ui, None
 
@@ -331,5 +383,6 @@ def prepare_astream_input(
     human_msg.additional_kwargs["attachments"] = _attachments_metadata()
     if user_message_id:
         human_msg.id = user_message_id
+    _apply_tool_expiry_notice(agent, thread_id, human_msg)
     _apply_pending_fallback_note(agent, thread_id, human_msg)
     return {"messages": [human_msg]}, context_summary_for_ui, None

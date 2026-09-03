@@ -254,21 +254,60 @@ async def run_subturn_compact_loop(
     agent._subturn_compact_requested.discard(thread_id)
 
 
-def build_queued_prompt_messages(pending_batch: List[PendingPrompt]) -> List[Any]:
+def build_queued_prompt_messages(
+    pending_batch: List[PendingPrompt],
+    *,
+    agent: Any = None,
+    thread_id: Optional[str] = None,
+) -> List[Any]:
     """Build one HumanMessage per drained prompt.
 
     Per-prompt visibility/history semantics survive the absorption:
     autonomous prompts stay ``internal=True`` (filtered from user-facing
-    history); user prompts stay visible.
+    history); user prompts stay visible. A ``system`` prompt (the mid-turn
+    tool-expiry notice, nodes._enqueue_tool_expiry_notice) is internal
+    under its own ``internal_type`` so history renders it as a typed
+    ``tool_expiry_notice`` card rather than a wakeup (which the
+    show_autonomous_prompts toggle would hide, sub-turn included).
+
+    Absorb is where the notice COMMITS: with ``agent`` and ``thread_id`` the
+    system prompt's text is re-rendered from the still-un-notified records
+    and those records flip to notified (``consume_tool_expiry_notice``), so a
+    prompt dropped before this point (stop, abort, inject failure) is simply
+    carried by the next prompt's prefix instead. A system prompt whose
+    records are already delivered, or whose commit save failed, is skipped:
+    the next prompt covers it. Without an agent the queued text is used as
+    is (tests, and callers that only shape messages).
     """
     # Lazy: avoid circular import at module load (sibling convention).
     from .agent import _create_human_message
 
-    return [
-        _create_human_message(
-            f"{queued_prompt_header(p)}\n\n{p.message}",
-            internal=p.is_autonomous,
-            internal_type="autonomous_wakeup" if p.is_autonomous else None,
-        )
-        for p in pending_batch
-    ]
+    messages: List[Any] = []
+    for p in pending_batch:
+        if p.source == "system":
+            text = p.message
+            if agent is not None and thread_id:
+                from .agent_tools import consume_tool_expiry_notice
+
+                text = consume_tool_expiry_notice(agent, thread_id, commit=True)
+                if not text:
+                    logger.info(
+                        "Thread %s: queued tool expiry notice skipped at absorb "
+                        "(already delivered, or its commit save failed)",
+                        thread_id,
+                    )
+                    continue
+            msg = _create_human_message(
+                f"{queued_prompt_header(p)}\n\n{text}",
+                internal=True,
+                internal_type="tool_expiry_notice",
+            )
+            msg.additional_kwargs["tool_expiry_notice"] = text
+        else:
+            msg = _create_human_message(
+                f"{queued_prompt_header(p)}\n\n{p.message}",
+                internal=p.is_autonomous,
+                internal_type="autonomous_wakeup" if p.is_autonomous else None,
+            )
+        messages.append(msg)
+    return messages

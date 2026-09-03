@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -8033,6 +8034,28 @@ def test_injected_tools_aliases_restore_the_filtered_views() -> None:
     assert "Enabled Tools on this thread" in bridged.markdown
     core_explicit = run(service.execute(_ctx(), "/tools list core", api=api))
     assert "Core Tools" in core_explicit.markdown
+
+
+def test_tools_enabled_shows_when_a_ttl_window_closes() -> None:
+    """A TTL'd tool says when it lapses (#232): the read surface used to flag
+    it ``[temporary/TTL]`` and drop the expiry it had in hand, so the lapse was
+    learned from a refused call."""
+    from nymeria.core.time_utils import utc_now
+
+    service = CommandService()
+    api = FakeCommandApi()
+    api.thread_config = {
+        "enabled_tools": [],
+        "disabled_tools": [],
+        "temporary_tools": {
+            "browser": {"expires_at": (utc_now() + timedelta(hours=3)).isoformat()},
+        },
+    }
+
+    result = run(service.execute(_ctx(), "/tools enabled", api=api))
+
+    assert result.success is True, result.markdown
+    assert re.search(r"browser: Use a browser \[temporary/TTL, 2h 59m left\]|\[temporary/TTL, 3h 0m left\]", result.markdown), result.markdown
 
 
 # ── #157 vault-consistent posture: agent-issued sensitive settings writes ───

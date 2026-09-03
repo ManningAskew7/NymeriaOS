@@ -400,6 +400,20 @@
     <div class="compaction-meta">{message.content}</div>
   </div>
 </div>
+{:else if message.kind === 'tool_expiry_notice'}
+<!-- TTL lapse (backlog #320): the exact [System: ...] line the model
+     received, from history (next-turn prefix) or a `system`-source
+     prompt_injected (mid-turn). Same card as the fallback notice; the
+     title carries the human framing so `content` needs no parsing. -->
+<div class="compaction-notice fallback-notice">
+  <div class="compaction-icon">
+    <Icon name="clock" size={18} />
+  </div>
+  <div class="compaction-body">
+    <div class="compaction-title">Tools expired</div>
+    <div class="compaction-meta">{message.content}</div>
+  </div>
+</div>
 {:else if !isHiddenMessage}
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div

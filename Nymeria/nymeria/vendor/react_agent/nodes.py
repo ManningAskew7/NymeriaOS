@@ -3718,23 +3718,29 @@ class SafeToolNode(ToolNode):
     def _gate_unbound_call(self, name: str, call: ToolCall, config) -> Optional[ToolMessage]:
         """Apply the unbound-call policy for a real-but-unbound tool.
 
-        Strict (default): refuse with a redirect to tool_invoke (one-off) or
-        tool_manage (bind). Permissive (``allow_unbound_tool_calls``): apply the
-        SAME deferred gates as tool_invoke and dispatch on pass, refuse on gate
-        failure. Returns None only when a permissive call passes the gates.
+        Strict (default): refuse with ``unbound_call_refusal`` (names the kit
+        that bound the tool and when its TTL lapsed, and recommends only the
+        paths reachable from this thread's bound set). Permissive
+        (``allow_unbound_tool_calls``): apply the SAME deferred gates as
+        tool_invoke and dispatch on pass, refuse on gate failure. Returns None
+        only when a permissive call passes the gates.
         """
         configurable = (config or {}).get("configurable") or {}
         tool_call_id = call.get("id", "unknown")
         if not bool(configurable.get("allow_unbound_tool_calls")):
+            from ...tools.utils import current_agent
+
+            try:
+                agent = current_agent()
+            except Exception:  # noqa: BLE001 - the refusal must never raise
+                agent = None
             return ToolMessage(
-                content=(
-                    f"[Error]: {name!r} is not enabled on this thread, so it "
-                    "cannot be called directly. To run it once without binding "
-                    f'it, use tool_invoke(name="{name}", arguments={{...}}) '
-                    "(cache-safe). To use it repeatedly, bind it first with "
-                    f'tool_manage(action="enable", tools=["{name}"], ttl=...), '
-                    "choosing the ttl for how long you expect to need it "
-                    '(Nm/Nh/Nd/Nw or "permanent").'
+                content=unbound_call_refusal(
+                    name,
+                    effective_names=self._effective_tool_names,
+                    agent=agent,
+                    thread_id=str(configurable.get("thread_id") or ""),
+                    user_id=str(configurable.get("user_id") or ""),
                 ),
                 name=name,
                 tool_call_id=tool_call_id,
@@ -4613,6 +4619,174 @@ def _latest_tool_batch_queued_reload(messages: List[BaseMessage]) -> bool:
     return latest_tool_batch_queued_reload(messages)
 
 
+def _kit_providing_tool(agent: Any, name: str, user_id: str) -> Optional[str]:
+    """The installed Skill Kit whose ``required_tools`` names ``name``, if any."""
+    manager = getattr(agent, "skill_manager", None)
+    if manager is None:
+        return None
+    for skill in manager.list_installed(user_id or None):
+        try:
+            if name in (skill.required_tools or []):
+                return str(skill.name)
+        except Exception:  # noqa: BLE001 - a malformed manifest is not this call's problem
+            continue
+    return None
+
+
+def unbound_call_refusal(
+    name: str,
+    *,
+    effective_names: Optional[set],
+    agent: Any,
+    thread_id: str,
+    user_id: str,
+) -> str:
+    """The strict unbound-call refusal, composed from what is actually reachable.
+
+    Lead sentence: the tool's expiry record when it lapsed on this thread
+    (``ThreadConfig.expired_tools``: the kit that bound it, the TTL, the
+    time), else the installed kit that provides it, else the plain fact.
+    Remedies name only paths the thread can take RIGHT NOW: ``Skill(...)``
+    when the meta-tool is bound (else the user's ``/kit``), ``tool_manage``
+    when bound, ``tool_invoke`` when bound AND the tool is not a protected
+    management tool (it refuses those; the old copy recommended it anyway,
+    which sent an agent whose ``tool-management`` kit had lapsed in a circle,
+    backlog #320). Every lookup fails soft to the plain sentence.
+    """
+    effective = set(effective_names or ())
+    record = None
+    kit: Optional[str] = None
+    protected = False
+    try:
+        from ...tools.tool_search import PROTECTED_MANAGEMENT_TOOL_NAMES
+
+        protected = name in PROTECTED_MANAGEMENT_TOOL_NAMES
+    except Exception:  # noqa: BLE001
+        logger.debug("protected-tool lookup failed for %s", name, exc_info=True)
+    try:
+        if agent is not None and thread_id:
+            tc = agent.thread_config_manager.get_config(thread_id)
+            record = (getattr(tc, "expired_tools", None) or {}).get(name)
+            if record is not None:
+                kit = record.kit or None
+        if kit is None and agent is not None:
+            kit = _kit_providing_tool(agent, name, user_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("unbound-call context lookup failed for %s", name, exc_info=True)
+
+    if record is not None:
+        from ...core.agent_tools import expiry_clock, expiry_ttl_text
+
+        ttl = expiry_ttl_text(record)
+        window = f" with a {ttl} TTL" if ttl else ""
+        bound_by = (
+            f"Skill Kit '{record.kit}'" if record.kit else (record.source or "a TTL bind")
+        )
+        lead = (
+            f"[Error]: {name!r} is no longer bound on this thread: {bound_by} "
+            f"bound it{window} that expired at {expiry_clock(record.expired_at)}."
+        )
+    elif kit:
+        lead = (
+            f"[Error]: {name!r} is not enabled on this thread. "
+            f"Skill Kit '{kit}' provides it."
+        )
+    else:
+        lead = (
+            f"[Error]: {name!r} is not enabled on this thread, so it cannot be "
+            "called directly."
+        )
+
+    remedies: List[str] = []
+    if kit:
+        if "Skill" in effective:
+            remedies.append(
+                f're-activate the kit for a fresh window with Skill(name="{kit}")'
+            )
+        else:
+            remedies.append(f"ask the user to run /kit {kit} to re-activate it")
+    if "tool_manage" in effective:
+        remedies.append(
+            f'bind it with tool_manage(action="enable", tools=["{name}"], ttl=...), '
+            "choosing the ttl for how long you expect to need it "
+            '(Nm/Nh/Nd/Nw or "permanent")'
+        )
+    if "tool_invoke" in effective and not protected:
+        remedies.append(
+            f'for a one-off, tool_invoke(name="{name}", arguments={{...}}) (cache-safe)'
+        )
+    if not remedies:
+        # No kit known, tool_manage unbound, tool_invoke unbound or useless:
+        # the agent cannot bind from here, and saying so beats a dead pointer.
+        remedies.append(
+            "no binding tool is bound on this thread; ask the user to run "
+            f"/tools enable {name}"
+        )
+    text = f"{lead} Options: {'; '.join(remedies)}."
+    if protected:
+        text += " It is a protected management tool, so tool_invoke cannot run it."
+    return text
+
+
+def _enqueue_tool_expiry_notice(thread_id: str, user_id: str, backend: Any) -> bool:
+    """Queue this turn's TTL-lapse notice as a system prompt, if one is due.
+
+    ``resolve_temporary_tools`` flags the thread when it evicts mid-turn; the
+    notice then rides the queued-prompt absorb path (halt at this boundary,
+    drain, one internal HumanMessage, re-drive), so the model hears about a
+    kit that lapsed while it was working the same way it hears a queued
+    message. This only RENDERS and enqueues; the ``notified`` flip happens at
+    absorb (``agent_turn_loops.build_queued_prompt_messages``), because a
+    queued prompt can still be dropped before it is delivered: a user stop
+    restores only user-source prompts, an abort clears the queue, an inject
+    failure abandons the batch. Committing here would strand those as
+    delivered; committing at absorb lets the next prompt's prefix carry them
+    instead. Returns True when a prompt was queued.
+    """
+    from ...core.agent import get_current_agent
+
+    agent = get_current_agent()
+    if agent is None:
+        return False
+    signal = getattr(agent, "_tool_expiry_signal", None)
+    if not isinstance(signal, set) or thread_id not in signal:
+        return False
+    signal.discard(thread_id)
+    try:
+        from ...core.agent_tools import consume_tool_expiry_notice
+        from ...core.pending_prompt_queue import (
+            PendingPromptQueueClosingError,
+            make_pending_prompt,
+        )
+
+        text = consume_tool_expiry_notice(agent, thread_id, commit=False)
+        if not text:
+            return False
+        prompt = make_pending_prompt(
+            message=text,
+            source="system",
+            source_id=None,
+            source_label="System notice",
+            user_id=user_id,
+            is_autonomous=True,
+        )
+        try:
+            backend.enqueue(thread_id, prompt)
+        except PendingPromptQueueClosingError:
+            logger.info(
+                "Thread %s is releasing; tool expiry notice deferred to the next turn",
+                thread_id,
+            )
+            return False
+        return True
+    except Exception:  # noqa: BLE001 - routing must never fail on a notice
+        logger.warning(
+            "tool expiry notice could not be queued for thread %s",
+            thread_id, exc_info=True,
+        )
+        return False
+
+
 def route_after_tools(state: AgentState, config=None) -> str:
     """Route after tool execution.
 
@@ -4646,6 +4820,11 @@ def route_after_tools(state: AgentState, config=None) -> str:
             # [[feedback_extraction_circular_imports]].
             from ...core.pending_prompt_queue import get_pending_queue
             backend = get_pending_queue()
+            # A kit whose TTL lapsed during this turn is announced here, as a
+            # queued system prompt, so the size check below halts for it.
+            _enqueue_tool_expiry_notice(
+                thread_id, str(configurable.get("user_id") or ""), backend
+            )
             pending = backend.size(thread_id)
             if pending > 0:
                 backend.mark_halt_observed(thread_id, pending)
