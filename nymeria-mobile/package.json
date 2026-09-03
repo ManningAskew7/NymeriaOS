@@ -16,7 +16,7 @@
     "open": "npx cap open android",
     "run:android": "npx cap run android"
   },
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "dependencies": {
     "@capacitor/android": "^6.2.1",
     "@capacitor/app": "^6.0.0",
