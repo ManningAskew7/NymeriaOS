@@ -311,8 +311,6 @@ export interface ThreadFolder {
   pinned?: boolean;
 }
 
-export type OrganizationMode = 'folders' | 'teams';
-
 export interface ThreadTeam {
   id: string;
   name: string;
