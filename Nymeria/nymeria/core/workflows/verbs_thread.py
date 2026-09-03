@@ -516,11 +516,16 @@ def _tool_name_list(args: dict, key: str) -> List[str]:
 
 
 def _gate_restricted_tools(agent: Any, user_id: str, names: List[str]) -> None:
-    """The REST PATCH admin gate: non-admins cannot enable restricted tools.
+    """The workflow twin of the thread ``enabled_tools`` admin gate.
 
     Without this a non-admin's workflow could enable reload_all/claude_code
     on a thread and escalate via that thread's next turn, exactly the spawn
     escalation the spawn gate closes.
+
+    Deliberately NOT the same function as `tools.enabled_tools_role_error`,
+    which the REST route and its in-process twin share: this one judges the
+    names a verb ASKS FOR, so it has no stored list to diff against and gates
+    every requested name. Keep the two in step when either moves.
     """
     user = agent.accounts_repo.get_user_by_id(user_id)
     role = getattr(user, "role", None) or "user"

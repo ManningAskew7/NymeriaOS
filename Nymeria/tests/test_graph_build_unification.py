@@ -10,6 +10,7 @@ import ast
 import asyncio
 import inspect
 import textwrap
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -213,6 +214,60 @@ def test_select_tools_strips_admin_extra_for_non_admin_keeps_for_admin():
     agent.thread_config_manager.get_config.return_value = ThreadConfig(
         thread_id="t1",
         enabled_tools=[admin_tool],
+    )
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="user")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    assert admin_tool not in {t.name for t in tools}
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="admin")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    assert admin_tool in {t.name for t in tools}
+
+
+def test_select_tools_strips_developer_only_extra_for_non_admin():
+    """The developer-only axis of the extras gate.
+
+    Load-bearing since #326: the thread-config writer now judges only what a
+    write ADDS, so a developer-only name already on a thread is RETAINED in
+    `enabled_tools`. That is only safe while graph build keeps stripping it.
+    """
+    catalog = static_tool_catalog()
+    dev_tool = next((n for n in DEVELOPER_ONLY_TOOL_NAMES if n in catalog), None)
+    assert dev_tool is not None, "expected a developer-only tool present in the catalog"
+
+    agent = _make_agent()
+    agent._get_team_scoped_callable_threads = MagicMock(return_value=[])
+    agent.thread_config_manager.get_config.return_value = ThreadConfig(
+        thread_id="t1",
+        enabled_tools=[dev_tool],
+    )
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="user")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    assert dev_tool not in {t.name for t in tools}
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="admin")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    assert dev_tool in {t.name for t in tools}
+
+
+def test_select_tools_strips_a_gated_temporary_tool_for_non_admin():
+    """`temporary_tools` rides the same extras merge and must be gated too.
+
+    The extras set is `enabled_tools | live temporary_tools`, so a TTL binding
+    is the other way a gated name reaches the merge. Unpinned before #326.
+    """
+    catalog = static_tool_catalog()
+    admin_tool = next((n for n in ADMIN_ONLY_TOOL_NAMES if n in catalog), None)
+    assert admin_tool is not None, "expected an admin-only tool present in the catalog"
+
+    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    agent = _make_agent()
+    agent._get_team_scoped_callable_threads = MagicMock(return_value=[])
+    agent.thread_config_manager.get_config.return_value = ThreadConfig(
+        thread_id="t1",
+        temporary_tools={admin_tool: {"expires_at": future}},
     )
 
     agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="user")
