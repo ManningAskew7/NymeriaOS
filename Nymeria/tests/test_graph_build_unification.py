@@ -653,3 +653,128 @@ def test_rebuild_default_graphs_clears_caches_under_lock():
     assert "assign _default_async_graph" in outside_ops
     assert "_user_graphs.clear" not in outside_ops
     assert "_async_user_graphs.clear" not in outside_ops
+
+
+# ---------------------------------------------------------------------------
+# #327: a role change must not be served a stale compiled graph.
+#
+# Graph build gates admin-only and developer-only tools by role, but that gate
+# runs only on a cache MISS. `memory_hash` is the freshness token in front of
+# it, so role had to become one of its inputs: otherwise a demotion left the
+# previously-compiled graph, and every tool bound into it, exactly as the
+# account was before. Under `dynamic_tool_binding=False` the tool node holds
+# that bound list with no second gate, so the stale binding was executable.
+# ---------------------------------------------------------------------------
+
+
+def _roles_by_id(**roles: str):
+    """A `get_user_by_id` that answers per ACCOUNT ID, never a flat value.
+
+    A `return_value` fake ignores its argument, so a resolver that looked up
+    the wrong identity (the thread id, say) would still be handed the role
+    under test and the assertion would pass for the wrong reason. Discriminating
+    here is what pins WHICH account's role the hash reads.
+    """
+    return MagicMock(side_effect=lambda account_id: (
+        SimpleNamespace(role=roles[account_id]) if account_id in roles else None
+    ))
+
+
+def _role_hash_agent(role: str):
+    """An agent whose only interesting property is the role it reports."""
+    agent = _make_agent()
+    agent.accounts_repo.get_user_by_id = _roles_by_id(u1=role)
+    agent._skills_fingerprint = MagicMock(return_value="")
+    agent._resolve_temporary_tools = MagicMock(return_value=set())
+    return agent
+
+
+def test_memory_hash_changes_when_the_owner_role_changes():
+    admin = _role_hash_agent("admin")
+    demoted = _role_hash_agent("user")
+
+    assert admin._get_memory_hash("u1", "") != demoted._get_memory_hash("u1", "")
+
+
+def test_memory_hash_is_stable_when_the_role_is_unchanged():
+    # Guards two over-corrections at once: a term that varied per CALL would
+    # defeat the cache entirely, and a term that varied per HOST (an object id,
+    # say) would pass the test above while folding no role at all. Two distinct
+    # agents reporting the same role must therefore agree.
+    assert _role_hash_agent("admin")._get_memory_hash("u1", "") == (
+        _role_hash_agent("admin")._get_memory_hash("u1", "")
+    )
+
+
+def test_role_change_evicts_the_cached_graph_and_forces_a_rebuild():
+    """The end-to-end property, and the one that failed before #327.
+
+    Demote the account between two graph fetches and the second must not be
+    served the first's compiled graph. The rebuild is what matters: it is the
+    only thing that re-runs `select_tools_for_graph`, whose role stripping the
+    tests above already pin. Without the rebuild an admin-only tool bound
+    while the account was an admin stays bound, and on the static path
+    `SafeToolNode` has no second gate to catch the call.
+    """
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+
+    agent = _make_agent()
+    agent._graph_cache_lock = __import__("threading").Lock()
+    agent._user_graphs = {}
+    agent._async_user_graphs = {}
+    agent._GRAPH_CACHE_MAX = 50
+    agent._base_system_prompt = "sys"
+    agent._build_full_system_prompt = MagicMock(return_value="sys")
+    agent._skills_fingerprint = MagicMock(return_value="")
+    agent._resolve_temporary_tools = MagicMock(return_value=set())
+    agent.thread_config_manager.get_config.return_value = None
+    agent.profile_manager.get_profile.return_value = MagicMock(
+        memories=[],
+        personality_overrides={},
+        tool_preferences=MagicMock(default_thread_tools=[admin_only]),
+    )
+    agent.todo_manager = MagicMock()
+    agent.todo_manager.get_todos.return_value = MagicMock(
+        get_active_todos_for_thread=MagicMock(return_value=[]),
+        get_active_todos=MagicMock(return_value=[]),
+    )
+    agent._build_graph_with_prompt = MagicMock(side_effect=lambda *a, **k: object())
+
+    agent.accounts_repo.get_user_by_id = _roles_by_id(u1="admin")
+    as_admin = agent._get_graph_for_user("u1", "t1")
+    # A second fetch at the SAME role must still hit the cache, or this test
+    # would pass for a hash that simply varies per call.
+    assert agent._get_graph_for_user("u1", "t1") is as_admin
+
+    agent.accounts_repo.get_user_by_id = _roles_by_id(u1="user")
+    as_user = agent._get_graph_for_user("u1", "t1")
+
+    assert as_admin is not as_user, "the demotion was served the admin's cached graph"
+    assert agent._build_graph_with_prompt.call_count == 2
+
+
+def test_memory_hash_folds_the_role_on_the_callable_thread_path_too():
+    """`get_memory_hash` returns from TWO places and both bind tools.
+
+    The callable-thread branch returns early, skipping memory/TODO/personality,
+    but it still hashes `enabled_tools`/`disabled_tools`/`temporary_tools`, so a
+    graph built from it is just as role-gated and just as cacheable. Leaving the
+    role out of that return would have left callable threads with exactly the
+    staleness #327 fixed everywhere else.
+    """
+    def _agent_at(role: str):
+        agent = _make_agent()
+        agent.accounts_repo.get_user_by_id = _roles_by_id(u1=role)
+        agent._skills_fingerprint = MagicMock(return_value="")
+        agent._resolve_temporary_tools = MagicMock(return_value=set())
+        agent.thread_config_manager.get_config.return_value = ThreadConfig(
+            thread_id="t1",
+            callable=True,
+            system_prompt="you are a callable thread",
+        )
+        return agent
+
+    admin = _agent_at("admin")._get_memory_hash("u1", "t1")
+    demoted = _agent_at("user")._get_memory_hash("u1", "t1")
+
+    assert admin != demoted

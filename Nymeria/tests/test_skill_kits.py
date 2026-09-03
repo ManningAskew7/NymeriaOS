@@ -1431,6 +1431,10 @@ def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):
         )
     )
     agent.skill_manager = None
+    # The hash folds the owner's role (#327), so the stub needs the repo the
+    # role gate reads. An unknown account resolves to "user", which is all
+    # this test needs.
+    agent.accounts_repo = SimpleNamespace(get_user_by_id=lambda user_id: None)
     agent.thread_config_manager.save_config(
         ThreadConfig(
             thread_id="thread-a",

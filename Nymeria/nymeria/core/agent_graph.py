@@ -22,7 +22,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Protocol
 
 from langchain_core.tools import BaseTool
 
@@ -36,7 +36,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _resolve_owner_role(agent: "NymeriaAgent", account_id: str) -> str:
+class _RoleSource(Protocol):
+    """Anything that can look an account up.
+
+    Kept structural (rather than typed to ``NymeriaAgent``) so the graph-cache
+    freshness hash in ``agent_prompt`` can share this resolver instead of
+    copying it (#327). Any host exposing ``accounts_repo`` qualifies.
+    """
+
+    accounts_repo: Any
+
+
+def _resolve_owner_role(source: _RoleSource, account_id: str) -> str:
     """Resolve an account's role for tool gating, defaulting to ``"user"``.
 
     ``account_id`` is whichever id owns the tools being gated: the caller's
@@ -44,8 +55,12 @@ def _resolve_owner_role(agent: "NymeriaAgent", account_id: str) -> str:
     id for callable-thread tools. Returns ``"user"`` when the id is empty or
     the account is unknown, the conservative least-privilege default used at
     every graph-build role gate.
+
+    Also read by ``agent_prompt.get_memory_hash``, so that the graph cache's
+    freshness token and the gate it guards agree on what a role is and how an
+    unknown account defaults. Keep them on this one function.
     """
-    owner = agent.accounts_repo.get_user_by_id(account_id) if account_id else None
+    owner = source.accounts_repo.get_user_by_id(account_id) if account_id else None
     return owner.role if owner else "user"
 
 
