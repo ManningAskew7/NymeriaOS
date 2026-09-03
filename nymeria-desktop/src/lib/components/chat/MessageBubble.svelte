@@ -956,7 +956,11 @@
     max-width: min(70ch, 100%);
   }
 
-  :global(html[data-chat-bubbles="on"]) .message-bubble.assistant {
+  /* Bubbles are the default look; Settings > Appearance sets
+     data-chat-bubbles="off" on <html> to flatten AI responses. The default
+     must not depend on any script running, so the attribute only ever
+     disables. */
+  :global(html:not([data-chat-bubbles="off"])) .message-bubble.assistant {
     align-self: flex-start;
     max-width: min(70ch, 85%);
   }
@@ -1145,7 +1149,7 @@
     padding-right: 0;
   }
 
-  :global(html[data-chat-bubbles="on"]) .assistant .bubble-content {
+  :global(html:not([data-chat-bubbles="off"])) .assistant .bubble-content {
     background: var(--bg-elevated);
     border: 1px solid var(--glass-border);
     border-bottom-left-radius: var(--radius-sm);

@@ -161,6 +161,8 @@ _CSP_STATIC_DIRECTIVES: tuple[str, ...] = (
 _INLINE_SCRIPT_RE = re.compile(
     rb"<script(?![^>]*\bsrc\b)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
 )
+# CRLF or a lone CR, as the HTML parser's input-stream preprocessing folds them.
+_NEWLINE_RE = re.compile(rb"\r\n?")
 
 
 def _inline_script_csp_hashes(index_path: Path) -> list[str]:
@@ -170,6 +172,12 @@ def _inline_script_csp_hashes(index_path: Path) -> list[str]:
     bootstrap script embeds a build-hashed module filename, so a pinned hash
     would go stale on the next ``npm run build`` and take the whole page down
     with it. Reading the file we actually serve keeps the two in step.
+
+    Line endings are normalized to LF before hashing because that is what the
+    browser hashes: the HTML parser rewrites CR and CRLF to LF in its input
+    stream before the script text exists, so a CRLF ``index.html`` (a bundle
+    built from a Windows checkout) hashed raw would fail every inline script
+    silently, with the page still rendering.
     """
     try:
         html = index_path.read_bytes()
@@ -177,9 +185,19 @@ def _inline_script_csp_hashes(index_path: Path) -> list[str]:
         logger.debug("Could not read %s for CSP script hashes", index_path, exc_info=True)
         return []
     return [
-        f"'sha256-{base64.b64encode(hashlib.sha256(match.group(1)).digest()).decode()}'"
+        f"'sha256-{_inline_script_csp_digest(match.group(1))}'"
         for match in _INLINE_SCRIPT_RE.finditer(html)
     ]
+
+
+def _inline_script_csp_digest(script_body: bytes) -> str:
+    """Base64 sha256 of an inline script body as the browser computes it.
+
+    Applies the HTML input-stream newline normalization (CRLF and lone CR
+    become LF) that runs before the browser sees the script text.
+    """
+    normalized = _NEWLINE_RE.sub(b"\n", script_body)
+    return base64.b64encode(hashlib.sha256(normalized).digest()).decode()
 
 
 def _build_csp(frontend_dir: str) -> str:

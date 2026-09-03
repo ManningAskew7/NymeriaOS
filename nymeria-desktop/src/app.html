@@ -61,10 +61,11 @@
         if (lc === 'white') document.documentElement.style.setProperty('--logo-color', '#ffffff');
         else if (lc === 'black') document.documentElement.style.setProperty('--logo-color', '#000000');
       } catch (e) {}
-      // Apply persisted chat-bubble preference
+      // Apply persisted chat-bubble preference. Bubbles are the CSS default;
+      // only an explicit 'off' flattens them (SettingsPanel keeps the same rule).
       try {
         var b = localStorage.getItem('nymeria_chat_bubbles');
-        if (b === 'on') document.documentElement.setAttribute('data-chat-bubbles', 'on');
+        if (b === 'off') document.documentElement.setAttribute('data-chat-bubbles', 'off');
       } catch (e) {}
       // Apply persisted interface-spacing choice before app loads. Only a stored
       // 4/8/16/24 sets the override; absence leaves each area's built-in spacing.

@@ -488,8 +488,66 @@ def test_csp_admits_every_inline_script_in_the_served_index(tmp_path: Path):
     inline_scripts = _INLINE_SCRIPT_RE.findall(index_path.read_bytes())
     assert inline_scripts, "index.html has no inline scripts; the regex may have rotted"
     for body in inline_scripts:
-        digest = base64.b64encode(hashlib.sha256(body).digest()).decode()
+        # The browser hashes the script text AFTER the HTML parser has folded
+        # CRLF / CR to LF, so that is the digest the header must carry.
+        browser_text = body.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        digest = base64.b64encode(hashlib.sha256(browser_text).digest()).decode()
         assert f"'sha256-{digest}'" in script_src
+
+
+def test_csp_hashes_crlf_inline_scripts_as_the_browser_does(tmp_path: Path):
+    """A CRLF index.html must produce the LF-normalized digest, not the raw one.
+
+    The bundled web client was once built from a Windows checkout, giving its
+    inline scripts CRLF endings. Browsers fold those to LF while parsing, so a
+    raw-bytes hash never matched and the pre-boot preference script was
+    silently blocked (theme flashed, chat bubbles vanished on every refresh)
+    while the page otherwise rendered fine.
+    """
+    import base64
+    import hashlib
+
+    from nymeria.triggers.api import _build_csp
+
+    body_lf = b"\n  var a = 1;\n  var b = 2;\n"
+    body_crlf = body_lf.replace(b"\n", b"\r\n")
+    # A lone CR (classic Mac ending, or a mixed-endings file) folds the same way.
+    body_cr = b"\r  var c = 3;\r"
+    (tmp_path / "index.html").write_bytes(
+        b"<!doctype html>\r\n<html><head><script>"
+        + body_crlf
+        + b"</script><script>"
+        + body_cr
+        + b"</script></head></html>\r\n"
+    )
+
+    script_src = next(
+        part for part in _build_csp(str(tmp_path)).split(";") if part.strip().startswith("script-src")
+    )
+
+    def digest(body: bytes) -> str:
+        return f"'sha256-{base64.b64encode(hashlib.sha256(body).digest()).decode()}'"
+
+    assert digest(body_lf) in script_src
+    assert digest(body_crlf) not in script_src
+    assert digest(body_cr.replace(b"\r", b"\n")) in script_src
+    assert digest(body_cr) not in script_src
+
+
+def test_csp_hashes_lf_inline_scripts_unchanged(tmp_path: Path):
+    """Normalization is a no-op for an LF-only build: same digest as before."""
+    import base64
+    import hashlib
+
+    from nymeria.triggers.api import _build_csp
+
+    body = b"\n  var a = 1;\n"
+    (tmp_path / "index.html").write_bytes(b"<html><head><script>" + body + b"</script></head></html>")
+
+    csp = _build_csp(str(tmp_path))
+
+    digest = base64.b64encode(hashlib.sha256(body).digest()).decode()
+    assert f"'sha256-{digest}'" in csp
 
 
 def test_csp_allows_every_external_origin_the_build_loads(tmp_path: Path):
