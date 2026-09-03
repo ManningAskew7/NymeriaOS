@@ -13,7 +13,6 @@ CommandStatus: TypeAlias = Literal["ok", "error", "exit", "clear", "unhandled"]
 CommandReturn: TypeAlias = Any
 CommandHandler: TypeAlias = Callable[[Any, list[str]], Any]
 StateDispatcher: TypeAlias = Callable[[Any], Any | Awaitable[Any]]
-ConfirmationHandler: TypeAlias = Callable[[str], bool | Awaitable[bool]]
 PromptHandler: TypeAlias = Callable[[str], str | Awaitable[str]]
 
 _JSON_UNSET = object()
@@ -134,7 +133,6 @@ class CommandContext:
     client: Any | None = None
     output: CommandOutputSink | None = None
     dispatch_state: StateDispatcher | None = None
-    confirm_handler: ConfirmationHandler | None = None
     prompt_handler: PromptHandler | None = None
     secret_prompt_handler: PromptHandler | None = None
     thread_id: str | None = None
@@ -171,16 +169,6 @@ class CommandContext:
         if inspect.isawaitable(result):
             return await result
         return result
-
-    async def confirm(self, prompt: str, *, default: bool = False) -> bool:
-        """Ask for confirmation through the renderer, defaulting safely."""
-
-        if self.confirm_handler is None:
-            return default
-        result = self.confirm_handler(prompt)
-        if inspect.isawaitable(result):
-            return bool(await result)
-        return bool(result)
 
     async def prompt(self, prompt: str, *, secret: bool = False) -> str:
         """Ask for user input through the active renderer."""
@@ -305,7 +293,6 @@ __all__ = [
     "CommandResultOutputSink",
     "CommandReturn",
     "CommandStatus",
-    "ConfirmationHandler",
     "ListCommandOutputSink",
     "PromptHandler",
     "StateDispatcher",

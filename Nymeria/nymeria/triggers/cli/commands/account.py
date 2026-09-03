@@ -11,7 +11,6 @@ from ._shared import (
     call_client_method,
     call_client_user_scoped,
     compact_id,
-    confirmation_granted,
     confirmation_required_result,
     mapping_get,
     mapping_sequence as _mapping_sequence,
@@ -163,12 +162,7 @@ async def _handle_tokens_revoke(
             error_code="usage_error",
         )
     prefix = args[0]
-    confirmed = await confirmation_granted(
-        context,
-        f"Revoke API token {prefix}?",
-        explicitly_confirmed=explicit_confirmation,
-    )
-    if not confirmed:
+    if not explicit_confirmation:
         return confirmation_required_result("/account tokens revoke")
 
     try:

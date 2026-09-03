@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ._shared import (
     call_client_method,
-    confirmation_granted,
     confirmation_required_result,
     mapping_get,
     strip_confirmation_flags,
@@ -58,12 +57,7 @@ async def _handle_compact_command(
     if args:
         return CommandResult.failed("Usage: /compact [--yes]", error_code="usage_error")
 
-    confirmed = await confirmation_granted(
-        context,
-        f"Compact thread {context.thread_id}?",
-        explicitly_confirmed=explicit_confirmation,
-    )
-    if not confirmed:
+    if not explicit_confirmation:
         return confirmation_required_result("/compact")
 
     try:

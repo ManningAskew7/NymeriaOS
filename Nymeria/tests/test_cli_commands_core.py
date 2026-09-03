@@ -12,7 +12,8 @@ from nymeria.triggers.cli.commands import (
     ListCommandOutputSink,
 )
 from nymeria.triggers.cli.commands import context as context_commands
-from nymeria.triggers.cli.commands import model, system
+from nymeria.triggers.cli.commands import conversation, model, system
+from nymeria.triggers.cli.state.model import AssistantMessage, CLIUIState, UserMessage
 
 
 class CoreFakeClient:
@@ -259,13 +260,11 @@ def make_context(
     *,
     output: ListCommandOutputSink | None = None,
     actions: list[Any] | None = None,
-    confirm: bool = False,
 ) -> CommandContext:
     return CommandContext(
         client=client,
         output=output or ListCommandOutputSink(),
         dispatch_state=(actions.append if actions is not None else None),
-        confirm_handler=lambda _prompt: confirm,
         thread_id="thread-1",
         user_id="alice",
     )
@@ -275,7 +274,7 @@ def test_model_history_and_context_commands_use_client() -> None:
     client = CoreFakeClient()
     registry = make_registry()
     sink = ListCommandOutputSink()
-    ctx = make_context(client, output=sink, confirm=True)
+    ctx = make_context(client, output=sink)
 
     assert run(registry.dispatch_async(ctx, "/model show")).ok is True
     assert run(registry.dispatch_async(ctx, "/model set gpt-new")).ok is True
@@ -325,7 +324,7 @@ def test_cli_context_shows_last_compaction_in_the_user_timezone(monkeypatch: Any
     client.context_stats["last_compaction"] = "2026-05-18T10:00:00+00:00"
     registry = make_registry()
     sink = ListCommandOutputSink()
-    ctx = make_context(client, output=sink, confirm=True)
+    ctx = make_context(client, output=sink)
 
     assert run(registry.dispatch_async(ctx, "/context")).ok is True
     rendered = "\n".join(message.content for message in sink.messages)
@@ -338,8 +337,153 @@ def test_cli_context_still_says_never_without_a_compaction() -> None:
     client = CoreFakeClient()  # fixture leaves last_compaction None
     registry = make_registry()
     sink = ListCommandOutputSink()
-    ctx = make_context(client, output=sink, confirm=True)
+    ctx = make_context(client, output=sink)
 
     assert run(registry.dispatch_async(ctx, "/context")).ok is True
     rendered = "\n".join(message.content for message in sink.messages)
     assert "Never" in rendered
+
+
+# ---------------------------------------------------------------------------
+# /undo confirmation contract (#328)
+#
+# `--yes` is the WHOLE confirmation contract for the CLI now that the dead
+# `confirm_handler` seam is gone, and /undo is the only CLI-local command that
+# still gates on it (every other former gate resolves to a backend proxy
+# handler). These tests pin both arms so a regression in the flag plumbing is
+# red rather than silently destructive.
+# ---------------------------------------------------------------------------
+
+
+class UndoFakeClient:
+    connection_label = "api http://test"
+
+    def __init__(self) -> None:
+        self.rewinds: list[tuple[str, int, str]] = []
+
+    async def rewind_thread(self, thread_id: str, *, steps: int, user_id: str) -> dict[str, Any]:
+        self.rewinds.append((thread_id, steps, user_id))
+        return {"ok": True}
+
+
+def _undo_context(
+    client: UndoFakeClient,
+    *,
+    actions: list[Any] | None = None,
+) -> CommandContext:
+    ui_state = CLIUIState(
+        thread_id="thread-1",
+        user_id="alice",
+        messages=(
+            UserMessage(id="u1", content="hello"),
+            AssistantMessage(id="a1", content="hi", status="complete"),
+        ),
+    )
+    return CommandContext(
+        client=client,
+        output=ListCommandOutputSink(),
+        dispatch_state=(actions.append if actions is not None else None),
+        thread_id="thread-1",
+        user_id="alice",
+        metadata={"ui_state": ui_state},
+    )
+
+
+def _undo_registry() -> CommandRegistry:
+    registry = CommandRegistry()
+    conversation.register(registry)
+    return registry
+
+
+def test_undo_without_the_flag_refuses_and_rewinds_nothing() -> None:
+    client = UndoFakeClient()
+    actions: list[Any] = []
+    result = run(_undo_registry().dispatch_async(_undo_context(client, actions=actions), "/undo"))
+
+    assert result.ok is True
+    assert "--yes" in "\n".join(message.content for message in result.messages)
+    # The refusal must be inert: no rewind call, no transcript mutation.
+    assert client.rewinds == []
+    assert actions == []
+
+
+def test_undo_with_the_flag_rewinds_one_step_and_drops_the_exchange() -> None:
+    client = UndoFakeClient()
+    actions: list[Any] = []
+    result = run(
+        _undo_registry().dispatch_async(_undo_context(client, actions=actions), "/undo --yes")
+    )
+
+    assert result.ok is True
+    assert client.rewinds == [("thread-1", 1, "alice")]
+    assert actions == [{"type": "undo_last_exchange"}]
+
+
+def test_undo_accepts_the_short_flag_and_rejects_anything_else() -> None:
+    client = UndoFakeClient()
+    assert run(_undo_registry().dispatch_async(_undo_context(client), "/undo -y")).ok is True
+    assert client.rewinds == [("thread-1", 1, "alice")]
+
+    stray = run(_undo_registry().dispatch_async(_undo_context(client), "/undo now"))
+    assert stray.ok is False
+    assert stray.error_code == "usage_error"
+    # A stray token must not be read as consent.
+    assert client.rewinds == [("thread-1", 1, "alice")]
+
+
+def test_undo_with_nothing_to_undo_never_reaches_the_backend() -> None:
+    """The empty-transcript guard is what stops a confirmed /undo going destructive.
+
+    `--yes` satisfies the confirmation, so this guard is the ONLY thing between a
+    fresh thread and a `rewind_thread` call that would drop an exchange the local
+    transcript does not know about.
+    """
+    client = UndoFakeClient()
+    for messages in (
+        (),                                            # nothing at all
+        (UserMessage(id="u1", content="hello"),),      # a prompt with no reply yet
+    ):
+        ctx = CommandContext(
+            client=client,
+            output=ListCommandOutputSink(),
+            thread_id="thread-1",
+            user_id="alice",
+            metadata={"ui_state": CLIUIState(thread_id="thread-1", messages=messages)},
+        )
+        result = run(_undo_registry().dispatch_async(ctx, "/undo --yes"))
+        assert result.ok is False
+        assert "No exchange to undo." in " ".join(m.content for m in result.messages)
+    assert client.rewinds == []
+
+
+def test_undo_without_a_transcript_never_reaches_the_backend() -> None:
+    client = UndoFakeClient()
+    ctx = CommandContext(
+        client=client,
+        output=ListCommandOutputSink(),
+        thread_id="thread-1",
+        user_id="alice",
+        metadata={},
+    )
+    result = run(_undo_registry().dispatch_async(ctx, "/undo --yes"))
+    assert result.ok is False
+    assert client.rewinds == []
+
+
+def test_undo_is_not_shadowed_by_the_backend_catalog() -> None:
+    """#328/#329: /undo's confirmation only matters while /undo is REACHABLE.
+
+    The registry registers the backend catalog LAST, so any name the backend also
+    declares wins and the local handler goes dead, which is exactly what already
+    happened to the other four CLI confirm sites. If `registry_defaults.py` ever
+    declares `undo`, the tests above keep passing against a handler nobody runs.
+    """
+    from nymeria.triggers.cli.commands import backend as backend_commands
+
+    registry = CommandRegistry()
+    conversation.register(registry)
+    backend_commands.register(registry)
+
+    resolved = registry.get("undo")
+    assert resolved is not None
+    assert resolved.handler is conversation._handle_undo

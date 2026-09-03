@@ -52,14 +52,11 @@ def test_async_context_handler_receives_client_and_helpers() -> None:
     registry = CommandRegistry(include_builtins=False)
     client = object()
     actions: list[Any] = []
-    prompts: list[str] = []
 
     async def handler(ctx: CommandContext, args: list[str]) -> CommandResult:
         assert ctx.client is client
         assert ctx.thread_id == "thread-1"
         assert ctx.user_id == "alice"
-        prompts.append("confirm")
-        assert await ctx.confirm("confirm?") is True
         await ctx.dispatch({"type": "command", "args": args})
         return CommandResult.completed(
             CommandMessage(f"ran {' '.join(args)}", level="success")
@@ -77,7 +74,6 @@ def test_async_context_handler_receives_client_and_helpers() -> None:
         client=client,
         output=sink,
         dispatch_state=actions.append,
-        confirm_handler=lambda _prompt: True,
         thread_id="thread-1",
         user_id="alice",
     )
@@ -87,7 +83,6 @@ def test_async_context_handler_receives_client_and_helpers() -> None:
     assert result.ok is True
     assert result.command_path == ("ping",)
     assert actions == [{"type": "command", "args": ["hello", "world"]}]
-    assert prompts == ["confirm"]
     assert sink.messages == [
         CommandMessage("ran hello world", level="success")
     ]

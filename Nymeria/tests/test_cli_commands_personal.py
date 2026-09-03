@@ -335,13 +335,11 @@ def make_context(
     *,
     output: ListCommandOutputSink | None = None,
     actions: list[Any] | None = None,
-    confirm: bool = True,
 ) -> CommandContext:
     return CommandContext(
         client=client,
         output=output or ListCommandOutputSink(),
         dispatch_state=(actions.append if actions is not None else None),
-        confirm_handler=lambda _prompt: confirm,
         thread_id="thread-1",
         user_id="alice",
         metadata={
@@ -358,7 +356,7 @@ def test_memory_commands_use_api_client_methods() -> None:
     client = PersonalFakeClient()
     registry = make_registry()
 
-    confirmed = make_context(client, output=ListCommandOutputSink(), confirm=True)
+    confirmed = make_context(client, output=ListCommandOutputSink())
     assert run(registry.dispatch_async(confirmed, "/memory list")).ok is True
     assert run(registry.dispatch_async(confirmed, "/memory search Tulsa")).ok is True
     assert run(registry.dispatch_async(confirmed, "/memory save timezone UTC")).ok is True
@@ -375,7 +373,7 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
     registry = make_registry()
     sink = ListCommandOutputSink()
     actions: list[Any] = []
-    ctx = make_context(client, output=sink, actions=actions, confirm=False)
+    ctx = make_context(client, output=sink, actions=actions)
 
     # Bare `/account` is the local identity readout: backlog #131 renamed the
     # backend command to `/account show` and retired the local `current`
@@ -387,8 +385,15 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
     assert revoke_result.ok is True
     assert sink.messages[-1].level == "warning"
 
-    confirmed = make_context(client, output=sink, actions=actions, confirm=True)
-    assert run(registry.dispatch_async(confirmed, "/account tokens revoke abcd1234")).ok is True
+    # `--yes` is the ONLY way past a CLI confirmation now (#328): the prompt
+    # seam it used to share with `confirm_handler` was never wired outside tests.
+    confirmed = make_context(client, output=sink, actions=actions)
+    assert run(
+        registry.dispatch_async(confirmed, "/account tokens revoke abcd1234 --yes")
+    ).ok is True
+    # The refusal path also returns ok=True (it is a completed warning), so the
+    # only thing that separates confirmed from refused is the client call.
+    assert any(name == "revoke_my_token" for name, _ in client.calls)
     assert run(registry.dispatch_async(confirmed, "/account switch bob")).ok is True
     assert run(registry.dispatch_async(confirmed, "/account platforms")).ok is True
     assert run(registry.dispatch_async(confirmed, "/triggers list --enabled")).ok is True
@@ -403,7 +408,7 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
     assert run(registry.dispatch_async(confirmed, "/triggers edit trig-1 name=Renamed")).ok is True
     assert run(registry.dispatch_async(confirmed, "/triggers history trig-1 5")).ok is True
     assert run(registry.dispatch_async(confirmed, "/triggers test trig-1")).ok is True
-    assert run(registry.dispatch_async(confirmed, "/triggers delete trig-1")).ok is True
+    assert run(registry.dispatch_async(confirmed, "/triggers delete trig-1 --yes")).ok is True
     # `/activity recent` retired with backlog #131 (the backend aliases it to
     # `/activity list`); the local root keeps the filters for the fallback.
     assert run(registry.dispatch_async(confirmed, "/activity 5 --thread current")).ok is True
@@ -453,7 +458,7 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
 def test_trigger_list_and_history_reject_bad_filters_and_parse_limit_options() -> None:
     client = PersonalFakeClient()
     registry = make_registry()
-    ctx = make_context(client, confirm=True)
+    ctx = make_context(client)
 
     unknown_filter = run(registry.dispatch_async(ctx, "/triggers list --bogus"))
     missing_thread = run(registry.dispatch_async(ctx, "/triggers list --thread"))
