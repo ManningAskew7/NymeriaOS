@@ -8,7 +8,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ..state.model import AssistantMessage, CLIUIState, UserMessage
 from ._shared import (
     call_client_method,
-    confirmation_granted,
+    confirmation_required_result,
     strip_confirmation_flags,
     unsupported_transport_result,
     CommandClientMethodUnavailable,
@@ -119,18 +119,8 @@ async def _handle_undo(
     if not _has_exchange(ui_state):
         return CommandResult.failed("No exchange to undo.")
 
-    confirmed = await confirmation_granted(
-        context,
-        "Remove the last user+assistant exchange?",
-        explicitly_confirmed=explicit_confirmation,
-    )
-    if not confirmed:
-        return CommandResult.completed(
-            CommandMessage(
-                "Confirmation required for /undo. Re-run with --yes to proceed.",
-                level="warning",
-            )
-        )
+    if not explicit_confirmation:
+        return confirmation_required_result("/undo")
 
     try:
         await call_client_method(

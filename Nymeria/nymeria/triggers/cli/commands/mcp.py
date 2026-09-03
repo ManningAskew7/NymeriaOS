@@ -18,7 +18,6 @@ from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
     compact_id,
-    confirmation_granted,
     confirmation_required_result,
     mapping_get,
     mapping_sequence as _mapping_sequence,
@@ -174,12 +173,7 @@ async def _handle_mcp_retry(
             error_code="usage_error",
         )
     server_id = args[0]
-    confirmed = await confirmation_granted(
-        context,
-        f"Retry MCP setup for {server_id}?",
-        explicitly_confirmed=explicit_confirmation,
-    )
-    if not confirmed:
+    if not explicit_confirmation:
         return confirmation_required_result("/mcp retry")
 
     try:

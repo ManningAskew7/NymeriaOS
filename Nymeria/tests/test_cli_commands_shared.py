@@ -170,32 +170,27 @@ class TestStripConfirmationFlags:
         assert remaining == []
         assert confirmed is True
 
+    def test_flags_are_case_insensitive(self) -> None:
+        # Incidental rather than a designed contract, but it is the only cover
+        # for the `.casefold()` in the strip loop, so pin it here where the
+        # name says what is being pinned.
+        assert _shared.strip_confirmation_flags(["abcd", "-Y"]) == (["abcd"], True)
+        assert _shared.strip_confirmation_flags(["abcd", "--YES"]) == (["abcd"], True)
 
-class TestConfirmationGranted:
-    def test_explicit_confirmation_skips_prompt(self) -> None:
-        calls: list[str] = []
 
-        def _confirm(prompt: str) -> bool:
-            calls.append(prompt)
-            return True
+class TestConfirmationSeamIsGone:
+    def test_no_confirm_method_survives_on_the_context(self) -> None:
+        """#328 anti-regression pin, structural on purpose.
 
-        ctx = CommandContext(confirm_handler=_confirm)
-        granted = asyncio.run(
-            _shared.confirmation_granted(ctx, "Proceed?", explicitly_confirmed=True)
-        )
-        assert granted is True
-        assert calls == []  # the handler is not consulted when already confirmed
-
-    def test_delegates_to_context_confirm(self) -> None:
-        def _yes(_prompt: str) -> bool:
-            return True
-
-        ctx_yes = CommandContext(confirm_handler=_yes)
-        assert asyncio.run(_shared.confirmation_granted(ctx_yes, "Proceed?")) is True
-
-        # No handler falls back to the safe default (False).
-        ctx_none = CommandContext(confirm_handler=None)
-        assert asyncio.run(_shared.confirmation_granted(ctx_none, "Proceed?")) is False
+        `--yes`/`-y` is the whole CLI confirmation contract. `confirm_handler`
+        and the `confirm()` it fed were wired in the test suite ONLY, so in
+        production `confirm()` always returned its safe default and every
+        caller was already flag-only. Re-adding the seam would recreate a
+        mechanism that looks live in tests and is dead in production, so this
+        pin is deliberately about the shape rather than an outcome.
+        """
+        assert not hasattr(CommandContext, "confirm")
+        assert not hasattr(_shared, "confirmation_granted")
 
 
 class TestMappingGet:
@@ -354,7 +349,7 @@ _TOOLKIT_WIRING = [
     (account, "mapping_get"),
     (account, "compact_id"),
     (skills, "one_line"),
-    (mcp, "confirmation_granted"),
+    (mcp, "strip_confirmation_flags"),
     # memory took over this wiring row when #143 retired the local todo
     # family (the shared symbol itself is still imported by 13 modules).
     (memory, "unsupported_transport_result"),

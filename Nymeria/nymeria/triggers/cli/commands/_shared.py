@@ -143,17 +143,17 @@ def strip_confirmation_flags(args: Sequence[str]) -> tuple[list[str], bool]:
     return remaining, confirmed
 
 
-async def confirmation_granted(
-    context: CommandContext,
-    prompt: str,
-    *,
-    explicitly_confirmed: bool = False,
-) -> bool:
-    """Return whether a destructive command has user confirmation."""
-
-    if explicitly_confirmed:
-        return True
-    return await context.confirm(prompt, default=False)
+# Confirmation in the CLI is the `--yes`/`-y` flag and NOTHING else. There is
+# deliberately no prompt: `CommandContext.confirm` existed for years, was never
+# wired in `app.py` (only in tests), and so always returned its safe default, so
+# every caller of it was already flag-only in production (#328). Wiring a prompt
+# here would pre-empt #130, which owns the cross-surface confirmation model.
+# #134's `command_submit` hook on `command_danger_level` is the working
+# cross-surface mechanism, but it fires in the BACKEND dispatcher, so it covers
+# the four sites the backend catalog shadows and NOT `/undo`, the one that is
+# still CLI-local (`registry._execute` fires no hooks). Callers read
+# `strip_confirmation_flags` directly; `confirmation_granted` is gone rather
+# than left returning its own argument.
 
 
 def confirmation_required_result(command: str) -> CommandResult:

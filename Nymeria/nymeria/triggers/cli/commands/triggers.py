@@ -12,7 +12,6 @@ from ._shared import (
     call_client_method,
     call_client_user_scoped,
     compact_id,
-    confirmation_granted,
     confirmation_required_result,
     mapping_get,
     mapping_sequence as _mapping_sequence,
@@ -267,12 +266,7 @@ async def _handle_triggers_delete(
             error_code="usage_error",
         )
     trigger_id = args[0]
-    confirmed = await confirmation_granted(
-        context,
-        f"Delete trigger {trigger_id}?",
-        explicitly_confirmed=explicit_confirmation,
-    )
-    if not confirmed:
+    if not explicit_confirmation:
         return confirmation_required_result("/triggers delete")
     try:
         await call_client_method(context, "delete_trigger", trigger_id, context.user_id)

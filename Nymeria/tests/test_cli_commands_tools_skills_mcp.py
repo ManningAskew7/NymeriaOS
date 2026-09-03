@@ -382,13 +382,11 @@ def make_context(
     *,
     output: ListCommandOutputSink | None = None,
     actions: list[Any] | None = None,
-    confirm: bool = False,
 ) -> CommandContext:
     return CommandContext(
         client=client,
         output=output or ListCommandOutputSink(),
         dispatch_state=(actions.append if actions is not None else None),
-        confirm_handler=lambda _prompt: confirm,
         thread_id="thread-1",
         user_id="alice",
     )
@@ -625,7 +623,7 @@ def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -
     client = CapabilityFakeClient()
     registry = make_registry()
     sink = ListCommandOutputSink()
-    unconfirmed = make_context(client, output=sink, confirm=False)
+    unconfirmed = make_context(client, output=sink)
 
     assert run(registry.dispatch_async(unconfirmed, "/mcp list")).ok is True
     assert run(registry.dispatch_async(unconfirmed, "/mcp status draft")).ok is True
@@ -643,8 +641,9 @@ def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -
     assert not any(name == "delete_mcp_server" for name, _payload in client.calls)
     assert sink.messages[-1].level == "warning"
 
-    confirmed = make_context(client, output=ListCommandOutputSink(), confirm=True)
-    retry_confirmed = run(registry.dispatch_async(confirmed, "/mcp retry draft"))
+    # `--yes` is the ONLY way past a CLI confirmation now (#328).
+    confirmed = make_context(client, output=ListCommandOutputSink())
+    retry_confirmed = run(registry.dispatch_async(confirmed, "/mcp retry draft --yes"))
     assert retry_confirmed.ok is True
     assert "Draft / search" in retry_confirmed.messages[0].content
     add_result = run(
