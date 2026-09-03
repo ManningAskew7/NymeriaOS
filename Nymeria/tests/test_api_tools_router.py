@@ -629,3 +629,189 @@ def test_command_backend_set_default_tools_judges_the_target_users_role(
         agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
         != [SEED_TOOLS[0].name, admin_only]
     )
+
+
+def test_default_tools_validates_what_the_write_adds_not_the_whole_list(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """#325: one stale entry must not refuse every later write.
+
+    The write is a whole-list replace, so a caller changing one tool resubmits
+    the account's entire set. Validating all of it meant an uninstalled tool
+    still in the profile answered every write with an error about a tool the
+    user never touched, including the removal that would have cleared it.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+
+    profile = agent.profile_manager.get_profile("owner")
+    profile.tool_preferences.default_thread_tools = [SEED_TOOLS[0].name, "ghost_tool"]
+    agent.profile_manager.save_profile(profile)
+
+    # Adding a real tool alongside the stale one now succeeds.
+    added = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, "ghost_tool", "todo"]},
+    )
+    assert added.status_code == 200, added.json()
+
+    # And the stale name can be dropped, which is the way out.
+    cleared = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, "nym_todo"]},
+    )
+    assert cleared.status_code == 200, cleared.json()
+    assert "ghost_tool" not in (
+        agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
+    )
+
+
+def test_default_tools_still_refuses_a_newly_added_unknown_or_gated_tool(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The delta keeps every gate: only PRE-EXISTING entries are exempt.
+
+    This is the half that makes #325's relaxation safe. A name the write brings
+    IN is checked exactly as before, so nobody can put an admin-only or
+    developer-only tool into a profile that did not already carry it.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
+
+    unknown = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, "ghost_tool"]},
+    )
+    gated = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, admin_only]},
+    )
+    dev_gated = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, developer_only]},
+    )
+
+    assert unknown.status_code == 400
+    assert "ghost_tool" in unknown.json()["detail"]
+    assert gated.status_code == 403
+    assert dev_gated.status_code == 403
+
+
+def test_a_demoted_user_can_still_write_while_keeping_a_now_gated_tool(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The role axis of #325, which is the whole security argument of the delta.
+
+    A user demoted out of admin still has the admin-only tool in their profile.
+    Before, that entry answered every later write with a 403 naming a tool they
+    never touched, so a demotion did not strip the tool, it BRICKED the command.
+    Retaining it is safe only because `select_tools_for_graph` re-gates by role
+    at every build, pinned by
+    `test_graph_build_unification.py::test_select_tools_strips_admin_default_for_non_admin_keeps_for_admin`.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
+
+    profile = agent.profile_manager.get_profile("owner")
+    profile.tool_preferences.default_thread_tools = [
+        SEED_TOOLS[0].name,
+        admin_only,
+        developer_only,
+    ]
+    agent.profile_manager.save_profile(profile)
+
+    kept = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, admin_only, developer_only, "todo"]},
+    )
+
+    assert kept.status_code == 200, kept.json()
+    saved = agent.profile_manager.get_profile(
+        "owner"
+    ).tool_preferences.default_thread_tools
+    # Preserved, not silently dropped: fix (b) was considered and rejected,
+    # because a reinstalled tool should light back up rather than be erased by
+    # the first unrelated write.
+    assert admin_only in saved
+    assert developer_only in saved
+    assert "nym_todo" in saved
+
+
+def test_an_unrelated_add_preserves_a_stale_entry_rather_than_dropping_it(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """Exempting a name from validation must not mean deleting it."""
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+
+    profile = agent.profile_manager.get_profile("owner")
+    profile.tool_preferences.default_thread_tools = [SEED_TOOLS[0].name, "ghost_tool"]
+    agent.profile_manager.save_profile(profile)
+
+    added = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, "ghost_tool", "todo"]},
+    )
+
+    assert added.status_code == 200, added.json()
+    assert "ghost_tool" in (
+        agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
+    )
+
+
+def test_the_delta_rule_is_identical_through_the_in_process_client(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """Two-shape parity on the delta, not just on the gates.
+
+    The shared writer exists so the HTTP route and CommandBackendClient cannot
+    diverge; that is only true if the exemption behaves the same through both.
+    """
+    from nymeria.core.command_service import CommandBackendClient, _CommandBackendUser
+
+    _client_, agent = _client(tmp_path, api_client_builder)
+    _create_user(agent, "owner")
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+
+    profile = agent.profile_manager.get_profile("owner")
+    profile.tool_preferences.default_thread_tools = [
+        SEED_TOOLS[0].name,
+        admin_only,
+        "ghost_tool",
+    ]
+    agent.profile_manager.save_profile(profile)
+
+    backend = CommandBackendClient(
+        agent,
+        user=_CommandBackendUser(id="owner", role="user"),
+        settings_fn=lambda: api_client_builder.settings(tmp_path),
+    )
+
+    result = asyncio.run(
+        backend.set_default_tools(
+            "owner", [SEED_TOOLS[0].name, admin_only, "ghost_tool", "todo"]
+        )
+    )
+    assert "nym_todo" in result["default_tools"]
+
+    # ... and a NEWLY added gated name is still refused on this shape.
+    with pytest.raises(ValueError, match="Admin-only tools"):
+        asyncio.run(
+            backend.set_default_tools("owner", [SEED_TOOLS[0].name, "ghost_tool", sorted(ADMIN_ONLY_TOOL_NAMES)[1]])
+        )

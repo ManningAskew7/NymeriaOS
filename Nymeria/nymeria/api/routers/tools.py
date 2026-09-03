@@ -168,6 +168,31 @@ def apply_default_tools_update(
     or the target's when writing another user's profile), never from a command
     executor's ``is_admin`` attribute: the agent runs with that set to ``None``,
     so an ``is_admin is False`` test would wave it through.
+
+    Validation covers what the write ADDS, not the whole list (#325). The write
+    is a whole-list replace, so every caller resubmits the account's entire
+    current set to change one entry; validating all of it meant a single name
+    that had gone stale (an uninstalled catalog tool, an admin-only tool left
+    after a role demotion) refused EVERY later write with an error naming a tool
+    the user never touched, and refused the removal that would have cleared it.
+
+    The gates keep their teeth: a name being ADDED is checked exactly as before,
+    so no one can put an admin-only tool into a profile they could not before,
+    and a REMOVAL needs no permission. What this gives up is using the write as
+    an incidental sweep of a demoted user's existing entries, which was never a
+    control: ``select_tools_for_graph`` runs ``_apply_role_gates`` on the
+    default-bound set at every graph build, per role, so a retained entry never
+    binds. That makes this list a record of intent rather than a grant, and
+    anything that later reads it AS a grant without re-gating would be the
+    actual bug. Pinned by
+    ``test_graph_build_unification.py::test_select_tools_strips_admin_default_for_non_admin_keeps_for_admin``.
+
+    Two consequences of dropping the sweep, both accepted: a demoted user's
+    ``GET /threads/{id}/overview`` keeps LISTING the retained name (display
+    only, it is not bound), and a tool an admin planted in another user's
+    defaults through ``PUT /users/{id}/tools/unified/{tool}/enable`` (which
+    gates on the CALLER's role, where this gates on the target's) is no longer
+    swept out by the next write.
     """
     from ...core.user_profile import migrate_tool_names
     from ...tools import (
@@ -180,24 +205,28 @@ def apply_default_tools_update(
 
     resolved = migrate_tool_names(list(tool_names))
 
+    profile = agent.profile_manager.get_profile(user_id)
+    existing = set(profile.tool_preferences.default_thread_tools or ())
+    added = set(resolved) - existing
+
     known = (
         {t.name for t in SEED_TOOLS}
         | set(CATALOG_TOOLS.keys())
         | set(MCP_SERVER_TOOL_METADATA.keys())
     )
-    unknown = set(resolved) - known
+    unknown = added - known
     if unknown:
         raise DefaultToolsUpdateError(400, f"Unknown tools: {sorted(unknown)}")
 
     if not is_admin:
-        blocked = ADMIN_ONLY_TOOL_NAMES.intersection(resolved)
+        blocked = ADMIN_ONLY_TOOL_NAMES.intersection(added)
         if blocked:
             raise DefaultToolsUpdateError(
                 403,
                 "Admin-only tools cannot be set as defaults by this "
                 f"user: {sorted(blocked)}",
             )
-        blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(resolved)
+        blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(added)
         if blocked:
             raise DefaultToolsUpdateError(
                 403,
@@ -205,7 +234,6 @@ def apply_default_tools_update(
                 f"defaults by this user: {sorted(blocked)}",
             )
 
-    profile = agent.profile_manager.get_profile(user_id)
     profile.tool_preferences.default_thread_tools = resolved
     agent.profile_manager.save_profile(profile)
 
