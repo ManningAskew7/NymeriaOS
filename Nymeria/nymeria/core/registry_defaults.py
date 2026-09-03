@@ -144,6 +144,17 @@ _TOOL_TARGET_PARAM = CommandParam(
     label="tool_or_category",
     description="Tool name or tool category",
 )
+# Scope grammar (style guide rule 3), the same shape `/skills enable` uses: the
+# global arm writes the account profile's `default_thread_tools`, which every
+# thread of the account inherits at graph build. Thread stays the default and
+# does NOT fall back to global when there is no thread (see the handler), since
+# inferring global from a threadless surface would let one call change every
+# conversation at once.
+_TOOL_SCOPE_PARAM = CommandParam(
+    "scope",
+    kind="scope",
+    description="Write this thread's tool set (default) or the account-wide one",
+)
 
 # ``/todos list`` (and its ``/tasks`` alias) filters on status. Declared
 # ``choices`` (#143 review): the status set is a closed enum, so the old
@@ -1275,26 +1286,32 @@ def register_default_commands(service: "CommandService") -> None:
             ),
         ),
     )
+    # `requires_thread` is deliberately OFF on both: the global arm writes the
+    # account profile and needs no thread. The handlers still refuse a
+    # thread-scope write without one, so dropping the flag widens only the
+    # global path.
     service.register(
         "tools enable",
-        description="Enable a tool or category on this thread",
+        description="Enable a tool or category on this thread (default) or account-wide",
         category="Tools",
         aliases=("tools_enable",),
-        requires_thread=True,
         mutates_state=True,
         danger_level="normal",
-        examples=("/tools enable web_search", "/tools enable productivity"),
-        params=(_TOOL_TARGET_PARAM,),
+        examples=(
+            "/tools enable web_search",
+            "/tools enable productivity",
+            "/tools enable harness_report global",
+        ),
+        params=(_TOOL_TARGET_PARAM, _TOOL_SCOPE_PARAM),
     )
     service.register(
         "tools disable",
-        description="Disable a tool or category on this thread",
+        description="Disable a tool or category on this thread (default) or account-wide",
         category="Tools",
         aliases=("tools_disable",),
-        requires_thread=True,
         mutates_state=True,
         danger_level="normal",
-        params=(_TOOL_TARGET_PARAM,),
+        params=(_TOOL_TARGET_PARAM, _TOOL_SCOPE_PARAM),
     )
     service.register(
         "sequential-tools",

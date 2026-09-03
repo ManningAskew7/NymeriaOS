@@ -2,7 +2,13 @@
 
 ``defaults``, ``search`` and ``test`` are genuinely local (the backend
 registers no such verbs); the root and ``list`` handlers are defensive
-fallbacks for a failed catalog registration. Backlog #131 folded
+fallbacks for a failed catalog registration. Backlog #321 gave account-wide
+enablement a backend verb WITHOUT taking this one over, deliberately: it landed
+as a scope token on the existing commands (``/tools enable <name> global``,
+style-guide rule 3), so every surface can now write `default_thread_tools`
+while ``defaults`` keeps the CLI's whole-list ``set``/``reset`` and its
+``Default Core Toolset`` table, which registering a backend ``tools defaults``
+would have shadowed away. Backlog #131 folded
 ``/tools core|optional|enabled|category`` into ``/tools list [filter]`` and
 retired the local ``core`` and ``optional`` declarations with it: the fold
 freed both keys, which would otherwise have made the CLI the one surface
