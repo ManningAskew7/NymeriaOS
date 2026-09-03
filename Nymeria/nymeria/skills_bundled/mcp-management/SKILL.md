@@ -1,10 +1,11 @@
 ---
 name: mcp-management
-description: Find, install, test, and manage MCP servers. Use this skill when Nymeria
-  needs an external service, local app, database, browser, or API surface that is best
-  exposed as an MCP server, rather than a single tool call. Load it to search public
-  MCP registries, preview and install a server, inspect or test an installed server,
-  or enable, disable, and remove servers.
+description: Find, install, test, and manage MCP servers. Load this when Nymeria
+  needs an external service, local app, database, browser, or API surface that
+  is best exposed as an MCP server rather than a single tool, whether to search
+  public registries, preview and install a server, inspect or test one, or
+  enable, disable, and remove servers. Not for a single HTTP endpoint or one
+  tool (use tool-management).
 metadata:
   nymeria:
     required_tools:
@@ -68,7 +69,7 @@ workflow; changing Nymeria's own codebase is a separate, admin-only path.
 - You want to save a recurring MCP-backed workflow as reusable instructions ->
   `skill-management`.
 - For the overall operating philosophy and when to create which artifact ->
-  `Skill(name="self-improve")`.
+  `Skill(name="self-improve", ttl="1h")`.
 
 ## Output
 

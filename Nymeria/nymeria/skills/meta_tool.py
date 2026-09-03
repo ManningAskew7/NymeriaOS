@@ -1,9 +1,10 @@
-"""Skill meta-tool — the single `Skill` tool that carries the progressive-disclosure index.
+"""Skill meta-tool: the single `Skill` tool that carries the progressive-disclosure index.
 
 The tool's description lists every skill active on the thread as
-<available_skills>…</available_skills>. Calling `Skill(name="…")` returns the
-full SKILL.md body of that skill as a ToolMessage, which the model then uses
-as procedural knowledge for the rest of its turn(s).
+<available_skills>...</available_skills>. Calling `Skill(name="...", ttl="...")`
+returns the full SKILL.md body of that skill as a ToolMessage, which the model
+then uses as procedural knowledge for the rest of its turn(s); for a Skill Kit
+it also binds the kit's tools for the required `ttl` window.
 
 No skill content lives in the system prompt. The index lives in the tool's
 description (sent with every request alongside the tool schema), and the body
@@ -38,56 +39,64 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_SKILL_TOOL_PREAMBLE = """Load the full instructions for a named skill.
+_SKILL_TOOL_PREAMBLE = """Load a skill's full instructions; for a Skill Kit, also bind its tools.
 
-A "skill" is a bundle of procedural knowledge (a markdown playbook plus
-optional scripts and reference files on disk). The <available_skills> list
-below is the set currently ENABLED on this thread (each has a name and a short
-description). You are not limited to that list: you can load ANY installed
-skill by its exact name, including one you found via search_skills that is not
-enabled here. A skill that is not installed at all must be installed first with
-install_skill.
+A skill is a playbook (markdown plus optional scripts and reference files).
+A Skill Kit is a skill that also BINDS TOOLS you do not otherwise have: an
+entry with binds="N tools" below is a kit, and those tools stay unavailable
+until you activate it. The <available_skills> list is what is enabled on this
+thread; any installed skill loads by exact name (find others with
+search_skills; a skill that is not installed needs install_skill first).
 
-When you judge that a skill applies to the current task, call this tool with
-that skill's name. The return value is the skill's full body — read it
-carefully and follow its instructions. Skills may instruct you to read
-reference files or run scripts using your existing tools (file_read,
-bash_execute, etc.); the skill's directory path is included in the returned
-body so you can resolve those references.
+RULE: when a task falls in a listed kit's area, activate that kit FIRST,
+before attempting the task with generic tools (bash_execute, file tools, web
+fetch) or telling the user it cannot be done. Read the returned body and
+follow it; it names any reference files or scripts, which you resolve with
+your existing tools. Call this tool at most once per distinct skill per turn
+(exception: re-activating with defer=false a kit you first loaded with
+defer=true). If no skill applies, do not call it.
 
-Optional `ttl` argument (Skill Kits only): some skills are "Skill Kits" that
-bind extra tools onto this thread when you activate them. A kit can also
-declare required SKILLS (one level deep): activating it fully activates those
-too, binding any tools THEY require in the same transaction. Prefer choosing
-the `ttl` yourself, sized to how long you expect to need the tools (duration
-format Nm/Nh/Nd/Nw, e.g. "45m" or "3d", or "permanent"); when you omit it,
-the kit's own declared lifetime applies. Important: `ttl` governs ONLY the
-tools this activation binds (the kit's own plus any nested kit's). It does
-NOT change how long the skill's instructions stay with you: the body text
-this tool returns remains in your context until the conversation is
-compacted, cleared, or scrolls out of the sliding window, no matter what
-`ttl` you pass. Note that ttl="permanent" (or "never") makes the kit's tools
-persist on the thread beyond this turn rather than expiring; prefer the
-shortest finite lifetime that covers the task unless you intend a lasting
-change. `ttl` has no effect on skills that bind no tools.
+`ttl` (required): how long the kit's tools stay bound. Nm/Nh/Nd/Nw (e.g.
+"45m", "3d"; max one year) or "permanent". Size it to the task and prefer
+the shortest window that covers it; suggested_ttl in the list is the kit
+author's typical span, not a default. An invalid value refuses the
+activation. A kit that requires other kits binds their tools too, under the
+same window. The window governs only the bound tools: the instructions stay
+in your context until compaction, /clear, or the sliding window, regardless.
+For a skill without binds= the value is accepted and ignored; pass any valid
+one. When the window lapses you are told once and a call to a lapsed tool is
+refused; re-activate for a fresh window.
 
-Optional `defer` argument (Skill Kits only): decide by usage. One-off use of a
-kit's tools right now: pass defer=true. A multi-step task, or a kit you will
-use again later: bind with `ttl` instead. defer=true loads the kit's
-instructions AND its tools' argument schemas WITHOUT binding the kit's tools:
-the schemas arrive here in conversation history and you run the tools by name
-via tool_invoke(name, arguments), keeping the prompt cache intact. Binding
-(`ttl`) instead puts the tools in your tool list (the cached tools prefix at
-the head of the request), which makes calling them more reliable: a bound
-schema is read as your tool grammar and its arguments are grammar-constrained
-as you emit them; a deferred schema is read as prose. `defer` and `ttl` are
-mutually exclusive; if you pass both, `ttl` is ignored (defer binds nothing).
-
-Call this tool at most once per distinct skill per turn. One exception:
-re-activating a kit you first loaded with defer=true, passing `ttl`, to bind
-its tools once the use turns out to be repeated. If no skill applies, do not
-call it; proceed with your regular tools.
+`defer` (kits only): pass defer=true for a one-off use of a kit's tools. The
+instructions and the tools' argument schemas load without binding, and you
+run them by name via tool_invoke (cache-safe; protected management tools
+cannot run this way). For a multi-step task or future use, bind instead
+(defer=false), so the schemas sit in your tool list and your arguments are
+grammar-constrained. With defer=true, ttl is ignored.
 """
+
+
+def _skill_entry_attrs(skill: Skill) -> str:
+    """``binds="N tools" suggested_ttl="2h"`` for a kit; empty for a plain skill.
+
+    The structural cue is what lets a cold model tell "instructions only"
+    from "tools I do not have yet" without parsing prose; the suggested
+    window is the author's typical span, quoted because the agent must pick
+    its own ``ttl`` (there is no default on the agent call).
+    """
+    parts: List[str] = []
+    if skill.required_tools:
+        count = len(skill.required_tools)
+        parts.append(f"{count} tool{'s' if count != 1 else ''}")
+    if skill.required_skills:
+        parts.append("nested kits")
+    if skill.thread_templates:
+        parts.append("thread templates")
+    if not parts:
+        # Same predicate as Skill.is_skill_kit: any declared dependency or
+        # template makes it a kit, and every kind binds under the ttl.
+        return ""
+    return f' binds="{" + ".join(parts)}" suggested_ttl="{skill.tool_ttl}"'
 
 
 def _render_available_skills(skills: List[Skill]) -> str:
@@ -99,7 +108,7 @@ def _render_available_skills(skills: List[Skill]) -> str:
     lines: List[str] = ["<available_skills>"]
     for s in skills:
         desc = s.description.strip().replace("\n", " ")
-        lines.append(f'  <skill name="{s.name}">{desc}</skill>')
+        lines.append(f'  <skill name="{s.name}"{_skill_entry_attrs(s)}>{desc}</skill>')
     lines.append("</available_skills>")
     block = "\n".join(lines)
 
@@ -121,14 +130,19 @@ def _render_available_skills(skills: List[Skill]) -> str:
         desc = s.description.strip().replace("\n", " ")
         if len(desc) > budget_per:
             desc = desc[: budget_per - 1].rstrip() + "…"
-        lines.append(f'  <skill name="{s.name}">{desc}</skill>')
+        lines.append(f'  <skill name="{s.name}"{_skill_entry_attrs(s)}>{desc}</skill>')
     lines.append("</available_skills>")
     return "\n".join(lines)
 
 
-def _render_skill_body(skill: Skill) -> str:
+def _render_skill_body(skill: Skill, *, effective_ttl: Optional[str] = None) -> str:
     """Render the full SKILL.md body with a small header that tells the model
-    what auxiliary files exist and where they live."""
+    what auxiliary files exist and where they live. ``effective_ttl`` is the
+    window this activation asked for (None on a deferred load and on a
+    nested body, whose tools bind under the OUTER activation's window); the
+    kit's own ``tool_ttl`` is always quoted as the author's suggestion. The
+    binding-result block, not this line, says which tools actually got a
+    fresh TTL entry (an already-bound default tool gets none)."""
     parts = [f"# Skill: {skill.name}", "", skill.body.rstrip(), ""]
 
     aux_lines: List[str] = []
@@ -156,10 +170,13 @@ def _render_skill_body(skill: Skill) -> str:
 
     if skill.required_tools:
         aux_lines.append("")
+        window = (
+            f"activation ttl {effective_ttl}; " if effective_ttl else ""
+        ) + f"kit suggests {skill.tool_ttl}"
         aux_lines.append(
             "Skill Kit required Nymeria tools: "
             + ", ".join(skill.required_tools)
-            + f" (ttl: {skill.tool_ttl})"
+            + f" ({window})"
         )
 
     if skill.required_skills:
@@ -269,45 +286,38 @@ def _resolve_active_skill(
 
 def _resolve_effective_ttl(
     skill: Skill, ttl: Optional[str], required_tools: Optional[List[str]] = None
-) -> tuple[str, str]:
-    """Resolve the effective Skill Kit tool TTL and any model-facing notice.
+) -> tuple[Optional[str], str]:
+    """Resolve the window for the tools this activation binds, or refuse.
 
-    A model-supplied ``ttl`` overrides the kit's declared ``tool_ttl``, but ONLY
-    for the bound tools: the skill body is not governed by any TTL (it persists
-    in conversation history until compaction, /clear, or sliding-window
-    eviction). ``required_tools`` is the tool set this activation will actually
-    bind (the nested-expansion union); it defaults to the skill's own list.
-    Returns ``(effective_ttl, ttl_notice)``; ``ttl_notice`` is empty when there
-    is nothing to tell the model.
+    ``ttl`` is required on the agent's ``Skill()`` call and has NO default:
+    a kit activation with a blank or invalid value returns ``(None, refusal)``
+    and the caller loads nothing. A skill that binds no tools accepts any
+    value and reports it ignored. The window governs the bound tools only
+    (``required_tools``, the nested-expansion union; defaults to the skill's
+    own list); the skill body persists in history regardless.
+    ``skill.tool_ttl`` is the author's SUGGESTION, quoted in the refusal; it
+    is the default only for the human ``/kit`` command and programmatic
+    activation (``command_service.activate_skill_kit``), never here. (The
+    ``/kit`` slash path reinterprets a bad leading token as prompt text; here
+    the typed argument means the model intended a TTL, so a bad one refuses
+    rather than guesses. Do not "align" the two.)
     """
     effective_tools = (
         skill.required_tools if required_tools is None else required_tools
     )
-    effective_ttl = skill.tool_ttl
-    ttl_notice = ""
-    if ttl is not None and str(ttl).strip():
-        if not effective_tools:
-            ttl_notice = (
-                "[note] ttl was provided but this skill binds no Skill Kit "
-                "tools, so it has no effect. TTL applies only to a kit's "
-                "bound tools, not to the instructions above."
-            )
-        else:
-            try:
-                ttl_key, _ = parse_tool_ttl(ttl)
-                effective_ttl = ttl_key
-            except ValueError as exc:
-                # Deliberately divergent from the /kit slash path: there an
-                # invalid leading token is reinterpreted as the prompt
-                # (command_service.activate_skill_kit / prepare_skill_slash_command).
-                # Here the typed `ttl` arg means the model intended a TTL, so
-                # fall back to the kit default and tell it the value was bad
-                # rather than aborting activation. Do not "align" the two.
-                ttl_notice = (
-                    f"[note] Ignored ttl={ttl!r}: {exc} Bound this kit's "
-                    f"tools with its default TTL ({skill.tool_ttl}) instead."
-                )
-    return effective_ttl, ttl_notice
+    if not effective_tools:
+        # One clause: the preamble already explains the required-but-ignored
+        # contract, and this lands on every plain-skill activation.
+        return skill.tool_ttl, "[note] ttl ignored: this skill binds no tools."
+    try:
+        ttl_key, _ = parse_tool_ttl("" if ttl is None else str(ttl))
+    except ValueError as exc:
+        return None, (
+            f"[Skill activation refused: {skill.name}] {exc} Pass the window "
+            "you expect to need this kit's tools for; the kit suggests "
+            f'"{skill.tool_ttl}". Nothing was loaded or bound.'
+        )
+    return ttl_key, ""
 
 
 def _bind_skill_kit_tools(
@@ -614,7 +624,7 @@ def _nested_skill_bodies_block(skill: Skill, nested_skills: List[Skill]) -> str:
                 f"{nested.name!r} declares further required skills that were "
                 "NOT auto-activated (nesting is one level deep): "
                 + ", ".join(nested.required_skills)
-                + ". Load any of them on demand with Skill(name=...)."
+                + ". Load any of them on demand with Skill(name=..., ttl=...)."
             )
     return "".join(parts)
 
@@ -639,8 +649,8 @@ def _defer_required_skills_block(
     lines = [
         "\n\n---\n"
         "[Required skills (deferred)] This kit pulls in the skills below. "
-        "None were activated; load one on demand with Skill(name=...) (add "
-        "defer=true to keep that load cache-safe too).",
+        "None were activated; load one on demand with Skill(name=..., "
+        "ttl=...) (add defer=true to keep that load cache-safe too).",
     ]
     for nested_skill in nested:
         kind = "kit" if nested_skill.is_skill_kit else "skill"
@@ -823,7 +833,7 @@ def _skill_kit_reload_notice(
     return (
         "\n\n---\n"
         "[Skill Kit tools bound; callable on the next model step]\n"
-        "These tools were NOT bound before this Skill Kit activation — "
+        "These tools were NOT bound before this Skill Kit activation: "
         "earlier turns of this conversation did not have access to them. "
         "They become callable immediately after this tool result without "
         "a graph rebuild or resume. "
@@ -844,7 +854,7 @@ def create_skill_meta_tool(
 
     The tool's description is dynamically composed so that every request
     carries the (name, description) index. The body only loads when the
-    model calls Skill(name=...).
+    model calls Skill(name=..., ttl=...).
 
     If skill_manager is provided, bodies are re-read from disk at activation
     time — edits to SKILL.md take effect without rebuilding the graph. If the
@@ -873,18 +883,16 @@ def create_skill_meta_tool(
     def skill_meta_tool(
         name: str,
         ttl: Annotated[
-            Optional[str],
-            "Optional one-off lifetime for a Skill Kit's bound tools; choose "
-            "it for how long you expect to need them (duration format "
-            "Nm/Nh/Nd/Nw, e.g. '45m' or '3d', max one year, or 'permanent'). "
-            "Overrides the "
-            "kit's declared tool_ttl for this activation only. Applies ONLY "
-            "to the bound tools, never to the skill's instruction text (which "
-            "persists until compaction/clear/sliding-window). "
-            "'permanent'/'never' make the tools persist beyond this turn. "
-            "Ignored for skills that bind no tools, and ignored when "
-            "defer=true.",
-        ] = None,
+            str,
+            "Required. How long this kit's tools stay bound: Nm/Nh/Nd/Nw "
+            "(e.g. '45m', '3d'; max one year) or 'permanent'. Size it to the "
+            "task and prefer the shortest window that covers it; the list's "
+            "suggested_ttl is the author's typical span, not a default. An "
+            "invalid value refuses the activation. Governs only the bound "
+            "tools, never the returned instructions. Accepted and ignored "
+            "for a skill that binds no tools, and ignored when defer=true "
+            "(pass any valid value).",
+        ],
         defer: Annotated[
             Optional[bool],
             "Skill Kits only. Decide by usage: one-off use of the kit's tools "
@@ -893,7 +901,8 @@ def create_skill_meta_tool(
             "schemas WITHOUT binding the kit's tools; call them by name via "
             "tool_invoke (cache-safe). A bound schema sits in your tool list "
             "and is called more reliably (grammar-constrained); a deferred "
-            "one is prose in history. Mutually exclusive with ttl.",
+            "one is prose in history. ttl is still required by the schema "
+            "and is ignored when defer=true.",
         ] = False,
         *,
         tool_call_id: Annotated[str, InjectedToolCallId],
@@ -904,18 +913,19 @@ def create_skill_meta_tool(
         Args:
             name: The exact name of an installed skill (one listed in
                 <available_skills>, or any other installed skill by exact name).
-            ttl: Optional. For Skill Kits only, a one-off lifetime for the
-                tools the kit binds, sized to how long you expect to need
-                them (e.g. "45m", "3d", "permanent"), overriding the kit's
-                declared tool_ttl for this activation.
+            ttl: Required. How long the tools a Skill Kit binds stay bound,
+                sized to how long you expect to need them (e.g. "45m", "3d",
+                "permanent"); an invalid value refuses the activation.
                 Governs the bound tools only, not the returned instructions,
                 which stay in context until compaction/clear/sliding-window.
-                No effect for skills that bind no tools, or when defer=true.
+                Accepted and ignored for skills that bind no tools, and
+                ignored when defer=true.
             defer: Optional. For Skill Kits only. When true, load the kit's
                 instructions plus its tools' schemas without binding the
                 kit's tools; call them via tool_invoke. Cache-safe, best for
-                one-off use; a multi-step task or future use binds with ttl
-                instead. Mutually exclusive with ttl.
+                one-off use; a multi-step task or future use binds instead
+                (defer=false). ttl stays required by the schema and is
+                ignored when defer=true.
         """
         # Re-fetch from disk when possible so SKILL.md edits are live.
         skill = _resolve_active_skill(
@@ -931,7 +941,6 @@ def create_skill_meta_tool(
             )
 
         logger.info("skill activated: %s (scope=%s)", skill.name, skill.scope)
-        body = _render_skill_body(skill)
 
         # Deferred activation: load the kit's tool schemas and list its nested
         # skills but bind nothing, so the model runs the tools by name (via
@@ -941,6 +950,7 @@ def create_skill_meta_tool(
         # _ensure_deferred_executor binds it on a self-cleaning TTL (or says
         # honestly why it will not, when the thread disabled it).
         if defer:
+            body = _render_skill_body(skill)
             use_direct = _unbound_direct_calls_active()
             executor_note, emit_reload, executor_bound = _ensure_deferred_executor(
                 skill, config, use_direct
@@ -953,10 +963,10 @@ def create_skill_meta_tool(
             )
             body += _defer_thread_templates_block(skill, use_direct)
             body += executor_note
-            if ttl is not None and str(ttl).strip() and skill.required_tools:
+            if skill.required_tools:
                 body += (
-                    "\n\n---\n[note] ttl was ignored because defer=true binds no "
-                    "tools; ttl governs a bound kit's tool lifetime."
+                    "\n\n---\n[note] ttl ignored: defer=true binds no tools; "
+                    "ttl governs a bound kit's tool lifetime."
                 )
             body += _allowed_tools_advisory(skill, thread_tools_set)
             if emit_reload:
@@ -982,14 +992,19 @@ def create_skill_meta_tool(
                 )
         union_tools = expanded_required_tools(skill, nested_skills)
 
-        # Resolve the effective TTL for any Skill Kit tools this activation
-        # binds. A model-supplied `ttl` overrides the kit's declared tool_ttl,
-        # but ONLY for the bound tools: the skill body returned here is not
-        # governed by any TTL (it persists in conversation history until
-        # compaction, /clear, or the sliding window evicts it). The one TTL
-        # governs the whole union (outer + nested kits' tools).
+        # Resolve the window for any Skill Kit tools this activation binds,
+        # BEFORE rendering the body: a blank or invalid `ttl` on a kit
+        # refuses the whole activation (nothing loaded, nothing bound; the
+        # agent call has no default). The one window governs the whole union
+        # (outer + nested kits' tools) and never the body, which persists in
+        # history until compaction, /clear, or the sliding window.
         effective_ttl, ttl_notice = _resolve_effective_ttl(
             skill, ttl, required_tools=union_tools
+        )
+        if effective_ttl is None:
+            return ttl_notice
+        body = _render_skill_body(
+            skill, effective_ttl=effective_ttl if union_tools else None
         )
 
         outcome = _bind_skill_kit_tools(

@@ -65,7 +65,7 @@ Not loaded by default. The normal path is to activate the matching focused Skill
 Kit, which binds its facades below with a TTL: `tool-management` for
 `tool_search`/`tool_manage`/`tool_create`/`api_discover`/`http_request`,
 `skill-management` for `skill_manage`/`skill_write`/`skill_edit`, and
-`mcp-management` for `manage_mcp`. `Skill(name="self-improve")` itself binds no
+`mcp-management` for `manage_mcp`. `Skill(name="self-improve", ttl="1h")` itself binds no
 tools; it provides the operating philosophy and routes to these kits.
 
 | # | Tool | Category | Security | Description |
@@ -1756,7 +1756,7 @@ Credential providers and fallback env vars:
 ### tool_manage
 
 Enable, disable, prune, or inspect current-thread tool bindings. This is
-normally available after the agent activates `Skill(name="tool-management")`.
+normally available after the agent activates `Skill(name="tool-management", ttl="2h")`.
 
 ```python
 tool_manage(
@@ -2111,7 +2111,7 @@ legacy parsed-command callers.
 
 ## HTTP/API and Skill Authoring Tools (Optional)
 
-General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP/Python tools, and generated Skills or Skill Kits. These are not loaded by default; normally load `Skill(name="tool-management")` for the HTTP/API and tool-building primitives or `Skill(name="skill-management")` for the Skill authoring tools, then manage per-thread bindings with `tool_manage` when needed.
+General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP/Python tools, and generated Skills or Skill Kits. These are not loaded by default; normally load `Skill(name="tool-management", ttl="2h")` for the HTTP/API and tool-building primitives or `Skill(name="skill-management", ttl="2h")` for the Skill authoring tools, then manage per-thread bindings with `tool_manage` when needed.
 
 ### http_request
 

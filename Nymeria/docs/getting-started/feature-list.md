@@ -186,7 +186,7 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
 | **Credentials** | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` |
-| **Capability Expansion** | `Skill(name="self-improve")` is text-only guidance (binds no tools) and routes to its four capability kits, default-on alongside `trigger-management`, `hook-management`, and `callable-thread-builder`, each binding its tools only when activated: `tool-management` (`tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request`), `skill-management` (`skill_manage`, `skill_write`, `skill_edit`), `mcp-management` (`manage_mcp`), and `credential-management` (`auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential`) |
+| **Capability Expansion** | `Skill(name="self-improve", ttl="1h")` is text-only guidance (binds no tools) and routes to its four capability kits, default-on alongside `trigger-management`, `hook-management`, and `callable-thread-builder`, each binding its tools only when activated: `tool-management` (`tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request`), `skill-management` (`skill_manage`, `skill_write`, `skill_edit`), `mcp-management` (`manage_mcp`), and `credential-management` (`auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential`) |
 
 The code-owned source of truth is `nymeria/tools/__init__.py`: ~13 seed tools in
 `SEED_TOOLS` (the default for new threads) and roughly 1,260 catalog tools in

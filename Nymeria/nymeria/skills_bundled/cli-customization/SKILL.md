@@ -1,9 +1,9 @@
 ---
 name: cli-customization
 description: Read and reconfigure the user's Nymeria terminal CLI status bars
-  (segment order, a second under-prompt bar, static text labels, and script
-  segments) on their behalf. Load this when the user asks you to change,
-  simplify, or extend what their CLI status line shows.
+  (segment order, a second under-prompt bar, static labels, script segments).
+  Load this when the user asks to change, simplify, or extend what their CLI
+  status line shows. Not for desktop or mobile app settings.
 metadata:
   nymeria:
     required_tools:

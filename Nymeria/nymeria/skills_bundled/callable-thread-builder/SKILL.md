@@ -1,10 +1,10 @@
 ---
 name: callable-thread-builder
-description: Design, create, invoke, and maintain callable Nymeria helper
-  threads, and organize them into callable teams (create/rename teams, move
-  threads between them) that scope which callables see each other. Load this
-  to build a specialist helper thread, wire up a delegated workflow, or
-  restructure the team bubbles your callables live in.
+description: Build, invoke, and maintain callable helper threads (persistent
+  specialists invoked by name) and the callable teams that scope which of
+  them see each other. Load this when the user wants a reusable specialist, a
+  delegated workflow a named helper should own, or teams created, renamed, or
+  reorganized. Not for a one-off sub-task (spawn a worker thread directly).
 allowed-tools: Read
 metadata:
   nymeria:

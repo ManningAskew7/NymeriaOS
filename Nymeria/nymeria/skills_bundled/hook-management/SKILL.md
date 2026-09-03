@@ -1,6 +1,10 @@
 ---
 name: hook-management
-description: Create, inspect, test, and troubleshoot Nymeria lifecycle hooks.
+description: Create, inspect, test, and troubleshoot Nymeria lifecycle hooks,
+  automations that run when a prompt arrives, a tool is called, or a turn
+  ends. Load this when the user wants something to happen automatically
+  around turns or tool calls, or asks why a hook fired or stayed silent. Not
+  for time- or feed-driven automation (use trigger-management).
 allowed-tools: Read
 metadata:
   nymeria:

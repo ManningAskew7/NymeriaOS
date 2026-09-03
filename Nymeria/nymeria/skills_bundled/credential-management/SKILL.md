@@ -1,12 +1,11 @@
 ---
 name: credential-management
-description: How to manage user credentials, API keys, OAuth tokens, and service connections
-  using Nymeria's auth tools. Use this skill whenever you need to request a new credential
-  from the user (API key, OAuth login, PAT, or multi-field form), inspect existing
-  credentials, clean up stale or duplicate credentials, or manage credential-to-target
-  bindings for runtime secret resolution. Also use when a tool fails due to missing
-  authentication, when you need to check if a credential exists before requesting
-  a new one, or when connecting an MCP server that needs an API key.
+description: Request, inspect, test, clean up, and bind the user's credentials
+  (API keys, OAuth logins, tokens, multi-field forms) with Nymeria's auth
+  tools. Load this BEFORE asking the user for any secret, when a tool or MCP
+  server fails on missing or expired auth, or to check whether a credential
+  already exists rather than requesting a duplicate. Not for tools that need
+  no auth.
 metadata:
   nymeria:
     required_tools:
@@ -407,4 +406,4 @@ to hard-block even that can add a `pre_tool_use` hook guardrail on `auth_write`.
 - You want to save a recurring authenticated workflow as reusable instructions ->
   `skill-management`.
 - For the overall operating philosophy and when to create which artifact ->
-  `Skill(name="self-improve")`.
+  `Skill(name="self-improve", ttl="1h")`.

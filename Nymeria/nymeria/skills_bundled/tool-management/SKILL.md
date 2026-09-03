@@ -1,10 +1,11 @@
 ---
 name: tool-management
-description: Find, enable, and build Nymeria tools. Use this skill to give Nymeria a
-  new capability that is a tool, whether by enabling an existing tool or category from
-  the registry, or by probing an HTTP API and wrapping it as a reusable custom tool.
-  Load it whenever the user needs something Nymeria cannot currently do and the answer
-  is "a tool" (not an MCP server, not a reusable skill, not a credential).
+description: Find, enable, and build Nymeria tools. Load this BEFORE telling
+  the user a capability does not exist, whenever they need something Nymeria
+  cannot currently do and the answer is a tool, whether by enabling an
+  existing tool or category from the registry or by probing an HTTP API and
+  wrapping it as a reusable custom tool. Not for an MCP server, a reusable
+  skill, or a credential (those have their own kits).
 metadata:
   nymeria:
     required_tools:
@@ -76,8 +77,9 @@ When unsure: one call now -> defer; several calls over a real task -> bind.
 This kit's own five tools are protected management tools: `tool_invoke` refuses
 them, so they can only ever be BOUND, and when this kit's TTL lapses they all
 go together. A `[System: Skill Kit tool-management's tools expired ...]` notice
-or a refusal naming this kit means re-activate it (`Skill(name="tool-management")`)
-for a fresh window; there is no deferred route back.
+or a refusal naming this kit means re-activate it
+(`Skill(name="tool-management", ttl="2h")`) for a fresh window; there is no
+deferred route back.
 
 ## Path 2: Build a New Tool
 
@@ -187,7 +189,7 @@ workflow; changing Nymeria's own codebase is a separate, admin-only path.
 - The user wants a persistent, re-invocable specialist (not just a tool) ->
   `callable-thread-builder`.
 - For the overall operating philosophy and when to create which artifact ->
-  `Skill(name="self-improve")`.
+  `Skill(name="self-improve", ttl="1h")`.
 
 ## Output
 

@@ -327,12 +327,12 @@ def _ensure_marketplace_indexed(agent, source: str) -> tuple[str, str | None]:
 # on a hit. An installed skill is loadable immediately by name (even if it is
 # not enabled on this thread); a marketplace skill must be installed first.
 _INSTALLED_NEXT_STEP = (
-    'Load any of these now with Skill(name="<name>") — no install or enable '
-    "needed, an installed skill loads by exact name."
+    'Load any of these now with Skill(name="<name>", ttl="<window>"): no '
+    "install or enable needed, an installed skill loads by exact name."
 )
 _MARKETPLACE_NEXT_STEP = (
     'These are not installed yet. Install one with install_skill(name="<name>"), '
-    'then load it with Skill(name="<name>").'
+    'then load it with Skill(name="<name>", ttl="<window>").'
 )
 
 
@@ -364,7 +364,7 @@ def search_skills(
             - ``mode`` is "semantic" (best), "bm25" (keyword fallback), or
               "substring" (final safety net)
             - ``next_step`` tells you how to use a hit: an installed result
-              loads immediately with Skill(name=...); a marketplace result must
+              loads immediately with Skill(name=..., ttl=...); a marketplace result must
               be install_skill'd first.
             - ``warning`` is only present when search is running in degraded
               mode. Surface its message to the user so they can set up a

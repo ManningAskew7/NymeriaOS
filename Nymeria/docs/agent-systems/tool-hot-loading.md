@@ -25,7 +25,7 @@ Tool hot-loading does the same thing:
 User: "convert report.docx to PDF"
   │
   ├─ Graph invocation #1 (no pdf_* tools bound)
-  │    ├─ tool_call: Skill(name="tool-management")
+  │    ├─ tool_call: Skill(name="tool-management", ttl="2h")
   │    ├─ tool_call: tool_search(query="pdf")
   │    ├─ tool_result: pdf_view, pdf_edit, pdf_write found
   │    ├─ tool_call: tool_manage(action="enable", tools=["pdf_write"])
@@ -114,8 +114,8 @@ generic dispatch idiom they are trained on and guess arguments by tool name
   is to bind and reload the tool set, so they belong on the binding surface).
 - `Skill(name=..., defer=true)` is the kit-level expression: it loads the kit's
   instructions plus its tools' argument schemas and binds none of the kit's
-  tools, for use via `tool_invoke`. `ttl` (bind) and `defer` are mutually
-  exclusive. One exception to "binds nothing" (backlog #170): when the thread
+  tools, for use via `tool_invoke`. `ttl` stays required by the schema and is
+  ignored under `defer=true`. One exception to "binds nothing" (backlog #170): when the thread
   cannot call `tool_invoke` itself (e.g. an account whose curated
   `default_thread_tools` predates the tool, #164), the activation binds just
   `tool_invoke` on a self-cleaning 7-day TTL and announces it in the result.
@@ -159,7 +159,7 @@ the resolver and, for a call whose tool exists but is not in that set:
   thread, the lead sentence names the Skill Kit (or `tool_manage`) that bound
   it, the window, and when it expired; else, if an installed kit's
   `required_tools` names it, the kit; and the remedies offered are only the
-  reachable ones (`Skill(name=<kit>)` when the meta-tool is bound, otherwise
+  reachable ones (`Skill(name=<kit>, ttl=...)` when the meta-tool is bound, otherwise
   the user's `/kit <kit>`; `tool_manage` when bound; `tool_invoke` when bound
   AND the tool is not a protected management tool, which `tool_invoke` refuses).
   A truly unknown name (absent from the superset too) still gets the parent's
@@ -206,9 +206,12 @@ that are not currently bound, the Skill tool:
 
 1. Validates every required tool strictly (unknown, unloadable, or admin-only
    dependencies fail before any config write).
-2. Writes the required tools to `temporary_tools` or `enabled_tools` using the
-   skill's `metadata.nymeria.tool_ttl` (`2h` by default; accepts `Nm`, `Nh`,
-   `Nd`, `Nw`, or `never`/`permanent`).
+2. Writes the required tools to `temporary_tools` or `enabled_tools` for the
+   window the agent passed as the REQUIRED `ttl` argument (`Nm`, `Nh`, `Nd`,
+   `Nw`, or `permanent`/`never`; a blank or invalid value refuses the whole
+   activation). The skill's `metadata.nymeria.tool_ttl` (`2h` when absent) is
+   the author's suggestion, shown in the listing, and the default only for
+   `/kit` and programmatic activation.
 3. Removes required tools from `disabled_tools` when needed, matching
    `tool_manage(action="enable")`.
 4. In dynamic-binding mode, returns the skill body plus a binding-result block.
@@ -409,7 +412,7 @@ No background scheduler. `resolve_temporary_tools()` (`core/agent_tools.py`) fil
 
 A lapse reaches the model three ways, all fed by `expired_tools`:
 
-- **Next prompt.** The turn-input build (`agent_streaming_input._apply_tool_expiry_notice`) folds a one-line `[System: Skill Kit <kit>'s tools expired at <time> (<ttl> TTL) and are no longer bound: <names>. Re-activate it with Skill(name="<kit>") (or /kit <kit>) for a fresh window. ...]` directly under the `[Time:]/[Trigger:]` block (kits first, then direct binds). It persists in the checkpoint like that block and is stripped from history views by the same reader (`agent_history.SYSTEM_NOTICE_PATTERN`), the raw message carrying it on `additional_kwargs["tool_expiry_notice"]`.
+- **Next prompt.** The turn-input build (`agent_streaming_input._apply_tool_expiry_notice`) folds a one-line `[System: Skill Kit <kit>'s tools expired at <time> (<ttl> TTL) and are no longer bound: <names>. Re-activate it with Skill(name="<kit>", ttl="<lapsed window>") (or /kit <kit>) for a fresh window. ...]` directly under the `[Time:]/[Trigger:]` block (kits first, then direct binds). It persists in the checkpoint like that block and is stripped from history views by the same reader (`agent_history.SYSTEM_NOTICE_PATTERN`), the raw message carrying it on `additional_kwargs["tool_expiry_notice"]`.
 - **Mid-turn.** An eviction inside a running turn flags the thread (`agent._tool_expiry_signal`); `route_after_tools` turns the flag into a `source="system"` pending prompt at the next sub-turn boundary, so the same text arrives through the queued-prompt absorb path (halt, drain, one internal `[Trigger: System Notice]` HumanMessage, re-drive). The `notified` flag on each record is the single once-only truth across both deliveries, and it flips at ABSORB (`build_queued_prompt_messages`), not at enqueue: a queued notice dropped before delivery (user stop, abort, inject failure, closing queue) is simply carried by the next prompt instead.
 - **A call to the expired tool** gets the kit-aware refusal described under Unbound-call enforcement.
 

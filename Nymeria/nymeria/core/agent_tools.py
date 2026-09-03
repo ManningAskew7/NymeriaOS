@@ -314,11 +314,14 @@ def render_tool_expiry_notice(records: Dict[str, Any]) -> str:
     for kit in sorted(by_kit):
         recs = kit_records[kit]
         latest = max(ensure_aware_utc(r.expired_at) for r in recs)
+        # The recall example passes the window that just lapsed: Skill()
+        # requires a ttl and has no default.
+        again = next((t for t in (expiry_ttl_text(r) for r in recs) if t), "2h")
         parts.append(
             f"Skill Kit {kit}'s tools expired at {expiry_clock(latest)}{_ttl_label(recs)} "
             f"and are no longer bound: {_notice_names(by_kit[kit])}. "
-            f'Re-activate it with Skill(name="{kit}") (or /kit {kit}) for a '
-            "fresh window."
+            f'Re-activate it with Skill(name="{kit}", ttl="{again}") (or /kit {kit}) '
+            "for a fresh window."
         )
     if direct:
         lead = "TTL also expired on" if parts else "TTL expired on"
