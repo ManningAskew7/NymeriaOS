@@ -168,6 +168,7 @@ class ClaudeCodeCommandsMixin:
 
         cancel_event = threading.Event()
         model = get_effective_claude_code_model(thread_id, settings.nymeria_claude_code_model)
+        job_id = secrets.token_hex(4)
         try:
             prepared = prepare_run(
                 settings,
@@ -178,11 +179,12 @@ class ClaudeCodeCommandsMixin:
                 resume=not fresh,
                 abort_event=cancel_event,
                 model=model,
+                job_id=job_id,
+                dispatched_by="the user (/code command, no model in the loop)",
             )
         except ClaudeCodeError as exc:
             return command_error(f"Claude Code could not start: {exc}")
 
-        job_id = secrets.token_hex(4)
         job = ClaudeCodeJob(
             id=job_id,
             thread_id=thread_id,
@@ -192,8 +194,11 @@ class ClaudeCodeCommandsMixin:
             mode=cli_mode,
             started_at=time.time(),
             detached_message=_ack_markdown(job_id, cli_mode, prepared.resume_session_id),
+            observer=prepared.observer,
+            resumed_session_id=prepared.resume_session_id,
             deliver=deliver_code_result,
             cancel_event=cancel_event,
+            peek=prepared.peek,
         )
         # Atomic check-and-set: two concurrent /code dispatches (desktop and
         # Telegram, or a double send) must not both start against one
@@ -220,17 +225,24 @@ class ClaudeCodeCommandsMixin:
         if job.wait_inline(INLINE_WAIT_SECONDS) != "inline":
             return command_info(job.detached_message, data={**data, "detached": True})
 
-        # Quick run: the reply IS the delivery. The exchange is still recorded
-        # in thread history so the thread carries it and a later model turn
-        # can read what happened.
-        assert job.result is not None  # wait_inline claims inline only once done
-        outcome = outcome_of(job)
-        finish(job, outcome)
-        text = render_result_markdown(job)
+        # Quick report: the reply IS the delivery. The exchange is still
+        # recorded in thread history so the thread carries it and a later
+        # model turn can read what happened. The first report may be an
+        # INTERIM end-turn of a run that is still going (the watcher then
+        # delivers the rest as they land); only a final one settles the
+        # registry.
+        report = job.first_report
+        assert report is not None  # wait_inline claims inline only once a report exists
+        text = render_result_markdown(job, report)
         agent = get_current_agent()
         if agent is not None:
-            record_inline(agent, job, text)
-        data["session_id"] = job.result.session_id
+            record_inline(agent, job, text, report)
+        data["session_id"] = job.session_id
+        if not report.final:
+            return command_info(text, data={**data, "interim": True})
+        assert job.result is not None
+        outcome = outcome_of(job)
+        finish(job, outcome)
         if outcome != "completed":
             return command_error(text, data=data)
         return command_success(text, data=data)
@@ -239,7 +251,8 @@ class ClaudeCodeCommandsMixin:
     def _still_running(job: Any) -> CommandOutput:
         elapsed = max(0.0, time.time() - job.started_at)
         state = "is delivering its result" if job.done.is_set() else "is still running"
+        session = f" (session {job.session_id})" if job.session_id else ""
         return command_error(
-            f"Claude Code job {job.id} {state} on this thread ({elapsed:.0f}s). "
+            f"Claude Code job {job.id}{session} {state} on this thread ({elapsed:.0f}s). "
             "Wait for it to land, or `/stop` to cancel it."
         )

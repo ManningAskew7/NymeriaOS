@@ -86,7 +86,7 @@ def test_claude_code_runs_within_allowlist(tmp_path, monkeypatch):
 
     captured = {}
 
-    def fake_run_local(request, config, timeout, env=None):
+    def fake_run_local(request, config, timeout, env=None, **kw):
         captured["cwd"] = request.cwd
         captured["mode"] = request.permission_mode
         return bridge.ClaudeCodeResult(ok=True, result_text="done")

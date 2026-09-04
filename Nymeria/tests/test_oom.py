@@ -177,14 +177,22 @@ def test_run_local_blocking_passes_oom_preexec(monkeypatch, tmp_path):
 
     captured: dict = {}
 
+    import io
+
     class _FakeProc:
+        """The bridge streams stdout and waits on the process; a finished
+        child with its one ``result`` line already on the pipe."""
+
         returncode = 0
 
         def __init__(self, args, **kwargs):
             captured.update(kwargs)
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO('{"type": "result", "result": "ok", "subtype": "success"}\n')
+            self.stderr = io.StringIO("")
 
-        def communicate(self, input=None, timeout=None):
-            return ('{"result": "ok", "subtype": "success"}', "")
+        def wait(self, timeout=None):
+            return 0
 
         def poll(self):
             return 0

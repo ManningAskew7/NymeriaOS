@@ -26,7 +26,13 @@ user, never root. Start it with ``python3 run.py claude-code-runner``.
 
 Endpoints:
 - ``POST /run``   -> ``{job_id, status}`` (kicks off the run; poll for the result)
-- ``GET  /job/{id}`` -> ``{status, result?}``
+- ``GET  /job/{id}`` -> ``{status, session_id, end_turns, result?}``: the
+  session id as soon as the CLI announces it and every end-turn so far, so
+  the tool can persist the session and deliver interim turns while the run
+  is still going.
+- ``GET  /job/{id}/peek?tail=N`` and ``GET /sessions/{session_id}/peek?tail=N``
+  -> the live transcript tail (``RunObserver.snapshot``), a read-only look
+  at a running (or recently finished) session without resuming it.
 - ``POST /cancel/{id}`` -> ``{status}`` (group-kills the job's Claude Code process)
 - ``GET  /health`` -> ``{status, claude}`` (no auth)
 
@@ -53,6 +59,7 @@ from ..tools.claude_code_bridge import (
     ClaudeCodeResult,
     ClaudeCodeRunConfig,
     DEFAULT_DISALLOWED_TOOLS,
+    RunObserver,
     build_subprocess_env,
     map_mode,
     parse_roots,
@@ -89,6 +96,21 @@ class _RunnerJob:
     result: Optional[ClaudeCodeResult] = None
     created_at: float = field(default_factory=time.time)
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    # Fed by the run as it streams: session id, end-turns, transcript tail.
+    observer: RunObserver = field(default_factory=RunObserver)
+
+    def status_payload(self) -> dict:
+        payload: dict = {
+            "status": self.status,
+            "session_id": self.observer.session_id,
+            "end_turns": [t.to_payload() for t in self.observer.turns_after(0)],
+        }
+        if self.status == "completed" and self.result is not None:
+            payload["result"] = self.result.to_payload()
+        return payload
+
+    def peek_payload(self, tail: int) -> dict:
+        return {"job_id": self.id, "status": self.status, **self.observer.snapshot(tail)}
 
 
 class _JobRegistry:
@@ -109,6 +131,14 @@ class _JobRegistry:
     def get(self, job_id: str) -> Optional[_RunnerJob]:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def by_session(self, session_id: str) -> Optional[_RunnerJob]:
+        """The newest job on ``session_id`` (a resumed session has several)."""
+        with self._lock:
+            for job in reversed(self._jobs.values()):
+                if job.observer.session_id == session_id:
+                    return job
+        return None
 
     def complete(self, job_id: str, result: ClaudeCodeResult) -> None:
         with self._lock:
@@ -212,6 +242,7 @@ def _execute(job: _RunnerJob, request: ClaudeCodeRequest, config: ClaudeCodeRunC
                     timeout=RUNNER_HARD_TIMEOUT,
                     env=build_subprocess_env(config.bare),
                     cancel_check=job.cancel_event.is_set,
+                    observer=job.observer,
                 )
         finally:
             if semaphore is not None:
@@ -219,6 +250,7 @@ def _execute(job: _RunnerJob, request: ClaudeCodeRequest, config: ClaudeCodeRunC
     except Exception as exc:  # noqa: BLE001 - never leave a job stuck "running".
         logger.exception("Runner job %s failed", job.id)
         result = ClaudeCodeResult(ok=False, is_error=True, error=f"runner error: {exc}"[:2000])
+    job.observer.mark_finished()  # a peek after completion reports it as such
     registry.complete(job.id, result)
 
 
@@ -294,9 +326,21 @@ def create_app(*, allow_insecure: bool = False):
         job = registry.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        if job.status == "completed" and job.result is not None:
-            return {"status": "completed", "result": job.result.to_payload()}
-        return {"status": job.status}
+        return job.status_payload()
+
+    @app.get("/job/{job_id}/peek")
+    def job_peek(job_id: str, tail: int = 12, _: None = Depends(_auth)) -> dict:
+        job = registry.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return job.peek_payload(tail)
+
+    @app.get("/sessions/{session_id}/peek")
+    def session_peek(session_id: str, tail: int = 12, _: None = Depends(_auth)) -> dict:
+        job = registry.by_session(session_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="no job on that session")
+        return job.peek_payload(tail)
 
     @app.post("/cancel/{job_id}")
     def cancel(job_id: str, _: None = Depends(_auth)) -> dict:
