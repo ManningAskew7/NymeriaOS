@@ -118,6 +118,7 @@ SOURCE_TRIGGER_LABELS = {
     "watchdog": "Watchdog",
     "background_bash": "Background Bash",
     "claude_code": "Claude Code",
+    "callable_result": "Callable Thread Result",
     "hook_continuation": "Hook Continuation",
     "dream": "Dream",
     # Harness-authored notices absorbed mid-turn (a kit's TTL lapsing while

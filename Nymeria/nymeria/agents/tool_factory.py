@@ -189,6 +189,13 @@ This is a specialized thread with its own tools and context. Use mode="ask" to
 delegate and wait for the final answer, or mode="handoff" to transfer work to
 the target thread without waiting for its final output. In handoff mode, the
 target thread responds through its own autonomous output channels.
+
+An ask waits inline for a bounded budget (just under the tool timeout). If the
+thread is still working when that lapses you get a [StillWorking] receipt, not
+an error: its final output is delivered to you later as a new prompt on this
+thread (no polling needed; you may end your turn), and a further call with
+mode="handoff" queues extra instructions for the running thread. Handoffs
+never deliver output back.
 """
 
     # Capture in closure
@@ -208,7 +215,7 @@ target thread responds through its own autonomous output channels.
 
         Args:
             task: A clear description of what you want this thread to do. Be specific about the goal and any constraints.
-            mode: "ask" waits for this thread's final answer and returns it to you. "handoff" starts autonomous work in this thread and returns only a dispatch receipt.
+            mode: "ask" waits for this thread's final answer and returns it to you (bounded: a long run returns a [StillWorking] receipt and the answer arrives later as a prompt on your thread). "handoff" starts autonomous work in this thread and returns only a dispatch receipt.
             scheduled_for: For mode="handoff" only, delay execution until a time such as "30s", "5m", "1h", "1d", or "YYYY-MM-DD HH:MM". Omit for immediate handoff.
             if_busy: For handoff mode, "queue" waits for the target thread lock in the background; "error" returns immediately if the target thread is busy. For ask mode, "error" performs a best-effort busy check before waiting.
         """
@@ -217,6 +224,7 @@ target thread responds through its own autonomous output channels.
         from ..core.thread_agent_executor import (
             handoff as thread_handoff,
             invoke as thread_invoke,
+            invoke_with_continuation as thread_invoke_with_continuation,
         )
 
         user_id = config.get("configurable", {}).get("user_id", "default") if config else "default"
@@ -264,9 +272,12 @@ target thread responds through its own autonomous output channels.
             _agent, user_id, parent_thread_id
         )
 
-        # Break the LangChain callback/tracing inheritance chain so the inner
+        # Break the LangChain callback/tracing inheritance chain so an inner
         # graph.invoke() doesn't propagate LLM token events back to the
-        # parent's astream_events() — prevents stream leakage.
+        # parent's astream_events() (stream leakage). The continuation and
+        # handoff paths run the callee on a fresh worker thread, which starts
+        # with an empty context, so this matters for the no-caller-thread
+        # fallback below, which still runs the callee inline here.
         config_token = var_child_runnable_config.set(None)
         callback_token = tracing_v2_callback_var.set(None)
         collector_token = run_collector_var.set(None)
@@ -283,6 +294,22 @@ target thread responds through its own autonomous output channels.
                     scheduled_for=scheduled_for,
                     if_busy=if_busy,
                 )
+            if parent_thread_id:
+                # Bounded inline wait; a long run detaches and its output
+                # wakes the caller thread later (thread_agent_executor's
+                # "Ask continuations"). The invocation edge registered above
+                # is dropped in ``finally`` either way, so a detached callee
+                # is a handoff target from then on: no cascade-abort from
+                # the caller, no circular block if it calls the caller back.
+                return thread_invoke_with_continuation(
+                    _thread_id,
+                    task,
+                    user_id,
+                    _name,
+                    caller_thread_id=parent_thread_id,
+                    trigger_override=trigger_override,
+                )
+            # No caller thread to wake (no turn context): plain blocking ask.
             return thread_invoke(
                 _thread_id,
                 task,

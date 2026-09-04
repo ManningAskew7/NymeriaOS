@@ -1290,6 +1290,7 @@ def spawn_thread(
         title=title,
         task=prompt.strip(),
         user_id=user_id,
+        callable_tool_name=callable_name if make_callable else None,
     )
     return f"{preamble}\n\n{response}"
 
@@ -1301,12 +1302,16 @@ def _invoke_spawned(
     title: str,
     task: str,
     user_id: str,
+    callable_tool_name: Optional[str] = None,
 ) -> str:
     """Dispatch the initial message to the spawned thread and collect its response.
 
     Mirrors thread_agent_executor.invoke() but works for either callable or
     non-callable spawned threads. Publishes autonomous events so the frontend
-    can stream the child's activity live.
+    can stream the child's activity live. ``callable_tool_name`` is the
+    generated tool name when the child is callable (the ``[StillWorking]``
+    receipt tells the parent to reach the child through it); None when there
+    is no such tool.
     """
     from langchain_core.runnables.config import var_child_runnable_config
     from langchain_core.tracers.context import (
@@ -1316,6 +1321,11 @@ def _invoke_spawned(
 
     from ..core.autonomous_turn import AutonomousTurnEmitter
     from ..core.stream_bridge import stream_and_collect
+    from ..core.thread_agent_executor import (
+        interim_note,
+        outstanding_for_caller,
+        run_with_continuation,
+    )
 
     task_id = f"spawned-{uuid.uuid4().hex[:8]}"
 
@@ -1345,72 +1355,100 @@ def _invoke_spawned(
         meta_event_types=("queued", "prompt_queued"),
     )
 
-    try:
-        parent_name = parent_thread_id or "unknown"
-        if parent_thread_id:
-            try:
-                parent_meta = agent.thread_metadata_manager.get_thread(
-                    user_id, parent_thread_id
-                )
-                if parent_meta and parent_meta.title:
-                    parent_name = parent_meta.title
-            except Exception:
-                logger.debug("Failed to resolve parent thread title")
-        trigger_override = f'SpawnedBy("{parent_thread_id}", "{parent_name}")'
+    def _run(progress_sink) -> str:
+        """The blocking child turn; runs on the continuation's worker."""
 
-        def stream_error_message(chunk: Dict[str, Any]) -> str:
-            content = chunk.get("content")
-            return str(content) if content else "spawned thread stream error"
+        def _on_chunk(chunk, collection) -> None:
+            emitter.handle_chunk(chunk, collection)
+            progress_sink(chunk)
 
-        result = stream_and_collect(
-            agent,
-            astream_kwargs={
-                "message": task,
-                "thread_id": child_thread_id,
-                "user_id": user_id,
-                "_is_self_invoke": True,
-                "_trigger_override": trigger_override,
-            },
-            on_chunk=emitter.handle_chunk,
-            error_message_factory=stream_error_message,
-        )
-
-        response_text = result.response_text()
-
-        iteration_limit_hit = result.iteration_limit_hit
-        if iteration_limit_hit and response_text:
-            response_text += (
-                "\n\n[Note: Spawned thread was stopped at iteration limit; "
-                "result may be incomplete.]"
-            )
-        elif iteration_limit_hit and not response_text:
-            response_text = (
-                "[Spawned thread hit iteration limit without producing a response.]"
-            )
-
-        emitter.publish_completed(
-            {"content": response_text, "callable_name": title}
-        )
-
-        return response_text or "[Spawned thread returned no content.]"
-
-    except Exception as e:
-        logger.error(
-            f"spawn_thread dispatch failed for {child_thread_id}: {e}", exc_info=True
-        )
         try:
-            emitter.publish_completed(
-                {
-                    "error": True,
-                    "error_message": str(e)[:200],
-                    "content": f"Task failed: {str(e)[:200]}",
-                    "callable_name": title,
-                }
-            )
-        except Exception:
-            logger.warning("Failed to publish task-completed error event", exc_info=True)
-        return f"[Error]: Initial message failed: {str(e)}"
+            parent_name = parent_thread_id or "unknown"
+            if parent_thread_id:
+                try:
+                    parent_meta = agent.thread_metadata_manager.get_thread(
+                        user_id, parent_thread_id
+                    )
+                    if parent_meta and parent_meta.title:
+                        parent_name = parent_meta.title
+                except Exception:
+                    logger.debug("Failed to resolve parent thread title")
+            trigger_override = f'SpawnedBy("{parent_thread_id}", "{parent_name}")'
 
+            def stream_error_message(chunk: Dict[str, Any]) -> str:
+                content = chunk.get("content")
+                return str(content) if content else "spawned thread stream error"
+
+            result = stream_and_collect(
+                agent,
+                astream_kwargs={
+                    "message": task,
+                    "thread_id": child_thread_id,
+                    "user_id": user_id,
+                    "_is_self_invoke": True,
+                    "_trigger_override": trigger_override,
+                },
+                on_chunk=_on_chunk,
+                error_message_factory=stream_error_message,
+            )
+
+            response_text = result.response_text()
+
+            iteration_limit_hit = result.iteration_limit_hit
+            if iteration_limit_hit and response_text:
+                response_text += (
+                    "\n\n[Note: Spawned thread was stopped at iteration limit; "
+                    "result may be incomplete.]"
+                )
+            elif iteration_limit_hit and not response_text:
+                response_text = (
+                    "[Spawned thread hit iteration limit without producing a response.]"
+                )
+
+            emitter.publish_completed(
+                {"content": response_text, "callable_name": title}
+            )
+
+            text = response_text or "[Spawned thread returned no content.]"
+            # Single-hop honesty (thread_agent_executor "Ask continuations"):
+            # asks the child made that are still running detached will wake
+            # the child, not the parent, so the parent's answer is interim.
+            note = interim_note(title, outstanding_for_caller(child_thread_id))
+            return f"{text}\n\n{note}" if note else text
+
+        except Exception as e:
+            logger.error(
+                f"spawn_thread dispatch failed for {child_thread_id}: {e}", exc_info=True
+            )
+            try:
+                emitter.publish_completed(
+                    {
+                        "error": True,
+                        "error_message": str(e)[:200],
+                        "content": f"Task failed: {str(e)[:200]}",
+                        "callable_name": title,
+                    }
+                )
+            except Exception:
+                logger.warning("Failed to publish task-completed error event", exc_info=True)
+            return f"[Error]: Initial message failed: {str(e)}"
+
+    try:
+        if parent_thread_id:
+            # Bounded inline wait; a long first turn detaches and its output
+            # wakes the parent later (the callable-ask contract).
+            return run_with_continuation(
+                agent=agent,
+                run=_run,
+                callable_name=title,
+                target_thread_id=child_thread_id,
+                caller_thread_id=parent_thread_id,
+                caller_user_id=user_id,
+                task=task,
+                task_id=task_id,
+                follow_up_tool=callable_tool_name,
+            )
+        return _run(lambda _chunk: None)
     finally:
         run_collector_var.reset(collector_token)
         tracing_v2_callback_var.reset(callback_token)

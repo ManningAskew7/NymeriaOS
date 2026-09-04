@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from ..core.completion_delivery import CompletionDelivery
+
 logger = logging.getLogger(__name__)
 
 TAIL_BYTES = 4096
@@ -324,15 +326,59 @@ def _watch(record: BackgroundJobRecord, proc) -> None:
         )
 
 
+def _delivery(record: BackgroundJobRecord, prompt_text: str) -> CompletionDelivery:
+    """The shared detach-and-deliver descriptor for one finished job."""
+    from ..core.activity_log import ActivityType
+
+    job_fields = {
+        "job_id": record.id,
+        "pid": record.pid,
+        "command": record.command,
+        "exit_code": record.exit_code,
+    }
+    return CompletionDelivery(
+        thread_id=record.thread_id,
+        user_id=record.user_id,
+        prompt_text=prompt_text,
+        source=SOURCE,
+        source_id=record.id,
+        source_label=_source_label(record),
+        task_id=_task_id(record),
+        label="Background bash job",
+        started_data=dict(job_fields),
+        completed_data={
+            **job_fields,
+            "stdout_path": record.stdout_path,
+            "stderr_path": record.stderr_path,
+        },
+        activity_message=_activity_message(record),
+        activity_metadata={
+            "source": SOURCE,
+            **job_fields,
+            "stdout_path": record.stdout_path,
+            "stderr_path": record.stderr_path,
+        },
+        activity_type=(
+            ActivityType.TASK_COMPLETED
+            if record.exit_code == 0
+            else ActivityType.TASK_FAILED
+        ),
+        # A user who just stopped this thread does not want it waking itself
+        # up with a job result; the files stay on disk for a later read.
+        drop_on_abort=True,
+    )
+
+
 def _submit_completion_prompt(record: BackgroundJobRecord) -> None:
-    """Submit or queue a follow-up prompt for a completed background job."""
+    """Submit or queue a follow-up prompt for a completed background job.
+
+    Thin wrapper over ``core.completion_delivery.submit_completion`` (the
+    choreography shared with Claude Code runs and callable-ask
+    continuations); kept as a module-level seam for tests and the watcher.
+    """
 
     from ..core.agent import get_current_agent
-    from ..core.pending_prompt_queue import (
-        PendingPromptQueueClosingError,
-        get_pending_queue,
-        make_pending_prompt,
-    )
+    from ..core.completion_delivery import submit_completion
 
     agent = get_current_agent()
     if agent is None:
@@ -341,40 +387,13 @@ def _submit_completion_prompt(record: BackgroundJobRecord) -> None:
             record.id,
         )
         return
-    if _should_drop_for_thread_state(record, agent):
-        return
 
     prompt_text = build_completion_prompt(record)
-    thread_locks = agent._thread_locks
-    if thread_locks.is_thread_busy(record.thread_id):
-        pending = make_pending_prompt(
-            message=prompt_text,
-            source=SOURCE,
-            source_id=record.id,
-            source_label=_source_label(record),
-            user_id=record.user_id,
-            is_autonomous=True,
-            fanout_mailbox=None,
-            consumer_loop=None,
-        )
-        try:
-            get_pending_queue().enqueue(record.thread_id, pending)
-            logger.info(
-                "Queued background bash completion prompt job=%s thread=%s",
-                record.id,
-                record.thread_id,
-            )
-            return
-        except PendingPromptQueueClosingError:
-            logger.info(
-                "Thread %s is releasing; firing background bash job %s as next turn",
-                record.thread_id,
-                record.id,
-            )
-        if _should_drop_for_thread_state(record, agent):
-            return
-
-    _fire_autonomous_turn(record, prompt_text, agent)
+    submit_completion(
+        agent,
+        _delivery(record, prompt_text),
+        fire=lambda: _fire_autonomous_turn(record, prompt_text, agent),
+    )
 
 
 def build_completion_prompt(record: BackgroundJobRecord) -> str:
@@ -414,187 +433,10 @@ def _fire_autonomous_turn(
 ) -> None:
     """Run the completion prompt as an autonomous turn and publish SSE events."""
 
-    if _should_drop_for_thread_state(record, agent):
-        return
+    from ..core.completion_delivery import fire_autonomous_turn
 
-    from ..core.activity_log import ActivityType
-    from ..core.autonomous_turn import AutonomousTurnEmitter
-    from ..core.stream_bridge import stream_and_collect
+    fire_autonomous_turn(agent, _delivery(record, prompt_text))
 
-    task_id = _task_id(record)
-
-    emitter = AutonomousTurnEmitter(
-        thread_id=record.thread_id,
-        user_id=record.user_id,
-        task_id=task_id,
-        started_data={
-            "prompt": prompt_text,
-            "source": SOURCE,
-            "job_id": record.id,
-            "pid": record.pid,
-            "command": record.command,
-            "exit_code": record.exit_code,
-        },
-    )
-
-    def stream_error_message(chunk: dict) -> str:
-        error_content = chunk.get("content", "")
-        error_code = chunk.get("code", "unknown")
-        return error_content or f"Background bash stream error (code={error_code})"
-
-    astream_kwargs = {
-        "message": prompt_text,
-        "thread_id": record.thread_id,
-        "user_id": record.user_id,
-        "_is_self_invoke": True,
-        "source": SOURCE,
-        "source_id": record.id,
-        "source_label": _source_label(record),
-    }
-
-    try:
-        result = stream_and_collect(
-            agent,
-            astream_kwargs=astream_kwargs,
-            on_chunk=emitter.handle_chunk,
-            error_message_factory=stream_error_message,
-        )
-        emitter.publish_started()
-        response = result.response_text(fallback_to_thinking=True)
-        completed_data = {
-            "content": response,
-            "source": SOURCE,
-            "job_id": record.id,
-            "pid": record.pid,
-            "command": record.command,
-            "exit_code": record.exit_code,
-            "stdout_path": record.stdout_path,
-            "stderr_path": record.stderr_path,
-        }
-        if result.iteration_limit_hit:
-            completed_data["partial"] = True
-        emitter.publish_completed(completed_data)
-        activity_type = (
-            ActivityType.TASK_COMPLETED
-            if record.exit_code == 0
-            else ActivityType.TASK_FAILED
-        )
-        _log_activity(
-            activity_type,
-            _activity_message(record),
-            user_id=record.user_id,
-            thread_id=record.thread_id,
-            metadata={
-                "source": SOURCE,
-                "job_id": record.id,
-                "pid": record.pid,
-                "command": record.command,
-                "exit_code": record.exit_code,
-                "stdout_path": record.stdout_path,
-                "stderr_path": record.stderr_path,
-                "partial": result.iteration_limit_hit,
-            },
-        )
-    except Exception as exc:
-        safe_error = str(exc)[:300] or "Unknown error"
-        logger.exception(
-            "Background bash autonomous turn failed job=%s thread=%s",
-            record.id,
-            record.thread_id,
-        )
-        emitter.publish_started()
-        emitter.publish_completed(
-            {
-                "content": f"Background bash job {record.id} failed: {safe_error}",
-                "source": SOURCE,
-                "job_id": record.id,
-                "pid": record.pid,
-                "command": record.command,
-                "exit_code": record.exit_code,
-                "status": "error",
-                "error": safe_error,
-                "error_message": safe_error,
-            }
-        )
-        _log_activity(
-            ActivityType.TASK_FAILED,
-            f"Background bash job {record.id} notification failed: {safe_error[:120]}",
-            user_id=record.user_id,
-            thread_id=record.thread_id,
-            metadata={
-                "source": SOURCE,
-                "job_id": record.id,
-                "pid": record.pid,
-                "command": record.command,
-                "exit_code": record.exit_code,
-                "error": safe_error,
-            },
-        )
-
-
-def _log_activity(
-    activity_type,
-    message: str,
-    *,
-    user_id: str,
-    thread_id: str,
-    metadata: dict,
-) -> None:
-    try:
-        from ..core.activity_log import log_activity
-
-        log_activity(
-            activity_type,
-            message,
-            user_id=user_id,
-            thread_id=thread_id,
-            metadata=metadata,
-        )
-    except Exception as exc:
-        logger.warning("Failed to log background bash activity: %s", exc)
-
-
-def _should_drop_for_thread_state(record: BackgroundJobRecord, agent) -> bool:
-    try:
-        abort_event = agent._thread_locks.get_abort_event(record.thread_id)
-        if abort_event.is_set():
-            logger.info(
-                "Thread %s aborted; dropping background bash completion job=%s",
-                record.thread_id,
-                record.id,
-            )
-            return True
-    except Exception as exc:
-        logger.warning(
-            "Failed to check abort state for background bash job %s: %s",
-            record.id,
-            exc,
-        )
-
-    repo = getattr(agent, "accounts_repo", None)
-    get_owner = getattr(repo, "get_thread_owner", None)
-    if callable(get_owner):
-        try:
-            owner = get_owner(record.thread_id)
-        except Exception as exc:
-            logger.warning(
-                "Failed to verify owner for background bash job %s: %s",
-                record.id,
-                exc,
-            )
-            return True
-        if owner != record.user_id:
-            logger.info(
-                "Thread owner mismatch for background bash job %s: "
-                "thread=%s owner=%s record_user=%s; dropping completion",
-                record.id,
-                record.thread_id,
-                owner,
-                record.user_id,
-            )
-            return True
-
-    return False
 
 
 def _tail_file(path: str, max_bytes: int = TAIL_BYTES) -> str:

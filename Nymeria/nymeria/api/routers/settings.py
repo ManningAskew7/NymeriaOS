@@ -726,7 +726,8 @@ def _llm_api_key_env_var(provider: str) -> str | None:
     return spec.api_key_env_vars[0]
 # tool_timeout is captured into SafeToolNode at graph build, so a hot PATCH must
 # rebuild the graph (otherwise the cached kill-timeout drifts from settings; the
-# claude_code tool's inline-vs-detach budget depends on the two staying in sync).
+# claude_code tool's inline-vs-detach budget and the callable-ask wait budget
+# (`thread_agent_executor.ask_wait_budget`) both depend on the two staying in sync).
 _GRAPH_REBUILD_FIELDS = (
     _LLM_FIELDS | {"tool_output_max_chars", "tool_timeout"} | _LLM_CREDENTIAL_FIELDS
 )
