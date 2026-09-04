@@ -578,3 +578,82 @@ def test_todo_atomic_update_does_not_mask_body_exception(tmp_path: Path):
             raise ValueError("boom")
     # The save still ran in ``finally`` despite the body exception.
     assert saves["n"] == 1
+
+
+def test_nym_todo_partial_update_preserves_omitted_schedule_and_recurrence(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """PATCH semantics on update: an omitted field is left alone.
+
+    Intake 20260828-044238Z reported a status-only ``nym_todo`` update wiping
+    a future ``scheduled_for`` (the wake was a medication ping that would
+    never have fired). The tool never had that defect: the real killer was the
+    ticker's post-run finalize overwriting a mid-run re-arm, fixed 2026-08-29
+    (``shipped/06``). This pins the tool contract the report expected, on the
+    JSON record AND the schedule index the ticker actually fires from:
+    status-only, notes-only, task-only, and recurrence-only updates keep the
+    schedule, a schedule-only update keeps the recurrence, and ``clear_*`` is
+    the only way either field goes away.
+    """
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: schedule_db)
+    slot = (utc_now() + timedelta(hours=2)).replace(microsecond=0)
+    todo_id = _seed_rearmed_recurring(
+        manager, schedule_db, slot=slot, last_execution=None
+    )
+
+    def item():
+        return manager.get_todos("owner").get_item(todo_id)
+
+    for kwargs in (
+        {"status": "in_progress"},
+        {"status": "pending"},
+        {"notes": "took #2 at 13:45"},
+        {"task": "Ping about dose #3"},
+        {"recurrence": "2d"},
+    ):
+        result = todo_tools.nym_todo.func(
+            todo_id=todo_id, config=_config("thread-a"), **kwargs
+        )
+        assert result.startswith(f"[Updated]: TODO {todo_id}"), kwargs
+        assert "(scheduled)" in result, kwargs
+        assert item().scheduled_for == slot, kwargs
+        assert _row_time(schedule_db, todo_id) == slot, kwargs
+    assert item().recurrence == "2d"
+    assert item().notes == "took #2 at 13:45"
+    assert item().task == "Ping about dose #3"
+
+    # A schedule-only update moves the slot and keeps the recurrence.
+    result = todo_tools.nym_todo.func(
+        todo_id=todo_id, scheduled_for="3h", config=_config("thread-a")
+    )
+    assert "(recurring: 2d)" in result
+    moved = item()
+    assert moved.scheduled_for != slot
+    assert moved.recurrence == "2d"
+    assert _row_time(schedule_db, todo_id) == moved.scheduled_for
+
+    # clear_recurrence is the only thing that drops the recurrence, and it
+    # leaves the schedule armed.
+    result = todo_tools.nym_todo.func(
+        todo_id=todo_id, clear_recurrence=True, config=_config("thread-a")
+    )
+    assert "(recurrence cleared)" in result
+    assert item().recurrence is None
+    assert item().scheduled_for == moved.scheduled_for
+    assert _row_time(schedule_db, todo_id) == moved.scheduled_for
+
+    # clear_schedule is the only thing that drops the schedule, JSON and index
+    # both; a scheduled_for passed alongside it does not resurrect it.
+    result = todo_tools.nym_todo.func(
+        todo_id=todo_id,
+        scheduled_for="4h",
+        clear_schedule=True,
+        config=_config("thread-a"),
+    )
+    assert "(schedule cleared)" in result
+    assert item().scheduled_for is None
+    assert schedule_db.get_entry(todo_id) is None

@@ -175,6 +175,9 @@ def nym_todo(
 ) -> str:
     """
     Create or update a TODO item. Omit todo_id to create, provide it to update.
+    Updates are partial: a field you omit keeps its current value, so a
+    status-only or notes-only update never touches scheduled_for or the
+    recurrence. Only clear_schedule / clear_recurrence remove them.
 
     These are YOUR tasks. Scheduled TODOs auto-wake you to execute them.
     Use scheduled_for to prompt yourself at a specific time.

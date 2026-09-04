@@ -359,6 +359,73 @@ def test_patch_to_done_reschedules_recurring_todo(
     assert _scheduled_row_count(tmp_path, todo_id) == 1
 
 
+def test_patch_partial_update_preserves_omitted_schedule_and_recurrence(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """REST twin of the nym_todo PATCH-semantics pin (intake 20260828-044238Z):
+    a status-only, notes-only, task-only, or recurrence-only PATCH keeps
+    ``scheduled_for`` on the record and in the schedule index; only
+    ``clear_schedule`` / ``clear_recurrence`` remove a field."""
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+
+    created = client.post(
+        "/todos",
+        headers=headers,
+        json={
+            "task": "Ping about dose #3",
+            "scheduled_for": "2h",
+            "recurrence": "1d",
+            "thread_id": "thread-1",
+        },
+    )
+    assert created.status_code == 200
+    todo_id = created.json()["id"]
+    slot = created.json()["scheduled_for"]
+    assert slot is not None
+    slot_row = _scheduled_row_time(tmp_path, todo_id)
+
+    for patch in (
+        {"status": "in_progress"},
+        {"status": "pending"},
+        {"notes": "took #2 at 13:45"},
+        {"task": "Ping about dose #4"},
+        {"recurrence": "2d"},
+    ):
+        patched = client.patch(f"/todos/{todo_id}", headers=headers, json=patch)
+        assert patched.status_code == 200, patch
+        assert patched.json()["scheduled_for"] == slot, patch
+        assert _scheduled_row_time(tmp_path, todo_id) == slot_row, patch
+    body = patched.json()
+    assert body["recurrence"] == "2d"
+    assert body["notes"] == "took #2 at 13:45"
+    assert body["task"] == "Ping about dose #4"
+
+    moved = client.patch(
+        f"/todos/{todo_id}", headers=headers, json={"scheduled_for": "3h"}
+    ).json()
+    assert moved["scheduled_for"] != slot
+    assert moved["recurrence"] == "2d"
+    assert _scheduled_row_time(tmp_path, todo_id) != slot_row
+
+    cleared_rec = client.patch(
+        f"/todos/{todo_id}", headers=headers, json={"clear_recurrence": True}
+    ).json()
+    assert cleared_rec["recurrence"] is None
+    assert cleared_rec["scheduled_for"] == moved["scheduled_for"]
+    assert _scheduled_row_count(tmp_path, todo_id) == 1
+
+    cleared = client.patch(
+        f"/todos/{todo_id}",
+        headers=headers,
+        json={"scheduled_for": "4h", "clear_schedule": True},
+    ).json()
+    assert cleared["scheduled_for"] is None
+    assert _scheduled_row_count(tmp_path, todo_id) == 0
+
+
 def test_patch_to_done_after_ticker_rearm_does_not_consume_the_armed_slot(
     tmp_path: Path,
     api_client_builder,
