@@ -201,12 +201,15 @@ def test_pulse_prompt_has_no_seen_section_and_permits_silence():
     prompt = compose_pulse_prompt([_msg("a"), _msg("b")])
     assert "Chat pulse: 2 new messages" in prompt
     assert "already seen" not in prompt
-    assert "or do nothing" in prompt
+    assert "or take no action" in prompt
     # The trailer names every action family the tools allow, not just
-    # comment-or-silence; tone stays the thread system prompt's job.
+    # comment-or-silence; tone stays the thread system prompt's job. The
+    # opt-out is a plain option, not a stated default: a "most pulses warrant
+    # nothing" steer is obeyed so reliably it makes the other options moot.
     for family in ("twitch_send", "moderation tools", "research tools"):
         assert family in prompt
-    assert "quip" not in prompt and "insult" not in prompt
+    for steer in ("quip", "insult", "warrant nothing", "do nothing"):
+        assert steer not in prompt
 
 
 def test_chat_text_line_breaks_cannot_forge_a_fenced_line():

@@ -202,7 +202,7 @@ overwritten by the bot):
 - During periodic chat pulses you see the new messages since your last look.
   Reply with twitch_send when you can add value, moderate when someone is
   disruptive, research a recurring topic you do not know (web search) so a
-  later reply lands better, or do nothing: most pulses warrant nothing.
+  later reply lands better, or take no action.
 - Keep messages short and natural; Twitch chat moves fast. Max 400 chars per
   message, plain text only (no markdown).
 ```
@@ -231,8 +231,9 @@ interesting is happening.
 - **Minimum activity**: `TWITCH_PULSE_MIN_MESSAGES` (default 10; live via `!pulse min <count>`)
 - **Behavior**: the agent receives only **unseen** messages, closed by a
   tone-free action menu (reply via `twitch_send`, moderate, research with its
-  info or web tools, or nothing); appetite for each is the thread's system
-  prompt. Skipped pulses carry their
+  info or web tools, or no action) with no stated default, since a "usually
+  do nothing" steer is obeyed so reliably it makes the other options moot;
+  appetite for each is the thread's system prompt. Skipped pulses carry their
   messages over to the next delivery, so nothing is dropped and nothing is
   double-delivered. The pulse never fires on a dead or offline chat.
 
