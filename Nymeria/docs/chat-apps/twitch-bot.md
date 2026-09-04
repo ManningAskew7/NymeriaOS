@@ -200,7 +200,9 @@ overwritten by the bot):
 - Use your info tools to stay aware of stream status, viewer count, current
   game, and who is in chat.
 - During periodic chat pulses you see the new messages since your last look.
-  Use twitch_send if you can add value, or do nothing if chat is boring.
+  Reply with twitch_send when you can add value, moderate when someone is
+  disruptive, research a recurring topic you do not know (web search) so a
+  later reply lands better, or do nothing: most pulses warrant nothing.
 - Keep messages short and natural; Twitch chat moves fast. Max 400 chars per
   message, plain text only (no markdown).
 ```
@@ -227,8 +229,10 @@ interesting is happening.
 
 - **Interval**: `TWITCH_PULSE_INTERVAL` (default 300s; live via `!pulse <seconds>`)
 - **Minimum activity**: `TWITCH_PULSE_MIN_MESSAGES` (default 10; live via `!pulse min <count>`)
-- **Behavior**: the agent receives only **unseen** messages and decides
-  whether to call `twitch_send` or stay silent. Skipped pulses carry their
+- **Behavior**: the agent receives only **unseen** messages, closed by a
+  tone-free action menu (reply via `twitch_send`, moderate, research with its
+  info or web tools, or nothing); appetite for each is the thread's system
+  prompt. Skipped pulses carry their
   messages over to the next delivery, so nothing is dropped and nothing is
   double-delivered. The pulse never fires on a dead or offline chat.
 
