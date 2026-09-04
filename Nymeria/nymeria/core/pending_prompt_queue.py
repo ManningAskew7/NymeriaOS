@@ -163,6 +163,10 @@ class PendingPrompt:
     # so a blocked queuer can tell its prompt was handed back to the user
     # rather than dropped.
     restored: bool = field(default=False)
+    # Set by ``_wake_prompt`` when the prompt was woken with an error (an
+    # abort, a restore, an eviction, an inject failure) rather than absorbed,
+    # so a producer without a mailbox can still read the outcome.
+    error_code: Optional[str] = field(default=None)
 
 
 def _wake_prompt(
@@ -183,6 +187,8 @@ def _wake_prompt(
         prompt.abandoned = True
     if restored:
         prompt.restored = True
+    if error_code:
+        prompt.error_code = error_code
     if prompt.fanout_mailbox is not None:
         if error_code:
             prompt.fanout_mailbox.put({
