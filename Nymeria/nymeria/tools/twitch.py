@@ -23,16 +23,20 @@ The chat-reading half of the old family lives in the Twitch bot thin client
 
 Egress: every request goes through ``policy_http_client`` +
 ``request_with_policy`` (see ``tests/test_service_integration_egress.py``).
-The Helix and token hosts are module constants; no credential-supplied value
-ever reaches a URL authority, and the credential spec declares no destination
-group, so the vault join gate does not arm here.
+The Helix, token, and preview-CDN hosts are module constants; no
+credential-supplied or response-supplied value ever reaches a URL authority
+(the preview URL takes only a sanitized channel login as a path segment), and
+the credential spec declares no destination group, so the vault join gate
+does not arm here.
 """
 from __future__ import annotations
 
 from .registry import ToolGroup, register_tool_group
 
 import logging
+import re
 import time
+from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, NamedTuple, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -44,6 +48,7 @@ from .credential_registry import (
     ProviderCredentialSpec,
     register_provider_spec,
 )
+from .image_generation import finalize_captured_image
 from .service_integration_base import (
     credential_value as _credential_value,
     filtered as _filtered,
@@ -57,6 +62,21 @@ logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT = 30.0
 _HELIX_BASE_URL = "https://api.twitch.tv/helix"
 _TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+
+# Twitch's public preview image of a live stream: the URL every channel page
+# embeds and the one Helix's ``thumbnail_url`` template names. Built from this
+# constant plus the channel login only, never from a response value.
+_PREVIEW_URL_TEMPLATE = (
+    "https://static-cdn.jtvnw.net/previews-ttv/live_user_{login}-{width}x{height}.jpg"
+)
+_PREVIEW_BASE_WIDTH = 1920
+_PREVIEW_BASE_HEIGHT = 1080
+# The CDN caches a rendered size for 300 s (``cache-control: max-age=300``,
+# measured 2026-09-04) and renders a size nobody has cached on demand from the
+# current broadcast. A clock-derived width over a wider modulus cannot repeat
+# inside that window, so each look gets a fresh render (undocumented Twitch
+# behaviour; the caller falls back to the cached size when it fails).
+_PREVIEW_SIZE_PERIOD_S = 320
 
 # Process-local caches. Access tokens are minted per (client_id, refresh_token)
 # pair and expire; identity lookups are stable for the process lifetime.
@@ -116,6 +136,7 @@ _TWITCH = register_provider_spec(
             "twitch_automod_review",
             "twitch_shoutout",
             "twitch_get_stream",
+            "twitch_get_stream_frame",
             "twitch_get_channel",
             "twitch_get_chatters",
             "twitch_get_banned",
@@ -422,6 +443,61 @@ def _mod_params(tool_name: str, config: Optional[RunnableConfig]) -> dict[str, s
 
 def _error(exc: Exception) -> str:
     return f"[Error]: {exc}"
+
+
+# =============================================================================
+# Stream row and preview image (public CDN, no credentials)
+# =============================================================================
+
+
+def _stream_row(tool_name: str, config: Optional[RunnableConfig]) -> Optional[dict[str, Any]]:
+    """The Helix stream object for the configured channel, ``None`` when offline.
+
+    Raises RuntimeError carrying the Helix status on a non-200, so both stream
+    tools report it through their shared except-clause.
+    """
+    resp = _helix(
+        "GET",
+        "streams",
+        tool_name=tool_name,
+        config=config,
+        params={"user_id": _broadcaster_id(tool_name, config)},
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"{resp.status_code} {resp.text[:200]}")
+    data = resp.json().get("data", [])
+    return data[0] if data else None
+
+
+def _preview_login(stream: dict[str, Any]) -> str:
+    """The channel login for the preview path: Helix's, else the configured channel.
+
+    Reduced to letters, digits, and underscores (a Twitch login's alphabet), so
+    the response value can only ever select a path segment on the CDN host.
+    """
+    raw = str(stream.get("user_login") or _settings_value("twitch_channel") or "")
+    return re.sub(r"[^a-z0-9_]", "", raw.strip().lower())
+
+
+def _preview_size(now: float) -> tuple[int, int]:
+    """A near-1080p 16:9 size that cannot repeat within the CDN's cache window."""
+    width = _PREVIEW_BASE_WIDTH - 1 - int(now) % _PREVIEW_SIZE_PERIOD_S
+    return width, round(width * 9 / 16)
+
+
+def _preview_url(login: str, width: int, height: int) -> str:
+    return _PREVIEW_URL_TEMPLATE.format(login=login, width=width, height=height)
+
+
+def _fetch_preview(login: str, width: int, height: int) -> Optional[bytes]:
+    """One unauthenticated GET of the preview; JPEG bytes, or None on any miss."""
+    resp = _twitch_http("GET", _preview_url(login, width, height))
+    if resp.status_code != 200:
+        return None
+    body = resp.content or b""
+    if not body.startswith(b"\xff\xd8"):  # JPEG magic; anything else is an error page
+        return None
+    return body
 
 
 # =============================================================================
@@ -752,27 +828,81 @@ def twitch_shoutout(
 def twitch_get_stream(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
-    """Get the current live stream status: viewers, game, title, uptime. Returns 'offline' if not live."""
+    """Get the current live stream status: viewers, game, title, uptime, plus the URL of Twitch's cached preview image (a snapshot up to 5 minutes old). Returns 'offline' if not live. To actually look at the stream, use twitch_get_stream_frame."""
     try:
-        resp = _helix(
-            "GET",
-            "streams",
-            tool_name="twitch_get_stream",
-            config=config,
-            params={"user_id": _broadcaster_id("twitch_get_stream", config)},
-        )
-        if resp.status_code != 200:
-            return f"[Error]: {resp.status_code} {resp.text[:200]}"
-        data = resp.json().get("data", [])
-        if not data:
+        s = _stream_row("twitch_get_stream", config)
+        if s is None:
             return "Stream is offline."
-        s = data[0]
-        return (
+        line = (
             f"LIVE: {s['title']} | Game: {s.get('game_name', 'N/A')} | "
             f"Viewers: {s['viewer_count']} | Started: {s.get('started_at', 'unknown')}"
         )
+        login = _preview_login(s)
+        if login:
+            line += f" | Preview: {_preview_url(login, _PREVIEW_BASE_WIDTH, _PREVIEW_BASE_HEIGHT)}"
+        return line
     except Exception as e:
         return _error(e)
+
+
+@tool(response_format="content_and_artifact")
+def twitch_get_stream_frame(
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Look at the live stream: capture one still frame of the broadcast as an image you can see.
+
+    Fetches Twitch's public preview image of the configured channel (a JPEG of
+    what is on stream right now, about 1920x1080, webcam, HUD, and overlays
+    visible) and attaches it for you to view on your next step. Use it when chat
+    is talking about something on screen, when asked what is happening, or to
+    check the game state before commenting. Returns 'offline' text and no image
+    when the channel is not live.
+
+    Freshness: normally a fresh render a few seconds old ('on-demand render' in
+    the result); if that path fails it falls back to Twitch's cached preview,
+    which can be up to five minutes old, and the result says so. Cost: one
+    public CDN fetch (no credentials sent), roughly 300 KB, and the frame stays
+    in your context as an image for a few steps, so look when it will change
+    what you say, not on every pulse.
+    """
+    tool_name = "twitch_get_stream_frame"
+    try:
+        s = _stream_row(tool_name, config)
+        if s is None:
+            return "Stream is offline; there is no frame to capture.", {}
+        login = _preview_login(s)
+        if not login:
+            raise RuntimeError("Could not determine the channel login for the preview image.")
+        width, height = _preview_size(time.time())
+        raw = _fetch_preview(login, width, height)
+        freshness = "on-demand render, seconds old"
+        if raw is None:
+            raw = _fetch_preview(login, _PREVIEW_BASE_WIDTH, _PREVIEW_BASE_HEIGHT)
+            freshness = "cached preview, may be up to 5 minutes old"
+        if raw is None:
+            return (
+                "[Error]: Twitch's preview CDN returned no image for this stream; "
+                "try again in a minute.",
+                {},
+            )
+        captured = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        summary = (
+            f"Live frame of #{login}: {s.get('title', '')} | Game: {s.get('game_name', 'N/A')} | "
+            f"Viewers: {s.get('viewer_count', '?')} | Captured {captured} ({freshness})."
+        )
+        return finalize_captured_image(
+            raw=raw,
+            mime_type="image/jpeg",
+            config=config,
+            summary=summary,
+            label=f"twitch stream frame #{login}",
+            source="twitch_stream_frame",
+            provider="twitch",
+            model="preview-cdn",
+            output_name=f"twitch-{login}",
+        )
+    except Exception as e:
+        return _error(e), {}
 
 
 @tool
@@ -1215,6 +1345,7 @@ TWITCH_TOOLS = [
     twitch_shoutout,
     # Channel & Stream Info
     twitch_get_stream,
+    twitch_get_stream_frame,
     twitch_get_channel,
     twitch_get_chatters,
     twitch_get_banned,

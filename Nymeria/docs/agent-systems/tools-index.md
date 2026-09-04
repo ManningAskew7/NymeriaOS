@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1263 tools found.**
+**1264 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1147,6 +1147,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `twitch_get_chatters` | `nymeria/tools/twitch.py` | Get list of users currently in chat with total count. |
 | `twitch_get_schedule` | `nymeria/tools/twitch.py` | Get the channel's upcoming stream schedule. |
 | `twitch_get_stream` | `nymeria/tools/twitch.py` | Get the current live stream status: viewers, game, title, uptime. Returns 'offline' if not live. |
+| `twitch_get_stream_frame` | `nymeria/tools/twitch.py` | Look at the live stream: capture one still frame of the broadcast as an image you can see. |
 | `twitch_get_subs` | `nymeria/tools/twitch.py` | Check subscriber count, or check if a specific user is subscribed. Requires broadcaster token. |
 | `twitch_resolve_prediction` | `nymeria/tools/twitch.py` | Resolve, cancel, or lock a prediction. Requires broadcaster token. |
 | `twitch_send` | `nymeria/tools/twitch.py` | Send a message to the Twitch channel chat. |

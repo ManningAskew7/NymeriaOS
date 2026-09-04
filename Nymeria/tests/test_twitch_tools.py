@@ -8,6 +8,8 @@ the module's ``_twitch_http`` seam (the one place requests leave the module),
 mirroring the ``_request_json`` seam the service-integration tests use.
 """
 
+from pathlib import Path
+
 import pytest
 
 from _service_integration_helpers import (  # type: ignore[import-not-found]
@@ -20,10 +22,11 @@ HELIX = "https://api.twitch.tv/helix"
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, json_body=None, text=""):
+    def __init__(self, status_code=200, json_body=None, text="", content=b""):
         self.status_code = status_code
         self._json = json_body if json_body is not None else {}
         self.text = text
+        self.content = content
 
     def json(self):
         return self._json
@@ -677,13 +680,236 @@ def test_no_tool_carries_the_disabled_prefix():
         assert "DISABLED" not in t.description, t.name
 
 
-def test_family_is_21_tools_without_read_chat():
+def test_family_is_22_tools_without_read_chat():
     from nymeria.tools import twitch as tools
 
     names = {t.name for t in tools.TWITCH_TOOLS}
-    assert len(tools.TWITCH_TOOLS) == 21
+    assert len(tools.TWITCH_TOOLS) == 22
     assert "twitch_read_chat" not in names
     assert {"twitch_send", "twitch_ban", "twitch_get_stream", "twitch_create_poll"} <= names
+
+
+# ---------------------------------------------------------------------------
+# Behavior: twitch_get_stream_frame, a look at the live broadcast
+# ---------------------------------------------------------------------------
+
+JPEG = b"\xff\xd8\xff\xe0" + b"fresh-frame"
+CACHED_JPEG = b"\xff\xd8\xff\xe0" + b"cached-frame"
+PREVIEW_TEMPLATE = "https://static-cdn.jtvnw.net/previews-ttv/live_user_silk-{width}x{height}.jpg"
+CDN = "https://static-cdn.jtvnw.net/"
+
+
+def _frame_handler(*, live=True, odd=None, base=None, login="silk", streams=None):
+    """Helix live stub (with the thumbnail_url Helix really sends), plus the CDN.
+
+    ``odd`` answers any non-standard size (the fresh-render path), ``base``
+    the standard 1920x1080 (the cached fallback); ``streams`` overrides the
+    whole Helix streams response.
+    """
+    odd = odd or (lambda: FakeResponse(200, content=JPEG))
+    base = base or (lambda: FakeResponse(200, content=CACHED_JPEG))
+
+    def handler(call):
+        if call["url"].startswith(CDN):
+            assert call["method"] == "GET"
+            assert not call["headers"]  # public CDN: no credentials ride along
+            size = call["url"].rsplit("-", 1)[1].removesuffix(".jpg")
+            return base() if size == "1920x1080" else odd()
+        if call["url"] == f"{HELIX}/streams":
+            if streams is not None:
+                return streams()
+            if not live:
+                return FakeResponse(200, {"data": []})
+            row = {
+                "title": "T",
+                "game_name": "G",
+                "viewer_count": 3,
+                "started_at": "now",
+                "thumbnail_url": PREVIEW_TEMPLATE,
+            }
+            if login is not None:
+                row["user_login"] = login
+            return FakeResponse(200, {"data": [row]})
+        return _standard_handler(call)
+
+    return handler
+
+
+def _cdn_urls(calls):
+    return [c["url"] for c in calls if c["url"].startswith(CDN)]
+
+
+def _cdn_sizes(calls):
+    return [u.rsplit("-", 1)[1].removesuffix(".jpg") for u in _cdn_urls(calls)]
+
+
+def _frame_setup(monkeypatch, tmp_path, handler, *, now=1_700_000_000.0):
+    from nymeria.tools import twitch as tools
+
+    _configure_env(monkeypatch)
+    _no_vault(monkeypatch)
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setattr(tools.time, "time", lambda: now)
+    return tools, _fake_transport(monkeypatch, handler)
+
+
+def test_stream_frame_attaches_a_fresh_render_from_the_workspace(monkeypatch, tmp_path):
+    from nymeria.core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
+
+    tools, calls = _frame_setup(monkeypatch, tmp_path, _frame_handler())
+    config = {"configurable": {"user_id": "owner@example.com"}}
+
+    content, artifact = tools.twitch_get_stream_frame.func(config=config)
+
+    assert "Live frame of #silk" in content and "Game: G" in content
+    assert "on-demand render" in content
+    meta = artifact[NATIVE_IMAGE_ARTIFACT_KEY]
+    assert meta["source"] == "twitch_stream_frame"
+    assert meta["mime_type"] == "image/jpeg"
+    assert meta["native_context_enabled"] is True
+    assert f"[attach:{meta['path']}]" in content
+    path = Path(meta["path"])
+    assert path.is_relative_to(tmp_path.resolve())  # confined: the model may see it
+    assert path.read_bytes() == JPEG
+    sizes = _cdn_sizes(calls)
+    assert len(sizes) == 1 and sizes[0] != "1920x1080"  # never the cached size first
+    w, h = (int(x) for x in sizes[0].split("x"))
+    assert 1920 - 320 <= w < 1920 and abs(h - w * 9 / 16) < 1
+
+
+def test_stream_frame_size_cannot_repeat_inside_the_cdn_cache_window(monkeypatch, tmp_path):
+    tools, calls = _frame_setup(monkeypatch, tmp_path, _frame_handler())
+    t0 = 1_700_000_000.0
+
+    seen = []
+    for offset in (0, 1, 299):  # the CDN caches a size for 300 s
+        monkeypatch.setattr(tools.time, "time", lambda: t0 + offset)
+        tools.twitch_get_stream_frame.func(config=None)
+        seen.append(_cdn_sizes(calls)[-1])
+    assert len(set(seen)) == 3
+
+    monkeypatch.setattr(tools.time, "time", lambda: t0 + 0.4)  # same second, same instant
+    tools.twitch_get_stream_frame.func(config=None)
+    assert _cdn_sizes(calls)[-1] == seen[0]
+
+    # The whole window, directly: 300 consecutive seconds give 300 distinct sizes.
+    window = {tools._preview_size(t0 + k) for k in range(300)}
+    assert len(window) == 300 and (1920, 1080) not in window
+
+
+@pytest.mark.parametrize(
+    "login, expected",
+    [
+        ("Silk_TV", "silk_tv"),  # Helix login, normalised
+        ("silk/../evil?x=1", "silkevilx1"),  # a hostile login can only pick a path segment
+        (None, "silk"),  # no Helix login: the configured TWITCH_CHANNEL
+    ],
+)
+def test_stream_frame_url_is_the_cdn_constant_plus_a_sanitised_login(
+    monkeypatch, tmp_path, login, expected
+):
+    tools, calls = _frame_setup(monkeypatch, tmp_path, _frame_handler(login=login))
+
+    tools.twitch_get_stream_frame.func(config=None)
+
+    (url,) = _cdn_urls(calls)
+    assert url.startswith(f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{expected}-")
+    assert url.endswith(".jpg") and "{" not in url
+
+
+@pytest.mark.parametrize(
+    "streams, needle",
+    [
+        (lambda: FakeResponse(500, text="helix down"), "500"),
+        (lambda: FakeResponse(200, {"data": ["not-a-stream-row"]}), "Error"),
+    ],
+    ids=["helix-non-200", "malformed-row"],
+)
+def test_stream_frame_helix_failures_are_error_tuples_without_a_fetch(
+    monkeypatch, tmp_path, streams, needle
+):
+    tools, calls = _frame_setup(monkeypatch, tmp_path, _frame_handler(streams=streams))
+
+    content, artifact = tools.twitch_get_stream_frame.func(config=None)
+
+    assert content.startswith("[Error]") and needle in content
+    assert artifact == {}
+    assert _cdn_urls(calls) == []
+
+
+def test_stream_frame_unconfigured_channel_makes_no_request(monkeypatch, tmp_path):
+    tools, calls = _frame_setup(monkeypatch, tmp_path, _frame_handler())
+    monkeypatch.delenv("TWITCH_CHANNEL", raising=False)
+
+    content, artifact = tools.twitch_get_stream_frame.func(config=None)
+
+    assert content.startswith("[Error]") and "TWITCH_CHANNEL" in content
+    assert artifact == {}
+    assert calls == []
+
+
+def test_stream_frame_offline_returns_text_and_no_image(monkeypatch, tmp_path):
+    tools, calls = _frame_setup(monkeypatch, tmp_path, _frame_handler(live=False))
+
+    content, artifact = tools.twitch_get_stream_frame.func(config=None)
+
+    assert "offline" in content.lower()
+    assert artifact == {}
+    assert _cdn_sizes(calls) == []
+    assert not list(tmp_path.rglob("*.jpg"))
+
+
+@pytest.mark.parametrize(
+    "odd",
+    [
+        lambda: FakeResponse(404, text="not found"),
+        lambda: FakeResponse(200, content=b"<html>error page</html>"),
+        lambda: FakeResponse(200, content=b""),
+    ],
+    ids=["non-200", "non-jpeg-body", "empty-body"],
+)
+def test_stream_frame_falls_back_to_the_cached_preview_and_says_so(monkeypatch, tmp_path, odd):
+    from nymeria.core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
+
+    tools, calls = _frame_setup(monkeypatch, tmp_path, _frame_handler(odd=odd))
+
+    content, artifact = tools.twitch_get_stream_frame.func(config=None)
+
+    assert "cached preview" in content and "5 minutes" in content
+    assert "on-demand" not in content
+    assert Path(artifact[NATIVE_IMAGE_ARTIFACT_KEY]["path"]).read_bytes() == CACHED_JPEG
+    sizes = _cdn_sizes(calls)
+    assert len(sizes) == 2 and sizes[1] == "1920x1080" and sizes[0] != "1920x1080"
+
+
+def test_stream_frame_both_paths_failing_is_an_honest_error(monkeypatch, tmp_path):
+    fail = lambda: FakeResponse(503, text="cdn down")  # noqa: E731
+    tools, _ = _frame_setup(monkeypatch, tmp_path, _frame_handler(odd=fail, base=fail))
+
+    content, artifact = tools.twitch_get_stream_frame.func(config=None)
+
+    assert content.startswith("[Error]") and "preview" in content
+    assert artifact == {}
+    assert not list(tmp_path.rglob("*.jpg"))
+
+
+def test_stream_frame_is_a_safe_info_tool_bound_to_the_twitch_credential():
+    from nymeria.tools import twitch as tools
+    from nymeria.tools.metadata import SecurityLevel, get_tool_metadata
+
+    assert get_tool_metadata("twitch_get_stream_frame").security_level == SecurityLevel.SAFE
+    assert "twitch_get_stream_frame" in tools._TWITCH.tools
+    assert tools.twitch_get_stream_frame.response_format == "content_and_artifact"
+
+
+def test_get_stream_names_the_cached_preview_url(monkeypatch):
+    tools, calls = _frame_setup(monkeypatch, Path("/nonexistent-unused"), _frame_handler())
+
+    result = tools.twitch_get_stream.func(config=None)
+
+    assert "LIVE: T" in result
+    assert "Preview: https://static-cdn.jtvnw.net/previews-ttv/live_user_silk-1920x1080.jpg" in result
+    assert _cdn_urls(calls) == []  # names it, never fetches it
 
 
 def test_security_metadata_preserved():
