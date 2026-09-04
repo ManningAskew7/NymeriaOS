@@ -614,3 +614,46 @@ def test_terminate_process_group_noop_when_already_exited(monkeypatch):
     monkeypatch.setattr(b.os, "killpg", lambda pgid, sig: calls.append(sig))
     b.terminate_process_group(_P())
     assert calls == []  # nothing signalled
+
+
+def _fake_http(monkeypatch, status, body):
+    """Stand in for the policy HTTP client: every GET answers ``status``/``body``."""
+    class _Resp:
+        status_code = status
+        text = json.dumps(body) if isinstance(body, dict) else body
+
+        def json(self):
+            if not isinstance(body, dict):
+                raise ValueError("not json")
+            return body
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, params=None, headers=None):
+            return _Resp()
+
+    monkeypatch.setattr(b, "_http_client", lambda timeout: _Client())
+
+
+def test_remote_peek_404_tells_a_missing_route_from_an_expired_job(monkeypatch):
+    """Bug 2 (2026-09-04): the one 404 message blamed "unknown job, or an old
+    runner" and quoted only the runner's job id. FastAPI's bare ``Not Found``
+    means the route is missing (old service); the runner's own ``job not
+    found`` means its record is gone."""
+    client = b.RemoteRunnerClient("http://runner:8200", "tok")
+    _fake_http(monkeypatch, 404, {"detail": "Not Found"})
+    with pytest.raises(b.RemoteRunnerError, match="predates the peek endpoint.*restart it"):
+        client.peek("0ab7ee1d41ee55a1")
+    _fake_http(monkeypatch, 404, {"detail": "job not found"})
+    with pytest.raises(b.RemoteRunnerError, match="no longer has its job 0ab7ee1d41ee55a1"):
+        client.peek("0ab7ee1d41ee55a1")
+    _fake_http(monkeypatch, 404, "<html>gateway</html>")
+    with pytest.raises(b.RemoteRunnerError, match="predates the peek endpoint"):
+        client.peek("x")
+    _fake_http(monkeypatch, 200, {"session_id": "s", "running": True, "tail": [], "tail_total": 0})
+    assert client.peek("x")["session_id"] == "s"

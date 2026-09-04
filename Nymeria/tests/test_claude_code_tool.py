@@ -676,6 +676,7 @@ def test_remote_polls_feed_the_observer_and_persist_the_session_early(tmp_path, 
     assert seen == [(1, 2), (2, 3)]
     assert observer.remote_job_id == "rj"
     assert result.result_text == "final" and [t.index for t in result.end_turns] == [1, 2]
+    assert observer.legacy_runner is False
 
 
 def test_remote_result_from_a_runner_without_end_turns_counts_as_one_turn(tmp_path, monkeypatch):
@@ -698,6 +699,7 @@ def test_remote_result_from_a_runner_without_end_turns_counts_as_one_turn(tmp_pa
     assert observer.session_id == "old-sess"
     assert [t.text for t in result.end_turns] == ["legacy"]
     assert observer.turn_count == 1
+    assert observer.legacy_runner is True
 
 
 def test_remote_peek_uses_the_runner_job_id(tmp_path, monkeypatch):
@@ -738,3 +740,112 @@ def test_remote_peek_uses_the_runner_job_id(tmp_path, monkeypatch):
     assert "tool_use Grep" in out and "RUNNING" in out
     release.set()
     assert _wait_for(lambda: not bg.find_job(job_id).running)
+
+
+def _remote_detached_run(monkeypatch, client_cls, tmp_path):
+    """Start a detached remote run against ``client_cls``; return the job and
+    the list the watcher's deliveries land in."""
+    settings = _settings(tmp_path, nymeria_claude_code_url="http://host:9000")
+    monkeypatch.setattr(claude_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(claude_module, "REMOTE_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(claude_module, "RemoteRunnerClient", client_cls)
+    delivered: list[tuple] = []
+    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: delivered.append((job, report)))
+    started = claude_module.claude_code.func("multi-turn", detach=True, config=THREAD_CFG)
+    job = bg.find_job(started.split("job ")[1].split(" ")[0])
+    assert job is not None
+    return job, delivered
+
+
+def test_legacy_runner_run_is_flagged_in_the_final_report_and_peek(tmp_path, monkeypatch):
+    """Job d1b0ff78 (2026-09-04): a runner service still on pre-end-turn code
+    reports nothing until the process exits, so a two-turn run reached the
+    thread as ONE delivery, labelled a normal single-turn FINAL, carrying
+    turn 2's text with turn 1 lost, and peek quoted only the runner's own
+    job id. The report must say the runner is legacy, and peek must explain
+    itself without a round trip, naming both ids."""
+    peeks: list = []
+
+    class LegacyClient:
+        polls = 0
+
+        def __init__(self, base_url, token):
+            pass
+
+        def run(self, payload, timeout):
+            return {"status": "running", "job_id": "cd5a4bbc58d11bba"}
+
+        def poll(self, job_id, timeout=30.0):
+            LegacyClient.polls += 1
+            if LegacyClient.polls < 3:
+                return {"status": "running"}  # no session_id, no end_turns
+            return {"status": "completed", "result": {
+                "ok": True, "result_text": "Turn 2: the subagent reported back",
+                "session_id": "925728ae", "subtype": "success", "num_turns": 1}}
+
+        def peek(self, job_id, tail=12, timeout=15.0):
+            peeks.append(job_id)
+            raise AssertionError("a legacy runner has no peek route to ask")
+
+        def cancel(self, job_id, timeout=10.0):
+            return True
+
+    job, delivered = _remote_detached_run(monkeypatch, LegacyClient, tmp_path)
+    assert _wait_for(lambda: len(delivered) == 1 and not job.running)
+    _, report = delivered[0]
+    assert report.final and [t.text for t in report.turns] == ["Turn 2: the subagent reported back"]
+    prompt = bg.build_completion_prompt(job, report)
+    assert "FINAL: run finished" in prompt
+    assert "only the terminal end-turn captured (legacy runner" in prompt
+    assert "1 end-turn(s)" not in prompt, "a truncated run must not pass as a normal single-turn one"
+    assert "[Runner note]: the runner service predates per-end-turn reporting" in prompt
+    assert "restart it at a quiet moment" in prompt
+
+    out = claude_module.claude_code.func(peek=job.id, config=THREAD_CFG)
+    assert peeks == [], "legacy detected from the polls: no peek round trip"
+    assert "End-turns so far: 1" in out
+    assert "No transcript tail: the runner service predates per-end-turn reporting" in out
+    assert f"Bridge job {job.id} is runner job cd5a4bbc58d11bba" in out
+
+
+def test_current_runner_end_turns_deliver_interim_then_final_through_the_remote_poll(tmp_path, monkeypatch):
+    """The same run against a runner that reports end-turns per poll: turn 1
+    goes out INTERIM once the settle window passes with the process alive,
+    turn 2 arrives as the FINAL with the cumulative count, no legacy note."""
+    release = threading.Event()
+
+    class CurrentClient:
+        def __init__(self, base_url, token):
+            pass
+
+        def run(self, payload, timeout):
+            return {"status": "running", "job_id": "rj-2"}
+
+        def poll(self, job_id, timeout=30.0):
+            turn1 = {"index": 1, "text": "turn 1: subagent outstanding", "subtype": "success"}
+            if not release.is_set():
+                return {"status": "running", "session_id": "s-2", "end_turns": [turn1]}
+            turn2 = {"index": 2, "text": "turn 2: done", "subtype": "success"}
+            return {"status": "completed", "session_id": "s-2", "end_turns": [turn1, turn2],
+                    "result": bridge.ClaudeCodeResult(
+                        ok=True, result_text="turn 2: done", session_id="s-2", subtype="success",
+                        end_turns=[bridge.EndTurn(1, "turn 1: subagent outstanding"), bridge.EndTurn(2, "turn 2: done")],
+                    ).to_payload()}
+
+        def cancel(self, job_id, timeout=10.0):
+            return True
+
+    job, delivered = _remote_detached_run(monkeypatch, CurrentClient, tmp_path)
+    assert _wait_for(lambda: len(delivered) == 1), "turn 1 was not delivered while the run went on"
+    _, interim = delivered[0]
+    assert interim.kind == bg.REPORT_INTERIM and [t.index for t in interim.turns] == [1]
+    assert job.running
+    assert "INTERIM end-turn 1" in bg.build_completion_prompt(job, interim)
+
+    release.set()
+    assert _wait_for(lambda: len(delivered) == 2)
+    _, final = delivered[1]
+    assert final.final and [t.index for t in final.turns] == [2] and final.total == 2
+    prompt = bg.build_completion_prompt(job, final)
+    assert "FINAL: run finished" in prompt and "2 end-turn(s)" in prompt
+    assert "legacy runner" not in prompt and "[Runner note]" not in prompt
