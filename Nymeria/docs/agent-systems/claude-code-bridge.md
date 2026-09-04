@@ -22,9 +22,10 @@ Two components, selected by environment:
 ```
 Telegram -> Nymeria agent (container) --claude_code tool-->  [HTTP + bearer token]
                                                   -> Host runner (python run.py claude-code-runner)
-                                                     -> claude -p --output-format json
-                                                  <- final text + run summary (+ session id)
-   <- Nymeria relays the result    (long/detached runs arrive as a follow-up autonomous message)
+                                                     -> claude -p --output-format stream-json --verbose
+                                                  <- session id, every end-turn as it lands, transcript tail
+                                                  <- final text + run summary
+   <- Nymeria relays each report   (every end-turn is its own follow-up message, tagged job + session)
 ```
 
 - **Container-side tool** (`nymeria/tools/claude_code.py`): the agent's interface.
@@ -33,7 +34,14 @@ Telegram -> Nymeria agent (container) --claude_code tool-->  [HTTP + bearer toke
   independently requires the bearer token, re-resolves the working-directory
   allowlist, re-maps the permission mode, applies the hard deny rules, and builds
   the run config from its own host environment. A compromised container cannot
-  make it step outside the allowlist or deny rules.
+  make it step outside the allowlist or deny rules. Endpoints: `POST /run`,
+  `GET /job/{id}` (`status`, `session_id`, `end_turns` so far, `result` when
+  done), `GET /job/{id}/peek?tail=N`, `GET /sessions/{session_id}/peek`,
+  `POST /cancel/{id}`, `GET /health`. The runner is a long-lived process
+  loaded from the checkout: restart the service after updating the code
+  (`systemctl --user restart nymeria-claude-code-runner`), at a quiet moment,
+  since the restart kills its in-flight runs. The tool degrades against an
+  older runner (session and end-turns known only at completion, no peek).
 
 Shared logic lives in `nymeria/tools/claude_code_bridge.py` so the tool and the
 runner build and interpret identical Claude Code invocations.
@@ -46,22 +54,51 @@ runner build and interpret identical Claude Code invocations.
   process. This is the slim / desktop path where the agent and `claude` are
   co-located.
 
-## Long runs: block, then detach
+## Reports: every end-turn, block then detach
 
-A Claude Code run can outlast the runtime's per-tool-call timeout
-(`settings.tool_timeout`, hard-capped at 900s), which would orphan the work. So
-every run is driven by a background watcher and the tool only *waits* on it for a
-bounded budget (kept below `tool_timeout`):
+Claude Code is driven with `--output-format stream-json`, one JSON event per
+line: a `system/init` event naming the session id up front, `assistant` and
+`user` events per content block, and one `result` event PER END-TURN. A `-p`
+run normally ends one turn and exits a few seconds later, but a run that
+ended its turn with background subagents outstanding is re-invoked when they
+report and ends another turn in the same process (a background Bash task does
+NOT keep it alive: the CLI kills those at exit). The old bridge parsed only the
+process's terminal object, so a session that said "suite running, will pick
+up" as an early end-turn delivered THAT as its completion and everything after
+had no path back (job 3c35ee19, 2026-09-04).
 
-- finishes within budget -> result returns inline;
-- exceeds budget (or `detach=True`) -> the tool returns a "working in the
-  background" notice and the watcher delivers an autonomous completion turn (the
-  same path as background bash: a pending prompt if the thread is busy, otherwise
-  a self-invoked turn with SSE `task_started` / `task_completed`).
+Now `RunObserver` (`claude_code_bridge.py`) folds the stream into the session
+id, the list of end-turns and a bounded transcript tail, and the watcher
+(`claude_code_background.py`) turns each end-turn into a REPORT delivered to
+the thread as its own completion prompt:
 
-The inline-vs-detach decision resolves exactly once, so a run is never notified
-twice and never silently dropped, even if the runtime kills the waiting tool
-thread.
+- **Tagged.** Every report opens with
+  `[Claude Code job <id> | session <id> | INTERIM end-turn k ...]` or
+  `[... | FINAL: run finished after Ns with N end-turn(s) ...]`, and every
+  tool return, `[Queued]` receipt and peek carries the same job + session tag,
+  so the agent always knows which run is talking and how to address it
+  (`resume="<session id>"`, `peek="<job id>"`).
+- **Interim vs final.** An observed end-turn is held `END_TURN_SETTLE_SECONDS`
+  (30s) for the process to exit; the common single-turn run merges into one
+  FINAL report. A turn the process outlives goes out as INTERIM ("the run is
+  still going; more follows"), with its own task id
+  (`claude-code-<job>-t<k>`) and activity entry. The FINAL report carries the
+  run summary (files changed, commits, cost, duration, `end_turns` count); if
+  its last end-turn was already delivered it says so instead of repeating it.
+- **Block, then detach.** A run can outlast the runtime's per-tool-call
+  timeout (`settings.tool_timeout`, hard-capped at 900s), so the tool only
+  *waits* for the FIRST report, up to a budget kept below `tool_timeout`
+  (`NYMERIA_CLAUDE_CODE_BLOCK_SECONDS` overrides). Ready in time: it returns
+  inline (an INTERIM first report is a valid inline answer; the rest follow).
+  Not in time, or `detach=True`: the tool returns a tagged "working in the
+  background" notice and every report arrives as an autonomous completion
+  turn (the same path as background bash: a pending prompt if the thread is
+  busy, otherwise a self-invoked turn with SSE `task_started` /
+  `task_completed`). The first report's inline-or-detached decision resolves
+  exactly once (`InlineLatch`), so it is never delivered twice and never
+  dropped; later reports are always delivered.
+- **Cancellation.** A `/stop` cancels the run; its FINAL report stays silent
+  (an interim already delivered is real output and stands).
 
 ## Permission modes
 
@@ -98,8 +135,58 @@ account the runner runs as.
 ## Sessions
 
 Claude Code sessions are cwd-scoped on the host. The tool persists a
-`(thread_id, project) -> session_id` map (`data/claude_code_sessions.json`) so
-`resume=True` continues the same conversation in the same directory across turns.
+`(thread_id, project) -> session_id` map (`data/claude_code_sessions.json`),
+written on FIRST SIGHT of the session id (the `init` event, or the runner's
+first poll that carries it), not at the end of the run, so the thread's "last
+session" is the one in flight.
+
+`resume` is addressable:
+
+- `True` (default): the thread's stored session for that directory.
+- A **session id**, or a **bridge job id** from any report: that specific
+  session, whichever thread or run last used it. This is how a follow-up
+  reaches the run you mean when several are in flight (the 2026-09-04
+  incidents: `resume=True` with a detached job running resumed the previous
+  session instead).
+- `False`: a fresh session.
+
+A prompt for a session that is **still running** cannot be injected into the
+`-p` process, and resuming it concurrently would fork the conversation. It is
+QUEUED on the live job instead (`ClaudeCodeJob.followups`) and the tool
+returns a `[Queued]` receipt at once, whatever `detach` says; when the run
+ends, the queued prompt(s) start as a new job resuming that session (same
+thread, mode, cwd and deliverer), and its reports arrive tagged with the same
+session id and the new job id. This is the callable-thread "follow-up wake"
+shape: a receipt now, the answer later, no polling. Bare `resume=True` queues
+the same way when the stored session is the live one. A run cancelled by
+`/stop` drops its queued follow-ups.
+
+## Peek: look at a running session without resuming it
+
+`claude_code(peek="<job id> | <session id> | latest", tail=N)` returns the
+session's live state: RUNNING or finished, elapsed time, its end-turns so
+far, and the last N transcript entries (assistant text, tool calls with a
+compact input preview, tool results, task notifications), each timestamped.
+Read-only: nothing is resumed and no Claude Code turn is spent. In local mode
+it reads the in-process `RunObserver`; in remote mode it calls the runner's
+`GET /job/{id}/peek?tail=N` (the runner also answers
+`GET /sessions/{session_id}/peek`). The runner keeps up to 200 entries per
+job; jobs stay addressable in the tool's live registry after they finish (the
+64 most recent).
+
+## Bridge context: every prompt names its thread
+
+Every prompt the bridge sends (tool and `/code` alike) is prefixed with a
+`[Nymeria bridge context] ... [end bridge context]` block
+(`claude_code_bridge.frame_prompt`) naming the originating Nymeria thread
+id, the bridge job id and, when resuming, the session id. It tells Claude
+Code that its end-turn messages reach that thread automatically (tagged, so
+it need not repeat them) and how to message the thread itself mid-task:
+the Nymeria MCP tool `nymeria_chat` with that `thread_id` when the MCP
+server is available to it, else `POST /threads/{id}/chat` on the API with a
+bearer token, opening the message with `[Claude Code job <id>]` so the thread
+knows who is talking. The user's raw prompt follows the block unchanged; a
+run with no thread context (direct CLI, tests) goes out bare.
 
 ## Auth
 
@@ -283,11 +370,15 @@ fix Nymeria on the host.
   `--new` starts fresh; `--resume` is accepted for clarity and changes nothing.
   Bare `/code` shows the thread's state: the run in flight, the last outcome,
   and the session the next prompt would resume.
-- **Reply, then follow-up.** The command waits up to 20 seconds. A quick run
-  answers inline (the command reply IS Claude Code's final message plus the
-  run summary). A longer run gets an immediate acknowledgement carrying the
-  job id, and the result arrives in the same chat when Claude Code finishes.
-  One run per thread at a time; a second `/code` is refused until it ends.
+- **Reply, then follow-up.** The command waits up to 20 seconds for the
+  run's FIRST report. A quick run answers inline (the command reply IS Claude
+  Code's message plus the run summary; an INTERIM first report is returned
+  as an info reply and the rest follow). A longer run gets an immediate
+  acknowledgement carrying the job id, and every report (each interim
+  end-turn, then the final) arrives in the same chat as its own model-free
+  holder turn, tagged with the job and session. One run per thread at a
+  time; a second `/code` is refused until it ends (the tool's
+  `resume="<session>"` queues a follow-up on it instead).
 - **Delivery needs no model.** A detached result is handed to the thread by
   `core/claude_code_delivery.py` as a short model-free holder turn
   (`completion_delivery.deliver_without_turn`): the thread is held the way a
@@ -334,6 +425,12 @@ claude_code("Add a backlog item under docs/private/plans/backlog for <idea>, "
 claude_code("Refactor the X module to do Y", mode="plan")     # returns a plan
 claude_code("Looks good, implement it", mode="accept_edits")  # resume + execute
 
-# Fire and continue talking
+# Fire and continue talking; every end-turn arrives as a tagged follow-up
 claude_code("Run the full test suite and fix any failures", detach=True)
+
+# See what a running job is doing without resuming it
+claude_code(peek="a1b2c3d4", tail=20)
+
+# Follow up on a SPECIFIC session (queued if it is still running)
+claude_code("Also add a changelog entry", resume="2e60c2a6-4c3d-4d7f-9192-1c63956949c5")
 ```

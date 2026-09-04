@@ -5,7 +5,9 @@ runner: permission-mode mapping, working-directory allowlisting, CLI-argument
 assembly, JSON result parsing, and the session store.
 """
 
+import io
 import json
+import os
 import sys
 import time
 from types import SimpleNamespace
@@ -93,7 +95,10 @@ def test_build_cli_args_core_flags():
     args = b.build_cli_args(req, cfg)
     assert args[0] == "claude"
     assert "-p" in args
-    assert args[args.index("--output-format") + 1] == "json"
+    # stream-json (one event per line, one ``result`` per end-turn) is the
+    # default, and the CLI requires --verbose with it under -p.
+    assert args[args.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in args
     assert args[args.index("--permission-mode") + 1] == "dontAsk"
     assert args[args.index("--model") + 1] == "opus"
     # The hard deny list is always present.
@@ -119,6 +124,14 @@ def test_build_cli_args_optional_flags():
     assert args[args.index("--fallback-model") + 1] == "sonnet"
     assert "--bare" in args
     assert args[args.index("--resume") + 1] == "sess-1"
+
+
+def test_build_cli_args_json_format_has_no_verbose():
+    cfg = b.ClaudeCodeRunConfig(executable="claude", output_format="json")
+    req = b.ClaudeCodeRequest(prompt="x", cwd="/tmp")
+    args = b.build_cli_args(req, cfg)
+    assert args[args.index("--output-format") + 1] == "json"
+    assert "--verbose" not in args
 
 
 # --- parse_cli_result --------------------------------------------------------
@@ -350,36 +363,67 @@ def test_a_sandbox_refusal_drops_the_summary_rather_than_the_run(monkeypatch):
 # --- cancellation ------------------------------------------------------------
 
 
+_RESULT_LINE = json.dumps({"type": "result", "subtype": "success", "result": "ok",
+                           "session_id": "sess-fake"}) + "\n"
+
+
+class _CapturingStdin(io.StringIO):
+    """Keeps what was written after the bridge closes it."""
+
+    def close(self):
+        self.written = self.getvalue()
+        super().close()
+
+
 class _FakeProc:
-    """A Popen stand-in whose communicate keeps timing out until killed."""
+    """A Popen stand-in with real pipes: stdout stays open (the reader pump
+    blocks, as on a live child) until the process finishes or is killed."""
 
-    def __init__(self, *, finish_after_timeouts=None, returncode=0,
-                 stdout='{"result": "ok", "subtype": "success"}'):
+    def __init__(self, *, finish_after_polls=None, returncode=0, stdout=_RESULT_LINE):
         self.pid = 4242
-        self.returncode = returncode
-        self._stdout = stdout
-        self._timeouts = 0
-        self._finish_after = finish_after_timeouts  # None = never finish alone
+        self.returncode = None
+        self._rc = returncode
+        self._payload = stdout
+        self._polls = 0
+        self._finish_after = finish_after_polls  # None = never finish alone
         self._killed = False
+        out_r, out_w = os.pipe()
+        err_r, err_w = os.pipe()
+        self.stdout = os.fdopen(out_r, "r")
+        self._stdout_w = os.fdopen(out_w, "w")
+        self.stderr = os.fdopen(err_r, "r")
+        self._stderr_w = os.fdopen(err_w, "w")
+        self.stdin = _CapturingStdin()
 
-    def communicate(self, input=None, timeout=None):
-        if self._killed:
-            return (self._stdout, "")
-        self._timeouts += 1
-        if self._finish_after is not None and self._timeouts >= self._finish_after:
-            return (self._stdout, "")
+    def _finish(self, rc, *, write=True):
+        if self.returncode is not None:
+            return
+        if write:
+            self._stdout_w.write(self._payload)
+        self._stdout_w.close()
+        self._stderr_w.close()
+        self.returncode = rc
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is not None:
+            return self.returncode
+        self._polls += 1
+        if self._finish_after is not None and self._polls >= self._finish_after:
+            self._finish(self._rc)
+            return self.returncode
         if timeout:
             time.sleep(min(timeout, 0.02))
         raise b.subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
-
-    def poll(self):
-        return None if not self._killed else self.returncode
 
 
 def _kill_spy(killed):
     def _spy(proc, grace=b.GROUP_KILL_GRACE_SECONDS):
         killed.append(proc)
         proc._killed = True
+        proc._finish(-15, write=False)  # a killed child closes its pipes
 
     return _spy
 
@@ -428,7 +472,7 @@ def test_run_local_blocking_group_kills_on_timeout(monkeypatch, tmp_path):
 
 
 def test_run_local_blocking_success_path_uses_popen(monkeypatch, tmp_path):
-    proc = _FakeProc(finish_after_timeouts=1)  # completes on the first communicate
+    proc = _FakeProc(finish_after_polls=1)  # completes on the first wait
     monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
     monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
     monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: (["x.py"], ["abc done"]))
@@ -441,8 +485,99 @@ def test_run_local_blocking_success_path_uses_popen(monkeypatch, tmp_path):
 
     assert res.ok is True
     assert res.result_text == "ok"
+    assert res.session_id == "sess-fake"
+    assert [t.text for t in res.end_turns] == ["ok"]
     assert res.files_changed == ["x.py"]
     assert res.commits == ["abc done"]
+    # The prompt went down stdin, never argv.
+    assert proc.stdin.written == "hi"
+
+
+def test_run_local_blocking_streams_every_end_turn_to_the_observer(monkeypatch, tmp_path):
+    """A run that ends two turns (re-invoked by background subagents) reports
+    both through the observer AS THEY ARRIVE and the result carries both;
+    the terminal result text is the last turn's."""
+    init = json.dumps({"type": "system", "subtype": "init", "session_id": "sess-2"})
+    first = json.dumps({"type": "result", "subtype": "success", "result": "suite running, will pick up"})
+    tool = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -q"}}]}})
+    second = json.dumps({"type": "result", "subtype": "success", "result": "all green, committed"})
+    proc = _FakeProc(finish_after_polls=3)
+    # Feed the stream in two bursts: the first end-turn lands before the
+    # process finishes, the second at exit.
+    proc._stdout_w.write(init + "\n" + first + "\n")
+    proc._stdout_w.flush()
+    proc._payload = tool + "\n" + second + "\n"
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: ([], []))
+
+    seen: list[tuple[int, int, str]] = []
+    observer = b.RunObserver()
+    sessions: list[str] = []
+    observer.on_session = sessions.append
+    observer.on_end_turn = lambda t: seen.append((t.index, proc._polls, t.text))
+
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="go", cwd=str(tmp_path))
+    res = b.run_local_blocking(
+        req, cfg, timeout=5, env=b.build_subprocess_env(bare=False),
+        observer=observer, poll_interval=0.01,
+    )
+
+    assert sessions == ["sess-2"]
+    assert [i for i, _, _ in seen] == [1, 2]
+    assert seen[0][2] == "suite running, will pick up"
+    assert seen[0][1] < 3, "the first end-turn was observed before the process exited"
+    assert res.ok is True
+    assert res.result_text == "all green, committed"
+    assert res.session_id == "sess-2"
+    assert [t.index for t in res.end_turns] == [1, 2]
+    tail = observer.snapshot(10)
+    assert tail["running"] is False
+    kinds = [e["kind"] for e in tail["tail"]]
+    assert kinds == ["end_turn", "tool_use", "end_turn"]
+    assert tail["tail"][1]["tool"] == "Bash"
+
+
+def test_run_local_blocking_without_result_event_falls_back_to_raw_parse(monkeypatch, tmp_path):
+    """A child that dies before any ``result`` (no JSON) is an error result
+    built from its exit, and the observer's partial view still reports."""
+    proc = _FakeProc(finish_after_polls=1, returncode=1, stdout="not json at all\n")
+    proc._stderr_w.write("boom on stderr")
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: ([], []))
+
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="x", cwd=str(tmp_path))
+    res = b.run_local_blocking(req, cfg, timeout=5, env=b.build_subprocess_env(bare=False))
+    assert res.ok is False and res.is_error is True
+    assert "boom on stderr" in (res.error or "")
+    assert res.end_turns == []
+
+
+def test_cancelled_run_keeps_the_turns_seen_so_far(monkeypatch, tmp_path):
+    proc = _FakeProc()
+    proc._stdout_w.write(json.dumps({"type": "result", "subtype": "success",
+                                     "result": "partial", "session_id": "s-c"}) + "\n")
+    proc._stdout_w.flush()
+    killed: list = []
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "terminate_process_group", _kill_spy(killed))
+    observer = b.RunObserver()
+    flags = iter([False, False, True])
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="x", cwd=str(tmp_path))
+    res = b.run_local_blocking(
+        req, cfg, timeout=5, env=b.build_subprocess_env(bare=False),
+        cancel_check=lambda: next(flags, True), poll_interval=0.01, observer=observer,
+    )
+    assert res.subtype == "cancelled"
+    assert res.session_id == "s-c"
+    assert [t.text for t in res.end_turns] == ["partial"]
+    assert killed
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group kill")

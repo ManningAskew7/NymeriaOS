@@ -15,9 +15,20 @@ the git before/after summary) means the tool and the runner build and interpret
 identical Claude Code invocations.
 
 Design notes:
-- Claude Code is driven headless with ``claude -p --output-format json``. The
-  prompt is fed on stdin (avoids arg-length / shell-escaping issues for long
-  prompts). ``--output-format json`` prints one terminal result object.
+- Claude Code is driven headless with ``claude -p --output-format stream-json
+  --verbose``. The prompt is fed on stdin (avoids arg-length / shell-escaping
+  issues for long prompts). The stream is one JSON event per line: a
+  ``system/init`` event naming the session id up front, ``assistant`` /
+  ``user`` events per content block, and one ``result`` event PER END-TURN.
+  A ``-p`` run normally has one end-turn and exits right after it, but a run
+  that ended its turn with background subagents outstanding is re-invoked
+  when they report and emits another ``result`` (measured 2026-09-04: job
+  3c35ee19 produced several in one process; background Bash tasks do NOT keep
+  it alive, the CLI kills them at exit). ``RunObserver`` folds the stream into
+  the session id, the list of end-turns and a bounded transcript tail, so the
+  bridge can deliver every end-turn and answer a live peek; the terminal
+  ``result`` is the run's final message. The legacy ``json`` format (one
+  terminal object) is still parsed for a runner configured that way.
 - ``--bare`` is intentionally NOT the default: it forces ``ANTHROPIC_API_KEY``
   auth (OAuth and keychain are never read), whereas the zero-cost default is to
   reuse the host's existing Claude Code auth. ``bare`` is opt-in for isolated
@@ -43,6 +54,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -270,7 +282,9 @@ class ClaudeCodeRunConfig:
     disallowed_tools: tuple[str, ...] = DEFAULT_DISALLOWED_TOOLS
     allowed_tools: tuple[str, ...] = ()
     bare: bool = False
-    output_format: str = "json"
+    # ``stream-json`` (default) streams one event per line and needs
+    # ``--verbose`` under ``-p``; ``json`` prints one terminal object.
+    output_format: str = "stream-json"
     add_dirs: tuple[str, ...] = ()
 
 
@@ -290,6 +304,8 @@ def build_cli_args(
 ) -> list[str]:
     """Assemble the ``claude`` argv (excluding the prompt, fed on stdin)."""
     args: list[str] = [config.executable, "-p", "--output-format", config.output_format]
+    if config.output_format == "stream-json":
+        args.append("--verbose")  # required by the CLI for stream-json under -p
     args += ["--permission-mode", request.permission_mode]
     if config.model:
         args += ["--model", config.model]
@@ -320,6 +336,73 @@ def build_cli_args(
 
 
 @dataclass
+class EndTurn:
+    """One end-turn of a Claude Code run: a ``result`` event in the stream.
+
+    ``index`` is 1-based within the run. The last end-turn's text is also the
+    run's ``result_text``; earlier ones are interim messages (the model ended
+    its turn with background subagents still working and was re-invoked when
+    they reported).
+    """
+
+    index: int
+    text: str = ""
+    subtype: Optional[str] = None
+    is_error: bool = False
+    num_turns: Optional[int] = None
+    duration_ms: Optional[int] = None
+    total_cost_usd: Optional[float] = None
+    usage: dict[str, Any] = field(default_factory=dict)
+    at: float = field(default_factory=time.time)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "text": self.text,
+            "subtype": self.subtype,
+            "is_error": self.is_error,
+            "num_turns": self.num_turns,
+            "duration_ms": self.duration_ms,
+            "total_cost_usd": self.total_cost_usd,
+            "usage": self.usage,
+            "at": self.at,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "EndTurn":
+        return cls(
+            index=int(payload.get("index") or 0),
+            text=payload.get("text") or "",
+            subtype=payload.get("subtype"),
+            is_error=bool(payload.get("is_error")),
+            num_turns=_as_int(payload.get("num_turns")),
+            duration_ms=_as_int(payload.get("duration_ms")),
+            total_cost_usd=_as_float(payload.get("total_cost_usd")),
+            usage=payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
+            at=_as_float(payload.get("at")) or time.time(),
+        )
+
+    @classmethod
+    def from_result_event(cls, index: int, event: dict[str, Any]) -> "EndTurn":
+        """Build from a stream-json ``result`` event."""
+        subtype = event.get("subtype")
+        is_error = bool(event.get("is_error")) or subtype not in (None, "success")
+        text = event.get("result")
+        if not isinstance(text, str):
+            text = event.get("error") if isinstance(event.get("error"), str) else ""
+        return cls(
+            index=index,
+            text=text or "",
+            subtype=subtype,
+            is_error=is_error,
+            num_turns=_as_int(event.get("num_turns")),
+            duration_ms=_as_int(event.get("duration_ms")),
+            total_cost_usd=_as_float(event.get("total_cost_usd")),
+            usage=event.get("usage") if isinstance(event.get("usage"), dict) else {},
+        )
+
+
+@dataclass
 class ClaudeCodeResult:
     """Normalized outcome of one Claude Code run."""
 
@@ -336,6 +419,9 @@ class ClaudeCodeResult:
     commits: list[str] = field(default_factory=list)
     error: Optional[str] = None
     exit_code: Optional[int] = None
+    # Every end-turn of the run, in order; the last one is ``result_text``.
+    # Empty for a legacy ``json``-format run (one terminal object, no stream).
+    end_turns: list[EndTurn] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         """Serialize for the runner's HTTP response."""
@@ -353,6 +439,7 @@ class ClaudeCodeResult:
             "commits": self.commits,
             "error": self.error,
             "exit_code": self.exit_code,
+            "end_turns": [t.to_payload() for t in self.end_turns],
         }
 
     @classmethod
@@ -372,6 +459,11 @@ class ClaudeCodeResult:
             commits=list(payload.get("commits") or []),
             error=payload.get("error"),
             exit_code=payload.get("exit_code"),
+            end_turns=[
+                EndTurn.from_payload(t)
+                for t in (payload.get("end_turns") or [])
+                if isinstance(t, dict)
+            ],
         )
 
     def summary_block(self) -> str:
@@ -381,6 +473,8 @@ class ClaudeCodeResult:
             lines.append(f"session_id: {self.session_id}")
         if self.subtype:
             lines.append(f"outcome: {self.subtype}")
+        if len(self.end_turns) > 1:
+            lines.append(f"end_turns: {len(self.end_turns)}")
         if self.num_turns is not None:
             lines.append(f"turns: {self.num_turns}")
         if self.duration_ms is not None:
@@ -471,6 +565,294 @@ def parse_cli_result(
         error=(obj.get("error") if is_error and isinstance(obj.get("error"), str) else None),
         exit_code=returncode,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Stream observer: session id, end-turns, and a live transcript tail
+# --------------------------------------------------------------------------- #
+
+# Transcript entries kept for a live peek. Bounded so a long run cannot grow
+# the runner's memory without limit; a peek asks for the last N of these.
+TAIL_MAX_ENTRIES = 200
+_TAIL_TEXT_CHARS = 600
+
+
+def _preview(value: Any, limit: int = _TAIL_TEXT_CHARS) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(value)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+class RunObserver:
+    """Folds a stream-json run into what the bridge needs while it runs.
+
+    Fed one event per line (``feed_line``) by the local subprocess reader, or
+    fed already-parsed end-turns (``record_end_turn``) by the remote poll
+    loop. Thread-safe. ``on_end_turn`` (optional) fires for each end-turn
+    with the ``EndTurn``; ``on_session`` once with the session id.
+
+    ``snapshot(tail)`` is the peek payload: session id, elapsed, the end-turns
+    so far, and the last ``tail`` transcript entries (assistant text, tool
+    calls with a compact input preview, tool results, task notifications).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.session_id: Optional[str] = None
+        self.end_turns: list[EndTurn] = []
+        self.started_at = time.time()
+        self.finished_at: Optional[float] = None
+        self.remote_job_id: Optional[str] = None
+        self._tail: "deque[dict[str, Any]]" = deque(maxlen=TAIL_MAX_ENTRIES)
+        self._last_result_event: Optional[dict[str, Any]] = None
+        self.on_end_turn: Optional[Callable[[EndTurn], None]] = None
+        self.on_session: Optional[Callable[[str], None]] = None
+
+    # -- feeding ----------------------------------------------------------
+
+    def feed_line(self, line: str) -> Optional[dict[str, Any]]:
+        """Parse one stdout line; returns the event dict or None."""
+        text = (line or "").strip()
+        if not text.startswith("{"):
+            return None
+        try:
+            event = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(event, dict):
+            return None
+        self.feed_event(event)
+        return event
+
+    def feed_event(self, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        session_id = event.get("session_id")
+        session_cb = None
+        turn: Optional[EndTurn] = None
+        with self._lock:
+            if isinstance(session_id, str) and session_id and self.session_id is None:
+                self.session_id = session_id
+                session_cb = self.on_session
+            if kind == "result":
+                self._last_result_event = event
+                turn = EndTurn.from_result_event(len(self.end_turns) + 1, event)
+                self.end_turns.append(turn)
+                self._tail.append({
+                    "at": turn.at,
+                    "kind": "end_turn",
+                    "index": turn.index,
+                    "text": _preview(turn.text),
+                })
+            elif kind in ("assistant", "user"):
+                self._fold_message(kind, event)
+            elif kind == "system":
+                subtype = event.get("subtype")
+                if subtype in ("task_notification", "task_started"):
+                    self._tail.append({
+                        "at": time.time(),
+                        "kind": f"system:{subtype}",
+                        "text": _preview(event.get("summary") or event.get("description") or ""),
+                    })
+        if session_cb is not None and session_id:
+            try:
+                session_cb(session_id)
+            except Exception:  # noqa: BLE001 - observers never break the run.
+                logger.exception("Claude Code session callback failed")
+        if turn is not None and self.on_end_turn is not None:
+            try:
+                self.on_end_turn(turn)
+            except Exception:  # noqa: BLE001
+                logger.exception("Claude Code end-turn callback failed")
+
+    def _fold_message(self, role: str, event: dict[str, Any]) -> None:
+        message = event.get("message") or {}
+        content = message.get("content")
+        now = time.time()
+        if isinstance(content, str):
+            if content.strip():
+                self._tail.append({"at": now, "kind": role, "text": _preview(content)})
+            return
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text" and role == "assistant":
+                if str(block.get("text") or "").strip():
+                    self._tail.append({"at": now, "kind": "assistant", "text": _preview(block.get("text"))})
+            elif btype == "tool_use":
+                self._tail.append({
+                    "at": now,
+                    "kind": "tool_use",
+                    "tool": str(block.get("name") or "?"),
+                    "text": _preview(block.get("input"), 240),
+                })
+            elif btype == "tool_result":
+                self._tail.append({
+                    "at": now,
+                    "kind": "tool_result",
+                    "error": bool(block.get("is_error")),
+                    "text": _preview(block.get("content"), 240),
+                })
+
+    def record_end_turn(self, turn: EndTurn) -> None:
+        """Remote path: an end-turn learned from a runner poll."""
+        with self._lock:
+            self.end_turns.append(turn)
+        if self.on_end_turn is not None:
+            try:
+                self.on_end_turn(turn)
+            except Exception:  # noqa: BLE001
+                logger.exception("Claude Code end-turn callback failed")
+
+    def set_session_id(self, session_id: Optional[str]) -> None:
+        if not session_id:
+            return
+        with self._lock:
+            if self.session_id is not None:
+                return
+            self.session_id = session_id
+            cb = self.on_session
+        if cb is not None:
+            try:
+                cb(session_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("Claude Code session callback failed")
+
+    def mark_finished(self) -> None:
+        with self._lock:
+            self.finished_at = time.time()
+
+    # -- reading ----------------------------------------------------------
+
+    @property
+    def turn_count(self) -> int:
+        with self._lock:
+            return len(self.end_turns)
+
+    def turns_after(self, count: int) -> list[EndTurn]:
+        with self._lock:
+            return list(self.end_turns[count:])
+
+    def last_result_event(self) -> Optional[dict[str, Any]]:
+        with self._lock:
+            return self._last_result_event
+
+    def snapshot(self, tail: int = 12) -> dict[str, Any]:
+        with self._lock:
+            entries = list(self._tail)
+            end = self.finished_at
+            return {
+                "session_id": self.session_id,
+                "running": end is None,
+                "elapsed": max(0.0, (end or time.time()) - self.started_at),
+                "end_turns": [t.to_payload() for t in self.end_turns],
+                "tail": entries[-max(0, int(tail)):] if tail else [],
+                "tail_total": len(entries),
+            }
+
+
+def result_from_stream(
+    observer: RunObserver, stdout: str, stderr: str, returncode: int
+) -> ClaudeCodeResult:
+    """The run's result from what the observer saw, else the legacy parse.
+
+    The terminal ``result`` event carries the same fields as the ``json``
+    format's object, so a stream run that emitted one is parsed from it; a
+    run that died before any ``result`` (or one configured for ``json``)
+    falls back to ``parse_cli_result`` on the raw output.
+    """
+    event = observer.last_result_event()
+    if event is None:
+        result = parse_cli_result(stdout, stderr, returncode)
+    else:
+        result = _result_from_event(event, returncode)
+        # An error exit after a clean result (a hook, a kill) still fails.
+        if returncode != 0 and result.ok:
+            result.ok = False
+            result.is_error = True
+            result.error = (stderr or "").strip()[:4000] or f"claude exited with code {returncode}"
+    with observer._lock:
+        result.end_turns = list(observer.end_turns)
+        if not result.session_id:
+            result.session_id = observer.session_id
+    return result
+
+
+def _result_from_event(obj: dict[str, Any], returncode: int) -> ClaudeCodeResult:
+    is_error = bool(obj.get("is_error")) or obj.get("subtype") not in (None, "success")
+    result_text = obj.get("result")
+    if not isinstance(result_text, str):
+        result_text = obj.get("error") if isinstance(obj.get("error"), str) else ""
+    return ClaudeCodeResult(
+        ok=(returncode == 0 and not is_error),
+        result_text=result_text or "",
+        session_id=obj.get("session_id"),
+        is_error=is_error,
+        subtype=obj.get("subtype"),
+        num_turns=_as_int(obj.get("num_turns")),
+        duration_ms=_as_int(obj.get("duration_ms")),
+        total_cost_usd=_as_float(obj.get("total_cost_usd")),
+        usage=obj.get("usage") if isinstance(obj.get("usage"), dict) else {},
+        error=(obj.get("error") if is_error and isinstance(obj.get("error"), str) else None),
+        exit_code=returncode,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Prompt framing: the bridge context every run carries
+# --------------------------------------------------------------------------- #
+
+BRIDGE_CONTEXT_OPEN = "[Nymeria bridge context]"
+BRIDGE_CONTEXT_CLOSE = "[end bridge context]"
+
+
+def frame_prompt(
+    prompt: str,
+    *,
+    thread_id: Optional[str],
+    job_id: str,
+    session_id: Optional[str] = None,
+    dispatched_by: str = "the Nymeria agent",
+) -> str:
+    """Prefix ``prompt`` with the originating-thread block.
+
+    Tells Claude Code which Nymeria thread dispatched it, how its end-turn
+    messages get back there (automatically, tagged with the job id and its
+    session id), and how to message that thread itself mid-task (the Nymeria
+    MCP ``nymeria_chat`` tool, or the REST chat route), tagged so the thread
+    knows who is talking. Bracketed the way the completion prompts frame
+    Claude Code's own output, and closed with a marker so the task text is
+    unambiguous. No thread (direct CLI / tests): the prompt goes out bare.
+    """
+    if not thread_id:
+        return prompt
+    session = f", resuming Claude Code session {session_id}" if session_id else ""
+    lines = [
+        BRIDGE_CONTEXT_OPEN,
+        f"Dispatched by {dispatched_by} from Nymeria thread {thread_id} "
+        f"(bridge job {job_id}{session}).",
+        "Every message you end a turn with is delivered to that thread "
+        f"automatically, tagged with job {job_id} and your session id, so you "
+        "need not repeat it yourself.",
+        "To message the thread mid-task (progress, a question, an early "
+        "result), send it a prompt: the Nymeria MCP tool `nymeria_chat` with "
+        f'thread_id="{thread_id}" when that MCP server is available to you, '
+        f"else POST /threads/{thread_id}/chat on the Nymeria API with a bearer "
+        f'token. Start such a message with "[Claude Code job {job_id}]" so the '
+        "thread knows who is talking; it may reply by resuming your session.",
+        BRIDGE_CONTEXT_CLOSE,
+        "",
+        prompt,
+    ]
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -703,8 +1085,15 @@ def run_local_blocking(
     *,
     cancel_check: Optional[Callable[[], bool]] = None,
     poll_interval: float = 0.25,
+    observer: Optional[RunObserver] = None,
 ) -> ClaudeCodeResult:
     """Run Claude Code as a local subprocess and parse the result.
+
+    stdout is read line by line on a reader thread and fed to ``observer``
+    (a fresh ``RunObserver`` when none is given) as the run goes, so the
+    session id, each end-turn and the transcript tail are visible while the
+    process is still running; the final result is built from the last
+    ``result`` event (``result_from_stream``).
 
     ``env`` is REQUIRED and has no default. It used to default to ``None``,
     which ``Popen`` reads as "inherit the parent environment", so a caller who
@@ -722,6 +1111,8 @@ def run_local_blocking(
     """
     args = build_cli_args(request, config)
     before = git_snapshot(request.cwd)
+    if observer is None:
+        observer = RunObserver()
 
     popen_kwargs: dict[str, Any] = dict(
         cwd=request.cwd,
@@ -759,41 +1150,80 @@ def run_local_blocking(
             error=f"Claude Code executable not found: {config.executable}",
         )
 
-    def _kill_and_drain() -> None:
-        terminate_process_group(proc)
-        try:  # close pipes / reap so nothing is left dangling.
-            proc.communicate(timeout=GROUP_KILL_GRACE_SECONDS)
-        except Exception:  # noqa: BLE001 - process/pipes already gone.
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    # All three pipes were requested above; pin that for the type checker.
+    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    child_stdin, child_stdout, child_stderr = proc.stdin, proc.stdout, proc.stderr
+
+    def _pump_stdout() -> None:
+        try:
+            for line in iter(child_stdout.readline, ""):
+                stdout_chunks.append(line)
+                observer.feed_line(line)
+        except Exception:  # noqa: BLE001 - a closed pipe ends the pump.
             pass
 
-    deadline = time.monotonic() + timeout
-    stdout: Optional[str] = None
-    stderr: Optional[str] = None
-    pending_input: Optional[str] = request.prompt
-    while True:
+    def _pump_stderr() -> None:
         try:
-            stdout, stderr = proc.communicate(input=pending_input, timeout=poll_interval)
-            break
-        except subprocess.TimeoutExpired:
-            pending_input = None  # prompt already buffered; never resend it.
-            if cancel_check is not None and cancel_check():
-                _kill_and_drain()
-                return ClaudeCodeResult(
-                    ok=False,
-                    is_error=True,
-                    error="Claude Code run cancelled (thread aborted)",
-                    subtype="cancelled",
-                )
-            if time.monotonic() >= deadline:
-                _kill_and_drain()
-                return ClaudeCodeResult(
-                    ok=False,
-                    is_error=True,
-                    error=f"Claude Code timed out after {timeout:.0f}s",
-                    subtype="timeout",
-                )
+            stderr_chunks.append(child_stderr.read() or "")
+        except Exception:  # noqa: BLE001
+            pass
 
-    result = parse_cli_result(stdout, stderr, proc.returncode)
+    def _feed_prompt() -> None:
+        # The prompt goes down stdin on its own thread so a prompt larger than
+        # the pipe buffer cannot deadlock against an unread stdout.
+        try:
+            child_stdin.write(request.prompt)
+            child_stdin.close()
+        except Exception:  # noqa: BLE001 - the child died before reading it.
+            pass
+
+    pumps = [
+        threading.Thread(target=_feed_prompt, name="ClaudeCode-stdin", daemon=True),
+        threading.Thread(target=_pump_stdout, name="ClaudeCode-stdout", daemon=True),
+        threading.Thread(target=_pump_stderr, name="ClaudeCode-stderr", daemon=True),
+    ]
+    for pump in pumps:
+        pump.start()
+
+    def _join_pumps() -> None:
+        for pump in pumps:
+            pump.join(timeout=GROUP_KILL_GRACE_SECONDS)
+
+    def _kill_and_drain() -> None:
+        terminate_process_group(proc)
+        _join_pumps()
+        try:  # reap so nothing is left dangling.
+            proc.wait(timeout=GROUP_KILL_GRACE_SECONDS)
+        except Exception:  # noqa: BLE001 - process already gone.
+            pass
+
+    def _halt(error: str, subtype: str) -> ClaudeCodeResult:
+        _kill_and_drain()
+        observer.mark_finished()
+        result = ClaudeCodeResult(ok=False, is_error=True, error=error, subtype=subtype)
+        with observer._lock:
+            result.end_turns = list(observer.end_turns)
+            result.session_id = observer.session_id
+        return result
+
+    deadline = time.monotonic() + timeout
+    while proc.poll() is None:
+        if cancel_check is not None and cancel_check():
+            return _halt("Claude Code run cancelled (thread aborted)", "cancelled")
+        if time.monotonic() >= deadline:
+            return _halt(f"Claude Code timed out after {timeout:.0f}s", "timeout")
+        try:
+            proc.wait(timeout=poll_interval)
+        except subprocess.TimeoutExpired:
+            continue
+    _join_pumps()
+    observer.mark_finished()
+
+    result = result_from_stream(
+        observer, "".join(stdout_chunks), "".join(stderr_chunks), proc.returncode
+    )
     files, commits = git_diff_summary(before, request.cwd)
     result.files_changed = files
     result.commits = commits
@@ -912,6 +1342,35 @@ class RemoteRunnerClient:
             raise RemoteRunnerError(f"runner poll failed: {exc}") from exc
         if resp.status_code == 404:
             raise RemoteRunnerError(f"runner job {job_id} not found")
+        if resp.status_code >= 400:
+            raise RemoteRunnerError(
+                f"runner returned {resp.status_code}: {resp.text[:500]}"
+            )
+        return resp.json()
+
+    def peek(self, job_id: str, tail: int = 12, timeout: float = 15.0) -> dict[str, Any]:
+        """GET /job/{job_id}/peek: the live transcript tail.
+
+        Raises ``RemoteRunnerError``; a 404 names the job as unknown, which
+        on a runner predating the endpoint (Not Found for the route itself)
+        reads the same, so the message says so.
+        """
+        import httpx
+
+        try:
+            with _http_client(timeout=timeout) as client:
+                resp = client.get(
+                    f"{self.base_url}/job/{job_id}/peek",
+                    params={"tail": int(tail)},
+                    headers=self._headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise RemoteRunnerError(f"runner peek failed: {exc}") from exc
+        if resp.status_code == 404:
+            raise RemoteRunnerError(
+                f"runner has no peek for job {job_id} (unknown job, or the runner "
+                "service predates the peek endpoint and needs a restart)"
+            )
         if resp.status_code >= 400:
             raise RemoteRunnerError(
                 f"runner returned {resp.status_code}: {resp.text[:500]}"

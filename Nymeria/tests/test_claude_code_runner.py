@@ -90,7 +90,7 @@ def test_run_rejects_outside_allowlist(tmp_path, monkeypatch):
 def test_run_executes_and_reports_completion(tmp_path, monkeypatch):
     captured = {}
 
-    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None):
+    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None, **kw):
         captured["cwd"] = request.cwd
         captured["mode"] = request.permission_mode
         captured["has_cancel_check"] = callable(cancel_check)
@@ -138,7 +138,7 @@ def test_job_not_found(tmp_path, monkeypatch):
 def test_cancel_running_job_group_kills_and_reports_cancelled(tmp_path, monkeypatch):
     started = threading.Event()
 
-    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None):
+    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None, **kw):
         # Emulate run_local_blocking honoring cancel_check on a long run.
         started.set()
         for _ in range(300):
@@ -175,7 +175,7 @@ def test_max_concurrency_caps_parallel_runs(tmp_path, monkeypatch):
     peak = [0]
     release = threading.Event()
 
-    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None):
+    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None, **kw):
         with lock:
             running.append(1)
             peak[0] = max(peak[0], len(running))
@@ -233,7 +233,7 @@ def test_select_runner_model_allowlist_rejects_unlisted(tmp_path):
 def test_run_passes_requested_model_through_allowlist(tmp_path, monkeypatch):
     captured = {}
 
-    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None):
+    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None, **kw):
         captured["model"] = config.model
         return bridge.ClaudeCodeResult(ok=True, result_text="ok", subtype="success")
 
@@ -259,3 +259,95 @@ def test_create_app_requires_token_unless_insecure(tmp_path, monkeypatch):
     # insecure mode is allowed without a token
     app = runner_mod.create_app(allow_insecure=True)
     assert app is not None
+
+
+# --- live status: session id, end-turns, peek --------------------------------
+
+
+def _streaming_run(started, release, *, session_id="live-sess"):
+    """A fake run that announces its session, ends one turn, then blocks
+    until released, ending a second turn at exit."""
+
+    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None, observer=None, **kw):
+        observer.feed_event({"type": "system", "subtype": "init", "session_id": session_id})
+        observer.feed_event({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}}]}})
+        observer.feed_event({"type": "result", "subtype": "success", "result": "interim note"})
+        started.set()
+        release.wait(5)
+        observer.feed_event({"type": "result", "subtype": "success", "result": "all done"})
+        return bridge.ClaudeCodeResult(
+            ok=True, result_text="all done", session_id=session_id,
+            end_turns=observer.turns_after(0),
+        )
+
+    return fake_run_local
+
+
+def test_job_status_reports_session_and_end_turns_while_running(tmp_path, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(runner_mod, "run_local_blocking", _streaming_run(started, release))
+    client, _ = _client(tmp_path, monkeypatch)
+    job_id = client.post("/run", json={"prompt": "x"}, headers=_AUTH).json()["job_id"]
+    assert started.wait(2.0)
+
+    status = client.get(f"/job/{job_id}", headers=_AUTH).json()
+    assert status["status"] == "running"
+    assert status["session_id"] == "live-sess"
+    assert [t["index"] for t in status["end_turns"]] == [1]
+    assert status["end_turns"][0]["text"] == "interim note"
+    assert "result" not in status
+
+    release.set()
+    result = _wait_completed(client, job_id)
+    assert result["result_text"] == "all done"
+    assert [t["text"] for t in result["end_turns"]] == ["interim note", "all done"]
+    final = client.get(f"/job/{job_id}", headers=_AUTH).json()
+    assert [t["index"] for t in final["end_turns"]] == [1, 2]
+
+
+def test_peek_by_job_and_by_session_returns_the_transcript_tail(tmp_path, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(runner_mod, "run_local_blocking", _streaming_run(started, release))
+    client, _ = _client(tmp_path, monkeypatch)
+    job_id = client.post("/run", json={"prompt": "x"}, headers=_AUTH).json()["job_id"]
+    assert started.wait(2.0)
+
+    peek = client.get(f"/job/{job_id}/peek", params={"tail": 1}, headers=_AUTH).json()
+    assert peek["job_id"] == job_id and peek["status"] == "running"
+    assert peek["running"] is True and peek["session_id"] == "live-sess"
+    assert peek["tail_total"] == 2
+    assert [e["kind"] for e in peek["tail"]] == ["end_turn"]
+    assert peek["tail"][0]["text"] == "interim note"
+    assert len(peek["end_turns"]) == 1
+
+    by_session = client.get("/sessions/live-sess/peek", headers=_AUTH).json()
+    assert by_session["job_id"] == job_id
+    assert [e["kind"] for e in by_session["tail"]] == ["tool_use", "end_turn"]
+    assert by_session["tail"][0]["tool"] == "Read"
+
+    assert client.get("/job/nope/peek", headers=_AUTH).status_code == 404
+    assert client.get("/sessions/nope/peek", headers=_AUTH).status_code == 404
+    assert client.get(f"/job/{job_id}/peek").status_code == 401, "peek needs the bearer token"
+
+    release.set()
+    _wait_completed(client, job_id)
+    done = client.get(f"/job/{job_id}/peek", headers=_AUTH).json()
+    assert done["status"] == "completed" and done["running"] is False
+
+
+def test_session_peek_finds_the_newest_job_on_a_resumed_session(tmp_path, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(runner_mod, "run_local_blocking", _streaming_run(started, release, session_id="shared"))
+    client, _ = _client(tmp_path, monkeypatch)
+    first = client.post("/run", json={"prompt": "one"}, headers=_AUTH).json()["job_id"]
+    assert started.wait(2.0)
+    release.set()
+    _wait_completed(client, first)
+    started.clear()
+    release.clear()
+    second = client.post("/run", json={"prompt": "two", "resume_session_id": "shared"}, headers=_AUTH).json()["job_id"]
+    assert started.wait(2.0)
+    assert client.get("/sessions/shared/peek", headers=_AUTH).json()["job_id"] == second
+    release.set()
+    _wait_completed(client, second)

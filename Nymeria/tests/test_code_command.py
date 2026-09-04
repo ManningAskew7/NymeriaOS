@@ -157,8 +157,10 @@ def env(monkeypatch, tmp_path):
     )
     # The tool's model-relay path must never fire for /code.
     relays: list[Any] = []
-    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job: relays.append(job))
+    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: relays.append(job))
     monkeypatch.setattr(bg, "INLINE_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(bg, "END_TURN_SETTLE_SECONDS", 0.2)
+    bg.reset_jobs_for_tests()
     monkeypatch.setattr(code_cmd, "INLINE_WAIT_SECONDS", 0.5)
 
     calls: list[dict] = []
@@ -633,3 +635,100 @@ def test_help_lists_code_with_its_flags() -> None:
     assert "## /code" in card.markdown
     assert "--new" in card.markdown
     assert "--mode" in card.markdown
+
+
+def test_every_end_turn_of_a_long_run_is_relayed_without_a_model(env, monkeypatch) -> None:
+    """A /code run that ends a turn early ("suite running, will pick up") and
+    a second one at exit delivers BOTH to the chat, each as its own
+    model-free holder turn, tagged interim then final."""
+    from nymeria.tools.claude_code_bridge import RunObserver
+
+    second = threading.Event()
+
+    def streaming_prepare_run(settings_arg, **kwargs):
+        observer = RunObserver()
+
+        def producer():
+            observer.feed_event({"type": "system", "subtype": "init", "session_id": "sess-multi"})
+            observer.feed_event({"type": "result", "subtype": "success",
+                                 "result": "suite running, will pick up"})
+            second.wait(5)
+            observer.feed_event({"type": "result", "subtype": "success", "result": "all green"})
+            return ClaudeCodeResult(ok=True, result_text="all green", session_id="sess-multi",
+                                    end_turns=observer.turns_after(0))
+
+        return PreparedRun(
+            producer=producer, persist=lambda r: None, run_cwd="/repo",
+            resume_session_id=None, observer=observer,
+        )
+
+    monkeypatch.setattr(claude_module, "prepare_run", streaming_prepare_run)
+    # The first end-turn settles only after the command's inline wait.
+    monkeypatch.setattr(code_cmd, "INLINE_WAIT_SECONDS", 0.05)
+    ack = _execute("/code long job")
+    assert ack.data["detached"] is True
+    job_id = ack.data["job_id"]
+
+    assert _wait_for(lambda: len(env.events) >= 2)
+    started, completed = env.events[:2]
+    assert started["task_id"] == f"claude-code-{job_id}-t1"
+    assert started["data"]["report"] == "interim"
+    assert "interim end-turn 1" in completed["data"]["content"]
+    assert "suite running, will pick up" in completed["data"]["content"]
+    assert f"job {job_id} (session sess-multi)" in completed["data"]["content"]
+    assert delivery.active_job(THREAD) is not None, "the run is still in flight"
+    # The interim exchange is in history, framed as data with the tag line.
+    (_, values) = env.agent._default_graph.updates[0]
+    human, _ai = values["messages"]
+    assert "INTERIM end-turn 1" in human.content and "/code" in human.content
+
+    second.set()
+    assert _wait_for(lambda: len(env.events) >= 4)
+    started2, completed2 = env.events[2:4]
+    assert started2["task_id"] == f"claude-code-{job_id}"
+    assert started2["data"]["report"] == "final"
+    assert "finished after" in completed2["data"]["content"]
+    assert "2 end-turn(s)" in completed2["data"]["content"]
+    assert "all green" in completed2["data"]["content"]
+    assert "suite running" not in completed2["data"]["content"]
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
+    assert delivery.last_outcome(THREAD) == (job_id, "completed")
+    assert env.relays == [] and env.notifications == []
+
+
+def test_quick_interim_reply_is_info_and_the_final_still_lands(env, monkeypatch) -> None:
+    """The command's 20s wait can return an INTERIM end-turn: the reply says
+    so, the registry keeps the run, and the final is delivered later."""
+    from nymeria.tools.claude_code_bridge import RunObserver
+
+    finish = threading.Event()
+
+    def streaming_prepare_run(settings_arg, **kwargs):
+        observer = RunObserver()
+
+        def producer():
+            observer.feed_event({"type": "result", "subtype": "success",
+                                 "result": "reviewers running", "session_id": "sess-q"})
+            finish.wait(5)
+            return ClaudeCodeResult(ok=True, result_text="reviewers running", session_id="sess-q",
+                                    end_turns=observer.turns_after(0))
+
+        return PreparedRun(
+            producer=producer, persist=lambda r: None, run_cwd="/repo",
+            resume_session_id=None, observer=observer,
+        )
+
+    monkeypatch.setattr(claude_module, "prepare_run", streaming_prepare_run)
+    monkeypatch.setattr(code_cmd, "INLINE_WAIT_SECONDS", 2.0)
+    reply = _execute("/code review this")
+    assert reply.success is True
+    assert reply.data.get("interim") is True and reply.data["session_id"] == "sess-q"
+    assert "interim end-turn 1" in reply.markdown and "reviewers running" in reply.markdown
+    assert delivery.active_job(THREAD) is not None
+    assert env.events == []
+
+    finish.set()
+    assert _wait_for(lambda: _completed(env))
+    final = [e for e in env.events if e["event_type"] == "task_completed"][0]
+    assert "final message was end-turn 1, delivered earlier" in final["data"]["content"]
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
