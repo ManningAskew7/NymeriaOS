@@ -41,7 +41,13 @@ Telegram -> Nymeria agent (container) --claude_code tool-->  [HTTP + bearer toke
   loaded from the checkout: restart the service after updating the code
   (`systemctl --user restart nymeria-claude-code-runner`), at a quiet moment,
   since the restart kills its in-flight runs. The tool degrades against an
-  older runner (session and end-turns known only at completion, no peek).
+  older runner and SAYS SO: a poll payload without `end_turns` marks the run
+  legacy (`RunObserver.legacy_runner`), the FINAL header then reads "only
+  the terminal end-turn captured (legacy runner)" with a runner note under
+  the summary, and `peek` answers with that reason instead of a round trip.
+  Against such a runner a multi-turn run LOSES its earlier end-turns (only
+  the terminal message is ever reported), so a stale runner after a bridge
+  commit is not cosmetic: restart it (job d1b0ff78, 2026-09-04).
 
 Shared logic lives in `nymeria/tools/claude_code_bridge.py` so the tool and the
 runner build and interpret identical Claude Code invocations.
@@ -172,7 +178,11 @@ it reads the in-process `RunObserver`; in remote mode it calls the runner's
 `GET /job/{id}/peek?tail=N` (the runner also answers
 `GET /sessions/{session_id}/peek`). The runner keeps up to 200 entries per
 job; jobs stay addressable in the tool's live registry after they finish (the
-64 most recent).
+64 most recent). When the runner cannot answer, the peek still renders what
+the polls observed and says why there is no tail, naming both ids (the
+runner tracks a run under its OWN job id, not the bridge job id): a bare
+`Not Found` 404 is a runner predating the endpoint, the runner's own `job not
+found` is an expired record.
 
 ## Bridge context: every prompt names its thread
 

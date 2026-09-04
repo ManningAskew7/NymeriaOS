@@ -92,6 +92,14 @@ REMOTE_POLL_INTERVAL = 3.0
 # Consecutive poll failures tolerated before giving up (the runner job keeps
 # running through transient network blips).
 REMOTE_POLL_MAX_ERRORS = 5
+# What a report or peek says about a runner service still on pre-end-turn
+# code (``RunObserver.legacy_runner``).
+LEGACY_RUNNER_NOTE = (
+    "the runner service predates per-end-turn reporting and live peek: it "
+    "reports only the terminal message when the process exits, so earlier "
+    "end-turns of a multi-turn run are lost. It loads code from the checkout; "
+    "restart it at a quiet moment (the restart kills its in-flight runs)"
+)
 # Safety margin kept below settings.tool_timeout so the inline wait always
 # resolves (and detaches) before the runtime would kill the tool thread.
 BLOCK_MARGIN_SECONDS = 30
@@ -422,11 +430,15 @@ def _peek(ref: str, tail: int, *, thread_id: Optional[str], user_id: str) -> str
             snapshot = job.peek(count)
         except RemoteRunnerError as exc:
             # The runner cannot answer (old service, or its record is gone):
-            # fall back to what this side observed from the polls.
+            # fall back to what this side observed from the polls. Both ids
+            # are named: the runner tracks the run under its OWN job id, and
+            # an error quoting only that one reads as a mismatch.
             snapshot = {**job.observer.snapshot(0), "tail": [], "tail_total": 0}
+            remote_id = job.observer.remote_job_id or "not assigned"
             return (
                 f"{format_peek(job, snapshot, count)}\n"
-                f"(No transcript tail: {exc}.)"
+                f"(No transcript tail: {exc}. Bridge job {job.id} is runner job "
+                f"{remote_id}.)"
             )
     return format_peek(job, snapshot, count)
 
@@ -600,6 +612,8 @@ def prepare_run(
             remote_id = observer.remote_job_id
             if not remote_id:
                 raise RemoteRunnerError("the run has not been accepted by the runner yet")
+            if observer.legacy_runner:
+                raise RemoteRunnerError(LEGACY_RUNNER_NOTE)
             return client.peek(remote_id, tail)
 
         peek: Optional[Callable[[int], dict]] = _remote_peek
@@ -688,6 +702,8 @@ def _make_remote_producer(
         )
 
     def _absorb(status: dict[str, Any]) -> None:
+        if "end_turns" not in status:
+            observer.legacy_runner = True
         observer.set_session_id(status.get("session_id"))
         turns = status.get("end_turns") or []
         for payload_turn in turns[observer.turn_count:]:
@@ -704,7 +720,8 @@ def _make_remote_producer(
         observer.set_session_id(result.session_id)
         if not result.end_turns and result.result_text.strip():
             # A runner with no end-turn reporting: the terminal text is the
-            # run's one and only end-turn.
+            # only end-turn this side will ever see (earlier ones are lost).
+            observer.legacy_runner = True
             observer.record_end_turn(EndTurn(index=1, text=result.result_text, subtype=result.subtype, is_error=result.is_error))
         result.end_turns = observer.turns_after(0)
         return result

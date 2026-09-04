@@ -609,6 +609,14 @@ class RunObserver:
         self.started_at = time.time()
         self.finished_at: Optional[float] = None
         self.remote_job_id: Optional[str] = None
+        # Remote path: set once a runner poll shows the pre-end-turn payload
+        # shape (no ``end_turns`` key), i.e. a runner service still running
+        # code that reports nothing until the process exits. Its run then
+        # yields ONE end-turn (the terminal message) whatever the process
+        # did, and it has no peek: reports say so instead of passing a
+        # truncated run off as a normal single-turn one (job d1b0ff78,
+        # 2026-09-04: turn 1 was lost and turn 2 landed as "1 end-turn").
+        self.legacy_runner = False
         self._tail: "deque[dict[str, Any]]" = deque(maxlen=TAIL_MAX_ENTRIES)
         self._last_result_event: Optional[dict[str, Any]] = None
         self.on_end_turn: Optional[Callable[[EndTurn], None]] = None
@@ -1291,6 +1299,16 @@ class RemoteRunnerError(Exception):
     """Raised when the host runner is unreachable or returns an error status."""
 
 
+def _route_missing(resp: Any) -> bool:
+    """True when a 404 is FastAPI's default for an unknown ROUTE (detail
+    ``Not Found``), not one of the runner's own ``... not found`` answers."""
+    try:
+        detail = resp.json().get("detail")
+    except Exception:  # noqa: BLE001 - a non-JSON 404 is not the runner's
+        return True
+    return detail == "Not Found"
+
+
 class RemoteRunnerClient:
     """Thin sync HTTP client the tool uses to drive the host runner.
 
@@ -1351,9 +1369,10 @@ class RemoteRunnerClient:
     def peek(self, job_id: str, tail: int = 12, timeout: float = 15.0) -> dict[str, Any]:
         """GET /job/{job_id}/peek: the live transcript tail.
 
-        Raises ``RemoteRunnerError``; a 404 names the job as unknown, which
-        on a runner predating the endpoint (Not Found for the route itself)
-        reads the same, so the message says so.
+        Raises ``RemoteRunnerError``. A 404 is told apart by its body: the
+        runner's own ``job not found`` (its record of the job expired) versus
+        FastAPI's bare ``Not Found`` for a route the running service does not
+        have (it predates the endpoint and needs a restart).
         """
         import httpx
 
@@ -1367,9 +1386,14 @@ class RemoteRunnerClient:
         except httpx.HTTPError as exc:
             raise RemoteRunnerError(f"runner peek failed: {exc}") from exc
         if resp.status_code == 404:
+            if _route_missing(resp):
+                raise RemoteRunnerError(
+                    "the runner service predates the peek endpoint (it loads code "
+                    "from the checkout; restart it at a quiet moment)"
+                )
             raise RemoteRunnerError(
-                f"runner has no peek for job {job_id} (unknown job, or the runner "
-                "service predates the peek endpoint and needs a restart)"
+                f"the runner no longer has its job {job_id} (its record expired "
+                "or the service restarted)"
             )
         if resp.status_code >= 400:
             raise RemoteRunnerError(

@@ -409,9 +409,12 @@ def report_header(job: ClaudeCodeJob, report: TurnReport) -> str:
             outcome = "cancelled"
         elif result is None or result.is_error or not result.ok:
             outcome = "failed"
+        turns = f"{report.total} end-turn(s)"
+        if job.observer.legacy_runner:
+            turns = "only the terminal end-turn captured (legacy runner, see note)"
         return (
             f"[Claude Code job {job.id} | session {session} | FINAL: run {outcome} "
-            f"after {_duration(job):.0f}s with {report.total} end-turn(s); "
+            f"after {_duration(job):.0f}s with {turns}; "
             f"mode={job.mode}, cwd={job.cwd}]"
         )
     indices = ", ".join(str(t.index) for t in report.turns) or "?"
@@ -451,6 +454,10 @@ def report_body(job: ClaudeCodeJob, report: TurnReport) -> str:
     elif not result.ok and result.error and not result.result_text.strip():
         parts.append(f"[Claude Code error]: {result.error}")
     parts.append(result.summary_block())
+    if job.observer.legacy_runner:
+        from .claude_code import LEGACY_RUNNER_NOTE
+
+        parts.append(f"[Runner note]: {LEGACY_RUNNER_NOTE}.")
     return "\n\n".join(parts)
 
 
