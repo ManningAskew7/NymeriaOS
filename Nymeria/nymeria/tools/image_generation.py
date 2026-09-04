@@ -397,6 +397,60 @@ def finalize_image(
     return content, artifact
 
 
+def finalize_captured_image(
+    *,
+    raw: bytes,
+    mime_type: str,
+    config: Optional[RunnableConfig],
+    summary: str,
+    label: str,
+    source: str,
+    provider: str,
+    model: str,
+    output_name: str = "capture",
+    native_context_enabled: bool = True,
+) -> tuple[str, dict[str, Any]]:
+    """Write captured image bytes (a screenshot, a stream frame) and build the return.
+
+    The capture analogue of :func:`finalize_image`: resolves the calling user
+    from the injected config, writes the bytes under the per-user
+    ``images/screenshots/`` workspace dir, embeds an ``[attach:<path>]`` marker
+    so the image surfaces to the chat, and attaches the native-vision artifact
+    tagged with ``source`` (any tag but ``file_read`` stays workspace-confined)
+    so vision-capable models can see it on the next reasoning step. ``summary``
+    is the first sentence of the tool text, ending in a period. Raises on write
+    failure; callers wrap the call and return an ``[Error]: ...`` string.
+
+    Subject to the same per-model image cap as generated images (see
+    core/generated_image_context.py): an oversized capture still attaches to
+    the chat but is not replayed to the model.
+    """
+    user_id = get_user_id(config)
+    path = _write_image_file(
+        user_id=user_id,
+        raw=raw,
+        mime_type=mime_type,
+        output_name=output_name,
+        prompt=label,
+        output_dir=screenshot_dir(user_id),
+    )
+    content = (
+        f"{summary} Saved to {path}.\n"
+        f"It is attached for you to view (when the active model supports image input).\n"
+        f"[attach:{path}]"
+    )
+    artifact = build_native_image_artifact(
+        path,
+        mime_type,
+        source=source,
+        prompt=label,
+        provider=provider,
+        model=model,
+        native_context_enabled=native_context_enabled,
+    )
+    return content, artifact
+
+
 def finalize_screenshot(
     *,
     raw: bytes,
@@ -407,41 +461,19 @@ def finalize_screenshot(
 ) -> tuple[str, dict[str, Any]]:
     """Write screenshot PNG bytes to the workspace and build the (content, artifact) return.
 
-    The browser-screenshot analogue of :func:`finalize_image`: resolves the
-    calling user from the injected config, writes the PNG under the per-user
-    ``images/screenshots/`` workspace dir, embeds an ``[attach:<path>]`` marker so
-    the shot surfaces to the chat, and attaches the native-vision artifact
-    (``source="browser_screenshot"``) so vision-capable models can see the
-    screenshot on the next reasoning step. Raises on write failure; callers wrap
-    the call and return an ``[Error]: ...`` string.
-
-    Subject to the same per-model image cap as generated images (see
-    core/generated_image_context.py): an oversized shot still attaches to the
-    chat but is not replayed to the model.
+    :func:`finalize_captured_image` with the browser-screenshot wording and
+    ``source="browser_screenshot"``.
     """
-    user_id = get_user_id(config)
-    label = page_url or "browser screenshot"
-    path = _write_image_file(
-        user_id=user_id,
+    where = f" of {page_url}" if page_url else ""
+    return finalize_captured_image(
         raw=raw,
         mime_type="image/png",
-        output_name="screenshot",
-        prompt=label,
-        output_dir=screenshot_dir(user_id),
-    )
-    where = f" of {page_url}" if page_url else ""
-    content = (
-        f"Captured a browser screenshot{where} and saved it to {path}.\n"
-        f"It is attached for you to view (when the active model supports image input).\n"
-        f"[attach:{path}]"
-    )
-    artifact = build_native_image_artifact(
-        path,
-        "image/png",
+        config=config,
+        summary=f"Captured a browser screenshot{where}.",
+        label=page_url or "browser screenshot",
         source="browser_screenshot",
-        prompt=label,
         provider="browser",
         model=model,
+        output_name="screenshot",
         native_context_enabled=native_context_enabled,
     )
-    return content, artifact

@@ -7,7 +7,7 @@ Nymeria's Twitch integration has two halves that share the `TWITCH_*` settings:
   messages, responds to `!commands`, and periodically evaluates chat
   ("pulse"). It relays prompts to the backend over `POST /chat` like the
   Telegram/Discord thin clients; it runs no agent of its own.
-- **The `twitch_*` tools** (`nymeria/tools/twitch.py`, 21 tools): call the
+- **The `twitch_*` tools** (`nymeria/tools/twitch.py`, 22 tools): call the
   Twitch Helix API directly with their own OAuth tokens, executing wherever
   the agent runs. They work on any thread that enables them, with or without
   the bot process running.
@@ -149,10 +149,13 @@ Enable the tools and set the personality on the `twitch_{channel}` thread via
 the desktop app or the API. Recommended starting tool set:
 
 ```
-twitch_send, twitch_announce, twitch_get_stream, twitch_get_channel,
-twitch_get_chatters, twitch_get_schedule, twitch_timeout, twitch_ban,
-twitch_unban, twitch_warn
+twitch_send, twitch_announce, twitch_get_stream, twitch_get_stream_frame,
+twitch_get_channel, twitch_get_chatters, twitch_get_schedule, twitch_timeout,
+twitch_ban, twitch_unban, twitch_warn
 ```
+
+With `twitch_get_stream_frame` enabled, set `image_window_size` to 2 or 3
+on the thread (Seeing the stream below explains why).
 
 Recommended starting system prompt (adapt freely; your thread config is never
 overwritten by the bot):
@@ -198,7 +201,9 @@ overwritten by the bot):
   chat this time". Silence stays fine for pulses, but for a direct !ask
   prefer a real reply over leaving the asker that stock acknowledgment.
 - Use your info tools to stay aware of stream status, viewer count, current
-  game, and who is in chat.
+  game, and who is in chat. Use twitch_get_stream_frame to look at the
+  stream when chat reacts to something on screen or asks what is happening;
+  not every pulse, a look costs context.
 - During periodic chat pulses you see the new messages since your last look.
   Reply with twitch_send when you can add value, moderate when someone is
   disruptive, research a recurring topic you do not know (web search) so a
@@ -247,7 +252,7 @@ unified `channel.moderate` v2 subscription first (needs
 `channel.ban` / `channel.unban` / `channel.chat.message_delete`
 subscriptions. Failures are non-fatal: the bot works without mod awareness.
 
-## Tools (21 total)
+## Tools (22 total)
 
 All tools are catalog tools, enabled per-thread via thread config. They call
 Helix directly and work without the bot process. Tools resolve credentials
@@ -276,7 +281,8 @@ vault-first (provider `twitch`) with the `TWITCH_*` settings as fallback.
 
 | Tool | Description |
 |------|-------------|
-| `twitch_get_stream` | Live status, viewer count, game, title |
+| `twitch_get_stream` | Live status, viewer count, game, title, preview image URL |
+| `twitch_get_stream_frame` | A still frame of the live broadcast as an image the model can see (see Seeing the stream) |
 | `twitch_get_channel` | Channel title, game, tags, language |
 | `twitch_get_chatters` | Users currently in chat + count |
 | `twitch_get_banned` | Banned users with reasons |
@@ -293,6 +299,31 @@ vault-first (provider `twitch`) with the `TWITCH_*` settings as fallback.
 | `twitch_get_subs` | Sub count, or per-user sub check |
 
 Username arguments resolve to user IDs automatically via Helix.
+
+### Seeing the stream
+
+`twitch_get_stream_frame` gives a vision-capable model a look at the
+broadcast without a browser or a video decode: it fetches Twitch's public
+preview JPEG of the channel (the same image the channel page and Helix
+`thumbnail_url` point at, about 1920x1080 with webcam, HUD, and overlays
+visible), saves it under the workspace, and attaches it as a native image
+for the model's next step. No credentials are sent to the CDN; only the
+"is it live" Helix check is authenticated.
+
+Freshness: the standard 1920x1080 preview is CDN-cached for about five
+minutes, but a size nobody has requested lately is rendered on demand from
+the current broadcast (measured 2026-09-04: two odd sizes 45 seconds apart
+were different frames). The tool asks for a jittered near-1080p size each
+call and labels the result "on-demand render"; if that fails it falls back
+to the cached size and labels it "cached preview, may be up to 5 minutes
+old". The on-demand behaviour is undocumented by Twitch, so the fallback is
+the contract.
+
+Cost: one CDN fetch (about 300 KB) and one image-window slot per look.
+Kept frames are re-sent on every model call until they age out of the
+window, so set a small `image_window_size` (2 to 3) on the channel thread
+and tell the agent in its system prompt to look when chat reacts to
+something on screen or asks what is happening, not on every pulse.
 
 The former `twitch_read_chat` tool was retired: chat context is pushed into
 every prompt by the bot (unseen messages plus, on thin asks, a marked
@@ -340,7 +371,7 @@ See the Messaging Platforms table in `docs/configuration.md` for every
 | File | Purpose |
 |------|---------|
 | `nymeria/triggers/twitch_bot.py` | Thin-client bot: EventSub, buffer + cursor, !commands, pulse, relay |
-| `nymeria/tools/twitch.py` | The 21 direct-Helix tools + the `twitch` credential spec |
+| `nymeria/tools/twitch.py` | The 22 direct-Helix tools + the `twitch` credential spec |
 | `nymeria/config/settings.py` | `TWITCH_*` settings fields |
 | `run.py` | `twitch-bot` subcommand |
 | `docker-compose.yml` | `twitch-bot` service (profile: twitch) |

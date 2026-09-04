@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1261
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1262
 
 
 def test_catalog_key_equals_tool_name():
@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1277
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1278
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -1497,6 +1497,7 @@ BASELINE_CATALOG_NAMES = [
     "twitch_get_chatters",
     "twitch_get_schedule",
     "twitch_get_stream",
+    "twitch_get_stream_frame",
     "twitch_get_subs",
     "twitch_resolve_prediction",
     "twitch_send",
@@ -2777,6 +2778,7 @@ BASELINE_STATIC_NAMES = [
     "twitch_get_chatters",
     "twitch_get_schedule",
     "twitch_get_stream",
+    "twitch_get_stream_frame",
     "twitch_get_subs",
     "twitch_resolve_prediction",
     "twitch_send",
