@@ -247,6 +247,81 @@ fall through to the host's OAuth / keychain auth).
 - A future option for zero network exposure is a Unix-domain-socket transport (no
   open port); the firewalled-TCP + token setup above is the current shape.
 
+## `/code`: the user drives Claude Code directly (break-glass)
+
+The `claude_code` tool is the AGENT's way in. `/code <prompt>` is the USER's:
+an admin-only slash command that dispatches the prompt to the same host runner
+(or local `claude -p`) with NO model in the loop. It exists for repair: when the
+Nymeria agent itself is broken (every turn errors, the provider is down, a
+self-modification went wrong), the owner can still message Claude Code from
+Telegram, the desktop, the CLI, or the MCP `nymeria_command` surface and have it
+fix Nymeria on the host.
+
+```text
+/code [--new] [--resume] [--mode <mode>] [--dir <path>] [prompt]
+```
+
+- **Independent of the agent.** Slash commands are routed through
+  `POST /commands/execute` before the chat path on every client, so `/code`
+  works while chat turns are failing. The handler
+  (`core/command_executor_claude_code.py`) touches no graph and no LLM.
+- **Same transport and sessions as the tool.** It reuses
+  `tools.claude_code.prepare_run`, so the runner remains the policy boundary
+  (bearer token, cwd allowlist, deny rules, budgets), and the
+  `(thread, project) -> session` map is shared: a `/code` follow-up continues
+  the session the tool started on that thread, and vice versa.
+- **Mode defaults to `bypass`** (`bypassPermissions`). This is the owner's
+  explicit decision: the point is unattended repair, and the host-side deny
+  list (`NYMERIA_CLAUDE_CODE_DISALLOWED_TOOLS`) still applies in every mode.
+  Precedence mirrors the tool: an explicit `--mode`, then the thread's
+  `claude_code_mode` override, then this default (the global
+  `NYMERIA_CLAUDE_CODE_DEFAULT_MODE` is the tool's default, not this
+  command's). `--mode plan` makes Claude Code write a plan and stop.
+- **Session continuity per thread.** By default each `/code` resumes the
+  thread's last Claude Code session, so when Claude Code stops to ask a
+  question or present a plan, `/code <reply>` answers it in the same session.
+  `--new` starts fresh; `--resume` is accepted for clarity and changes nothing.
+  Bare `/code` shows the thread's state: the run in flight, the last outcome,
+  and the session the next prompt would resume.
+- **Reply, then follow-up.** The command waits up to 20 seconds. A quick run
+  answers inline (the command reply IS Claude Code's final message plus the
+  run summary). A longer run gets an immediate acknowledgement carrying the
+  job id, and the result arrives in the same chat when Claude Code finishes.
+  One run per thread at a time; a second `/code` is refused until it ends.
+- **Delivery needs no model.** A detached result is handed to the thread by
+  `core/claude_code_delivery.py` as a short model-free holder turn
+  (`completion_delivery.deliver_without_turn`): the thread is held the way a
+  real turn holds it (lock, holder metadata, the pending queue's release
+  window), the exchange is written into thread history under that hold (a
+  hidden wake-up carrying the output as data, then the relayed text as the
+  assistant message, after patching any dangling tool calls a dead turn left
+  behind), a turn stream buffer is opened and fed the text, and the
+  `task_started` / `task_completed` bookends go out. The buffer opens BEFORE
+  `task_started` because the bots attach on that event to the thread's
+  current buffer: publishing first would hand them the previous turn's
+  retained buffer and swallow the result. Bots and the desktop therefore
+  render it exactly as any autonomous turn; the activity ledger records it.
+  If a live turn keeps the thread past 10 minutes (or the turn publish
+  fails), the result falls back to a notification: bots post it as a plain
+  message and the desktop gets an in-app item, never silence. A quick inline
+  reply is recorded into history the same way (briefly, skipped if a turn
+  holds the thread) but publishes no bookends, since the reply already
+  reached the chat.
+- **Cancellation and timeouts.** A `/code` run holds no thread lock, so both
+  `/stop` surfaces (the command and `POST /threads/{id}/stop`) consult the
+  run registry and set the run's own cancel event (the same signal the tool
+  gets from the thread abort); a cancelled run stays silent. The runner's
+  hard ceiling (one hour) still bounds a runaway run; the result is then an
+  error reply. Telegram's per-thread autonomous delivery mode gates the
+  follow-up like any autonomous completion (`notify_only` delivers only
+  errors), so keep the default on a thread you would use for repair.
+
+```text
+/code the agent errors on every turn; read `docker logs nymeria-api` and fix it
+/code --new --mode plan tighten the /status output
+/code yes, go ahead with option 2        # answers the plan in the same session
+```
+
 ## Usage examples
 
 ```text

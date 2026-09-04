@@ -30,7 +30,8 @@ import logging
 import os
 import secrets
 import time
-from typing import Annotated, Optional
+from dataclasses import dataclass
+from typing import Annotated, Callable, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -213,71 +214,22 @@ def claude_code(
         except Exception:  # noqa: BLE001 - cancellation is best-effort.
             abort_event = None
 
-    # Session key: a stable per-(thread, project) handle. Local mode keys by the
-    # resolved cwd; remote mode keys by the requested dir string (the runner owns
-    # the real path), defaulting to "<default>" when omitted.
-    store = _session_store()
-    if remote_url:
-        project_key = (working_dir or "<default>").strip() or "<default>"
-    else:
-        try:
-            resolved = resolve_cwd_against_roots(
-                working_dir,
-                parse_roots(settings.nymeria_claude_code_roots, settings.project_root),
-                settings.project_root,
-            )
-        except ClaudeCodeError as exc:
-            return f"[Error]: {exc}"
-        project_key = str(resolved)
-
-    resume_session_id = store.get(thread_id or "default", project_key) if resume else None
-
-    def _persist(result: ClaudeCodeResult) -> None:
-        if result.session_id:
-            store.set(thread_id or "default", project_key, result.session_id)
-
-    # Build the producer (runs Claude Code to completion in the watcher thread).
-    if remote_url:
-        producer = _make_remote_producer(
+    try:
+        prepared = prepare_run(
             settings,
-            remote_url,
+            thread_id=thread_id,
             prompt=prompt,
             working_dir=working_dir,
             cli_mode=cli_mode,
-            resume_session_id=resume_session_id,
+            resume=resume,
             abort_event=abort_event,
             model=effective_model,
         )
-        run_cwd = working_dir or "<default>"
-    else:
-        try:
-            run_config = _build_local_config(settings)
-        except ClaudeCodeError as exc:
-            return f"[Error]: {exc}"
-        run_config.model = effective_model  # per-thread override (None = default)
-        request = ClaudeCodeRequest(
-            prompt=prompt,
-            cwd=project_key,
-            permission_mode=cli_mode,
-            resume_session_id=resume_session_id,
-        )
-        run_env = build_subprocess_env(run_config.bare)
-        # Pass cancel_check only when a thread exists, so the no-thread sync path
-        # (direct CLI / tests) keeps the original run_local_blocking call shape.
-        if abort_event is not None:
-            _cancel_check = abort_event.is_set
-            producer = lambda: run_local_blocking(  # noqa: E731 - small closure.
-                request,
-                run_config,
-                timeout=LOCAL_HARD_TIMEOUT,
-                env=run_env,
-                cancel_check=_cancel_check,
-            )
-        else:
-            producer = lambda: run_local_blocking(  # noqa: E731 - small closure.
-                request, run_config, timeout=LOCAL_HARD_TIMEOUT, env=run_env
-            )
-        run_cwd = project_key
+    except ClaudeCodeError as exc:
+        return f"[Error]: {exc}"
+    producer = prepared.producer
+    _persist = prepared.persist
+    run_cwd = prepared.run_cwd
 
     # No real thread context (direct CLI / tests): run synchronously, no detach.
     if thread_id is None:
@@ -302,6 +254,116 @@ def claude_code(
     if decision == "inline" and job.result is not None:
         return job.result.format_for_agent()
     return job.detached_message
+
+
+def session_project_key(settings, working_dir: Optional[str]) -> str:
+    """The project half of the session-store key for ``working_dir``.
+
+    Remote mode keys by the requested dir string (the runner owns the real
+    path; "<default>" when omitted); local mode keys by the cwd resolved
+    against the allowlist, which raises ``ClaudeCodeError`` outside it.
+    """
+    if (settings.nymeria_claude_code_url or "").strip():
+        return (working_dir or "<default>").strip() or "<default>"
+    resolved = resolve_cwd_against_roots(
+        working_dir,
+        parse_roots(settings.nymeria_claude_code_roots, settings.project_root),
+        settings.project_root,
+    )
+    return str(resolved)
+
+
+def stored_session_id(settings, thread_id: str, working_dir: Optional[str]) -> Optional[str]:
+    """The Claude Code session a resume on ``thread_id`` would continue."""
+    return _session_store().get(thread_id, session_project_key(settings, working_dir))
+
+
+@dataclass
+class PreparedRun:
+    """A Claude Code run built but not started: the producer, the session
+    persist hook, and the cwd label the job reports. Shared by the agent
+    tool and the user's ``/code`` command so both drive one transport and
+    one session map."""
+
+    producer: Callable[[], ClaudeCodeResult]
+    persist: Callable[[ClaudeCodeResult], None]
+    run_cwd: str
+    resume_session_id: Optional[str]
+
+
+def prepare_run(
+    settings,
+    *,
+    thread_id: Optional[str],
+    prompt: str,
+    working_dir: Optional[str],
+    cli_mode: str,
+    resume: bool,
+    abort_event=None,
+    model: Optional[str] = None,
+) -> PreparedRun:
+    """Resolve transport, session, and cwd for one run; raise ``ClaudeCodeError``.
+
+    Session key: a stable per-(thread, project) handle. Local mode keys by
+    the resolved cwd; remote mode keys by the requested dir string (the
+    runner owns the real path), defaulting to "<default>" when omitted.
+    """
+    remote_url = (settings.nymeria_claude_code_url or "").strip()
+    store = _session_store()
+    project_key = session_project_key(settings, working_dir)
+    session_thread = thread_id or "default"
+    resume_session_id = store.get(session_thread, project_key) if resume else None
+
+    def _persist(result: ClaudeCodeResult) -> None:
+        if result.session_id:
+            store.set(session_thread, project_key, result.session_id)
+
+    # Build the producer (runs Claude Code to completion in the watcher thread).
+    if remote_url:
+        producer = _make_remote_producer(
+            settings,
+            remote_url,
+            prompt=prompt,
+            working_dir=working_dir,
+            cli_mode=cli_mode,
+            resume_session_id=resume_session_id,
+            abort_event=abort_event,
+            model=model,
+        )
+        run_cwd = working_dir or "<default>"
+    else:
+        run_config = _build_local_config(settings)
+        run_config.model = model  # per-thread override (None = default)
+        request = ClaudeCodeRequest(
+            prompt=prompt,
+            cwd=project_key,
+            permission_mode=cli_mode,
+            resume_session_id=resume_session_id,
+        )
+        run_env = build_subprocess_env(run_config.bare)
+        # Pass cancel_check only when a thread exists, so the no-thread sync path
+        # (direct CLI / tests) keeps the original run_local_blocking call shape.
+        if abort_event is not None:
+            _cancel_check = abort_event.is_set
+            producer = lambda: run_local_blocking(  # noqa: E731 - small closure.
+                request,
+                run_config,
+                timeout=LOCAL_HARD_TIMEOUT,
+                env=run_env,
+                cancel_check=_cancel_check,
+            )
+        else:
+            producer = lambda: run_local_blocking(  # noqa: E731 - small closure.
+                request, run_config, timeout=LOCAL_HARD_TIMEOUT, env=run_env
+            )
+        run_cwd = project_key
+
+    return PreparedRun(
+        producer=producer,
+        persist=_persist,
+        run_cwd=run_cwd,
+        resume_session_id=resume_session_id,
+    )
 
 
 def _make_remote_producer(

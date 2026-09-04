@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import shlex
+import time
 import uuid
 import dataclasses
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ import httpx
 from ..config import get_settings
 from .command_executor_aliases import AliasCommandsMixin
 from .command_executor_browser import BrowserCommandsMixin
+from .command_executor_claude_code import ClaudeCodeCommandsMixin
 from .command_executor_cliproxy import CliproxyCommandsMixin
 from .command_executor_context import ContextCommandsMixin
 from .command_executor_llm import LLMCommandsMixin, model_select_form
@@ -1397,8 +1399,13 @@ class CommandBackendClient:
         mirroring the REST stop route.
         """
         self._require_thread_access(thread_id)
+        from .claude_code_delivery import cancel_active_job
+
         thread_locks = getattr(self.agent, "_thread_locks", None)
         lock_info = thread_locks.get_lock_info(thread_id) if thread_locks else None
+        # A /code run holds no thread lock; its registry is the cancel seam
+        # (the REST stop route does the same).
+        code_job = cancel_active_job(thread_id)
         if lock_info:
             from .pending_prompt_queue import restored_prompts_payload
 
@@ -1409,6 +1416,14 @@ class CommandBackendClient:
                 "holder": lock_info.get("holder"),
                 "held_seconds": lock_info.get("held_seconds", 0),
                 "restored_prompts": restored_prompts_payload(restored),
+            }
+        if code_job is not None:
+            return {
+                "status": "stopping",
+                "thread_id": thread_id,
+                "holder": f"Claude Code job {code_job.id}",
+                "held_seconds": max(0.0, time.time() - code_job.started_at),
+                "restored_prompts": [],
             }
         return {
             "status": "idle",
@@ -4045,6 +4060,7 @@ class _CommandExecutor(
     CliproxyCommandsMixin,
     AliasCommandsMixin,
     BrowserCommandsMixin,
+    ClaudeCodeCommandsMixin,
 ):
     """Per-request command executor with the migrated command bodies."""
 

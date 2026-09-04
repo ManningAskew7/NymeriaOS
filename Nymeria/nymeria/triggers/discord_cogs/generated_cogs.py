@@ -507,6 +507,55 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @app_commands.command(
+        name="code",
+        description="Prompt Claude Code on the host directly, no model in the loop (break-glass repair)",
+    )
+    @app_commands.describe(
+        new="Start a fresh Claude Code session instead of resuming this thread's last one",
+        resume="Accepted for clarity; resuming the thread's last session is the default",
+        mode="Permission mode (default bypass: unattended repair)",
+        dir="Working directory, within the runner's allowed roots",
+        prompt="A task for Claude Code, or a reply to its question; omit to show this thread's state",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="bypass", value="bypass"),
+            app_commands.Choice(name="plan", value="plan"),
+            app_commands.Choice(name="dont_ask", value="dont_ask"),
+            app_commands.Choice(name="accept_edits", value="accept_edits"),
+            app_commands.Choice(name="auto", value="auto"),
+            app_commands.Choice(name="default", value="default"),
+        ],
+    )
+    async def cmd_code(
+        self,
+        interaction: discord.Interaction,
+        new: Optional[bool] = None,
+        resume: Optional[bool] = None,
+        mode: Optional[str] = None,
+        dir: Optional[str] = None,
+        prompt: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        if new is True:
+            parts.append("--new")
+        if resume is True:
+            parts.append("--resume")
+        if mode is not None:
+            parts.extend(("--mode", shlex.quote(mode)))
+        if dir is not None:
+            parts.extend(("--dir", shlex.quote(dir)))
+        if prompt is not None:
+            parts.append(shlex.quote(prompt))
+        await self.bot._send_backend_command(
+            interaction,
+            "code",
+            args=" ".join(parts),
+            require_admin=True,
+        )
+
+    @app_commands.command(
         name="context",
         description="Detailed context and tool breakdown",
     )
@@ -2035,6 +2084,7 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "browser login",
     "browser rename",
     "browser switch",
+    "code",
     "context",
     "doctor auth",
     "doctor model",
@@ -2113,6 +2163,7 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "browser login": "Tools",
     "browser rename": "Tools",
     "browser switch": "Tools",
+    "code": "System",
     "context": "Status",
     "doctor auth": "System",
     "doctor model": "System",

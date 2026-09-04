@@ -501,3 +501,99 @@ def test_inline_latch_settle_waits_out_the_grace_for_a_late_inline_claim():
     latch.done.set()
     threading.Timer(0.05, lambda: latch.wait_inline(0)).start()
     assert latch.settle(2.0) == "inline"
+
+
+# --------------------------------------------------------------------------- #
+# hold_thread: the model-free holder's lock choreography
+# --------------------------------------------------------------------------- #
+
+
+def _user_prompt(text: str):
+    from nymeria.core.pending_prompt_queue import make_pending_prompt
+
+    return make_pending_prompt(
+        message=text,
+        source="user",
+        source_id="u",
+        source_label="user",
+        user_id="u1",
+        is_autonomous=False,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+
+
+def test_hold_thread_looks_like_a_holder_turn_and_closes_the_queue_window():
+    reset_pending_queue_for_tests()
+    locks = ThreadLockManager()
+    agent = _agent(locks)
+    locks.signal_abort("t1")
+    queue = get_pending_queue()
+    # A prompt that snuck into the queue before the hold is handed back the
+    # way a stop does, never stranded behind a holder with no boundary.
+    early = _user_prompt("early")
+    queue.enqueue("t1", early)
+
+    with cd.hold_thread(agent, "t1", holder="claude_code", task_id="claude-code-1", timeout=1) as held:
+        assert held is True
+        assert locks.get_lock("t1").locked() is True
+        assert locks.get_lock_info("t1")["holder"] == "claude_code"
+        assert locks.get_abort_event("t1").is_set() is False
+        assert early.restored is True
+        # A contender arriving now must block on the lock (astream's
+        # is_releasing arm), not enqueue behind us.
+        with pytest.raises(PendingPromptQueueClosingError):
+            queue.enqueue("t1", _user_prompt("late"))
+
+    assert locks.get_lock("t1").locked() is False
+    assert locks.get_lock_info("t1") is None
+    assert queue.is_releasing("t1") is False
+    queue.enqueue("t1", _user_prompt("next turn"))  # window open again
+
+
+def test_hold_thread_yields_false_and_touches_nothing_when_a_turn_keeps_the_lock():
+    reset_pending_queue_for_tests()
+    locks = ThreadLockManager()
+    agent = _agent(locks)
+    lock = locks.get_lock("t1")
+    assert lock.acquire(blocking=False)
+    try:
+        with cd.hold_thread(agent, "t1", holder="claude_code", task_id="x", timeout=0.05) as held:
+            assert held is False
+            assert locks.get_lock_info("t1") is None
+            assert get_pending_queue().is_releasing("t1") is False
+    finally:
+        lock.release()
+
+
+def test_hold_thread_releases_on_a_body_exception():
+    reset_pending_queue_for_tests()
+    locks = ThreadLockManager()
+    agent = _agent(locks)
+    with pytest.raises(RuntimeError):
+        with cd.hold_thread(agent, "t1", holder="h", task_id="x", timeout=1):
+            raise RuntimeError("boom")
+    assert locks.get_lock("t1").locked() is False
+    assert locks.get_lock_info("t1") is None
+    assert get_pending_queue().is_releasing("t1") is False
+
+
+def test_deliver_without_turn_respects_the_guard_and_reports_busy(monkeypatch):
+    reset_pending_queue_for_tests()
+    cap = _patch_turn(monkeypatch, stream_behavior=lambda on_chunk: _Result())
+    delivery = _delivery(drop_on_abort=False)
+
+    mismatched = _agent(owner="someone-else")
+    assert cd.deliver_without_turn(mismatched, delivery, "text", timeout=1) == cd.RESULT_DROPPED
+    assert cap.events == []
+
+    locks = ThreadLockManager()
+    agent = _agent(locks)
+    lock = locks.get_lock("t1")
+    assert lock.acquire(blocking=False)
+    try:
+        assert cd.deliver_without_turn(agent, delivery, "text", timeout=0.05) == cd.RESULT_BUSY
+    finally:
+        lock.release()
+    assert cap.events == []
+    assert cap.activities == []

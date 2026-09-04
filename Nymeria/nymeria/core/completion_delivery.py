@@ -30,6 +30,15 @@ a stop, an abort, or a drain failure), so ``submit_completion`` waits for
 that outcome and re-delivers when the prompt never reached the model. The
 background tools return as soon as the prompt is queued, as before.
 
+``deliver_without_turn`` is the model-free sibling of ``fire_autonomous_turn``
+for a producer whose result is ALREADY the text the user should read (the
+user's ``/code`` command relaying Claude Code's answer): it holds the thread
+as a short holder turn (``hold_thread``: the lock, holder metadata, the
+queue's release window), lets the caller record the exchange into history
+under that hold, feeds the turn stream buffer so bots and the desktop attach
+to THIS turn rather than the previous one, and publishes the same bookends.
+No model runs, so it works while the agent's LLM path is broken.
+
 ``InlineLatch`` is the one-way inline-or-detached decision every bounded
 inline wait shares (detached Claude Code runs, callable-ask continuations):
 the caller claims inline only if the run finished WITHIN its budget, the
@@ -46,14 +55,18 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
 RESULT_DROPPED = "dropped"
 RESULT_QUEUED = "queued"
 RESULT_FIRED = "fired"
+# ``deliver_without_turn`` only: a live turn kept the thread lock past the
+# caller's wait, so nothing was delivered (the caller picks a fallback).
+RESULT_BUSY = "busy"
 
 # A queued must-deliver result that keeps being cleared before absorption is
 # retried this many times (with a short backoff) before it is given up on.
@@ -366,7 +379,7 @@ def fire_autonomous_turn(agent: Any, delivery: CompletionDelivery) -> None:
         if result.iteration_limit_hit:
             completed["partial"] = True
         emitter.publish_completed(completed)
-        _log_activity(
+        log_delivery_activity(
             delivery.activity_type or ActivityType.TASK_COMPLETED,
             delivery.activity_message or f"{delivery.label} {delivery.source_id} completed",
             delivery,
@@ -391,7 +404,7 @@ def fire_autonomous_turn(agent: Any, delivery: CompletionDelivery) -> None:
                 "error_message": safe_error,
             }
         )
-        _log_activity(
+        log_delivery_activity(
             ActivityType.TASK_FAILED,
             f"{delivery.label} {delivery.source_id} notification failed: {safe_error[:120]}",
             delivery,
@@ -399,7 +412,138 @@ def fire_autonomous_turn(agent: Any, delivery: CompletionDelivery) -> None:
         )
 
 
-def _log_activity(
+@contextmanager
+def hold_thread(
+    agent: Any,
+    thread_id: str,
+    *,
+    holder: str,
+    task_id: str,
+    timeout: float,
+) -> Iterator[bool]:
+    """Hold ``thread_id`` as a short model-free holder turn.
+
+    Mirrors what a real turn does around the lock, so the rest of the
+    platform sees an ordinary holder: the lock is taken (waiting up to
+    ``timeout`` for a live turn to end), the pending queue's release window
+    is closed so a contender arriving now blocks on the lock and runs as the
+    NEXT turn (``astream``'s ``is_releasing`` arm) instead of queueing behind
+    a holder with no sub-turn boundary to absorb it, anything that queued in
+    the gap is handed back the way a stop does, holder metadata is set (so
+    ``/stop`` and the status route see the hold), and the abort flag is
+    cleared as a turn start would. Yields True while held; yields False,
+    holding nothing, when the lock stayed taken past ``timeout``.
+    """
+    from .pending_prompt_queue import get_pending_queue
+
+    locks = agent._thread_locks
+    lock = locks.get_lock(thread_id)
+    if not lock.acquire(timeout=timeout):
+        yield False
+        return
+    backend = get_pending_queue()
+    try:
+        backend.begin_release(thread_id)
+        restored, discarded = backend.clear_with_restore(thread_id)
+        if restored or discarded:
+            logger.info(
+                "Thread %s: %d user prompt(s) restored and %d dropped from the "
+                "queue while a model-free holder took the thread",
+                thread_id,
+                len(restored),
+                discarded,
+            )
+        locks.set_lock_info(thread_id, holder=holder, task_id=task_id)
+        locks.clear_abort(thread_id)
+        yield True
+    finally:
+        locks.clear_lock_info(thread_id)
+        lock.release()
+        backend.end_release(thread_id)
+
+
+def deliver_without_turn(
+    agent: Any,
+    delivery: CompletionDelivery,
+    content: str,
+    *,
+    record: Optional[Callable[[], Optional[str]]] = None,
+    timeout: float,
+) -> str:
+    """Deliver ready-made ``content`` to the thread as a model-free holder turn.
+
+    ``record`` runs under the hold before the turn opens (the producer's
+    history write) and returns the anchor message id for live-attach
+    viewers, or None. The turn stream buffer opens BEFORE ``task_started``
+    is published: bots attach on that event to the thread's current buffer,
+    so publishing first would hand them the previous turn's retained buffer
+    and swallow this result. Returns ``RESULT_DROPPED`` (guard),
+    ``RESULT_BUSY`` (lock held past ``timeout``, nothing delivered), or
+    ``RESULT_FIRED``.
+    """
+    if drop_reason(agent, delivery) is not None:
+        return RESULT_DROPPED
+
+    from .activity_log import ActivityType
+    from .autonomous_turn import AutonomousTurnEmitter
+    from .stream_bridge import begin_holder_turn_tee
+
+    with hold_thread(
+        agent,
+        delivery.thread_id,
+        holder=delivery.source,
+        task_id=delivery.task_id,
+        timeout=timeout,
+    ) as held:
+        if not held:
+            return RESULT_BUSY
+        anchor: Optional[str] = None
+        if record is not None:
+            try:
+                anchor = record()
+            except Exception:  # noqa: BLE001 - the record is not the delivery
+                logger.exception(
+                    "%s %s: history record failed", delivery.label, delivery.source_id
+                )
+        tee = begin_holder_turn_tee(
+            agent,
+            thread_id=delivery.thread_id,
+            user_id=delivery.user_id,
+            source=delivery.source,
+            source_label=delivery.source_label,
+            user_message_id=anchor,
+        )
+        emitter = AutonomousTurnEmitter(
+            thread_id=delivery.thread_id,
+            user_id=delivery.user_id,
+            task_id=delivery.task_id,
+            started_data={
+                "prompt": delivery.prompt_text,
+                "source": delivery.source,
+                **delivery.started_data,
+            },
+        )
+        try:
+            chunk = {"type": "response", "content": content}
+            tee.record(chunk)
+            emitter.handle_chunk(chunk)
+            tee.finish_done()
+            emitter.publish_completed(
+                {"content": content, "source": delivery.source, **delivery.completed_data}
+            )
+        finally:
+            tee.finish_aborted_if_live()
+
+    log_delivery_activity(
+        delivery.activity_type or ActivityType.TASK_COMPLETED,
+        delivery.activity_message or f"{delivery.label} {delivery.source_id} completed",
+        delivery,
+        metadata=dict(delivery.activity_metadata),
+    )
+    return RESULT_FIRED
+
+
+def log_delivery_activity(
     activity_type: Any,
     message: str,
     delivery: CompletionDelivery,

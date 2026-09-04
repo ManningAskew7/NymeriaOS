@@ -289,6 +289,12 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/browser default <browser>` | Show or set the account-wide default browser; `clear` unsets it. User-only: the agent cannot change the account default. |
 | `/browser rename <browser> [label]` | Name a browser so it is easy to pick; omit the label to remove the name. |
 
+### Claude Code (`/code`)
+
+| Command | Description |
+|---------|-------------|
+| `/code [prompt]` | Admin-only break-glass: prompt Claude Code on the host directly, with no model in the loop, so the owner can repair Nymeria even while agent turns are failing. Resumes the channel's last Claude Code session (`new` starts fresh; `mode` defaults to `bypass`; `dir` picks a project within the runner's roots). A quick run answers inline; a longer one acknowledges with a job id and the result lands in the channel when it finishes. `/stop` cancels a running job. Bare `/code` shows the run and session state. See `docs/agent-systems/claude-code-bridge.md`. |
+
 ### Tools (`/tools`)
 
 | Command | Description |

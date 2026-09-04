@@ -52,6 +52,19 @@ class ClaudeCodeJob:
     result: Optional[ClaudeCodeResult] = None
     # The inline-or-detached decision (shared with callable-ask continuations).
     latch: InlineLatch = field(default_factory=InlineLatch)
+    # How a DETACHED result reaches the thread. None is the tool's path (an
+    # autonomous completion turn: the model relays the output). The user's
+    # ``/code`` command installs a deliverer that needs no model at all, so a
+    # broken agent can still hand Claude Code's answer back to the chat.
+    deliver: Optional[Callable[["ClaudeCodeJob"], None]] = None
+    # The run's own cancel signal, when it has one: the tool wires the
+    # THREAD's abort event into the producer (a /stop on the running turn
+    # cancels the run), while ``/code`` has no turn, so it gives the producer
+    # this event and the stop surfaces set it via ``cancel_active_job``.
+    cancel_event: Optional[threading.Event] = None
+    # Set by the watcher when the producer returns, so a result held for
+    # delivery reports the run's real duration, not the hold.
+    finished_at: Optional[float] = None
 
     @property
     def done(self) -> threading.Event:
@@ -103,6 +116,7 @@ def _watch(
         )
 
     job.result = result
+    job.finished_at = time.time()
     if on_complete is not None:
         try:
             on_complete(result)
@@ -117,7 +131,10 @@ def _watch(
 
     if do_inject:
         try:
-            _submit_completion_prompt(job)
+            if job.deliver is not None:
+                job.deliver(job)
+            else:
+                _submit_completion_prompt(job)
         except Exception:
             logger.exception(
                 "Claude Code completion submission failed for job %s", job.id
@@ -141,8 +158,16 @@ def build_completion_prompt(job: ClaudeCodeJob) -> str:
     )
 
 
-def _delivery(job: ClaudeCodeJob, prompt_text: str) -> CompletionDelivery:
-    """The shared detach-and-deliver descriptor for one finished run."""
+def job_delivery(
+    job: ClaudeCodeJob, prompt_text: str, *, drop_on_abort: bool = True
+) -> CompletionDelivery:
+    """The shared detach-and-deliver descriptor for one finished run.
+
+    The tool's completion turn drops on a set abort flag (a user who just
+    stopped the thread does not want it waking itself up); the ``/code``
+    command passes ``drop_on_abort=False`` because its result is the user's
+    own request, often issued right after stopping a broken turn.
+    """
     from ..core.activity_log import ActivityType
 
     result = job.result
@@ -163,9 +188,7 @@ def _delivery(job: ClaudeCodeJob, prompt_text: str) -> CompletionDelivery:
         activity_message=_activity_message(job),
         activity_metadata={"source": SOURCE, **run_fields, "session_id": session_id},
         activity_type=ActivityType.TASK_FAILED if is_error else ActivityType.TASK_COMPLETED,
-        # A user who just stopped this thread does not want it waking itself
-        # up with the run's result (abort-suppresses-notification UX).
-        drop_on_abort=True,
+        drop_on_abort=drop_on_abort,
     )
 
 
@@ -191,7 +214,7 @@ def _submit_completion_prompt(job: ClaudeCodeJob) -> None:
     prompt_text = build_completion_prompt(job)
     submit_completion(
         agent,
-        _delivery(job, prompt_text),
+        job_delivery(job, prompt_text),
         fire=lambda: _fire_autonomous_turn(job, prompt_text, agent),
     )
 
@@ -202,7 +225,7 @@ def _fire_autonomous_turn(job: ClaudeCodeJob, prompt_text: str, agent) -> None:
 
     if _cancelled(job):
         return
-    fire_autonomous_turn(agent, _delivery(job, prompt_text))
+    fire_autonomous_turn(agent, job_delivery(job, prompt_text))
 
 
 def _cancelled(job: ClaudeCodeJob) -> bool:
@@ -220,7 +243,7 @@ def _should_drop_for_thread_state(job: ClaudeCodeJob, agent) -> bool:
 
     if _cancelled(job):
         return True
-    return drop_reason(agent, _delivery(job, "")) is not None
+    return drop_reason(agent, job_delivery(job, "")) is not None
 
 
 def _source_label(job: ClaudeCodeJob) -> str:
