@@ -4004,103 +4004,30 @@ class SafeToolNode(ToolNode):
             logger.debug("Failed to record capability usage", exc_info=True)
 
     def invoke(self, input, config=None, **kwargs):
-        """Execute tools with a timeout to prevent indefinite hangs.
+        """Execute tools; every call is bounded by its own per-call timeout.
 
-        Wraps the parent ToolNode.invoke() in a thread with a timeout.
-        If the timeout fires, returns error ToolMessages for all pending
-        tool calls so the agent can recover gracefully.
+        Both dispatch paths (concurrent fan-out and the ordered loop) wrap
+        each call in ``_run_one_with_timeout``, so a hung call times out
+        ALONE: its siblings keep their real results and only its own
+        callable sub-thread is cascade-aborted. There is deliberately no
+        whole-batch timeout here any more: the old one marked every call in
+        the batch timed out when one hung, discarding completed results
+        (a Skill() activation lost to a slow callable ask in the same batch,
+        backlog #330), and aborted every callable in the batch by name.
 
-        Note: on timeout, the underlying thread may continue running in the
-        background (Python cannot forcibly kill threads), but the agent is
-        unblocked and can proceed. The executor is shut down with wait=False
-        so the caller is not blocked by ThreadPoolExecutor cleanup.
+        Note: on a per-call timeout the underlying thread may keep running
+        in the background (Python cannot forcibly kill threads), but the
+        agent is unblocked and can proceed.
         """
         self._record_capability_usage(input, config)
-        if self._should_run_sequentially(input, config):
-            # Ordered batches run one call after another, so their wall-clock is
-            # the SUM of the calls and would blow past the single whole-batch
-            # timeout below (which, on fire, marks every call timed out and
-            # discards completed results). Bypass it: each call is bounded by its
-            # own per-call timeout inside the ordered loop in _func.
-            result = super().invoke(input, config, **kwargs)
-            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(super().invoke, input, config, **kwargs)
-        try:
-            result = future.result(timeout=self._tool_timeout)
-            executor.shutdown(wait=False)
-            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
-        except concurrent.futures.TimeoutError:
-            # shutdown(wait=False) returns immediately — the daemon worker
-            # thread will finish on its own (or when the process exits).
-            executor.shutdown(wait=False)
-            try:
-                self._notify_timeout(input, config)
-            except Exception as e:
-                logger.warning(f"on_timeout callback failed: {e}")
-            return _truncate_tool_messages_in_result(
-                self._build_timeout_response(input),
-                self._tool_output_max_chars,
-            )
+        result = super().invoke(input, config, **kwargs)
+        return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
 
     async def ainvoke(self, input, config=None, **kwargs):
-        """Async tool execution with timeout."""
+        """Async tool execution; per-call timeouts, see ``invoke``."""
         self._record_capability_usage(input, config)
-        if self._should_run_sequentially(input, config):
-            # See invoke(): bypass the whole-batch timeout for ordered batches and
-            # rely on the per-call timeouts inside the ordered loop in _afunc.
-            result = await super().ainvoke(input, config, **kwargs)
-            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
-        try:
-            result = await asyncio.wait_for(
-                super().ainvoke(input, config, **kwargs),
-                timeout=self._tool_timeout,
-            )
-            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
-        except asyncio.TimeoutError:
-            try:
-                self._notify_timeout(input, config)
-            except Exception as e:
-                logger.warning(f"on_timeout callback failed: {e}")
-            return _truncate_tool_messages_in_result(
-                self._build_timeout_response(input),
-                self._tool_output_max_chars,
-            )
-
-    def _build_timeout_response(self, input) -> dict:
-        """Build error ToolMessages for timed-out tool calls.
-
-        LangGraph requires a matching ToolMessage for every tool_call in the
-        AIMessage, so we produce one error message per pending call.
-        """
-        messages = input.get("messages", []) if isinstance(input, dict) else []
-        last_message = messages[-1] if messages else None
-
-        error_messages = []
-        if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            tool_names = [tc.get("name", "unknown") for tc in last_message.tool_calls]
-            logger.error(
-                f"Tool execution timed out after {self._tool_timeout}s. "
-                f"Tools: {tool_names}"
-            )
-            for tc in last_message.tool_calls:
-                tool_name = tc.get("name", "unknown")
-                tool_call_id = tc.get("id", "unknown")
-                error_messages.append(ToolMessage(
-                    content=(
-                        f"[Error]: Tool '{tool_name}' timed out after {self._tool_timeout} seconds. "
-                        f"The operation took too long and was stopped to prevent the agent from hanging. "
-                        f"Do NOT retry this tool. Report the timeout to the user."
-                    ),
-                    tool_call_id=tool_call_id,
-                ))
-        else:
-            logger.error(
-                f"Tool execution timed out after {self._tool_timeout}s "
-                f"but could not extract tool calls from input to build error response."
-            )
-
-        return {"messages": error_messages}
+        result = await super().ainvoke(input, config, **kwargs)
+        return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
 
     # ------------------------------------------------------------------
     # Ordered (sequential) same-turn tool execution.
@@ -4179,13 +4106,108 @@ class SafeToolNode(ToolNode):
         # ``_afunc``: RunnableCallable derives its config/runtime injection map
         # once from the sync ``_func`` signature and reuses it for both paths.
         if not self._should_run_sequentially(input, config):
-            return super()._func(input, config, runtime)
+            return self._run_concurrent(input, config, runtime)
         return self._run_sequential(input, config, runtime)
 
     async def _afunc(self, input, config, runtime):
         if not self._should_run_sequentially(input, config):
-            return await super()._afunc(input, config, runtime)
+            return await self._arun_concurrent(input, config, runtime)
         return await self._arun_sequential(input, config, runtime)
+
+    # ------------------------------------------------------------------
+    # Concurrent (default) same-turn tool execution with PER-CALL timeouts.
+    #
+    # The parent's ``_func``/``_afunc`` fan the batch out and wait for every
+    # call; SafeToolNode used to wrap that whole wait in one ``tool_timeout``,
+    # which on firing replaced EVERY call's result with a timeout error and
+    # cascade-aborted every callable in the batch by name. These twins keep
+    # the parent's fan-out (same ToolRuntime construction, same output
+    # combining) but bound each call individually with the helpers the
+    # ordered loop already uses, so a hung call fails alone.
+    # ------------------------------------------------------------------
+
+    def _run_concurrent(self, input, config, runtime):
+        from langchain_core.runnables.config import ContextThreadPoolExecutor
+
+        tool_calls, input_type = self._parse_input(input)
+        config_list = get_config_list(config, len(tool_calls))
+        tool_runtimes = [
+            self._build_tool_runtime(call, cfg, runtime, input)
+            for call, cfg in zip(tool_calls, config_list, strict=False)
+        ]
+        if not tool_calls:
+            return self._combine_tool_outputs([], input_type)
+        # ContextThreadPoolExecutor copies contextvars into the workers, as
+        # the parent's ``get_executor_for_config`` does (LangChain callbacks
+        # and the child runnable config ride on them). ``max_concurrency``
+        # is honored the same way; unset means the stdlib default pool size
+        # (``min(32, cpu_count + 4)``), so a larger batch queues.
+        max_workers = None
+        if isinstance(config, dict):
+            max_workers = config.get("max_concurrency") or None
+        executor = ContextThreadPoolExecutor(max_workers=max_workers)
+        # Each call is bounded by the tool timeout from ITS OWN start, so a
+        # pool-queued call is not charged for the wait. A call that never
+        # starts because hung siblings hold every worker is bounded from the
+        # batch start instead, so the loop still terminates.
+        batch_start = time.monotonic()
+        started_at: list = [None] * len(tool_calls)
+        started_lock = threading.Lock()
+
+        def _timed(index, call, tool_runtime):
+            with started_lock:
+                started_at[index] = time.monotonic()
+            return self._run_one(call, input_type, tool_runtime)
+
+        futures = [
+            executor.submit(_timed, index, call, tool_runtime)
+            for index, (call, tool_runtime) in enumerate(
+                zip(tool_calls, tool_runtimes, strict=False)
+            )
+        ]
+        outputs: list = []
+        try:
+            for index, (call, future) in enumerate(zip(tool_calls, futures, strict=False)):
+                while True:
+                    with started_lock:
+                        origin = started_at[index]
+                    deadline = (batch_start if origin is None else origin) + self._tool_timeout
+                    try:
+                        outputs.append(
+                            future.result(timeout=max(0.0, deadline - time.monotonic()))
+                        )
+                        break
+                    except concurrent.futures.TimeoutError:
+                        with started_lock:
+                            latest = started_at[index]
+                        if latest is not None and latest != origin:
+                            # It left the pool queue after the deadline was
+                            # computed: re-arm from its own start.
+                            continue
+                        self._notify_single_call_timeout(call, config)
+                        outputs.append(self._timeout_message(call))
+                        break
+                    # GraphBubbleUp re-raises from future.result() and is
+                    # intentionally not caught: the interrupt propagates.
+        finally:
+            # Never wait on a hung worker; it finishes on its own.
+            executor.shutdown(wait=False)
+        return self._combine_tool_outputs(outputs, input_type)
+
+    async def _arun_concurrent(self, input, config, runtime):
+        tool_calls, input_type = self._parse_input(input)
+        config_list = get_config_list(config, len(tool_calls))
+        tool_runtimes = [
+            self._build_tool_runtime(call, cfg, runtime, input)
+            for call, cfg in zip(tool_calls, config_list, strict=False)
+        ]
+        outputs = await asyncio.gather(
+            *(
+                self._arun_one_with_timeout(call, input_type, tool_runtime, config)
+                for call, tool_runtime in zip(tool_calls, tool_runtimes, strict=False)
+            )
+        )
+        return self._combine_tool_outputs(list(outputs), input_type)
 
     def _build_tool_runtime(self, call, cfg, runtime, input):
         """Construct the per-call ToolRuntime exactly as the parent does.
@@ -4287,14 +4309,12 @@ class SafeToolNode(ToolNode):
         return self._combine_tool_outputs(outputs, input_type)
 
     def _notify_single_call_timeout(self, call, config) -> None:
-        """Fire the timeout hook for a single timed-out call in an ordered batch.
+        """Fire the timeout hook for ONE timed-out call (both dispatch paths).
 
-        The concurrent path calls ``_notify_timeout`` on a whole-batch timeout so
-        ``on_tool_timeout`` can cascade-abort any callable sub-thread that hung.
-        The sequential path times out per call, so only the one call that hung
-        should be aborted: passing the real input here would also abort sibling
-        callable threads (already-finished or not-yet-started) by name. Synthesize
-        a one-call input so exactly that call's callable thread is cascaded.
+        ``on_tool_timeout`` cascade-aborts the callable sub-thread named by every
+        tool call in the input it is handed, so passing the real batch input
+        would also abort sibling callables (finished or not) by name. Synthesize
+        a one-call input so exactly the hung call's callable thread is cascaded.
         """
         if not self._on_timeout:
             return
@@ -4447,7 +4467,7 @@ class SafeToolNode(ToolNode):
     def _timeout_message(self, call) -> ToolMessage:
         name = call.get("name", "unknown")
         logger.error(
-            "Tool '%s' timed out after %ss in a sequential batch.",
+            "Tool '%s' timed out after %ss (per-call timeout).",
             name,
             self._tool_timeout,
         )
