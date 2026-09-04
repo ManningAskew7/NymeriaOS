@@ -254,8 +254,7 @@ def compose_pulse_prompt(messages: List[ChatMessage]) -> str:
         f"{fence_chat(format_chat_context(messages))}\n\n"
         "Decide what this batch warrants: reply in chat with twitch_send, act "
         "on disruption with your moderation tools, use your info or research "
-        "tools when more context would sharpen a later reply, or do nothing. "
-        "Most pulses warrant nothing."
+        "tools when more context would sharpen a later reply, or take no action."
     )
 
 
