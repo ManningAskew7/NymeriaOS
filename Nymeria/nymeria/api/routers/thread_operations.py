@@ -3,6 +3,7 @@
 import json
 import logging
 import mimetypes
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -13,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from ...core.accounts import AuthenticatedUser
+from ...core.claude_code_delivery import cancel_active_job as cancel_active_code_job
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.turn_stream_buffer import (
     TurnReplayGapError,
@@ -496,6 +498,10 @@ def create_thread_operations_router(
         require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
         lock_info = agent._thread_locks.get_lock_info(thread_id)
+        # A user's /code run holds no thread lock (its Claude Code job runs
+        # on the host runner), so the holder check below cannot see it; its
+        # own registry is the cancel seam, consulted on every stop.
+        code_job = cancel_active_code_job(thread_id)
 
         # Only create abort events for threads with active operations
         # to prevent unbounded memory growth from arbitrary thread IDs
@@ -536,6 +542,19 @@ def create_thread_operations_router(
                     f"Stop signal sent. Thread was held by '{lock_info.get('holder')}' "
                     f"for {lock_info.get('held_seconds', 0):.0f}s. "
                     f"Will stop at next iteration boundary."
+                ),
+            }
+        if code_job is not None:
+            held = max(0.0, time.time() - code_job.started_at)
+            return {
+                "status": "stopping",
+                "thread_id": thread_id,
+                "holder": f"Claude Code job {code_job.id}",
+                "held_seconds": round(held, 1),
+                "restored_prompts": [],
+                "message": (
+                    f"Cancel signal sent to Claude Code job {code_job.id} "
+                    f"(running for {held:.0f}s)."
                 ),
             }
         return {

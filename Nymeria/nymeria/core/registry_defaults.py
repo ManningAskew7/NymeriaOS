@@ -2125,6 +2125,67 @@ def register_default_commands(service: "CommandService") -> None:
             ),
         ),
     )
+    # /code: the user prompts Claude Code on the host directly, with no model
+    # in the loop (break-glass repair when the agent itself is broken). The
+    # handler lives in command_executor_claude_code.py; it rides the same
+    # transport and session map as the claude_code tool. Admin-only and
+    # never offered to the agent (it has the tool). Rest-primary: options
+    # must precede the prompt text.
+    service.register(
+        "code",
+        description="Prompt Claude Code on the host directly, no model in the loop (break-glass repair)",
+        category="System",
+        requires_admin=True,
+        requires_thread=True,
+        agent_allowed=False,
+        mutates_state=True,
+        danger_level="dangerous",
+        examples=(
+            "/code the agent errors on every turn, read docker logs nymeria-api and fix it",
+            "/code --new --mode plan tighten the /status output",
+            "/code yes, go ahead with option 2",
+        ),
+        params=(
+            CommandParam(
+                "new",
+                kind="flag",
+                type="bool",
+                description=(
+                    "Start a fresh Claude Code session instead of resuming this "
+                    "thread's last one"
+                ),
+            ),
+            CommandParam(
+                "resume",
+                kind="flag",
+                type="bool",
+                description=(
+                    "Accepted for clarity; resuming the thread's last session is "
+                    "the default"
+                ),
+            ),
+            CommandParam(
+                "mode",
+                kind="option",
+                choices=("bypass", "plan", "dont_ask", "accept_edits", "auto", "default"),
+                description="Permission mode (default bypass: unattended repair)",
+            ),
+            CommandParam(
+                "dir",
+                kind="option",
+                label="path",
+                description="Working directory, within the runner's allowed roots",
+            ),
+            CommandParam(
+                "prompt",
+                kind="rest",
+                description=(
+                    "A task for Claude Code, or a reply to its question; omit to "
+                    "show this thread's state"
+                ),
+            ),
+        ),
+    )
     service.register(
         "doctor",
         description="Run server-side diagnostics (auth + model)",

@@ -218,6 +218,14 @@ Unmasked environment reads are not offered here: there is no `/env_get`
 handler, because an unmasked secret typed back into a chat persists in
 platform history.
 
+### Claude Code (break-glass)
+
+Served by the passthrough (no native handler), admin-only.
+
+| Command | Description |
+|---------|-------------|
+| `/code [--new] [--mode <mode>] [--dir <path>] [prompt]` | Prompt Claude Code on the host directly, with no model in the loop, so you can repair Nymeria from this chat even while agent turns are failing. Resumes this chat's last Claude Code session by default (`--new` starts fresh), so `/code <reply>` answers a question or a plan Claude Code stopped on. Mode defaults to `bypass`. A quick run answers inline; a longer one acknowledges with a job id and the result arrives here when it finishes (gated by this chat's autonomous delivery mode like any autonomous completion). `/stop` cancels a running job. Bare `/code` shows the run and session state. See `docs/agent-systems/claude-code-bridge.md`. |
+
 ### Aliases
 
 | Command | Description |

@@ -3883,9 +3883,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # browser-login pass added the /browser family: root overview + login.
     # 152 after the single-browser-routing pass grew that family by
     # list + switch + default + rename, all executable. 153 with
-    # `settings reload`, the #302 config-reload command.)
-    assert len(service._commands) == 154
-    assert sum(cmd.executable for cmd in service._commands.values()) == 145
+    # `settings reload`, the #302 config-reload command. 155 with `/code`,
+    # the admin-only break-glass to Claude Code, executable.)
+    assert len(service._commands) == 155
+    assert sum(cmd.executable for cmd in service._commands.values()) == 146
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"

@@ -222,6 +222,40 @@ class _TurnBufferTee:
             return None
 
 
+def begin_holder_turn_tee(
+    agent: Any,
+    *,
+    thread_id: str,
+    user_id: str,
+    source: str,
+    source_label: Optional[str],
+    user_message_id: Optional[str],
+) -> _TurnBufferTee:
+    """Open the turn buffer for a model-free holder turn and return its tee.
+
+    ``completion_delivery.deliver_without_turn`` delivers a ready-made
+    result as an autonomous holder turn without an agent stream, so there
+    is no ``astream`` to fire ``_on_turn_started``; this builds the tee from
+    the same self-invoke kwargs shape the stream path uses and begins the
+    buffer at once. The caller must hold the thread lock (the buffer is
+    the holder turn's).
+    """
+    from .turn_executor import wrap_for_stream
+
+    kwargs: Dict[str, Any] = {
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "_is_self_invoke": True,
+        "source": source,
+        "source_label": source_label,
+    }
+    if user_message_id:
+        kwargs["_turn_user_message_id"] = user_message_id
+    tee = _TurnBufferTee(wrap_for_stream(agent), kwargs)
+    kwargs["_on_turn_started"]()
+    return tee
+
+
 def iter_agent_astream(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
     """Yield ``agent.astream(...)`` chunks from synchronous worker contexts.
 

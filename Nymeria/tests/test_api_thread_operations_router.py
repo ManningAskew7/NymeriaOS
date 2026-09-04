@@ -482,6 +482,60 @@ def test_stop_route_idle_returns_empty_restored_prompts(
     assert agent.aborted_threads == []
 
 
+def test_stop_route_cancels_a_code_run_that_holds_no_lock(
+    tmp_path: Path, api_client_builder
+):
+    """A /code run lives in its own registry (no thread lock), so the stop
+    route must reach it through the cancel seam and say so."""
+    import threading
+    import time
+
+    from nymeria.core import claude_code_delivery as delivery
+    from nymeria.tools.claude_code_background import ClaudeCodeJob
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-stop-code"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    delivery.reset_registry_for_tests()
+    cancel = threading.Event()
+    job = ClaudeCodeJob(
+        id="c0de",
+        thread_id=thread_id,
+        user_id="owner",
+        prompt="fix it",
+        cwd="/repo",
+        mode="bypassPermissions",
+        started_at=time.time() - 12,
+        detached_message="",
+        cancel_event=cancel,
+    )
+    assert delivery.claim(job) is None
+    try:
+        response = client.post(
+            f"/threads/{thread_id}/stop",
+            headers=api_client_builder.auth(token),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "stopping"
+        assert body["holder"] == "Claude Code job c0de"
+        assert body["held_seconds"] >= 12
+        assert "Claude Code job c0de" in body["message"]
+        assert cancel.is_set()
+        # No turn held the thread: nothing to abort-cascade.
+        assert agent.aborted_threads == []
+
+        # A finished job is left alone; the thread reads idle.
+        job.done.set()
+        again = client.post(
+            f"/threads/{thread_id}/stop",
+            headers=api_client_builder.auth(token),
+        ).json()
+        assert again["status"] == "idle"
+    finally:
+        delivery.reset_registry_for_tests()
+
+
 def test_stop_route_returns_restored_prompts_and_publishes_queue_restored(
     tmp_path: Path, api_client_builder, monkeypatch
 ):
