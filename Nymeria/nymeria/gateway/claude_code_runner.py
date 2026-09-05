@@ -66,6 +66,7 @@ from ..tools.claude_code_bridge import (
     resolve_claude_executable,
     resolve_cwd_against_roots,
     run_local_blocking,
+    validate_session_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -300,6 +301,9 @@ def create_app(*, allow_insecure: bool = False):
                 live.project_root,
             )
             config = _resolve_runner_config(live, requested_model=body.model)
+            # The runner is the policy boundary: a resume id that could parse
+            # as a CLI flag is refused here whatever the tool side sent.
+            resume_session_id = validate_session_id(body.resume_session_id)
         except ClaudeCodeError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -307,7 +311,7 @@ def create_app(*, allow_insecure: bool = False):
             prompt=body.prompt,
             cwd=str(cwd),
             permission_mode=cli_mode,
-            resume_session_id=body.resume_session_id,
+            resume_session_id=resume_session_id,
             fork_session=body.fork_session,
         )
         job = registry.create()

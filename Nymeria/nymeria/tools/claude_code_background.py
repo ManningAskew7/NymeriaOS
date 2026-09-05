@@ -88,6 +88,10 @@ class TurnReport:
     kind: str
     turns: list[EndTurn]
     total: int
+    # Bridge-side notes appended to the body (a FINAL carries the fate of
+    # the follow-ups queued on the run: started as which job, or dropped
+    # and why), so a caller holding a [Queued] receipt is never left guessing.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def final(self) -> bool:
@@ -126,10 +130,11 @@ class ClaudeCodeJob:
     # ``/code`` command installs a deliverer that needs no model at all, so a
     # broken agent can still hand Claude Code's answer back to the chat.
     deliver: Optional[Callable[["ClaudeCodeJob", TurnReport], None]] = None
-    # The run's own cancel signal, when it has one: the tool wires the
-    # THREAD's abort event into the producer (a /stop on the running turn
-    # cancels the run), while ``/code`` has no turn, so it gives the producer
-    # this event and the stop surfaces set it via ``cancel_active_job``.
+    # The run's own cancel signal. Every job (tool, /code, queued follow-up)
+    # owns one; both /stop surfaces set it through ``cancel_jobs_for_thread``
+    # (via ``core.claude_code_delivery.cancel_active_job``), which is how a
+    # run reaches cancellation once its tool call has returned and the thread
+    # holds no lock. The tool additionally folds the thread's abort event in.
     cancel_event: Optional[threading.Event] = None
     # Set by the watcher when the producer returns, so a result held for
     # delivery reports the run's real duration, not the hold.
@@ -169,6 +174,11 @@ class ClaudeCodeJob:
         the one-way rule.
         """
         return self.latch.wait_inline(budget)
+
+    def detach(self) -> str:
+        """Claim detached without waiting: every report of this job is
+        delivered (see ``InlineLatch.detach``)."""
+        return self.latch.detach()
 
     def queue_followup(self, prompt: str) -> int:
         """Queue a prompt for this session; returns its position (1-based)."""
@@ -253,6 +263,23 @@ def jobs_for_thread(thread_id: str) -> list[ClaudeCodeJob]:
         return [j for j in _JOBS.values() if j.thread_id == thread_id]
 
 
+def cancel_jobs_for_thread(thread_id: str) -> list[ClaudeCodeJob]:
+    """Signal every RUNNING job on ``thread_id`` to cancel; the jobs signalled.
+
+    The seam both ``/stop`` surfaces reach (via
+    ``core.claude_code_delivery.cancel_active_job``). A run holds no thread
+    lock once its tool call has returned, and a queued follow-up never had a
+    turn, so the thread's abort event alone cannot reach them: every job owns
+    a ``cancel_event`` and this sets it.
+    """
+    cancelled: list[ClaudeCodeJob] = []
+    for job in jobs_for_thread(thread_id):
+        if job.running and job.cancel_event is not None:
+            job.cancel_event.set()
+            cancelled.append(job)
+    return cancelled
+
+
 def reset_jobs_for_tests() -> None:
     with _JOBS_LOCK:
         _JOBS.clear()
@@ -290,6 +317,7 @@ def _run_producer(
     job: ClaudeCodeJob,
     producer: Callable[[], ClaudeCodeResult],
     on_complete: Optional[Callable[[ClaudeCodeResult], None]],
+    wake: Optional[threading.Event] = None,
 ) -> None:
     try:
         result = producer()
@@ -307,6 +335,10 @@ def _run_producer(
         except Exception:  # noqa: BLE001 - persistence is best-effort.
             logger.exception("Claude Code job %s on_complete failed", job.id)
     job.done.set()
+    if wake is not None:
+        # Wake the watcher now: its loop otherwise notices ``done`` only on
+        # its next 1s poll, and every FINAL would lag that long.
+        wake.set()
 
 
 def _watch(
@@ -318,7 +350,7 @@ def _watch(
     job.observer.on_end_turn = lambda turn: turn_signal.set()
     runner = threading.Thread(
         target=_run_producer,
-        args=(job, producer, on_complete),
+        args=(job, producer, on_complete, turn_signal),
         name=f"NymeriaClaudeCodeRun-{job.id}",
         daemon=True,
     )
@@ -337,8 +369,11 @@ def _watch(
             break
         _report(job, job.next_report(REPORT_INTERIM))
     runner.join()
-    _report(job, job.next_report(REPORT_FINAL))
-    _start_followups(job)
+    final = job.next_report(REPORT_FINAL)
+    # Follow-ups start BEFORE the final report goes out so their fate (the
+    # job they became, or why they were dropped) rides on the FINAL body.
+    final.notes.extend(_start_followups(job))
+    _report(job, final)
 
 
 def _report(job: ClaudeCodeJob, report: TurnReport) -> None:
@@ -362,17 +397,27 @@ def _report(job: ClaudeCodeJob, report: TurnReport) -> None:
         )
 
 
-def _start_followups(job: ClaudeCodeJob) -> None:
+def _start_followups(job: ClaudeCodeJob) -> list[str]:
+    """Start the prompts queued on ``job``; return the notes for its FINAL.
+
+    A cancelled run drops its queue silently (the FINAL is silent too: the
+    user stopped it). Every other drop is NAMED on the final report, because
+    the caller holds a [Queued] receipt promising the output.
+    """
     prompts = job.take_followups()
     if not prompts:
-        return
-    if _cancelled(job):
+        return []
+    # A stop that landed after the process exited (the result reads success)
+    # still means the user wants nothing more from this session.
+    stopped = job.cancel_event is not None and job.cancel_event.is_set()
+    if stopped or _cancelled(job):
         logger.info(
             "Claude Code job %s was cancelled; dropping %d queued follow-up(s)",
             job.id,
             len(prompts),
         )
-        return
+        return []
+    queued = _describe_followups(prompts)
     session_id = job.session_id
     if not session_id:
         logger.warning(
@@ -380,13 +425,32 @@ def _start_followups(job: ClaudeCodeJob) -> None:
             job.id,
             len(prompts),
         )
-        return
+        return [
+            f"[Follow-up note]: {len(prompts)} queued follow-up(s) DROPPED: the run "
+            f"ended without a session id to resume. Re-send them as a new run: {queued}"
+        ]
     from .claude_code import start_followup_run
 
     try:
-        start_followup_run(job, session_id, prompts)
-    except Exception:  # noqa: BLE001 - a follow-up that cannot start is logged.
+        followup = start_followup_run(job, session_id, prompts)
+    except Exception as exc:  # noqa: BLE001 - a follow-up that cannot start is reported.
         logger.exception("Claude Code job %s: queued follow-up could not start", job.id)
+        return [
+            f"[Follow-up note]: {len(prompts)} queued follow-up(s) DROPPED: could not "
+            f"start ({exc}). Re-send them: {queued}"
+        ]
+    return [
+        f"[Follow-up note]: {len(prompts)} queued follow-up(s) started as job "
+        f"{followup.id} resuming session {session_id}; its reports follow."
+    ]
+
+
+def _describe_followups(prompts: list[str]) -> str:
+    previews = []
+    for text in prompts:
+        compact = " ".join(text.split())
+        previews.append(repr(compact[:60] + ("..." if len(compact) > 60 else "")))
+    return ", ".join(previews)
 
 
 # --------------------------------------------------------------------------- #
@@ -458,6 +522,7 @@ def report_body(job: ClaudeCodeJob, report: TurnReport) -> str:
         from .claude_code import LEGACY_RUNNER_NOTE
 
         parts.append(f"[Runner note]: {LEGACY_RUNNER_NOTE}.")
+    parts.extend(report.notes)
     return "\n\n".join(parts)
 
 

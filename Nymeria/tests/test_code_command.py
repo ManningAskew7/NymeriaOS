@@ -604,6 +604,144 @@ def test_claim_is_atomic_across_a_concurrent_dispatch(env, monkeypatch) -> None:
     assert env.events == []
 
 
+def test_code_is_refused_while_the_agents_tool_run_is_live(env) -> None:
+    """The agent's tool runs live in the shared registry, not this command's:
+    a /code that resumed the session one of them is on would fork it."""
+    tool_job = bg.ClaudeCodeJob(
+        id="t00l",
+        thread_id=THREAD,
+        user_id="owner",
+        prompt="agent work",
+        cwd="/repo",
+        mode="dontAsk",
+        started_at=time.time() - 5,
+        detached_message="",
+    )
+    bg.register(tool_job)
+    refused = _execute("/code fix it")
+    assert refused.success is False
+    assert "job t00l" in refused.markdown and "still running" in refused.markdown
+    assert env.calls == []
+
+    overview = _execute("/code")
+    assert "job t00l (started by the agent's tool) is running" in overview.markdown
+    assert overview.data["active_job"]["id"] == "t00l"
+    assert overview.data["active_job"]["via"] == "tool"
+
+    tool_job.done.set()
+    admitted = _execute("/code fix it")
+    assert admitted.success is True, admitted.markdown
+    assert len(env.calls) == 1
+
+
+def test_a_code_followup_takes_the_registry_slot_and_stop_reaches_it(env) -> None:
+    """A prompt queued on a live /code session (the tool's resume=<job>) runs
+    as a follow-up that IS a /code run: bare /code shows it, a second /code is
+    refused while it runs, /stop cancels it, and the FINAL of the run it was
+    queued on names it."""
+    env.state.release.clear()
+    first_release = env.state.release
+    ack = _execute("/code first task")
+    first_id = ack.data["job_id"]
+    first_job = delivery.active_job(THREAD)
+    assert first_job is not None
+    first_job.observer.set_session_id("sess-live")
+    assert first_job.queue_followup("and then this") == 1
+    # The follow-up must block so its in-flight state is observable.
+    env.state.release = threading.Event()
+    first_release.set()
+    assert _wait_for(lambda: len(env.calls) == 2)
+    assert env.calls[1]["resume"] == "sess-live"
+    assert "and then this" in env.calls[1]["prompt"]
+
+    assert _wait_for(lambda: delivery.active_job(THREAD) is not None
+                     and delivery.active_job(THREAD).id != first_id)
+    followup = delivery.active_job(THREAD)
+    assert followup.running and followup.resumed_session_id == "sess-live"
+    # The first run's delivered FINAL carries the follow-up's job id, and
+    # settles the first run's outcome without touching the follow-up's slot.
+    assert _wait_for(lambda: bool(env.agent._default_graph.updates))
+    (_, values) = env.agent._default_graph.updates[0]
+    assert f"started as job {followup.id}" in values["messages"][1].content
+    assert delivery.last_outcome(THREAD) == (first_id, "completed")
+    assert delivery.active_job(THREAD) is followup
+
+    refused = _execute("/code a third thing")
+    assert refused.success is False and f"job {followup.id}" in refused.markdown
+    overview = _execute("/code")
+    assert f"job {followup.id} is running" in overview.markdown
+
+    stopped = _execute("/stop")
+    assert f"Claude Code job {followup.id}" in stopped.markdown
+    assert env.calls[1]["abort_event"].is_set()
+    env.state.release.set()
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
+    assert delivery.last_outcome(THREAD) == (followup.id, "cancelled")
+
+
+def test_result_is_a_notification_when_no_agent_is_running(env, monkeypatch) -> None:
+    """No agent means no holder turn; the notification path needs none, and
+    the user asked for this output."""
+    env.state.release.clear()
+    _execute("/code fix it")
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: None)
+    env.state.release.set()
+    assert _wait_for(lambda: bool(env.notifications))
+    ((args, _),) = env.notifications
+    assert "PONG" in args[0] and args[1] == "owner" and args[2] == THREAD
+    assert any(e["event_type"] == "notification" for e in env.events)
+    assert delivery.active_job(THREAD) is None
+
+
+def test_a_dropped_holder_turn_falls_back_to_a_notification(env) -> None:
+    """An admin's /code on a thread another user owns: the thread-state guard
+    refuses the holder turn, and the run's output still reaches whoever
+    dispatched it instead of being logged away."""
+    env.state.release.clear()
+    _execute("/code fix it")
+    env.agent.accounts_repo.owners[THREAD] = "someone-else"
+    env.state.release.set()
+    assert _wait_for(lambda: bool(env.notifications))
+    ((args, _),) = env.notifications
+    assert "PONG" in args[0] and args[1] == "owner"
+    assert not _completed(env), "no holder turn was fired on the foreign thread"
+    # The bots route bus notifications by THREAD, which would post the output
+    # into the other user's chat: the dispatcher gets the in-app item only.
+    time.sleep(0.2)
+    assert env.events == []
+
+
+def test_a_failed_code_final_still_names_its_dropped_followups(env) -> None:
+    """The failed-final text takes its own branch; the fate of the queued
+    follow-ups must ride it all the same."""
+    env.state.release.clear()
+    env.state.result = ClaudeCodeResult(ok=False, is_error=True, error="runner died")
+    _execute("/code fix it")
+    first_job = delivery.active_job(THREAD)
+    assert first_job.queue_followup("and then this") == 1
+    env.state.release.set()
+    assert _wait_for(lambda: bool(env.agent._default_graph.updates))
+    (_, values) = env.agent._default_graph.updates[0]
+    text = values["messages"][1].content
+    assert "failed after" in text and "runner died" in text
+    assert "DROPPED" in text and "'and then this'" in text
+    assert len(env.calls) == 1, "no follow-up started without a session id"
+
+
+def test_a_start_failure_does_not_pin_the_code_slot(env, monkeypatch) -> None:
+    def cannot_start(job, producer, on_complete=None):
+        raise RuntimeError("can't start new thread")
+
+    real_start_job = bg.start_job
+    monkeypatch.setattr(bg, "start_job", cannot_start)
+    failed = _execute("/code fix it")
+    assert failed.success is False
+    assert delivery.active_job(THREAD) is None
+    monkeypatch.setattr(bg, "start_job", real_start_job)
+    admitted = _execute("/code fix it")
+    assert admitted.success is True, admitted.markdown
+
+
 # --------------------------------------------------------------------------- #
 # Overview
 # --------------------------------------------------------------------------- #

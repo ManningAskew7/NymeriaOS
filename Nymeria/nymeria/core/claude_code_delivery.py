@@ -61,11 +61,18 @@ _LAST: dict[str, tuple[str, str]] = {}
 _REGISTRY_LOCK = threading.Lock()
 
 
-def claim(job: "ClaudeCodeJob") -> Optional["ClaudeCodeJob"]:
-    """Register ``job`` as its thread's run, or return the one already there."""
+def claim(
+    job: "ClaudeCodeJob", *, replacing: Optional["ClaudeCodeJob"] = None
+) -> Optional["ClaudeCodeJob"]:
+    """Register ``job`` as its thread's run, or return the one already there.
+
+    ``replacing`` is the finishing run a queued follow-up succeeds: the slot
+    it still holds (its FINAL is not delivered yet) passes to the follow-up
+    instead of refusing it.
+    """
     with _REGISTRY_LOCK:
         existing = _ACTIVE.get(job.thread_id)
-        if existing is not None:
+        if existing is not None and existing is not replacing:
             return existing
         _ACTIVE[job.thread_id] = job
         return None
@@ -91,17 +98,23 @@ def finish(job: "ClaudeCodeJob", outcome: str) -> None:
 
 
 def cancel_active_job(thread_id: str) -> Optional["ClaudeCodeJob"]:
-    """Signal the thread's running ``/code`` job to cancel; the job, or None.
+    """Signal every running Claude Code job on the thread to cancel; the job
+    named as the stop's holder (the ``/code`` run when there is one), or None.
 
-    Called by both ``/stop`` surfaces. A job that already finished is left
-    alone (its delivery is in flight and stays silent only for a real
-    cancellation).
+    Called by both ``/stop`` surfaces. Covers the tool's detached runs and
+    queued follow-ups as well as ``/code`` runs: none of them holds a thread
+    lock, so the stop route's holder check cannot see them. A job that
+    already finished is left alone (its delivery is in flight and stays
+    silent only for a real cancellation).
     """
-    job = active_job(thread_id)
-    if job is None or job.done.is_set() or job.cancel_event is None:
-        return None
-    job.cancel_event.set()
-    return job
+    from ..tools.claude_code_background import cancel_jobs_for_thread
+
+    cancelled = cancel_jobs_for_thread(thread_id)
+    code_job = active_job(thread_id)
+    if code_job is not None and not code_job.done.is_set() and code_job.cancel_event is not None:
+        code_job.cancel_event.set()
+        return code_job
+    return cancelled[0] if cancelled else None
 
 
 def reset_registry_for_tests() -> None:
@@ -158,10 +171,12 @@ def render_result_markdown(job: "ClaudeCodeJob", report: "Optional[TurnReport]" 
     if result is None:
         return f"{head}\n\n[no result captured]"
     if not result.ok and result.error and not report.turns:
-        return (
+        failed = (
             f"Claude Code job {job.id} (session {session}) failed after "
             f"{duration:.0f}s: {result.error}"
         )
+        # The fate of any queued follow-ups rides the FINAL whatever its outcome.
+        return "\n\n".join([failed, *report.notes])
     return f"{head}\n\n{report_body(job, report)}"
 
 
@@ -268,10 +283,16 @@ def record_inline(
     return written
 
 
-def _deliver_as_notification(agent: Any, job: "ClaudeCodeJob", text: str, reason: str) -> None:
+def _deliver_as_notification(
+    job: "ClaudeCodeJob", text: str, reason: str, *, to_thread: bool = True
+) -> None:
     """Fallback when the thread stayed busy or the turn publish failed: an
-    in-app item for the desktop plus a bus ``notification`` the bots post as
-    a plain message. Never silent."""
+    in-app item for the DISPATCHER (keyed on ``job.user_id``) plus, with
+    ``to_thread``, a bus ``notification`` the bots post as a plain message
+    in the thread's chat. Never silent. ``to_thread=False`` is for a result
+    the thread must not see (the holder turn was refused because the
+    thread belongs to another user): the bots route bus notifications by
+    thread, so the bus copy would hand the output to that user."""
     from .event_bus import publish_autonomous_event
     from .notification_dispatch import create_in_app_notification
 
@@ -281,6 +302,8 @@ def _deliver_as_notification(agent: Any, job: "ClaudeCodeJob", text: str, reason
         create_in_app_notification(text, job.user_id, job.thread_id, task_id=task_id)
     except Exception:  # noqa: BLE001 - keep going to the bus copy.
         logger.exception("Claude Code job %s: in-app notification failed", job.id)
+    if not to_thread:
+        return
     publish_autonomous_event(
         event_type="notification",
         thread_id=job.thread_id,
@@ -312,7 +335,9 @@ def deliver_code_result(job: "ClaudeCodeJob", report: "Optional[TurnReport]" = N
     text = render_result_markdown(job, report)
     agent = get_current_agent()
     if agent is None:
-        logger.error("Claude Code job %s finished but no agent is running; result lost", job.id)
+        # No holder turn without an agent, but the notification path needs
+        # none: the user asked for this output and gets it.
+        _deliver_as_notification(job, text, "no agent is running")
         return
     delivery = _delivery(job, report)
     try:
@@ -325,9 +350,14 @@ def deliver_code_result(job: "ClaudeCodeJob", report: "Optional[TurnReport]" = N
         )
     except Exception as exc:  # noqa: BLE001 - never lose the result silently.
         logger.exception("Claude Code job %s: holder-turn delivery failed", job.id)
-        _deliver_as_notification(agent, job, text, f"turn delivery failed: {exc}")
+        _deliver_as_notification(job, text, f"turn delivery failed: {exc}")
         return
     if result == RESULT_BUSY:
-        _deliver_as_notification(agent, job, text, "thread stayed busy")
+        _deliver_as_notification(job, text, "thread stayed busy")
     elif result != RESULT_FIRED:
-        logger.info("Claude Code job %s: delivery %s", job.id, result)
+        # DROPPED: the thread-state guard refused the holder turn. With
+        # drop_on_abort=False that means an owner mismatch (an admin's /code
+        # on a thread another user owns) or an owner-lookup failure: an auth
+        # boundary, so the result reaches the DISPATCHER only (in-app item),
+        # never the thread's chat.
+        _deliver_as_notification(job, text, f"holder turn {result}", to_thread=False)

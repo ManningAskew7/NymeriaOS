@@ -103,8 +103,14 @@ the thread as its own completion prompt:
   `task_completed`). The first report's inline-or-detached decision resolves
   exactly once (`InlineLatch`), so it is never delivered twice and never
   dropped; later reports are always delivered.
-- **Cancellation.** A `/stop` cancels the run; its FINAL report stays silent
-  (an interim already delivered is real output and stands).
+- **Cancellation.** A `/stop` cancels the run, whether the tool call is
+  still waiting on it or has long returned: every job owns a cancel event,
+  and both `/stop` surfaces set it for every running job on the thread
+  (`claude_code_background.cancel_jobs_for_thread`, reached through
+  `core.claude_code_delivery.cancel_active_job`), so a detached run on an
+  idle thread and a queued follow-up are stopped the same way. Its FINAL
+  report stays silent (an interim already delivered is real output and
+  stands).
 
 ## Permission modes
 
@@ -153,7 +159,12 @@ session" is the one in flight.
   session, whichever thread or run last used it. This is how a follow-up
   reaches the run you mean when several are in flight (the 2026-09-04
   incidents: `resume=True` with a detached job running resumed the previous
-  session instead).
+  session instead). The value must look like an id
+  (`claude_code_bridge.SESSION_ID_PATTERN`: up to 128 of letters, digits,
+  `.`, `_`, `-`, starting with a letter or digit), checked at the tool, the
+  runner and the argv
+  builder: the CLI's `--resume [value]` takes an OPTIONAL argument, so a
+  flag-shaped value would parse as a separate flag.
 - `False`: a fresh session.
 
 A prompt for a session that is **still running** cannot be injected into the
@@ -165,7 +176,11 @@ thread, mode, cwd and deliverer), and its reports arrive tagged with the same
 session id and the new job id. This is the callable-thread "follow-up wake"
 shape: a receipt now, the answer later, no polling. Bare `resume=True` queues
 the same way when the stored session is the live one. A run cancelled by
-`/stop` drops its queued follow-ups.
+`/stop` drops its queued follow-ups. The FINAL report of the run they were
+queued on carries a `[Follow-up note]` naming the job they started as, or
+why they were dropped (the run ended without a session id, or the follow-up
+could not start), so the `[Queued]` receipt is answered unless the run was
+stopped (a stop drops the queue silently, as it silences the FINAL).
 
 ## Peek: look at a running session without resuming it
 
@@ -361,7 +376,8 @@ fix Nymeria on the host.
 - **Independent of the agent.** Slash commands are routed through
   `POST /commands/execute` before the chat path on every client, so `/code`
   works while chat turns are failing. The handler
-  (`core/command_executor_claude_code.py`) touches no graph and no LLM.
+  (`core/command_executor_claude_code.py`) runs no graph turn and no LLM
+  (the history write is a checkpoint update, and its failure is non-fatal).
 - **Same transport and sessions as the tool.** It reuses
   `tools.claude_code.prepare_run`, so the runner remains the policy boundary
   (bearer token, cwd allowlist, deny rules, budgets), and the
@@ -387,8 +403,12 @@ fix Nymeria on the host.
   acknowledgement carrying the job id, and every report (each interim
   end-turn, then the final) arrives in the same chat as its own model-free
   holder turn, tagged with the job and session. One run per thread at a
-  time; a second `/code` is refused until it ends (the tool's
-  `resume="<session>"` queues a follow-up on it instead).
+  time, counting the agent's own tool runs: a second `/code` is refused
+  while any Claude Code run is live on the thread (the tool's
+  `resume="<session>"` queues a follow-up on it instead), and bare `/code`
+  names a live tool run too. A follow-up queued on a `/code` session takes
+  the thread's `/code` slot when it starts, so it is shown, refuses a second
+  `/code`, and is reached by `/stop` like the run it followed.
 - **Delivery needs no model.** A detached result is handed to the thread by
   `core/claude_code_delivery.py` as a short model-free holder turn
   (`completion_delivery.deliver_without_turn`): the thread is held the way a
@@ -402,16 +422,21 @@ fix Nymeria on the host.
   current buffer: publishing first would hand them the previous turn's
   retained buffer and swallow the result. Bots and the desktop therefore
   render it exactly as any autonomous turn; the activity ledger records it.
-  If a live turn keeps the thread past 10 minutes (or the turn publish
-  fails), the result falls back to a notification: bots post it as a plain
-  message and the desktop gets an in-app item, never silence. A quick inline
+  If a live turn keeps the thread past 10 minutes, the turn publish fails,
+  or no agent is running, the result falls back to a notification: bots
+  post it as a plain message and the desktop gets an in-app item, never
+  silence. If the thread-state guard refuses the holder turn (an admin's
+  `/code` on a thread another user owns), only the dispatcher's in-app
+  item is created: the bots route bus notifications by thread, which
+  would post the output into the other user's chat. A quick inline
   reply is recorded into history the same way (briefly, skipped if a turn
   holds the thread) but publishes no bookends, since the reply already
   reached the chat.
 - **Cancellation and timeouts.** A `/code` run holds no thread lock, so both
-  `/stop` surfaces (the command and `POST /threads/{id}/stop`) consult the
-  run registry and set the run's own cancel event (the same signal the tool
-  gets from the thread abort); a cancelled run stays silent. The runner's
+  `/stop` surfaces (the command and `POST /threads/{id}/stop`) set the
+  cancel event of every running Claude Code job on the thread (`/code`,
+  tool, or queued follow-up) and name the `/code` run as the holder; a
+  cancelled run stays silent. The runner's
   hard ceiling (one hour) still bounds a runaway run; the result is then an
   error reply. Telegram's per-thread autonomous delivery mode gates the
   follow-up like any autonomous completion (`notify_only` delivers only

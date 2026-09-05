@@ -62,9 +62,9 @@ from .claude_code_background import (
 )
 from .claude_code_bridge import (
     ClaudeCodeError,
+    ClaudeCodeRequest,
     ClaudeCodeResult,
     ClaudeCodeRunConfig,
-    ClaudeCodeRequest,
     DEFAULT_DISALLOWED_TOOLS,
     EndTurn,
     RemoteRunnerClient,
@@ -78,6 +78,7 @@ from .claude_code_bridge import (
     resolve_claude_executable,
     resolve_cwd_against_roots,
     run_local_blocking,
+    validate_session_id,
 )
 from .utils import get_thread_id_or_none, get_user_id
 
@@ -175,6 +176,17 @@ def _queued_message(job: ClaudeCodeJob, position: int) -> str:
         f"claude_code(peek=\"{job.id}\") shows what the session is doing now; "
         "resume=False starts an independent session instead."
     )
+
+
+class _AnySet:
+    """``is_set()`` over several events: the job's own cancel event plus, for
+    a tool run, the thread's abort event (a /stop on the running turn)."""
+
+    def __init__(self, *events) -> None:
+        self._events = [e for e in events if e is not None]
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
 
 
 def _coerce_resume(resume: Union[bool, str, None]) -> Union[bool, str]:
@@ -313,16 +325,20 @@ def claude_code(
     # Capture the thread's abort event so POST /threads/{id}/stop cascades into
     # the in-flight Claude Code run (local subprocess group-kill, or remote
     # /cancel). None when there is no thread context (direct CLI / tests).
-    abort_event = None
+    # The job also owns its own cancel event, which is what /stop reaches once
+    # this tool call has returned and the thread holds no lock.
+    thread_abort = None
     if thread_id is not None:
         try:
             from ..core.agent import get_current_agent
 
             _agent = get_current_agent()
             if _agent is not None:
-                abort_event = _agent._thread_locks.get_abort_event(thread_id)
+                thread_abort = _agent._thread_locks.get_abort_event(thread_id)
         except Exception:  # noqa: BLE001 - cancellation is best-effort.
-            abort_event = None
+            thread_abort = None
+    cancel_event = threading.Event()
+    abort_event = _AnySet(cancel_event, thread_abort) if thread_id is not None else None
 
     job_id = secrets.token_hex(4)
     try:
@@ -362,6 +378,7 @@ def claude_code(
         ),
         observer=prepared.observer,
         resumed_session_id=prepared.resume_session_id,
+        cancel_event=cancel_event,
         peek=prepared.peek,
     )
     start_job(job, producer, on_complete=_persist)
@@ -459,9 +476,9 @@ def start_followup_run(previous: ClaudeCodeJob, session_id: str, prompts: list[s
             f"[Queued follow-up {i} of {len(prompts)}]\n{text}" for i, text in enumerate(prompts, 1)
         )
     remote_url = (settings.nymeria_claude_code_url or "").strip()
-    cancel_event = previous.cancel_event
-    if cancel_event is None:
-        cancel_event = threading.Event()
+    # Its own cancel event (never the finished run's): /stop reaches it via
+    # ``cancel_jobs_for_thread``.
+    cancel_event = threading.Event()
     job_id = secrets.token_hex(4)
     prepared = prepare_run(
         settings,
@@ -489,6 +506,19 @@ def start_followup_run(previous: ClaudeCodeJob, session_id: str, prompts: list[s
         cancel_event=cancel_event,
         peek=prepared.peek,
     )
+    if previous.deliver is not None:
+        # A /code run's follow-up is a /code run: it takes the thread's slot in
+        # the /code registry (replacing the run it follows, which is finishing),
+        # so bare /code shows it, a second /code is refused while it runs, and
+        # /stop's registry lookup finds it. Nothing has been spawned yet, so a
+        # refusal here loses nothing but the queue, which the FINAL names.
+        from ..core.claude_code_delivery import claim
+
+        existing = claim(job, replacing=previous)
+        if existing is not None:
+            raise ClaudeCodeError(
+                f"another /code run (job {existing.id}) is in flight on this thread"
+            )
     logger.info(
         "claude_code follow-up job %s resumes session %s after job %s (%d prompt(s))",
         job.id,
@@ -496,9 +526,22 @@ def start_followup_run(previous: ClaudeCodeJob, session_id: str, prompts: list[s
         previous.id,
         len(prompts),
     )
-    start_job(job, prepared.producer, on_complete=prepared.persist)
     # Nobody waits inline on a queued follow-up: every report is delivered.
-    job.wait_inline(0)
+    # Claimed BEFORE the run starts: a zero-budget wait after it would claim
+    # inline whenever the run had already finished, and the report would
+    # then have no renderer (the order-sensitive failure of 2026-09-05).
+    job.detach()
+    try:
+        start_job(job, prepared.producer, on_complete=prepared.persist)
+    except BaseException:
+        # A job that never started must not hold the thread's /code slot
+        # (a thread-creation failure would otherwise refuse every later
+        # /code until an API restart).
+        if previous.deliver is not None:
+            from ..core.claude_code_delivery import OUTCOME_FAILED, finish
+
+            finish(job, OUTCOME_FAILED)
+        raise
     return job
 
 
@@ -572,7 +615,8 @@ def prepare_run(
     project_key = session_project_key(settings, working_dir)
     session_thread = thread_id or "default"
     if isinstance(resume, str):
-        resume_session_id: Optional[str] = resume.strip() or None
+        # A model-supplied id must not be able to parse as a CLI flag.
+        resume_session_id: Optional[str] = validate_session_id(resume)
     else:
         resume_session_id = store.get(session_thread, project_key) if resume else None
     job_id = job_id or secrets.token_hex(4)

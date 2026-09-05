@@ -536,6 +536,47 @@ def test_stop_route_cancels_a_code_run_that_holds_no_lock(
         delivery.reset_registry_for_tests()
 
 
+def test_stop_route_cancels_a_detached_tool_run_with_no_lock(
+    tmp_path: Path, api_client_builder
+):
+    """The agent's own claude_code run, once its tool call has returned,
+    holds no lock and is in no /code registry; the stop route reaches it
+    through the shared live registry and names it as the holder."""
+    import threading
+    import time
+
+    from nymeria.tools import claude_code_background as bg
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-stop-tool"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    bg.reset_jobs_for_tests()
+    cancel = threading.Event()
+    job = bg.ClaudeCodeJob(
+        id="t00l",
+        thread_id=thread_id,
+        user_id="owner",
+        prompt="agent work",
+        cwd="/repo",
+        mode="dontAsk",
+        started_at=time.time() - 3,
+        detached_message="",
+        cancel_event=cancel,
+    )
+    bg.register(job)
+    try:
+        body = client.post(
+            f"/threads/{thread_id}/stop",
+            headers=api_client_builder.auth(token),
+        ).json()
+        assert body["status"] == "stopping"
+        assert body["holder"] == "Claude Code job t00l"
+        assert cancel.is_set()
+        assert agent.aborted_threads == []
+    finally:
+        bg.reset_jobs_for_tests()
+
+
 def test_stop_route_returns_restored_prompts_and_publishes_queue_restored(
     tmp_path: Path, api_client_builder, monkeypatch
 ):
