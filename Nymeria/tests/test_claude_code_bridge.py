@@ -657,3 +657,80 @@ def test_remote_peek_404_tells_a_missing_route_from_an_expired_job(monkeypatch):
         client.peek("x")
     _fake_http(monkeypatch, 200, {"session_id": "s", "running": True, "tail": [], "tail_total": 0})
     assert client.peek("x")["session_id"] == "s"
+
+
+# --- session id validation: what may reach ``--resume`` -----------------------
+
+
+@pytest.mark.parametrize(
+    "value", ["abc-123", "3f2a1c9e-7b6d-4e5f-8a9b-0c1d2e3f4a5b", "job.1_x", "a" * 128]
+)
+def test_validate_session_id_accepts_id_shaped_values(value):
+    assert b.validate_session_id(value) == value
+    assert b.validate_session_id(f"  {value}  ") == value
+
+
+@pytest.mark.parametrize(
+    "value", ["--dangerously-skip-permissions", "-r", "--bare", "a b", "x;y", "a" * 129]
+)
+def test_validate_session_id_refuses_flag_shaped_and_junk_values(value):
+    with pytest.raises(b.ClaudeCodeError, match="session id"):
+        b.validate_session_id(value)
+
+
+def test_validate_session_id_treats_empty_as_none():
+    assert b.validate_session_id(None) is None
+    assert b.validate_session_id("   ") is None
+
+
+def test_build_cli_args_refuses_a_flag_shaped_resume_id():
+    """``claude --resume [value]`` takes an OPTIONAL argument: a value that
+    starts with ``-`` parses as a bare ``--resume`` plus a separate flag, so
+    the argv builder is the last line of defense."""
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(
+        prompt="x", cwd="/tmp", resume_session_id="--dangerously-skip-permissions"
+    )
+    with pytest.raises(b.ClaudeCodeError, match="session id"):
+        b.build_cli_args(req, cfg)
+
+
+# --- the stdout pump outlives a bad line ---------------------------------------
+
+
+def test_fold_message_tolerates_a_non_dict_message():
+    observer = b.RunObserver()
+    observer.feed_event({"type": "assistant", "message": "just a string"})
+    observer.feed_event({"type": "user", "message": None})
+    observer.feed_event({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}})
+    assert [e["text"] for e in observer.snapshot(5)["tail"]] == ["ok"]
+
+
+def test_run_local_blocking_survives_a_line_the_observer_cannot_fold(monkeypatch, tmp_path):
+    """One line the observer chokes on must not end the pump: with nobody
+    draining the pipe the child blocks on a full buffer and the run ends as
+    a timeout an hour later. The run completes and its result is intact."""
+    init = json.dumps({"type": "system", "subtype": "init", "session_id": "sess-9"})
+    poison = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "POISON"}]}})
+    result = json.dumps({"type": "result", "subtype": "success", "result": "still done"})
+    proc = _FakeProc(finish_after_polls=2, stdout=init + "\n" + poison + "\n" + result + "\n")
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: ([], []))
+
+    class _Brittle(b.RunObserver):
+        def feed_line(self, line):
+            if "POISON" in line:
+                raise RuntimeError("observer bug")
+            return super().feed_line(line)
+
+    observer = _Brittle()
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="go", cwd=str(tmp_path))
+    res = b.run_local_blocking(
+        req, cfg, timeout=5, env=b.build_subprocess_env(bare=False),
+        observer=observer, poll_interval=0.01,
+    )
+    assert res.ok is True and res.result_text == "still done"
+    assert res.session_id == "sess-9"
+    assert [t.index for t in res.end_turns] == [1]

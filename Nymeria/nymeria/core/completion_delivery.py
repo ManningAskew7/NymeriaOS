@@ -100,6 +100,19 @@ class InlineLatch:
         self.inline_decided.set()
         return decision
 
+    def detach(self) -> str:
+        """Caller side, without waiting: claim detached because nobody will
+        render inline (a queued follow-up has no caller). Must be called
+        BEFORE the producer can finish: ``wait_inline(0)`` claims inline
+        when the result is already there, which for a run nobody waits on
+        means a report with no renderer."""
+        with self._lock:
+            if self._resolution is None:
+                self._resolution = "detached"
+            decision = self._resolution
+        self.inline_decided.set()
+        return decision
+
     def settle(self, grace: float) -> str:
         """Producer side, after ``done``: wait ``grace`` for the caller's claim,
         else claim detached (the caller is gone). Returns the resolution."""

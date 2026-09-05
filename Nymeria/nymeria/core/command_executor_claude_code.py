@@ -59,6 +59,14 @@ def _ack_markdown(job_id: str, mode: str, resumed_session: str | None) -> str:
     )
 
 
+def _live_tool_jobs(thread_id: str) -> list[Any]:
+    """Running Claude Code jobs on the thread in the shared live registry
+    (the tool's runs and any queued follow-up)."""
+    from ..tools.claude_code_background import jobs_for_thread
+
+    return [job for job in jobs_for_thread(thread_id) if job.running]
+
+
 class ClaudeCodeCommandsMixin:
     """The ``/code`` command body mixed into ``_CommandExecutor``.
 
@@ -107,7 +115,24 @@ class ClaudeCodeCommandsMixin:
                 "done": running.done.is_set(),
             }
         else:
-            parts.append("No Claude Code run is in flight on this thread.")
+            live = _live_tool_jobs(thread_id)
+            if live:
+                tool_job = live[-1]
+                elapsed = max(0.0, time.time() - tool_job.started_at)
+                parts.append(
+                    f"Claude Code job {tool_job.id} (started by the agent's tool) is "
+                    f"running (mode {tool_job.mode}, {elapsed:.0f}s so far); `/code` "
+                    "is refused until it ends, `/stop` cancels it."
+                )
+                data["active_job"] = {
+                    "id": tool_job.id,
+                    "mode": tool_job.mode,
+                    "elapsed": round(elapsed),
+                    "done": tool_job.done.is_set(),
+                    "via": "tool",
+                }
+            else:
+                parts.append("No Claude Code run is in flight on this thread.")
         last = last_outcome(thread_id)
         if last is not None:
             parts.append(f"Last job {last[0]} {last[1]}.")
@@ -165,6 +190,12 @@ class ClaudeCodeCommandsMixin:
         running = active_job(thread_id)
         if running is not None:
             return self._still_running(running)
+        # The agent's tool runs live in the shared registry, not this
+        # command's: a /code that resumed the session one of them is on
+        # would fork it, so any live run on the thread refuses the dispatch.
+        live = _live_tool_jobs(thread_id)
+        if live:
+            return self._still_running(live[-1])
 
         cancel_event = threading.Event()
         model = get_effective_claude_code_model(thread_id, settings.nymeria_claude_code_model)
@@ -214,7 +245,11 @@ class ClaudeCodeCommandsMixin:
             prepared.resume_session_id,
             prepared.run_cwd,
         )
-        start_job(job, prepared.producer, on_complete=prepared.persist)
+        try:
+            start_job(job, prepared.producer, on_complete=prepared.persist)
+        except BaseException:
+            finish(job, "failed")  # a job that never started holds no slot
+            raise
 
         data = {
             "job_id": job.id,

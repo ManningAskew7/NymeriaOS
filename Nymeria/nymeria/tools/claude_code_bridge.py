@@ -186,6 +186,31 @@ DEFAULT_DISALLOWED_TOOLS: tuple[str, ...] = (
 )
 
 
+# A Claude Code session id is a UUID; a job id is 8 hex chars. Anything that
+# reaches ``--resume`` must look like one of those, because the CLI declares
+# ``--resume [value]`` with an OPTIONAL argument: a value starting with ``-``
+# is parsed as a bare ``--resume`` plus a separate FLAG, so an unvalidated
+# ``resume="--dangerously-skip-permissions"`` from a prompt-injected turn
+# would rewrite the permission mode the runner mapped. Checked at the tool
+# (``prepare_run``), the runner (``POST /run``) and the argv builder.
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def validate_session_id(value: Optional[str]) -> Optional[str]:
+    """Return the stripped session id, None for empty, or raise ``ClaudeCodeError``."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not SESSION_ID_PATTERN.match(text):
+        raise ClaudeCodeError(
+            f"invalid Claude Code session id {text[:40]!r}: expected letters, digits, "
+            "'.', '_' or '-' (not starting with '-')"
+        )
+    return text
+
+
 def map_mode(mode: Optional[str]) -> str:
     """Map an LLM-facing ``mode`` token to a Claude Code ``--permission-mode``.
 
@@ -323,8 +348,10 @@ def build_cli_args(
         args += ["--add-dir", extra_dir]
     if config.bare:
         args.append("--bare")
-    if request.resume_session_id:
-        args += ["--resume", request.resume_session_id]
+    # Last line of defense at the argv boundary (see SESSION_ID_PATTERN).
+    resume_id = validate_session_id(request.resume_session_id)
+    if resume_id:
+        args += ["--resume", resume_id]
         if request.fork_session:
             args.append("--fork-session")
     return args
@@ -679,7 +706,9 @@ class RunObserver:
                 logger.exception("Claude Code end-turn callback failed")
 
     def _fold_message(self, role: str, event: dict[str, Any]) -> None:
-        message = event.get("message") or {}
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
         content = message.get("content")
         now = time.time()
         if isinstance(content, str):
@@ -1128,6 +1157,8 @@ def run_local_blocking(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         # Make Claude Code (and its node/ripgrep children) the kernel's OOM
         # target under memory pressure, not the parent agent runtime.
@@ -1165,12 +1196,19 @@ def run_local_blocking(
     child_stdin, child_stdout, child_stderr = proc.stdin, proc.stdout, proc.stderr
 
     def _pump_stdout() -> None:
+        # The pump must outlive any single bad line: if it dies, nothing
+        # drains the pipe, the child blocks on a full buffer, and the run
+        # ends as a timeout an hour later. A line the observer cannot fold
+        # is logged and skipped; only the pipe itself ends the loop.
         try:
             for line in iter(child_stdout.readline, ""):
                 stdout_chunks.append(line)
-                observer.feed_line(line)
+                try:
+                    observer.feed_line(line)
+                except Exception:  # noqa: BLE001 - one bad event never stops the read.
+                    logger.exception("Claude Code stream line could not be folded")
         except Exception:  # noqa: BLE001 - a closed pipe ends the pump.
-            pass
+            logger.warning("Claude Code stdout pump ended early", exc_info=True)
 
     def _pump_stderr() -> None:
         try:

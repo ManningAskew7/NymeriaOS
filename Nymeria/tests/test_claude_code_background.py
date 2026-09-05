@@ -86,8 +86,9 @@ def test_wait_inline_claims_inline_when_a_report_is_ready():
     job.result = ClaudeCodeResult(ok=True, result_text="x")
     job.done.set()
     # The watcher publishes the report, then signals; the caller waits on the
-    # report, not on completion (an interim turn can be the inline answer).
-    assert job.wait_inline(0.2) == "detached" or True  # not ready yet is fine
+    # report, not on completion (an interim turn can be the inline answer),
+    # so a done run whose report is not published yet detaches.
+    assert job.wait_inline(0.2) == "detached"
     job2 = _make_job("j2")
     job2.first_report = _final_report(job2)
     job2.report_ready.set()
@@ -281,6 +282,7 @@ def test_queued_followups_start_a_resumed_run_when_the_job_ends(monkeypatch):
     def fake_followup(previous, session_id, prompts):
         spawned.append((previous, session_id, list(prompts)))
         spawn_event.set()
+        return SimpleNamespace(id="fu-1")
 
     monkeypatch.setattr(claude_module, "start_followup_run", fake_followup)
     release = threading.Event()
@@ -321,6 +323,98 @@ def test_followups_are_dropped_when_the_run_was_cancelled(monkeypatch):
     assert job.wait_inline(5) == "inline"
     time.sleep(0.3)
     assert spawned == []
+
+
+def test_cancel_jobs_for_thread_signals_only_running_jobs_on_that_thread():
+    running = _make_job("run", thread_id="t1")
+    other = _make_job("other", thread_id="t2")
+    finished = _make_job("done", thread_id="t1")
+    for job in (running, other, finished):
+        job.cancel_event = threading.Event()
+        bg.register(job)
+    finished.done.set()
+    assert bg.cancel_jobs_for_thread("t1") == [running]
+    assert running.cancel_event.is_set()
+    assert not other.cancel_event.is_set() and not finished.cancel_event.is_set()
+
+
+def test_followups_dropped_without_a_session_are_named_on_the_final_report(monkeypatch):
+    """The caller holds a [Queued] receipt; a drop is reported, never logged
+    only."""
+    claude_module = importlib.import_module("nymeria.tools.claude_code")
+    delivered, event = _capture_deliveries(monkeypatch)
+    spawned: list = []
+    monkeypatch.setattr(claude_module, "start_followup_run", lambda *a: spawned.append(a))
+    job = _make_job("no-session")
+    job.queue_followup("then run the suite please")
+    job.detach()
+    bg.start_job(job, lambda: ClaudeCodeResult(ok=True, result_text="done"))
+    assert event.wait(3)
+    ((_, report),) = delivered
+    assert report.final and spawned == []
+    assert any(
+        "DROPPED" in n and "without a session id" in n and "then run the suite" in n
+        for n in report.notes
+    )
+    assert "DROPPED" in bg.report_body(job, report)
+
+
+def test_a_followup_that_cannot_start_is_named_on_the_final_report(monkeypatch):
+    claude_module = importlib.import_module("nymeria.tools.claude_code")
+    delivered, event = _capture_deliveries(monkeypatch)
+
+    def broken(*a):
+        raise RuntimeError("runner gone")
+
+    monkeypatch.setattr(claude_module, "start_followup_run", broken)
+    job = _make_job("cannot-start")
+    job.queue_followup("more")
+    job.detach()
+    bg.start_job(job, lambda: ClaudeCodeResult(ok=True, result_text="done", session_id="s-1"))
+    assert event.wait(3)
+    ((_, report),) = delivered
+    assert any("could not start" in n and "runner gone" in n and "'more'" in n for n in report.notes)
+
+
+def test_a_started_followup_is_named_on_the_final_report(monkeypatch):
+    claude_module = importlib.import_module("nymeria.tools.claude_code")
+    delivered, event = _capture_deliveries(monkeypatch)
+    monkeypatch.setattr(
+        claude_module, "start_followup_run", lambda *a: SimpleNamespace(id="fu-9")
+    )
+    job = _make_job("started-followup")
+    job.queue_followup("more")
+    job.detach()
+    bg.start_job(job, lambda: ClaudeCodeResult(ok=True, result_text="done", session_id="s-1"))
+    assert event.wait(3)
+    ((_, report),) = delivered
+    assert any("started as job fu-9" in n and "session s-1" in n for n in report.notes)
+    assert "started as job fu-9" in bg.report_body(job, report)
+
+
+def test_a_stop_that_lands_after_the_process_exits_still_drops_the_queue(monkeypatch):
+    """The result reads success (the child was already gone), but the user
+    stopped the session: nothing more runs on it, silently."""
+    claude_module = importlib.import_module("nymeria.tools.claude_code")
+    delivered, event = _capture_deliveries(monkeypatch)
+    spawned: list = []
+    monkeypatch.setattr(claude_module, "start_followup_run", lambda *a: spawned.append(a))
+    job = _make_job("stopped-late")
+    job.cancel_event = threading.Event()
+    job.queue_followup("more")
+    job.detach()
+    release = threading.Event()
+
+    def producer():
+        release.wait(5)
+        return ClaudeCodeResult(ok=True, result_text="done", session_id="s-1")
+
+    bg.start_job(job, producer)
+    assert bg.cancel_jobs_for_thread("t1") == [job]
+    release.set()
+    assert event.wait(3)
+    ((_, report),) = delivered
+    assert spawned == [] and report.notes == []
 
 
 # --- live registry -----------------------------------------------------------

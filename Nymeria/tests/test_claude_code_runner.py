@@ -351,3 +351,25 @@ def test_session_peek_finds_the_newest_job_on_a_resumed_session(tmp_path, monkey
     assert client.get("/sessions/shared/peek", headers=_AUTH).json()["job_id"] == second
     release.set()
     _wait_completed(client, second)
+
+
+def test_run_refuses_a_flag_shaped_resume_id_before_spawning(tmp_path, monkeypatch):
+    """The runner is the policy boundary: a resume id that would parse as a
+    CLI flag (``--resume [value]`` is optional-argument) is a 400, whatever
+    the tool side sent, and nothing is spawned."""
+    spawned: list = []
+    monkeypatch.setattr(
+        runner_mod,
+        "run_local_blocking",
+        lambda *a, **k: spawned.append(a) or bridge.ClaudeCodeResult(ok=True),
+    )
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.post(
+        "/run",
+        json={"prompt": "x", "resume_session_id": "--dangerously-skip-permissions"},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 400
+    assert "session id" in resp.json()["detail"]
+    time.sleep(0.05)
+    assert spawned == []

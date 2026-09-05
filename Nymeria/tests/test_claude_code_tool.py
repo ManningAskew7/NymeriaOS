@@ -392,11 +392,15 @@ THREAD_CFG = {"configurable": {"thread_id": "thread-A", "user_id": "owner"}}
 
 @pytest.fixture(autouse=True)
 def _job_registry(monkeypatch):
+    from nymeria.core.claude_code_delivery import reset_registry_for_tests
+
     monkeypatch.setattr(bg, "INLINE_GRACE_SECONDS", 0.2)
     monkeypatch.setattr(bg, "END_TURN_SETTLE_SECONDS", 0.2)
     bg.reset_jobs_for_tests()
+    reset_registry_for_tests()
     yield
     bg.reset_jobs_for_tests()
+    reset_registry_for_tests()
 
 
 def _local(tmp_path, monkeypatch, **overrides):
@@ -504,10 +508,14 @@ def test_prompt_for_a_running_session_is_queued_and_started_afterwards(tmp_path,
         return bridge.ClaudeCodeResult(ok=True, result_text="first done", session_id="live-sess")
 
     monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
-    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: None)
-    monkeypatch.setattr(
-        claude_module, "start_followup_run", lambda prev, sid, prompts: spawned.append((prev.id, sid, prompts))
-    )
+    reports: list = []
+    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: reports.append(report))
+
+    def fake_followup(prev, sid, prompts):
+        spawned.append((prev.id, sid, prompts))
+        return SimpleNamespace(id="fu-1")
+
+    monkeypatch.setattr(claude_module, "start_followup_run", fake_followup)
 
     first = claude_module.claude_code.func("long task", detach=True, config=THREAD_CFG)
     job_id = first.split("job ")[1].split(" ")[0]
@@ -534,6 +542,10 @@ def test_prompt_for_a_running_session_is_queued_and_started_afterwards(tmp_path,
     release.set()
     assert _wait_for(lambda: bool(spawned))
     assert spawned[0] == (job_id, "live-sess", ["also do X", "and Y", "and Z"])
+    # The FINAL of the run they were queued on names the job they became.
+    assert _wait_for(lambda: any(r.final for r in reports))
+    final = next(r for r in reports if r.final)
+    assert any("3 queued follow-up(s) started as job fu-1" in n for n in final.notes)
 
 
 def test_resume_of_an_unknown_reference_is_sent_as_a_session_id(tmp_path, monkeypatch):
@@ -563,10 +575,14 @@ def test_peek_shows_a_running_sessions_live_tail(tmp_path, monkeypatch):
         return bridge.ClaudeCodeResult(ok=True, result_text="done", session_id="peek-sess")
 
     monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
-    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: None)
+    reports: list = []
+    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: reports.append(report))
     started = claude_module.claude_code.func("run tests", detach=True, config=THREAD_CFG)
     job_id = started.split("job ")[1].split(" ")[0]
-    assert _wait_for(lambda: bg.find_job(job_id).session_id == "peek-sess")
+    # Wait for the entries the assertions below read (the session id lands on
+    # the FIRST feed; the tail=1 peek needs the THIRD).
+    assert _wait_for(lambda: bg.find_job(job_id).observer.snapshot(0)["tail_total"] == 2)
+    assert bg.find_job(job_id).session_id == "peek-sess"
 
     out = claude_module.claude_code.func(peek="latest", tail=1, config=THREAD_CFG)
     assert f"[Claude Code job {job_id} | session peek-sess | RUNNING" in out
@@ -577,7 +593,10 @@ def test_peek_shows_a_running_sessions_live_tail(tmp_path, monkeypatch):
     out = claude_module.claude_code.func(peek="peek-sess", tail=5, config=THREAD_CFG)
     assert "tool_use Bash" in out
     release.set()
-    assert _wait_for(lambda: not bg.find_job(job_id).running)
+    # Wait for the FINAL to be DELIVERED, not merely for the run to end: the
+    # watcher must not outlive the test (its stubs go away with it).
+    assert _wait_for(lambda: any(r.final for r in reports))
+    assert not bg.find_job(job_id).running
     out = claude_module.claude_code.func(peek=job_id, config=THREAD_CFG)
     assert "| finished" in out and "End-turns so far" in out
 
@@ -618,7 +637,7 @@ def test_start_followup_run_resumes_the_session_with_the_queued_prompts(tmp_path
     previous = bg.ClaudeCodeJob(
         id="prev", thread_id="thread-A", user_id="owner", prompt="first", cwd="/repo",
         mode="bypassPermissions", started_at=time.time(), detached_message="",
-        deliver=fake_deliver,
+        deliver=fake_deliver, cancel_event=threading.Event(),
     )
     previous.observer.set_session_id("s-prev")
     job = claude_module.start_followup_run(previous, "s-prev", ["also X", "then Y"])
@@ -628,7 +647,10 @@ def test_start_followup_run_resumes_the_session_with_the_queued_prompts(tmp_path
     assert "[Queued follow-up 2 of 2]\nthen Y" in calls[0]["prompt"]
     assert job.resumed_session_id == "s-prev" and job.deliver is fake_deliver
     assert bg.find_job(job.id) is job
-    assert delivered_event.wait(3)
+    # Its own cancel event (what /stop sets), wired into the run.
+    assert job.cancel_event is not None and job.cancel_event is not previous.cancel_event
+    assert calls[0]["abort_event"] is job.cancel_event
+    assert delivered_event.wait(10)
     assert delivered[0][0] is job and delivered[0][1].final
     assert "followed up" in delivered[0][1].turns[0].text
 
@@ -731,7 +753,8 @@ def test_remote_peek_uses_the_runner_job_id(tmp_path, monkeypatch):
             return True
 
     monkeypatch.setattr(claude_module, "RemoteRunnerClient", FakeClient)
-    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: None)
+    reports: list = []
+    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: reports.append(report))
     started = claude_module.claude_code.func("remote", detach=True, config=THREAD_CFG)
     job_id = started.split("job ")[1].split(" ")[0]
     assert _wait_for(lambda: bg.find_job(job_id).session_id == "rp-sess")
@@ -739,7 +762,7 @@ def test_remote_peek_uses_the_runner_job_id(tmp_path, monkeypatch):
     assert peeks == [("runner-77", 3)]
     assert "tool_use Grep" in out and "RUNNING" in out
     release.set()
-    assert _wait_for(lambda: not bg.find_job(job_id).running)
+    assert _wait_for(lambda: any(r.final for r in reports))
 
 
 def _remote_detached_run(monkeypatch, client_cls, tmp_path):
@@ -849,3 +872,108 @@ def test_current_runner_end_turns_deliver_interim_then_final_through_the_remote_
     prompt = bg.build_completion_prompt(job, final)
     assert "FINAL: run finished" in prompt and "2 end-turn(s)" in prompt
     assert "legacy runner" not in prompt and "[Runner note]" not in prompt
+
+
+def test_flag_shaped_resume_is_refused_before_anything_runs(tmp_path, monkeypatch):
+    """A model-supplied resume value reaches the host ``claude`` argv after
+    ``--resume``, whose argument is optional: a flag-shaped value would be
+    parsed as a flag. It is refused at the tool, and nothing starts."""
+    _local(tmp_path, monkeypatch)
+    ran: list = []
+    monkeypatch.setattr(claude_module, "run_local_blocking", lambda *a, **k: ran.append(a))
+    out = claude_module.claude_code.func(
+        "pick up", resume="--dangerously-skip-permissions", config=THREAD_CFG
+    )
+    assert out.startswith("[Error]") and "session id" in out
+    assert ran == []
+    assert bg.find_job("latest", thread_id="thread-A") is None
+
+
+def test_followup_run_is_detached_before_its_first_report_can_land(tmp_path, monkeypatch):
+    """A queued follow-up has no inline caller. If the run finishes before the
+    detached claim is made, a zero-budget wait would claim the report inline
+    with nobody to render it; the claim comes first."""
+    _local(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        claude_module,
+        "prepare_run",
+        lambda settings_arg, **kw: claude_module.PreparedRun(
+            producer=lambda: bridge.ClaudeCodeResult(ok=True, result_text="fast"),
+            persist=lambda r: None,
+            run_cwd="/repo",
+            resume_session_id="s-prev",
+        ),
+    )
+
+    def instant_start_job(job, producer, on_complete=None):
+        # The run is over, report published, before the caller gets control back.
+        job.result = producer()
+        job.done.set()
+        job.first_report = bg.TurnReport(kind=bg.REPORT_FINAL, turns=[], total=0)
+        job.report_ready.set()
+
+    monkeypatch.setattr(claude_module, "start_job", instant_start_job)
+    previous = bg.ClaudeCodeJob(
+        id="prev", thread_id="thread-A", user_id="owner", prompt="first", cwd="/repo",
+        mode="dontAsk", started_at=time.time(), detached_message="",
+    )
+    job = claude_module.start_followup_run(previous, "s-prev", ["more"])
+    assert job.latch.resolution == "detached"
+
+
+def test_stop_reaches_a_detached_tool_run_on_an_idle_thread(tmp_path, monkeypatch):
+    """Once the tool call has returned, the thread holds no lock; both stop
+    surfaces reach the run through its own cancel event (the delivery seam)."""
+    from nymeria.core.claude_code_delivery import cancel_active_job
+
+    _local(tmp_path, monkeypatch)
+
+    def fake_run_local(request, config, timeout, env=None, cancel_check=None, observer=None, **kw):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if cancel_check is not None and cancel_check():
+                return bridge.ClaudeCodeResult(
+                    ok=False, is_error=True, error="cancelled", subtype="cancelled"
+                )
+            time.sleep(0.01)
+        return bridge.ClaudeCodeResult(ok=True, result_text="never stopped")
+
+    monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
+    reports: list = []
+    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: reports.append(report))
+    started = claude_module.claude_code.func("long task", detach=True, config=THREAD_CFG)
+    job_id = started.split("job ")[1].split(" ")[0]
+    job = bg.find_job(job_id)
+    assert job.cancel_event is not None
+    assert cancel_active_job("thread-A") is job
+    assert _wait_for(lambda: any(r.final for r in reports))
+    assert not job.running and job.result.subtype == "cancelled"
+
+
+def test_a_followup_start_failure_releases_the_code_slot(tmp_path, monkeypatch):
+    from nymeria.core import claude_code_delivery as delivery
+
+    _local(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        claude_module,
+        "prepare_run",
+        lambda settings_arg, **kw: claude_module.PreparedRun(
+            producer=lambda: bridge.ClaudeCodeResult(ok=True), persist=lambda r: None,
+            run_cwd="/repo", resume_session_id="s-prev",
+        ),
+    )
+
+    def cannot_start(job, producer, on_complete=None):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(claude_module, "start_job", cannot_start)
+    previous = bg.ClaudeCodeJob(
+        id="prev", thread_id="thread-A", user_id="owner", prompt="first", cwd="/repo",
+        mode="bypassPermissions", started_at=time.time(), detached_message="",
+        deliver=lambda job, report: None,
+    )
+    assert delivery.claim(previous) is None
+    with pytest.raises(RuntimeError):
+        claude_module.start_followup_run(previous, "s-prev", ["more"])
+    assert delivery.active_job("thread-A") is None
+    assert delivery.last_outcome("thread-A")[1] == "failed"
