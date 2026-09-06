@@ -11,6 +11,7 @@ mirroring the ``_request_json`` seam the service-integration tests use.
 from pathlib import Path
 
 import pytest
+from datetime import datetime, timezone
 
 from _service_integration_helpers import (  # type: ignore[import-not-found]
     bind_vault_repo as _use_repo,
@@ -513,6 +514,29 @@ def test_delete_message_passes_message_id_param(monkeypatch):
     assert call["params"]["message_id"] == "msg-9"
 
 
+def test_delete_message_without_an_id_makes_no_request(monkeypatch):
+    """An empty id used to clear the WHOLE chat; now the wipe is explicit."""
+    from nymeria.tools import twitch as tools
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch)
+    calls = _mod_handler(monkeypatch, {f"{HELIX}/moderation/chat": FakeResponse(204)})
+
+    result = tools.twitch_delete_message.func(config=None)
+
+    assert result.startswith("[Error]") and "clear_chat=True" in result
+    assert not [c for c in calls if c["url"] == f"{HELIX}/moderation/chat"]
+
+    both = tools.twitch_delete_message.func(message_id="m1", clear_chat=True, config=None)
+    assert both.startswith("[Error]")
+    assert not [c for c in calls if c["url"] == f"{HELIX}/moderation/chat"]
+
+    cleared = tools.twitch_delete_message.func(clear_chat=True, config=None)
+    assert cleared == "Chat cleared."
+    call = [c for c in calls if c["url"] == f"{HELIX}/moderation/chat"][0]
+    assert "message_id" not in call["params"]
+
+
 def test_shoutout_maps_429_to_cooldown_message(monkeypatch):
     from nymeria.tools import twitch as tools
 
@@ -537,7 +561,20 @@ def test_clip_requires_202_and_returns_edit_url(monkeypatch):
 
     result = tools.twitch_clip.func(config=None)
 
-    assert "Clip created! ID: c1" in result
+    assert "https://clips.twitch.tv/c1" in result and "15 s" in result
+    assert "Edit: http://e" in result
+
+
+def test_clip_offline_is_a_plain_message(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch)
+    _mod_handler(monkeypatch, {f"{HELIX}/clips": FakeResponse(404)})
+
+    result = tools.twitch_clip.func(config=None)
+
+    assert result == "[Error]: cannot clip: the stream is offline."
 
 
 def test_get_banned_requests_a_full_page(monkeypatch):
@@ -680,11 +717,12 @@ def test_no_tool_carries_the_disabled_prefix():
         assert "DISABLED" not in t.description, t.name
 
 
-def test_family_is_22_tools_without_read_chat():
+def test_family_is_24_tools_without_read_chat():
     from nymeria.tools import twitch as tools
 
     names = {t.name for t in tools.TWITCH_TOOLS}
-    assert len(tools.TWITCH_TOOLS) == 22
+    assert len(tools.TWITCH_TOOLS) == 24
+    assert {"twitch_get_polls", "twitch_get_predictions"} <= names
     assert "twitch_read_chat" not in names
     assert {"twitch_send", "twitch_ban", "twitch_get_stream", "twitch_create_poll"} <= names
 
@@ -912,12 +950,373 @@ def test_get_stream_names_the_cached_preview_url(monkeypatch):
     assert _cdn_urls(calls) == []  # names it, never fetches it
 
 
+# ---------------------------------------------------------------------------
+# Polls, predictions, and category lookup (tmp/twitch-tools-audit-plan.md
+# behaviors 2, 3, 4, 6): the agent must be able to see results and settle
+# things without the ids the create call returned.
+# ---------------------------------------------------------------------------
+
+
+def _broadcaster_env(monkeypatch):
+    _no_vault(monkeypatch)
+    _configure_env(
+        monkeypatch,
+        TWITCH_BOT_REFRESH_TOKEN=None,
+        TWITCH_BOT_ACCESS_TOKEN="bot-tok",
+        TWITCH_BROADCASTER_TOKEN="caster-tok",
+    )
+
+
+def _helix_handler(monkeypatch, routes):
+    """routes: url -> FakeResponse or callable(call) -> FakeResponse."""
+
+    def handler(call):
+        if call["url"] == f"{HELIX}/users":
+            login = (call["params"] or {}).get("login")
+            return FakeResponse(200, {"data": [{"id": {"silk": "999"}.get(login, "111")}]})
+        target = routes.get(call["url"])
+        if target is None:
+            raise AssertionError(call["url"])
+        return target(call) if callable(target) else target
+
+    return _fake_transport(monkeypatch, handler)
+
+
+_POLLS = {
+    "data": [
+        {
+            "id": "p-new",
+            "title": "Boss?",
+            "status": "ACTIVE",
+            "duration": 600,
+            "started_at": "2099-01-01T00:00:00Z",
+            "choices": [{"title": "Yes", "votes": 7}, {"title": "No", "votes": 2}],
+        },
+        {
+            "id": "p-old",
+            "title": "Snack?",
+            "status": "COMPLETED",
+            "duration": 60,
+            "started_at": "2026-01-01T00:00:00Z",
+            "choices": [{"title": "Pizza", "votes": 4}, {"title": "Tacos", "votes": 9}],
+        },
+    ]
+}
+
+
+def test_get_polls_renders_status_ids_and_tallies(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    calls = _helix_handler(monkeypatch, {f"{HELIX}/polls": FakeResponse(200, _POLLS)})
+
+    result = tools.twitch_get_polls.func(count=2, config=None)
+
+    assert "'Boss?' [ACTIVE" in result and "id=p-new" in result and "9 votes: Yes: 7, No: 2" in result
+    assert "'Snack?' [COMPLETED]" in result and "Tacos: 9" in result
+    listing = [c for c in calls if c["url"] == f"{HELIX}/polls"][0]
+    assert listing["method"] == "GET" and listing["params"]["first"] == 2
+    assert listing["headers"]["Authorization"] == "Bearer caster-tok"
+
+
+def test_end_poll_without_an_id_ends_the_active_one(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    patched = []
+
+    def polls(call):
+        if call["method"] == "GET":
+            return FakeResponse(200, _POLLS)
+        patched.append(call["json_body"])
+        return FakeResponse(200, {"data": [{"choices": [{"title": "Yes", "votes": 7}]}]})
+
+    _helix_handler(monkeypatch, {f"{HELIX}/polls": polls})
+
+    result = tools.twitch_end_poll.func(config=None)
+
+    assert result == "Poll ended (TERMINATED). Results: Yes: 7 votes"
+    assert patched == [{"broadcaster_id": "999", "id": "p-new", "status": "TERMINATED"}]
+
+
+def test_end_poll_with_nothing_active_makes_no_patch(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    only_old = {"data": [_POLLS["data"][1]]}
+    calls = _helix_handler(monkeypatch, {f"{HELIX}/polls": FakeResponse(200, only_old)})
+
+    result = tools.twitch_end_poll.func(show_results=False, config=None)
+
+    assert result == "No active poll to end."
+    assert [c["method"] for c in calls if c["url"] == f"{HELIX}/polls"] == ["GET"]
+
+
+_PREDICTIONS = {
+    "data": [
+        {
+            "id": "pr-open",
+            "title": "Clutch?",
+            "status": "LOCKED",
+            "prediction_window": 120,
+            "created_at": "2026-01-01T00:00:00Z",
+            "winning_outcome_id": None,
+            "outcomes": [
+                {"id": "o-yes", "title": "Yes", "users": 12, "channel_points": 3400},
+                {"id": "o-no", "title": "No", "users": 3, "channel_points": 500},
+            ],
+        },
+        {
+            "id": "pr-done",
+            "title": "First try?",
+            "status": "RESOLVED",
+            "prediction_window": 60,
+            "created_at": "2025-12-31T00:00:00Z",
+            "winning_outcome_id": "o-b",
+            "outcomes": [
+                {"id": "o-a", "title": "Sure", "users": 1, "channel_points": 10},
+                {"id": "o-b", "title": "Nope", "users": 5, "channel_points": 900},
+            ],
+        },
+    ]
+}
+
+
+def test_get_predictions_renders_outcomes_and_winner(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    _helix_handler(monkeypatch, {f"{HELIX}/predictions": FakeResponse(200, _PREDICTIONS)})
+
+    result = tools.twitch_get_predictions.func(config=None)
+
+    assert "'Clutch?' [LOCKED] id=pr-open" in result
+    assert "Yes (id=o-yes) 12 users, 3400 points" in result
+    assert "'First try?' [RESOLVED, winner: Nope] id=pr-done" in result
+
+
+def test_resolve_prediction_by_title_targets_the_open_one(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    patched = []
+
+    def predictions(call):
+        if call["method"] == "GET":
+            return FakeResponse(200, _PREDICTIONS)
+        patched.append(call["json_body"])
+        return FakeResponse(200, {"data": [_PREDICTIONS["data"][0] | {"status": "RESOLVED"}]})
+
+    _helix_handler(monkeypatch, {f"{HELIX}/predictions": predictions})
+
+    result = tools.twitch_resolve_prediction.func(winning_outcome="yes", config=None)
+
+    assert result == "Prediction 'Clutch?' resolved: 'Yes' wins (12 backers, 3400 points)."
+    assert patched == [
+        {"broadcaster_id": "999", "id": "pr-open", "status": "RESOLVED", "winning_outcome_id": "o-yes"}
+    ]
+
+
+def test_resolve_prediction_unknown_outcome_names_the_real_ones(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    calls = _helix_handler(monkeypatch, {f"{HELIX}/predictions": FakeResponse(200, _PREDICTIONS)})
+
+    result = tools.twitch_resolve_prediction.func(winning_outcome="Maybe", config=None)
+
+    assert result.startswith("[Error]") and "'Yes' (id=o-yes)" in result and "'No' (id=o-no)" in result
+    assert [c["method"] for c in calls if c["url"] == f"{HELIX}/predictions"] == ["GET"]
+
+
+def test_resolve_prediction_guards_action_and_state(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    patched = []
+
+    def predictions(call):
+        if call["method"] == "GET":
+            wanted = (call["params"] or {}).get("id")
+            rows = [p for p in _PREDICTIONS["data"] if not wanted or p["id"] == wanted]
+            return FakeResponse(200, {"data": rows})
+        patched.append(call["json_body"])
+        return FakeResponse(200, {"data": [{"title": "Clutch?"}]})
+
+    _helix_handler(monkeypatch, {f"{HELIX}/predictions": predictions})
+
+    assert "required" in tools.twitch_resolve_prediction.func(config=None)
+    assert "only applies to RESOLVED" in tools.twitch_resolve_prediction.func(
+        winning_outcome="Yes", action="CANCELED", config=None
+    )
+    # LOCKED needs an ACTIVE prediction; the open one is already LOCKED.
+    assert "only ACTIVE" in tools.twitch_resolve_prediction.func(action="LOCKED", config=None)
+    # A settled prediction cannot be settled again.
+    assert "already RESOLVED" in tools.twitch_resolve_prediction.func(
+        action="CANCELED", prediction_id="pr-done", config=None
+    )
+    assert patched == []
+
+    assert tools.twitch_resolve_prediction.func(action="CANCELED", config=None) == (
+        "Prediction 'Clutch?' canceled."
+    )
+    assert patched == [{"broadcaster_id": "999", "id": "pr-open", "status": "CANCELED"}]
+
+
+def test_resolve_prediction_by_outcome_id_and_explicit_prediction_id(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    patched = []
+
+    def predictions(call):
+        if call["method"] == "GET":
+            wanted = (call["params"] or {}).get("id")
+            rows = [p for p in _PREDICTIONS["data"] if not wanted or p["id"] == wanted]
+            return FakeResponse(200, {"data": rows})
+        patched.append(call["json_body"])
+        return FakeResponse(200, {"data": [_PREDICTIONS["data"][0] | {"status": "RESOLVED"}]})
+
+    calls = _helix_handler(monkeypatch, {f"{HELIX}/predictions": predictions})
+
+    result = tools.twitch_resolve_prediction.func(
+        winning_outcome="O-NO", prediction_id="pr-open", config=None
+    )
+
+    assert result == "Prediction 'Clutch?' resolved: 'No' wins (3 backers, 500 points)."
+    assert patched[-1]["winning_outcome_id"] == "o-no" and patched[-1]["id"] == "pr-open"
+    lookup = [c for c in calls if c["url"] == f"{HELIX}/predictions" and c["method"] == "GET"][0]
+    assert lookup["params"] == {"broadcaster_id": "999", "id": "pr-open"}
+
+    missing = tools.twitch_resolve_prediction.func(
+        winning_outcome="Yes", prediction_id="pr-nope", config=None
+    )
+    assert missing == "[Error]: no prediction with id pr-nope on this channel."
+    assert len(patched) == 1
+
+
+def test_active_countdowns_come_from_start_time_and_window(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    monkeypatch.setattr(tools, "_utcnow", lambda: datetime(2099, 1, 1, 0, 1, 0, tzinfo=timezone.utc))
+    active_pred = _PREDICTIONS["data"][0] | {
+        "status": "ACTIVE",
+        "created_at": "2099-01-01T00:00:00.123456789Z",
+        "prediction_window": 120,
+    }
+    _helix_handler(
+        monkeypatch,
+        {
+            f"{HELIX}/polls": FakeResponse(200, _POLLS),
+            f"{HELIX}/predictions": FakeResponse(200, {"data": [active_pred]}),
+        },
+    )
+
+    assert "'Boss?' [ACTIVE, 540s left]" in tools.twitch_get_polls.func(config=None)
+    assert "'Clutch?' [ACTIVE, locks in 60s]" in tools.twitch_get_predictions.func(config=None)
+
+
+def test_helix_refusals_read_as_plain_guidance(monkeypatch):
+    """The 400/404 texts the docstrings promise, not raw status dumps."""
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    _helix_handler(
+        monkeypatch,
+        {
+            f"{HELIX}/polls": FakeResponse(400, text="a poll is already running"),
+            f"{HELIX}/predictions": FakeResponse(400, text="prediction already active"),
+            f"{HELIX}/moderation/chat": FakeResponse(404),
+            f"{HELIX}/moderation/automod/message": FakeResponse(404),
+            f"{HELIX}/chat/shoutouts": FakeResponse(400, text="broadcaster is not streaming live"),
+        },
+    )
+
+    assert tools.twitch_create_poll.func(title="Q?", choices="A|B", config=None) == (
+        "[Error]: a poll is already running; end it with twitch_end_poll first."
+    )
+    assert "already running; resolve or cancel it" in tools.twitch_create_prediction.func(
+        title="Q?", outcomes="A|B", config=None
+    )
+    assert "older than 6 hours" in tools.twitch_delete_message.func(message_id="m1", config=None)
+    assert "already reviewed or has expired" in tools.twitch_automod_review.func(
+        msg_id="h1", config=None
+    )
+    assert "live with at least one viewer" in tools.twitch_shoutout.func(username="pal", config=None)
+
+
+def test_set_channel_info_falls_back_to_category_search_and_names_the_match(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    calls = _helix_handler(
+        monkeypatch,
+        {
+            f"{HELIX}/games": FakeResponse(200, {"data": []}),
+            f"{HELIX}/search/categories": FakeResponse(
+                200, {"data": [{"id": "g7", "name": "ELDEN RING NIGHTREIGN"}]}
+            ),
+            f"{HELIX}/channels": FakeResponse(204),
+        },
+    )
+
+    result = tools.twitch_set_channel_info.func(game="elden ring", config=None)
+
+    assert result == "Channel updated: category='ELDEN RING NIGHTREIGN' (matched from 'elden ring')"
+    patch = [c for c in calls if c["url"] == f"{HELIX}/channels"][0]
+    assert patch["json_body"] == {"game_id": "g7"}
+    search = [c for c in calls if c["url"] == f"{HELIX}/search/categories"][0]
+    assert search["params"] == {"query": "elden ring", "first": 1}
+
+
+def test_set_channel_info_exact_match_skips_search(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    calls = _helix_handler(
+        monkeypatch,
+        {
+            f"{HELIX}/games": FakeResponse(200, {"data": [{"id": "g1", "name": "Minecraft"}]}),
+            f"{HELIX}/channels": FakeResponse(204),
+        },
+    )
+
+    result = tools.twitch_set_channel_info.func(game="Minecraft", tags="cozy, chill", config=None)
+
+    assert result == "Channel updated: category='Minecraft', tags=cozy,chill"
+    assert not [c for c in calls if c["url"] == f"{HELIX}/search/categories"]
+    patch = [c for c in calls if c["url"] == f"{HELIX}/channels"][0]
+    assert patch["json_body"] == {"game_id": "g1", "tags": ["cozy", "chill"]}
+
+
+def test_set_channel_info_unknown_category_makes_no_patch(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _broadcaster_env(monkeypatch)
+    calls = _helix_handler(
+        monkeypatch,
+        {
+            f"{HELIX}/games": FakeResponse(200, {"data": []}),
+            f"{HELIX}/search/categories": FakeResponse(200, {"data": []}),
+        },
+    )
+
+    result = tools.twitch_set_channel_info.func(game="zzz", config=None)
+
+    assert result == "[Error]: no Twitch category matches 'zzz'."
+    assert not [c for c in calls if c["url"] == f"{HELIX}/channels"]
+
+
 def test_security_metadata_preserved():
     from nymeria.tools.metadata import SecurityLevel, get_tool_metadata
 
     assert get_tool_metadata("twitch_ban").security_level == SecurityLevel.SENSITIVE
     assert get_tool_metadata("twitch_get_stream").security_level == SecurityLevel.SAFE
     assert get_tool_metadata("twitch_send").security_level == SecurityLevel.MODERATE
+    assert get_tool_metadata("twitch_get_polls").security_level == SecurityLevel.SAFE
+    assert get_tool_metadata("twitch_get_predictions").security_level == SecurityLevel.SAFE
+    assert get_tool_metadata("twitch_delete_message").security_level == SecurityLevel.MODERATE
 
 
 def test_tools_execute_without_any_bot_process(monkeypatch):
