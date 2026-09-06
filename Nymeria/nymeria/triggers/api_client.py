@@ -268,6 +268,16 @@ class NymeriaAPIClient:
 
     # ── Workflows ─────────────────────────────────────────────────────────
 
+    async def post_twitch_chat_log(
+        self, channel: str, messages: List[Dict[str, Any]], *, user_id: str
+    ) -> Any:
+        """Push a batch of Twitch chat lines into the API-side chat log as ``user_id``."""
+        return await self._post(
+            "/twitch/chat-log",
+            json={"channel": channel, "messages": messages},
+            act_as=user_id,
+        )
+
     async def run_workflow(
         self,
         workflow_id: str,

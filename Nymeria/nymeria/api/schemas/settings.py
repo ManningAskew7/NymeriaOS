@@ -283,6 +283,7 @@ class ServerSettingsUpdate(BaseModel):
     twitch_broadcaster_token: Optional[str] = None
     twitch_buffer_size: Optional[int] = Field(default=None, ge=50, le=5000)
     twitch_channel: Optional[str] = None
+    twitch_chatlog_retention_days: Optional[int] = Field(default=None, ge=1, le=365)
     twitch_client_id: Optional[str] = None
     twitch_client_secret: Optional[str] = None
     twitch_command_context_count: Optional[int] = Field(default=None, ge=5, le=200)

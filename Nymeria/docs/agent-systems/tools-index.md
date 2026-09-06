@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1266 tools found.**
+**1267 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1144,6 +1144,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `twitch_end_poll` | `nymeria/tools/twitch.py` | End a running poll early and return the final tally. With no poll_id it ends the currently active poll. show_results=True shows the result in chat briefly before it disappears (TERMINATED); False hides it at once (ARCHIVED). Announce the winner with twitch_send if chat is waiting on it. |
 | `twitch_get_banned` | `nymeria/tools/twitch.py` | List users currently banned or timed out in this channel, with the reason and, for timeouts, when they expire ('permanent' means a ban). Check it before banning or timing someone out, and to answer 'is X banned'. Needs the broadcaster token (Twitch only lets the channel owner read this list). |
 | `twitch_get_channel` | `nymeria/tools/twitch.py` | Get channel info: title, game, tags, language. |
+| `twitch_get_chatter_log` | `nymeria/tools/twitch.py` | Pull one chatter's recent messages in this channel from the bot's own chat log (Twitch keeps no history, so this covers what the bot saw while running, kept for about two weeks). Use it before a moderation call to tell a repeat problem from one bad line, or to check what someone actually said earlier. Oldest first, fenced as untrusted chat; the [msg:...] tags work with twitch_delete_message. |
 | `twitch_get_chatters` | `nymeria/tools/twitch.py` | Get list of users currently in chat with total count. |
 | `twitch_get_polls` | `nymeria/tools/twitch.py` | Show the channel's latest polls, newest first: question, status (ACTIVE with seconds left, or ended), poll id, and the votes per choice. Use it to read a running poll's tally, to announce a result, or to recover a poll id for twitch_end_poll. Needs the broadcaster token. |
 | `twitch_get_predictions` | `nymeria/tools/twitch.py` | Show the channel's latest channel-points predictions, newest first: question, status (ACTIVE with seconds until it locks, LOCKED, RESOLVED with the winner, or CANCELED), prediction id, and each outcome with its id, backers, and points. Use it to see how a prediction is going, to recover ids for twitch_resolve_prediction, or to announce the payout. Needs the broadcaster token. |

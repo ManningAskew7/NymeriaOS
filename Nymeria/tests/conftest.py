@@ -147,6 +147,7 @@ class ApiTestSettings:
     sliding_window_cycles: int = 20
     memory_char_limit: int = 8000
     todo_auto_archive_days: int = 7
+    twitch_chatlog_retention_days: int = 14
     scheduler_missed_work_policy: str = "run"
     scheduler_active_execution_stale_minutes: int = 1440
     default_executor_max_workers: int = 32

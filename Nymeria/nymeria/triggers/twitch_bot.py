@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -45,6 +44,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
+from ..core.twitch_chatlog import CHATLOG_BATCH_MAX, fence_chat
 from .bot_helpers import SeenEventCache
 
 try:  # pragma: no cover - twitchio ships in the optional nymeriaos[twitch] extra.
@@ -79,6 +79,14 @@ SUBSCRIPTION_REPAIR_INTERVAL_SECONDS = 60
 #: subscription is not re-issued while its first create is still in flight.
 WELCOME_RECONCILE_DELAY_SECONDS = 10
 
+#: The API-side chat log (core/twitch_chatlog.py) is fed in batches: every
+#: CHATLOG_FLUSH_SECONDS, or as soon as CHATLOG_FLUSH_AT lines are queued.
+#: A failed push keeps its lines for the next flush; the queue is capped so
+#: an API outage costs the oldest lines, never memory.
+CHATLOG_FLUSH_SECONDS = 5
+CHATLOG_FLUSH_AT = 50
+CHATLOG_QUEUE_CAP = 2000
+
 #: A Helix-listed websocket subscription younger than this is never treated
 #: as an orphan: twitchio records a subscription only after its create call
 #: returns, and the post-reconnect resubscribe runs one create per
@@ -96,22 +104,9 @@ class TrackedSubscription:
     label: str
 
 
-# Untrusted-content fence for chat-derived text, mirroring the
-# chrome_browser.py page-text treatment: the closing marker is neutralized
-# inside the body (including separator/zero-width tricks) so a chat message
-# cannot end the fence early and continue as trusted narration.
-_UNTRUSTED_OPEN = "<untrusted_chat_messages>"
-_UNTRUSTED_CLOSE = "</untrusted_chat_messages>"
-_SEP = r"[\s\u200b-\u200f\u2060\ufeff]*"
-_CLOSE_TAG_RE = re.compile(
-    _SEP.join([r"<", r"/", *list("untrusted_chat_messages")]), re.IGNORECASE
-)
-
-
-def fence_chat(text: str) -> str:
-    """Wrap chat-derived text so its provenance is unmistakable."""
-    body = _CLOSE_TAG_RE.sub("<\\\\/untrusted_chat_messages", text)
-    return f"{_UNTRUSTED_OPEN}\n{body}\n{_UNTRUSTED_CLOSE}"
+# The untrusted-content fence for chat-derived text lives with the chat log
+# (core/twitch_chatlog.py) so the tool that renders stored chat gets the
+# same treatment; re-exported here for the prompt composers and tests.
 
 
 # =============================================================================
@@ -445,6 +440,10 @@ class NymeriaTwitchBot(_BotBase):
         # the client no longer knows it), so one chat message can arrive once
         # per socket. The shared bot-client cache makes delivery idempotent.
         self._seen_message_ids = SeenEventCache()
+        # Lines waiting to be pushed to the API-side chat log.
+        self._chatlog_queue: deque[dict[str, Any]] = deque(maxlen=CHATLOG_QUEUE_CAP)
+        self._chatlog_task: Optional[asyncio.Task] = None
+        self._chatlog_wake = asyncio.Event()
         # Serializes repair passes: twitchio registers a new socket only after
         # awaiting its connect, so two concurrent subscribes for one token can
         # each open a socket and the orphan would double-deliver every event.
@@ -553,6 +552,8 @@ class NymeriaTwitchBot(_BotBase):
 
             await self._subscribe_moderation_events()
             await self._subscribe_automod_events()
+
+        self._chatlog_task = asyncio.create_task(self._chatlog_flush_loop())
 
         if self._pulse_enabled:
             self._pulse_task = asyncio.create_task(self._pulse_loop())
@@ -840,13 +841,19 @@ class NymeriaTwitchBot(_BotBase):
     async def close(self, **options: Any) -> None:
         """Clean shutdown: unwind loops and in-flight turn tasks."""
         self._closing_down = True
-        for task in (self._pulse_task, self._health_task):
+        for task in (self._pulse_task, self._health_task, self._chatlog_task):
             if task and not task.done():
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass  # task cancellation during shutdown is expected
+        # Graceful closes only: run.py's signal handler hard-exits, so a
+        # container stop loses at most the last flush window of lines.
+        try:
+            await self._flush_chatlog()
+        except Exception:
+            logger.debug("Final chat log flush failed", exc_info=True)
         for task in list(self._background_tasks):
             task.cancel()
         await super().close()
@@ -890,6 +897,7 @@ class NymeriaTwitchBot(_BotBase):
             badges=[getattr(b, "set_id", str(b)) for b in (payload.badges or [])],
         )
         self._buffer.append(msg)
+        self._queue_chatlog_line(msg)
 
         # Let TwitchIO's command framework process !commands
         await self.process_commands(payload)
@@ -1503,6 +1511,63 @@ class NymeriaTwitchBot(_BotBase):
         if error:
             logger.warning("Pulse turn errored: %s", error)
         return "fired"
+
+    # -----------------------------------------------------------------
+    # API-side chat log (per-chatter history for twitch_get_chatter_log)
+    # -----------------------------------------------------------------
+
+    def _queue_chatlog_line(self, msg: ChatMessage) -> None:
+        if len(self._chatlog_queue) + 1 >= CHATLOG_FLUSH_AT:
+            self._chatlog_wake.set()
+        self._chatlog_queue.append(
+            {
+                "message_id": msg.message_id,
+                "user_login": msg.username,
+                "display_name": msg.display_name,
+                "user_id": msg.user_id,
+                "text": msg.message,
+                "timestamp": msg.timestamp.isoformat(),
+                "badges": list(msg.badges),
+            }
+        )
+
+    async def _flush_chatlog(self) -> bool:
+        """Push everything queued in API-sized chunks; a failed chunk (and all
+        after it) stays for next time. Chunking matters: a queue that outgrew
+        one batch during an outage would otherwise be rejected whole (422)
+        on every retry, forever."""
+        while self._chatlog_queue:
+            batch = [self._chatlog_queue[i] for i in range(min(CHATLOG_BATCH_MAX, len(self._chatlog_queue)))]
+            try:
+                await self.api.post_twitch_chat_log(
+                    self._channel_name, batch, user_id=self._user_id
+                )
+            except Exception as e:
+                logger.warning(
+                    "Chat log push failed (%d lines kept for the next flush): %s",
+                    len(self._chatlog_queue),
+                    e,
+                )
+                return False
+            # Drop exactly what was sent; lines that arrived meanwhile stay.
+            for _ in range(min(len(batch), len(self._chatlog_queue))):
+                self._chatlog_queue.popleft()
+        return True
+
+    async def _chatlog_flush_loop(self) -> None:
+        while True:
+            try:
+                try:
+                    await asyncio.wait_for(self._chatlog_wake.wait(), timeout=CHATLOG_FLUSH_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
+                self._chatlog_wake.clear()
+                await self._flush_chatlog()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.warning("Chat log flush loop error", exc_info=True)
+                await asyncio.sleep(CHATLOG_FLUSH_SECONDS)
 
     async def _pulse_loop(self) -> None:
         """Background task: periodically evaluate chat and optionally comment."""

@@ -989,6 +989,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks |
 | `TWITCH_PULSE_MIN_MESSAGES` | `10` | Minimum unseen messages before a pulse fires |
 | `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Already-seen context lines added to a thin !ask prompt (hard-capped at 25) |
+| `TWITCH_CHATLOG_RETENTION_DAYS` | `14` | Days of per-chatter chat log the API keeps for `twitch_get_chatter_log` (one JSONL file per channel per day) |
 | `TEAMS_BOT_APP_ID` | - | Bot Framework app ID for Teams webhook replies |
 | `TEAMS_BOT_APP_PASSWORD` | - | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | - | Optional Azure tenant ID used during setup |

@@ -37,18 +37,21 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Any, Callable, NamedTuple, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.http_policy import policy_http_client as _http_client
+from ..core.twitch_chatlog import MAX_QUERY_HOURS, get_chat_log_store, render_chatter_log
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
     register_provider_spec,
 )
 from .image_generation import finalize_captured_image
+from .utils import get_user_id
 from .service_integration_base import (
     credential_value as _credential_value,
     filtered as _filtered,
@@ -141,6 +144,7 @@ _TWITCH = register_provider_spec(
             "twitch_get_channel",
             "twitch_get_chatters",
             "twitch_get_banned",
+            "twitch_get_chatter_log",
             "twitch_get_schedule",
             "twitch_clip",
             "twitch_get_polls",
@@ -1029,6 +1033,41 @@ def twitch_get_banned(
 
 
 @tool
+def twitch_get_chatter_log(
+    username: str,
+    limit: int = 50,
+    hours: int = 24,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Pull one chatter's recent messages in this channel from the bot's own chat log (Twitch keeps no history, so this covers what the bot saw while running, kept for about two weeks). Use it before a moderation call to tell a repeat problem from one bad line, or to check what someone actually said earlier. Oldest first, fenced as untrusted chat; the [msg:...] tags work with twitch_delete_message.
+
+    Args:
+        username: The chatter's login or display name.
+        limit: Most recent messages to return (1 to 200, default 50).
+        hours: How far back to look (1 to 8760, default 24).
+    """
+    try:
+        channel = _settings_value("twitch_channel")
+        if not channel:
+            return "[Error]: TWITCH_CHANNEL is not configured; the chat log is kept per channel."
+        from ..config import get_settings
+
+        settings = get_settings()
+        # The thread owner's log: the bot posts as the account it runs as and
+        # its pulse/!ask turns run as that same account.
+        store = get_chat_log_store(
+            Path(settings.data_dir),
+            get_user_id(config),
+            retention_days=settings.twitch_chatlog_retention_days,
+        )
+        window = max(1, min(MAX_QUERY_HOURS, int(hours)))
+        entries = store.query(str(channel), login=username, limit=limit, hours=window)
+        return render_chatter_log(username.strip().lstrip("@").lower(), entries, hours=window)
+    except Exception as e:
+        return _error(e)
+
+
+@tool
 def twitch_get_schedule(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
@@ -1604,6 +1643,7 @@ TWITCH_TOOLS = [
     twitch_get_channel,
     twitch_get_chatters,
     twitch_get_banned,
+    twitch_get_chatter_log,
     twitch_get_schedule,
     twitch_clip,
     twitch_get_polls,
