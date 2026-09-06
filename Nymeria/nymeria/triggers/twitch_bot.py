@@ -36,6 +36,7 @@ smuggle trusted-looking narration into the prompt.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections import deque
@@ -210,6 +211,28 @@ def format_chat_context(messages: List[ChatMessage]) -> str:
             mid = f" [msg:{msg.message_id}]" if msg.message_id else ""
             lines.append(f"{prefix} {msg.display_name}{mid}: {text}")
     return "\n".join(lines)
+
+
+def mention_as_ask(text: str, bot_login: Optional[str]) -> Optional[str]:
+    """Rewrite a leading ``@<bot>`` mention into the equivalent ``!ask`` line.
+
+    ``@SilkGPT what patch is this`` becomes ``!ask what patch is this`` so
+    the command framework applies the same access gate and cooldowns as a
+    typed ``!ask``. Only a mention at the very start counts (case-insensitive,
+    an optional ``,`` or ``:`` after it); a mention mid-sentence is chat about
+    the bot, not a question to it. Returns ``None`` when nothing to rewrite.
+    """
+    if not bot_login or not text:
+        return None
+    stripped = text.lstrip()
+    handle = "@" + bot_login.lower()
+    if not stripped.lower().startswith(handle):
+        return None
+    rest = stripped[len(handle):]
+    if rest and not rest[0].isspace() and rest[0] not in ",:":
+        return None  # @silkgpt2 is someone else
+    question = rest.lstrip(",:").strip()
+    return f"!ask {question}" if question else "!ask"
 
 
 def compose_ask_prompt(
@@ -407,6 +430,7 @@ class NymeriaTwitchBot(_BotBase):
         self._broadcaster_refresh_token = broadcaster_refresh_token
         self._bot_user_id = bot_user_id
         self._broadcaster_id: Optional[str] = None  # Resolved on ready
+        self._bot_login: Optional[str] = None  # Resolved on ready (@mention alias)
 
         # Chat buffer + shared delivery cursor (advanced by BOTH prompt paths)
         self._buffer = ChatBuffer(maxlen=buffer_size)
@@ -534,6 +558,7 @@ class NymeriaTwitchBot(_BotBase):
         logger.info("Watching channel: #%s", self._channel_name)
 
         await self._resolve_broadcaster_id()
+        await self._resolve_bot_login()
 
         if self._broadcaster_id:
             try:
@@ -898,6 +923,13 @@ class NymeriaTwitchBot(_BotBase):
         )
         self._buffer.append(msg)
         self._queue_chatlog_line(msg)
+
+        # "@<bot> <question>" is !ask by another spelling. The buffer and the
+        # chat log above keep the original line; only the command framework
+        # sees the rewrite, so the gate and cooldowns apply unchanged.
+        rewritten = mention_as_ask(payload.text or "", self._bot_login)
+        if rewritten is not None:
+            payload.text = rewritten
 
         # Let TwitchIO's command framework process !commands
         await self.process_commands(payload)
@@ -1464,7 +1496,10 @@ class NymeriaTwitchBot(_BotBase):
 
     async def _handle_help(self, ctx: Any) -> None:
         """List available bot commands."""
-        msg = "!ask <question>: Ask the bot | !status: Bot info"
+        ask = "!ask <question>"
+        if self._bot_login:
+            ask += f" or @{self._bot_login} <question>"
+        msg = f"{ask}: Ask the bot | !status: Bot info"
         if self._is_privileged(ctx):
             msg += (
                 " | !pulse on/off/<seconds>/min <count>: Pulse control"
@@ -1557,10 +1592,9 @@ class NymeriaTwitchBot(_BotBase):
     async def _chatlog_flush_loop(self) -> None:
         while True:
             try:
-                try:
+                # The timeout IS the periodic flush; a set event is the early one.
+                with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._chatlog_wake.wait(), timeout=CHATLOG_FLUSH_SECONDS)
-                except asyncio.TimeoutError:
-                    pass
                 self._chatlog_wake.clear()
                 await self._flush_chatlog()
             except asyncio.CancelledError:
@@ -1586,6 +1620,20 @@ class NymeriaTwitchBot(_BotBase):
     # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
+
+    async def _resolve_bot_login(self) -> None:
+        """Resolve the bot's own login so ``@<bot> <question>`` works as !ask."""
+        if not self._bot_user_id:
+            return
+        try:
+            users = await self.fetch_users(ids=[self._bot_user_id])
+            if users and getattr(users[0], "name", None):
+                self._bot_login = str(users[0].name).lower()
+                logger.info("Bot login resolved: @%s (mention works as !ask)", self._bot_login)
+            else:
+                logger.warning("Could not resolve the bot's login; @mention alias off")
+        except Exception as e:
+            logger.error("Error resolving bot login: %s", e)
 
     async def _resolve_broadcaster_id(self) -> None:
         """Resolve the channel's broadcaster user ID."""
