@@ -988,13 +988,17 @@ def twitch_get_chatters(
 def twitch_get_banned(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
-    """List users currently banned or timed out in this channel, with the reason and, for timeouts, when they expire ('permanent' means a ban). Check it before banning or timing someone out, and to answer 'is X banned'."""
+    """List users currently banned or timed out in this channel, with the reason and, for timeouts, when they expire ('permanent' means a ban). Check it before banning or timing someone out, and to answer 'is X banned'. Needs the broadcaster token (Twitch only lets the channel owner read this list)."""
     try:
         resp = _helix(
             "GET",
             "moderation/banned",
             tool_name="twitch_get_banned",
             config=config,
+            # Helix: broadcaster_id must match the token's user, so this is a
+            # broadcaster-token call even though a mod could read the list in
+            # the Twitch UI; the token also needs moderation:read (2026-09-06).
+            use_broadcaster_token=True,
             # Default page is 20; ask for the max so the 30-row format below
             # and its "and N more" suffix reflect reality. Not paginated
             # further on purpose (a mod list past 100 is noise for the agent).
@@ -1003,6 +1007,11 @@ def twitch_get_banned(
                 "first": 100,
             },
         )
+        if resp.status_code == 401:
+            return (
+                "[Error]: the broadcaster token cannot read the ban list: it needs the "
+                "moderation:read scope (re-run the broadcaster auth flow with it)."
+            )
         if resp.status_code != 200:
             return f"[Error]: {resp.status_code} {resp.text[:200]}"
         data = resp.json().get("data", [])

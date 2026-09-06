@@ -55,6 +55,7 @@ BROADCASTER_SCOPES = [
     "channel:manage:predictions",
     "channel:manage:broadcast",
     "channel:read:subscriptions",
+    "moderation:read",  # Get Banned Users: broadcaster_id must match the token's user
     # Needed for the channel.ban/channel.unban EventSub fallback the bot
     # subscribes with the broadcaster token when channel.moderate v2 fails.
     "channel:moderate",

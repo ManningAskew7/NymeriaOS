@@ -104,11 +104,14 @@ moderator:read:chat_settings moderator:read:unban_requests
 moderator:read:moderators moderator:read:vips clips:edit
 ```
 
-**Broadcaster scopes** (6):
+**Broadcaster scopes** (7; `moderation:read` was added 2026-09-06 for
+`twitch_get_banned`, whose `broadcaster_id` must match the token's user; a
+broadcaster token issued before that needs one re-run of this flow):
 
 ```
 channel:bot channel:manage:polls channel:manage:predictions
 channel:manage:broadcast channel:read:subscriptions channel:moderate
+moderation:read
 ```
 
 ### 4. Configure Environment
@@ -306,7 +309,7 @@ vault-first (provider `twitch`) with the `TWITCH_*` settings as fallback.
 | `twitch_get_stream_frame` | A still frame of the live broadcast as an image the model can see (see Seeing the stream) |
 | `twitch_get_channel` | Channel title, game, tags, language |
 | `twitch_get_chatters` | Users currently in chat + count |
-| `twitch_get_banned` | Banned users with reasons |
+| `twitch_get_banned` | Banned users with reasons (broadcaster token, `moderation:read`) |
 | `twitch_get_schedule` | Upcoming stream schedule |
 | `twitch_clip` | Clip the last ~30 seconds of a live stream; returns the public `clips.twitch.tv` URL |
 
