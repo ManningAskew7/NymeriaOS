@@ -508,6 +508,47 @@ for client-specific commands and setup behavior.
 
 ---
 
+### Twitch Chat Log
+
+```http
+POST /twitch/chat-log
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"channel": "silk", "messages": [{"message_id": "…", "user_login": "alice", "display_name": "Alice", "user_id": "5", "text": "hi", "timestamp": "2026-09-06T05:48:00Z", "badges": ["subscriber"]}]}
+```
+
+The Twitch bot's push: Twitch has no chat-history endpoint, so the API keeps
+a per-channel record of what the bot saw, one JSONL file per channel per UTC
+day under the caller's data dir, aged out after
+`TWITCH_CHATLOG_RETENTION_DAYS` (default 14). Lines are stored under the
+AUTHENTICATED account (the bot acts as the account that runs it). A
+`message_id` the API already stored is dropped, and ids are marked only after
+the write, so a retried batch is safe within one API process; a push
+acknowledged late and retried across an API restart can land twice on disk,
+and the reader collapses those by id. Up to 500 lines per call (the bot
+chunks a backlog to that).
+
+**Response:**
+```json
+{"stored": 1, "dropped": 0}
+```
+
+```http
+GET /twitch/chat-log?channel=silk&login=alice&limit=50&hours=24
+Authorization: Bearer <token>
+```
+
+One chatter's lines (login or display name, case-insensitive) inside the
+window, newest first; `limit` up to 200, `hours` up to a year. Another
+account's log is invisible. The agent-side view of the same data is the
+`twitch_get_chatter_log` tool, which renders it fenced as untrusted chat.
+
+**Response:**
+```json
+{"channel": "silk", "login": "alice", "hours": 24, "count": 1, "entries": [{"message_id": "…", "user_login": "alice", "display_name": "Alice", "user_id": "5", "text": "hi", "timestamp": "2026-09-06T05:48:00+00:00", "badges": ["subscriber"]}]}
+```
+
 ### Chat (Streaming)
 
 ```http

@@ -420,3 +420,15 @@ def test_join_api_base_appends_suffix_idempotently() -> None:
         == "https://mm.example.com/api/v4"
     )
     assert join_api_base("https://rc.example.com", "/api/v1") == "https://rc.example.com/api/v1"
+
+
+def test_seen_event_cache_probe_does_not_record():
+    from nymeria.triggers.bot_helpers import SeenEventCache
+
+    clock = {"t": 100.0}
+    cache = SeenEventCache(ttl_seconds=10, clock=lambda: clock["t"])
+    assert cache.was_seen("k") is False
+    assert cache.was_seen("k") is False  # a probe never records
+    assert cache.mark_seen("k") is False and cache.was_seen("k") is True
+    clock["t"] += 11
+    assert cache.was_seen("k") is False  # expired

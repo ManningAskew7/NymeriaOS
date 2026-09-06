@@ -10,13 +10,16 @@ touched by the methods under test).
 
 import asyncio
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from nymeria.triggers.bot_helpers import SeenEventCache
+from nymeria.core.twitch_chatlog import CHATLOG_BATCH_MAX
 from nymeria.triggers.twitch_bot import (
     CHAT_SUBSCRIPTION_TYPE,
+    CHATLOG_QUEUE_CAP,
     ChatBuffer,
     ChatMessage,
     NymeriaTwitchBot,
@@ -64,6 +67,20 @@ class _FakeAPI:
     def __init__(self):
         self.sync_chats = []
         self.cleared = []
+        self.chatlog_posts = []
+        self.chatlog_fail = False
+        self.chatlog_fail_after = None  # fail the Nth post (1-based) once
+
+    async def post_twitch_chat_log(self, channel, messages, *, user_id):
+        if self.chatlog_fail:
+            raise RuntimeError("api down")
+        if len(messages) > CHATLOG_BATCH_MAX:
+            raise RuntimeError("422: messages too long")
+        if self.chatlog_fail_after is not None and len(self.chatlog_posts) + 1 == self.chatlog_fail_after:
+            self.chatlog_fail_after = None
+            raise RuntimeError("blip")
+        self.chatlog_posts.append({"channel": channel, "messages": messages, "user_id": user_id})
+        return {"stored": len(messages), "dropped": 0}
 
     async def chat(self, message, thread_id, user_id, **kwargs):
         self.sync_chats.append(
@@ -107,6 +124,9 @@ def make_bot(**overrides):
     bot._last_purge_at = 0.0
     bot._reconcile_lock = asyncio.Lock()
     bot._seen_message_ids = SeenEventCache()
+    bot._chatlog_queue = deque(maxlen=CHATLOG_QUEUE_CAP)
+    bot._chatlog_task = None
+    bot._chatlog_wake = asyncio.Event()
     bot._websockets = {}
     _fake_helix(bot, {}, [])  # Twitch lists nothing unless a test says otherwise
     for key, value in overrides.items():
@@ -1215,6 +1235,73 @@ async def test_automod_hold_lands_in_buffer_with_the_message_id_once():
     assert all(m.is_system for m in bot._buffer.get_since(0))
     rendered = format_chat_context(bot._buffer.get_since(0))
     assert "[MOD] AutoMod held Alice [msg:h1]:" in rendered
+
+
+# ---------------------------------------------------------------------------
+# API-side chat log push (tmp/twitch-chatlog-plan.md behavior 6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_lines_are_queued_and_flushed_as_the_bots_user():
+    bot = make_bot(bot_user_id="111")
+    _count_commands(bot)
+    await bot.event_message(_chat_payload("m1", "hello"))
+    await bot.event_message(_chat_payload("m1", "hello"))  # duplicate: not queued twice
+    await bot.event_message(_chat_payload("m2", "again"))
+
+    assert [q["message_id"] for q in bot._chatlog_queue] == ["m1", "m2"]
+    assert bot._chatlog_queue[0]["user_login"] == "alice" and bot._chatlog_queue[0]["text"] == "hello"
+    assert bot._chatlog_queue[0]["timestamp"].endswith("+00:00")
+
+    assert await bot._flush_chatlog() is True
+    assert len(bot.api.chatlog_posts) == 1
+    post = bot.api.chatlog_posts[0]
+    assert post["channel"] == "silk" and post["user_id"] == "default"
+    assert [m["message_id"] for m in post["messages"]] == ["m1", "m2"]
+    assert not bot._chatlog_queue
+    assert await bot._flush_chatlog() is True and len(bot.api.chatlog_posts) == 1  # nothing to send
+
+
+@pytest.mark.asyncio
+async def test_failed_push_keeps_lines_and_the_queue_is_capped():
+    bot = make_bot(bot_user_id="111")
+    _count_commands(bot)
+    bot.api.chatlog_fail = True
+    await bot.event_message(_chat_payload("m1", "hello"))
+
+    assert await bot._flush_chatlog() is False
+    assert [q["message_id"] for q in bot._chatlog_queue] == ["m1"]
+
+    bot.api.chatlog_fail = False
+    await bot.event_message(_chat_payload("m2", "late"))
+    assert await bot._flush_chatlog() is True
+    assert [m["message_id"] for m in bot.api.chatlog_posts[0]["messages"]] == ["m1", "m2"]
+
+    for i in range(CHATLOG_QUEUE_CAP + 5):
+        bot._queue_chatlog_line(_msg(f"line {i}"))
+    assert len(bot._chatlog_queue) == CHATLOG_QUEUE_CAP
+    assert bot._chatlog_queue[0]["text"] == "line 5"  # oldest dropped, newest kept
+    assert bot._chatlog_wake.is_set()  # a full-ish queue wakes the flush loop
+
+
+@pytest.mark.asyncio
+async def test_a_backlog_larger_than_one_batch_drains_in_chunks():
+    """An outage queues more than the API accepts per call; the flush must
+    chunk (a whole-queue post is a 422 forever) and a failed chunk keeps
+    the rest."""
+    bot = make_bot(bot_user_id="111")
+    for i in range(CHATLOG_BATCH_MAX + 120):
+        bot._queue_chatlog_line(_msg(f"line {i}"))
+    bot.api.chatlog_fail_after = 2  # first chunk lands, second blips
+
+    assert await bot._flush_chatlog() is False
+    assert [len(p["messages"]) for p in bot.api.chatlog_posts] == [CHATLOG_BATCH_MAX]
+    assert len(bot._chatlog_queue) == 120 and bot._chatlog_queue[0]["text"] == f"line {CHATLOG_BATCH_MAX}"
+
+    assert await bot._flush_chatlog() is True
+    assert [len(p["messages"]) for p in bot.api.chatlog_posts] == [CHATLOG_BATCH_MAX, 120]
+    assert not bot._chatlog_queue
 
 
 # ---------------------------------------------------------------------------

@@ -1017,6 +1017,10 @@ def test_workflow_gate_refusal_explains_raw_edits_and_next_step():
 _INDIRECT_DATA_DIR_CHILDREN = {
     "safe_user_id": "per-user RAG dir, name is the sanitized user id",
     "safe_user_id(user_id)": "per-user auth cache dir, sanitized user id",
+    "safe_path_segment(user_id)": (
+        "per-user Twitch chat log (users/<id>/twitch_chatlog/<channel>/<day>.jsonl), "
+        "sanitized user id; the users/ store itself is classified"
+    ),
     "auth_utils.safe_user_id(user_id)": "per-user MCP auth bridge dir",
     "trace.workflow_id": "per-workflow trace dir",
     "name": (

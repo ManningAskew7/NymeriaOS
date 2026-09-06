@@ -7,7 +7,7 @@ Nymeria's Twitch integration has two halves that share the `TWITCH_*` settings:
   messages, responds to `!commands`, and periodically evaluates chat
   ("pulse"). It relays prompts to the backend over `POST /chat` like the
   Telegram/Discord thin clients; it runs no agent of its own.
-- **The `twitch_*` tools** (`nymeria/tools/twitch.py`, 24 tools): call the
+- **The `twitch_*` tools** (`nymeria/tools/twitch.py`, 25 tools): call the
   Twitch Helix API directly with their own OAuth tokens, executing wherever
   the agent runs. They work on any thread that enables them, with or without
   the bot process running.
@@ -149,7 +149,7 @@ Outside Docker: `python3 run.py twitch-bot --api-url http://localhost:8000`
 ### 6. Configure the Thread
 
 Enable the tools and set the personality on the `twitch_{channel}` thread via
-the desktop app or the API. The reference deployment enables all 24; a
+the desktop app or the API. The reference deployment enables all 25; a
 minimal mod-bot set is:
 
 ```
@@ -210,6 +210,9 @@ overwritten by the bot):
 - AutoMod holds show up as [MOD] AutoMod held lines with a message id; use
   twitch_automod_review only on holds you have seen there, and only when the
   call is clear (allow obvious false positives, deny obvious abuse).
+- Before a timeout or ban that is not clear-cut, twitch_get_chatter_log shows
+  that chatter's recent history: a repeat offender and a one-off bad line
+  deserve different responses.
 
 ## Operations
 - You communicate ONLY by calling the twitch_send tool. Your final text
@@ -276,7 +279,7 @@ message appears as `[MOD] AutoMod held <user> [msg:<id>]: <text> (reason)`
 and its verdict as `[MOD] AutoMod hold [msg:<id>] from <user>: approved by
 <mod>` (or denied, expired), so `twitch_automod_review` has an id to act on.
 
-## Tools (24 total)
+## Tools (25 total)
 
 All tools are catalog tools, enabled per-thread via thread config. They call
 Helix directly and work without the bot process. Tools resolve credentials
@@ -310,6 +313,7 @@ vault-first (provider `twitch`) with the `TWITCH_*` settings as fallback.
 | `twitch_get_channel` | Channel title, game, tags, language |
 | `twitch_get_chatters` | Users currently in chat + count |
 | `twitch_get_banned` | Banned users with reasons (broadcaster token, `moderation:read`) |
+| `twitch_get_chatter_log` | One chatter's recent messages from the API-side chat log (see Chatter history) |
 | `twitch_get_schedule` | Upcoming stream schedule |
 | `twitch_clip` | Clip the last ~30 seconds of a live stream; returns the public `clips.twitch.tv` URL |
 
@@ -325,6 +329,23 @@ vault-first (provider `twitch`) with the `TWITCH_*` settings as fallback.
 | `twitch_get_subs` | Sub count, or per-user sub check |
 
 Username arguments resolve to user IDs automatically via Helix.
+
+### Chatter history
+
+Twitch has no chat-history API, so the bot feeds one: every chat line it
+sees is pushed in small batches (5 s, or 50 lines) to `POST /twitch/chat-log`
+as the account the bot runs as, and the API stores it under that account,
+one JSONL file per channel per UTC day
+(`users/<account>/twitch_chatlog/<channel>/`), aged out after
+`TWITCH_CHATLOG_RETENTION_DAYS` (14). `twitch_get_chatter_log(username,
+limit, hours)` renders one chatter's lines oldest first, fenced as untrusted
+chat, with the `[msg:...]` tags `twitch_delete_message` takes, so the agent
+can tell a repeat problem from one bad line before acting. A failed push
+keeps its lines for the next flush (queue capped at 2000, drained in
+500-line chunks); a container stop loses at most the last flush window
+(run.py's signal handler hard-exits, so the graceful final flush only runs
+on a clean close). The log only covers what the bot saw while running.
+`GET /twitch/chat-log` is the same lookup for clients.
 
 ### Seeing the stream
 
@@ -413,7 +434,8 @@ See the Messaging Platforms table in `docs/configuration.md` for every
 | File | Purpose |
 |------|---------|
 | `nymeria/triggers/twitch_bot.py` | Thin-client bot: EventSub, buffer + cursor, !commands, pulse, relay |
-| `nymeria/tools/twitch.py` | The 24 direct-Helix tools + the `twitch` credential spec |
+| `nymeria/tools/twitch.py` | The 24 direct-Helix tools + `twitch_get_chatter_log` + the `twitch` credential spec |
+| `nymeria/core/twitch_chatlog.py` | The API-side per-chatter chat log store (bot-fed via `POST /twitch/chat-log`) |
 | `nymeria/config/settings.py` | `TWITCH_*` settings fields |
 | `run.py` | `twitch-bot` subcommand |
 | `docker-compose.yml` | `twitch-bot` service (profile: twitch) |

@@ -305,6 +305,7 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "twitch_pulse_interval",
         "twitch_pulse_min_messages",
         "twitch_command_context_count",
+        "twitch_chatlog_retention_days",
     ),
 }
 

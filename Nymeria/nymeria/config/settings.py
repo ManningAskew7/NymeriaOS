@@ -571,6 +571,9 @@ class Settings(BaseSettings):
     twitch_pulse_message_count: int = Field(default=100, ge=10, le=500, description="Messages to include in pulse context")
     twitch_command_context_count: int = Field(default=50, ge=5, le=200, description="Messages to include with !ask context")
     twitch_respond_mode: str = Field(default="command", description="Response mode: command (only !commands)")
+    twitch_chatlog_retention_days: int = Field(
+        default=14, ge=1, le=365, description="Days of per-chatter Twitch chat log kept by the API"
+    )
 
     # Messaging Platform Credentials - Slack
     slack_webhook_url: Optional[str] = Field(

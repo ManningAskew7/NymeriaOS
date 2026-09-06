@@ -289,6 +289,11 @@ class SeenEventCache:
         self._clock = clock
         self._items: dict[str, float] = {}
 
+    def was_seen(self, key: str) -> bool:
+        """Read-only probe: True when *key* is remembered and still fresh."""
+        expires_at = self._items.get(key)
+        return bool(expires_at and expires_at > self._clock())
+
     def mark_seen(self, key: str) -> bool:
         """Return True when *key* was already seen and still fresh."""
         now = self._clock()

@@ -275,6 +275,8 @@ EXPECTED_ROUTES = [
     ('/triggers/{trigger_id}/executions', ('GET',)),
     ('/triggers/{trigger_id}/resume', ('POST',)),
     ('/triggers/{trigger_id}/test', ('POST',)),
+    ('/twitch/chat-log', ('GET',)),
+    ('/twitch/chat-log', ('POST',)),
     ('/ui-prompts/{prompt_id}/result', ('POST',)),
     ('/users/{user_id}/memories', ('GET',)),
     ('/users/{user_id}/memories', ('POST',)),
