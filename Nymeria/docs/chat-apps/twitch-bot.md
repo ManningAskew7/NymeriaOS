@@ -269,7 +269,7 @@ something in the batch clearly warranted a look, a search, or a note.
 
 | Command | Access | Cooldown | Description |
 |---------|--------|----------|-------------|
-| `!ask <question>` (or `@<bot login> <question>`) | Subs, VIPs, Mods, Broadcaster | 30s/user, 10s/global | Ask the AI a question with unseen chat context. A leading mention of the bot (case-insensitive, optional `,`/`:`) is rewritten to `!ask` before the command framework sees it, so the same gate and cooldowns apply; a mention mid-sentence is ordinary chat. Always answered: the agent's twitch_send reply, an "acknowledged, chose not to reply" notice, or the generic error copy |
+| `!ask <question>` (or `@<bot login> <question>`) | Subs, VIPs, Mods, Broadcaster | 30s/user, 10s/global | Ask the AI a question with unseen chat context. A leading mention of the bot (case-insensitive, optional `,`/`:`) is rewritten to `!ask` before the command framework sees it, so the same gate and cooldowns apply. A mention mid-sentence, or the auto-inserted one on a reply thread to a bot message (usually a thank-you from someone who has not noticed it is a bot), is ordinary chat; a reply that types `!ask` still runs. Always answered: the agent's twitch_send reply, an "acknowledged, chose not to reply" notice, or the generic error copy |
 | `!status` | Everyone | None | Uptime, buffer count, unseen count, pulse status |
 | `!clear` | Mods, Broadcaster | None | Clear the thread's conversation history (via the API) |
 | `!pulse on/off/<seconds>/min <count>` | Mods, Broadcaster | None | Control pulse (enable/disable/interval/min messages) |

@@ -1352,9 +1352,10 @@ def _helix_sub(
     )
 
 
-def _chat_payload(mid, text="hello"):
+def _chat_payload(mid, text="hello", reply=None):
     return _duck(
         source_broadcaster=None,
+        reply=reply,
         chatter=_duck(id="5", name="alice", display_name="alice"),
         text=text,
         badges=[],
@@ -1689,3 +1690,22 @@ async def test_help_advertises_the_mention_alias_once_known():
     ctx = _Ctx("!help", _Chatter())
     await bot._handle_help(ctx)
     assert ctx.sent[0].startswith("!ask <question>: Ask the bot")
+
+
+@pytest.mark.asyncio
+async def test_reply_thread_on_a_bot_message_is_plain_chat_not_an_ask():
+    """Twitch auto-inserts "@<bot> " on a reply; a thank-you reply must not
+    fire an ask turn (or the access-gate line at a non-sub)."""
+    bot = make_bot(bot_user_id="111", bot_login="silkgpt")
+    processed = _count_commands(bot)
+    reply = _duck(parent_user=_duck(id="111", mention="@silkgpt"))
+
+    await bot.event_message(_chat_payload("m1", "@silkgpt thanks!", reply=reply))
+    await bot.event_message(_chat_payload("m2", "@silkgpt !ask and this one?", reply=reply))
+    await bot.event_message(_chat_payload("m3", "@silkgpt typed on purpose"))
+
+    assert [p.text for p in processed] == [
+        "@silkgpt thanks!",  # untouched: twitchio strips the mention, finds no command
+        "@silkgpt !ask and this one?",  # untouched: twitchio strips the mention, runs !ask
+        "!ask typed on purpose",
+    ]
