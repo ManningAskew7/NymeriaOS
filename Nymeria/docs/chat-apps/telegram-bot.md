@@ -459,7 +459,9 @@ When Nymeria writes a file with `file_write(..., attach=True)`, the bot automati
 3. The bot downloads the file from `GET /workspace/download?path=...` on the API.
 4. Images (`image/*` under 10 MB) are sent as inline photos; everything else as downloadable documents.
 
-**Limits:** Files over 50 MB (Telegram bot limit) are silently skipped. Only files within `/workspace/` can be downloaded  -  the API rejects paths outside the workspace directory.
+**Limits:** Files over 50 MB (Telegram bot limit) and paths outside `/workspace/` are refused by the API's download endpoint; the bot announces the refusal in the chat (below) rather than skipping silently.
+
+**Failures are announced.** If a delivery fails, the bot logs it and posts a one-line plain-text notice in the chat naming the file: `(Attachment failed to send: <name>. Ask me to resend it.)` for a Telegram-side failure (timeout, rate limit), or `(Attachment could not be sent: <name>.)` when the API refused the download (oversized, outside the workspace), where a resend would fail identically. The agent's reply typically says "attached above" regardless of the outcome, so without the notice the user would be the only one who never learns the file did not arrive. There is no automatic retry; for the Telegram-side case, asking the agent to resend (`file_read(path, attach_only=True)`) is the recovery.
 
 ### Voice messages (voice-in, voice-out)
 

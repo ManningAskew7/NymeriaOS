@@ -23,6 +23,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, List, Mapping, Optional, Sequence
 
 import httpx
@@ -1245,17 +1246,34 @@ class NymeriaTelegramBot:
         file_path: str,
         context: Optional[ContextTypes.DEFAULT_TYPE] = None,
     ) -> bool:
-        """Download a workspace file and send it to the Telegram chat."""
-        result = await self.api.download_workspace_file(file_path)
-        if result is None:
-            return False
-        raw_bytes, filename, content_type = result
+        """Download a workspace file and send it to the Telegram chat.
+
+        Every failure (download refused, Telegram timeout, rate limit) is
+        logged AND surfaced to the chat as a one-line notice naming the
+        file: callers discard the return value, and the agent's reply has
+        typically says "attached above" regardless, so without the notice
+        the user is the only one who never learns the file did not arrive.
+        The bot is resolved before the download so the notice has somewhere
+        to go; with no bot at all this raises RuntimeError up front (the
+        old code raised the same error after a successful download).
+        """
         if context is not None:
             bot = context.bot
         elif self._application is not None:
             bot = self._application.bot
         else:
             raise RuntimeError("Application not initialized")
+        result = await self.api.download_workspace_file(file_path)
+        if result is None:
+            # Refused by the API (missing, outside the workspace, or over the
+            # Telegram size cap): a resend would fail the same way, so the
+            # notice must not suggest one.
+            logger.warning("Failed to send file attachment %s: download refused", file_path)
+            await self._notify_attachment_failed(
+                bot, chat_id, Path(file_path).name or file_path, resend_hint=False
+            )
+            return False
+        raw_bytes, filename, content_type = result
         buf = io.BytesIO(raw_bytes)
         buf.name = filename
         try:
@@ -1267,11 +1285,34 @@ class NymeriaTelegramBot:
         except RetryAfter as e:
             _retry_value: Any = e.retry_after
             _retry_secs = _retry_value.total_seconds() if hasattr(_retry_value, "total_seconds") else _retry_value
+            logger.warning("Failed to send file attachment %s: rate limited (%ss)", file_path, _retry_secs)
             await asyncio.sleep(float(_retry_secs))
+            await self._notify_attachment_failed(bot, chat_id, filename)
             return False
         except Exception as e:
             logger.warning("Failed to send file attachment %s: %s", file_path, e)
+            await self._notify_attachment_failed(bot, chat_id, filename)
             return False
+
+    @staticmethod
+    async def _notify_attachment_failed(
+        bot: Any, chat_id: int, name: str, *, resend_hint: bool = True
+    ) -> None:
+        """Best-effort one-line notice that a file did not make it into the
+        chat, naming it as the send would have (``filename`` from the API,
+        which may come from content-disposition rather than the path). Plain
+        text (no parse mode) so a filename can never break the markup; a
+        failure here is logged and swallowed because the caller has already
+        lost the attachment and must not lose the reply as well."""
+        text = (
+            f"(Attachment failed to send: {name}. Ask me to resend it.)"
+            if resend_hint
+            else f"(Attachment could not be sent: {name}.)"
+        )
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception as e:  # noqa: BLE001 - notice is best-effort
+            logger.warning("Failed to post attachment-failure notice for %s: %s", name, e)
 
     def _parse_args(self, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Get the text after the command."""
