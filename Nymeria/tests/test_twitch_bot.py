@@ -28,6 +28,7 @@ from nymeria.triggers.twitch_bot import (
     compose_ask_prompt,
     compose_pulse_prompt,
     format_chat_context,
+    mention_as_ask,
 )
 
 
@@ -113,6 +114,7 @@ def make_bot(**overrides):
     bot._thread_id = "twitch_silk"
     bot._user_id = "default"
     bot._broadcaster_id = "999"
+    bot._bot_login = None
     bot._stopped = False
     bot._start_time = time.time()
     bot._pulse_task = None
@@ -1590,3 +1592,100 @@ async def test_clear_relays_to_api_and_is_mod_gated():
     await bot._handle_clear(mod)
     assert bot.api.cleared == [("twitch_silk", "default")]
     assert any("cleared" in s for s in mod.sent)
+
+
+# ---------------------------------------------------------------------------
+# @mention as !ask: "@<bot> <question>" is the same command by another spelling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("@silkgpt what patch is this", "!ask what patch is this"),
+        ("@SilkGPT what patch is this", "!ask what patch is this"),
+        ("  @silkgpt, what patch is this?", "!ask what patch is this?"),
+        ("@silkgpt: settle this", "!ask settle this"),
+        ("@silkgpt", "!ask"),
+        ("@silkgpt   ", "!ask"),
+        ("@silkgpt2 hello", None),  # a lookalike login is someone else
+        ("hey @silkgpt what do you think", None),  # mid-sentence is chat about the bot
+        ("!ask already a command", None),
+        ("", None),
+    ],
+)
+def test_mention_as_ask_rewrites_only_a_leading_mention(text, expected):
+    assert mention_as_ask(text, "silkgpt") == expected
+
+
+def test_mention_as_ask_is_off_until_the_login_is_known():
+    assert mention_as_ask("@silkgpt hi", None) is None
+    assert mention_as_ask("@silkgpt hi", "") is None
+
+
+@pytest.mark.asyncio
+async def test_mention_reaches_the_command_framework_as_ask_and_the_buffer_verbatim():
+    bot = make_bot(bot_user_id="111", bot_login="silkgpt")
+    processed = _count_commands(bot)
+
+    await bot.event_message(_chat_payload("m1", "@SilkGPT what patch is this"))
+    await bot.event_message(_chat_payload("m2", "just chatting about @silkgpt"))
+
+    assert [p.text for p in processed] == ["!ask what patch is this", "just chatting about @silkgpt"]
+    # Pulse context and the chat log keep what the chatter actually typed.
+    assert [m.message for m in bot._buffer.get_since(0)] == [
+        "@SilkGPT what patch is this",
+        "just chatting about @silkgpt",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mention_is_plain_chat_while_the_login_is_unresolved():
+    bot = make_bot(bot_user_id="111")  # _bot_login stays None
+    processed = _count_commands(bot)
+
+    await bot.event_message(_chat_payload("m1", "@silkgpt what patch is this"))
+
+    assert [p.text for p in processed] == ["@silkgpt what patch is this"]
+
+
+@pytest.mark.asyncio
+async def test_bot_login_resolves_from_the_bot_id():
+    bot = make_bot(bot_user_id="111")
+    asked = []
+
+    async def fake_fetch_users(ids=None, logins=None):
+        asked.append(ids)
+        return [_duck(id="111", name="SilkGPT")]
+
+    bot.fetch_users = fake_fetch_users
+    await bot._resolve_bot_login()
+
+    assert asked == [["111"]]
+    assert bot._bot_login == "silkgpt"
+
+
+@pytest.mark.asyncio
+async def test_bot_login_lookup_failure_leaves_the_alias_off():
+    bot = make_bot(bot_user_id="111")
+
+    async def failing_fetch_users(**_):
+        raise RuntimeError("helix down")
+
+    bot.fetch_users = failing_fetch_users
+    await bot._resolve_bot_login()
+
+    assert bot._bot_login is None
+
+
+@pytest.mark.asyncio
+async def test_help_advertises_the_mention_alias_once_known():
+    bot = make_bot(bot_login="silkgpt")
+    ctx = _Ctx("!help", _Chatter())
+    await bot._handle_help(ctx)
+    assert ctx.sent[0].startswith("!ask <question> or @silkgpt <question>: Ask the bot")
+
+    bot = make_bot()
+    ctx = _Ctx("!help", _Chatter())
+    await bot._handle_help(ctx)
+    assert ctx.sent[0].startswith("!ask <question>: Ask the bot")
