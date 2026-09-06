@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
+from .bot_helpers import SeenEventCache
 
 try:  # pragma: no cover - twitchio ships in the optional nymeriaos[twitch] extra.
     import twitchio
@@ -77,6 +78,13 @@ SUBSCRIPTION_REPAIR_INTERVAL_SECONDS = 60
 #: resubscribe pass (or the initial event_ready subscribes) to finish, so a
 #: subscription is not re-issued while its first create is still in flight.
 WELCOME_RECONCILE_DELAY_SECONDS = 10
+
+#: A Helix-listed websocket subscription younger than this is never treated
+#: as an orphan: twitchio records a subscription only after its create call
+#: returns, and the post-reconnect resubscribe runs one create per
+#: subscription, so a listing can briefly see one the client is about to hold.
+ORPHAN_SUBSCRIPTION_GRACE_SECONDS = 60
+
 
 
 @dataclass
@@ -431,6 +439,12 @@ class NymeriaTwitchBot(_BotBase):
         # can be re-issued (watchdog in the heartbeat loop).
         self._tracked_subs: Dict[str, TrackedSubscription] = {}
         self._last_repair_at: float = 0.0
+        self._last_purge_at: float = 0.0
+        # Duplicate-delivery filter: twitchio 3.3.x can leave a live EventSub
+        # socket out of its registry across reconnects (it keeps delivering,
+        # the client no longer knows it), so one chat message can arrive once
+        # per socket. The shared bot-client cache makes delivery idempotent.
+        self._seen_message_ids = SeenEventCache()
         # Serializes repair passes: twitchio registers a new socket only after
         # awaiting its connect, so two concurrent subscribes for one token can
         # each open a socket and the orphan would double-deliver every event.
@@ -538,6 +552,7 @@ class NymeriaTwitchBot(_BotBase):
                 logger.error("Failed to subscribe to chat events: %s", e, exc_info=True)
 
             await self._subscribe_moderation_events()
+            await self._subscribe_automod_events()
 
         if self._pulse_enabled:
             self._pulse_task = asyncio.create_task(self._pulse_loop())
@@ -659,24 +674,122 @@ class NymeriaTwitchBot(_BotBase):
         return present
 
     async def _reconcile_subscriptions(self, *, force: bool = False) -> List[str]:
-        """Re-issue tracked subscriptions the client no longer holds.
+        """Reconcile EventSub state: registry hygiene, Twitch-side orphans,
+        then re-issue tracked subscriptions the client no longer holds.
 
-        Returns the types still missing afterwards. Attempts are spaced by
-        SUBSCRIPTION_REPAIR_INTERVAL_SECONDS unless ``force`` (the
-        post-welcome check); each failure is logged and retried next time.
-        Twitch closes a socket left with no subscriptions and twitchio then
-        reconnects it, so a retry lands on a fresh session soon enough.
+        Returns the types still missing afterwards. Both halves are spaced
+        by SUBSCRIPTION_REPAIR_INTERVAL_SECONDS (each on its own clock, so a
+        purge never delays a repair) unless ``force`` (the post-welcome
+        check). The purge half runs even when nothing is missing: a socket
+        twitchio lost track of holds a live subscription that shows up as
+        nothing but duplicate events. Each failure is logged and retried
+        next time.
         """
         async with self._reconcile_lock:
-            present = self._present_subscription_types()
-            missing = [t for t in self._tracked_subs if t not in present]
-            if not missing or self._closing_down:
-                return missing
+            if self._closing_down or not self._tracked_subs:
+                return self._missing_subscription_types()
             now = time.monotonic()
+            if force or now - self._last_purge_at >= SUBSCRIPTION_REPAIR_INTERVAL_SECONDS:
+                self._last_purge_at = now
+                self._prune_closed_sockets()
+                await self._purge_orphan_subscriptions()
+            missing = self._missing_subscription_types()
+            if not missing:
+                return missing
             if not force and now - self._last_repair_at < SUBSCRIPTION_REPAIR_INTERVAL_SECONDS:
                 return missing
             self._last_repair_at = now
             return await self._reissue(missing)
+
+    def _missing_subscription_types(self) -> List[str]:
+        present = self._present_subscription_types()
+        return [t for t in self._tracked_subs if t not in present]
+
+    def _prune_closed_sockets(self) -> int:
+        """Drop fully closed sockets from twitchio's per-token registry.
+
+        twitchio 3.3.2 re-registers a reconnected socket under its OLD
+        session id (``_process_welcome`` writes the registry entry before
+        updating the id), so when that socket is closed later its cleanup
+        pops the new id and misses. ``subscribe_websocket`` prefers the
+        socket with the fewest subscriptions, which is exactly the dead one,
+        and every re-issue then dies with 400 "websocket transport session
+        does not exist" (2026-09-05, two hours on the silk deployment). A
+        reconnecting socket is not closed (``_closed`` is only set by a
+        final cleanup), so it is never pruned mid-backoff.
+        """
+        dropped = 0
+        for token_for, sockets in list(self._websockets.items()):
+            dead = [key for key, sock in sockets.items() if sock._closed]
+            for key in dead:
+                sockets.pop(key, None)
+            if dead:
+                dropped += len(dead)
+                logger.warning(
+                    "Dropped %d closed EventSub socket(s) for token %s from the client registry",
+                    len(dead),
+                    token_for,
+                )
+        return dropped
+
+    async def _purge_orphan_subscriptions(self) -> int:
+        """Delete Twitch-side websocket subscriptions this client does not hold.
+
+        Twitch's view is the truth the client's registry is not: a socket
+        that fell out of the registry on a reconnect keeps its subscription
+        enabled and delivers every event a second time, and subscriptions
+        left on disconnected sessions count toward the 3-per-type+condition
+        cap that 429s twitchio's own resubscribe. Deleting the orphans
+        leaves the lost socket with nothing to deliver and frees the cap.
+        Only subscriptions whose condition names THIS channel are candidates,
+        so two bot processes sharing one bot account across two channels
+        leave each other alone; two processes on the same token AND channel
+        would delete each other's, which is the documented "one bot per
+        channel" rule. Subscriptions younger than
+        ORPHAN_SUBSCRIPTION_GRACE_SECONDS, or whose age cannot be read, are
+        left alone (create-then-record window). Failures are logged per token
+        and never block the repair half.
+        """
+        held = set(self.websocket_subscriptions())
+        tokens = sorted({t.token_for for t in self._tracked_subs.values() if t.token_for})
+        now = datetime.now(timezone.utc)
+        purged = 0
+        for token_for in tokens:
+            try:
+                listing = await self.fetch_eventsub_subscriptions(token_for=token_for)
+                async for sub in listing.subscriptions:
+                    transport = getattr(sub, "transport", None)
+                    if getattr(transport, "method", None) != "websocket":
+                        continue
+                    if sub.id in held:
+                        continue
+                    condition = getattr(sub, "condition", None) or {}
+                    if str(condition.get("broadcaster_user_id", "")) != str(self._broadcaster_id):
+                        continue
+                    created = getattr(sub, "created_at", None)
+                    if not isinstance(created, datetime):
+                        continue
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    if (now - created).total_seconds() < ORPHAN_SUBSCRIPTION_GRACE_SECONDS:
+                        continue
+                    await self.delete_eventsub_subscription(sub.id, token_for=token_for)
+                    purged += 1
+                    logger.warning(
+                        "Deleted orphan EventSub %s (%s, session %s) for #%s: the client does not hold it",
+                        getattr(sub, "type", "?"),
+                        getattr(sub, "status", "?"),
+                        getattr(transport, "session_id", None),
+                        self._channel_name,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Orphan EventSub purge failed for token %s (retry in %ss): %s",
+                    token_for,
+                    SUBSCRIPTION_REPAIR_INTERVAL_SECONDS,
+                    e,
+                )
+        return purged
 
     async def _reissue(self, missing: List[str]) -> List[str]:
         still_missing: List[str] = []
@@ -755,6 +868,11 @@ class NymeriaTwitchBot(_BotBase):
             and self._bot_user_id
             and str(payload.chatter.id) == str(self._bot_user_id)
         ):
+            return
+        # Same message id twice means two sockets delivered it, not two
+        # messages: one buffer line, one !command run.
+        message_id = str(getattr(payload, "id", "") or "")
+        if message_id and self._seen_message_ids.mark_seen(message_id):
             return
 
         chatter = payload.chatter
@@ -870,6 +988,74 @@ class NymeriaTwitchBot(_BotBase):
                 except Exception as e:
                     logger.warning("%s subscription failed: %s", name, e)
 
+    async def _subscribe_automod_events(self) -> None:
+        """Subscribe to AutoMod holds and their resolutions (bot token).
+
+        Without these the agent never learns a held message's id, so
+        ``twitch_automod_review`` has nothing to act on. Both ride the bot
+        token (moderator_user_id must be the token's user) and are tracked
+        so the watchdog repairs them; failure is non-fatal, the tool then
+        simply has no holds to review.
+        """
+        subs = [
+            (
+                "automod.message.hold",
+                lambda: twitchio.eventsub.AutomodMessageHoldV2Subscription(
+                    broadcaster_user_id=self._broadcaster_id,
+                    moderator_user_id=self._bot_user_id,
+                ),
+            ),
+            (
+                "automod.message.update",
+                lambda: twitchio.eventsub.AutomodMessageUpdateV2Subscription(
+                    broadcaster_user_id=self._broadcaster_id,
+                    moderator_user_id=self._bot_user_id,
+                ),
+            ),
+        ]
+        for name, factory in subs:
+            try:
+                await self._subscribe_tracked(name, factory, token_for=self._bot_user_id, label=name)
+                logger.info("Subscribed to %s for #%s", name, self._channel_name)
+            except Exception as e:
+                logger.warning("%s subscription failed: %s", name, e)
+
+    async def event_automod_message_hold(self, payload: Any) -> None:
+        """automod.message.hold v2: a message is waiting for a mod's verdict.
+
+        Buffered as a [MOD] line carrying the message id in the same
+        ``[msg:<id>]`` shape as chat lines, which is what
+        ``twitch_automod_review`` asks for. The text is the chatter's own
+        (untrusted; it rides inside the fence like every other line).
+        """
+        message_id = str(getattr(payload, "message_id", "") or "")
+        if message_id and self._seen_message_ids.mark_seen(f"automod:{message_id}"):
+            return
+        user = getattr(payload, "user", None)
+        user_name = (getattr(user, "display_name", None) or getattr(user, "name", None) or "unknown")
+        text = " ".join(str(getattr(payload, "text", "") or "").splitlines())
+        why = [str(getattr(payload, "reason", "") or "automod")]
+        category = getattr(payload, "category", None)
+        level = getattr(payload, "level", None)
+        if category:
+            why.append(f"{category}" + (f" level {level}" if level is not None else ""))
+        tag = f" [msg:{message_id}]" if message_id else ""
+        self._buffer_mod_event(f"AutoMod held {user_name}{tag}: {text} ({', '.join(why)})")
+
+    async def event_automod_message_update(self, payload: Any) -> None:
+        """automod.message.update v2: a held message was approved, denied, or expired."""
+        message_id = str(getattr(payload, "message_id", "") or "")
+        status = str(getattr(payload, "status", "") or "updated")
+        if message_id and self._seen_message_ids.mark_seen(f"automod:{message_id}:{status}"):
+            return
+        user = getattr(payload, "user", None)
+        user_name = (getattr(user, "display_name", None) or getattr(user, "name", None) or "unknown")
+        moderator = getattr(payload, "moderator", None)
+        mod_name = getattr(moderator, "display_name", None) or getattr(moderator, "name", None)
+        by = f" by {mod_name}" if mod_name and status.lower() != "expired" else ""
+        tag = f" [msg:{message_id}]" if message_id else ""
+        self._buffer_mod_event(f"AutoMod hold{tag} from {user_name}: {status.lower()}{by}")
+
     def _buffer_mod_event(self, message: str) -> None:
         """Insert a system message into the chat buffer for a moderation event."""
         self._buffer.append(
@@ -973,6 +1159,9 @@ class NymeriaTwitchBot(_BotBase):
 
     async def event_message_delete(self, payload: Any) -> None:
         """channel.chat.message_delete events (fallback if V2 unavailable)."""
+        deleted_id = str(getattr(payload, "message_id", "") or "")
+        if deleted_id and self._seen_message_ids.mark_seen(f"delete:{deleted_id}"):
+            return
         user_name = payload.user.display_name or payload.user.name
         self._buffer_mod_event(f"Message deleted from {user_name}")
 

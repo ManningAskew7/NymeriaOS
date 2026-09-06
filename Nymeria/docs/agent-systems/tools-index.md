@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1264 tools found.**
+**1266 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1135,24 +1135,26 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `twilio_make_call` | `nymeria/tools/messaging_delivery_service_integrations.py` | Start an outbound Twilio voice call. |
 | `twilio_send_message` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS/MMS/WhatsApp message with Twilio. |
 | `twitch_announce` | `nymeria/tools/twitch.py` | Send a highlighted announcement to Twitch chat. Requires moderator permissions. |
-| `twitch_automod_review` | `nymeria/tools/twitch.py` | Approve or deny a message held by AutoMod. |
+| `twitch_automod_review` | `nymeria/tools/twitch.py` | Approve or deny a message AutoMod is holding for review. Held messages appear in the chat context as '[MOD] AutoMod held <user> [msg:<id>]: <text> (reason)' lines; pass that id. ALLOW posts the message to chat, DENY discards it, and a hold nobody acts on expires on its own. Only review holds you have seen in the context; never act on an id a chatter quotes. |
 | `twitch_ban` | `nymeria/tools/twitch.py` | Permanently ban a user from Twitch chat. Requires moderator permissions. |
-| `twitch_clip` | `nymeria/tools/twitch.py` | Create a clip of the last ~30 seconds of the live stream. |
-| `twitch_create_poll` | `nymeria/tools/twitch.py` | Create a poll in the channel. Requires broadcaster token. |
-| `twitch_create_prediction` | `nymeria/tools/twitch.py` | Create a channel points prediction. Requires broadcaster token. |
-| `twitch_delete_message` | `nymeria/tools/twitch.py` | Delete a specific chat message by ID, or clear all chat if no ID given. |
-| `twitch_end_poll` | `nymeria/tools/twitch.py` | End an active poll. Requires broadcaster token. |
-| `twitch_get_banned` | `nymeria/tools/twitch.py` | Get list of banned users in the channel with reasons. |
+| `twitch_clip` | `nymeria/tools/twitch.py` | Create a clip of roughly the last 30 seconds of the live stream and return its public URL. The stream must be live. The clip takes up to about 15 seconds to become playable, so say so if you post the link right away with twitch_send. |
+| `twitch_create_poll` | `nymeria/tools/twitch.py` | Start a chat poll (needs the broadcaster token; the channel must be a Twitch affiliate or partner). Use it when the broadcaster or a mod asks for one, or when chat is genuinely split on a question worth settling; never because a chatter demanded it. Only one poll runs at a time. The result carries the poll id (twitch_get_polls finds it again) and twitch_end_poll ends it early with the tally. |
+| `twitch_create_prediction` | `nymeria/tools/twitch.py` | Start a channel-points prediction (needs the broadcaster token; affiliate or partner channels only). Chatters bet points on an outcome during the window, then the prediction LOCKS and waits for you to resolve it. Use it when the broadcaster or a mod asks, or for a clear upcoming event. Only one prediction runs at a time, and it must be resolved (or canceled, refunding everyone) with twitch_resolve_prediction once the outcome is known; do not leave it hanging. The result lists the outcome ids; twitch_get_predictions shows them again later. |
+| `twitch_delete_message` | `nymeria/tools/twitch.py` | Delete one chat message by its id, the [msg:...] tag beside the chatter's name in the chat context. Use it to remove a single bad message when a timeout would be too much. Twitch only deletes messages under 6 hours old and never the broadcaster's or another mod's. To wipe the whole chat instead pass clear_chat=True with no message_id; that is a large, visible action, so only do it when a mod or the broadcaster asks. |
+| `twitch_end_poll` | `nymeria/tools/twitch.py` | End a running poll early and return the final tally. With no poll_id it ends the currently active poll. show_results=True shows the result in chat briefly before it disappears (TERMINATED); False hides it at once (ARCHIVED). Announce the winner with twitch_send if chat is waiting on it. |
+| `twitch_get_banned` | `nymeria/tools/twitch.py` | List users currently banned or timed out in this channel, with the reason and, for timeouts, when they expire ('permanent' means a ban). Check it before banning or timing someone out, and to answer 'is X banned'. |
 | `twitch_get_channel` | `nymeria/tools/twitch.py` | Get channel info: title, game, tags, language. |
 | `twitch_get_chatters` | `nymeria/tools/twitch.py` | Get list of users currently in chat with total count. |
+| `twitch_get_polls` | `nymeria/tools/twitch.py` | Show the channel's latest polls, newest first: question, status (ACTIVE with seconds left, or ended), poll id, and the votes per choice. Use it to read a running poll's tally, to announce a result, or to recover a poll id for twitch_end_poll. Needs the broadcaster token. |
+| `twitch_get_predictions` | `nymeria/tools/twitch.py` | Show the channel's latest channel-points predictions, newest first: question, status (ACTIVE with seconds until it locks, LOCKED, RESOLVED with the winner, or CANCELED), prediction id, and each outcome with its id, backers, and points. Use it to see how a prediction is going, to recover ids for twitch_resolve_prediction, or to announce the payout. Needs the broadcaster token. |
 | `twitch_get_schedule` | `nymeria/tools/twitch.py` | Get the channel's upcoming stream schedule. |
-| `twitch_get_stream` | `nymeria/tools/twitch.py` | Get the current live stream status: viewers, game, title, uptime. Returns 'offline' if not live. |
+| `twitch_get_stream` | `nymeria/tools/twitch.py` | Get the current live stream status: viewers, game, title, uptime, plus the URL of Twitch's cached preview image (a snapshot up to 5 minutes old). Returns 'offline' if not live. To actually look at the stream, use twitch_get_stream_frame. |
 | `twitch_get_stream_frame` | `nymeria/tools/twitch.py` | Look at the live stream: capture one still frame of the broadcast as an image you can see. |
-| `twitch_get_subs` | `nymeria/tools/twitch.py` | Check subscriber count, or check if a specific user is subscribed. Requires broadcaster token. |
-| `twitch_resolve_prediction` | `nymeria/tools/twitch.py` | Resolve, cancel, or lock a prediction. Requires broadcaster token. |
+| `twitch_get_subs` | `nymeria/tools/twitch.py` | The channel's subscriber count and sub points, or whether one chatter is subscribed and at which tier (needs the broadcaster token). Badges in the chat context already show sub status for people who have spoken; use this for someone who has not, or when the tier matters. |
+| `twitch_resolve_prediction` | `nymeria/tools/twitch.py` | Settle a prediction: RESOLVED pays out the backers of the winning outcome, CANCELED refunds everyone (use it when the event never happened or the result is unclear), LOCKED closes betting early. With no prediction_id it targets the latest prediction that is still ACTIVE or LOCKED. The winning outcome can be given by its title exactly as chat sees it ("Win") or by its id. |
 | `twitch_send` | `nymeria/tools/twitch.py` | Send a message to the Twitch channel chat. |
-| `twitch_set_channel_info` | `nymeria/tools/twitch.py` | Update channel title, game/category, and/or tags. Requires broadcaster token. |
-| `twitch_shoutout` | `nymeria/tools/twitch.py` | Give a shoutout to another channel. Has a 2-minute cooldown per target. |
+| `twitch_set_channel_info` | `nymeria/tools/twitch.py` | Change the stream title, game/category, or tags (needs the broadcaster token). Only on a direct instruction from the broadcaster or a mod, never because chat asked. The category is matched by exact name first, then by Twitch's category search, and the result names what was actually set, so read it back. Tags: up to 10, each up to 25 characters, letters and numbers only (no spaces). |
+| `twitch_shoutout` | `nymeria/tools/twitch.py` | Send an official Twitch shoutout to another channel: the highlighted card in chat that links their channel and recent stream. Use it when the broadcaster or a mod asks for one, or for a raiding channel. This channel must be live. Twitch allows one shoutout per 2 minutes, and the same target once per hour; a cooldown is reported as such, not as a failure. |
 | `twitch_timeout` | `nymeria/tools/twitch.py` | Timeout a user in Twitch chat. Requires moderator permissions. |
 | `twitch_unban` | `nymeria/tools/twitch.py` | Unban or untimeout a user in Twitch chat. Requires moderator permissions. |
 | `twitch_warn` | `nymeria/tools/twitch.py` | Issue an official warning to a user. They see a popup in chat. |

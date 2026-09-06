@@ -10,10 +10,11 @@ touched by the methods under test).
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from nymeria.triggers.bot_helpers import SeenEventCache
 from nymeria.triggers.twitch_bot import (
     CHAT_SUBSCRIPTION_TYPE,
     ChatBuffer,
@@ -103,7 +104,11 @@ def make_bot(**overrides):
     bot._background_tasks = set()
     bot._tracked_subs = {}
     bot._last_repair_at = 0.0
+    bot._last_purge_at = 0.0
     bot._reconcile_lock = asyncio.Lock()
+    bot._seen_message_ids = SeenEventCache()
+    bot._websockets = {}
+    _fake_helix(bot, {}, [])  # Twitch lists nothing unless a test says otherwise
     for key, value in overrides.items():
         setattr(bot, f"_{key}", value)
     return bot
@@ -1076,6 +1081,8 @@ def _stub_eventsub(monkeypatch):
         ChannelBanSubscription=_rec_sub_class("Ban"),
         ChannelUnbanSubscription=_rec_sub_class("Unban"),
         ChatMessageDeleteSubscription=_rec_sub_class("Delete"),
+        AutomodMessageHoldV2Subscription=_rec_sub_class("AutomodHold"),
+        AutomodMessageUpdateV2Subscription=_rec_sub_class("AutomodUpdate"),
     )
     monkeypatch.setattr(module, "twitchio", _duck(eventsub=eventsub))
     return eventsub
@@ -1142,6 +1149,294 @@ async def test_v1_fallback_subscriptions_keep_as_bot_false(monkeypatch):
     assert all(c["as_bot"] is False for c in calls)
     # ban/unban ride the broadcaster token (channel:moderate); delete rides the bot's.
     assert [c["token_for"] for c in fallback] == ["999", "999", "111"]
+
+
+# ---------------------------------------------------------------------------
+# AutoMod holds (tmp/twitch-tools-audit-plan.md behavior 7): the agent must
+# see a held message's id, or twitch_automod_review has nothing to act on.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_automod_subscriptions_ride_the_bot_token_and_are_tracked(monkeypatch):
+    eventsub = _stub_eventsub(monkeypatch)
+    bot = make_bot(broadcaster_token="btok", bot_user_id="111")
+    calls = _record_subscribe(bot)
+
+    await bot._subscribe_automod_events()
+
+    assert [type(c["sub"]).__name__ for c in calls] == ["AutomodHold", "AutomodUpdate"]
+    assert all(c["as_bot"] is False and c["token_for"] == "111" for c in calls)
+    assert all(
+        c["sub"].kwargs == {"broadcaster_user_id": "999", "moderator_user_id": "111"} for c in calls
+    )
+    assert {"automod.message.hold", "automod.message.update"} <= set(bot._tracked_subs)
+    assert bot._tracked_subs["automod.message.hold"].token_for == "111"
+
+    # A failed hold subscription is non-fatal and never tracked.
+    bot2 = make_bot(broadcaster_token="btok", bot_user_id="111")
+    _record_subscribe(bot2, fail_types=(eventsub.AutomodMessageHoldV2Subscription,))
+    await bot2._subscribe_automod_events()
+    assert set(bot2._tracked_subs) == {"automod.message.update"}
+
+
+@pytest.mark.asyncio
+async def test_automod_hold_lands_in_buffer_with_the_message_id_once():
+    bot = make_bot()
+    held = _duck(
+        message_id="h1",
+        user=_duck(display_name="Alice", name="alice"),
+        text="you absolute\nmuppet",
+        reason="automod",
+        category="swearing",
+        level=3,
+    )
+
+    await bot.event_automod_message_hold(held)
+    await bot.event_automod_message_hold(held)  # second socket delivery
+    await bot.event_automod_message_update(
+        _duck(
+            message_id="h1",
+            status="Approved",
+            user=_duck(display_name="Alice", name="alice"),
+            moderator=_duck(display_name="ModX", name="modx"),
+        )
+    )
+    await bot.event_automod_message_update(
+        _duck(message_id="h2", status="Expired", user=_duck(display_name="Bob", name="bob"), moderator=None)
+    )
+
+    lines = [m.message for m in bot._buffer.get_since(0)]
+    assert lines == [
+        "AutoMod held Alice [msg:h1]: you absolute muppet (automod, swearing level 3)",
+        "AutoMod hold [msg:h1] from Alice: approved by ModX",
+        "AutoMod hold [msg:h2] from Bob: expired",
+    ]
+    assert all(m.is_system for m in bot._buffer.get_since(0))
+    rendered = format_chat_context(bot._buffer.get_since(0))
+    assert "[MOD] AutoMod held Alice [msg:h1]:" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Orphan EventSub sockets (tmp/twitch-orphan-sockets-plan.md behaviors 1-9):
+# twitchio 3.3.2 loses track of sockets across reconnects, so a live orphan
+# double-delivers every event and a dead one in the registry eats every
+# re-issue (measured 2026-09-05/06 on the silk deployment).
+# ---------------------------------------------------------------------------
+
+
+def _fake_helix(bot, listing, deleted):
+    """Twitch's subscription list per token_for + a recorder of deletes."""
+    fetches = []
+
+    async def fetch(*, token_for=None, **kwargs):
+        fetches.append(token_for)
+        if isinstance(listing.get(token_for), Exception):
+            raise listing[token_for]
+
+        async def gen():
+            for sub in listing.get(token_for, []):
+                yield sub
+
+        return _duck(subscriptions=gen())
+
+    async def delete(sub_id, *, token_for=None):
+        deleted.append((sub_id, token_for))
+
+    bot.fetch_eventsub_subscriptions = fetch
+    bot.delete_eventsub_subscription = delete
+    return fetches
+
+
+def _helix_sub(
+    sub_id, *, method="websocket", age_seconds=600, status="enabled", channel="999", created=...
+):
+    if created is ...:
+        created = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    return _duck(
+        id=sub_id,
+        status=status,
+        type="channel.chat.message",
+        condition={"broadcaster_user_id": channel, "user_id": "111"},
+        created_at=created,
+        transport=_duck(method=method, session_id=f"sess-{sub_id}"),
+    )
+
+
+def _chat_payload(mid, text="hello"):
+    return _duck(
+        source_broadcaster=None,
+        chatter=_duck(id="5", name="alice", display_name="alice"),
+        text=text,
+        badges=[],
+        id=mid,
+        timestamp=None,
+    )
+
+
+def _count_commands(bot):
+    processed = []
+
+    async def fake_process(payload):
+        processed.append(payload)
+
+    bot.process_commands = fake_process
+    return processed
+
+
+@pytest.mark.asyncio
+async def test_duplicate_chat_delivery_is_buffered_and_processed_once():
+    bot = make_bot(bot_user_id="111")
+    processed = _count_commands(bot)
+
+    await bot.event_message(_chat_payload("m1", "!ask what"))
+    await bot.event_message(_chat_payload("m1", "!ask what"))
+    await bot.event_message(_chat_payload("m2", "second"))
+
+    assert [m.message for m in bot._buffer.get_since(0)] == ["!ask what", "second"]
+    assert len(processed) == 2
+
+
+@pytest.mark.asyncio
+async def test_messages_without_an_id_are_never_dropped():
+    bot = make_bot(bot_user_id="111")
+    _count_commands(bot)
+
+    await bot.event_message(_chat_payload("", "one"))
+    await bot.event_message(_chat_payload(None, "two"))
+
+    assert [m.message for m in bot._buffer.get_since(0)] == ["one", "two"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_message_delete_event_buffers_one_line():
+    bot = make_bot()
+    payload = _duck(message_id="m9", user=_duck(display_name="bob", name="bob"))
+
+    await bot.event_message_delete(payload)
+    await bot.event_message_delete(payload)
+    await bot.event_message_delete(_duck(message_id="", user=_duck(display_name="bob", name="bob")))
+    await bot.event_message_delete(_duck(message_id="", user=_duck(display_name="bob", name="bob")))
+
+    lines = [m.message for m in bot._buffer.get_since(0)]
+    assert lines == ["Message deleted from bob"] * 3
+
+
+@pytest.mark.asyncio
+async def test_reconcile_drops_closed_sockets_before_reissuing():
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    calls.clear()
+    _live_subs(bot)  # chat gone
+    dead = _duck(_closed=True, session_id="new-id")
+    live = _duck(_closed=False, session_id="live-id")
+    reconnecting = _duck(_closed=False, session_id="reconnecting-id", _socket=None)
+    bot._websockets = {"111": {"old-id": dead, "live-id": live, "r": reconnecting}}
+    seen_at_subscribe = []
+
+    async def subscribe(sub, **kwargs):
+        seen_at_subscribe.append(dict(bot._websockets["111"]))
+        calls.append(kwargs)
+        return {"data": [{"id": "sub-x"}]}
+
+    bot.subscribe_websocket = subscribe
+
+    assert await bot._reconcile_subscriptions(force=True) == []
+    assert len(calls) == 1
+    # The dead socket was gone when the re-issue ran; live and mid-reconnect stay.
+    assert seen_at_subscribe == [{"live-id": live, "r": reconnecting}]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_deletes_orphans_twitch_lists_but_the_client_does_not_hold():
+    bot = make_bot()
+    _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    await _track(bot, "channel.ban", token_for="999")
+    _live_subs(bot, CHAT_SUBSCRIPTION_TYPE, "channel.ban")  # held: id-0, id-1
+    deleted = []
+    _fake_helix(
+        bot,
+        {
+            "111": [
+                _helix_sub("id-0"),  # held by the client
+                _helix_sub("orphan-live"),  # the double-delivering socket
+                _helix_sub("orphan-dead", status="websocket_disconnected"),
+                _helix_sub("fresh", age_seconds=5),  # create-then-record window
+                _helix_sub("hook", method="webhook"),  # not ours to touch
+                _helix_sub("other-channel", channel="42"),  # a sibling bot's, same account
+                _helix_sub("unreadable-age", created=None),  # cannot judge: leave it
+            ],
+            "999": [_helix_sub("id-1"), _helix_sub("orphan-mod")],
+        },
+        deleted,
+    )
+
+    assert await bot._reconcile_subscriptions(force=True) == []
+
+    assert deleted == [("orphan-live", "111"), ("orphan-dead", "111"), ("orphan-mod", "999")]
+
+
+def test_twitchio_private_surface_the_prune_relies_on_is_still_there():
+    """The prune reads twitchio internals directly (no getattr fallback, so a
+    rename fails loudly here rather than turning the prune into a no-op)."""
+    twitchio = pytest.importorskip("twitchio")
+    from twitchio.eventsub.websockets import Websocket
+
+    assert "_closed" in Websocket.__slots__
+    assert "_websockets" in twitchio.Client.__init__.__code__.co_names
+
+
+@pytest.mark.asyncio
+async def test_purge_failure_never_blocks_the_repair_and_retries_next_interval():
+    import nymeria.triggers.twitch_bot as module
+
+    bot = make_bot()
+    calls = _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    await _track(bot, "channel.ban", token_for="999")
+    calls.clear()
+    _live_subs(bot, "channel.ban")  # chat missing
+    deleted = []
+    fetches = _fake_helix(
+        bot,
+        {"111": RuntimeError("helix down"), "999": [_helix_sub("orphan-mod")]},
+        deleted,
+    )
+
+    assert await bot._reconcile_subscriptions(force=True) == []
+    assert len(calls) == 1 and calls[0]["sub"].sub_type == CHAT_SUBSCRIPTION_TYPE
+    assert deleted == [("orphan-mod", "999")]
+    assert fetches == ["111", "999"]
+
+    # Inside the interval: no new listing. Past it: the purge runs again.
+    _live_subs(bot, CHAT_SUBSCRIPTION_TYPE, "channel.ban")
+    await bot._reconcile_subscriptions()
+    assert fetches == ["111", "999"]
+    bot._last_purge_at -= module.SUBSCRIPTION_REPAIR_INTERVAL_SECONDS + 1
+    await bot._reconcile_subscriptions()
+    assert fetches == ["111", "999", "111", "999"]
+
+
+@pytest.mark.asyncio
+async def test_purge_runs_when_nothing_is_missing_but_not_while_closing():
+    """The duplicate case: every tracked subscription is held, the extra
+    one lives on a socket the client forgot; the pass must still look."""
+    bot = make_bot()
+    _record_subscribe(bot)
+    await _track(bot, CHAT_SUBSCRIPTION_TYPE, token_for="111")
+    _live_subs(bot, CHAT_SUBSCRIPTION_TYPE)
+    deleted = []
+    fetches = _fake_helix(bot, {"111": [_helix_sub("id-0"), _helix_sub("ghost")]}, deleted)
+
+    assert await bot._reconcile_subscriptions() == []
+    assert deleted == [("ghost", "111")]
+
+    bot._last_purge_at = 0.0
+    bot._closing_down = True
+    await bot._reconcile_subscriptions()
+    assert fetches == ["111"]
 
 
 # ---------------------------------------------------------------------------
