@@ -577,21 +577,32 @@ def test_clip_offline_is_a_plain_message(monkeypatch):
     assert result == "[Error]: cannot clip: the stream is offline."
 
 
-def test_get_banned_requests_a_full_page(monkeypatch):
+def test_get_banned_requests_a_full_page_with_the_broadcaster_token(monkeypatch):
+    """Helix: broadcaster_id must match the token's user, so the bot token
+    401s here (measured live 2026-09-06, "incorrect user authorization")."""
     from nymeria.tools import twitch as tools
 
     _no_vault(monkeypatch)
-    _configure_env(monkeypatch)
+    _configure_env(
+        monkeypatch,
+        TWITCH_BOT_REFRESH_TOKEN=None,
+        TWITCH_BOT_ACCESS_TOKEN="bot-tok",
+        TWITCH_BROADCASTER_TOKEN="caster-tok",
+    )
     rows = [{"user_login": f"u{i}", "reason": "", "expires_at": None} for i in range(40)]
-    calls = _mod_handler(
+    calls = _helix_handler(
         monkeypatch, {f"{HELIX}/moderation/banned": FakeResponse(200, {"data": rows})}
     )
 
     result = tools.twitch_get_banned.func(config=None)
 
     call = [c for c in calls if c["url"] == f"{HELIX}/moderation/banned"][0]
+    assert call["headers"]["Authorization"] == "Bearer caster-tok"
     assert call["params"]["first"] == 100  # default page is 20; ask for the max
     assert "Banned users (40)" in result and "and 10 more" in result
+
+    _helix_handler(monkeypatch, {f"{HELIX}/moderation/banned": FakeResponse(401)})
+    assert "moderation:read" in tools.twitch_get_banned.func(config=None)
 
 
 # ---------------------------------------------------------------------------
