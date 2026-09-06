@@ -924,12 +924,17 @@ class NymeriaTwitchBot(_BotBase):
         self._buffer.append(msg)
         self._queue_chatlog_line(msg)
 
-        # "@<bot> <question>" is !ask by another spelling. The buffer and the
-        # chat log above keep the original line; only the command framework
-        # sees the rewrite, so the gate and cooldowns apply unchanged.
-        rewritten = mention_as_ask(payload.text or "", self._bot_login)
-        if rewritten is not None:
-            payload.text = rewritten
+        # A typed "@<bot> <question>" is !ask by another spelling. A reply
+        # thread on a bot message carries the same auto-inserted mention but
+        # is usually a thank-you from someone who did not notice the bot is
+        # one, so it stays plain chat (the pulse still sees it; a reply that
+        # types !ask still runs). The buffer and the chat log above keep the
+        # original line; only the command framework sees the rewrite, so the
+        # gate and cooldowns apply unchanged.
+        if getattr(payload, "reply", None) is None:
+            rewritten = mention_as_ask(payload.text or "", self._bot_login)
+            if rewritten is not None:
+                payload.text = rewritten
 
         # Let TwitchIO's command framework process !commands
         await self.process_commands(payload)
