@@ -16,29 +16,41 @@ Get NymeriaOS running in under 10 minutes.
 
 ## Step 1: Install NymeriaOS
 
+### Two install channels
+
+- **Stable** installs the published `nymeriaos` package from PyPI. It is the
+  recommended path, and the one to use on Windows.
+- **Source** clones the repository and installs it in editable mode. Pick this
+  one if you want to read or change the code, let the agent modify its own
+  source, or run either Docker shape (both build from the checkout).
+
 ### One-line installer (front door)
 
 The installer lets you pick a track and runs the right commands for you:
 
 ```bash
-curl -fsSL https://get.nymeriaos.com/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 | iex
 ```
 
 It asks whether you want **Slim** (simpler, best for a few users; single process
 on SQLite via `uv`, no Docker), **Full** (more robust, multi-user; runs in
-Docker, and the script can install Docker for you on Linux), or **Source**
-(hackable: a git checkout with an editable install, for working on Nymeria or
-letting the agent modify its own source). Non-interactive use:
-`... | sh -s -- --slim`, `--full`, or `--source`. Cautious users can download
-and read it first
-(`curl -fsSL https://get.nymeriaos.com/install.sh -o install.sh`).
+Docker, so the script clones the repository and builds the images locally, and
+it can install Docker for you on Linux), or **Source** (hackable: a git checkout
+with an editable install, for working on Nymeria or letting the agent modify its
+own source). Non-interactive use: `... | sh -s -- --slim`, `--full`, or
+`--source`. Cautious users can download and read the script first:
 
-Note: the one-line installer requires the hosted endpoint
-(`get.nymeriaos.com`, plus the published container images for the Full track
-and the public repo for the Source track) to be live. Until then, use the
-manual commands below, which work today.
+```bash
+curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh -o install.sh
+```
 
-### Manual install
+### Manual install: the Stable channel
 
 `uv` is the recommended installer (it is fast and can fetch a matching Python
 for you); `pipx` also works.
@@ -52,8 +64,7 @@ nymeria doctor
 nymeria api
 ```
 
-To try NymeriaOS without a persistent install, run it ephemerally with
-`uvx --from nymeriaos nymeria slim`.
+Update later with `uv tool upgrade nymeriaos`.
 
 With `pipx`:
 
@@ -64,9 +75,13 @@ nymeria doctor
 nymeria api
 ```
 
-From source (the hackable install; edits under the checkout, yours or the
-agent's own, apply on the next restart, and git gives you diff/branch/revert
-safety):
+To try NymeriaOS without a persistent install, run it ephemerally with
+`uvx --from nymeriaos nymeria slim`.
+
+### Manual install: the Source channel
+
+This is the hackable install. Edits under the checkout, yours or the agent's
+own, apply on the next restart, and git gives you diff/branch/revert safety:
 
 ```bash
 git clone https://github.com/ManningAskew7/NymeriaOS.git ~/NymeriaOS
@@ -74,9 +89,16 @@ uv tool install --editable ~/NymeriaOS/Nymeria
 nymeria init
 ```
 
-A source install also unlocks the Docker shapes that build from the checkout
-(including the full Postgres + Redis stack); the wizard detects the checkout
-automatically.
+Update later with `git -C ~/NymeriaOS pull --ff-only`, then restart the backend.
+Re-run `uv tool install --editable ~/NymeriaOS/Nymeria` only when the
+dependencies changed.
+
+A source install is also what unlocks the Docker shapes, both the single
+container and the full Postgres + Redis stack: they build their images from the
+checkout, and the wizard detects the checkout automatically. The beta ships no
+container images, so every Docker path needs a checkout.
+
+### Extras
 
 The default install is lean. Optional chat-platform bots and heavy integrations
 install as extras, for example `uv tool install "nymeriaos[discord]"` (or
@@ -84,6 +106,8 @@ install as extras, for example `uv tool install "nymeriaos[discord]"` (or
 or combine extras like `nymeriaos[postgres,redis,voice]`. Available extras:
 `discord`, `telegram`, `slack`, `bots`, `postgres`, `redis`, `voice`,
 `browser`, `firebase`, `all`.
+
+### First run: `nymeria init`
 
 `nymeria init` opens an interactive setup wizard. The first screen picks the
 setup depth. Quickstart (the recommended default) asks only the essentials:
@@ -104,14 +128,11 @@ instead (tool families, embeddings, image generation, voice, context tuning,
 agent limits). A third option, finishing setup in the desktop app, is on the
 way.
 
-Hosting works the same in both tiers: run the backend directly, install a
-background service, or run a single Docker container. The Docker option works
-without a source checkout: the wizard writes the published-image compose file
-and `.env.docker` into its config dir, pins the image tag to your installed
-version, and can start the container for you (it needs the published images
-to be live; the full Postgres + Redis stack still requires a source
-checkout). Move with the arrow keys, Enter to advance, Esc to go back a step,
-and Ctrl+Q to quit. A review screen confirms before anything is written.
+Hosting: run the backend directly, install a background service, or run it in
+Docker. The Docker options need a source checkout, because the beta publishes
+no container images and the compose files build them locally. Move with the
+arrow keys, Enter to advance, Esc to go back a step, and Ctrl+Q to quit. A
+review screen confirms before anything is written.
 
 After you confirm, NymeriaOS validates the provider key with a small LLM API
 call (unless you pass `--skip-llm-test`), writes `~/.nymeria/config.env`, creates
@@ -229,8 +250,8 @@ interactive local happy path, opens the browser already signed in so no paste
 is needed at all). Paste that
 `nym_<token>` account token into the desktop/mobile Setup Wizard, not an
 LLM provider API key, then delete the file. See
-`docs/accounts.md` for the full account model and the `python3 run.py users`
-CLI for provisioning additional users.
+[accounts.md](../agent-systems/accounts.md) for the full account model and the
+`python3 run.py users` CLI for provisioning additional users.
 
 ### Set Your LLM Provider API Key
 
@@ -327,7 +348,7 @@ Starting NymeriaOS SLIM (single-process) on 127.0.0.1:8000
 can authenticate against the API in the same process. That is NOT the
 human bootstrap token; paste `data/BOOTSTRAP_TOKEN.txt` into the desktop
 Setup Wizard, not `SLIM_SERVICE_TOKEN.txt`. See
-[deployment-slim.md](deployment-slim.md) for the full launcher reference.
+[deployment-slim.md](../deployment/deployment-slim.md) for the full launcher reference.
 
 For source-checkout API-only development, use:
 
@@ -380,7 +401,12 @@ GUI for the beta; see [frontends/web-client.md](../frontends/web-client.md)
 for the first-run flow, what stays desktop-only, token storage, and remote
 access.
 
-For the Windows desktop app:
+For the Windows desktop app, download the installer (`.exe`) attached to a
+release on the
+[Releases page](https://github.com/ManningAskew7/NymeriaOS/releases). It is
+unsigned for the beta, so Windows SmartScreen shows a warning: click "More
+info", then "Run anyway". The app is a client only. It does not bundle or
+start a backend; it connects to any backend URL with an account token. Then:
 
 1. Start or choose a separately installed backend
 2. Open the NymeriaOS desktop app
@@ -419,7 +445,7 @@ new user and first token:
 `python3 run.py users add <email> --role user --id <slug>`. To issue another
 token for an existing user without revoking old tokens:
 `python3 run.py users issue-token <id-or-email> --label <device>`. Both flows
-are documented in `docs/accounts.md`.
+are documented in [accounts.md](../agent-systems/accounts.md).
 
 ### "No API key for LLM provider"
 

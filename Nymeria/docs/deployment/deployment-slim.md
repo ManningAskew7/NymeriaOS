@@ -18,6 +18,14 @@ For multi-user or production deployments use the Docker stack instead. See
 
 ## Quick start
 
+From a packaged install (`uv tool install nymeriaos`, then `nymeria init`):
+
+```bash
+nymeria slim
+```
+
+From a source checkout:
+
 ```bash
 cd Nymeria
 python3 run.py slim
@@ -115,9 +123,16 @@ desktop-managed local backends.
 
 On Windows 11 the recommended shape is native Slim, installed with `uv` (which
 fetches its own Python, so the Microsoft Store `python` stub does not matter).
-`install.ps1` at the repo root drives the whole flow: it installs `uv`, runs
+`install.ps1` drives the whole flow: it installs `uv`, runs
 `uv tool install nymeriaos`, puts `nymeria` on PATH, runs `nymeria init` then
-`nymeria doctor`, and offers logon autostart. Config and data live under
+`nymeria doctor`, and offers logon autostart. Fetch and run it in one line
+from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 | iex
+```
+
+Update later with `uv tool upgrade nymeriaos`. Config and data live under
 `%USERPROFILE%\.nymeria` (the same `~/.nymeria` root every packaged install
 uses), so they survive a `uv tool upgrade`.
 

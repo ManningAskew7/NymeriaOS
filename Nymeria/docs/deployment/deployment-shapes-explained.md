@@ -8,6 +8,9 @@ the moving parts inside each, and why both exist. Read this before
 If you already know what those terms mean and just want to pick a shape,
 skip to [README.md](deployment-README.md). If you are operating a
 Docker deployment, see [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md).
+Either Docker shape (the single container or the full stack) builds its images
+from a source checkout: the beta publishes no container images, so there is
+nothing to pull.
 
 ## The one-sentence version
 
@@ -271,7 +274,7 @@ out of the architecture:
 - [slim.md](deployment-slim.md): the slim launcher reference
 - [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md): Docker
   operator's manual
-- [architecture.md](architecture.md): full agent runtime internals
+- [architecture.md](../getting-started/architecture.md): full agent runtime internals
   for engineers
 - [remote-access.md](deployment-remote-access.md): accessing either
   shape from outside the host

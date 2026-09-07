@@ -11,8 +11,6 @@ that shells out, admin + deployment-flag gated) shipped as the pathfinder for th
 workflow substrate; that substrate now ships too, as the `run_workflow` action (backlog
 #80): a hook whose logic is a published, approved nym workflow.
 
-Full design and rationale: `docs/private/plans/lifecycle-hooks.md`.
-
 ## Actions (product surface)
 
 A hook's logic is a **canned action**, selected by name. `HookLogic` is a pydantic
@@ -550,7 +548,7 @@ context-usage signal (numeric context fire conditions are non-matches). A
 customized hook records one execution-log entry per turn like any other
 prompt_submit hook; the pristine fast path records nothing.
 `AUTONOMOUS_MODE_RULES` and the queued-prompt drain headers stay hardcoded
-(deliberate scope cut; see `docs/private/plans/metadata-injection-hook.md`).
+(deliberate scope cut).
 
 ### Execution log
 

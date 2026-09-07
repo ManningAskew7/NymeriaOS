@@ -116,7 +116,7 @@ Three provider IDs route through dedicated `langchain-<provider>` packages inste
 |-------------|-------------------|-------|
 | `google` | `GEMINI_API_KEY` (or `GOOGLE_GENERATIVE_AI_API_KEY`) | Routes through `langchain-google-genai`. Gemini 3+ thought signatures round-trip natively; the OpenAI-compat shim drops them. Gemini 4.x SDK has a documented 50-90% latency increase on small Flash calls from the gRPC-to-REST transport switch. `max_retries=0` is interpreted as the SDK default of 5; Nymeria sets `max_retries=1` to actually disable internal retries. |
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (plus optional `AWS_SESSION_TOKEN`); `AWS_REGION` (or `AWS_DEFAULT_REGION`) | Routes through `langchain-aws` `ChatBedrockConverse`. Credentials resolved through the boto3 default chain. Optional `AWS_BEDROCK_ENDPOINT_URL` for VPC endpoints. |
-| `ollama` | none (no API key) | Defaults to `langchain-ollama` against Ollama's native `/api/chat` protocol. Use this for reasoning round-trip on `qwen3` / `deepseek-r1` / `gpt-oss`. Set `LLM_PROVIDER_ROUTE=openai_compat` or a per-thread route override to use Ollama's `/v1/chat/completions` shim. See [`local-llm.md`](local-llm.md) for the full Ollama native vs OpenAI-compat split. |
+| `ollama` | none (no API key) | Defaults to `langchain-ollama` against Ollama's native `/api/chat` protocol. Use this for reasoning round-trip on `qwen3` / `deepseek-r1` / `gpt-oss`. Set `LLM_PROVIDER_ROUTE=openai_compat` or a per-thread route override to use Ollama's `/v1/chat/completions` shim. See [`local-llm.md`](providers/local-llm.md) for the full Ollama native vs OpenAI-compat split. |
 
 Existing thread configs storing `provider="google"` or `provider="ollama"` use the native route unless a global or per-thread `provider_route="openai_compat"` override is set. The old `ollama-native` provider id is accepted as an alias for `ollama` with the native route.
 
@@ -1588,7 +1588,7 @@ working without reconfiguration.
 To configure destinations interactively, use **Settings → Notifications** in
 the desktop app, or have the agent do it via the
 `nymeria_notification_destination_*` MCP tools. See
-[`notifications.md`](notifications.md) for the data model, channel-type
+[`notifications.md`](agent-systems/notifications.md) for the data model, channel-type
 registry, and REST API.
 
 ### Watchdog, TODO, and Push Notifications

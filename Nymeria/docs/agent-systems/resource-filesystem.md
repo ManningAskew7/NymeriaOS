@@ -7,8 +7,7 @@ on bare metal and slim). The generic file tools (`file_read`, `file_write`,
 those files, on the Claude Code `~/.claude/` model: the purpose-built tools
 (`tool_create`, `hook_config`, `trigger_config`, `skill_write`, `mcp_manage`,
 `workflow_info`) remain the validated fast path, and raw file edits are the
-equally supported slow path. Design and owner decisions:
-`docs/private/plans/resource-filesystem-layout.md`.
+equally supported slow path.
 
 ## Discoverability (how the agent finds the root)
 

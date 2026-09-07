@@ -386,5 +386,5 @@ because the API process is the only agent runtime.
 
 ## Related docs
 
-- [architecture.md](architecture.md)  -  overall SSE event protocol and streaming model.
-- [configuration.md](configuration.md)  -  per-thread LLM config fields (`provider`, `base_url`, `api_key`, `reasoning_effort`, `extended_thinking`).
+- [architecture.md](../getting-started/architecture.md)  -  overall SSE event protocol and streaming model.
+- [configuration.md](../configuration.md)  -  per-thread LLM config fields (`provider`, `base_url`, `api_key`, `reasoning_effort`, `extended_thinking`).

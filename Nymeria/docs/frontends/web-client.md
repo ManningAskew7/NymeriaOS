@@ -63,8 +63,11 @@ desktop-shell-only and hide themselves in a browser:
 - OS keychain token storage, the system tray, and native auto-config.
 
 If you prefer the installed desktop app (currently Windows), grab the
-installer from the project's release page; it is the same UI as a thin
-client over the identical backend URL + token flow.
+`.exe` attached to a release on the
+[Releases page](https://github.com/ManningAskew7/NymeriaOS/releases). It is
+the same UI as a thin client over the identical backend URL + token flow. The
+installer is unsigned for the beta, so Windows SmartScreen shows a warning:
+click "More info", then "Run anyway".
 
 ## Token storage caveat
 

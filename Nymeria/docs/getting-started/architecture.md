@@ -473,7 +473,7 @@ When token usage reaches the threshold (default: 80% of model's context limit):
 - `CheckpointCleaner` (`checkpoint_cleanup.py`): shared raw-SQL checkpoint deletion and pruning for SQLite/Postgres, used by compaction and thread deletion.
 - Model limits and attachment modality checks are resolved from live model metadata when available, including bare OpenAI IDs routed through CLIProxy (`gpt-5.5` -> `openai/gpt-5.5`). Static fallbacks cover known long-context and multimodal families, and fallback capability matching is exact/snapshot-aware so distinct hyphenated variants do not inherit each other's capabilities.
 
-See [compaction-and-checkpoints.md](./compaction-and-checkpoints.md) for the end-to-end flow, the display filter's `internal_type` branches (including the `compaction_marker` edge case), and a troubleshooting playbook.
+See [compaction-and-checkpoints.md](../agent-systems/compaction-and-checkpoints.md) for the end-to-end flow, the display filter's `internal_type` branches (including the `compaction_marker` edge case), and a troubleshooting playbook.
 
 **Configuration:**
 ```bash
@@ -550,7 +550,7 @@ Credential tools (`auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_cred
 5. Strip admin-only and developer-only tools when the calling user role is not allowed.
 6. Add the synthetic `Skill(name)` meta-tool when thread or global skills are active.
 
-See [Tools Reference](./tools.md) for detailed documentation.
+See [Tools Reference](../agent-systems/tools.md) for detailed documentation.
 
 ---
 
@@ -746,7 +746,7 @@ command registry exposes `/skills` for listing, showing, and deactivating
 visible skills. The chat-stream intercept (`api/routers/chat.py`) still calls
 the same helpers for `/orchestrate`, whose bundled kit opts out of
 user-facing activation with `metadata.nymeria.internal: true`. See [Agent
-Skills](./skills.md#slash-command-activation).
+Skills](../agent-systems/skills.md#slash-command-activation).
 
 ### Key files
 

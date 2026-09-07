@@ -452,7 +452,7 @@ fix Nymeria on the host.
 
 ```text
 # Add an idea to the backlog with context (the first use case)
-claude_code("Add a backlog item under docs/private/plans/backlog for <idea>, "
+claude_code("Add a backlog item under docs/backlog for <idea>, "
             "with the usual Interpretation/Surface/Implications fields.",
             mode="bypass")
 
