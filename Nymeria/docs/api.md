@@ -294,7 +294,7 @@ The setup link is `${NYMERIA_PUBLIC_URL}/connect/credentials/{prompt_id}#<token>
 Only the hosted form shell is unauthenticated; metadata, test, submit, exit,
 and cancel require the one-time prompt token from the URL fragment.
 
-See [`credentials.md`](credentials.md) for the storage model and migration notes.
+See [`credentials.md`](agent-systems/credentials.md) for the storage model and migration notes.
 
 ---
 
@@ -445,7 +445,7 @@ curl -i -X PATCH "http://localhost:8000/admin/users/default" \
   -d '{"role":"user"}'
 ```
 
-See [`accounts.md`](accounts.md) for the data model, bootstrap admin flow, and service-token recipe. See [`frontend-accounts.md`](frontend-accounts.md) for how each endpoint is wrapped on the client side and how errors map to toasts.
+See [`accounts.md`](agent-systems/accounts.md) for the data model, bootstrap admin flow, and service-token recipe. See [`frontend-accounts.md`](frontends/frontend-accounts.md) for how each endpoint is wrapped on the client side and how errors map to toasts.
 
 ---
 
@@ -981,7 +981,7 @@ Assistant `steps` are optional. They appear when a turn has reasoning/thinking, 
 
 The final assistant message carries `"processing": true` when the thread is mid-turn (has an active agent lock) and the latest checkpoint message is assistant/tool output, i.e. that displayed turn is the one currently being generated. Clients use this to keep rendering the in-flight turn as a single streaming bubble when a thread is opened mid-stream, instead of finishing it and starting a new one. The flag is omitted when a new turn has only queued its (filtered) wake-up input, so the displayed tail is a prior completed reply and must not be reused.
 
-**Performance note:** latency scales with the checkpoint count for the thread. Compaction prunes pre-compact rows so healthy threads stay under ~100 ms. If you see multi-second latency, check the thread's checkpoint count and the troubleshooting section in [compaction-and-checkpoints.md](./compaction-and-checkpoints.md).
+**Performance note:** latency scales with the checkpoint count for the thread. Compaction prunes pre-compact rows so healthy threads stay under ~100 ms. If you see multi-second latency, check the thread's checkpoint count and the troubleshooting section in [compaction-and-checkpoints.md](agent-systems/compaction-and-checkpoints.md).
 
 ---
 
@@ -2730,7 +2730,7 @@ When metadata is supplied, the response includes the stored metadata fields:
 - `400`  -  `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `slack_C...`, `whatsapp_group_<id>`). These are inherently multi-user and cannot be per-user-claimed.
 - `404`  -  Non-admin caller and the thread is owned by someone else. Mirrors `_require_thread_access`'s leak surface so callers can't probe ownership under other users. Admin callers always get `200` with the actual owner instead.
 
-See [`accounts.md` → Thread ownership](accounts.md#thread-ownership) for the full lifecycle.
+See [`accounts.md` → Thread ownership](agent-systems/accounts.md#thread-ownership) for the full lifecycle.
 
 ---
 
@@ -3034,7 +3034,7 @@ the effective user.
 
 Nymeria's notification system has two surfaces: the **in-app feed** (audit
 log of every notify call) and **destinations / profiles / preferences**
-(user-configured routing). See [`notifications.md`](notifications.md) for
+(user-configured routing). See [`notifications.md`](agent-systems/notifications.md) for
 the full reference.
 
 ### In-app feed

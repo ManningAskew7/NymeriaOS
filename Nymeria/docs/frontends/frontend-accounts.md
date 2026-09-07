@@ -2,7 +2,7 @@
 
 This is the developer reference for everything the desktop and mobile apps render around **multi-user identity**: the bottom-bar avatar, the account menu, the saved-account switcher, the add-account modal, the Account / Users settings tabs, the copy-once token dialog, and the global error toast layer that surfaces 401/403/409 from the account-related endpoints.
 
-It does **not** cover backend semantics - those live in [`accounts.md`](accounts.md) (data model, bootstrap, service token) and [`api.md`](api.md) (HTTP endpoint reference). Read those first if you're touching the server. Read this if you're touching the client.
+It does **not** cover backend semantics - those live in [`accounts.md`](../agent-systems/accounts.md) (data model, bootstrap, service token) and [`api.md`](../api.md) (HTTP endpoint reference). Read those first if you're touching the server. Read this if you're touching the client.
 
 ---
 
@@ -400,7 +400,7 @@ Use your usual frontend testing setup as a starting point. Account-specific manu
 
 ## Where this fits in the overall code map
 
-- Account UI consumes [`accounts.md`](accounts.md)'s data model and [`api.md`](api.md)'s HTTP surface.
+- Account UI consumes [`accounts.md`](../agent-systems/accounts.md)'s data model and [`api.md`](../api.md)'s HTTP surface.
 - Identity scoping of localStorage keys (base key plus `-{user_id}`, for example `nymeria-threads-{user_id}`) is set up in `config.svelte.ts::scopedKey` and `registerIdentityReloadHook` - every per-feature store goes through this.
 - The Setup Wizard's identity preview lives in `components/common/SetupWizard.svelte` and reuses `Avatar` + `RoleChip` from `account/`.
 - The `+page.svelte` root mounts `<ErrorToast />` so it sits above every modal - don't put it inside a panel that conditionally renders.

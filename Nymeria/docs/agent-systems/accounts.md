@@ -1,6 +1,6 @@
 # Accounts & Authentication
 
-Nymeria is transitioning from implicit-single-user to a real multi-user model. This doc covers the **backend** account/token layer: the `AccountsRepo` data model, bootstrap flow, the `/me` and `/admin/users` HTTP surface, and the service-token pattern bots and background workers use. The **frontend** UX that wraps these endpoints (sidebar avatar, account menu / switcher, Settings > Account / Users tabs, copy-once token dialog, error-toast layer) is documented separately in [`frontend-accounts.md`](frontend-accounts.md). Read that one if you're touching `nymeria-{desktop,mobile}/src/lib/components/account/`.
+Nymeria is transitioning from implicit-single-user to a real multi-user model. This doc covers the **backend** account/token layer: the `AccountsRepo` data model, bootstrap flow, the `/me` and `/admin/users` HTTP surface, and the service-token pattern bots and background workers use. The **frontend** UX that wraps these endpoints (sidebar avatar, account menu / switcher, Settings > Account / Users tabs, copy-once token dialog, error-toast layer) is documented separately in [`frontend-accounts.md`](../frontends/frontend-accounts.md). Read that one if you're touching `nymeria-{desktop,mobile}/src/lib/components/account/`.
 
 ## Model
 
@@ -120,7 +120,7 @@ token authenticates same-process MCP, trigger-fire, and
 command-service calls; it is verified against the accounts repo on every
 boot and rotated automatically if invalid. It is an **internal service
 credential**, not a human bootstrap token - do not paste it into the Setup
-Wizard. See [deployment-slim.md](deployment-slim.md) for the full launcher
+Wizard. See [deployment-slim.md](../deployment/deployment-slim.md) for the full launcher
 reference.
 
 ## CLI
@@ -243,7 +243,7 @@ Every endpoint above has a wrapper in `nymeria-{desktop,mobile}/src/lib/services
 | 409 (owns threads/todos) | `resource_owned` | Toast only. |
 | Other non-2xx | `generic` | Toast only. |
 
-The toast layer (`stores/errors.svelte.ts` + `components/common/ErrorToast.svelte`) is mounted at the app root in `routes/+page.svelte` so it survives modal switching. See [`frontend-accounts.md`](frontend-accounts.md) for the full data flow, component reference, and a debugging table mapping common symptoms to source files.
+The toast layer (`stores/errors.svelte.ts` + `components/common/ErrorToast.svelte`) is mounted at the app root in `routes/+page.svelte` so it survives modal switching. See [`frontend-accounts.md`](../frontends/frontend-accounts.md) for the full data flow, component reference, and a debugging table mapping common symptoms to source files.
 
 ### Bootstrapping the service token via HTTP
 

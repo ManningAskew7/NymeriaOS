@@ -44,20 +44,25 @@ The GitHub Release job downloads both artifacts and attaches the `.whl`,
 `.tar.gz`, and Windows installer `.exe` files to the tag's release. Tags
 containing `alpha`, `beta`, or `rc` are marked as prereleases.
 
-The `docker-images` job builds and (optionally) publishes three container
-images to GHCR: `nymeria-full`, `nymeria-slim`, and `nymeria-single`. The
-job only pushes when the repository variable `PUBLISH_IMAGES` is `true` AND
-the workflow ran on a `v*` tag; otherwise it builds without pushing as a
-smoke test. The image namespace defaults to
-`ghcr.io/${{ github.repository_owner }}` and can be overridden via the
-`IMAGE_NAMESPACE` repository variable. The `nymeria-single` image is what
-the clone-free `install.sh --full` track pulls, and what a clone-free
-`nymeria init` Docker setup pulls: the published compose file also ships
-inside the wheel (`nymeria/setup/assets/`, kept byte-identical to
+The `docker-images` job builds three container images (`nymeria-full`,
+`nymeria-slim`, and `nymeria-single`) and can optionally push them to the
+GitHub Container Registry. **Image publishing is off for the beta.** The job
+pushes only when the repository variable `PUBLISH_IMAGES` is `true` AND the
+workflow ran on a `v*` tag; that variable is unset, so the job builds without
+pushing, as a smoke test. The namespace defaults to the registry path for the
+repository owner and can be overridden via the `IMAGE_NAMESPACE` repository
+variable.
+
+Because the beta ships no container images, every Docker path builds from a
+source checkout: the `install.sh --full` track clones the repository and
+builds locally, and a `nymeria init` Docker setup needs the checkout too. The
+image-based compose file that also ships inside the wheel
+(`nymeria/setup/assets/`, kept byte-identical to
 `Nymeria/docker-compose.single.published.yml` by a drift test in
-`tests/test_setup_wizard.py`), and init pins `NYMERIA_VERSION` in
-`.env.docker` to the installed package version, which matches the image tag
-(the release tag with `v` stripped).
+`tests/test_setup_wizard.py`) stays dormant until `PUBLISH_IMAGES` is turned
+on; when it is, init pins `NYMERIA_VERSION` in `.env.docker` to the installed
+package version, which matches the image tag (the release tag with `v`
+stripped).
 
 ## Publishing The Python Package
 
@@ -109,7 +114,7 @@ git push origin main v0.2.0-beta.1
 ```
 
 After the workflow finishes, confirm the GitHub Release has the wheel, source
-distribution, and Windows installer attached. If `PUBLISH_IMAGES`
-is enabled, confirm the container images appear under the GHCR namespace. If
-`PUBLISH_PYPI` is enabled, confirm the new version appears at
+distribution, and Windows installer attached. `PUBLISH_IMAGES` stays off for
+the beta, so expect no container images in the registry. If `PUBLISH_PYPI` is
+enabled, confirm the new version appears at
 `https://pypi.org/project/nymeriaos/`.

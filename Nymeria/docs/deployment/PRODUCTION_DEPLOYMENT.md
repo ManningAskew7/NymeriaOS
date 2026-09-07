@@ -7,6 +7,8 @@ This document outlines deployment options for Nymeria, from local development to
 - **Local**: run directly on host (`python3 run.py api`, or other `run.py` subcommands as needed)
 - **Docker Compose**: production-oriented split services (`api`, `worker`, `postgres`, `redis`, `caddy`, `mcp`, optional chat/voice services)
 
+Both options here start from a source checkout (`git clone https://github.com/ManningAskew7/NymeriaOS.git`). Compose builds the application images locally from the checkout's Dockerfiles; the beta publishes no container images, so there is nothing to pull. For the packaged single-process install, see [QUICKSTART.md](../getting-started/QUICKSTART.md).
+
 ## Quick Start
 
 ### Local Development (Recommended for Most Users)

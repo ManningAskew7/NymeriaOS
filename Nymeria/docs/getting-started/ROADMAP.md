@@ -42,8 +42,8 @@ not be added here.
 ## Reference Docs
 
 - [architecture.md](./architecture.md)
-- [tools.md](./tools.md)
-- [api.md](./api.md)
-- [skills.md](./skills.md)
-- [notifications.md](./notifications.md)
-- [deployment-README.md](./deployment-README.md)
+- [tools.md](../agent-systems/tools.md)
+- [api.md](../api.md)
+- [skills.md](../agent-systems/skills.md)
+- [notifications.md](../agent-systems/notifications.md)
+- [deployment-README.md](../deployment/deployment-README.md)
