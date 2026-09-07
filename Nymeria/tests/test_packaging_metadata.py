@@ -60,9 +60,61 @@ def test_bundled_catalog_data_files_are_packaged() -> None:
             )
 
 
+def test_setup_wizard_stylesheet_is_packaged() -> None:
+    """The Textual wizard declares ``CSS_PATH = "theme.tcss"`` and Textual
+    reads that file from the INSTALLED package at startup, so a wheel without
+    it crashes ``nymeria init`` on its first screen (the 0.2.0b1 Windows
+    clean-machine test, 2026-09-07). Pin every ``.tcss`` under the package to
+    a covering package-data glob."""
+    globs = _package_data_globs()
+    package_root = ROOT / "nymeria"
+    stylesheets = sorted(package_root.rglob("*.tcss"))
+    assert package_root / "setup" / "theme.tcss" in stylesheets
+    for path in stylesheets:
+        relative = path.relative_to(package_root)
+        assert any(PurePath(relative).match(glob) for glob in globs), (
+            f"{relative} is not covered by any [tool.setuptools.package-data] "
+            "glob, so nymeria init would crash from a wheel install"
+        )
+
+
 def test_frontend_bundle_exists_inside_python_package() -> None:
     frontend_dir = ROOT / "nymeria" / "frontend"
 
     assert (frontend_dir / "index.html").is_file()
     assert (frontend_dir / "_app").is_dir()
     assert (frontend_dir / "wolfhead-transparent.png").is_file()
+
+
+def test_check_wheel_contents_fails_on_a_wheel_missing_the_stylesheet(tmp_path: Path) -> None:
+    """The release gate must reject exactly the 0.2.0b1 shape (every other data
+    file present, the stylesheet absent) and accept a complete wheel."""
+    import importlib.util
+    import zipfile
+
+    spec = importlib.util.spec_from_file_location(
+        "check_wheel_contents", ROOT / "scripts" / "check_wheel_contents.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    complete = [
+        "nymeria/setup/theme.tcss", "nymeria/setup/assets/searxng-settings.yml",
+        "nymeria/frontend/index.html", "nymeria/frontend/_app/immutable/entry/start.abc.js",
+        "nymeria/config/soul.md", "nymeria/config/data/models.json",
+        "nymeria/hooks_bundled/x.json", "nymeria/skills_bundled/demo/SKILL.md",
+        "nymeria/workflows_bundled/y.json",
+    ]
+
+    def build(names: list[str]) -> Path:
+        path = tmp_path / f"w{len(names)}.whl"
+        with zipfile.ZipFile(path, "w") as z:
+            for n in names:
+                z.writestr(n, "x")
+        return path
+
+    assert mod.main(["check", str(build(complete))]) == 0
+    broken = [n for n in complete if not n.endswith(".tcss")]
+    assert mod.main(["check", str(build(broken))]) == 1
+    assert [pat for pat, _ in mod.missing_entries(broken)] == ["nymeria/setup/theme.tcss"]

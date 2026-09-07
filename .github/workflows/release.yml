@@ -77,6 +77,10 @@ jobs:
         working-directory: Nymeria
         run: python -m build
 
+      - name: Check wheel carries every runtime data file
+        working-directory: Nymeria
+        run: python scripts/check_wheel_contents.py dist/*.whl
+
       - name: Check Python distribution metadata
         working-directory: Nymeria
         run: python -m twine check dist/*.whl dist/*.tar.gz

@@ -82,6 +82,19 @@ def test_release_workflow_builds_and_checks_python_distributions() -> None:
     )
 
 
+def test_release_workflow_checks_wheel_contents_before_publishing() -> None:
+    """The 0.2.0b1 wheel shipped without the wizard stylesheet because nothing
+    ever looked inside a built wheel; the check must run on the wheel the job
+    built, before twine and before any upload step."""
+    jobs = _load_release_workflow()["jobs"]
+    commands = _run_commands(jobs["python-package"])
+    check = [i for i, c in enumerate(commands) if "scripts/check_wheel_contents.py dist/*.whl" in c]
+    assert check, "python-package must run scripts/check_wheel_contents.py on dist/*.whl"
+    build = [i for i, c in enumerate(commands) if "python -m build" in c]
+    twine = [i for i, c in enumerate(commands) if "twine check" in c]
+    assert build and build[0] < check[0] < twine[0], "the wheel check must sit between build and twine"
+
+
 def test_release_workflow_builds_windows_desktop_installer() -> None:
     jobs = _load_release_workflow()["jobs"]
 
