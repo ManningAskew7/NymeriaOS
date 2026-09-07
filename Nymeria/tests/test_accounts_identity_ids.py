@@ -6,7 +6,7 @@ distinct ids that fold to one segment share one file (``alice.smith`` and
 refuses a NON-canonical id at the two creation INSERTs in ``AccountsRepo``
 (``create_user`` and the first-touch ``claim_thread``), grandfathers every
 pre-existing row untouched, and reports collision groups for the startup
-audit. Spec: ``tmp/keep/safe-path-segment-spec.md`` behaviors 1 to 6.
+audit. Behaviors 1 to 6 of the #349 identity-id boundary pass spec.
 """
 
 from __future__ import annotations

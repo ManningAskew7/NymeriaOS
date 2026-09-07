@@ -62,11 +62,20 @@ nymeria init
 Update a source install with `git -C ~/NymeriaOS pull --ff-only` (re-run the
 `uv tool install` line only when dependencies changed).
 
-**Docker** needs a source checkout: from `~/NymeriaOS/Nymeria`, the wizard can
-run the single-container shape for you, or start it by hand with
-`docker compose -f docker-compose.single.yml up -d --build`. The full
-Postgres + Redis stack is `docker compose --env-file .env.docker up -d --build`
-in the same directory. No container images are published during the beta.
+**Docker** needs the source install above (a `nymeria` installed from PyPI
+stays clone-free even when run inside a checkout, so the wizard greys Docker
+out there). From `~/NymeriaOS/Nymeria`, create the env file first, then either
+let the wizard run the single-container shape for you or start it by hand:
+
+```bash
+cp .env.docker.example .env.docker      # then set the passwords it asks for
+docker compose -f docker-compose.single.yml up -d --build
+```
+
+The full Postgres + Redis stack is
+`docker compose --env-file .env.docker up -d --build` in the same directory
+(`.env.docker` must set `POSTGRES_PASSWORD` and `REDIS_PASSWORD`). No
+container images are published during the beta; both shapes build locally.
 
 Optional extras install as `uv tool install "nymeriaos[discord]"` (also
 `telegram`, `slack`, `bots`, `postgres`, `redis`, `voice`, `browser`,
