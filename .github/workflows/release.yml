@@ -242,7 +242,7 @@ jobs:
               echo "Skipped publishing because these repository secrets are missing:"
               printf -- "- \`%s\`\n" "${missing[@]}"
               echo
-              echo "Configure the secrets documented in \`Nymeria/docs/BETA_PRIVATE_INDEX.md\` to enable Twine publishing."
+              echo "Set the three NYMERIA_PYPI_* repository secrets to enable Twine publishing (see docs/deployment/release-workflow.md)."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi

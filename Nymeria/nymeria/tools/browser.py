@@ -121,7 +121,6 @@ def _find_playwright_browsers_path() -> Optional[str]:
         user_home = os.path.expanduser("~")
         windows_paths = [
             os.path.join(user_home, "AppData", "Local", "ms-playwright"),
-            r"C:\Users\user\AppData\Local\ms-playwright",
             r"C:\ms-playwright",
         ]
         for path in windows_paths:

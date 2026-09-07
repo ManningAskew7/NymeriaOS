@@ -126,7 +126,7 @@ strategy-notes/
 CLIProxyAPI-main/migration-rollback-*/
 CLIProxyAPI-main/auths-backup-20260418T054556Z/
 
-# === Security audit (internal notes — keep out of public history) ===
+# === Security audit working notes (never check in) ===
 SECURITY_AUDIT.md
 
 # === Verification/testing artifacts ===
