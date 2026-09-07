@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     )
     from .triggers import CLITrigger, create_api_app
 
-__version__ = "0.2.0-beta.3"
+__version__ = "0.2.0-beta.4"
 __all__ = [
     # Core
     "NymeriaAgent",
