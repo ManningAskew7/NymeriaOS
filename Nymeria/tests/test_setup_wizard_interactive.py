@@ -1099,8 +1099,8 @@ def test_welcome_env_report_fits_narrow_terminal():
     from nymeria.setup.state import WizardState
 
     long_note = (
-        "Nymeria containers are already running here (nymeria-pypi, "
-        "nymeria-caddy, nymeria-api, nymeria-worker): this wizard configures a "
+        "Nymeria containers are already running here (nymeria-api, "
+        "nymeria-worker, nymeria-postgres, nymeria-redis): this wizard configures a "
         "separate instance and will not touch them."
     )
     state = WizardState()

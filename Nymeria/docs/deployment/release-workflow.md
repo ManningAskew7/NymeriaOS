@@ -69,8 +69,8 @@ so you can enable either, both, or neither.
 `private-python-index` uploads to a private index with Twine. It runs on every
 `v*` tag but skips itself unless the three repository secrets
 `NYMERIA_PYPI_REPOSITORY_URL`, `NYMERIA_PYPI_USERNAME`, and
-`NYMERIA_PYPI_PASSWORD` are set (see `docs/private/beta/BETA_PRIVATE_INDEX.md`). This
-is the recommended path during a closed beta: testers install with
+`NYMERIA_PYPI_PASSWORD` are set (pointing at a private simple index you
+host). This is the recommended path during a closed beta: testers install with
 `uv tool install nymeriaos --index <simple-index-url>`.
 
 `pypi-publish` uploads to public PyPI (pypi.org) using tokenless OIDC (Trusted

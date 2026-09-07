@@ -2,8 +2,8 @@
 
 Deployment-gated drop-box writer. The tool is inert unless
 ``HARNESS_REPORT_DIR`` names an EXISTING directory; on the reference dev
-stack that is a bind mount of the repo's
-``Nymeria/docs/private/plans/backlog/intake/`` into the api container. The
+stack that is a bind mount of the repo's backlog intake directory into the
+api container. The
 tool only ever CREATES new files there (exclusive create, sanitized slug
 filename): it never edits or overwrites existing files, never touches git,
 and never allocates backlog numbers. Reports are untracked drop-box files

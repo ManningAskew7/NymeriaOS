@@ -207,8 +207,9 @@ def _spec(
     )
 
 
-# Curated from Nymeria's existing providers, /opt/openclaw, /opt/hermes-agent,
-# /opt/opencode, models.dev, and official provider documentation where linked.
+# Curated from Nymeria's existing providers, the provider tables of other
+# open-source agent harnesses (openclaw, hermes-agent, opencode), models.dev,
+# and official provider documentation where linked.
 # Providers with unusual endpoint roots intentionally keep the provider's
 # documented OpenAI-compatible base URL instead of forcing a /v1 suffix.
 _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
