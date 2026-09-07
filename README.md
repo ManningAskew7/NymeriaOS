@@ -31,7 +31,7 @@ model via Ollama. The setup wizard walks you through all three.
 uv tool install nymeriaos     # or: pipx install nymeriaos
 nymeria init                  # guided setup: hosting, LLM, timezone
 nymeria doctor                # check the install
-nymeria api                   # then open http://localhost:8000
+nymeria slim                  # API + scheduler + MCP in one process; open http://localhost:8000
 ```
 
 Upgrade later with `uv tool upgrade nymeriaos`. To try it without installing:
