@@ -294,3 +294,102 @@ def test_admin_account_guards_and_prefix_errors_remain_stable(
     assert missing_user_tokens.json()["detail"] == "User not found"
     assert bad_provider.status_code == 400
     assert bad_provider.json()["detail"] == "Unknown provider"
+
+
+# ---------------------------------------------------------------------------
+# Identity ids are canonical storage segments (spec behaviors 1, 4, 6)
+# ---------------------------------------------------------------------------
+
+
+def _data_files(root: Path) -> list[str]:
+    return sorted(
+        str(p.relative_to(root))
+        for p in root.rglob("*")
+        if not p.name.startswith("accounts.db")
+    )
+
+
+@pytest.mark.parametrize(
+    ("user_id", "segment"),
+    [
+        ("alice.smith", "alicesmith"),
+        ("a/b", "ab"),
+        ("..", "default"),
+        ("!!!", "default"),
+        ("   ", "default"),
+    ],
+)
+def test_admin_create_user_refuses_non_canonical_id(
+    tmp_path: Path,
+    api_client_builder,
+    user_id: str,
+    segment: str,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    admin_token = _create_user(agent, "default", role="admin")
+    users_before = [u.id for u in agent.accounts_repo.list_users()]
+    files_before = _data_files(tmp_path)
+
+    response = client.post(
+        "/admin/users",
+        headers=api_client_builder.auth(admin_token),
+        json={"email": "alice@example.com", "id": user_id},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert f"stored as {segment!r}" in detail
+    assert "letters, digits, '-' and '_'" in detail
+    # No row, no token, no file: the request left nothing behind.
+    assert [u.id for u in agent.accounts_repo.list_users()] == users_before
+    assert agent.accounts_repo.get_user_by_email("alice@example.com") is None
+    assert _data_files(tmp_path) == files_before
+    # The owner's account (segment "default") is untouched by the fold.
+    owner = agent.accounts_repo.get_user_by_id("default")
+    assert (owner.email, owner.role) == ("default@example.com", "admin")
+    assert len(agent.accounts_repo.list_tokens_for_user("default")) == 1
+
+
+def test_admin_create_user_accepts_canonical_id_and_blank_id_falls_back(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(_create_user(agent, "admin", role="admin"))
+
+    explicit = client.post(
+        "/admin/users",
+        headers=headers,
+        json={"email": "alice.smith@example.com", "id": "alice-smith"},
+    )
+    blank = client.post(
+        "/admin/users",
+        headers=headers,
+        json={"email": "bob.jones@example.com", "id": ""},
+    )
+
+    assert explicit.status_code == 200
+    assert agent.accounts_repo.verify_token(explicit.json()["raw_token"]).id == "alice-smith"
+    assert blank.status_code == 200
+    # An empty id is "no id": the email-derived slug (already canonical) applies.
+    assert agent.accounts_repo.verify_token(blank.json()["raw_token"]).id == "bobjones"
+
+
+def test_admin_create_user_refuses_case_variant_of_existing_id(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(_create_user(agent, "admin", role="admin"))
+    _create_user(agent, "alice")
+
+    response = client.post(
+        "/admin/users",
+        headers=headers,
+        json={"email": "alice.two@example.com", "id": "Alice"},
+    )
+
+    assert response.status_code == 400
+    assert "'alice'" in response.json()["detail"]
+    assert agent.accounts_repo.get_user_by_id("Alice") is None
+    assert agent.accounts_repo.get_user_by_email("alice.two@example.com") is None

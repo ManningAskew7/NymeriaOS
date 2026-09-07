@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
-from ...core.accounts import AuthenticatedUser
+from ...core.accounts import AuthenticatedUser, InvalidIdentityId
 from ...core.checkpoint_cleanup import delete_thread_checkpoints
 from ...core.checkpoint_status import (
     get_graph_state_revision,
@@ -715,7 +715,10 @@ def create_threads_router(
                 detail="Shared-channel threads cannot be claimed",
             )
         agent = get_agent_fn()
-        owner = agent.accounts_repo.claim_thread(thread_id, user.id)
+        try:
+            owner = agent.accounts_repo.claim_thread(thread_id, user.id)
+        except InvalidIdentityId as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if owner != user.id and user.role != "admin":
             raise HTTPException(status_code=404, detail="Not found")
         metadata: dict[str, Any] | None = None

@@ -27,6 +27,22 @@ DB file:
 
 Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header to call the API on behalf of another user - used by bots and the worker ticker.
 
+User ids and thread ids must be canonical storage segments (letters, digits,
+`-` and `_` only), because every per-user and per-thread store derives its
+file name from `safe_path_segment(id)`. `POST /admin/users`, `users add --id`,
+`POST /threads/{thread_id}/claim`, and the first write to a new client-chosen
+`thread_id` refuse anything else with `400` and a detail such as `User id
+'alice.smith' is not a canonical storage id: it would be stored as
+'alicesmith'. Pick an id made of letters, digits, '-' and '_'.` (the CLI
+exits 2 and prints the same text on an `[error]` line). Ids are capped at 128
+characters. A new id that differs from an existing one only by ASCII case
+(`Alice` when `alice` exists) is refused as well, because Windows and macOS
+filesystems would give both one store file; a non-ASCII case variant is not
+caught. Pre-existing ids are grandfathered (no rename; reads and writes keep
+resolving to the segment they always did); on startup the API logs one
+warning per group of existing ids that fold to the same segment, compared
+case-insensitively, so an operator knows they exist.
+
 ### Tokens
 
 Raw token format: `nym_<32-url-safe-bytes>`. Only `sha256(raw)` is stored. The raw value is returned **once** at creation and cannot be recovered - lost tokens must be rotated.

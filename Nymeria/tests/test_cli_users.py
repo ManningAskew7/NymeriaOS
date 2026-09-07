@@ -146,3 +146,56 @@ def test_issue_token_reports_active_token_limit(
     assert result == 2
     assert captured.out == ""
     assert "already has the maximum 10 active token(s)" in captured.err
+
+
+def test_add_refuses_non_canonical_id_and_says_what_to_do(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_data_dir(monkeypatch, tmp_path)
+
+    result = users_cli.dispatch(
+        Namespace(
+            action="add",
+            email="alice@example.com",
+            role="user",
+            display_name=None,
+            id="alice.smith",
+            label=None,
+        )
+    )
+
+    captured = capsys.readouterr()
+    repo = AccountsRepo(tmp_path / "accounts.db")
+    assert result == 2
+    assert captured.out == ""
+    assert "[error]" in captured.err
+    assert "stored as 'alicesmith'" in captured.err
+    assert "letters, digits, '-' and '_'" in captured.err
+    assert repo.get_user_by_id("alice.smith") is None
+    assert repo.get_user_by_email("alice@example.com") is None
+
+
+def test_add_default_slug_from_dotted_email_is_canonical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_data_dir(monkeypatch, tmp_path)
+
+    result = users_cli.dispatch(
+        Namespace(
+            action="add",
+            email="alice.smith@example.com",
+            role="user",
+            display_name=None,
+            id=None,
+            label=None,
+        )
+    )
+
+    output = capsys.readouterr().out
+    repo = AccountsRepo(tmp_path / "accounts.db")
+    assert result == 0
+    assert repo.verify_token(_extract_token(output)).id == "alice_smith"

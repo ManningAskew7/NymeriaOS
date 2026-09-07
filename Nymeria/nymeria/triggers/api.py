@@ -22,6 +22,8 @@ from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
 from ..core.accounts import (
     AuthenticatedUser,
+    InvalidIdentityId,
+    find_identity_collisions,
 )
 from ..core.event_bus import publish_sync_event
 from ..core.rate_limit import SlidingWindowRateLimiter
@@ -693,7 +695,7 @@ def _require_thread_access(
         # created. claim_thread is INSERT OR IGNORE — already-owned threads
         # are not disturbed; admin still bypasses the ownership check.
         if claim:
-            agent.accounts_repo.claim_thread(thread_id, user.id)
+            _claim_thread_or_400(agent, thread_id, user.id)
         return
     if _is_shared_channel_thread(thread_id):
         # Shared-channel threads (Discord guild channels, Telegram groups,
@@ -707,7 +709,7 @@ def _require_thread_access(
             return
         raise HTTPException(status_code=404, detail="Not found")
     if claim:
-        owner = agent.accounts_repo.claim_thread(thread_id, user.id)
+        owner = _claim_thread_or_400(agent, thread_id, user.id)
         if owner != user.id:
             raise HTTPException(status_code=404, detail="Not found")
         return
@@ -717,6 +719,19 @@ def _require_thread_access(
     owner = agent.accounts_repo.get_thread_owner(thread_id)
     if owner is not None and owner != user.id:
         raise HTTPException(status_code=404, detail="Not found")
+
+
+def _claim_thread_or_400(agent: NymeriaAgent, thread_id: str, user_id: str) -> str:
+    """First-touch claim; a non-canonical NEW thread id is a 400, not a 500.
+
+    The first write to a client-chosen thread id is where the thread is
+    created (spec: ``tmp/keep/safe-path-segment-spec.md``), so the refusal
+    surfaces here with the repo's own copy as the detail.
+    """
+    try:
+        return agent.accounts_repo.claim_thread(thread_id, user_id)
+    except InvalidIdentityId as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ============================================================================
@@ -1177,6 +1192,10 @@ def create_api_app(
     # the accounts repo lives in the API process in both shapes.
     _register_service_token_warning_lifecycle(app, agent_getter=get_agent)
 
+    # Report identity ids that share a store file (pre-existing, grandfathered
+    # ids; creation refuses new ones). Same unconditional reasoning.
+    _register_identity_collision_audit(app, agent_getter=get_agent)
+
     # Proactive idle compaction (opt-in via compact_proactive_enabled).
     # Unconditional for the same reason: turns run in the API process in
     # both shapes, so the turn-end stamps and the sweep live here too.
@@ -1622,6 +1641,44 @@ def _register_service_token_warning_lifecycle(
         start_log="Service-token expiry warning task started",
         error_label="Service-token expiry warning",
     )
+
+
+def _register_identity_collision_audit(
+    app: FastAPI, *, agent_getter: Callable[[], Any]
+) -> None:
+    """Log ONE warning per group of identity ids that share a store file.
+
+    Every per-identity store keys its file on ``safe_path_segment(id)``, so
+    ``alice.smith`` and ``alicesmith`` (or any all-punctuation id and the
+    owner's ``default``) are two identities over one file. Creation refuses a
+    non-canonical id now; ids created before that rule are grandfathered
+    (never renamed or migrated), and this read-only pass over the account
+    table and the thread index is how an operator learns they exist. A clean
+    deployment logs nothing; a failure is logged and never blocks boot.
+    """
+    import asyncio
+
+    async def _audit() -> None:
+        repo = getattr(agent_getter(), "accounts_repo", None)
+        if repo is None:
+            return
+        try:
+            collisions = await asyncio.to_thread(find_identity_collisions, repo)
+        except Exception:  # noqa: BLE001 - startup must survive an audit failure
+            logger.exception("Identity collision audit failed")
+            return
+        for kind, segment, ids in collisions:
+            logger.warning(
+                "Identity collision: %s ids %s all fold to storage segment %r and "
+                "share one on-disk store per %s (grandfathered, never renamed). "
+                "New ids must be made of letters, digits, '-' and '_'.",
+                kind,
+                ", ".join(repr(identity) for identity in ids),
+                segment,
+                kind,
+            )
+
+    app.router.add_event_handler("startup", _audit)
 
 
 def _register_turn_buffer_sweep_lifecycle(app: FastAPI) -> None:

@@ -14,8 +14,10 @@ from pathlib import Path
 import pytest
 
 from nymeria.core.storage_paths import (
+    canonical_segment_error,
     mtime_sort_key,
     safe_path_segment,
+    segment_collisions,
     write_text_atomic,
 )
 
@@ -230,3 +232,90 @@ class TestThreadDeletionSafeFile:
 
         path = _safe_thread_file(tmp_path, "thread_notes", "thread-1_abc", ".md")
         assert path == tmp_path / "thread_notes" / "thread-1_abc.md"
+
+
+class TestCanonicalSegmentError:
+    """The creation-time rule behind identity ids: an id is accepted only when
+    ``safe_path_segment`` returns it unchanged, so two distinct ids can never
+    share a store file. Non-goal: ``safe_path_segment`` itself is unchanged."""
+
+    @pytest.mark.parametrize("value", ["user1", "a-b_c", "déjà-vu", "_-x-_", "default"])
+    def test_canonical_ids_pass(self, value):
+        assert canonical_segment_error(value) is None
+
+    @pytest.mark.parametrize(
+        ("value", "segment"),
+        [
+            ("alice.smith", "alicesmith"),
+            ("a/b", "ab"),
+            ("qa-collide/1", "qa-collide1"),
+            ("U S E R", "USER"),
+            ("..", "default"),
+            ("!!!", "default"),
+            ("  ", "default"),
+            ("", "default"),
+        ],
+    )
+    def test_non_canonical_names_the_fold_and_the_fix(self, value, segment):
+        message = canonical_segment_error(value, label="Thread id")
+        assert message is not None
+        assert message.startswith(f"Thread id {value!r}")
+        assert f"stored as {segment!r}" in message
+        assert "letters, digits, '-' and '_'" in message
+
+    def test_label_defaults_to_id(self):
+        message = canonical_segment_error("a.b")
+        assert message is not None
+        assert message.startswith("Id 'a.b'")
+
+    def test_leading_space_is_refused(self):
+        message = canonical_segment_error(" alice")
+        assert message is not None
+        assert "stored as 'alice'" in message
+
+    def test_nfd_unicode_is_refused(self):
+        # Pins current behavior: a combining mark is not alphanumeric, so an
+        # NFD-composed id folds to its base letters. Precomposed (NFC) "déjà"
+        # passes (test_canonical_ids_pass); the two spellings of one word
+        # are therefore not interchangeable as ids.
+        message = canonical_segment_error("de\u0301ja")
+        assert message is not None
+        assert "stored as 'deja'" in message
+
+    def test_length_bound_is_128(self):
+        assert canonical_segment_error("a" * 128) is None
+        message = canonical_segment_error("a" * 129, label="Thread id")
+        assert message is not None
+        assert message.startswith("Thread id")
+        assert "129" in message and "128" in message
+        # Over-long AND non-canonical is still a single, actionable refusal.
+        assert canonical_segment_error("a." * 150) is not None
+
+
+class TestSegmentCollisions:
+    def test_groups_ids_that_fold_together(self):
+        groups = segment_collisions(
+            ["alice.smith", "bob", "alicesmith", "qa-collide/1", "qa-collide.1", "qa-collide1"]
+        )
+        assert groups == [
+            ("alicesmith", ["alice.smith", "alicesmith"]),
+            ("qa-collide1", ["qa-collide.1", "qa-collide/1", "qa-collide1"]),
+        ]
+
+    def test_lone_non_canonical_id_is_not_a_collision(self):
+        assert segment_collisions(["alice.smith", "bob"]) == []
+
+    def test_empty_input(self):
+        assert segment_collisions([]) == []
+
+    def test_all_punctuation_id_collides_with_the_owner_segment(self):
+        assert segment_collisions(["default", "!!!"]) == [("default", ["!!!", "default"])]
+
+    def test_case_variants_collide(self):
+        # Windows and macOS (shipped targets) have case-insensitive filesystems:
+        # "Alice.json" and "alice.json" are one file there, so grouping keys
+        # on the lowercased segment and reports it in that form.
+        assert segment_collisions(["Alice", "alice", "bob"]) == [("alice", ["Alice", "alice"])]
+        assert segment_collisions(["Alice.Smith", "alicesmith"]) == [
+            ("alicesmith", ["Alice.Smith", "alicesmith"])
+        ]
