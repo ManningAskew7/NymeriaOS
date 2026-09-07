@@ -122,6 +122,29 @@ def test_resolve_authenticated_user_act_as_rejects_non_admin(monkeypatch):
     assert exc.value.detail == "Act-As requires admin"
 
 
+def test_resolve_authenticated_user_non_admin_act_as_self_is_a_no_op(monkeypatch):
+    """#350: the CLI sends the header for its own user on every request, so a
+    non-admin acting as themselves must resolve to themselves, with no target
+    lookup (the repo here is empty on purpose) and no act-as marking."""
+    caller = AuthenticatedUser(id="c", email="c@x", display_name="C", role="user")
+    _patch_caller(monkeypatch, caller, _agent({}))
+    result = _run_dep(api_app.resolve_authenticated_user, act_as="c")
+    assert result is caller
+    assert not result.via_act_as
+
+
+def test_resolve_authenticated_user_non_admin_act_as_self_is_exact_match_only(monkeypatch):
+    """A case variant or padded spelling of the caller's own id is a FOREIGN
+    target for a non-admin: still 403, never a lookup."""
+    caller = AuthenticatedUser(id="c", email="c@x", display_name="C", role="user")
+    _patch_caller(monkeypatch, caller, _agent({"C": _user_record("C"), "c ": _user_record("c ")}))
+    for spelling in ("C", "c ", " c"):
+        with pytest.raises(HTTPException) as exc:
+            _run_dep(api_app.resolve_authenticated_user, act_as=spelling)
+        assert exc.value.status_code == 403, spelling
+        assert exc.value.detail == "Act-As requires admin"
+
+
 def test_resolve_authenticated_user_admin_act_as_returns_target(monkeypatch):
     caller = AuthenticatedUser(id="admin", email="a@x", display_name="A", role="admin")
     _patch_caller(monkeypatch, caller, _agent({"u1": _user_record("u1", role="user")}))
