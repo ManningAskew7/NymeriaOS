@@ -6,6 +6,7 @@ Split out of the former monolithic test_setup_wizard.py (dev-todo #54).
 
 from __future__ import annotations
 
+import pytest
 from pathlib import Path
 from nymeria.onboarding import HostingOption
 
@@ -362,6 +363,54 @@ def test_capability_summary_recognizes_keyless_ddgs():
     console, output = _capture_console()
     print_capability_summary(None, {}, console, keyless_search_selected=False)
     assert "add a search backend key" in output.getvalue()
+
+
+def test_capability_summary_rag_row_needs_the_local_extra_to_load():
+    """A local embedder/reranker on a bare-metal shape is only "ready" when
+    sentence-transformers can actually import; config alone said ok after a
+    failed local-rag install on the first Windows beta test."""
+    from nymeria.setup import local_rag_install as lri
+    from nymeria.setup.finalize import print_capability_summary
+
+    local = {"EMBEDDING_PROVIDER": "local", "RAG_RERANK_PROVIDER": "local"}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(lri, "local_rag_importable", lambda: False)
+        console, output = _capture_console()
+        print_capability_summary(None, {}, console, extra_env=local)
+        text = output.getvalue()
+        assert "-- Semantic memory / RAG" in text
+        assert "local-rag" in text
+
+        # Docker: the full stack bakes the extra in via the build flag; the
+        # single-container image omits it, so that shape is not ready either.
+        console, output = _capture_console()
+        print_capability_summary(
+            None, {}, console, extra_env=local, for_docker=True, full_stack=True
+        )
+        assert "ok Semantic memory / RAG" in output.getvalue()
+        console, output = _capture_console()
+        print_capability_summary(None, {}, console, extra_env=local, for_docker=True)
+        text = output.getvalue()
+        assert "-- Semantic memory / RAG" in text
+        assert "single-container image omits" in text
+
+        # A hosted embedder never needs the extra.
+        console, output = _capture_console()
+        print_capability_summary(
+            None, {}, console, extra_env={"EMBEDDING_PROVIDER": "voyage"}
+        )
+        assert "ok Semantic memory / RAG" in output.getvalue()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(lri, "local_rag_importable", lambda: True)
+        console, output = _capture_console()
+        print_capability_summary(None, {}, console, extra_env=local)
+        assert "ok Semantic memory / RAG" in output.getvalue()
+
+    # Nothing configured at all keeps the choose-an-embedder hint.
+    console, output = _capture_console()
+    print_capability_summary(None, {}, console, extra_env={})
+    assert "choose an embedder" in output.getvalue()
 
 
 def test_quick_hosting_defaults_reseed_on_hosting_change():

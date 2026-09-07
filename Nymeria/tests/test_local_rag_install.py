@@ -9,6 +9,7 @@ install runs: the subprocess and the importability probe are stubbed.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 
 import pytest
@@ -82,7 +83,6 @@ def test_build_command_uv_editable(tmp_path, monkeypatch):
         "uv",
         "tool",
         "install",
-        "--force",
         "--editable",
         "/src/Nymeria[local-rag]",
     ]
@@ -97,9 +97,27 @@ def test_build_command_uv_published(tmp_path, monkeypatch):
         "uv",
         "tool",
         "install",
-        "--force",
         "nymeriaos[local-rag]",
     ]
+
+
+def test_in_process_uv_command_never_forces_a_rebuild(tmp_path, monkeypatch):
+    """`--force` makes uv delete and recreate the tool environment, which is the
+    environment the wizard itself is running from; without it uv syncs the
+    existing environment in place and still records the extra in the receipt
+    (verified on uv 0.11: `uv tool upgrade` keeps it, a repeat is a no-op)."""
+    monkeypatch.setattr(lri.shutil, "which", lambda name: "/usr/bin/uv")
+    for receipt in (
+        '[tool]\nrequirements = [{ name = "nymeriaos" }]\n',
+        '[tool]\nrequirements = [{ name = "nymeriaos", editable = "/src/Nymeria" }]\n',
+    ):
+        prefix = tmp_path / "uv" / "tools" / "nymeriaos"
+        prefix.mkdir(parents=True, exist_ok=True)
+        (prefix / "uv-receipt.toml").write_text(receipt, encoding="utf-8")
+        command = lri.build_install_command(prefix=str(prefix))
+        assert command is not None
+        assert command[:3] == ["uv", "tool", "install"]
+        assert "--force" not in command
 
 
 def test_build_command_uv_published_preserves_custom_index(tmp_path, monkeypatch):
@@ -117,7 +135,6 @@ def test_build_command_uv_published_preserves_custom_index(tmp_path, monkeypatch
         "uv",
         "tool",
         "install",
-        "--force",
         "--index",
         "https://pypi.example/simple/",
         "nymeriaos[local-rag]",
@@ -137,7 +154,6 @@ def test_build_command_uv_default_index_uses_default_index_flag(tmp_path, monkey
         "uv",
         "tool",
         "install",
-        "--force",
         "--default-index",
         "https://pypi.example/simple/",
         "--editable",
@@ -229,6 +245,153 @@ def test_manual_hint_uv_tool_shape(tmp_path):
         lri.manual_install_hint(None, prefix=str(prefix))
         == 'uv tool install --force "nymeriaos[local-rag]"'
     )
+
+
+def test_manual_hint_adds_force_to_the_uv_tool_command():
+    # The manual command runs from a fresh shell where nothing is locked, so
+    # --force is safe there, and it is what repairs a half-deleted environment
+    # left by a failed in-process attempt. Never doubled, never added to pip.
+    hint = lri.manual_install_hint(
+        ["uv", "tool", "install", "nymeriaos[local-rag]"], windows=False
+    )
+    assert hint == "uv tool install --force 'nymeriaos[local-rag]'"
+    forced = lri.manual_install_hint(
+        ["uv", "tool", "install", "--force", "nymeriaos[local-rag]"], windows=False
+    )
+    assert forced.count("--force") == 1
+    pip = lri.manual_install_hint(
+        ["/venv/bin/python", "-m", "pip", "install", "sentence-transformers>=3.0.0"],
+        windows=False,
+    )
+    assert "--force" not in pip
+
+
+def test_manual_hint_quotes_for_cmd_and_powershell_on_windows():
+    # shlex.join's single quotes are literal in cmd.exe, so a Windows user
+    # pasting them gets a resolution error; double quotes work in both shells.
+    hint = lri.manual_install_hint(
+        ["uv", "tool", "install", "nymeriaos[local-rag]"], windows=True
+    )
+    assert hint == 'uv tool install --force "nymeriaos[local-rag]"'
+    editable = lri.manual_install_hint(
+        ["uv", "tool", "install", "--editable", "C:\\src\\Nymeria[local-rag]"],
+        windows=True,
+    )
+    assert editable == 'uv tool install --force --editable "C:\\src\\Nymeria[local-rag]"'
+    assert "'" not in hint and "'" not in editable
+
+
+def test_manual_hint_quotes_version_pins_and_spaced_paths_on_windows():
+    # `>` is a redirection to both shells and a bare space splits the path.
+    pip = lri.manual_install_hint(
+        ["C:\\venv\\Scripts\\python.exe", "-m", "pip", "install", "sentence-transformers>=3.0.0"],
+        windows=True,
+    )
+    assert pip == 'C:\\venv\\Scripts\\python.exe -m pip install "sentence-transformers>=3.0.0"'
+    uv_pip = lri.manual_install_hint(
+        ["uv", "pip", "install", "--python", "C:\\My Tools\\python.exe", "sentence-transformers>=3.0.0"],
+        windows=True,
+    )
+    assert '"C:\\My Tools\\python.exe"' in uv_pip
+    assert '"sentence-transformers>=3.0.0"' in uv_pip
+    assert "--force" not in uv_pip
+
+
+def test_build_command_keeps_the_receipts_existing_extras(tmp_path, monkeypatch):
+    """uv syncs the environment exactly to the new requirement and rewrites the
+    receipt, so a `nymeriaos[discord]` install reinstalled as plain
+    `nymeriaos[local-rag]` would lose discord.py. Existing extras ride along;
+    one already present is not duplicated."""
+    monkeypatch.setattr(lri.shutil, "which", lambda name: "/usr/bin/uv")
+    prefix = _uv_prefix(
+        tmp_path, '[tool]\nrequirements = [{ name = "nymeriaos", extras = ["discord"] }]\n'
+    )
+    assert lri.build_install_command(prefix=str(prefix))[-1] == "nymeriaos[discord,local-rag]"
+    (prefix / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{ name = "nymeriaos", editable = "/src/Nymeria", extras = ["local-rag"] }]\n',
+        encoding="utf-8",
+    )
+    assert lri.build_install_command(prefix=str(prefix))[-2:] == [
+        "--editable",
+        "/src/Nymeria[local-rag]",
+    ]
+
+
+def test_extra_install_hint_shares_the_receipt_and_platform_quoting(tmp_path):
+    # The voice-local hint must not drop a local-rag extra already installed,
+    # and must quote for the platform like the local-rag hint does.
+    prefix = _uv_prefix(
+        tmp_path, '[tool]\nrequirements = [{ name = "nymeriaos", extras = ["local-rag"] }]\n'
+    )
+    assert (
+        lri.extra_install_hint("voice-local", prefix=str(prefix), windows=False)
+        == "uv tool install --force 'nymeriaos[local-rag,voice-local]'"
+    )
+    assert (
+        lri.extra_install_hint("voice-local", prefix=str(prefix), windows=True)
+        == 'uv tool install --force "nymeriaos[local-rag,voice-local]"'
+    )
+    # No receipt: the plain published shape; a venv: pip.
+    bare = tmp_path / "uv" / "tools" / "other"
+    bare.mkdir(parents=True)
+    assert (
+        lri.extra_install_hint("voice-local", prefix=str(bare))
+        == 'uv tool install --force "nymeriaos[voice-local]"'
+    )
+    assert (
+        lri.extra_install_hint("voice-local", prefix=str(tmp_path / "venv"))
+        == 'pip install "nymeriaos[voice-local]"'
+    )
+
+
+# --- in_process_install_blocked ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "platform,uv_tool,blocked",
+    [
+        ("win32", True, True),
+        ("win32", False, False),
+        ("linux", True, False),
+        ("darwin", True, False),
+    ],
+)
+def test_in_process_install_blocked_only_for_a_windows_uv_tool(
+    tmp_path, platform, uv_tool, blocked
+):
+    """Windows keeps the running nymeria's launcher and loaded extensions locked
+    and uv rebuilds (or, on the in-place path, deletes on failure) the tool
+    environment they live in, so the wizard must never run the install from
+    inside itself there. POSIX in-place syncs are safe; a plain venv install
+    adds a dependency without touching nymeriaos at all."""
+    prefix = tmp_path / ("uv/tools/nymeriaos" if uv_tool else "venv")
+    prefix.mkdir(parents=True)
+    reason = lri.in_process_install_blocked(prefix=str(prefix), platform=platform)
+    assert (reason is not None) is blocked
+    if reason is not None:
+        assert "Windows" in reason
+
+
+# --- importability sees packages installed after startup --------------------
+
+
+def test_module_importable_sees_a_package_installed_after_startup(tmp_path, monkeypatch):
+    """The capability summary runs in the same interpreter that just spawned the
+    installer; FileFinder caches a directory listing, so without invalidating
+    the import caches a freshly installed extra still reads as missing."""
+    site = tmp_path / "site"
+    site.mkdir()
+    monkeypatch.syspath_prepend(str(site))
+    name = "nymeria_test_fake_extra_pkg"
+    assert lri._module_importable(name) is False
+    cached_mtime = site.stat().st_mtime
+    (site / name).mkdir()
+    (site / name / "__init__.py").write_text("", encoding="utf-8")
+    # FileFinder re-lists a directory only when its mtime moved; pin it back so
+    # the fresh package is visible ONLY through importlib.invalidate_caches()
+    # (a same-second write or a coarse-timestamp filesystem looks like this).
+    os.utime(site, (cached_mtime, cached_mtime))
+    assert lri._module_importable(name) is True
 
 
 def test_manual_hint_pip_shape_for_plain_venv(tmp_path):
@@ -368,8 +531,32 @@ def test_unknown_command_prints_manual_hint(monkeypatch, force_missing):
     assert "local-rag" in console.text
 
 
+def test_windows_uv_tool_defers_the_install_with_the_manual_command(
+    monkeypatch, force_missing, tty
+):
+    """On a Windows uv tool install the wizard neither prompts nor spawns uv: it
+    says why, and names the exact command to run after setup with Nymeria not
+    running. Setup itself carries on (the function returns normally)."""
+    monkeypatch.setattr(
+        lri, "build_install_command", lambda **k: ["uv", "tool", "install", "nymeriaos[local-rag]"]
+    )
+    monkeypatch.setattr(
+        lri, "in_process_install_blocked", lambda **k: "Windows keeps the files locked."
+    )
+    calls = []
+    monkeypatch.setattr(finalize_mod.subprocess, "run", lambda *a, **k: calls.append(a))
+    console = _FakeConsole(answer="")
+    _run(console)
+    assert calls == []
+    assert console.input_prompts == []
+    assert "Windows keeps the files locked." in console.text
+    assert "not running" in console.text
+    assert "uv tool install --force" in console.text
+    assert "[local-rag]" in console.text
+
+
 def test_accept_default_yes_runs_install(monkeypatch, force_missing, tty):
-    cmd = ["uv", "tool", "install", "--force", "nymeriaos[local-rag]"]
+    cmd = ["uv", "tool", "install", "nymeriaos[local-rag]"]
     monkeypatch.setattr(lri, "build_install_command", lambda **k: cmd)
     captured = {}
 

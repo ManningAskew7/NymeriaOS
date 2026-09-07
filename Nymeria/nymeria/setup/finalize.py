@@ -723,6 +723,8 @@ def finalize(
         keyless_search_selected=(
             "web_search_ddgs" in (state.extras.get("web_search") or [])
         ),
+        for_docker=for_docker,
+        full_stack=is_full_stack,
     )
     print_deployment_summary(state, console)
 
@@ -1454,14 +1456,50 @@ def print_capability_summary(
     console: Console,
     extra_env: Mapping[str, str] | None = None,
     keyless_search_selected: bool = False,
+    for_docker: bool = False,
+    full_stack: bool = False,
 ) -> None:
     """Show which capabilities are ready and which env var unblocks each.
 
-    Derived from what was written to config.env this run. As the placeholder
-    capability steps get real, this can move to the runtime capability
-    resolvers without changing the output shape. ``keyless_search_selected``
-    covers web_search_ddgs, which is ready with no env var at all.
+    Derived from what was written to config.env this run, with one live check:
+    a local embedder or reranker on a bare-metal shape is ready only when the
+    local-rag extra can actually import (a declined, deferred, or failed
+    install must not read as ok). On Docker the extra lives in the image: the
+    full stack bakes it in via the build flag finalize wrote, the
+    single-container image omits it, so ``for_docker``/``full_stack`` decide.
+    As the placeholder capability steps get real, this can move to the runtime
+    capability resolvers without changing the output shape.
+    ``keyless_search_selected`` covers web_search_ddgs, which is ready with no
+    env var at all.
     """
+    from .local_rag_install import (
+        build_install_command,
+        local_rag_importable,
+        manual_install_hint,
+        requires_local_rag,
+    )
+
+    rag_env = extra_env or {}
+    rag_configured = bool(rag_env.get("EMBEDDING_PROVIDER")) or bool(
+        optional_env.get("EMBEDDING_API_KEY")
+    )
+    rag_ready = rag_configured
+    rag_hint = "choose an embedder in nymeria init"
+    if rag_configured and requires_local_rag(rag_env):
+        if for_docker:
+            rag_ready = full_stack
+            if not full_stack:
+                rag_hint = (
+                    "the single-container image omits the local-rag extra: "
+                    "build one with it, or pick a hosted embedder in nymeria init"
+                )
+        elif not local_rag_importable():
+            rag_ready = False
+            # escape() keeps Rich from eating the [local-rag] in the command.
+            rag_hint = (
+                "install the local-rag extra: "
+                f"{escape(manual_install_hint(build_install_command()))}"
+            )
 
     openai_ready = (
         spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars
@@ -1481,12 +1519,7 @@ def print_capability_summary(
     )
     rows = [
         ("Primary LLM", spec is not None, "set a provider with nymeria init"),
-        (
-            "Semantic memory / RAG",
-            bool((extra_env or {}).get("EMBEDDING_PROVIDER"))
-            or bool(optional_env.get("EMBEDDING_API_KEY")),
-            "choose an embedder in nymeria init",
-        ),
+        ("Semantic memory / RAG", rag_ready, rag_hint),
         (
             "Web search backends",
             search_ready,
@@ -1562,18 +1595,16 @@ def _print_voice_hints(state: WizardState, console: Console) -> None:
         if selected_stt(state) in LOCAL_STT_PROVIDERS and not local_stt_importable():
             missing.append("faster-whisper")
         if missing:
-            # uv tool environments cannot be pip-installed into; the supported
-            # path is reinstalling the tool with the extra.
-            install_cmd = (
-                "uv tool install --force 'nymeriaos\\[voice-local]'"
-                if "uv/tools" in Path(sys.prefix).as_posix()
-                else "pip install 'nymeriaos\\[voice-local]'"
-            )
-            # \[ stops rich from eating [voice-local] as a markup tag.
+            from .local_rag_install import extra_install_hint
+
+            # The shared helper reinstalls a uv tool with the receipt's extras
+            # kept (so a local-rag install is not dropped) and quotes for the
+            # platform; escape() stops Rich from eating [voice-local].
+            install_cmd = escape(extra_install_hint("voice-local"))
             console.print(
                 "\n[yellow]Local voice needs the voice extra "
-                f"({' and '.join(missing)} not installed): "
-                f"{install_cmd}. Models download on first use.[/yellow]"
+                f"({' and '.join(missing)} not installed). Run, with Nymeria "
+                f"not running: {install_cmd}. Models download on first use.[/yellow]"
             )
     if uses_voice_sidecar(state):
         console.print(
@@ -1620,10 +1651,17 @@ def _maybe_install_local_rag(
     this offers to install: the local stack is also the silent Ctrl+S quickstart
     default the user never explicitly chose, so a bare hint would strand the most
     common path. Voice is always an explicit, visible pick, so a hint suffices.
+
+    One shape gets the hint regardless: a uv tool install on Windows, where the
+    install would rebuild the environment this very process runs from and the
+    OS keeps its files locked (``local_rag_install.in_process_install_blocked``
+    has the mechanism). Setup completes and the user runs the printed command
+    afterwards, with Nymeria not running.
     """
     from .local_rag_install import (
         DOCKER_LOCAL_RAG_ENV,
         build_install_command,
+        in_process_install_blocked,
         local_rag_importable,
         manual_install_hint,
         requires_local_rag,
@@ -1659,6 +1697,15 @@ def _maybe_install_local_rag(
     command = build_install_command()
     # escape() stops Rich from eating the [local-rag] in the command as markup.
     hint = escape(manual_install_hint(command))
+    blocked = in_process_install_blocked()
+    if blocked:
+        console.print(
+            "\n[yellow]The local RAG stack (granite + Ettin) needs the local-rag "
+            "extra: sentence-transformers plus PyTorch (a few hundred MB; the "
+            f"models download on first use). {escape(blocked)} After setup "
+            f"finishes, with Nymeria not running, run: {hint}[/yellow]"
+        )
+        return
     if command is None:
         console.print(
             "\n[yellow]The local RAG stack needs the local-rag extra "

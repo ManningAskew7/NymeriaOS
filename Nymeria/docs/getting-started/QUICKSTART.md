@@ -61,10 +61,19 @@ With `uv` (recommended):
 uv tool install nymeriaos
 nymeria init
 nymeria doctor
-nymeria api
+nymeria slim
 ```
 
 Update later with `uv tool upgrade nymeriaos`.
+
+On Windows, stop NymeriaOS first (the wizard, `nymeria slim`, or the
+background service) before any `uv tool install` or `uv tool upgrade` of
+`nymeriaos`. uv rebuilds the tool's environment, and Windows keeps a running
+program's files locked, so an install attempted while it runs stops halfway and
+leaves a half-deleted install (the repair is the same command, run again with
+nothing running). For the same reason `nymeria init` on Windows does not
+install the local semantic-memory extra itself: it prints the command to run
+once setup has finished.
 
 With `pipx`:
 
@@ -72,7 +81,7 @@ With `pipx`:
 pipx install nymeriaos
 nymeria init
 nymeria doctor
-nymeria api
+nymeria slim
 ```
 
 To try NymeriaOS without a persistent install, run it ephemerally with
@@ -140,6 +149,14 @@ call (unless you pass `--skip-llm-test`), writes `~/.nymeria/config.env`, create
 and a capability summary print to the terminal after the wizard closes. Optional
 provider keys (embeddings, OpenAI tools, Gemini, Perplexity) can be supplied with
 flags now and will get their own wizard steps later.
+
+Local semantic memory (the quickstart default) needs the `local-rag` extra:
+sentence-transformers plus PyTorch, a few hundred MB, with the models
+downloading on first use. On Linux and macOS the wizard offers to install it
+on the spot. On Windows it prints the command instead
+(`uv tool install --force "nymeriaos[local-rag]"`), to run after setup with
+NymeriaOS not running; the capability summary shows semantic memory as not
+ready until then.
 
 On a fresh interactive install that starts the backend from the wizard ("Start
 now" with local or background-service hosting), the wizard also opens your
