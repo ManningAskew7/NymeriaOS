@@ -1,32 +1,29 @@
 #!/bin/sh
 # NymeriaOS installer (front door).
 #
-#   curl -fsSL https://get.nymeriaos.com/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh | sh
 #
 # Lets you choose between three install tracks:
 #   Slim   - simpler, best for a few users. Single process on SQLite, installed
-#            with uv (which can fetch a matching Python for you). No Docker.
-#   Full   - more robust, better multi-user support. Runs in Docker (the script
-#            can install Docker for you on Linux).
+#            with uv from PyPI (uv can fetch a matching Python for you). No Docker.
+#   Full   - Docker. A source checkout plus Docker, then the setup wizard runs
+#            the single-container shape (or the full Postgres + Redis stack)
+#            built from that checkout; this script can install Docker for you
+#            on Linux. No container images are published during the beta.
 #   Source - hackable: git clone plus an editable uv install, so code edits
 #            (yours or the agent's own) apply on the next restart, with git
 #            for diff/branch/revert safety.
 #
 # Cautious users: download and read this script before running it, e.g.
-#   curl -fsSL https://get.nymeriaos.com/install.sh -o install.sh
+#   curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh -o install.sh
 #   less install.sh && sh install.sh
 #
 # Overridable via environment variables:
-#   NYMERIA_BASE_URL              Where compose + .env template are served
-#                                 (default: https://get.nymeriaos.com)
-#   NYMERIA_IMAGE_NAMESPACE       GHCR namespace for the Full images
-#                                 (default baked into the compose file)
-#   NYMERIA_PYPI_SIMPLE_INDEX_URL Private index URL for the Slim/beta install
+#   NYMERIA_PYPI_SIMPLE_INDEX_URL Alternative simple index for the Slim install
 #   NYMERIA_INSTALL_MODE          "slim", "full", or "source" (same as the flags)
-#   NYMERIA_REPO_URL              Git repo for the Source track (default:
+#   NYMERIA_REPO_URL              Git repo for the Source and Full tracks (default:
 #                                 https://github.com/ManningAskew7/NymeriaOS.git)
-#   NYMERIA_SOURCE_DIR            Checkout dir for the Source track
-#                                 (default: ~/NymeriaOS)
+#   NYMERIA_SOURCE_DIR            Checkout dir for those tracks (default: ~/NymeriaOS)
 #   NYMERIA_UV_INSTALLER_SHA256   Pin+verify the uv installer (astral.sh) by hash
 #   NYMERIA_DOCKER_INSTALLER_SHA256  Pin+verify the get.docker.com installer by hash
 #
@@ -35,18 +32,13 @@
 
 set -eu
 
-# Restrict permissions on everything this installer writes. The Full track
-# writes NYMERIA_SECRETS_KEY (the vault master key that decrypts every stored
-# API key and OAuth token) into .env.docker, so it must not be world-readable
-# on a shared host. 0600/0700 for created files/dirs; .env is also chmod'd
-# explicitly below as belt-and-suspenders.
+# Restrict permissions on everything this installer writes. Nothing here
+# should hold a secret (the setup wizard writes the env files, including the
+# vault master key, with its own permissions), but a temp file or a partial
+# download must not be world-readable on a shared host either.
 umask 077
 
-NYMERIA_BASE_URL="${NYMERIA_BASE_URL:-https://get.nymeriaos.com}"
 NYMERIA_REPO_URL="${NYMERIA_REPO_URL:-https://github.com/ManningAskew7/NymeriaOS.git}"
-COMPOSE_FILE="docker-compose.single.published.yml"
-ENV_FILE=".env.docker"
-ENV_EXAMPLE=".env.docker.example"
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -166,8 +158,9 @@ choose_mode() {
     printf '%s\n' "${C_BOLD}Choose how to install NymeriaOS:${C_RESET}" > /dev/tty
     printf '%s\n' "  ${C_BOLD}1) Slim${C_RESET}   - simpler, best for a few users. Single process on SQLite," > /dev/tty
     printf '%s\n' "              installed with uv. No Docker required." > /dev/tty
-    printf '%s\n' "  ${C_BOLD}2) Full${C_RESET}   - more robust, better multi-user support. Runs in Docker" > /dev/tty
-    printf '%s\n' "              (Docker required; this script can install it for you on Linux)." > /dev/tty
+    printf '%s\n' "  ${C_BOLD}2) Full${C_RESET}   - Docker: a source checkout plus Docker, then the wizard runs" > /dev/tty
+    printf '%s\n' "              the single container or the full stack built from it" > /dev/tty
+    printf '%s\n' "              (this script can install Docker for you on Linux)." > /dev/tty
     printf '%s\n' "  ${C_BOLD}3) Source${C_RESET} - hackable: a git checkout with an editable install, so" > /dev/tty
     printf '%s\n' "              code edits (yours or the agent's own) apply on restart." > /dev/tty
     _choice="$(ask "Enter 1, 2 or 3 [1]: " "1")"
@@ -211,13 +204,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Source track (git clone + editable uv install)
+# Source checkout (shared by the Source and Full tracks)
 # ---------------------------------------------------------------------------
-install_source() {
-    have git || die "git is required for the Source install. Install git and re-run."
-    ensure_uv
+ensure_checkout() {
+    have git || die "git is required for this track. Install git and re-run."
     SRCDIR="${NYMERIA_SOURCE_DIR:-$HOME/NymeriaOS}"
-    # The global umask 077 exists to protect secret-bearing env files; a code
+    # The global umask 077 exists to protect anything secret-bearing; a code
     # checkout must stay world-readable (normal 755/644) or the bind-mount
     # Docker shapes cannot read the source from inside the container (it runs
     # as its own non-root user). Scope the relaxed umask to the git commands.
@@ -229,12 +221,24 @@ install_source() {
         info "Cloning $NYMERIA_REPO_URL into $SRCDIR ..."
         (umask 022; git clone "$NYMERIA_REPO_URL" "$SRCDIR")
     fi
+}
+
+install_editable() {
+    ensure_uv
     info "Installing the backend as an editable uv tool ..."
     # --force replaces a previous PyPI (Slim) install of the same tool; the
     # editable install means edits under the checkout apply on the next
     # restart, no reinstall needed (reinstall only when dependencies change).
     uv tool install --force --editable "$SRCDIR/Nymeria"
     info "Installed. ${C_BOLD}nymeria${C_RESET} on your PATH runs the live code in $SRCDIR."
+}
+
+# ---------------------------------------------------------------------------
+# Source track (git clone + editable uv install)
+# ---------------------------------------------------------------------------
+install_source() {
+    ensure_checkout
+    install_editable
     maybe_run_wizard
     cat <<EOF
 
@@ -254,7 +258,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Full track (Docker, single-container)
+# Full track (Docker, built from the source checkout)
 # ---------------------------------------------------------------------------
 ensure_docker() {
     if have docker && docker info >/dev/null 2>&1; then return 0; fi
@@ -298,88 +302,29 @@ docker_fallback() {
     die "Docker is required for the Full install."
 }
 
-compose() {  # docker compose vs docker-compose shim
-    if docker compose version >/dev/null 2>&1; then
-        docker compose "$@"
-    elif have docker-compose; then
-        docker-compose "$@"
-    else
-        die "docker compose plugin not found."
-    fi
-}
-
-gen_secret() {  # 44-char urlsafe-base64 Fernet key, no cryptography dep
-    if have python3; then
-        python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
-    elif have openssl; then
-        openssl rand 32 | openssl base64 | tr '+/' '-_' | tr -d '\n'; echo
-    else
-        echo ""
-    fi
-}
-
 install_full() {
     ensure_docker
-    WORKDIR="${NYMERIA_FULL_DIR:-$HOME/nymeria}"
-    info "Setting up the Full (Docker) stack in $WORKDIR ..."
-    mkdir -p "$WORKDIR"
-    cd "$WORKDIR"
-
-    info "Fetching compose file and env template from $NYMERIA_BASE_URL ..."
-    fetch "$NYMERIA_BASE_URL/$COMPOSE_FILE" "$COMPOSE_FILE"
-
-    if [ ! -f "$ENV_FILE" ]; then
-        fetch "$NYMERIA_BASE_URL/$ENV_EXAMPLE" "$ENV_FILE"
-        # Lock down the secret-bearing env file before writing the master key
-        # into it (umask should already give 0600, but be explicit).
-        chmod 600 "$ENV_FILE" 2>/dev/null || true
-        _key="$(gen_secret)"
-        if [ -n "$_key" ]; then
-            printf '\nNYMERIA_SECRETS_KEY=%s\n' "$_key" >> "$ENV_FILE"
-            info "Generated NYMERIA_SECRETS_KEY (at-rest credential encryption)."
-        else
-            warn "Could not generate NYMERIA_SECRETS_KEY (no python3/openssl); set it later in $ENV_FILE."
-        fi
-    else
-        info "Reusing existing $ENV_FILE."
-        chmod 600 "$ENV_FILE" 2>/dev/null || true
-    fi
-
-    [ -n "${NYMERIA_IMAGE_NAMESPACE:-}" ] && export NYMERIA_IMAGE_NAMESPACE
-
-    info "Pulling and starting the container ..."
-    compose -f "$COMPOSE_FILE" pull
-    compose -f "$COMPOSE_FILE" up -d
-
-    info "Waiting for the API to become healthy ..."
-    _ok=0
-    _i=0
-    while [ "$_i" -lt 60 ]; do
-        if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then _ok=1; break; fi
-        _i=$((_i + 1)); sleep 2
-    done
-    if [ "$_ok" -eq 1 ]; then
-        info "${C_BOLD}NymeriaOS is running${C_RESET} at http://localhost:8000"
-    else
-        warn "API did not report healthy yet. Check: cd $WORKDIR && $(compose_label) -f $COMPOSE_FILE logs -f"
-    fi
-
+    ensure_checkout
+    install_editable
+    info "Docker and the checkout are ready. In the wizard's hosting step, pick Docker:"
+    info "the single-container shape or the full Postgres + Redis stack, both built"
+    info "from $SRCDIR. The wizard writes the env file and can start the stack."
+    maybe_run_wizard
     cat <<EOF
 
-Next steps (in $WORKDIR):
-  1. Add your LLM provider key to $ENV_FILE (LLM_PROVIDER, LLM_MODEL, and the
-     matching key, e.g. ANTHROPIC_API_KEY), then restart:
-       docker compose -f $COMPOSE_FILE restart
-  2. Grab the first-run admin sign-in token:
-       docker compose -f $COMPOSE_FILE exec nymeria-single cat /data/BOOTSTRAP_TOKEN.txt
-  3. Manage the stack:
-       docker compose -f $COMPOSE_FILE logs -f
-       docker compose -f $COMPOSE_FILE down
-EOF
-}
+Next steps:
+  nymeria init      # guided setup; pick Docker in the hosting step
+  nymeria doctor    # verify the install
 
-compose_label() {
-    if docker compose version >/dev/null 2>&1; then printf 'docker compose'; else printf 'docker-compose'; fi
+Or drive the single container by hand from $SRCDIR/Nymeria:
+  cp .env.docker.example .env.docker      # set your LLM key and NYMERIA_SECRETS_KEY
+  docker compose -f docker-compose.single.yml up -d --build
+  docker compose -f docker-compose.single.yml exec nymeria-single cat /data/BOOTSTRAP_TOKEN.txt
+
+Update later with:
+  git -C "$SRCDIR" pull --ff-only
+  docker compose -f docker-compose.single.yml up -d --build   # rebuilds when needed
+EOF
 }
 
 # ---------------------------------------------------------------------------
@@ -392,15 +337,15 @@ NymeriaOS installer
 Usage: install.sh [--slim | --full | --source] [--non-interactive] [-h|--help]
 
   --slim             Install the single-process (uv/SQLite) track.
-  --full             Install the Docker (single-container) track.
+  --full             Install the Docker track: a source checkout plus Docker,
+                     then the wizard runs the container(s) built from it.
   --source           Install from a git checkout (editable; for hacking on
                      Nymeria or letting the agent modify its own source).
   --non-interactive  Do not prompt; defaults to --slim unless another track
                      flag is given.
 
-Environment overrides: NYMERIA_BASE_URL, NYMERIA_IMAGE_NAMESPACE,
-NYMERIA_PYPI_SIMPLE_INDEX_URL, NYMERIA_INSTALL_MODE, NYMERIA_REPO_URL,
-NYMERIA_SOURCE_DIR.
+Environment overrides: NYMERIA_PYPI_SIMPLE_INDEX_URL, NYMERIA_INSTALL_MODE,
+NYMERIA_REPO_URL, NYMERIA_SOURCE_DIR.
 EOF
 }
 
