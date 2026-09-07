@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .._runtime_paths import find_project_root
 from ..onboarding import DockerStack, HostingOption
 from ..subprocess_env import DOCKER_CLI_PASSTHROUGH, scrubbed_subprocess_env
 
@@ -158,6 +159,10 @@ class EnvironmentReport:
     # Backend runtime packages this interpreter cannot import (light signal;
     # empty for any pip install, non-empty in an uninstalled source checkout).
     missing_python_deps: tuple[str, ...] = ()
+    # Whether a source checkout holding the Docker compose files is present
+    # (light signal). False on a clone-free wheel install, which gates the
+    # Docker shape while no published images exist.
+    source_checkout: bool = True
     deep: bool = False
 
     @property
@@ -191,6 +196,58 @@ def _os_label() -> tuple[str, bool]:
 def docker_available() -> bool:
     """True when a `docker` CLI is on PATH. Cheap (no `docker info` subprocess)."""
     return shutil.which("docker") is not None
+
+
+# The Docker compose files only a source checkout carries: the slim single
+# container reads `.env.docker` via `docker-compose.single.yml`; the full
+# Postgres + Redis stack is the default `docker-compose.yml`.
+DOCKER_SINGLE_COMPOSE = "docker-compose.single.yml"
+DOCKER_FULL_COMPOSE = "docker-compose.yml"
+
+
+# No container images are published for the public beta (distribution is the
+# PyPI wheel and a git clone; Docker shapes build from a checkout), so a
+# clone-free install has nothing to pull and the Docker hosting shape is gated
+# off for it. Flip this to True once release images exist on the registry: the
+# published-image compose path behind the gate is unchanged and re-opens.
+PUBLISHED_DOCKER_IMAGES_AVAILABLE = False
+
+
+def clone_free_docker_blocked_reason() -> str:
+    """Why Docker hosting is unavailable without a source checkout ("" if it is not).
+
+    Worded for the hosting picker's "(unavailable: ...)" suffix, so it also
+    tells the user where the working install is.
+    """
+    if PUBLISHED_DOCKER_IMAGES_AVAILABLE:
+        return ""
+    # Name `install.sh --source`, not "git clone": detection is __file__-based
+    # (`source_checkout_root` below), so a wheel-installed `nymeria init` run
+    # inside a clone is still clone-free. What fixes it is an install that
+    # RUNS from the checkout: the --source track's editable install, or
+    # `python run.py init` from the clone itself.
+    return (
+        "no published images yet, so Docker needs a source install: "
+        "install.sh --source, or `python run.py init` from a clone"
+    )
+
+
+def source_checkout_root() -> Path | None:
+    """The source-checkout dir holding the Docker compose files, or None.
+
+    The compose files (`docker-compose.single.yml` for slim, `docker-compose.yml`
+    for the full stack) only exist in a source checkout; a clone-free (pip/uv)
+    install ships neither, so None signals the clone-free Docker case: finalize
+    materializes the wheel-bundled published-image compose into the runtime
+    root for the slim stack and rejects the full stack (whose compose builds
+    images from the repo). Both stacks resolve to the same root.
+    """
+    root = find_project_root(Path(__file__).resolve())
+    if root is not None and (
+        (root / DOCKER_SINGLE_COMPOSE).exists() or (root / DOCKER_FULL_COMPOSE).exists()
+    ):
+        return root
+    return None
 
 
 def port_free(port: int, *, host: str = "127.0.0.1", timeout: float = 0.2) -> bool:
@@ -510,10 +567,13 @@ def hosting_gates(report: EnvironmentReport) -> dict[HostingOption, HostingGate]
     warning, e.g. missing runtime packages).
     """
     gates: dict[HostingOption, HostingGate] = {}
+    clone_free_reason = "" if report.source_checkout else clone_free_docker_blocked_reason()
     if not report.docker_available:
         gates[HostingOption.DOCKER] = HostingGate(
             disabled=True, reason="docker is not installed"
         )
+    elif clone_free_reason:
+        gates[HostingOption.DOCKER] = HostingGate(disabled=True, reason=clone_free_reason)
     elif report.docker_daemon_running is False:
         gates[HostingOption.DOCKER] = HostingGate(
             warning="the Docker daemon is not running; start it before launching."
@@ -599,6 +659,11 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
     """
     os_label, is_windows = _os_label()
     has_docker = docker_available()
+    checkout = source_checkout_root() is not None
+    # Docker as a shape this install can actually run: the CLI is present AND
+    # there is something to build or pull (hosting_gates greys it out otherwise).
+    clone_free_reason = "" if checkout else clone_free_docker_blocked_reason()
+    docker_hostable = has_docker and not clone_free_reason
     free = port_free(port)
     in_container = _detect_in_container()
     service_label, service_reason = service_manager_block()
@@ -606,7 +671,7 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
     missing_deps = missing_python_deps()
     recommended = recommend_hosting(
         is_windows=is_windows,
-        has_docker=has_docker,
+        has_docker=docker_hostable,
         in_container=in_container,
         native_deps_missing=bool(missing_deps),
         service_blocked=bool(service_reason),
@@ -645,12 +710,14 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
             "Native Windows installs are painful (no venv, sqlite-vec to build). "
             "Install Docker Desktop to use the recommended container shape."
         )
+    if has_docker and clone_free_reason:
+        notes.append(f"Docker is installed, but there are {clone_free_reason}.")
     if missing_deps:
         # In-container the recommendation stays LOCAL, so do not point at the
         # Docker shape there.
         remedy = (
             "the Docker shape avoids a native install"
-            if has_docker and not in_container
+            if docker_hostable and not in_container
             else "install the project's Python dependencies before a native launch"
         )
         notes.append(
@@ -698,14 +765,19 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
         mcp_port_free=mcp_free,
         browser_blocked_reason=browser_reason,
         missing_python_deps=missing_deps,
+        source_checkout=checkout,
         deep=deep,
     )
 
 
 __all__ = [
+    "DOCKER_FULL_COMPOSE",
+    "DOCKER_SINGLE_COMPOSE",
+    "PUBLISHED_DOCKER_IMAGES_AVAILABLE",
     "EnvironmentReport",
     "HostingGate",
     "browser_launch_blocked_reason",
+    "clone_free_docker_blocked_reason",
     "detect_environment",
     "docker_available",
     "docker_compose_available",
@@ -718,6 +790,7 @@ __all__ = [
     "port_free",
     "recommend_hosting",
     "service_manager_block",
+    "source_checkout_root",
     "stack_resource_warnings",
     "suggest_free_port",
     "total_ram_gb",

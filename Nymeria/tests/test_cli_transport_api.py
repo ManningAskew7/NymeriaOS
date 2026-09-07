@@ -200,6 +200,35 @@ def test_resolve_api_connection_prefers_cli_flags_over_environment() -> None:
     assert config.explicit_api_key is True
 
 
+def test_resolve_api_connection_default_follows_configured_api_port() -> None:
+    # run.py loads the project's dotenv into the process env before the CLI
+    # starts, so API_PORT is the port `nymeria init` wrote: the bare default
+    # must name that instance, not a hard-coded :8000.
+    config = resolve_api_connection_config(runtime_config(), environ={"API_PORT": "8010"})
+    assert config.api_url == "http://localhost:8010"
+    assert config.api_url_source == "default"
+    assert config.explicit_api_url is False
+
+    # An explicit NYMERIA_API_URL still wins over the port.
+    config = resolve_api_connection_config(
+        runtime_config(),
+        environ={"API_PORT": "8010", "NYMERIA_API_URL": "http://env:9000"},
+    )
+    assert config.api_url == "http://env:9000"
+    assert config.api_url_source == "env"
+
+    # Nothing configured (or junk) falls back to the conventional port.
+    assert resolve_api_connection_config(runtime_config(), environ={}).api_url == (
+        "http://localhost:8000"
+    )
+    assert resolve_api_connection_config(
+        runtime_config(), environ={"API_PORT": ""}
+    ).api_url == "http://localhost:8000"
+    assert resolve_api_connection_config(
+        runtime_config(), environ={"API_PORT": "eighty"}
+    ).api_url == "http://localhost:8000"
+
+
 def test_resolve_api_connection_uses_saved_profile_before_default() -> None:
     config = resolve_api_connection_config(
         runtime_config(),
@@ -341,19 +370,51 @@ def test_api_transport_stream_auth_error_becomes_error_event() -> None:
 
     events = run(collect())
 
-    assert events == [
-        ErrorEvent(
-            thread_id="thread-a",
-            content="API authentication failed: Invalid API key",
-            code="api_auth_error",
-            details={
-                "api_url": "http://api",
-                "error_type": "HTTPStatusError",
-                "status_code": 401,
-                "detail": "Invalid API key",
-            },
-        )
-    ]
+    # A mid-session 401 is what an expired saved token looks like: say so and
+    # point at /login, rather than echoing the raw server detail alone.
+    assert len(events) == 1
+    event = events[0]
+    assert isinstance(event, ErrorEvent)
+    assert event.code == "api_auth_error"
+    assert event.thread_id == "thread-a"
+    assert event.details == {
+        "api_url": "http://api",
+        "error_type": "HTTPStatusError",
+        "status_code": 401,
+        "detail": "Invalid API key",
+    }
+    assert "http://api" in event.content
+    assert "Invalid API key" in event.content
+    assert "expired" in event.content
+    assert "/login" in event.content
+
+
+def test_api_transport_stream_403_keeps_the_generic_authorization_message() -> None:
+    """403 means the request was refused, not that the token is bad.
+
+    The CLI attaches `X-Nymeria-Act-As` to every call, and the backend 403s
+    that header for any non-admin caller (plus "Admin only" routes and the
+    admin-gated tool toggles), so 403 is a routine answer for a regular user.
+    It must keep the generic authorization rendering rather than claiming the
+    token expired and sending the user off to /login.
+    """
+
+    api = FakeAPIClient(base_url="http://api", api_key="fine")
+    api.stream_exception = http_status_error(403, "Act-As requires admin")
+    client = APIAgentClient(api, default_user_id="alice")
+
+    async def collect():
+        return [event async for event in client.stream_chat("hello", "thread-a")]
+
+    events = run(collect())
+
+    assert len(events) == 1
+    event = events[0]
+    assert isinstance(event, ErrorEvent)
+    assert event.code == "api_auth_error"
+    assert event.content == "API authentication failed: Act-As requires admin"
+    assert "expired" not in event.content
+    assert "/login" not in event.content
 
 
 def test_select_agent_client_api_mode_uses_healthy_api_transport() -> None:
@@ -495,10 +556,45 @@ def test_select_agent_client_saved_profile_auth_failure_is_not_reconnectable() -
     )
 
     # A bad/expired token cannot be fixed by retrying, so the placeholder does
-    # not retain it and tells the user to /login.
+    # not retain it and tells the user, plainly, to /login with a new token.
     assert isinstance(selected, DisconnectedAgentClient)
     assert selected.can_reconnect is False
     assert "Run /login" in selected.startup_error
+    assert "http://saved" in selected.startup_error
+    assert "Token revoked" in selected.startup_error
+    assert "expired" in selected.startup_error
+    assert "issue-token" in selected.startup_error
+
+
+def test_select_agent_client_403_is_not_reported_as_an_expired_token() -> None:
+    """A saved token refused with 403 is a permission answer, not an expiry.
+
+    Handing a non-admin "your token expired, run /login" on every launch sends
+    them round a loop that cannot help: a new token is refused the same way.
+    """
+
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(403, "Act-As requires admin")
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api"),
+            api_client_factory=FakeAPIClient,
+            environ={},
+            saved_profile=CLIConnectionProfile(
+                api_url="http://saved",
+                api_key="saved-token",
+                user_id="alice",
+            ),
+        )
+    )
+
+    assert isinstance(selected, DisconnectedAgentClient)
+    assert selected.startup_error == (
+        "API authentication failed: Act-As requires admin Run /login to reconnect."
+    )
+    assert "expired" not in selected.startup_error
+    assert "issue-token" not in selected.startup_error
 
 
 def test_attempt_saved_reconnect_returns_live_client_when_backend_recovers() -> None:

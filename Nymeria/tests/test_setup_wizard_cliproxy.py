@@ -1048,3 +1048,121 @@ def test_provider_trio_drops_on_cliproxy_branch_despite_residual_provider():
     direct = WizardState(auth_method=ProviderAuthMethod.API_KEY, provider="anthropic")
     assert make_provider_step().applies(direct)
     assert make_model_step().applies(direct)
+
+
+# --- fresh-host full stack: the edge network before the stack (#313) ----------
+
+
+class _FakeDocker:
+    """Scripted `subprocess.run` stand-in for the CLIProxy bring-up.
+
+    ``outcomes`` maps a docker verb ("inspect", "create", "up") to
+    ``(returncode, stderr)``; every invocation is recorded in ``calls``.
+    """
+
+    # `docker network <verb>` and `docker compose <verb>` are different
+    # commands that happen to carry their verb in the same slot, so the fake
+    # keys on the pair and refuses anything it was not built to answer: a
+    # silent returncode 0 for an unrecognised invocation would let a wrong
+    # command pass for a right one.
+    _VERBS = {
+        ("network", "inspect"): "inspect",
+        ("network", "create"): "create",
+        ("compose", "up"): "up",
+    }
+
+    def __init__(self, **outcomes: tuple[int, str]) -> None:
+        self.outcomes = outcomes
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **kwargs):
+        from types import SimpleNamespace
+
+        self.calls.append(list(argv))
+        argv = list(argv)
+        try:
+            verb = self._VERBS[(argv[1], argv[2])]
+        except (KeyError, IndexError):
+            raise AssertionError(f"unexpected docker invocation: {argv}") from None
+        returncode, stderr = self.outcomes.get(verb, (0, ""))
+        return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+
+
+_NETWORK_CREATE = [
+    "docker", "network", "create",
+    "--label", "com.docker.compose.network=edge",
+    "--label", "com.docker.compose.project=nymeria",
+    "nymeria_edge",
+]
+
+
+def test_compose_up_creates_the_missing_edge_network_with_compose_labels(
+    monkeypatch, tmp_path
+):
+    """Fresh host: the proxy joins `nymeria_edge` as an external network, so it
+    must exist before the stack that normally creates it. It is created with
+    compose's own labels so the later `up` adopts it instead of refusing."""
+    from nymeria.setup import cliproxy_deploy
+
+    docker = _FakeDocker(inspect=(1, "Error: No such network: nymeria_edge"))
+    monkeypatch.setattr(cliproxy_deploy.subprocess, "run", docker)
+
+    ok, detail = cliproxy_deploy.compose_up(tmp_path, join_network="nymeria_edge")
+
+    assert (ok, detail) == (True, "")
+    assert docker.calls == [
+        ["docker", "network", "inspect", "nymeria_edge"],
+        _NETWORK_CREATE,
+        ["docker", "compose", "up", "-d"],
+    ]
+
+
+def test_compose_up_leaves_an_existing_edge_network_alone(monkeypatch, tmp_path):
+    """Second run (or the stack already up): the network is present, so nothing
+    is created and the bring-up proceeds."""
+    from nymeria.setup import cliproxy_deploy
+
+    docker = _FakeDocker(inspect=(0, ""))
+    monkeypatch.setattr(cliproxy_deploy.subprocess, "run", docker)
+
+    ok, detail = cliproxy_deploy.compose_up(tmp_path, join_network="nymeria_edge")
+
+    assert (ok, detail) == (True, "")
+    assert docker.calls == [
+        ["docker", "network", "inspect", "nymeria_edge"],
+        ["docker", "compose", "up", "-d"],
+    ]
+
+
+def test_compose_up_reports_the_network_command_when_creation_fails(
+    monkeypatch, tmp_path
+):
+    """No Docker permission: the step must hand the operator the exact command
+    to run by hand and must not go on to claim the proxy started."""
+    from nymeria.setup import cliproxy_deploy
+
+    docker = _FakeDocker(
+        inspect=(1, "permission denied while trying to connect to the Docker daemon socket"),
+        create=(1, "permission denied while trying to connect to the Docker daemon socket"),
+    )
+    monkeypatch.setattr(cliproxy_deploy.subprocess, "run", docker)
+
+    ok, detail = cliproxy_deploy.compose_up(tmp_path, join_network="nymeria_edge")
+
+    assert ok is False
+    assert "nymeria_edge" in detail
+    assert " ".join(_NETWORK_CREATE) in detail
+    assert "permission denied" in detail
+    # Never reached `docker compose up`: a failed prerequisite is not success.
+    assert ["docker", "compose", "up", "-d"] not in docker.calls
+
+
+def test_compose_up_without_a_joined_network_touches_no_network(monkeypatch, tmp_path):
+    """The single-container and native shapes join nothing: no network calls."""
+    from nymeria.setup import cliproxy_deploy
+
+    docker = _FakeDocker()
+    monkeypatch.setattr(cliproxy_deploy.subprocess, "run", docker)
+
+    assert cliproxy_deploy.compose_up(tmp_path) == (True, "")
+    assert docker.calls == [["docker", "compose", "up", "-d"]]

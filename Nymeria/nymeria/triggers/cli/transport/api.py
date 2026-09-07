@@ -24,6 +24,43 @@ TransportMode = Literal["api", "local", "auto"]
 
 DEFAULT_API_URL = "http://localhost:8000"
 
+
+def default_api_url(environ: Mapping[str, str] | None = None) -> str:
+    """The loopback URL of the instance this project root is configured for.
+
+    run.py loads the project's dotenv into the process environment before the
+    CLI starts, so ``API_PORT`` here is the port `nymeria init` wrote (8010 on
+    a non-default install). A bare install with nothing configured falls back
+    to the conventional :8000.
+    """
+
+    env = os.environ if environ is None else environ
+    port = _clean_optional(env.get("API_PORT"))
+    if port and port.isdigit():
+        return f"http://localhost:{port}"
+    return DEFAULT_API_URL
+
+
+def token_rejected_message(api_url: str, *, detail: str = "") -> str:
+    """Actionable copy for a CLI token the backend rejected (HTTP 401 only).
+
+    A rejected saved token is almost always an expired one (the 24-hour
+    bootstrap token, or a personal token past its TTL); the backend answers a
+    bare "Invalid API key" either way, so say what that means and where a
+    replacement comes from. 401 is the ONLY code that means this: 403 is an
+    authorization refusal against a perfectly good token ("Act-As requires
+    admin", "Admin only", the admin-gated tool toggles), which every non-admin
+    CLI user meets routinely because the client act-as headers every call.
+    """
+
+    reason = f" ({detail})" if detail else ""
+    return (
+        f"{api_url} rejected the CLI token{reason}: it has probably expired or "
+        "been revoked. Run /login again with a new token (mint one with "
+        "`nymeria users issue-token <user-id>` on the host)."
+    )
+
+
 # Exception shapes that mean "the connection dropped", not "the request was
 # rejected": these trigger the turn re-attach recovery path in stream_chat.
 # httpx.TransportError covers connect/read/write errors and timeouts;
@@ -637,7 +674,7 @@ def resolve_api_connection_config(
         (cli_url, "flag"),
         (env_url, "env"),
         (saved_url, "saved"),
-        (DEFAULT_API_URL, "default"),
+        (default_api_url(env), "default"),
     )
     api_key, api_key_source = _select_value(
         (cli_key, "flag"),
@@ -800,12 +837,16 @@ async def select_agent_client(
                     reconnect_user_id=config.user_id,
                     suggested_url=suggested,
                 )
+            startup_error = (
+                token_rejected_message(
+                    config.api_url, detail=str(exc.details.get("detail") or "")
+                )
+                if exc.status_code == 401
+                else f"{exc.message} Run /login to reconnect."
+            )
             return DisconnectedAgentClient(
                 default_user_id=config.user_id,
-                startup_error=(
-                    "Saved CLI connection could not be validated. "
-                    "Run /login to reconnect."
-                ),
+                startup_error=startup_error,
             )
         raise
 
@@ -1004,9 +1045,13 @@ def _error_event_from_exception(
     default_code: str,
 ) -> ErrorEvent:
     code = "api_auth_error" if _is_auth_error(exc) else default_code
+    if _status_code(exc) == 401:
+        content = token_rejected_message(api_url, detail=_response_detail(exc))
+    else:
+        content = _http_error_message(exc, fallback="API transport stream failed.")
     return ErrorEvent(
         thread_id=thread_id,
-        content=_http_error_message(exc, fallback="API transport stream failed."),
+        content=content,
         code=code,
         details={
             "api_url": api_url,
@@ -1071,8 +1116,10 @@ __all__ = [
     "RECONNECTABLE_STARTUP_CODES",
     "attempt_saved_reconnect",
     "create_api_agent_client",
+    "default_api_url",
     "is_loopback_url",
     "resolve_api_connection_config",
     "select_agent_client",
     "suggest_reachable_backend",
+    "token_rejected_message",
 ]

@@ -686,3 +686,74 @@ def test_sink_final_rule_carries_the_trailing_blank_itself() -> None:
     ]
     assert tail[-1] == ""
     assert tail[-2] != ""
+
+
+def test_dispatch_renders_a_401_from_a_handler_as_expired_token_guidance() -> None:
+    import httpx
+
+    registry = CommandRegistry(include_builtins=False)
+
+    async def rejected(_ctx: CommandContext, _args: list[str]) -> CommandResult:
+        request = httpx.Request("GET", "http://api/threads")
+        response = httpx.Response(401, json={"detail": "Invalid API key"}, request=request)
+        raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    registry.register(Command(name="threads", description="x", handler=rejected))
+    context = CommandContext(
+        client=SimpleNamespace(base_url="http://api"),
+        output=ListCommandOutputSink(),
+    )
+
+    result = run(registry.dispatch_async(context, "/threads"))
+
+    # The saved token was rejected mid-session (it expired): say so and point
+    # at /login instead of surfacing the raw httpx exception text.
+    assert result.ok is False
+    assert result.error_code == "command_exception"
+    message = result.messages[0].content
+    assert "http://api" in message
+    assert "expired" in message
+    assert "/login" in message
+    assert "Command failed" not in message
+
+    # Other failures keep the generic rendering.
+    async def broken(_ctx: CommandContext, _args: list[str]) -> CommandResult:
+        raise RuntimeError("kaput")
+
+    registry.register(Command(name="broken", description="x", handler=broken))
+    result = run(registry.dispatch_async(context, "/broken"))
+    assert result.messages[0].content == "Command failed: kaput"
+
+
+def test_dispatch_keeps_the_generic_rendering_for_a_403_refusal() -> None:
+    """403 is an authorization refusal, not a rejected token.
+
+    The backend answers 403 for "Act-As requires admin", "Admin only", and the
+    admin-gated tool toggles; the CLI sends `X-Nymeria-Act-As` on every call,
+    so a non-admin user meets 403 routinely. Telling them their token expired
+    and to run /login is the wrong diagnosis and the wrong instruction.
+    """
+
+    import httpx
+
+    registry = CommandRegistry(include_builtins=False)
+
+    async def refused(_ctx: CommandContext, _args: list[str]) -> CommandResult:
+        request = httpx.Request("POST", "http://api/tools/enable")
+        response = httpx.Response(403, json={"detail": "Admin only"}, request=request)
+        raise httpx.HTTPStatusError("403", request=request, response=response)
+
+    registry.register(Command(name="tools", description="x", handler=refused))
+    context = CommandContext(
+        client=SimpleNamespace(base_url="http://api"),
+        output=ListCommandOutputSink(),
+    )
+
+    result = run(registry.dispatch_async(context, "/tools"))
+
+    assert result.ok is False
+    message = result.messages[0].content
+    assert message.startswith("Command failed: ")
+    assert "expired" not in message
+    assert "/login" not in message
+    assert "issue-token" not in message

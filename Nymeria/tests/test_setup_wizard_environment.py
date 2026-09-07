@@ -466,6 +466,62 @@ def test_hosting_gates_matrix():
     assert hosting_gates(_env_report()) == {}
 
 
+def test_hosting_gates_block_docker_without_a_checkout_while_images_are_unpublished(
+    monkeypatch,
+):
+    """A clone-free (wheel) install has no compose files to build from, and no
+    published image exists to pull for the beta, so the Docker shape is gated
+    off with a pointer at the source install. Flipping the flag re-opens it."""
+    from nymeria.setup import environment as environment_mod
+    from nymeria.setup.environment import hosting_gates
+
+    gate = hosting_gates(_env_report(source_checkout=False))[HostingOption.DOCKER]
+    assert gate.disabled
+    assert "no published images yet" in gate.reason
+    # The remedy has to be an install that RUNS from the checkout: detection is
+    # __file__-based, so "git clone it and run `nymeria init`" would not work.
+    assert "install.sh --source" in gate.reason
+    assert "python run.py init" in gate.reason
+    assert "git clone" not in gate.reason
+    # A checkout keeps Docker available: its shapes build from the repo.
+    assert HostingOption.DOCKER not in hosting_gates(_env_report(source_checkout=True))
+    # No docker CLI at all is still the first thing to say.
+    gate = hosting_gates(_env_report(source_checkout=False, docker_available=False))[
+        HostingOption.DOCKER
+    ]
+    assert "not installed" in gate.reason
+
+    monkeypatch.setattr(environment_mod, "PUBLISHED_DOCKER_IMAGES_AVAILABLE", True)
+    assert HostingOption.DOCKER not in hosting_gates(_env_report(source_checkout=False))
+
+
+def test_detect_environment_reports_the_checkout_and_steers_off_gated_docker(monkeypatch):
+    from pathlib import Path
+
+    from nymeria.setup import environment as environment_mod
+
+    monkeypatch.setattr(environment_mod, "docker_available", lambda: True)
+    monkeypatch.setattr(environment_mod, "_detect_in_container", lambda: False)
+    # Missing native packages normally recommend the container shape.
+    monkeypatch.setattr(environment_mod, "missing_python_deps", lambda: ("fastapi",))
+
+    monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: None)
+    report = environment_mod.detect_environment()
+    assert report.source_checkout is False
+    assert report.docker_available is True
+    # A gated shape is never the recommendation, and the deps note must not
+    # point at it either; a note explains why Docker is off.
+    assert report.recommended_hosting is not HostingOption.DOCKER
+    assert not any("Docker shape avoids" in note for note in report.notes)
+    assert any("no published images yet" in note for note in report.notes)
+
+    monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: Path("/x"))
+    report = environment_mod.detect_environment()
+    assert report.source_checkout is True
+    assert report.recommended_hosting is HostingOption.DOCKER
+    assert not any("no published images yet" in note for note in report.notes)
+
+
 def test_hosting_gates_warn_on_missing_python_deps():
     from nymeria.setup.environment import hosting_gates
 
@@ -542,6 +598,22 @@ def test_hosting_choices_disable_impossible_and_tag_recommended():
     assert "running inside a container" in choices[HostingOption.SERVICE].label
     assert not choices[HostingOption.LOCAL].disabled
     assert "(recommended)" in choices[HostingOption.LOCAL].label
+
+
+def test_hosting_choices_point_clone_free_docker_at_the_source_install():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.hosting import hosting_choices_for
+
+    state = WizardState()
+    state.env_report = _env_report(source_checkout=False)
+    choices = {c.value: c for c in hosting_choices_for(state)}
+    docker = choices[HostingOption.DOCKER]
+    assert docker.disabled
+    assert "(unavailable: no published images yet" in docker.label
+    assert "install.sh --source" in docker.label
+    # The user is steered to the two native shapes instead.
+    assert not choices[HostingOption.LOCAL].disabled
+    assert not choices[HostingOption.SERVICE].disabled
 
 
 def test_hosting_choices_warn_on_degraded_docker():
