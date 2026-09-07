@@ -1541,3 +1541,61 @@ def test_chat_stream_bounded_wait_admits_when_slot_frees(
     assert first_sent[0]["status"] == 200
     assert second_sent[0]["status"] == 200
     assert get_interactive_turn_gate().active == 0
+
+
+# ---------------------------------------------------------------------------
+# Create-on-first-message refuses a non-canonical thread id (spec behavior 3)
+# ---------------------------------------------------------------------------
+
+
+def test_chat_refuses_non_canonical_new_thread_before_any_turn(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+
+    sync = client.post(
+        "/chat/sync",
+        headers=headers,
+        json={"message": "hello", "thread_id": "qa-collide/1"},
+    )
+    stream = client.post(
+        "/chat",
+        headers=headers,
+        json={"message": "hello", "thread_id": "qa-collide/1"},
+    )
+    canonical = client.post(
+        "/chat/sync",
+        headers=headers,
+        json={"message": "hello", "thread_id": "qa-collide1"},
+    )
+
+    assert sync.status_code == 400
+    assert "stored as 'qa-collide1'" in sync.json()["detail"]
+    assert "letters, digits, '-' and '_'" in sync.json()["detail"]
+    assert stream.status_code == 400
+    assert "stored as 'qa-collide1'" in stream.json()["detail"]
+    assert agent.accounts_repo.get_thread_owner("qa-collide/1") is None
+    assert agent.astream_calls == []
+    assert canonical.status_code == 200
+    assert [call["thread_id"] for call in agent.chat_calls] == ["qa-collide1"]
+    assert agent.accounts_repo.get_thread_owner("qa-collide1") == "alice"
+
+
+def test_chat_grandfathered_non_canonical_thread_still_runs(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent.accounts_repo.backfill_threads(["legacy.thread"], "alice")
+
+    response = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "hello", "thread_id": "legacy.thread"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["thread_id"] == "legacy.thread"
+    assert [call["thread_id"] for call in agent.chat_calls] == ["legacy.thread"]

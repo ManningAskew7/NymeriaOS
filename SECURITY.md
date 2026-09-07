@@ -717,6 +717,20 @@ the data directory, or run the `nymeria` CLI as that user, is effectively admin.
 Protect the data directory like the secret it guards. (Account passwords are not
 implemented; authentication is bearer-token only.)
 
+Identity ids (account ids and thread ids) are canonical filesystem segments:
+every per-identity store keys its file on `safe_path_segment(id)`, which
+keeps only letters, digits, `-` and `_`, so an id containing anything else
+would share a file with a different id (`alice.smith` and `alicesmith`; any
+all-punctuation id and the owner's `default`). Creation refuses such ids at
+the boundary (`POST /admin/users`, `nymeria users add`, the first write to a
+client-chosen thread id, `POST /threads/{id}/claim`) with a 400 naming the
+segment the id would fold onto (the CLI exits 2 with an `[error]` line).
+Because Windows and macOS have case-insensitive filesystems, a new id that
+differs from an existing one only by ASCII case (`Alice` beside `alice`) is
+refused too; a non-ASCII case variant is not caught. Ids created before this
+rule are grandfathered untouched, never renamed, and the API process logs one
+warning per collision group (compared case-insensitively) at startup.
+
 ### 2.8 Tool use and prompt injection
 
 LLM output, web pages, emails, documents, retrieved files, webhook payloads, and

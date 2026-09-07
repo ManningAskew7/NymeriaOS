@@ -867,3 +867,129 @@ def test_dream_route_force_and_enabled_paths_invoke(
     )
     assert response.status_code == 400
     assert "no parent" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Client-chosen thread ids are canonical storage segments (spec behaviors 2, 3)
+# ---------------------------------------------------------------------------
+
+
+def test_thread_claim_refuses_non_canonical_new_thread(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    owner_token = _create_user(agent, "owner")
+    admin_token = _create_user(agent, "admin", role="admin")
+
+    refused = client.post(
+        "/threads/qa.collide.1/claim",
+        headers=api_client_builder.auth(owner_token),
+        json={"title": "Draft", "platform": "cli"},
+    )
+    admin_refused = client.post(
+        "/threads/qa.collide.1/claim",
+        headers=api_client_builder.auth(admin_token),
+    )
+    accepted = client.post(
+        "/threads/qacollide1/claim",
+        headers=api_client_builder.auth(owner_token),
+    )
+
+    assert refused.status_code == 400
+    assert "stored as 'qacollide1'" in refused.json()["detail"]
+    assert "letters, digits, '-' and '_'" in refused.json()["detail"]
+    assert admin_refused.status_code == 400
+    assert agent.accounts_repo.get_thread_owner("qa.collide.1") is None
+    # The title in the refused request was never written.
+    assert "qa.collide.1" not in agent.thread_metadata_manager.get_store("owner").threads
+    assert accepted.status_code == 200
+    assert accepted.json() == {"thread_id": "qacollide1", "owner": "owner"}
+
+
+def test_first_write_refuses_non_canonical_new_thread_but_reads_do_not(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    monkeypatch.setattr(api_module, "publish_sync_event", lambda **kwargs: None)
+    client, agent = _client(tmp_path, api_client_builder)
+    owner_token = _create_user(agent, "owner")
+    admin_token = _create_user(agent, "admin", role="admin")
+
+    read = client.get(
+        "/threads/qa.collide.1/context",
+        headers=api_client_builder.auth(owner_token),
+    )
+    write = client.patch(
+        "/threads/qa.collide.1/metadata",
+        headers=api_client_builder.auth(owner_token),
+        json={"title": "Renamed"},
+    )
+    admin_write = client.patch(
+        "/threads/qa.collide.1/metadata",
+        headers=api_client_builder.auth(admin_token),
+        json={"title": "Renamed"},
+    )
+
+    assert read.status_code == 200
+    assert write.status_code == 400
+    assert "stored as 'qacollide1'" in write.json()["detail"]
+    assert admin_write.status_code == 400
+    assert agent.accounts_repo.get_thread_owner("qa.collide.1") is None
+    assert "qa.collide.1" not in agent.thread_metadata_manager.get_store("owner").threads
+
+
+def test_grandfathered_non_canonical_thread_keeps_working(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    monkeypatch.setattr(api_module, "publish_sync_event", lambda **kwargs: None)
+    client, agent = _client(tmp_path, api_client_builder)
+    owner_token = _create_user(agent, "owner")
+    # Pre-existing thread: registered by the boot backfill, never validated.
+    agent.accounts_repo.backfill_threads(["legacy.thread"], "owner")
+
+    write = client.patch(
+        "/threads/legacy.thread/metadata",
+        headers=api_client_builder.auth(owner_token),
+        json={"title": "Renamed"},
+    )
+    claim = client.post(
+        "/threads/legacy.thread/claim",
+        headers=api_client_builder.auth(owner_token),
+    )
+
+    assert write.status_code == 200
+    assert write.json()["title"] == "Renamed"
+    assert claim.status_code == 200
+    assert claim.json()["owner"] == "owner"
+    assert agent.thread_metadata_manager.get_store("owner").threads["legacy.thread"].title == "Renamed"
+
+
+def test_thread_creation_refuses_case_variant_of_existing_thread(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    monkeypatch.setattr(api_module, "publish_sync_event", lambda **kwargs: None)
+    client, agent = _client(tmp_path, api_client_builder)
+    owner_token = _create_user(agent, "owner")
+    agent.accounts_repo.claim_thread("qa-thread", "owner")
+
+    claim = client.post(
+        "/threads/QA-Thread/claim",
+        headers=api_client_builder.auth(owner_token),
+    )
+    write = client.patch(
+        "/threads/QA-Thread/metadata",
+        headers=api_client_builder.auth(owner_token),
+        json={"title": "Renamed"},
+    )
+
+    assert claim.status_code == 400
+    assert "'qa-thread'" in claim.json()["detail"]
+    assert write.status_code == 400
+    assert agent.accounts_repo.get_thread_owner("QA-Thread") is None
+    assert agent.accounts_repo.get_thread_owner("qa-thread") == "owner"

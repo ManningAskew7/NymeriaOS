@@ -46,6 +46,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 # separators and "." are intentionally excluded, which is what blocks traversal.
 _ALLOWED_EXTRA = "-_"
 
+# Longest identity id accepted at creation. Well under every shipped
+# filesystem's 255-byte name limit once a store adds its own suffix
+# (``<id>_executions.json``), so a first write never ENAMETOOLONGs; the
+# longest system-generated shape (a Teams channel thread) is ~120.
+MAX_IDENTITY_ID_LENGTH = 128
+
 
 def safe_path_segment(value: str, *, default: str = "default") -> str:
     """Reduce ``value`` to a filesystem-safe path segment.
@@ -66,6 +72,54 @@ def safe_path_segment(value: str, *, default: str = "default") -> str:
         The sanitized segment, or ``default`` when it would otherwise be empty.
     """
     return "".join(c for c in value if c.isalnum() or c in _ALLOWED_EXTRA) or default
+
+
+def canonical_segment_error(value: str, *, label: str = "Id") -> Optional[str]:
+    """Why ``value`` cannot become a NEW identity id, or ``None`` when it can.
+
+    An identity id (user id, thread id) is accepted at creation only when it
+    IS its own path segment (``safe_path_segment(value) == value``). Anything
+    else folds onto a segment some other id can also fold onto, so two
+    distinct identities would share one store file (``alice.smith`` and
+    ``alicesmith``; every all-punctuation id and the owner's ``default``).
+    Ids that already exist are never re-checked: the rule gates creation
+    only, and pre-existing non-canonical ids keep the segment they always had.
+
+    Returns the user-facing refusal, which names the fold and what to do.
+    """
+    if len(value) > MAX_IDENTITY_ID_LENGTH:
+        return (
+            f"{label} {value[:24] + '...'!r} is too long: {len(value)} characters, "
+            f"the limit is {MAX_IDENTITY_ID_LENGTH}."
+        )
+    segment = safe_path_segment(value)
+    if segment == value:
+        return None
+    return (
+        f"{label} {value!r} is not a canonical storage id: it would be stored "
+        f"as {segment!r}. Pick an id made of letters, digits, '-' and '_'."
+    )
+
+
+def segment_collisions(ids: Iterable[str]) -> List[Tuple[str, List[str]]]:
+    """Group ``ids`` that fold to the same :func:`safe_path_segment`.
+
+    Returns ``(segment, sorted ids)`` for every segment with more than one
+    id, sorted by segment. The segment is compared and reported lowercased,
+    because Windows and macOS (both shipped targets) have case-insensitive
+    filesystems where ``Alice.json`` and ``alice.json`` are one file. A lone
+    non-canonical id collides with nothing and is not reported; ids from
+    different stores (users vs threads) must be grouped in separate calls,
+    since they never share a directory.
+    """
+    by_segment: Dict[str, List[str]] = {}
+    for identity in ids:
+        by_segment.setdefault(safe_path_segment(identity).lower(), []).append(identity)
+    return [
+        (segment, sorted(members))
+        for segment, members in sorted(by_segment.items())
+        if len(members) > 1
+    ]
 
 
 def mtime_sort_key(path: Path) -> Tuple[int, str]:

@@ -1333,7 +1333,7 @@ class CommandBackendClient:
             if is_shared_channel(thread_id):
                 return
             if claim:
-                self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
+                self._claim_thread_or_400(thread_id, self.user.id)
             return
 
         if is_shared_channel(thread_id):
@@ -1342,7 +1342,7 @@ class CommandBackendClient:
             _raise_http_status(404, "Not found")
 
         if claim:
-            owner = self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
+            owner = self._claim_thread_or_400(thread_id, self.user.id)
             if owner != self.user.id:
                 _raise_http_status(404, "Not found")
             return
@@ -1350,6 +1350,16 @@ class CommandBackendClient:
         owner = self.agent.accounts_repo.get_thread_owner(thread_id)
         if owner is not None and owner != self.user.id:
             _raise_http_status(404, "Not found")
+
+    def _claim_thread_or_400(self, thread_id: str, user_id: str) -> str:
+        """First-touch claim; a non-canonical NEW thread id is a 400 (the twin
+        of ``triggers/api.py::_claim_thread_or_400``)."""
+        from .accounts import InvalidIdentityId
+
+        try:
+            return self.agent.accounts_repo.claim_thread(thread_id, user_id)
+        except InvalidIdentityId as exc:
+            _raise_http_status(400, str(exc))
 
     def _checked_user_id(self, user_id: str) -> str:
         self._require_same_user_or_admin(user_id)
@@ -1534,6 +1544,11 @@ class CommandBackendClient:
 
         target_user_id = self._checked_user_id(user_id or self.user.id)
         selected_thread_id = thread_id or uuid.uuid4().hex[:8]
+        # Claim first: a refused (non-canonical) id must leave no metadata,
+        # and someone else's thread is 404 for a non-admin, as on REST /claim.
+        owner = self._claim_thread_or_400(selected_thread_id, target_user_id)
+        if owner != target_user_id and self.user.role != "admin":
+            _raise_http_status(404, "Not found")
         fields: dict[str, Any] = {"platform": "cli"}
         if title:
             fields["title"] = title
@@ -1541,7 +1556,6 @@ class CommandBackendClient:
         meta = self.agent.thread_metadata_manager.upsert_thread(
             target_user_id, selected_thread_id, **fields
         )
-        self.agent.accounts_repo.claim_thread(selected_thread_id, target_user_id)
         return _thread_list_payload(self.agent, selected_thread_id, meta)
 
     async def update_thread_metadata(

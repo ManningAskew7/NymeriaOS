@@ -25,7 +25,9 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal, NamedTuple, Optional
+
+from .storage_paths import canonical_segment_error, segment_collisions
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +223,42 @@ class UserAlreadyExists(ValueError):
     pass
 
 
+class InvalidIdentityId(ValueError):
+    """A NEW user or thread id is not its own storage segment.
+
+    Raised before any row is written; ``str(exc)`` is the user-facing copy
+    (it names the segment the id would fold onto and how to fix it).
+    """
+
+
+def _require_canonical_id(value: str, *, label: str) -> None:
+    error = canonical_segment_error(value, label=label)
+    if error is not None:
+        raise InvalidIdentityId(error)
+
+
+def _require_no_case_variant(
+    conn: sqlite3.Connection, table: str, column: str, value: str, *, label: str
+) -> None:
+    """Refuse a NEW id that differs from an existing row only by case.
+
+    Windows and macOS (shipped targets) have case-insensitive filesystems, so
+    ``Alice`` and ``alice`` are two rows over one store file there. SQLite's
+    ``lower()`` folds ASCII only, which covers the ids the platform mints and
+    the realistic operator typo; a non-ASCII case variant is not caught.
+    """
+    row = conn.execute(
+        f"SELECT {column} FROM {table} WHERE lower({column}) = lower(?) AND {column} != ?",
+        (value, value),
+    ).fetchone()
+    if row is not None:
+        raise InvalidIdentityId(
+            f"{label} {value!r} differs only by case from the existing id "
+            f"{row[0]!r}; the two would share one store on a case-insensitive "
+            "filesystem. Pick a different id."
+        )
+
+
 class LastAdminError(ValueError):
     """Raised when an operation would leave zero enabled admins."""
 
@@ -310,8 +348,12 @@ class AccountsRepo:
         display_name: str,
         role: UserRole = "user",
     ) -> UserRecord:
+        # Identity ids are canonical storage segments (see InvalidIdentityId);
+        # every per-user store keys its file on safe_path_segment(user_id).
+        _require_canonical_id(user_id, label="User id")
         now = _now()
         with self._lock, self._connect() as conn:
+            _require_no_case_variant(conn, "users", "id", user_id, label="User id")
             try:
                 conn.execute(
                     "INSERT INTO users (id, email, display_name, role, disabled, created_at, updated_at) "
@@ -781,19 +823,41 @@ class AccountsRepo:
         """
         First-touch claim. Returns the owner (which may be someone else if we
         lost a race). ``INSERT OR IGNORE`` then re-read makes this race-safe.
+
+        The first touch is where a client-chosen thread id enters the thread
+        index, so it is also where a non-canonical id is refused
+        (:class:`InvalidIdentityId`, before any write). An id that already has
+        a row is never re-checked: pre-existing threads keep working whatever
+        their id looks like, and ``backfill_threads`` (the boot path that
+        registers them) stays ungated on purpose.
         """
         with self._lock, self._connect() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO thread_owners (thread_id, user_id, created_at) "
-                "VALUES (?, ?, ?)",
-                (thread_id, user_id, _now()),
-            )
-            conn.commit()
             row = conn.execute(
                 "SELECT user_id FROM thread_owners WHERE thread_id = ?",
                 (thread_id,),
             ).fetchone()
+            if row is None:
+                _require_canonical_id(thread_id, label="Thread id")
+                _require_no_case_variant(
+                    conn, "thread_owners", "thread_id", thread_id, label="Thread id"
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO thread_owners (thread_id, user_id, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (thread_id, user_id, _now()),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT user_id FROM thread_owners WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()
             return row["user_id"]
+
+    def list_thread_ids(self) -> List[str]:
+        """Every thread id in the ownership index, all users."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT thread_id FROM thread_owners").fetchall()
+            return [r["thread_id"] for r in rows]
 
     def list_threads_for_user(self, user_id: str) -> List[str]:
         with self._lock, self._connect() as conn:
@@ -932,6 +996,33 @@ class AccountsRepo:
 # ---------------------------------------------------------------------------
 # Row helpers
 # ---------------------------------------------------------------------------
+
+
+class IdentityCollision(NamedTuple):
+    kind: str  # "user" or "thread"
+    segment: str
+    ids: List[str]
+
+
+def find_identity_collisions(repo: AccountsRepo) -> List[IdentityCollision]:
+    """Ids in the account table and the thread index that share a store file.
+
+    Pre-existing ids were never validated (creation refuses non-canonical ids
+    only since the rule shipped), so a deployment can hold ``alice.smith``
+    beside ``alicesmith``: two identities, one ``alicesmith.json`` in every
+    per-user store. This is the read-only source for the startup audit that
+    reports them; it never renames or deletes anything. Users and threads are
+    grouped separately because their stores live in different directories.
+    """
+    collisions = [
+        IdentityCollision("user", segment, ids)
+        for segment, ids in segment_collisions(u.id for u in repo.list_users())
+    ]
+    collisions.extend(
+        IdentityCollision("thread", segment, ids)
+        for segment, ids in segment_collisions(repo.list_thread_ids())
+    )
+    return collisions
 
 
 def _row_to_user(row: sqlite3.Row) -> UserRecord:

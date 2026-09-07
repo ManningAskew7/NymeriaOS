@@ -14,6 +14,7 @@ from typing import List
 from nymeria.config import get_settings
 from nymeria.core.accounts import (
     AccountsRepo,
+    InvalidIdentityId,
     TokenLimitExceeded,
     UserAlreadyExists,
     UserNotFound,
@@ -74,6 +75,9 @@ def _cmd_add(args: argparse.Namespace) -> int:
             display_name=display_name,
             role=args.role,
         )
+    except InvalidIdentityId as e:
+        print(f"[error] {e}", file=sys.stderr)
+        return 2
     except UserAlreadyExists as e:
         print(f"[error] User already exists: {e}", file=sys.stderr)
         return 2

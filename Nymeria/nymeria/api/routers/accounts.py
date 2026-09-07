@@ -13,6 +13,7 @@ from ...config import Settings
 from ...core.accounts import (
     AmbiguousTokenPrefix,
     AuthenticatedUser,
+    InvalidIdentityId,
     LastAdminError,
     TokenNotFound,
     TokenLimitExceeded,
@@ -261,6 +262,8 @@ def create_accounts_router(
                 display_name=display_name,
                 role=body.role,
             )
+        except InvalidIdentityId as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except UserAlreadyExists as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
