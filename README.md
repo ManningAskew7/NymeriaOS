@@ -12,6 +12,12 @@ tools, skills, workflows, and triggers.
 rough edges, breaking changes between betas, and docs that occasionally lag
 the code. Please file what you hit as a GitHub issue.
 
+**Beta scope: one person per deployment.** The account model supports several
+users on one backend, but multi-user operation is not yet tested or supported
+in the beta. Run a separate deployment for each person and use the owner
+(admin) account that `nymeria init` creates on first run; treat additional
+accounts as experimental.
+
 ## Install
 
 You need Python 3.11+ (the `uv` installer can fetch one for you) and an LLM

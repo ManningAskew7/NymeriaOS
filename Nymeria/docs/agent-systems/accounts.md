@@ -1,6 +1,6 @@
 # Accounts & Authentication
 
-Nymeria is transitioning from implicit-single-user to a real multi-user model. This doc covers the **backend** account/token layer: the `AccountsRepo` data model, bootstrap flow, the `/me` and `/admin/users` HTTP surface, and the service-token pattern bots and background workers use. The **frontend** UX that wraps these endpoints (sidebar avatar, account menu / switcher, Settings > Account / Users tabs, copy-once token dialog, error-toast layer) is documented separately in [`frontend-accounts.md`](../frontends/frontend-accounts.md). Read that one if you're touching `nymeria-{desktop,mobile}/src/lib/components/account/`.
+Nymeria is transitioning from implicit-single-user to a real multi-user model. Beta scope: multi-user operation is not yet tested or supported; run one deployment per person on the owner (admin) account, and treat additional accounts as experimental. This doc covers the **backend** account/token layer: the `AccountsRepo` data model, bootstrap flow, the `/me` and `/admin/users` HTTP surface, and the service-token pattern bots and background workers use. The **frontend** UX that wraps these endpoints (sidebar avatar, account menu / switcher, Settings > Account / Users tabs, copy-once token dialog, error-toast layer) is documented separately in [`frontend-accounts.md`](../frontends/frontend-accounts.md). Read that one if you're touching `nymeria-{desktop,mobile}/src/lib/components/account/`.
 
 ## Model
 
@@ -25,7 +25,7 @@ DB file:
 | `credentials` / `credential_secret_fields` / `credential_bindings` | Encrypted reusable tool credentials and connection auth. Secret fields are Fernet ciphertext; public APIs return metadata only. See [`credentials.md`](credentials.md). |
 | `credential_audit_events` | Credential-vault audit log rows for create/update/test/delete and binding operations |
 
-Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header to call the API on behalf of another user - used by bots and the worker ticker.
+Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header to call the API on behalf of another user - used by bots and the worker ticker. A non-admin sending the header for their own exact id is treated as not sending it (the terminal client does this on every request); any other target is a 403 for them.
 
 User ids and thread ids must be canonical storage segments (letters, digits,
 `-` and `_` only), because every per-user and per-thread store derives its

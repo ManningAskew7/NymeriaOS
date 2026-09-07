@@ -39,7 +39,7 @@ irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 |
 ```
 
 It asks whether you want **Slim** (simpler, best for a few users; single process
-on SQLite via `uv`, no Docker), **Full** (more robust, multi-user; runs in
+on SQLite via `uv`, no Docker), **Full** (more robust, Postgres and Redis; runs in
 Docker, so the script clones the repository and builds the images locally, and
 it can install Docker for you on Linux), or **Source** (hackable: a git checkout
 with an editable install, for working on Nymeria or letting the agent modify its
@@ -251,7 +251,9 @@ is needed at all). Paste that
 `nym_<token>` account token into the desktop/mobile Setup Wizard, not an
 LLM provider API key, then delete the file. See
 [accounts.md](../agent-systems/accounts.md) for the full account model and the
-`python3 run.py users` CLI for provisioning additional users.
+`python3 run.py users` CLI for provisioning additional users. Beta scope:
+multi-user operation is not yet tested or supported, so run one deployment per
+person and use the owner (admin) account; additional accounts are experimental.
 
 ### Set Your LLM Provider API Key
 

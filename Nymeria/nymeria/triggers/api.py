@@ -503,8 +503,10 @@ async def resolve_authenticated_user(
     ``X-Nymeria-Act-As: <user_id>`` is honored only for admin-role callers.
     When present, the dep returns the target user instead of the admin, so
     shared infrastructure (bots, the worker ticker) can route traffic per-user
-    without holding each user's raw token. Non-admin use → 403. Unknown or
-    disabled target → 404.
+    without holding each user's raw token. Non-admin use → 403, except that a
+    non-admin naming their own exact id is treated as not sending the header
+    (#350: the terminal client sends it for its own user on every request).
+    Unknown or disabled target → 404.
     """
     caller, agent = _resolve_caller_from_bearer(
         request=request,
@@ -513,6 +515,8 @@ async def resolve_authenticated_user(
 
     if x_nymeria_act_as:
         if caller.role != "admin":
+            if x_nymeria_act_as == caller.id:
+                return caller
             raise HTTPException(status_code=403, detail="Act-As requires admin")
         return _resolve_act_as_target(agent, x_nymeria_act_as)
 
