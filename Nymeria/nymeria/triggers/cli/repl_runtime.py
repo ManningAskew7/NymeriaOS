@@ -1070,7 +1070,11 @@ class _RichReplRuntime:
             task.cancel()
 
     async def _run_reconnect_watcher(self) -> None:
-        from .transport.api import APITransportStartupError, attempt_saved_reconnect
+        from .transport.api import (
+            APITransportStartupError,
+            attempt_saved_reconnect,
+            token_rejected_message,
+        )
 
         while True:
             await asyncio.sleep(_RECONNECT_POLL_INTERVAL_SECONDS)
@@ -1082,12 +1086,18 @@ class _RichReplRuntime:
             except asyncio.CancelledError:
                 raise
             except APITransportStartupError as exc:
-                # Saved token is no longer valid (e.g. revoked while we waited):
-                # stop polling and tell the user to re-authenticate.
-                self.set_status_notice(
-                    f"{exc.message} Run /login to reconnect.",
-                    level="error",
-                )
+                # Saved token is no longer valid (expired overnight, or revoked
+                # while we waited): stop polling and tell the user to
+                # re-authenticate, and with what. Only 401 means that; a 403 is
+                # the backend refusing the request itself, so it keeps the
+                # generic rendering.
+                if exc.status_code == 401:
+                    notice = token_rejected_message(
+                        exc.api_url, detail=str(exc.details.get("detail") or "")
+                    )
+                else:
+                    notice = f"{exc.message} Run /login to reconnect."
+                self.set_status_notice(notice, level="error")
                 return
             except Exception:  # noqa: BLE001 - a background retry must never crash the REPL.
                 continue

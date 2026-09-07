@@ -383,8 +383,18 @@ def _env_line(text: str, key: str) -> str | None:
 
 
 def _no_checkout(monkeypatch):
-    """Simulate a clone-free (pip/uv) install: no source checkout anywhere."""
-    monkeypatch.setattr(finalize_mod, "source_checkout_root", lambda: None)
+    """Simulate a clone-free (pip/uv) install: no source checkout anywhere.
+
+    The detection lives in environment.py, and every consumer reaches it
+    there (`detect_environment` reads it into the report's `source_checkout`;
+    finalize and the deployment step call it through the module), so one patch
+    covers all of them. Headless runs see the conftest's crafted report
+    instead, so a gating test also re-patches `runner.detect_environment` with
+    `_env_report(source_checkout=False)`.
+    """
+    from nymeria.setup import environment as environment_mod
+
+    monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: None)
 
 
 def _cliproxy_first_run(monkeypatch, root, *, provider="claude", auth_provider=None):

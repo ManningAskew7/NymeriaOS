@@ -11,14 +11,24 @@ import re
 from pathlib import Path
 import pytest
 from nymeria.onboarding import HostingOption
+from nymeria.setup import environment as environment_mod
 from nymeria.setup import finalize as finalize_mod
+from nymeria.setup import runner as runner_mod
 from nymeria.setup.runner import main as setup_main
 
 from _setup_wizard_helpers import (  # type: ignore[import-not-found]
+    _capture_console,
     _env_line,
+    _env_report,
     _no_checkout,
     _stub_llm,
 )
+
+
+def _images_published(monkeypatch):
+    """Flip the beta gate: pretend release images exist on the registry, which
+    re-opens the clone-free published-image compose path."""
+    monkeypatch.setattr(environment_mod, "PUBLISHED_DOCKER_IMAGES_AVAILABLE", True)
 
 
 # --- full Docker stack (Postgres + Redis) -----------------------------------
@@ -358,7 +368,7 @@ def test_docker_stack_spec_clone_free_uses_published_compose(monkeypatch):
     assert finalize_mod._compose_env(spec)["NYMERIA_VERSION"] == __version__
 
     # A checkout install is untouched: local-build compose, no version pin.
-    monkeypatch.setattr(finalize_mod, "source_checkout_root", lambda: Path("/x"))
+    monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: Path("/x"))
     spec = finalize_mod._docker_stack_spec(WizardState())
     assert spec.compose_args == ("-f", finalize_mod.DOCKER_SINGLE_COMPOSE)
     assert spec.image_version is None
@@ -374,7 +384,7 @@ def test_docker_stack_step_gates_full_without_checkout(monkeypatch):
     assert "needs a source checkout" in by_value[DockerStack.FULL].label
     assert not by_value[DockerStack.SLIM].disabled
 
-    monkeypatch.setattr(finalize_mod, "source_checkout_root", lambda: Path("/x"))
+    monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: Path("/x"))
     by_value = {choice.value: choice for choice in _docker_stack_choices()}
     assert not by_value[DockerStack.FULL].disabled
 
@@ -382,10 +392,13 @@ def test_docker_stack_step_gates_full_without_checkout(monkeypatch):
 def test_finalize_clone_free_slim_materializes_compose_and_pins_version(
     monkeypatch, tmp_path, capsys
 ):
+    # The published-image path, kept working behind the beta gate for when
+    # release images ship (the flag is the only thing standing in its way).
     from nymeria import __version__
 
     _stub_llm(monkeypatch)
     _no_checkout(monkeypatch)
+    _images_published(monkeypatch)
     root = tmp_path / "clone-free"
     root.mkdir()
 
@@ -456,6 +469,7 @@ def test_finalize_clone_free_start_drives_published_compose(monkeypatch, tmp_pat
 
     _stub_llm(monkeypatch)
     _no_checkout(monkeypatch)
+    _images_published(monkeypatch)
     root = tmp_path / "clone-free"
     root.mkdir()
     calls: list[tuple[list[str], object, dict]] = []
@@ -491,8 +505,10 @@ def test_finalize_clone_free_start_drives_published_compose(monkeypatch, tmp_pat
 
 
 def test_finalize_clone_free_full_stack_rejected(monkeypatch, tmp_path, capsys):
+    # Even with images published, the full stack builds from the repo.
     _stub_llm(monkeypatch)
     _no_checkout(monkeypatch)
+    _images_published(monkeypatch)
     root = tmp_path / "clone-free"
     root.mkdir()
 
@@ -502,10 +518,78 @@ def test_finalize_clone_free_full_stack_rejected(monkeypatch, tmp_path, capsys):
          "--non-interactive"]
     )
     assert rc == 2
-    out = capsys.readouterr().out
-    assert "needs a source checkout" in out
+    out = " ".join(capsys.readouterr().out.split())
+    assert "compose file builds the images from the repo" in out
+    # And the remedy names a setup run that actually sees the checkout:
+    # __file__-based detection ignores the cwd, so a packaged `nymeria init`
+    # inside the clone would land right back here.
+    assert "python run.py init" in out
+    assert "re-run `nymeria init`" not in out
     # Rejected before any file writes.
     assert not (root / ".env.docker").exists()
+
+
+def test_headless_clone_free_docker_is_rejected_before_any_write(monkeypatch, tmp_path):
+    """No images are published for the beta: a clone-free `--hosting docker`
+    is refused by the hosting gate (same copy as the picker) and nothing is
+    written, instead of a compose that fails at `up` with a pull error."""
+    _stub_llm(monkeypatch)
+    _no_checkout(monkeypatch)
+    # Headless runs get a crafted detection report (conftest stubs the real
+    # probe suite-wide), so the clone-free signal is set on the report itself.
+    monkeypatch.setattr(
+        runner_mod,
+        "detect_environment",
+        lambda **_kw: _env_report(source_checkout=False),
+    )
+    root = tmp_path / "clone-free"
+    root.mkdir()
+
+    with pytest.raises(SystemExit) as excinfo:
+        setup_main(
+            ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+             "--hosting", "docker", "--root", str(root), "--non-interactive",
+             "--skip-llm-test"]
+        )
+    message = str(excinfo.value)
+    assert "no published images yet" in message
+    assert "install.sh --source" in message
+    assert list(root.iterdir()) == []
+
+
+def test_finalize_clone_free_docker_gate_writes_nothing(monkeypatch, tmp_path):
+    """Finalize's own gate (hydrated or scoped runs reach it without the
+    headless hosting check): the Docker shape without a checkout writes no
+    config and no compose, and says where the source install is."""
+    _stub_llm(monkeypatch)
+    _no_checkout(monkeypatch)
+    root = tmp_path / "clone-free"
+    root.mkdir()
+    args = runner_mod.build_parser().parse_args(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--root", str(root), "--skip-llm-test"]
+    )
+    state = runner_mod._build_state(args)
+    console, buf = _capture_console()
+
+    rc = finalize_mod.finalize(state, console=console, non_interactive=True)
+
+    assert rc == 2
+    out = " ".join(buf.getvalue().split())  # undo Rich's line wrapping
+    assert "no published Nymeria images exist yet" in out
+    # Detection is __file__-based, so the remedy named must be an install that
+    # runs from the checkout, never "git clone it and run `nymeria init`".
+    assert "install.sh --source" in out
+    assert "python run.py init" in out
+    assert "git clone" not in out
+    assert list(root.iterdir()) == []
+
+    # The gate is the beta flag, nothing else: with images published the same
+    # state materializes the published compose as before.
+    _images_published(monkeypatch)
+    console, _buf = _capture_console()
+    assert finalize_mod.finalize(state, console=console, non_interactive=True) == 0
+    assert (root / finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE).exists()
 
 
 def test_finalize_checkout_docker_writes_no_version_pin(monkeypatch, tmp_path):

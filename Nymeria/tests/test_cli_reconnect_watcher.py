@@ -172,6 +172,73 @@ def test_reconnect_watcher_stops_and_warns_on_auth_error(monkeypatch) -> None:
     assert "/login" in runtime._status_notice.message
 
 
+def test_reconnect_watcher_explains_an_expired_saved_token(monkeypatch) -> None:
+    cli_app, runtime = _make_app_and_runtime()
+    placeholder = _reconnectable_placeholder()
+    cli_app._client = placeholder
+    monkeypatch.setattr(repl_runtime_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
+
+    async def fake_attempt(client, **kwargs):
+        raise APITransportStartupError(
+            "API authentication failed: Invalid API key",
+            code="api_auth_error",
+            api_url="http://saved",
+            status_code=401,
+            details={"detail": "Invalid API key"},
+        )
+
+    monkeypatch.setattr(transport_api, "attempt_saved_reconnect", fake_attempt)
+
+    asyncio.run(runtime._run_reconnect_watcher())
+
+    # The backend came up and rejected the saved token: the bootstrap token
+    # expired overnight is the common case, so the notice says so plainly and
+    # names where a replacement comes from.
+    assert cli_app._client is placeholder
+    assert runtime._status_notice is not None
+    assert runtime._status_notice.level == "error"
+    message = runtime._status_notice.message
+    assert "http://saved" in message
+    assert "expired" in message
+    assert "/login" in message
+    assert "issue-token" in message
+
+
+def test_reconnect_watcher_keeps_the_generic_notice_for_a_403(monkeypatch) -> None:
+    """403 is the backend refusing the request, not refusing the token.
+
+    Every CLI call carries `X-Nymeria-Act-As`, which the backend 403s for any
+    non-admin caller, so a regular user's saved token is fine and "it has
+    probably expired, run /login with a new token" is a false lead.
+    """
+
+    cli_app, runtime = _make_app_and_runtime()
+    placeholder = _reconnectable_placeholder()
+    cli_app._client = placeholder
+    monkeypatch.setattr(repl_runtime_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
+
+    async def fake_attempt(client, **kwargs):
+        raise APITransportStartupError(
+            "API authentication failed: Act-As requires admin",
+            code="api_auth_error",
+            api_url="http://saved",
+            status_code=403,
+            details={"detail": "Act-As requires admin"},
+        )
+
+    monkeypatch.setattr(transport_api, "attempt_saved_reconnect", fake_attempt)
+
+    asyncio.run(runtime._run_reconnect_watcher())
+
+    assert runtime._status_notice is not None
+    message = runtime._status_notice.message
+    assert message == (
+        "API authentication failed: Act-As requires admin Run /login to reconnect."
+    )
+    assert "expired" not in message
+    assert "issue-token" not in message
+
+
 def test_reconnect_watcher_is_noop_for_plain_disconnected(monkeypatch) -> None:
     cli_app, runtime = _make_app_and_runtime()
     cli_app._client = DisconnectedAgentClient(default_user_id="alice")

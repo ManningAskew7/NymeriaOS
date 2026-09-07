@@ -294,7 +294,11 @@ class CLIProxyEndpointStep(FormStep):
         state.cliproxy_management_url = deployment.management_url
         state.cliproxy_management_key = secret
         state.cliproxy_gatekeeper_key = gatekeeper
-        ok, detail = await asyncio.to_thread(compose_up, deployment.directory)
+        # The full stack's edge network is external to the proxy's compose
+        # and does not exist yet on a fresh host: compose_up creates it first.
+        ok, detail = await asyncio.to_thread(
+            compose_up, deployment.directory, join_network=join_network
+        )
         if not ok:
             self._deploying = False
             self.show_error(f"Could not start CLIProxy: {detail}")

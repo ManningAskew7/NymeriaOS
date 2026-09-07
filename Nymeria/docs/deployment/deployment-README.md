@@ -2,7 +2,7 @@
 
 Nymeria supports two deployment shapes from the same codebase. Pick the one that matches your use case. You can switch later.
 
-Both shapes come from the same two install channels: the published `nymeriaos` package (`uv tool install nymeriaos`) or a source checkout (`git clone` plus an editable install). The Docker stack needs the source checkout, because it builds its images locally; the beta publishes no container images. See [QUICKSTART.md](../getting-started/QUICKSTART.md) for the install steps.
+Both shapes come from the same two install channels: the published `nymeriaos` package (`uv tool install nymeriaos`) or a source checkout (`git clone` plus an editable install). The Docker stack needs the source checkout, because it builds its images locally; the beta publishes no container images. `nymeria init` enforces that rather than letting you find out at `docker compose up`: with no checkout detected it greys the Docker hosting option out and points at `install.sh --source`, a gate held by `PUBLISHED_DOCKER_IMAGES_AVAILABLE` in `Nymeria/nymeria/setup/environment.py` that re-opens the path once release images are published. See [QUICKSTART.md](../getting-started/QUICKSTART.md) for the install steps.
 
 New here? Read [shapes-explained.md](deployment-shapes-explained.md) first for a beginner-friendly tour of SSE, Redis, SQLite vs Postgres, and why two shapes exist. This page is the chooser; that one is the explainer.
 

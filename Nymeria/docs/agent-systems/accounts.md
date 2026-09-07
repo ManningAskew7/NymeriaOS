@@ -128,6 +128,15 @@ keeps the pasted token as-is. Later token edits in Settings store what you
 paste without exchanging (deliberate: that surface is also used to paste
 specific personal tokens).
 
+The terminal client does the same: `/login` (and the saved-token check at
+launch) finds its token in `GET /me/tokens` and, when that record expires
+within seven days, issues a `nymeria-cli <hostname>` token via
+`POST /me/tokens` and saves that one, saying so in one line. A token with
+longer to live is saved as entered. A failed exchange keeps the entered
+token and warns, naming `/account tokens issue` as the manual path; a saved
+token the backend later rejects with 401 gets the same advice instead of a
+raw status.
+
 ### Slim-launcher service token (`data/SLIM_SERVICE_TOKEN.txt`)
 
 `python3 run.py slim` provisions a separate `bot-service` admin user and

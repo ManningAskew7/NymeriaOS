@@ -11,6 +11,7 @@ tree.
 from __future__ import annotations
 
 import secrets
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,8 +207,78 @@ def generate_cliproxy_deployment(
     )
 
 
-def compose_up(directory: Path, *, timeout: float = 300.0) -> tuple[bool, str]:
-    """`docker compose up -d` the generated deployment; (ok, detail)."""
+def network_create_command(name: str) -> list[str]:
+    """The `docker network create` argv that makes compose ADOPT the network.
+
+    Compose names a project network `<project>_<key>` and, on `up`, checks an
+    existing network's labels before reusing it: created bare, the stack's
+    later `up` refuses with a label-mismatch error instead of joining it. The
+    full stack runs from the `Nymeria/` checkout dir (project `nymeria`) and
+    declares `edge`, so the labels follow from the name.
+    """
+    project, _, key = name.rpartition("_")
+    return [
+        "docker", "network", "create",
+        "--label", f"com.docker.compose.network={key}",
+        "--label", f"com.docker.compose.project={project}",
+        name,
+    ]
+
+
+def ensure_external_network(name: str, *, timeout: float = 30.0) -> tuple[bool, str]:
+    """Create the external network ``name`` unless it exists; (ok, detail).
+
+    A fresh host has no `nymeria_edge` yet: the stack that would create it
+    comes up AFTER the proxy the wizard is starting now, and compose refuses
+    to start a service on a missing external network (#313). Idempotent: an
+    existing network is left untouched, labels and all. On failure the
+    detail carries the exact command to run by hand.
+    """
+    try:
+        probe = subprocess.run(
+            ["docker", "network", "inspect", name],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=scrubbed_subprocess_env(DOCKER_CLI_PASSTHROUGH),
+        )
+        if probe.returncode == 0:
+            return True, ""
+        command = network_create_command(name)
+        created = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=scrubbed_subprocess_env(DOCKER_CLI_PASSTHROUGH),
+        )
+    except FileNotFoundError:
+        return False, "docker is not installed or not on PATH"
+    except subprocess.TimeoutExpired:
+        return False, f"docker network setup timed out after {int(timeout)}s"
+    if created.returncode == 0:
+        return True, ""
+    stderr = (created.stderr or created.stdout or "").strip()[-400:]
+    why = f" ({stderr})" if stderr else ""
+    return False, (
+        f"could not create the Docker network {name}{why}. Create it by hand, "
+        f"then retry: {shlex.join(command)}"
+    )
+
+
+def compose_up(
+    directory: Path, *, join_network: str | None = None, timeout: float = 300.0
+) -> tuple[bool, str]:
+    """`docker compose up -d` the generated deployment; (ok, detail).
+
+    `join_network` is the external network the generated compose joins (the
+    full stack's `nymeria_edge`); it is created first when missing, since
+    compose will not bring up a service on an absent external network.
+    """
+    if join_network:
+        ok, detail = ensure_external_network(join_network)
+        if not ok:
+            return False, detail
     try:
         result = subprocess.run(
             ["docker", "compose", "up", "-d"],
@@ -241,7 +312,9 @@ __all__ = [
     "MANAGEMENT_SECRET_FILENAME",
     "compose_up",
     "docker_available",
+    "ensure_external_network",
     "generate_cliproxy_deployment",
     "mint_gatekeeper_key",
     "mint_management_secret",
+    "network_create_command",
 ]

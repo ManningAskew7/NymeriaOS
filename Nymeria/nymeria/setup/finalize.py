@@ -47,6 +47,11 @@ from ..onboarding import (
     HostingOption,
     NextAction,
 )
+# `source_checkout_root` is reached through the module, not bound by name: it
+# is the one symbol tests fake, and a single patch point (environment.py, where
+# it lives) beats every importer needing its own.
+from . import environment
+from .environment import DOCKER_SINGLE_COMPOSE, clone_free_docker_blocked_reason
 from .external_access import (
     CORS_ORIGINS_ENV,
     EXTERNAL_ACCESS_ENV,
@@ -86,17 +91,18 @@ logger = logging.getLogger(__name__)
 
 BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
 
-# Single-container Docker (slim) artifacts. The compose file reads `.env.docker`
-# and runs `python run.py slim` as service `nymeria-single`, which mints the
-# bootstrap admin + token into its `/data` volume on first boot.
-DOCKER_SINGLE_COMPOSE = "docker-compose.single.yml"
+# Single-container Docker (slim) artifacts. The compose file
+# (`DOCKER_SINGLE_COMPOSE`, named beside the checkout detection in
+# environment.py) reads `.env.docker` and runs `python run.py slim` as
+# service `nymeria-single`, which mints the bootstrap admin + token into its
+# `/data` volume on first boot.
 DOCKER_SINGLE_SERVICE = "nymeria-single"
 
 # Full Postgres + Redis stack artifacts. The multi-container compose is the
-# default `docker-compose.yml`, read with `--env-file .env.docker` (compose
-# interpolation, not a service `env_file:`). The `api` service runs `run.py api`
-# and mints the bootstrap admin + token into the `nymeria_data` volume.
-DOCKER_FULL_COMPOSE = "docker-compose.yml"
+# default `docker-compose.yml` (`DOCKER_FULL_COMPOSE`), read with
+# `--env-file .env.docker` (compose interpolation, not a service `env_file:`).
+# The `api` service runs `run.py api` and mints the bootstrap admin + token
+# into the `nymeria_data` volume.
 DOCKER_FULL_SERVICE = "api"
 
 # Clone-free single-container artifacts: the same slim shape, but pulling the
@@ -190,7 +196,7 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
     search_profile = _searxng_sidecar_selected(state)
     profile_args: tuple[str, ...] = ("--profile", "search") if search_profile else ()
     if (state.docker_stack or DockerStack.SLIM) is DockerStack.SLIM:
-        clone_free = source_checkout_root() is None
+        clone_free = environment.source_checkout_root() is None
         compose_file = (
             DOCKER_SINGLE_PUBLISHED_COMPOSE if clone_free else DOCKER_SINGLE_COMPOSE
         )
@@ -295,18 +301,34 @@ def finalize(
     """
 
     # Clone-free (pip/uv) installs have no checkout holding the compose files.
-    # The slim shape works anyway (finalize materializes the wheel-bundled
-    # published-image compose into the runtime root), but the full stack's
-    # compose builds its images from the repo, so reject it up front, before
-    # any LLM test, OAuth flow, or file write happens.
-    if _is_full_stack(state) and source_checkout_root() is None:
-        console.print(
-            "[red]The full Postgres + Redis stack needs a source checkout: its "
-            "compose file builds the images from the repo. Clone the repo and "
-            "re-run `nymeria init` from it, or choose the single-container "
-            "stack.[/red]"
-        )
-        return 2
+    # While no images are published (the beta gate in environment.py) that
+    # rules out Docker hosting altogether; once they are, the slim shape works
+    # (finalize materializes the wheel-bundled published-image compose into
+    # the runtime root) but the full stack's compose still builds its images
+    # from the repo. Either way, reject up front, before any LLM test, OAuth
+    # flow, or file write happens. The interactive picker and the headless
+    # hosting gate already grey the shape out; this catches hydrated state.
+    if state.hosting is HostingOption.DOCKER and environment.source_checkout_root() is None:
+        if clone_free_docker_blocked_reason():
+            console.print(
+                "[red]Docker hosting needs a source checkout for now: no "
+                "published Nymeria images exist yet, so a clone-free (pip/uv) "
+                "install has nothing to pull. Install from source with "
+                "install.sh --source, or run `python run.py init` from a "
+                "clone (a packaged `nymeria init` stays clone-free wherever "
+                "you launch it), or choose to run on this machine or as a "
+                "background service.[/red]"
+            )
+            return 2
+        if _is_full_stack(state):
+            console.print(
+                "[red]The full Postgres + Redis stack needs a source checkout: "
+                "its compose file builds the images from the repo. Clone the "
+                "repo and re-run setup as `python run.py init` from it (a "
+                "packaged `nymeria init` stays clone-free wherever you launch "
+                "it), or choose the single-container stack.[/red]"
+            )
+            return 2
 
     # Out-of-the-box RAG: if nothing RAG-related was configured (no embedder chosen
     # and no embedding key supplied), equip the free, private local stack
@@ -429,7 +451,7 @@ def finalize(
     # Slim Docker without a checkout: finalize owns the compose file (the
     # wheel-bundled published-image one, materialized below). The full stack
     # was already rejected up front.
-    clone_free_docker = for_docker and source_checkout_root() is None
+    clone_free_docker = for_docker and environment.source_checkout_root() is None
     try:
         check_writable(root)
         if not for_docker:
@@ -1279,28 +1301,10 @@ def resolve_runtime_root(state: WizardState, *, for_docker: bool) -> Path:
     if state.root is not None:
         return Path(state.root).expanduser().resolve()
     if for_docker:
-        checkout = source_checkout_root()
+        checkout = environment.source_checkout_root()
         if checkout is not None:
             return checkout
     return default_init_root()
-
-
-def source_checkout_root() -> Path | None:
-    """The source-checkout dir holding the Docker compose files, or None.
-
-    The compose files (`docker-compose.single.yml` for slim, `docker-compose.yml`
-    for the full stack) only exist in a source checkout; a clone-free (pip/uv)
-    install ships neither, so None signals the clone-free Docker case: finalize
-    materializes the wheel-bundled published-image compose into the runtime
-    root for the slim stack and rejects the full stack (whose compose builds
-    images from the repo). Both stacks resolve to the same root.
-    """
-    root = find_project_root(Path(__file__).resolve())
-    if root is not None and (
-        (root / DOCKER_SINGLE_COMPOSE).exists() or (root / DOCKER_FULL_COMPOSE).exists()
-    ):
-        return root
-    return None
 
 
 def _materialize_published_compose(root: Path) -> Path:
@@ -2814,7 +2818,6 @@ __all__ = [
     "update_bootstrap_profile",
     "resolve_root",
     "resolve_runtime_root",
-    "source_checkout_root",
     "resolve_data_dir",
     "default_init_root",
     "check_writable",

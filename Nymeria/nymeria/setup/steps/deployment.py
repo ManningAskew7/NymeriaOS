@@ -60,7 +60,7 @@ def _docker_stack_choices() -> list[Choice]:
     images from the repo, so without a checkout it is shown greyed out (the
     same rendering as "to come" choices) instead of failing in finalize.
     """
-    from ..finalize import source_checkout_root
+    from ..environment import source_checkout_root
 
     choices = _choices(DOCKER_STACK_ORDER, DOCKER_STACK_CHOICES)
     if source_checkout_root() is not None:

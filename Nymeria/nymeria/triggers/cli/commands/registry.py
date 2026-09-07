@@ -281,11 +281,7 @@ class CommandRegistry:
         except Exception as exc:  # noqa: BLE001 - transport faults surface in UI.
             # Mirror _execute's containment: a transport fault on an unknown
             # token must degrade to an error result, not kill the REPL.
-            return CommandResult.failed(
-                f"Command failed: {exc}",
-                error_code="command_exception",
-                payload={"error_type": exc.__class__.__name__},
-            )
+            return _exception_result(context, exc)
 
     def get_all_commands(self) -> list[Command]:
         """Return all non-hidden root commands."""
@@ -376,12 +372,7 @@ class CommandRegistry:
             if inspect.isawaitable(raw_result):
                 raw_result = await raw_result
         except Exception as exc:  # noqa: BLE001 - command errors surface in UI.
-            return CommandResult.failed(
-                f"Command failed: {exc}",
-                command_path=match.path,
-                error_code="command_exception",
-                payload={"error_type": exc.__class__.__name__},
-            )
+            return _exception_result(context, exc, command_path=match.path)
 
         return _coerce_result(raw_result, command_path=match.path)
 
@@ -603,6 +594,41 @@ def _with_json_output(context: CommandContext) -> CommandContext:
     metadata = dict(context.metadata)
     metadata["json_output"] = True
     return replace(context, output=JsonCommandOutputSink(), metadata=metadata)
+
+
+def _exception_result(
+    context: CommandContext,
+    exc: Exception,
+    *,
+    command_path: tuple[str, ...] = (),
+) -> CommandResult:
+    """Contain a handler exception as an error result.
+
+    A 401 escaping a backend call is the saved token being rejected
+    mid-session (it expired), so it gets the actionable token copy rather
+    than the raw exception text. A 403 does not: that is the backend refusing
+    the request itself ("Admin only", "Act-As requires admin", an admin-gated
+    tool toggle), which a non-admin meets routinely with a perfectly good
+    token, so it keeps the generic rendering.
+    """
+
+    message = f"Command failed: {exc}"
+    if getattr(exc, "response", None) is not None:
+        # Function-local: the transport module pulls httpx, which the thin
+        # client keeps off its launch path (tests/test_cli_startup_imports.py).
+        # Only an HTTP-shaped exception can carry a status, so nothing else
+        # pays for the import either.
+        from ..transport.api import _response_detail, _status_code, token_rejected_message
+
+        if _status_code(exc) == 401:
+            api_url = str(getattr(context.client, "base_url", "") or "") or "The backend"
+            message = token_rejected_message(api_url, detail=_response_detail(exc))
+    return CommandResult.failed(
+        message,
+        command_path=command_path,
+        error_code="command_exception",
+        payload={"error_type": exc.__class__.__name__},
+    )
 
 
 def _coerce_result(raw_result: Any, *, command_path: tuple[str, ...]) -> CommandResult:
