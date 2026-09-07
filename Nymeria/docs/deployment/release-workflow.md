@@ -16,6 +16,16 @@ The `python-package` job builds the Python distribution artifacts:
 5. Builds the wheel and source distribution with `python -m build`.
 6. Runs `twine check` before uploading artifacts.
 
+Before that metadata check, `scripts/check_wheel_contents.py` opens the built
+wheel and fails the job unless every runtime data file is inside it (the
+wizard's Textual stylesheet, the web UI bundle, the persona prompt, the
+bundled catalogs, the wizard assets). A wheel ships only what
+`[tool.setuptools.package-data]` declares, and a source checkout hides an
+undeclared file completely, so this is the only place the gap can show
+before users do; `0.2.0b1` shipped without `setup/theme.tcss` and crashed
+`nymeria init` for exactly that reason. Run it locally on the output of
+`python -m build --wheel` when adding a non-Python file to the package.
+
 The `windows-desktop` job builds the Windows desktop installer:
 
 1. Installs the desktop frontend dependencies with Node 20.
