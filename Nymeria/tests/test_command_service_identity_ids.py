@@ -6,7 +6,7 @@ with ``claim=True``) and ``create_thread`` are creation points for a
 client-chosen thread id, so both must refuse a non-canonical id with the
 same 400 + detail the REST layer returns, leaving no owner row and no
 metadata behind. Reads and grandfathered threads are never refused. Spec:
-``tmp/keep/safe-path-segment-spec.md`` behaviors 2, 3 and 6.
+the #349 identity-id boundary pass (behaviors 2, 3 and 6 of its spec).
 """
 
 from __future__ import annotations

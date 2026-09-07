@@ -729,7 +729,7 @@ def _claim_thread_or_400(agent: NymeriaAgent, thread_id: str, user_id: str) -> s
     """First-touch claim; a non-canonical NEW thread id is a 400, not a 500.
 
     The first write to a client-chosen thread id is where the thread is
-    created (spec: ``tmp/keep/safe-path-segment-spec.md``), so the refusal
+    created (the #349 identity-id boundary pass), so the refusal
     surfaces here with the repo's own copy as the detail.
     """
     try:

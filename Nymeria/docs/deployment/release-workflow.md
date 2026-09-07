@@ -59,7 +59,7 @@ builds locally, and a `nymeria init` Docker setup needs the checkout too. The
 image-based compose file that also ships inside the wheel
 (`nymeria/setup/assets/`, kept byte-identical to
 `Nymeria/docker-compose.single.published.yml` by a drift test in
-`tests/test_setup_wizard.py`) stays dormant until `PUBLISH_IMAGES` is turned
+`tests/test_setup_wizard_docker.py`) stays dormant until `PUBLISH_IMAGES` is turned
 on; when it is, init pins `NYMERIA_VERSION` in `.env.docker` to the installed
 package version, which matches the image tag (the release tag with `v`
 stripped).
