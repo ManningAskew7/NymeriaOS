@@ -290,6 +290,32 @@ def test_login_remote_url_still_prompts_for_token(tmp_path) -> None:
     assert secret_calls != []
 
 
+def test_login_cancelled_at_a_prompt_reports_cancellation(tmp_path) -> None:
+    """EOF (Ctrl+D) at the URL or token prompt used to surface as an empty
+    "Command failed:" (the EOFError's empty str); it is a cancellation. Ctrl+C
+    never reaches the command inside the REPL (its keymap clears the line)."""
+    FakeLoginAPI.reset()
+    actions: list[Any] = []
+    config_path = tmp_path / ".nymeria" / "cli.json"
+    registry = make_registry()
+
+    def eof(prompt: str) -> str:
+        raise EOFError
+
+    ctx = make_context(config_path=config_path, actions=actions, prompts=[])
+    ctx.secret_prompt_handler = eof
+    result = run(registry.dispatch_async(ctx, "/login https://remote.example.com:8000"))
+    assert result.ok is False
+    assert result.error_code == "login_cancelled"
+    assert "cancelled" in str(result.messages[0].content).lower()
+    assert FakeLoginAPI.instances == []
+
+    ctx = make_context(config_path=config_path, actions=actions, prompts=[])
+    ctx.prompt_handler = eof
+    result = run(registry.dispatch_async(ctx, "/login"))
+    assert result.error_code == "login_cancelled"
+
+
 def test_login_reuse_falls_back_to_prompt_on_auth_error(tmp_path) -> None:
     FakeLoginAPI.reset()
     actions: list[Any] = []

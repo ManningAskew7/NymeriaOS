@@ -286,6 +286,14 @@ async def _connection_failure_result(
     )
 
 
+def _login_cancelled() -> CommandResult:
+    """EOF at a /login prompt (Ctrl+D; Ctrl+C where the prompt lets it through,
+    the REPL's own keymap binds it to clear-line) is a cancellation, not a
+    failure: an EOFError's empty str used to render as a bare
+    "Command failed:". An empty token cancels too, and the prompt says so."""
+    return CommandResult.failed("Login cancelled.", error_code="login_cancelled")
+
+
 async def _handle_login(
     context: CommandContext,
     args: list[str],
@@ -298,7 +306,10 @@ async def _handle_login(
     user_id = parsed["user_id"] or context.user_id or "default"
     if not api_url:
         default_url = _default_login_url(context)
-        entered = (await context.prompt(f"API URL [{default_url}]: ")).strip()
+        try:
+            entered = (await context.prompt(f"API URL [{default_url}]: ")).strip()
+        except (EOFError, KeyboardInterrupt):
+            return _login_cancelled()
         api_url = entered or default_url
     api_url = api_url.rstrip("/")
 
@@ -321,7 +332,12 @@ async def _handle_login(
                 return await _connection_failure_result(context, exc)
             # Saved token rejected for this backend: fall through and prompt.
 
-    api_key = (await context.prompt("API token: ", secret=True)).strip()
+    try:
+        api_key = (
+            await context.prompt("API token (empty to cancel): ", secret=True)
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return _login_cancelled()
     if not api_key:
         return CommandResult.failed(
             "Login cancelled: API token is required.",

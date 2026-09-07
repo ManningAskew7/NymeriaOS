@@ -71,6 +71,12 @@ _suppress_env_file_loading()
 # `pytest_runtest_setup` runs before `item.setup()`, so it precedes every
 # fixture regardless of name and scope, including module- and class-scoped
 # ones set up during a test's setup phase.
+# Rich honours FORCE_COLOR even on a captured, non-tty stdout, and the wizard
+# tests assert on plain captured text: with it set, "port 8010 is already in
+# use" arrives as "port \x1b[1;36m8010\x1b[0m is already in use" and nine
+# setup tests fail. Claude Code's shell exports FORCE_COLOR=3 (2026-09-07), so
+# drop it before the snapshot pins the environment for every test.
+os.environ.pop("FORCE_COLOR", None)
 _PRISTINE_ENV = dict(os.environ)
 
 # pytest rewrites PYTEST_CURRENT_TEST per phase and pops it UNGUARDED at

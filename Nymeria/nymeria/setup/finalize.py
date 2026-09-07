@@ -1929,9 +1929,13 @@ def print_next_action(
     else:
         console.print("\nStart Nymeria with:")
         _print_command(console, _start_command_for_hosting(state))
-    console.print(
-        f"Then open {local_base_url(state)} and paste the bootstrap token."
-    )
+    if connect_token:
+        console.print(
+            f"Then open {local_base_url(state)} and paste the bootstrap token "
+            "from the handoff printed above."
+        )
+    else:
+        console.print(f"Then open {local_base_url(state)} and sign in.")
     if active_public_url(state):
         console.print(
             f"Remote devices use {public_origin(active_public_url(state))} "
@@ -2093,7 +2097,11 @@ def run_next_action(
             return _start_now_docker(console, state=state, root=root)
         if state.hosting is HostingOption.LOCAL:
             return _start_now_local(
-                console, state=state, root=root, handoff_token=handoff_token
+                console,
+                state=state,
+                root=root,
+                handoff_token=handoff_token,
+                token_printed=connect_token is not None,
             )
         if state.hosting is HostingOption.SERVICE:
             return _start_now_service(
@@ -2185,28 +2193,46 @@ def _start_now_local(
     state: WizardState,
     root: Path,
     handoff_token: str | None = None,
+    token_printed: bool = False,
 ) -> int:
+    """Start the slim backend in this terminal.
+
+    ``handoff_token`` is the pre-gated browser auto-open credential;
+    ``token_printed`` says whether this run printed a bootstrap token at all
+    (a reconfigure of an existing admin prints none), so the copy never tells
+    the user to paste something they were not shown.
+    """
+    from ..service_install import resolve_exec_argv
+
     console.print("\nStarting Nymeria in the foreground (Ctrl+C to stop).")
     if handoff_token:
         console.print(
             "Once it is up, your browser opens already signed in (the token "
             f"printed above and {local_base_url(state)} are the fallback)."
         )
-    else:
+    elif token_printed:
         console.print(
             f"Once it is up, open {local_base_url(state)} and paste the bootstrap "
-            "token shown above."
+            "token from the handoff printed above."
         )
+    else:
+        console.print(f"Once it is up, open {local_base_url(state)} and sign in.")
     if active_public_url(state):
         console.print(
             f"Remote devices use {public_origin(active_public_url(state))} "
             "once the backend is up."
         )
-    # Re-invoke this same entry point with the `slim` subcommand so it works from
-    # both a source checkout (`python3 run.py init`) and an installed console
-    # script (`nymeria init`). Run in the runtime root so slim finds config.env.
-    script = os.path.abspath(sys.argv[0])
-    command = [sys.executable, script, "slim"]
+    # Re-run this entry point with the `slim` subcommand. resolve_exec_argv is
+    # the one place that knows every install shape: a source checkout
+    # (`python3 run.py init`), a `-m` launch, a frozen build, and an installed
+    # console script, including uv's Windows trampoline, which runs
+    # nymeria.exe as a zipapp and leaves a sys.argv[0] of
+    # `...\.local\bin\nymeria` (no such file); the answer there is to re-run
+    # the archive, with `shutil.which("nymeria")` as the fallback. The old
+    # `[sys.executable, sys.argv[0], "slim"]` died there with "can't open file"
+    # on the first public-beta Windows test. Run in the runtime root so slim
+    # finds config.env.
+    command = resolve_exec_argv()
     env = dict(os.environ)
     env["NYMERIA_PROJECT_ROOT"] = str(root)
     # The server owns this terminal from here, so the smoke turn runs from a

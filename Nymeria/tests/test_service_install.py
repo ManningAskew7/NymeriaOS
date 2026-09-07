@@ -191,6 +191,41 @@ def test_resolve_exec_argv_reproduces_dash_m_launch(monkeypatch, tmp_path):
     assert resolve_exec_argv() == [sys.executable, "-m", "nymeria.cli_entry", "slim"]
 
 
+def test_resolve_exec_argv_reruns_a_zipapp_launcher(monkeypatch, tmp_path):
+    """uv's Windows console-script launcher runs `python.exe nymeria.exe` as a
+    zipapp: `__main__.__spec__.name` is "__main__" and its origin is
+    `<exe>/__main__.py`, while the generated __main__ strips `.exe` from
+    sys.argv[0] (no such file). The re-run is `python <exe>`, never
+    `python -m __main__` (which cannot find a module spec) and never argv[0]."""
+    archive = tmp_path / "nymeria.exe"
+    archive.write_bytes(b"MZ-not-really-but-a-file")
+
+    class _Spec:
+        name = "__main__"
+        origin = str(archive / "__main__.py")
+
+    monkeypatch.setattr(sys.modules["__main__"], "__spec__", _Spec(), raising=False)
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "nymeria")])
+    monkeypatch.setattr(si.shutil, "which", lambda _name: str(tmp_path / "nymeria.exe"))
+    assert resolve_exec_argv() == [sys.executable, str(archive), "slim"]
+
+
+def test_resolve_exec_argv_main_spec_without_an_archive_falls_through(
+    monkeypatch, tmp_path
+):
+    # A "__main__" spec whose origin is not inside a runnable archive (a
+    # `python -c` style launch on some interpreters) must not become
+    # `-m __main__`; the script / console-script branches decide instead.
+    class _Spec:
+        name = "__main__"
+        origin = str(tmp_path / "missing.exe" / "__main__.py")
+
+    monkeypatch.setattr(sys.modules["__main__"], "__spec__", _Spec(), raising=False)
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "gone")])
+    monkeypatch.setattr(si.shutil, "which", lambda _name: "/fake/bin/nymeria")
+    assert resolve_exec_argv() == ["/fake/bin/nymeria", "slim"]
+
+
 def test_ephemeral_exec_warning_flags_uv_cache(tmp_path):
     argv = [f"{Path.home()}/.cache/uv/archive-v0/abc/bin/python", "slim"]
     warning = si.ephemeral_exec_warning(argv)

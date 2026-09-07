@@ -169,6 +169,15 @@ def test_finalize_starts_local_foreground_when_opted_in(monkeypatch, tmp_path):
         "wait_for_health",
         lambda **kw: pytest.fail("local foreground start must not health-poll"),
     )
+    # The launcher command comes from service_install.resolve_exec_argv, the one
+    # place that knows every install shape. Under uv's Windows console-script
+    # trampoline sys.argv[0] is `...\.local\bin\nymeria` (no such file, and
+    # nymeria.exe is not a Python script), so `[sys.executable, argv0, "slim"]`
+    # died with "can't open file" on the first public-beta Windows test.
+    import nymeria.service_install as si
+
+    launcher = ["C:\\Users\\t\\.local\\bin\\nymeria.exe", "slim"]
+    monkeypatch.setattr(si, "resolve_exec_argv", lambda *a, **k: list(launcher))
 
     rc = setup_main(
         ["--provider", "anthropic", "--model", "claude-test-model",
@@ -179,10 +188,39 @@ def test_finalize_starts_local_foreground_when_opted_in(monkeypatch, tmp_path):
     assert rc == 0
     assert len(calls) == 1
     cmd, cwd, env = calls[0]
-    assert cmd[0] == finalize_mod.sys.executable
-    assert cmd[-1] == "slim"
+    assert cmd == launcher
     assert cwd == str(root)
     assert env.get("NYMERIA_PROJECT_ROOT") == str(root)
+
+
+def test_local_foreground_copy_only_cites_a_token_that_was_printed(monkeypatch, tmp_path):
+    """A reconfigure prints no bootstrap token (the admin already exists), so
+    "paste the bootstrap token shown above" pointed at nothing on the first
+    public-beta Windows test. A fresh non-interactive install did print one
+    (browser handoff off), and keeps the paste instruction."""
+    from nymeria.setup.state import WizardState
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", lambda *a, **k: _Result())
+    import nymeria.service_install as si
+
+    monkeypatch.setattr(si, "resolve_exec_argv", lambda *a, **k: ["nymeria", "slim"])
+
+    def run(**kw):
+        console, out = _capture_console()
+        finalize_mod._start_now_local(
+            console, state=WizardState(), root=tmp_path, handoff_token=None, **kw
+        )
+        return out.getvalue()
+
+    # The console wraps at 80 columns; compare on collapsed whitespace.
+    reconfigure = " ".join(run(token_printed=False).split())
+    assert "bootstrap token" not in reconfigure
+    assert "sign in" in reconfigure
+    fresh = " ".join(run(token_printed=True).split())
+    assert "paste the bootstrap token from the handoff printed above" in fresh
 
 
 # --- post-start chat smoke test ----------------------------------------------
@@ -849,6 +887,36 @@ def test_run_next_action_gates_the_handoff_token(monkeypatch, tmp_path):
     )
     # Gates pass -> the token reaches the start path; headless -> it never does.
     assert seen == ["nym_x", None]
+
+
+def test_run_next_action_tells_local_start_whether_a_token_was_printed(monkeypatch, tmp_path):
+    """`token_printed` is derived from connect_token (the bootstrap token this
+    run printed), independently of the browser handoff gate: a headless fresh
+    install printed one (paste instruction), a reconfigure printed none."""
+    from nymeria.onboarding import NextAction
+    from nymeria.setup.state import WizardState
+
+    seen: list[tuple[str | None, bool]] = []
+
+    def fake_local(console, *, state, root, handoff_token=None, token_printed=False):
+        seen.append((handoff_token, token_printed))
+        return 0
+
+    monkeypatch.setattr(finalize_mod, "_start_now_local", fake_local)
+    console, _out = _capture_console()
+    state = WizardState(
+        hosting=HostingOption.LOCAL, next_action=NextAction.START_API_OPEN_FRONTEND
+    )
+    for token in ("nym_x", None):
+        assert (
+            finalize_mod.run_next_action(
+                state, console, root=tmp_path, connect_token=token, non_interactive=True
+            )
+            == 0
+        )
+    # Headless: no browser handoff either way; the paste instruction only when
+    # a token exists.
+    assert seen == [(None, True), (None, False)]
 
 
 def test_finalize_service_start_opens_browser_after_health(monkeypatch, tmp_path):

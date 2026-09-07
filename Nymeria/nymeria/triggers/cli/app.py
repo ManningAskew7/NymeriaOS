@@ -814,11 +814,17 @@ class CLIApp:
             client=self._client,
             output=self._command_output_sink(capabilities),
             dispatch_state=self._dispatch_repl_action,
-            prompt_handler=lambda prompt: self._prompt_for_input(
+            # The command runs under asyncio.run below, so a prompt it awaits
+            # (/login's token) is served INSIDE that loop: the async twin
+            # (session.prompt_async) is the only prompt that can run there.
+            # prompt_toolkit's sync session.prompt starts its own loop and
+            # refuses with "asyncio.run() cannot be called from a running event
+            # loop" (first public-beta Windows test, 2026-09-07).
+            prompt_handler=lambda prompt: self._prompt_for_input_async(
                 prompt,
                 session=session,
             ),
-            secret_prompt_handler=lambda prompt: self._prompt_for_input(
+            secret_prompt_handler=lambda prompt: self._prompt_for_input_async(
                 prompt,
                 secret=True,
                 session=session,
@@ -1681,19 +1687,6 @@ class CLIApp:
             user_id_explicit=True,
         )
 
-    def _prompt_for_input(
-        self,
-        prompt: str,
-        *,
-        secret: bool = False,
-        session: Any | None = None,
-    ) -> str:
-        if session is not None:
-            return session.prompt(prompt, is_password=secret)
-        if secret:
-            return getpass.getpass(prompt)
-        return self.state.console.input(prompt)
-
     async def _prompt_for_input_async(
         self,
         prompt: str,
@@ -1709,11 +1702,19 @@ class CLIApp:
                 if runtime is not None
                 else prompt
             )
-            return await session.prompt_async(
-                prompt_message,
-                is_password=secret,
-                **prompt_kwargs,
-            )
+            # prompt_toolkit persists every kwarg on the session (is_password
+            # included), and the REPL's own next prompt passes none of its
+            # own, so a secret prompt left as-is would mask the rest of the
+            # session as asterisks. Restore what the session had.
+            previous_is_password = getattr(session, "is_password", False)
+            try:
+                return await session.prompt_async(
+                    prompt_message,
+                    is_password=secret,
+                    **prompt_kwargs,
+                )
+            finally:
+                session.is_password = previous_is_password
         if runtime is not None and runtime.application is not None:
             from prompt_toolkit.application import run_in_terminal
 

@@ -156,7 +156,20 @@ def resolve_exec_argv(args: Sequence[str] = ("slim",)) -> list[str]:
     main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
     if main_spec is not None and getattr(main_spec, "name", None):
         module = main_spec.name.removesuffix(".__main__")
-        return [sys.executable, "-m", module, *tail]
+        if module != "__main__":
+            return [sys.executable, "-m", module, *tail]
+        # A zipapp launch (`python <archive>`), which is what uv's Windows
+        # console-script trampoline does with the zip appended to
+        # nymeria.exe: the spec is named "__main__" with origin
+        # `<archive>/__main__.py`, and `-m __main__` cannot find a spec. Re-run
+        # the archive itself. sys.argv[0] is no use here either (the generated
+        # __main__ strips `.exe` from it), so this must come before the script
+        # branch.
+        origin = getattr(main_spec, "origin", None)
+        if origin:
+            archive = Path(origin).parent
+            if archive.is_file():
+                return [sys.executable, str(archive), *tail]
     script = Path(os.path.abspath(sys.argv[0]))
     if script.is_file():
         return [sys.executable, str(script), *tail]
