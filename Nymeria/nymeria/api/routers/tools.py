@@ -239,11 +239,17 @@ def apply_default_tools_update(
 
     agent._rebuild_default_graphs()
 
-    return {
+    result = {
         "status": "ok",
         "default_tools": sorted(resolved),
         "count": len(resolved),
     }
+    from ...tools.metadata import capability_loss_warning
+
+    lost = capability_loss_warning(existing - set(resolved))
+    if lost:
+        result["warning"] = lost
+    return result
 
 
 def create_tools_router(

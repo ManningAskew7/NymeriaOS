@@ -9,6 +9,8 @@ And confirms the existing prompt + instructions paths still work.
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +18,9 @@ from unittest.mock import patch
 
 import pytest
 
+from nymeria.core import thread_requests as tr
 from nymeria.core.thread_config import ThreadConfigManager
+from nymeria.core.thread_lock_manager import ThreadLockManager
 from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.tools import SEED_TOOLS
 from nymeria.tools.spawn_thread import (
@@ -537,8 +541,18 @@ class TestKitBinding:
 
 
 class TestInvokeSpawnedInternals:
-    """Lock the SSE-publishing behavior of _invoke_spawned through the refactor
-    onto the shared AutonomousTurnEmitter (slice 18 F3)."""
+    """_invoke_spawned publishes the child's turn over the shared
+    AutonomousTurnEmitter (slice 18 F3) and, under a parent, dispatches a
+    REQUEST (backlog #357): the child's prompt carries the [Request Metadata]
+    block, the parent gets a [Requested] receipt at once (or the reply inline
+    after ``wait_seconds``), the child's plain text is never the reply, and
+    the abort-cascade edge exists only while the parent waits."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_ledger(self):
+        tr.reset_for_tests()
+        yield
+        tr.reset_for_tests()
 
     @staticmethod
     def _spawn_agent(register, unregister, parent_title="Parent Title"):
@@ -551,6 +565,8 @@ class TestInvokeSpawnedInternals:
             thread_metadata_manager=SimpleNamespace(
                 get_thread=lambda uid, tid: meta
             ),
+            _thread_locks=ThreadLockManager(),
+            accounts_repo=SimpleNamespace(get_thread_owner=lambda tid: "u1"),
         )
 
     @staticmethod
@@ -573,12 +589,22 @@ class TestInvokeSpawnedInternals:
             fake_publish_agent_stream_chunk,
         )
 
-    def test_publishes_bookends_trigger_and_registers(self, monkeypatch):
+    @staticmethod
+    def _wait_until(predicate, timeout: float = 5.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        assert predicate(), "condition not met in time"
+
+    def test_under_a_parent_the_child_gets_a_request_and_the_parent_a_receipt(self, monkeypatch):
         events: list[tuple] = []
         chunks: list[dict] = []
         captured_kwargs: dict[str, Any] = {}
         registered: list[tuple[str, str]] = []
         unregistered: list[tuple[str, str]] = []
+        finished = threading.Event()
         self._patch_publishers(monkeypatch, events, chunks)
 
         class FakeStreamResult:
@@ -592,6 +618,7 @@ class TestInvokeSpawnedInternals:
         ):
             captured_kwargs.update(astream_kwargs)
             on_chunk({"type": "response", "content": "child reply"}, SimpleNamespace())
+            finished.set()
             return FakeStreamResult()
 
         monkeypatch.setattr(
@@ -612,11 +639,32 @@ class TestInvokeSpawnedInternals:
             user_id="u1",
         )
 
-        assert result == "child reply"
+        # The parent gets the receipt at once; the child's turn runs on a worker.
+        assert result.startswith("[Requested]: request_id=req-")
+        assert "target=ResponderBot" in result and "target_thread_id=child-1" in result
+        req = tr.requests_awaited_by("parent-1")[0]
+        assert req.id in result and req.target_thread_id == "child-1"
+        assert req.task == "do the thing" and req.caller_name == "Parent Title"
+
+        assert finished.wait(5)
+        message = captured_kwargs["message"]
+        assert message.startswith("[Request Metadata]\n")
+        assert f"request_id: {req.id}" in message
+        assert "source_thread_id: parent-1" in message
+        assert "source_thread_name: Parent Title" in message
+        assert "reply_to_thread" in message
+        assert message.endswith("\n\ndo the thing")
+        assert captured_kwargs["_trigger_override"] == 'SpawnedBy("parent-1", "Parent Title")'
+        assert captured_kwargs["_is_self_invoke"] is True
+        assert captured_kwargs["source"] == "callable"
+        assert captured_kwargs["source_label"] == "ResponderBot"
+        assert captured_kwargs["source_id"] == req.task_id
+
+        self._wait_until(lambda: len(events) == 2)
         assert [e[0] for e in events] == ["task_started", "task_completed"]
         assert events[0][1] == "child-1" and events[0][2] == "u1"
-        # both bookend events carry the same spawned-* task id
-        assert events[0][3] == events[1][3]
+        # both bookend events carry the same spawned-* task id, the request's task id
+        assert events[0][3] == events[1][3] == req.task_id
         assert events[0][3].startswith("spawned-")
         assert events[0][4] == {
             "prompt": "do the thing",
@@ -625,15 +673,145 @@ class TestInvokeSpawnedInternals:
         }
         assert events[1][4] == {"content": "child reply", "callable_name": "ResponderBot"}
         assert chunks == [{"type": "response", "content": "child reply"}]
-        assert captured_kwargs["_trigger_override"] == 'SpawnedBy("parent-1", "Parent Title")'
-        assert captured_kwargs["_is_self_invoke"] is True
-        assert captured_kwargs["message"] == "do the thing"
+        # Nobody waited, so no abort-cascade edge; and the child's plain text
+        # is NOT its reply: the request stays open until reply_to_thread.
+        assert registered == [] and unregistered == []
+        assert req.state == tr.STATE_OPEN
+
+    def test_wait_seconds_returns_the_reply_inline_and_holds_the_edge_only_while_waiting(self, monkeypatch):
+        events: list[tuple] = []
+        chunks: list[dict] = []
+        registered: list[tuple[str, str]] = []
+        unregistered: list[tuple[str, str]] = []
+        self._patch_publishers(monkeypatch, events, chunks)
+
+        class FakeStreamResult:
+            iteration_limit_hit = False
+
+            def response_text(self, *, fallback_to_thinking: bool = True) -> str:
+                return "ok, sent"
+
+        def fake_stream_and_collect(
+            agent_arg, *, astream_kwargs, on_chunk, error_message_factory
+        ):
+            # The child's reply_to_thread call, as its turn would make it.
+            req = tr.requests_owed_by("child-1")[0]
+            tr.reply(
+                request_id=req.id, content="child reply", final=True,
+                replier_thread_id="child-1", agent=agent_arg,
+            )
+            return FakeStreamResult()
+
+        monkeypatch.setattr(
+            "nymeria.core.stream_bridge.stream_and_collect",
+            fake_stream_and_collect,
+        )
+        agent = self._spawn_agent(
+            register=lambda p, c: registered.append((p, c)),
+            unregister=lambda p, c: unregistered.append((p, c)),
+        )
+
+        result = _invoke_spawned(
+            agent,
+            child_thread_id="child-1",
+            parent_thread_id="parent-1",
+            title="ResponderBot",
+            task="do the thing",
+            user_id="u1",
+            wait_seconds=5,
+        )
+
+        assert result.startswith("[Requested]: request_id=req-")
+        assert "[Reply from ResponderBot]" in result
+        assert result.rstrip().endswith("child reply")
+        req = tr.get_request(result.split("request_id=")[1].split()[0])
+        assert req is not None and req.state == tr.STATE_REPLIED
+        assert req.delivered_via == "inline"
         assert registered == [("parent-1", "child-1")]
         assert unregistered == [("parent-1", "child-1")]
 
-    def test_error_path_returns_error_and_skips_task_started(self, monkeypatch):
+    def test_a_workflow_spawn_under_a_parent_stays_synchronous(self, monkeypatch):
+        """``nym.thread`` spawns fresh threads with the workflow's thread as the
+        parent but reads the child's text itself (``schema=`` extracts from
+        it): inside ``synchronous_spawn()`` the child runs as a plain turn and
+        no request is opened, while lineage and the trigger label are kept."""
+        from nymeria.tools.spawn_thread import synchronous_spawn
+
         events: list[tuple] = []
         chunks: list[dict] = []
+        captured_kwargs: dict[str, Any] = {}
+        self._patch_publishers(monkeypatch, events, chunks)
+
+        class FakeStreamResult:
+            iteration_limit_hit = False
+
+            def response_text(self, *, fallback_to_thinking: bool = True) -> str:
+                return '{"answer": 42}'
+
+        def fake_stream_and_collect(
+            agent_arg, *, astream_kwargs, on_chunk, error_message_factory
+        ):
+            captured_kwargs.update(astream_kwargs)
+            return FakeStreamResult()
+
+        monkeypatch.setattr(
+            "nymeria.core.stream_bridge.stream_and_collect",
+            fake_stream_and_collect,
+        )
+        agent = self._spawn_agent(register=lambda p, c: None, unregister=lambda p, c: None)
+
+        with synchronous_spawn():
+            result = _invoke_spawned(
+                agent,
+                child_thread_id="child-1",
+                parent_thread_id="parent-1",
+                title="Worker",
+                task="compute",
+                user_id="u1",
+            )
+
+        assert result == '{"answer": 42}'
+        assert captured_kwargs["message"] == "compute"
+        assert captured_kwargs["_trigger_override"] == 'SpawnedBy("parent-1", "Parent Title")'
+        assert tr.open_requests() == []
+        assert events[-1][4] == {"content": '{"answer": 42}', "callable_name": "Worker"}
+
+    def test_a_child_whose_first_turn_dies_fails_the_request(self, monkeypatch):
+        events: list[tuple] = []
+        chunks: list[dict] = []
+        self._patch_publishers(monkeypatch, events, chunks)
+        delivered: list = []
+        monkeypatch.setattr(
+            "nymeria.core.completion_delivery.fire_autonomous_turn",
+            lambda agent, d: delivered.append(d),
+        )
+
+        def boom(agent_arg, *, astream_kwargs, on_chunk, error_message_factory):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr("nymeria.core.stream_bridge.stream_and_collect", boom)
+        agent = self._spawn_agent(register=lambda p, c: None, unregister=lambda p, c: None)
+
+        result = _invoke_spawned(
+            agent,
+            child_thread_id="child-1",
+            parent_thread_id="parent-1",
+            title="Bot",
+            task="t",
+            user_id="u1",
+        )
+
+        assert result.startswith("[Requested]")
+        self._wait_until(lambda: len(delivered) == 1)
+        assert delivered[0].thread_id == "parent-1"
+        assert delivered[0].prompt_text.startswith("[NoReply]") and "kaboom" in delivered[0].prompt_text
+        req = tr.get_request(result.split("request_id=")[1].split()[0])
+        assert req is not None and req.state == tr.STATE_FAILED
+
+    def test_parentless_error_path_returns_error_and_skips_task_started(self, monkeypatch):
+        events: list[tuple] = []
+        chunks: list[dict] = []
+        registered: list[tuple[str, str]] = []
         unregistered: list[tuple[str, str]] = []
         self._patch_publishers(monkeypatch, events, chunks)
 
@@ -642,14 +820,14 @@ class TestInvokeSpawnedInternals:
 
         monkeypatch.setattr("nymeria.core.stream_bridge.stream_and_collect", boom)
         agent = self._spawn_agent(
-            register=lambda p, c: None,
+            register=lambda p, c: registered.append((p, c)),
             unregister=lambda p, c: unregistered.append((p, c)),
         )
 
         result = _invoke_spawned(
             agent,
             child_thread_id="child-1",
-            parent_thread_id="parent-1",
+            parent_thread_id=None,
             title="Bot",
             task="t",
             user_id="u1",
@@ -666,7 +844,9 @@ class TestInvokeSpawnedInternals:
             "content": "Task failed: kaboom",
             "callable_name": "Bot",
         }
-        assert unregistered == [("parent-1", "child-1")]  # finally still runs
+        # No parent, no request, no wait: no cascade edge either way.
+        assert registered == [] and unregistered == []
+        assert tr.open_requests() == []
 
     def test_iteration_limit_appends_note_to_response_and_completed(self, monkeypatch):
         events: list[tuple] = []

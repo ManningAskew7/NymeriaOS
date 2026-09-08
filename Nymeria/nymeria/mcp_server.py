@@ -216,8 +216,11 @@ async def nymeria_turn_status(
 
 # Bounds for a blocking chat's wait budget.
 #
-# The default matches ``settings.tool_timeout`` (300s), so an MCP ask waits
-# exactly as long as an in-process callable-thread ask does.
+# The default matches ``settings.tool_timeout`` (300s), the same bound a
+# plain in-process tool call has. (Callable-thread calls between threads are
+# requests since backlog #357: they return a receipt and wait only on demand,
+# capped by ``callable_wait_max_seconds``; this client-shaped chat keeps its
+# own blocking ask because an MCP client has no thread to wake.)
 #
 # The ceiling is generous because real browser drives run ten to twenty
 # minutes, but it carries a TRAP worth stating at the site. This is an inner
@@ -428,7 +431,7 @@ def _configured_chat_wait_seconds() -> int:
 
     Unset means derive from ``tool_timeout``, matching the
     ``nymeria_claude_code_block_seconds`` precedent, so an MCP ask really does
-    wait as long as an in-process callable-thread ask rather than merely
+    wait as long as an in-process tool call is allowed to rather than merely
     sharing its default number.
     """
     try:
@@ -493,9 +496,9 @@ async def nymeria_chat(
     - handoff: dispatch and return a receipt immediately, without waiting. Use
       it to start long work you will check on later, or to start a second turn
       while a first is still running. Note this is a DEFERRED READ, not a
-      transfer of responsibility: unlike a callable-thread handoff, the target
-      is not told to report through its own channels, so you remain the one who
-      collects the result.
+      transfer of responsibility: unlike a thread-to-thread request (which the
+      target answers with reply_to_thread), the target is not told to report
+      back, so you remain the one who collects the result.
 
     wait_seconds applies to mode="ask" only (1-3600, default 300, matching the
     backend's own tool_timeout). Passing it with mode="handoff" is an error

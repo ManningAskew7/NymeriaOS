@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1281
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1283
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -115,7 +115,7 @@ def test_seed_tool_names_match_baseline():
 
 
 def test_seed_tools_count_matches_baseline():
-    assert len(T.SEED_TOOLS) == len(BASELINE_SEED_NAMES) == 16
+    assert len(T.SEED_TOOLS) == len(BASELINE_SEED_NAMES) == 18
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +327,8 @@ BASELINE_SEED_NAMES = [
     "run_tools_in_order",
     "tool_invoke",
     "spawn_thread",
+    "reply_to_thread",
+    "wait_for_reply",
 ]
 
 BASELINE_ADMIN_ONLY = [
@@ -2572,6 +2574,7 @@ BASELINE_STATIC_NAMES = [
     "reddit_search_posts",
     "regression_echo",
     "reload_all",
+    "reply_to_thread",
     "request_credential",
     "rss_feed_read",
     "run_tools_in_order",
@@ -2826,6 +2829,7 @@ BASELINE_STATIC_NAMES = [
     "vero_update_user_tags",
     "vonage_get_balance",
     "vonage_send_sms",
+    "wait_for_reply",
     "watchdog_dispatch",
     "watchdog_read_notepad",
     "watchdog_todo_overview",

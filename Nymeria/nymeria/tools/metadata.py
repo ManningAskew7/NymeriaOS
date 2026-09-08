@@ -227,6 +227,39 @@ _PLUGIN_TOOL_SECURITY_LEVELS: Dict[str, "SecurityLevel"] = (
 )
 
 
+# Tools whose absence silently breaks a cross-thread contract. Never
+# force-bound (the developer's modularity rule); instead every disable
+# surface (/tools disable, the unified REST endpoint, PUT /tools/defaults,
+# PATCH /threads/{id}/config, tool_manage) appends the note so the user learns
+# what stops working (backlog #357).
+CAPABILITY_LOSS_NOTES: Dict[str, str] = {
+    "reply_to_thread": (
+        "without reply_to_thread this thread cannot answer requests other "
+        "threads make to it (callable-thread calls and spawn_thread prompts "
+        "get no reply; their receipts will say so)"
+    ),
+    "wait_for_reply": (
+        "without wait_for_reply this thread cannot wait inline for, or check "
+        "the progress of, a reply to a request it made (the wait_seconds "
+        "argument on a callable tool still works; replies still arrive as "
+        "prompts)"
+    ),
+}
+
+
+def capability_loss_warning(tool_names) -> Optional[str]:
+    """One warning line naming what stops working when ``tool_names`` are
+    disabled, or None when none of them carries a note."""
+    notes = [
+        CAPABILITY_LOSS_NOTES[name]
+        for name in sorted({str(n) for n in (tool_names or ())})
+        if name in CAPABILITY_LOSS_NOTES
+    ]
+    if not notes:
+        return None
+    return "Capability lost: " + "; ".join(notes) + "."
+
+
 def register_plugin_tool_category(
     tool_name: str,
     category: ToolCategory,

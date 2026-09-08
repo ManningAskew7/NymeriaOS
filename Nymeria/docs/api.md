@@ -1349,7 +1349,11 @@ DELETE /tools/defaults
 Authorization: Bearer <token>
 ```
 
-Manage the default tool set applied to newly created threads.
+Manage the default tool set applied to newly created threads. `PUT` replaces
+the whole list and returns `{"status", "default_tools", "count"}`, plus an
+advisory `warning` string when the write drops `reply_to_thread` or
+`wait_for_reply` out of the defaults (see "Capability-loss warning" under
+`PATCH /threads/{thread_id}/config`).
 
 ### Thread Callable Tools
 
@@ -3838,6 +3842,15 @@ Updates thread config. Key fields for callable threads:
 through `PATCH /threads/{thread_id}/config`; `PATCH /threads/{thread_id}/metadata`
 only updates display metadata for non-callable threads.
 
+**Capability-loss warning:** when a write NEWLY adds `reply_to_thread` or
+`wait_for_reply` to `disabled_tools`, the config response carries an extra
+`warning` string ("Capability lost: ...") naming what the thread can no longer
+do. It is advisory only: the write still succeeds, and a write that disables
+anything else carries no `warning`. Same field, same rule, on `PUT
+/tools/defaults` and `PUT /users/{user_id}/tools/unified/{tool_id}/enable`
+(see "Enable Unified Tool"). Background: `docs/agent-systems/tools.md`,
+"Thread Requests and Replies".
+
 ```http
 POST /threads/{thread_id}/dream
 Content-Type: application/json
@@ -4366,7 +4379,9 @@ Authorization: Bearer <token>
 Enable or disable a built-in or live MCP server tool by mutating the user's
 `default_thread_tools`. Role-gated tools still require an admin caller. Custom
 tool execution is controlled through thread `enabled_tools` and custom-tool
-definition state, not this endpoint.
+definition state, not this endpoint. Disabling `reply_to_thread` or
+`wait_for_reply` succeeds and adds an advisory `warning` string to the
+response (see "Capability-loss warning" under `PATCH /threads/{thread_id}/config`).
 
 ### Update Unified Tool Description
 

@@ -39,14 +39,14 @@ def get_autonomous_tail_guidance(is_autonomous: bool) -> str:
     same thread.
 
     Source-specific guidance is handled at the source instead of here: the
-    watchdog bakes its instructions into its nudge message, and handoffs carry
-    their routing-and-callback guidance in the ``[Handoff Metadata]`` block built
-    by ``thread_agent_executor`` (so both immediate and scheduled handoffs get
+    watchdog bakes its instructions into its nudge message, and thread requests
+    carry their reply contract in the ``[Request Metadata]`` block built by
+    ``core/thread_requests.py`` (so immediate and scheduled requests both get
     it). This keeps the general rules in one place without duplicating the
     per-source bits.
 
-    Returns ``""`` for interactive turns (user / mcp / blocking callable ask),
-    which need no extra guidance.
+    Returns ``""`` for interactive turns (user / mcp), which need no extra
+    guidance.
     """
     if not is_autonomous:
         return ""
@@ -119,6 +119,11 @@ SOURCE_TRIGGER_LABELS = {
     "background_bash": "Background Bash",
     "claude_code": "Claude Code",
     "callable_result": "Callable Thread Result",
+    # A reply another thread sent through reply_to_thread, and the harness's
+    # no-reply nudge or expiry notice for a request (core/thread_requests.py).
+    "thread_reply": "Thread Reply",
+    "request_nudge": "Request Nudge",
+    "request_reminder": "Request Reminder",
     "hook_continuation": "Hook Continuation",
     "dream": "Dream",
     # Harness-authored notices absorbed mid-turn (a kit's TTL lapsing while

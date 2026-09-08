@@ -244,6 +244,7 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         # Google Calendar outage: settable all along, advertised nowhere).
         "nymeria_public_url",
         "tool_timeout",
+        "callable_wait_max_seconds",
         "nymeria_mcp_chat_wait_seconds",
         "tool_output_max_chars",
         "tool_timing_in_results",
@@ -494,6 +495,7 @@ def serialize_server_settings(settings: Any) -> ServerSettingsResponse:
         sliding_window_cycles=settings.sliding_window_cycles,
         tool_output_max_chars=settings.tool_output_max_chars,
         tool_timeout=settings.tool_timeout,
+        callable_wait_max_seconds=settings.callable_wait_max_seconds,
         tool_timing_in_results=settings.tool_timing_in_results,
         memory_char_limit=settings.memory_char_limit,
         memory_max_entries=settings.memory_max_entries,
@@ -727,8 +729,9 @@ def _llm_api_key_env_var(provider: str) -> str | None:
     return spec.api_key_env_vars[0]
 # tool_timeout is captured into SafeToolNode at graph build, so a hot PATCH must
 # rebuild the graph (otherwise the cached kill-timeout drifts from settings; the
-# claude_code tool's inline-vs-detach budget and the callable-ask wait budget
-# (`thread_agent_executor.ask_wait_budget`) both depend on the two staying in sync).
+# claude_code tool's inline-vs-detach budget depends on the two staying in
+# sync). A callable-thread wait is bounded separately (callable_wait_max_seconds,
+# read per call) and declares its own kill timeout to the node.
 _GRAPH_REBUILD_FIELDS = (
     _LLM_FIELDS | {"tool_output_max_chars", "tool_timeout"} | _LLM_CREDENTIAL_FIELDS
 )

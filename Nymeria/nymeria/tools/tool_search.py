@@ -1197,6 +1197,11 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
 
     forced_protected = [n for n in targets if n in protected_names]
     lines = [f"[Success]: Disabled {len(targets)} tool(s): {', '.join(sorted(targets))}"]
+    from .metadata import capability_loss_warning
+
+    lost = capability_loss_warning(targets)
+    if lost:
+        lines.append(f"[Warning]: {lost}")
     if forced_protected:
         lines.append(
             f"[Warning]: {len(forced_protected)} default tool(s) disabled (force=True): "

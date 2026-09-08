@@ -175,7 +175,7 @@ def _spawn_fresh(spawn_args: dict, config: dict) -> str:
 
     from langchain_core.runnables import RunnableConfig
 
-    from ...tools.spawn_thread import spawn_thread
+    from ...tools.spawn_thread import spawn_thread, synchronous_spawn
     from ..tool_execution import ToolDenied, by_name_tool_config, run_tool_envelope
 
     configurable = config.get("configurable") or {}
@@ -200,14 +200,19 @@ def _spawn_fresh(spawn_args: dict, config: dict) -> str:
         )
 
     try:
-        return cast(
-            str,
-            run_tool_envelope(
-                call={"name": "spawn_thread", "args": spawn_args, "id": "wf-spawn_thread"},
-                config=hook_config,
-                execute=_execute,
-            ),
-        )
+        # A fresh spawn from a workflow is BLOCKING: the script is its own
+        # waiter and reads the child's text (``schema=`` extracts from it), so
+        # the child runs as a plain turn, not as a request the parent thread
+        # would be woken with later (backlog #357).
+        with synchronous_spawn():
+            return cast(
+                str,
+                run_tool_envelope(
+                    call={"name": "spawn_thread", "args": spawn_args, "id": "wf-spawn_thread"},
+                    config=hook_config,
+                    execute=_execute,
+                ),
+            )
     except ToolDenied as denied:
         # Named refusal, matching the other four envelope callers. Without this
         # the reason still reaches the workflow author (ToolDenied stringifies

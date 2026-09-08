@@ -1815,6 +1815,18 @@ class Settings(BaseSettings):
         le=900,
         description="Max seconds a single tool/agent invocation can run before being terminated (default 5 minutes)"
     )
+    callable_wait_max_seconds: int = Field(
+        default=600,
+        ge=30,
+        le=21600,
+        description=(
+            "Per-call ceiling on an inline wait for another thread's reply "
+            "(a callable tool's wait_seconds, wait_for_reply's timeout_seconds, "
+            "spawn_thread's wait_seconds). Waits are chainable; the tool-node "
+            "kill for a waiting call is the clamped wait plus 60 s, independent "
+            "of tool_timeout."
+        ),
+    )
     tool_output_max_chars: int = Field(
         default=100000,
         ge=1000,
@@ -1928,7 +1940,7 @@ class Settings(BaseSettings):
         default=None,
         ge=1,
         le=3600,
-        description="Default seconds nymeria_chat waits on mode='ask' before returning a partial transcript plus a resume token. None = derive from tool_timeout, so an MCP ask waits as long as an in-process callable-thread ask. The MCP client's transport timeout must exceed whatever is in play.",
+        description="Default seconds nymeria_chat waits on mode='ask' before returning a partial transcript plus a resume token. None = derive from tool_timeout, the bound an in-process tool call has. The MCP client's transport timeout must exceed whatever is in play.",
     )
     nymeria_claude_code_max_concurrency: int = Field(
         default=2,

@@ -987,6 +987,34 @@ class NymeriaAgent:
             outcome, continuation_depth=continuation_depth, user_id=user_id
         )
 
+    def _unreplied_request_reminder(self, thread_id: str, user_id: str):
+        """Turn-end reminder for a thread that owes a reply to another thread's
+        request and has not sent one (``core/thread_requests``, backlog #357).
+
+        Runs at the drain-loop seam after the DONE-hook continuation check,
+        once per request (the ledger stamps ``reminded_at``): the returned
+        pending prompt re-drives the same turn so the callee can reply before
+        its lock releases. None when nothing is owed. Never raises.
+        """
+        try:
+            from .pending_prompt_queue import make_pending_prompt
+            from .thread_requests import REMINDER_SOURCE, unreplied_request_reminder
+
+            text = unreplied_request_reminder(thread_id)
+        except Exception:  # noqa: BLE001 - a reminder must never break a turn end
+            logger.debug("unreplied request reminder failed", exc_info=True)
+            return None
+        if not text:
+            return None
+        return make_pending_prompt(
+            message=text,
+            source=REMINDER_SOURCE,
+            source_id=f"request-reminder-{thread_id}",
+            source_label="Unreplied request",
+            user_id=user_id,
+            is_autonomous=True,
+        )
+
     def _maybe_done_continuation_sync(
         self,
         *,
@@ -2709,6 +2737,10 @@ class NymeriaAgent:
                             continuation_depth=continuation_depth,
                             registry=self._hook_registry_for_turn(thread_id, user_id),
                         )
+                        if cont_prompt is None:
+                            # A reply owed to another thread's request and not
+                            # sent: remind once, re-drive (backlog #357).
+                            cont_prompt = self._unreplied_request_reminder(thread_id, user_id)
                         if cont_prompt is not None:
                             continuation_depth += 1
                             try:
@@ -3591,6 +3623,10 @@ class NymeriaAgent:
                             continuation_depth=continuation_depth,
                             registry=self._hook_registry_for_turn(thread_id, user_id),
                         )
+                        if cont_prompt is None:
+                            # A reply owed to another thread's request and not
+                            # sent: remind once, re-drive (backlog #357).
+                            cont_prompt = self._unreplied_request_reminder(thread_id, user_id)
                         if cont_prompt is not None:
                             continuation_depth += 1
                             try:

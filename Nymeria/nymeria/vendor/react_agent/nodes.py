@@ -4146,11 +4146,13 @@ class SafeToolNode(ToolNode):
         if isinstance(config, dict):
             max_workers = config.get("max_concurrency") or None
         executor = ContextThreadPoolExecutor(max_workers=max_workers)
-        # Each call is bounded by the tool timeout from ITS OWN start, so a
+        # Each call is bounded by ITS OWN timeout (``_call_timeout``: the tool
+        # timeout, or a declared inline wait) from its own start, so a
         # pool-queued call is not charged for the wait. A call that never
         # starts because hung siblings hold every worker is bounded from the
         # batch start instead, so the loop still terminates.
         batch_start = time.monotonic()
+        timeouts = [self._call_timeout(call) for call in tool_calls]
         started_at: list = [None] * len(tool_calls)
         started_lock = threading.Lock()
 
@@ -4165,33 +4167,43 @@ class SafeToolNode(ToolNode):
                 zip(tool_calls, tool_runtimes, strict=False)
             )
         ]
-        outputs: list = []
+        results: dict = {}
+        pending = set(range(len(tool_calls)))
         try:
-            for index, (call, future) in enumerate(zip(tool_calls, futures, strict=False)):
-                while True:
+            while pending:
+                # Wait on the call whose deadline comes FIRST, so a call with a
+                # short timeout is judged at its own deadline even while a
+                # sibling with a longer one (a declared inline wait) runs on.
+                # Collecting in index order would let the long call mask the
+                # short one's overrun until it happened to finish.
+                with started_lock:
+                    origins = {index: started_at[index] for index in pending}
+                deadlines = {
+                    index: (batch_start if origin is None else origin) + timeouts[index]
+                    for index, origin in origins.items()
+                }
+                index = min(pending, key=deadlines.__getitem__)
+                call, future = tool_calls[index], futures[index]
+                try:
+                    results[index] = future.result(
+                        timeout=max(0.0, deadlines[index] - time.monotonic())
+                    )
+                except concurrent.futures.TimeoutError:
                     with started_lock:
-                        origin = started_at[index]
-                    deadline = (batch_start if origin is None else origin) + self._tool_timeout
-                    try:
-                        outputs.append(
-                            future.result(timeout=max(0.0, deadline - time.monotonic()))
-                        )
-                        break
-                    except concurrent.futures.TimeoutError:
-                        with started_lock:
-                            latest = started_at[index]
-                        if latest is not None and latest != origin:
-                            # It left the pool queue after the deadline was
-                            # computed: re-arm from its own start.
-                            continue
-                        self._notify_single_call_timeout(call, config)
-                        outputs.append(self._timeout_message(call))
-                        break
-                    # GraphBubbleUp re-raises from future.result() and is
-                    # intentionally not caught: the interrupt propagates.
+                        latest = started_at[index]
+                    if latest is not None and latest != origins[index]:
+                        # It left the pool queue after the deadline was
+                        # computed: re-arm from its own start.
+                        continue
+                    self._notify_single_call_timeout(call, config)
+                    results[index] = self._timeout_message(call, timeouts[index])
+                pending.discard(index)
+                # GraphBubbleUp re-raises from future.result() and is
+                # intentionally not caught: the interrupt propagates.
         finally:
             # Never wait on a hung worker; it finishes on its own.
             executor.shutdown(wait=False)
+        outputs = [results[index] for index in range(len(tool_calls))]
         return self._combine_tool_outputs(outputs, input_type)
 
     async def _arun_concurrent(self, input, config, runtime):
@@ -4330,32 +4342,62 @@ class SafeToolNode(ToolNode):
         except Exception as e:  # a hook failure must never break the ordered loop
             logger.warning(f"on_timeout callback failed: {e}")
 
+    def _call_timeout(self, call) -> float:
+        """Per-call kill timeout: ``tool_timeout`` unless the bound tool declares
+        its own inline wait.
+
+        A tool whose ``metadata["inline_wait_timeout"]`` is a callable (the
+        callable-thread tools and ``spawn_thread(prompt=)``, which wait a long
+        caller-settable budget for ANOTHER thread's answer and return a receipt
+        before their own budget lapses) is asked for the kill timeout for THIS
+        call's arguments. None, a failure, or a value under ``tool_timeout``
+        falls back to the default, so the kill only ever fires on a genuinely
+        hung call.
+        """
+        name = call.get("name") if isinstance(call, dict) else None
+        tool = self.tools_by_name.get(name) if isinstance(name, str) else None
+        meta = getattr(tool, "metadata", None) or {}
+        derive = meta.get("inline_wait_timeout") if isinstance(meta, dict) else None
+        if not callable(derive):
+            return float(self._tool_timeout)
+        try:
+            args = call.get("args") if isinstance(call.get("args"), dict) else {}
+            value = derive(args)
+        except Exception as exc:  # noqa: BLE001 - a bad derivation is the default
+            logger.debug("inline_wait_timeout for %s failed: %s", name, exc)
+            return float(self._tool_timeout)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return float(self._tool_timeout)
+        return max(float(self._tool_timeout), float(value))
+
     async def _arun_one_with_timeout(self, call, input_type, tool_runtime, config):
         """Run one call with its own timeout (the outer batch timeout is bypassed
         in sequential mode). ``_arun_one`` already converts ordinary tool errors
         to error ToolMessages and re-raises ``GraphBubbleUp``; we must not turn an
         interrupt into an error message, so carve it out explicitly.
         """
+        timeout = self._call_timeout(call)
         try:
             return await asyncio.wait_for(
                 self._arun_one(call, input_type, tool_runtime),
-                timeout=self._tool_timeout,
+                timeout=timeout,
             )
         except GraphBubbleUp:
             raise
         except asyncio.TimeoutError:
             self._notify_single_call_timeout(call, config)
-            return self._timeout_message(call)
+            return self._timeout_message(call, timeout)
 
     def _run_one_with_timeout(self, call, input_type, tool_runtime, config):
+        timeout = self._call_timeout(call)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
             future = executor.submit(self._run_one, call, input_type, tool_runtime)
             try:
-                return future.result(timeout=self._tool_timeout)
+                return future.result(timeout=timeout)
             except concurrent.futures.TimeoutError:
                 self._notify_single_call_timeout(call, config)
-                return self._timeout_message(call)
+                return self._timeout_message(call, timeout)
             # GraphBubbleUp raised in the worker re-raises from future.result() and
             # is intentionally not caught, so the interrupt propagates (the finally
             # below still releases the pool first).
@@ -4464,16 +4506,17 @@ class SafeToolNode(ToolNode):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Failed to dispatch marker %s event: %s", name, exc)
 
-    def _timeout_message(self, call) -> ToolMessage:
+    def _timeout_message(self, call, timeout: Optional[float] = None) -> ToolMessage:
         name = call.get("name", "unknown")
+        seconds = int(self._tool_timeout if timeout is None else timeout)
         logger.error(
             "Tool '%s' timed out after %ss (per-call timeout).",
             name,
-            self._tool_timeout,
+            seconds,
         )
         return ToolMessage(
             content=(
-                f"[Error]: Tool '{name}' timed out after {self._tool_timeout} seconds. "
+                f"[Error]: Tool '{name}' timed out after {seconds} seconds. "
                 "The operation took too long and was stopped to prevent the agent from hanging. "
                 "Do NOT retry this tool. Report the timeout to the user."
             ),

@@ -16,9 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from nymeria.agents.tool_factory import (
-    _check_busy,
     _check_callable_ownership,
-    _check_circular_call,
     _check_team_visibility,
     _resolve_parent_name_and_trigger,
 )
@@ -178,73 +176,6 @@ def test_team_not_visible_blocked():
 
 def test_team_no_agent_skips():
     assert _check_team_visibility(None, "parent", name="Helper", thread_id="t") is None
-
-
-# --------------------------------------------------------------------------- #
-# _check_circular_call
-# --------------------------------------------------------------------------- #
-def test_circular_handoff_mode_skips():
-    # Handoffs do not wait, so even an ancestor target is allowed.
-    agent = SimpleNamespace(is_ancestor_invocation=lambda p, t: True)
-    assert _check_circular_call(agent, "parent", "handoff", name="Helper", thread_id="t") is None
-
-
-def test_circular_no_parent_skips():
-    agent = SimpleNamespace(is_ancestor_invocation=lambda p, t: True)
-    assert _check_circular_call(agent, None, "ask", name="Helper", thread_id="t") is None
-
-
-def test_circular_ancestor_blocked(caplog):
-    caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
-    agent = SimpleNamespace(is_ancestor_invocation=lambda p, t: True)
-    result = _check_circular_call(agent, "parent", "ask", name="Helper", thread_id="t")
-    assert result is not None
-    assert "is currently waiting for YOUR response" in result
-    assert "circular call blocked" in caplog.text
-
-
-def test_circular_not_ancestor_allows():
-    agent = SimpleNamespace(is_ancestor_invocation=lambda p, t: False)
-    assert _check_circular_call(agent, "parent", "ask", name="Helper", thread_id="t") is None
-
-
-def test_circular_no_agent_skips():
-    assert _check_circular_call(None, "parent", "ask", name="Helper", thread_id="t") is None
-
-
-# --------------------------------------------------------------------------- #
-# _check_busy
-# --------------------------------------------------------------------------- #
-def _busy_agent(is_busy):
-    # _check_busy uses the public agent.is_thread_busy() accessor (slice 27 F10),
-    # not a reach-in into the private _thread_locks manager.
-    return SimpleNamespace(is_thread_busy=lambda t: is_busy)
-
-
-def test_busy_blocks_when_busy():
-    result = _check_busy(_busy_agent(True), "ask", "error", name="Helper", thread_id="t")
-    assert result is not None
-    assert result.startswith("[Busy]:")
-    assert "is busy on thread 't'" in result
-
-
-def test_busy_allows_when_free():
-    assert _check_busy(_busy_agent(False), "ask", "error", name="Helper", thread_id="t") is None
-
-
-def test_busy_skips_when_if_busy_queue():
-    # if_busy != "error" -> no best-effort busy check (must not call is_thread_busy).
-    agent = SimpleNamespace()
-    assert _check_busy(agent, "ask", "queue", name="Helper", thread_id="t") is None
-
-
-def test_busy_skips_in_handoff_mode():
-    agent = SimpleNamespace()
-    assert _check_busy(agent, "handoff", "error", name="Helper", thread_id="t") is None
-
-
-def test_busy_no_agent_skips():
-    assert _check_busy(None, "ask", "error", name="Helper", thread_id="t") is None
 
 
 # --------------------------------------------------------------------------- #

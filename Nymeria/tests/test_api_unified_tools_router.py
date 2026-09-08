@@ -484,3 +484,45 @@ def test_unified_mcp_tools_carry_server_provenance_and_setup_axis(
     finally:
         unregister_mcp_server_tool_metadata(ready)
         unregister_mcp_server_tool_metadata(unconfigured)
+
+
+def test_unified_disable_of_a_contract_tool_warns_about_the_lost_capability(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """Disabling reply_to_thread or wait_for_reply is allowed (modularity) but
+    the response says what stops working; disabling any other tool carries no
+    warning (backlog #357)."""
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    user_token = _create_user(agent, "owner")
+
+    reply_off = client.put(
+        "/users/owner/tools/unified/reply_to_thread/enable",
+        headers=api_client_builder.auth(user_token),
+        json={"enabled": False},
+    )
+    wait_off = client.put(
+        "/users/owner/tools/unified/wait_for_reply/enable",
+        headers=api_client_builder.auth(user_token),
+        json={"enabled": False},
+    )
+    plain_off = client.put(
+        f"/users/owner/tools/unified/{SEED_TOOLS[0].name}/enable",
+        headers=api_client_builder.auth(user_token),
+        json={"enabled": False},
+    )
+    reply_on = client.put(
+        "/users/owner/tools/unified/reply_to_thread/enable",
+        headers=api_client_builder.auth(user_token),
+        json={"enabled": True},
+    )
+
+    assert reply_off.status_code == 200
+    assert "cannot answer requests other threads make" in reply_off.json()["warning"]
+    assert wait_off.status_code == 200
+    assert "cannot wait inline" in wait_off.json()["warning"]
+    assert plain_off.status_code == 200 and "warning" not in plain_off.json()
+    assert reply_on.status_code == 200 and "warning" not in reply_on.json()
+    defaults = agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
+    assert "reply_to_thread" in defaults and "wait_for_reply" not in defaults

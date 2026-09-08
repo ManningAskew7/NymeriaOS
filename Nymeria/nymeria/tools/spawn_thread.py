@@ -5,8 +5,10 @@ its own appended instructions, tool selection, and optional LLM overrides.
 Spawned threads are callable (invocable as tools) by default, so the parent
 can re-invoke them later. Supports two actions:
 
-  action="create" (default): Create a new thread. Optionally dispatches an
-      prompt and blocks until the child responds.
+  action="create" (default): Create a new thread. Optionally dispatches a
+      prompt as a REQUEST (core/thread_requests): the child answers through
+      reply_to_thread and the reply reaches the parent as a prompt, or
+      inline when wait_seconds is set.
   action="delete": Remove a previously-spawned thread (metadata, config,
       checkpoints, notepad, and callable-tool registration). Only the thread
       that originally spawned it can delete it.
@@ -23,6 +25,8 @@ It only exposes the *append* path for system prompts
 (ThreadConfig.instructions); it cannot replace soul.md.
 """
 
+import contextvars
+from contextlib import contextmanager
 import logging
 import os
 import threading
@@ -743,6 +747,7 @@ def spawn_thread(
     kit: Optional[str] = None,
     team: Optional[str] = None,
     prompt: Optional[str] = None,
+    wait_seconds: int = 0,
     action: str = "create",
     delete_thread_id: Optional[str] = None,
     mode: str = "fresh",
@@ -828,9 +833,20 @@ def spawn_thread(
             or name (see team_manage(action="list")) to spawn into that
             team. An unknown ref errors without creating a thread. Works
             in both modes; in branched mode it overrides the cloned team.
-        prompt: If provided, dispatches this message to the new
-            thread and BLOCKS until the child returns its response. The
-            child's response becomes part of this tool's output.
+        prompt: If provided, sends this message to the new thread as a
+            REQUEST, the same contract as calling a callable thread: the
+            child receives it under a [Request Metadata] block naming this
+            thread as the source, and answers with its reply_to_thread tool;
+            that reply reaches you exactly once, as a new prompt on this
+            thread (you may end your turn), or inline when wait_seconds is
+            set. Nothing else the child says is delivered to you. The tool
+            returns the [Spawned] preamble plus a [Requested] receipt with
+            the request_id (use wait_for_reply to wait or check progress).
+        wait_seconds: With prompt, also wait up to this many seconds for the
+            child's reply and return it inline when it lands in time (else a
+            [Waiting] status; the request stays open). 0 (default) returns
+            the receipt at once. Clamped to the server maximum (default
+            600); set it above the time the task should take.
         mode: 'fresh' (default) creates an empty thread. 'branched' forks
             the calling thread's checkpoint history and configuration via
             branch_thread(); the new thread starts with the parent's full
@@ -854,8 +870,9 @@ def spawn_thread(
     Returns (create):
         Preamble with the new thread_id, the callable tool name (if
         make_callable=True), the [Resolved tools] line when tool_queries
-        was used, and, if prompt was provided, the child thread's
-        response text.
+        was used, and, if prompt was provided, the [Requested] receipt
+        (plus the child's reply or a [Waiting] status when wait_seconds
+        is set).
 
     Returns (delete):
         "[Deleted]: thread_id=spawned-..." on success.
@@ -983,6 +1000,15 @@ def spawn_thread(
     )
     if ttl_error:
         return ttl_error
+
+    try:
+        wait_seconds = int(wait_seconds or 0)
+    except (TypeError, ValueError):
+        return "[Error]: wait_seconds must be a whole number of seconds (0 for no wait)."
+    if wait_seconds < 0:
+        return "[Error]: wait_seconds must be 0 or a positive number of seconds."
+    if wait_seconds and not (prompt and prompt.strip()):
+        pre_warnings.append("wait_seconds ignored without prompt")
 
     if mode_norm == "branched" and not parent_thread_id:
         return "[Error]: mode='branched' requires a parent thread; call this from inside a thread."
@@ -1291,8 +1317,29 @@ def spawn_thread(
         task=prompt.strip(),
         user_id=user_id,
         callable_tool_name=callable_name if make_callable else None,
+        wait_seconds=wait_seconds,
     )
     return f"{preamble}\n\n{response}"
+
+
+# The ``nym.thread`` workflow verb spawns FRESH threads synchronously: a
+# workflow script is its own waiter and reads the child's text directly
+# (``schema=`` extraction runs on it). Set for the duration of that call, it
+# keeps the parent lineage and trigger label but skips the request model.
+_SYNCHRONOUS_SPAWN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "nymeria_spawn_synchronous", default=False
+)
+
+
+@contextmanager
+def synchronous_spawn():
+    """Run ``spawn_thread(prompt=...)`` as a blocking child turn whose text is
+    returned directly, even under a parent thread (the workflow verb's seam)."""
+    token = _SYNCHRONOUS_SPAWN.set(True)
+    try:
+        yield
+    finally:
+        _SYNCHRONOUS_SPAWN.reset(token)
 
 
 def _invoke_spawned(
@@ -1303,15 +1350,20 @@ def _invoke_spawned(
     task: str,
     user_id: str,
     callable_tool_name: Optional[str] = None,
+    wait_seconds: int = 0,
 ) -> str:
-    """Dispatch the initial message to the spawned thread and collect its response.
+    """Dispatch the initial message to the spawned thread.
 
-    Mirrors thread_agent_executor.invoke() but works for either callable or
-    non-callable spawned threads. Publishes autonomous events so the frontend
-    can stream the child's activity live. ``callable_tool_name`` is the
-    generated tool name when the child is callable (the ``[StillWorking]``
-    receipt tells the parent to reach the child through it); None when there
-    is no such tool.
+    With a parent thread this is a REQUEST (``core/thread_requests``): the
+    child gets the task under a ``[Request Metadata]`` block, its first turn
+    runs on a worker thread, and it answers through ``reply_to_thread``; the
+    ``[Requested]`` receipt returns at once, or after an inline wait of
+    ``wait_seconds`` (the reply inline when it lands in time). Without a parent
+    (no turn context) the child's turn runs synchronously and its text is
+    returned. Publishes autonomous events either way so the frontend can
+    stream the child's activity live. ``callable_tool_name`` is the generated
+    tool name when the child is callable (None when ``make_callable=False``);
+    it names the request's target in the ledger and receipts.
     """
     from langchain_core.runnables.config import var_child_runnable_config
     from langchain_core.tracers.context import (
@@ -1319,22 +1371,43 @@ def _invoke_spawned(
         tracing_v2_callback_var,
     )
 
+    from ..core import thread_requests as tr
     from ..core.autonomous_turn import AutonomousTurnEmitter
     from ..core.stream_bridge import stream_and_collect
-    from ..core.thread_agent_executor import (
-        interim_note,
-        outstanding_for_caller,
-        run_with_continuation,
-    )
+    from ..core.thread_agent_executor import target_can_reply
 
     task_id = f"spawned-{uuid.uuid4().hex[:8]}"
 
+    parent_name = parent_thread_id or "unknown"
     if parent_thread_id:
-        agent.register_callable_invocation(parent_thread_id, child_thread_id)
+        try:
+            parent_meta = agent.thread_metadata_manager.get_thread(
+                user_id, parent_thread_id
+            )
+            if parent_meta and parent_meta.title:
+                parent_name = parent_meta.title
+        except Exception:
+            logger.debug("Failed to resolve parent thread title")
 
-    config_token = var_child_runnable_config.set(None)
-    callback_token = tracing_v2_callback_var.set(None)
-    collector_token = run_collector_var.set(None)
+    # Under a parent the child's prompt carries the request contract (id,
+    # source, "reply with reply_to_thread"); a parentless dispatch has no
+    # thread to reply to and sends the bare task.
+    req = None
+    child_message = task
+    if parent_thread_id and not _SYNCHRONOUS_SPAWN.get():
+        req = tr.open_request(
+            caller_thread_id=parent_thread_id,
+            caller_user_id=user_id,
+            caller_name=parent_name,
+            target_thread_id=child_thread_id,
+            callable_name=callable_tool_name or title,
+            task=task,
+            task_id=task_id,
+            target_can_reply=target_can_reply(
+                agent, child_thread_id, fallback_user_id=user_id
+            ),
+        )
+        child_message = tr.format_request_prompt(task=task, req=req)
 
     # Bound before the parent-title resolution (which is internally guarded) so
     # the error handler below can always publish the task_completed event.
@@ -1355,24 +1428,15 @@ def _invoke_spawned(
         meta_event_types=("queued", "prompt_queued"),
     )
 
-    def _run(progress_sink) -> str:
-        """The blocking child turn; runs on the continuation's worker."""
+    def _run() -> str:
+        """The child's first turn; runs on the worker (or inline, parentless)."""
 
         def _on_chunk(chunk, collection) -> None:
             emitter.handle_chunk(chunk, collection)
-            progress_sink(chunk)
+            if req is not None:
+                req.progress.observe(chunk)
 
         try:
-            parent_name = parent_thread_id or "unknown"
-            if parent_thread_id:
-                try:
-                    parent_meta = agent.thread_metadata_manager.get_thread(
-                        user_id, parent_thread_id
-                    )
-                    if parent_meta and parent_meta.title:
-                        parent_name = parent_meta.title
-                except Exception:
-                    logger.debug("Failed to resolve parent thread title")
             trigger_override = f'SpawnedBy("{parent_thread_id}", "{parent_name}")'
 
             def stream_error_message(chunk: Dict[str, Any]) -> str:
@@ -1382,11 +1446,14 @@ def _invoke_spawned(
             result = stream_and_collect(
                 agent,
                 astream_kwargs={
-                    "message": task,
+                    "message": child_message,
                     "thread_id": child_thread_id,
                     "user_id": user_id,
                     "_is_self_invoke": True,
                     "_trigger_override": trigger_override,
+                    "source": "callable",
+                    "source_id": task_id,
+                    "source_label": title,
                 },
                 on_chunk=_on_chunk,
                 error_message_factory=stream_error_message,
@@ -1408,18 +1475,19 @@ def _invoke_spawned(
             emitter.publish_completed(
                 {"content": response_text, "callable_name": title}
             )
-
-            text = response_text or "[Spawned thread returned no content.]"
-            # Single-hop honesty (thread_agent_executor "Ask continuations"):
-            # asks the child made that are still running detached will wake
-            # the child, not the parent, so the parent's answer is interim.
-            note = interim_note(title, outstanding_for_caller(child_thread_id))
-            return f"{text}\n\n{note}" if note else text
+            return response_text or "[Spawned thread returned no content.]"
 
         except Exception as e:
             logger.error(
                 f"spawn_thread dispatch failed for {child_thread_id}: {e}", exc_info=True
             )
+            if req is not None:
+                # The child's turn died before it could reply: tell the parent
+                # now (inline to its wait, else a [NoReply] wake-up).
+                try:
+                    tr.fail_request(req, f"initial message failed: {str(e)[:200]}", agent)
+                except Exception:  # noqa: BLE001
+                    logger.warning("spawn request failure notice failed", exc_info=True)
             try:
                 emitter.publish_completed(
                     {
@@ -1433,28 +1501,68 @@ def _invoke_spawned(
                 logger.warning("Failed to publish task-completed error event", exc_info=True)
             return f"[Error]: Initial message failed: {str(e)}"
 
+    # Break the LangChain callback/tracing inheritance chain so the child's
+    # graph run does not leak token events into the parent's stream. The
+    # worker copies THIS context, so the reset must precede the dispatch.
+    config_token = var_child_runnable_config.set(None)
+    callback_token = tracing_v2_callback_var.set(None)
+    collector_token = run_collector_var.set(None)
+    # A spawn that waits registers its waiter before the child is dispatched,
+    # so a reply landing at once is still handed inline.
+    seconds = tr.clamp_wait(wait_seconds) if req is not None else 0.0
+    waiter = None
+    if req is not None and parent_thread_id and seconds > 0:
+        waiter = tr.begin_wait(req, parent_thread_id, agent)
+    registered_wait = False
     try:
-        if parent_thread_id:
-            # Bounded inline wait; a long first turn detaches and its output
-            # wakes the parent later (the callable-ask contract).
-            return run_with_continuation(
-                agent=agent,
-                run=_run,
-                callable_name=title,
-                target_thread_id=child_thread_id,
-                caller_thread_id=parent_thread_id,
-                caller_user_id=user_id,
-                task=task,
-                task_id=task_id,
-                follow_up_tool=callable_tool_name,
-            )
-        return _run(lambda _chunk: None)
+        if req is None or not parent_thread_id:
+            return _run()
+
+        try:
+            threading.Thread(
+                target=contextvars.copy_context().run,
+                args=(_run,),
+                name=f"NymeriaSpawnRequest-{req.id[-8:]}",
+                daemon=True,
+            ).start()
+        except Exception:
+            # Never dispatched: nothing owed, waited on, or nudged.
+            tr.discard_request(req)
+            raise
+        receipt = tr.request_receipt(req)
+        if waiter is None:
+            return receipt
+        if isinstance(waiter, str):
+            return f"{receipt}\n\n{waiter}"
+        # The parent is actively waiting: its /stop cascades into the child for
+        # the duration of the wait (the callable-tool rule).
+        try:
+            agent.register_callable_invocation(parent_thread_id, child_thread_id)
+            registered_wait = True
+        except Exception:  # noqa: BLE001 - the cascade edge is best-effort
+            logger.debug("spawn wait: invocation registration failed", exc_info=True)
+        outcome = tr.finish_wait(req, waiter, seconds=seconds, agent=agent)
+        return f"{receipt}\n\n{outcome}"
     finally:
         run_collector_var.reset(collector_token)
         tracing_v2_callback_var.reset(callback_token)
         var_child_runnable_config.reset(config_token)
-        if parent_thread_id:
+        if registered_wait and parent_thread_id:
             agent.unregister_callable_invocation(parent_thread_id, child_thread_id)
+
+
+def _spawn_inline_wait_timeout(args: Dict[str, Any]) -> Optional[float]:
+    """SafeToolNode's per-call kill for a spawn that waits inline for the
+    child's reply (``prompt=`` with ``wait_seconds``): the clamped wait plus a
+    margin. Other spawns keep the node's default."""
+    if not (args or {}).get("prompt"):
+        return None
+    from ..core.thread_requests import wait_kill_timeout
+
+    return wait_kill_timeout((args or {}).get("wait_seconds"))
+
+
+spawn_thread.metadata = {"inline_wait_timeout": _spawn_inline_wait_timeout}
 
 
 # Kept as a named list for the category metadata mapping

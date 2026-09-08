@@ -241,7 +241,11 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
     assert user_developer_only.status_code == 403
     assert "Developer-only diagnostic tools" in user_developer_only.json()["detail"]
     assert admin_allowed.status_code == 200
-    assert admin_allowed.json() == {
+    payload = admin_allowed.json()
+    # The new list drops the request/reply seed tools: the response says what
+    # capability that costs (backlog #357), additively.
+    assert "reply_to_thread" in payload.pop("warning")
+    assert payload == {
         "status": "ok",
         "default_tools": sorted([SEED_TOOLS[0].name, admin_only, "nym_todo"]),
         "count": 3,
@@ -307,7 +311,9 @@ def test_default_tools_accepts_split_auth_manager_legacy_name(
 
     expected = ["auth_bindings", "auth_cleanup", "auth_inspect"]
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    assert "reply_to_thread" in payload.pop("warning")  # the seed pair was dropped
+    assert payload == {
         "status": "ok",
         "default_tools": expected,
         "count": 3,

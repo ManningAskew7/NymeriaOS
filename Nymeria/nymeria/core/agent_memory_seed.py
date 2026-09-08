@@ -231,9 +231,21 @@ def build_resume_compaction_tail(
     stamping the opener's ``additional_kwargs`` (summary/messages_removed/
     auto_resumed/timestamp) for the frontend compaction notice.
     """
+    opener_text = MEMORY_RESUME_OPENER_TEMPLATE.format(summary=summary)
+    # Open thread requests this thread owes or awaits survive the rebuild as
+    # harness-stated facts (the [Request Metadata] block that carried them was
+    # in the discarded messages); never depends on the model's summary.
+    try:
+        from .thread_requests import compaction_block
+
+        requests_block = compaction_block(thread_id)
+    except Exception:  # noqa: BLE001 - the resume must never fail on this
+        requests_block = None
+    if requests_block:
+        opener_text = f"{opener_text}\n\n{requests_block}"
     return build_memory_exchange(
         opener_internal_type=MEMORY_SEED_MARKER_TYPE,
-        opener_text=MEMORY_RESUME_OPENER_TEMPLATE.format(summary=summary),
+        opener_text=opener_text,
         global_text=read_global_memory(user_id, thread_id),
         thread_text=read_thread_memory(user_id, thread_id),
         team_text=read_team_memory(user_id, thread_id),

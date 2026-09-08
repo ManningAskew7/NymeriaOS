@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1267 tools found.**
+**1269 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -947,6 +947,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `reddit_search_posts` | `nymeria/tools/community_publishing_service_integrations.py` | Search Reddit posts. |
 | `regression_echo` | `nymeria/tools/regression_echo.py` | Echo the supplied text back with a fixed prefix. |
 | `reload_all` | `nymeria/tools/runtime_admin.py` | Reload all tools, skills, and trigger sources. |
+| `reply_to_thread` | `nymeria/tools/thread_requests.py` | Send your reply to a request another thread made to you. |
 | `request_credential` | `nymeria/tools/credential_prompt.py` | Open a secure in-chat prompt (modal / hosted form / OAuth dance) to |
 | `rss_feed_read` | `nymeria/tools/public_info_integrations.py` | Read an RSS or Atom feed URL. |
 | `run_tools_in_order` | `nymeria/tools/tool_order.py` | Run this whole batch of tool calls in the order listed, not concurrently. |
@@ -1192,6 +1193,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `vero_update_user_tags` | `nymeria/tools/marketing_contact_service_integrations.py` | Add or remove Vero user tags. |
 | `vonage_get_balance` | `nymeria/tools/messaging_delivery_service_integrations.py` | Get Vonage account balance. |
 | `vonage_send_sms` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS message with Vonage. |
+| `wait_for_reply` | `nymeria/tools/thread_requests.py` | Wait for, or check on, the reply to a request you made to another thread. |
 | `watchdog_dispatch` | `nymeria/tools/watchdog_dispatch.py` | Dispatch a TODO to a target thread. You CANNOT target your own thread. |
 | `watchdog_read_notepad` | `nymeria/tools/watchdog_dispatch.py` | Read another thread's notepad to understand what it's currently focused on. |
 | `watchdog_todo_overview` | `nymeria/tools/watchdog_dispatch.py` | List all active TODOs across ALL threads, showing which thread each belongs to. |

@@ -83,6 +83,7 @@ class FakeSettings:
     sliding_window_cycles: int = 20
     tool_output_max_chars: int = 100000
     tool_timeout: int = 300
+    callable_wait_max_seconds: int = 600
     tool_timing_in_results: bool = False
     memory_char_limit: int = 8000
     memory_max_entries: int = 100

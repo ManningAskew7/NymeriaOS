@@ -6837,13 +6837,17 @@ class _CommandExecutor(
             )
             if write_error:
                 return command_error(write_error)
+            from ..tools.metadata import capability_loss_warning
+
+            lost = capability_loss_warning(tool_names)
+            suffix = f" {lost}" if lost else ""
             if is_category:
                 return command_success(
                     f"Removed category '{cat_name}' ({len(tool_names)} tools) "
-                    "from this account's defaults."
+                    f"from this account's defaults.{suffix}"
                 )
             return command_success(
-                f"Removed tool '{tool_names[0]}' from this account's defaults."
+                f"Removed tool '{tool_names[0]}' from this account's defaults.{suffix}"
             )
 
         thread_error = self._require_thread()
@@ -6863,9 +6867,15 @@ class _CommandExecutor(
             enabled_tools=sorted(new_enabled),
             disabled_tools=sorted(new_disabled),
         )
+        from ..tools.metadata import capability_loss_warning
+
+        lost = capability_loss_warning(tool_names)
+        suffix = f" {lost}" if lost else ""
         if is_category:
-            return command_success(f"Disabled category '{cat_name}' ({len(tool_names)} tools).")
-        return command_success(f"Disabled tool '{tool_names[0]}'.")
+            return command_success(
+                f"Disabled category '{cat_name}' ({len(tool_names)} tools).{suffix}"
+            )
+        return command_success(f"Disabled tool '{tool_names[0]}'.{suffix}")
 
     # ── Memory ────────────────────────────────────────────────────────────
 

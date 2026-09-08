@@ -80,16 +80,21 @@ with your full conversation history up to the spawn point. The worker
 already knows what the overall goal is and what's been discussed  -
 don't re-brief context you've already shared.
 
-`prompt=...` makes the call **block** until the worker returns its result,
-and the result is part of the tool's return value. Use this for serial
-delegation. For parallel delegation, omit `prompt` and invoke each callable
-later by its returned name.
+`prompt=...` sends the worker its first task as a REQUEST: you get a
+`[Requested]` receipt with a `request_id` at once, and the worker's answer
+(sent with its `reply_to_thread` tool) arrives as a new prompt on your thread
+when it is ready. Add `wait_seconds=N` to also wait up to N seconds and get
+the reply inline (the request stays open if it does not land in time; keep
+waiting with `wait_for_reply(request_id, timeout_seconds)` or end your turn).
+Use the wait for serial delegation. For parallel delegation, spawn each
+worker with its `prompt` and no wait, end your turn, and act on the replies
+as they arrive (or invoke each callable later by its returned name).
 
 ### 4. Parallel vs serial
 
-- **Serial** (default): spawn one worker at a time with `prompt=...` and
-  wait for each result before the next. Use when later tasks depend on
-  earlier results.
+- **Serial** (default): spawn one worker at a time with `prompt=...` plus
+  `wait_seconds=...` (or wait with `wait_for_reply`) and act on each reply
+  before the next. Use when later tasks depend on earlier results.
 - **Parallel**: spawn multiple workers without `prompt`, then invoke them
   in parallel via their callable names. Use when tasks are independent.
   You can absorb multiple worker results in one turn.

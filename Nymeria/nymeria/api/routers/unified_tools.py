@@ -271,7 +271,9 @@ def create_unified_tools_router(
 
         agent._rebuild_default_graphs()
 
-        return {
+        from ...tools.metadata import capability_loss_warning
+
+        response = {
             "status": "ok",
             "tool_id": tool_id,
             "enabled": request.enabled,
@@ -281,6 +283,12 @@ def create_unified_tools_router(
                 else "builtin"
             ),
         }
+        # Disabling a tool that carries a cross-thread contract warns about
+        # what stops working (never blocks: modularity is the user's call).
+        lost = capability_loss_warning([tool_id]) if not request.enabled else None
+        if lost:
+            response["warning"] = lost
+        return response
 
     @router.put("/users/{user_id}/tools/unified/{tool_id}/description")
     async def set_unified_tool_description(

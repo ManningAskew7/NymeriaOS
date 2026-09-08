@@ -205,6 +205,7 @@ class ServerSettingsResponse(BaseModel):
     sliding_window_cycles: int
     tool_output_max_chars: int
     tool_timeout: int = 300
+    callable_wait_max_seconds: int = 600
     tool_timing_in_results: bool = False
     memory_char_limit: int = 8000
     memory_max_entries: int = 100
@@ -861,6 +862,9 @@ class ServerSettingsUpdate(BaseModel):
     tool_output_max_chars: Optional[int] = None
     # Bounds mirror the CLI wizard's tuning catalog (setup/tuning_catalog.py).
     tool_timeout: Optional[int] = Field(default=None, ge=30, le=900)
+    # Per-call ceiling on a callable-thread inline wait (backlog #357); read
+    # per call, so no graph rebuild is needed.
+    callable_wait_max_seconds: Optional[int] = Field(default=None, ge=30, le=21600)
     nymeria_mcp_chat_wait_seconds: Optional[int] = Field(
         default=None, ge=1, le=3600
     )

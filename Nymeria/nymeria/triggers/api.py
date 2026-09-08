@@ -1192,6 +1192,12 @@ def create_api_app(
     _register_hook_approval_sweep_lifecycle(app)
     _register_fallback_approval_sweep_lifecycle(app)
 
+    # Nudge a thread whose request to another thread got no reply, and expire
+    # stale requests (backlog #357). Unconditional for the same reason: the
+    # request ledger, the thread locks and the pending queue live in the API
+    # process in both shapes (the worker's Ticker has no agent).
+    _register_stale_request_sweep_lifecycle(app, agent_getter=get_agent)
+
     # Warn admins ahead of service-token expiry (backlog #107). Unconditional:
     # the accounts repo lives in the API process in both shapes.
     _register_service_token_warning_lifecycle(app, agent_getter=get_agent)
@@ -1503,6 +1509,42 @@ def _register_proactive_compaction_lifecycle(
         startup_delay_seconds=60,
         start_log="Proactive compaction sweep task started",
         error_label="Proactive compaction sweep",
+    )
+
+
+def _register_stale_request_sweep_lifecycle(app: FastAPI, *, agent_getter) -> None:
+    """Nudge callers whose thread requests got no reply; expire stale ones.
+
+    A request (``core/thread_requests.py``) is a durable record whose callee
+    may have ended its turn without replying, been stopped, or died with the
+    process; nothing else wakes the caller. Each pass nudges the caller once
+    per request past the nudge window while the callee is idle, and closes a
+    request past the hard expiry with a ``[NoReply]`` notice. Must run where
+    turns run: the API process, in both deployment shapes.
+    """
+
+    async def _run_pass() -> None:
+        import asyncio as _asyncio
+
+        from ..core.thread_requests import sweep_stale_requests
+
+        agent = agent_getter()
+        if agent is None:
+            return
+        acted = await _asyncio.to_thread(sweep_stale_requests, agent)
+        if acted:
+            logger.info("Stale request sweep acted on %d request(s)", acted)
+
+    from ..core.thread_requests import REQUEST_SWEEP_INTERVAL_SECONDS
+
+    _register_periodic_task(
+        app,
+        state_prefix="stale_request_sweep",
+        run_pass=_run_pass,
+        interval_seconds=REQUEST_SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=120,
+        start_log="Stale request sweep task started",
+        error_label="Stale request sweep",
     )
 
 

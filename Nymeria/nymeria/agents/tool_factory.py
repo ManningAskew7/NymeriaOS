@@ -96,41 +96,13 @@ def _check_team_visibility(agent, parent_thread_id, *, name, thread_id) -> Optio
     return None
 
 
-def _check_circular_call(agent, parent_thread_id, mode, *, name, thread_id) -> Optional[str]:
-    """Block a blocking ask that would deadlock on an ancestor invocation.
+def _inline_wait_timeout(args: Dict[str, Any]) -> Optional[float]:
+    """SafeToolNode's per-call kill for a callable-tool call that waits inline
+    (``wait_seconds``): the clamped wait plus a margin; None (the node's
+    default) for a call that does not wait."""
+    from ..core.thread_requests import wait_kill_timeout
 
-    If the target thread is an ancestor waiting for this thread's output,
-    invoking it would deadlock. Handoffs do not wait, so a child can hand work
-    back to its caller. Returns an error string, or None when allowed or not
-    applicable.
-    """
-    if mode == "ask" and agent and parent_thread_id:
-        if agent.is_ancestor_invocation(parent_thread_id, thread_id):
-            logger.warning(
-                f"{name} circular call blocked: thread {parent_thread_id} "
-                f"tried to call {thread_id} which is waiting for its response"
-            )
-            return (
-                f"[Error]: {name} is currently waiting for YOUR response. "
-                f"Do not call a thread that invoked you — just return your "
-                f"final answer directly to complete your turn."
-            )
-    return None
-
-
-def _check_busy(agent, mode, if_busy, *, name, thread_id) -> Optional[str]:
-    """Best-effort busy check for a blocking ask with if_busy='error'.
-
-    Returns a "[Busy]" string, or None when the target is free or the check
-    does not apply.
-    """
-    if mode == "ask" and if_busy == "error" and agent:
-        if agent.is_thread_busy(thread_id):
-            return (
-                f"[Busy]: {name} is busy on thread '{thread_id}'. "
-                "Ask again later or retry with if_busy='queue'."
-            )
-    return None
+    return wait_kill_timeout((args or {}).get("wait_seconds"))
 
 
 def _resolve_parent_name_and_trigger(
@@ -185,17 +157,19 @@ def create_callable_thread_tool(thread_config) -> BaseTool:
 
     tool_description = f"""{description}
 
-This is a specialized thread with its own tools and context. Use mode="ask" to
-delegate and wait for the final answer, or mode="handoff" to transfer work to
-the target thread without waiting for its final output. In handoff mode, the
-target thread responds through its own autonomous output channels.
-
-An ask waits inline for a bounded budget (just under the tool timeout). If the
-thread is still working when that lapses you get a [StillWorking] receipt, not
-an error: its final output is delivered to you later as a new prompt on this
-thread (no polling needed; you may end your turn), and a further call with
-mode="handoff" queues extra instructions for the running thread. Handoffs
-never deliver output back.
+This is a specialized thread with its own tools and context. Calling it sends
+a REQUEST: you get a [Requested] receipt with a request_id at once, the thread
+works on the task, and its reply (sent with its reply_to_thread tool) reaches
+you exactly once as a new prompt on your thread, so you can end your turn and
+continue when it arrives. For a quick question you need answered now, pass
+wait_seconds: the call also waits up to that long and returns the reply
+inline; if it does not land in time you get a [Waiting] status and the request
+stays open (wait again with wait_for_reply(request_id, timeout_seconds), or
+check progress with timeout_seconds=0). Waits are capped per call (server
+maximum, default 600 s); while you wait your own incoming messages queue
+until the wait returns, so prefer no wait or short waits for long work.
+Nothing the thread says outside reply_to_thread is delivered to you. A second
+call with a new task while one is open is a second, separate request.
 """
 
     # Capture in closure
@@ -205,48 +179,54 @@ never deliver output back.
     @tool_decorator(_name, return_direct=False)
     def callable_thread_tool_func(
         task: str,
-        mode: Literal["ask", "handoff"] = "ask",
+        wait_seconds: int = 0,
         scheduled_for: Optional[str] = None,
         if_busy: Literal["queue", "error"] = "queue",
         *,
         config: Annotated[RunnableConfig, InjectedToolArg],
     ) -> str:
-        """Invoke this thread with a task.
+        """Send this thread a task as a request and, optionally, wait for its reply.
 
         Args:
-            task: A clear description of what you want this thread to do. Be specific about the goal and any constraints.
-            mode: "ask" waits for this thread's final answer and returns it to you (bounded: a long run returns a [StillWorking] receipt and the answer arrives later as a prompt on your thread). "handoff" starts autonomous work in this thread and returns only a dispatch receipt.
-            scheduled_for: For mode="handoff" only, delay execution until a time such as "30s", "5m", "1h", "1d", or "YYYY-MM-DD HH:MM". Omit for immediate handoff.
-            if_busy: For handoff mode, "queue" waits for the target thread lock in the background; "error" returns immediately if the target thread is busy. For ask mode, "error" performs a best-effort busy check before waiting.
+            task: A clear description of what you want this thread to do. Be specific about the goal, the constraints, and what the reply should contain.
+            wait_seconds: 0 (default) returns the [Requested] receipt at once; the reply arrives later as a prompt on your thread. N > 0 also waits up to N seconds for the reply and returns it inline when it lands in time, else a [Waiting] status (the request stays open). Clamped to the server maximum (default 600). Set it above the time the task should take, or wait again with wait_for_reply.
+            scheduled_for: Delay the request until a time such as "30s", "5m", "1h", "1d", or "YYYY-MM-DD HH:MM". Omit for an immediate request; cannot be combined with wait_seconds.
+            if_busy: "queue" (default) queues the request behind the thread's current turn (it is absorbed at that turn's next tool-round boundary); "error" returns [Busy] instead when the thread is mid-turn.
         """
         from langchain_core.runnables.config import var_child_runnable_config
         from langchain_core.tracers.context import tracing_v2_callback_var, run_collector_var
         from ..core.thread_agent_executor import (
-            handoff as thread_handoff,
             invoke as thread_invoke,
-            invoke_with_continuation as thread_invoke_with_continuation,
+            request as thread_request,
         )
 
         user_id = config.get("configurable", {}).get("user_id", "default") if config else "default"
         parent_thread_id = config.get("configurable", {}).get("thread_id") if config else None
 
-        logger.info(f"{_name} callable thread tool called: mode={mode}, task={task[:100]}...")
+        logger.info(
+            f"{_name} callable thread tool called: wait_seconds={wait_seconds}, task={task[:100]}..."
+        )
 
-        if mode not in ("ask", "handoff"):
-            return "[Error]: mode must be 'ask' or 'handoff'."
         if if_busy not in ("queue", "error"):
             return "[Error]: if_busy must be 'queue' or 'error'."
-        if mode == "ask" and scheduled_for and scheduled_for.strip():
-            return "[Error]: scheduled_for is only supported when mode='handoff'."
+        try:
+            wait_requested = int(wait_seconds or 0)
+        except (TypeError, ValueError):
+            return "[Error]: wait_seconds must be a whole number of seconds (0 for no wait)."
+        if wait_requested < 0:
+            return "[Error]: wait_seconds must be 0 or a positive number of seconds."
+        if wait_requested > 0 and scheduled_for and scheduled_for.strip():
+            return (
+                "[Error]: wait_seconds cannot be combined with scheduled_for; a "
+                "scheduled request replies when its schedule fires."
+            )
 
-        # Register parent→child relationship for cascading abort
         from ..core.agent import get_current_agent
         _agent = get_current_agent()
 
-        # Auth / visibility guards, evaluated in the original order. The first
-        # guard returning a non-None message short-circuits and is surfaced to
-        # the model. Each guard reproduces its own applicability precondition
-        # (so calling it when it does not apply is a safe no-op), including the
+        # Auth / visibility guards, in this order. The first guard returning a
+        # non-None message short-circuits and is surfaced to the model; each
+        # reproduces its own applicability precondition, including the
         # fail-closed ownership boundary which returns an error rather than
         # raising. See the _check_* helpers above.
         error = _check_callable_ownership(_agent, user_id, name=_name, thread_id=_thread_id)
@@ -255,17 +235,6 @@ never deliver output back.
         error = _check_team_visibility(_agent, parent_thread_id, name=_name, thread_id=_thread_id)
         if error:
             return error
-        error = _check_circular_call(_agent, parent_thread_id, mode, name=_name, thread_id=_thread_id)
-        if error:
-            return error
-        error = _check_busy(_agent, mode, if_busy, name=_name, thread_id=_thread_id)
-        if error:
-            return error
-
-        registered_invocation = False
-        if mode == "ask" and _agent and parent_thread_id:
-            _agent.register_callable_invocation(parent_thread_id, _thread_id)
-            registered_invocation = True
 
         # Resolve parent thread name for trigger metadata
         parent_name, trigger_override = _resolve_parent_name_and_trigger(
@@ -274,49 +243,53 @@ never deliver output back.
 
         # Break the LangChain callback/tracing inheritance chain so an inner
         # graph.invoke() doesn't propagate LLM token events back to the
-        # parent's astream_events() (stream leakage). The continuation and
-        # handoff paths run the callee on a fresh worker thread, which starts
-        # with an empty context, so this matters for the no-caller-thread
-        # fallback below, which still runs the callee inline here.
+        # parent's astream_events() (stream leakage). The request path copies
+        # THIS context onto its worker thread, so the reset must happen
+        # before the dispatch; the no-caller-thread fallback runs inline here.
         config_token = var_child_runnable_config.set(None)
         callback_token = tracing_v2_callback_var.set(None)
         collector_token = run_collector_var.set(None)
         try:
-            if mode == "handoff":
-                return thread_handoff(
+            if not parent_thread_id:
+                # No calling thread to reply to (no turn context): the
+                # synchronous form, the callee's text returned directly. A
+                # schedule needs a thread for the reply to land on.
+                if scheduled_for and scheduled_for.strip():
+                    return (
+                        "[Error]: scheduled_for needs a calling thread for the "
+                        "reply to reach (no thread context on this call)."
+                    )
+                if if_busy == "error" and _agent is not None:
+                    try:
+                        if _agent._thread_locks.is_thread_busy(_thread_id):
+                            return (
+                                f"[Busy]: {_name} is busy on thread '{_thread_id}'. "
+                                "Ask again later or retry with if_busy='queue'."
+                            )
+                    except Exception:  # noqa: BLE001 - an unreadable lock is idle
+                        pass
+                return thread_invoke(
                     _thread_id,
                     task,
                     user_id,
                     _name,
-                    caller_thread_id=parent_thread_id,
-                    caller_name=parent_name,
-                    trigger_override=trigger_override,
-                    scheduled_for=scheduled_for,
-                    if_busy=if_busy,
-                )
-            if parent_thread_id:
-                # Bounded inline wait; a long run detaches and its output
-                # wakes the caller thread later (thread_agent_executor's
-                # "Ask continuations"). The invocation edge registered above
-                # is dropped in ``finally`` either way, so a detached callee
-                # is a handoff target from then on: no cascade-abort from
-                # the caller, no circular block if it calls the caller back.
-                return thread_invoke_with_continuation(
-                    _thread_id,
-                    task,
-                    user_id,
-                    _name,
-                    caller_thread_id=parent_thread_id,
                     trigger_override=trigger_override,
                 )
-            # No caller thread to wake (no turn context): plain blocking ask.
-            return thread_invoke(
+            # The request path owns the wait too (waiter registered before
+            # the callee is dispatched, abort-cascade edge for its duration).
+            receipt, _req = thread_request(
                 _thread_id,
                 task,
                 user_id,
                 _name,
+                caller_thread_id=parent_thread_id,
+                caller_name=parent_name,
                 trigger_override=trigger_override,
+                scheduled_for=scheduled_for,
+                if_busy=if_busy,
+                wait_seconds=wait_requested,
             )
+            return receipt
         except Exception as e:
             logger.error(f"{_name} callable thread failed: {e}", exc_info=True)
             return f"[Error]: {_name} invocation failed: {str(e)}"
@@ -324,11 +297,11 @@ never deliver output back.
             run_collector_var.reset(collector_token)
             tracing_v2_callback_var.reset(callback_token)
             var_child_runnable_config.reset(config_token)
-            # Unregister parent→child (child is done or failed)
-            if registered_invocation and _agent and parent_thread_id:
-                _agent.unregister_callable_invocation(parent_thread_id, _thread_id)
 
     callable_thread_tool_func.description = tool_description
+    # SafeToolNode reads this per call: a waiting call is killed at its own
+    # wait plus a margin, never at the plain tool_timeout.
+    callable_thread_tool_func.metadata = {"inline_wait_timeout": _inline_wait_timeout}
     return callable_thread_tool_func
 
 
@@ -487,14 +460,16 @@ def _finalize_materialized_thread(
     return updated, None
 
 
-def _invoke_materialized(child_tc, task: str, mode: str, config) -> str:
+def _invoke_materialized(child_tc, task: str, wait_seconds: int, config) -> str:
     """Seam: route the call through the ordinary callable-thread tool.
 
-    Shares the ownership / team / circular-call / busy guards and the
-    invoke/handoff plumbing with every other callable thread.
+    Shares the ownership / team guards and the request/wait plumbing with
+    every other callable thread.
     """
     callable_tool = create_callable_thread_tool(child_tc)
-    return cast(Any, callable_tool).func(task=task, mode=mode, config=config)
+    return cast(Any, callable_tool).func(
+        task=task, wait_seconds=wait_seconds, config=config
+    )
 
 
 def create_template_thread_tool(skill_name: str, template) -> BaseTool:
@@ -511,9 +486,10 @@ def create_template_thread_tool(skill_name: str, template) -> BaseTool:
     tool_description = f"""{template.description}
 
 Callable thread template from Skill Kit '{skill_name}'. The first call creates
-the thread from the kit's declared configuration and sends it your task; later
-calls route to the same thread. Use mode="ask" to wait for its answer, or
-mode="handoff" to dispatch work without waiting.
+the thread from the kit's declared configuration and sends it your task as a
+request; later calls route to the same thread. You get a [Requested] receipt
+with a request_id at once and the thread's reply (sent with reply_to_thread)
+arrives as a prompt on your thread; pass wait_seconds to wait inline for it.
 """
 
     _skill_name = skill_name
@@ -522,21 +498,27 @@ mode="handoff" to dispatch work without waiting.
     @tool_decorator(_tool_name, return_direct=False)
     def template_thread_tool(
         task: str,
-        mode: Literal["ask", "handoff"] = "ask",
+        wait_seconds: int = 0,
         *,
         config: Annotated[RunnableConfig, InjectedToolArg],
     ) -> str:
-        """Delegate a task to this kit-declared thread (created on first call).
+        """Send a task to this kit-declared thread (created on first call) as a request.
 
         Args:
             task: A clear description of what you want this thread to do.
-            mode: "ask" waits for the thread's final answer; "handoff" starts
-                autonomous work in it and returns a dispatch receipt.
+            wait_seconds: 0 (default) returns the [Requested] receipt at once
+                (the reply arrives later as a prompt on your thread); N > 0
+                also waits up to N seconds for the reply inline (clamped to
+                the server maximum).
         """
         from ..core.agent import get_current_agent
 
-        if mode not in ("ask", "handoff"):
-            return "[Error]: mode must be 'ask' or 'handoff'."
+        try:
+            wait_requested = int(wait_seconds or 0)
+        except (TypeError, ValueError):
+            return "[Error]: wait_seconds must be a whole number of seconds (0 for no wait)."
+        if wait_requested < 0:
+            return "[Error]: wait_seconds must be 0 or a positive number of seconds."
 
         agent = get_current_agent()
         if agent is None:
@@ -591,10 +573,11 @@ mode="handoff" to dispatch work without waiting.
                     f"'{_skill_name}' template '{_tool_name}')\n\n"
                 )
 
-        response = _invoke_materialized(child_tc, task, mode, config)
+        response = _invoke_materialized(child_tc, task, wait_requested, config)
         return materialized_receipt + response
 
     template_thread_tool.description = tool_description
+    template_thread_tool.metadata = {"inline_wait_timeout": _inline_wait_timeout}
     return template_thread_tool
 
 

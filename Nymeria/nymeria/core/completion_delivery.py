@@ -3,16 +3,18 @@
 Three producers outlive the tool call that started them and must deliver their
 result to the thread that asked, later: background bash jobs
 (``tools/bash_background.py``), detached Claude Code runs
-(``tools/claude_code_background.py``), and callable-thread asks that outran
-their inline wait budget (``core/thread_agent_executor.py``). They share one
-choreography, which this module owns so it cannot drift between them:
+(``tools/claude_code_background.py``), and thread requests
+(``core/thread_requests.py``: another thread's ``reply_to_thread`` answer to a
+request nobody is waiting on inline, plus the no-reply nudge and expiry
+notices). They share one choreography, which this module owns so it cannot
+drift between them:
 
 - Guard: the origin thread must still be owned by the user the result was
   produced for (fail closed on a lookup error: this is an auth boundary, the
   same rule as the callable ownership gate). A set abort flag on the origin
   thread drops the delivery only when the producer asked for that
   (``drop_on_abort``): the background tools do (a user who just stopped a
-  thread does not want it waking itself up), callable asks do not (the
+  thread does not want it waking itself up), thread replies do not (the
   callee did real work on the caller's behalf, and the wake-up turn itself
   clears the stale flag at start).
 - Route: if the origin thread is busy, enqueue a pending prompt that the

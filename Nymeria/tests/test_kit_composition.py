@@ -1148,8 +1148,8 @@ def test_template_first_call_materializes_then_routes(tmp_path: Path, monkeypatc
         tool_factory, "_spawn_template_thread", _fake_spawn_factory(agent, spawn_calls)
     )
 
-    def fake_invoke(child_tc, task, mode, config):
-        invoke_calls.append((child_tc.thread_id, task, mode))
+    def fake_invoke(child_tc, task, wait_seconds, config):
+        invoke_calls.append((child_tc.thread_id, task, wait_seconds))
         return "child answer"
 
     monkeypatch.setattr(tool_factory, "_invoke_materialized", fake_invoke)
@@ -1157,7 +1157,7 @@ def test_template_first_call_materializes_then_routes(tmp_path: Path, monkeypatc
     set_current_agent(agent)
     try:
         first = tool.func(task="dig into X", config=_CONFIG)
-        second = tool.func(task="follow up", mode="handoff", config=_CONFIG)
+        second = tool.func(task="follow up", wait_seconds=0, config=_CONFIG)
     finally:
         set_current_agent(None)
 
@@ -1185,8 +1185,8 @@ def test_template_first_call_materializes_then_routes(tmp_path: Path, monkeypatc
 
     # Both calls routed to the SAME thread through the callable seam.
     assert invoke_calls == [
-        ("spawned-research_helper-1", "dig into X", "ask"),
-        ("spawned-research_helper-1", "follow up", "handoff"),
+        ("spawned-research_helper-1", "dig into X", 0),
+        ("spawned-research_helper-1", "follow up", 0),
     ]
 
 
@@ -1207,8 +1207,8 @@ def test_template_materialization_drives_real_spawn_thread_func(
 
     invoked: list = []
 
-    def fake_invoke(child_tc, task, mode, config):
-        invoked.append((child_tc.thread_id, child_tc.callable_name, task, mode))
+    def fake_invoke(child_tc, task, wait_seconds, config):
+        invoked.append((child_tc.thread_id, child_tc.callable_name, task, wait_seconds))
         return "child answer"
 
     monkeypatch.setattr(tool_factory, "_invoke_materialized", fake_invoke)
@@ -1243,7 +1243,7 @@ def test_template_materialization_drives_real_spawn_thread_func(
     # The template.tools list survived the REAL spawn tool-resolution pass.
     assert "memory_clear_all" in (child.enabled_tools or [])
     # The route went through the renamed child via the real keyword wiring.
-    assert invoked == [(spawned_ids[0], "research_helper", "dig in", "ask")]
+    assert invoked == [(spawned_ids[0], "research_helper", "dig in", 0)]
 
 
 def test_template_materialization_inherits_caller_team(tmp_path: Path, monkeypatch):
@@ -1300,7 +1300,7 @@ def test_template_concurrent_first_calls_spawn_once(tmp_path: Path, monkeypatch)
         _fake_spawn_factory(agent, spawn_calls, delay=0.2),
     )
     monkeypatch.setattr(
-        tool_factory, "_invoke_materialized", lambda tc, task, mode, config: "answer"
+        tool_factory, "_invoke_materialized", lambda tc, task, wait_seconds, config: "answer"
     )
 
     results: list = [None, None]
@@ -1430,14 +1430,17 @@ def test_template_spawn_refusal_passes_through_verbatim(tmp_path: Path, monkeypa
     assert agent.owned_threads == []
 
 
-def test_template_tool_rejects_bad_mode(tmp_path: Path):
+def test_template_tool_rejects_a_negative_wait_and_exposes_the_request_schema(tmp_path: Path):
     _, agent, tool = _template_fixture(tmp_path)
+    assert sorted(tool.args.keys()) == ["task", "wait_seconds"]
+    assert "mode" not in tool.args
     set_current_agent(agent)
     try:
-        result = tool.func(task="x", mode="broadcast", config=_CONFIG)
+        result = tool.func(task="x", wait_seconds=-5, config=_CONFIG)
     finally:
         set_current_agent(None)
-    assert result == "[Error]: mode must be 'ask' or 'handoff'."
+    assert result == "[Error]: wait_seconds must be 0 or a positive number of seconds."
+    assert agent.owned_threads == []  # nothing materialized on a refused call
 
 
 # ---------------------------------------------------------------------------

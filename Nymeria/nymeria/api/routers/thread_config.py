@@ -215,6 +215,7 @@ def create_thread_config_router(
 
         if tc is None:
             tc = ThreadConfig(thread_id=thread_id)
+        previously_disabled = set(tc.disabled_tools or [])
 
         def _drop_active_fallback(reason: str) -> None:
             # Every path that clears an active hold latches the model-facing
@@ -433,7 +434,15 @@ def create_thread_config_router(
                 platform="callable",
             )
 
-        return _config_response(tc, agent=agent, user_id=user_id)
+        response = _config_response(tc, agent=agent, user_id=user_id)
+        # A write that newly disables a tool carrying a cross-thread contract
+        # warns about what stops working on this thread (never blocks).
+        from ...tools.metadata import capability_loss_warning
+
+        lost = capability_loss_warning(set(tc.disabled_tools or []) - previously_disabled)
+        if lost:
+            response["warning"] = lost
+        return response
 
     @router.delete("/threads/{thread_id}/config")
     async def delete_thread_config(

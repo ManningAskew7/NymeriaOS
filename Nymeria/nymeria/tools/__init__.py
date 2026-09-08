@@ -32,8 +32,11 @@ Tool classification (read this before reasoning about "core" vs "optional"):
   developer-only) are name overlays applied at bind time, not separate tiers.
 
 Adding a tool: ``@tool`` it, then place it in ``SEED_TOOLS`` (on by default for
-everyone, and auto-synced into every existing user's defaults on reload) or in a
-``CATALOG_TOOLS`` group (opt-in). Prefer the catalog unless it must always be on.
+a FRESH profile; an existing profile's saved ``default_thread_tools`` list is
+only normalized on reload, never extended, so an already-seeded user enables a
+new seed tool per thread, with ``/tools enable``, or via ``PUT /tools/defaults``)
+or in a ``CATALOG_TOOLS`` group (opt-in). Prefer the catalog unless it must
+always be on.
 """
 
 from .bash import bash_execute
@@ -214,6 +217,7 @@ from .search_mcp import (
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
+from .thread_requests import reply_to_thread, wait_for_reply
 from .dream_tools import thread_instructions_set, DREAM_TOOLS
 from .image_gen_integrations import (
     image_gen_openai,
@@ -1609,6 +1613,13 @@ SEED_TOOLS = [
     # sub-threads). Its module registers no ToolGroup, keeping seed/catalog
     # disjoint.
     spawn_thread,
+    # The thread request/reply contract (backlog #357): how a thread answers a
+    # request another thread made to it, and how a requester waits for or
+    # checks on the reply. Ordinary seed tools by design (never force-bound);
+    # disabling either warns about the lost capability
+    # (metadata.CAPABILITY_LOSS_NOTES). No ToolGroup, seed/catalog disjoint.
+    reply_to_thread,
+    wait_for_reply,
 ]
 
 
@@ -2690,6 +2701,7 @@ __all__ = [
     "reddit_search_posts",
     "regression_echo",
     "reload_all",
+    "reply_to_thread",
     "request_credential",
     "resolve_default_tool_names",
     "rss_feed_read",
@@ -2914,6 +2926,7 @@ __all__ = [
     "vero_update_user_tags",
     "vonage_get_balance",
     "vonage_send_sms",
+    "wait_for_reply",
     "watchdog_dispatch",
     "watchdog_read_notepad",
     "watchdog_todo_overview",

@@ -249,11 +249,12 @@ system prompt. For any autonomous wake-up (scheduled TODO, watchdog nudge,
 trigger fire, handoff, dream), `NymeriaAgent._prefix_turn_metadata` appends the
 general autonomous run rules from `AUTONOMOUS_MODE_RULES`
 (`get_autonomous_tail_guidance` in `core/prompts.py`) after the `[Time:]/[Trigger:]`
-line. Interactive turns (user, MCP, blocking callable ask) get no extra guidance.
+line. Interactive turns (user, MCP) get no extra guidance.
 Source-specific guidance stays with its source: the watchdog bakes its
-instructions into its nudge message, and handoffs carry their routing IDs plus
-call-back / `notify` guidance in the `[Handoff Metadata]` block built by
-`thread_agent_executor` (so both immediate and scheduled handoffs receive it).
+instructions into its nudge message, and thread requests carry their
+`request_id`, source ids, and the reply contract (`reply_to_thread`) in the
+`[Request Metadata]` block built by `core/thread_requests.py` (so both
+immediate and scheduled requests receive it).
 
 **Recovery on Restart:**
 When Nymeria starts, the Ticker:
@@ -601,7 +602,7 @@ The `get_conversation_history()` method (used for page refresh/checkpoint rebuil
 
 **Callable Thread Streaming**
 
-Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Blocking `mode="ask"` calls run through the shared sync stream bridge loop rather than creating a fresh event loop per invocation. Async graph cache keys include the owning event loop, and `vendor/react_agent/providers.py` keeps Anthropic plus OpenAI-compatible HTTP pools loop-local. Parent→child invocations are tracked via `_active_callable_invocations` for cascading abort support. This dict is intentionally process-local  -  a restart kills all in-flight invocations, so an empty dict is the correct post-restart state.
+Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. A callable call is a request (`core/thread_requests.py`): the callee's turn runs on a worker through the shared sync stream bridge loop rather than creating a fresh event loop per invocation, and its answer comes back through `reply_to_thread`. Async graph cache keys include the owning event loop, and `vendor/react_agent/providers.py` keeps Anthropic plus OpenAI-compatible HTTP pools loop-local. Parent→child invocations are tracked via `_active_callable_invocations` for cascading abort support only while the parent waits inline (`wait_seconds` or `wait_for_reply`); a request nobody waits on is the callee's own work and a parent `/stop` leaves it running. This dict is intentionally process-local  -  a restart kills all in-flight invocations, so an empty dict is the correct post-restart state.
 
 ---
 

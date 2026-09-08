@@ -181,7 +181,8 @@ metadata:
   that call's `task` as its first turn, and prepends a
   `[Materialized]: thread_id=...` receipt. The spawned thread is renamed so
   its callable name equals the template tool name; subsequent calls route to
-  it like any callable thread (`mode="ask"` or `"handoff"`). Concurrent first
+  it like any callable thread (a request: `task`, optional `wait_seconds`,
+  `scheduled_for`, `if_busy`; see the request model in `tools.md`). Concurrent first
   calls are serialized in-process: exactly one spawn.
 - **Lifecycle.** Materialized threads are ordinary spawned threads: they live
   in the Spawned folder, honor the template's `ttl_hours` idle lifetime, and

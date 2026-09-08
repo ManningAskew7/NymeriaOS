@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.prompts import AUTONOMOUS_MODE_RULES, get_autonomous_tail_guidance
-from nymeria.core.thread_agent_executor import _format_handoff_prompt
 from nymeria.core.thread_config import ThreadConfig
+from nymeria.core.thread_requests import ThreadRequest, format_request_prompt
 from nymeria.core.todo_manager import TodoItem, TodoManager
 from nymeria.core.watchdog_sweep import WatchdogSweep
 
@@ -72,25 +72,33 @@ def test_prefix_turn_metadata_appends_guidance_only_when_autonomous(monkeypatch)
     assert "Autonomous Run Rules" not in interactive
 
 
-def test_handoff_metadata_block_explains_non_return_and_callback():
-    prompt = _format_handoff_prompt(
-        task="summarize the report",
-        handoff_id="handoff-abc123",
+def test_request_metadata_block_explains_the_reply_contract():
+    """Source-specific guidance rides in the request block, not the system
+    prompt (backlog #357): the callee learns who asked, how to answer, and that
+    its ordinary final message is not delivered to the asker."""
+    req = ThreadRequest(
+        id="req-abc12345",
         caller_thread_id="thread-42",
+        caller_user_id="owner",
         caller_name="Planner",
+        target_thread_id="thread-99",
         callable_name="Researcher",
+        task="summarize the report",
+        task_id="req-abc12345-Researcher",
     )
-    # Routing facts the receiver needs to call the source back.
-    assert "[Handoff Metadata]" in prompt
-    assert "handoff_id: handoff-abc123" in prompt
+    prompt = format_request_prompt(task="summarize the report", req=req)
+    # Routing facts the receiver needs to answer the source.
+    assert prompt.startswith("[Request Metadata]\n")
+    assert "request_id: req-abc12345" in prompt
     assert "source_thread_id: thread-42" in prompt
     assert "source_thread_name: Planner" in prompt
-    # Behavioral guidance: output is not returned; call back if callable; else notify.
-    assert "non-blocking handoff" in prompt
-    assert "NOT returned" in prompt
-    assert "call it back" in prompt
-    assert "notify tool" in prompt
+    assert "target_callable_name: Researcher" in prompt
+    # Behavioural guidance: reply through the tool, the final message is not delivered.
+    assert 'reply_to_thread(request_id="req-abc12345"' in prompt
+    assert "your ordinary final message is not" in prompt
+    assert "final=false" in prompt
     # The actual task still trails the metadata block.
+    assert "[/Request Metadata]" in prompt
     assert prompt.rstrip().endswith("summarize the report")
 
 
