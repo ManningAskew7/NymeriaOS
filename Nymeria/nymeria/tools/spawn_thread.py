@@ -1542,7 +1542,7 @@ def _invoke_spawned(
         except Exception:  # noqa: BLE001 - the cascade edge is best-effort
             logger.debug("spawn wait: invocation registration failed", exc_info=True)
         outcome = tr.finish_wait(req, waiter, seconds=seconds, agent=agent)
-        return f"{receipt}\n\n{outcome}"
+        return tr.waited_result(req, receipt, outcome)
     finally:
         run_collector_var.reset(collector_token)
         tracing_v2_callback_var.reset(callback_token)

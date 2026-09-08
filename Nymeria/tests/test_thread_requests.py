@@ -906,3 +906,26 @@ def test_wait_tool_holds_the_abort_cascade_edge_only_while_waiting(monkeypatch):
     assert sorted(wait_for_reply.args.keys()) == ["request_id", "steps", "timeout_seconds"]
     assert wait_for_reply.metadata["inline_wait_timeout"]({"timeout_seconds": 100}) == 100.0 + tr.WAIT_KILL_MARGIN_SECONDS
     assert wait_for_reply.metadata["inline_wait_timeout"]({}) is None
+
+
+def test_a_waited_call_returns_only_the_outcome_once_the_request_is_closed():
+    """The receipt tells the caller how to wait or check progress; once the wait
+    itself closed the request (reply landed, or it failed) those instructions are
+    stale and would invite a redundant wait, so only the outcome is returned."""
+    agent = _Agent()
+    receipt = "[Requested]: request_id=req-x target=Helper. Helper is working on it."
+
+    still_open = _open()
+    text = tr.waited_result(still_open, receipt, "[Waiting]: no final reply yet")
+    assert text.startswith(receipt) and text.rstrip().endswith("[Waiting]: no final reply yet")
+
+    replied = _open()
+    tr.reply(request_id=replied.id, content="42", final=True, replier_thread_id=CALLEE, agent=agent)
+    text = tr.waited_result(replied, receipt, tr.format_reply_inline(replied))
+    assert text.startswith("[Reply from Helper] (request_id=" + replied.id)
+    assert "[Requested]" not in text and text.rstrip().endswith("42")
+
+    failed = _open()
+    tr.fail_request(failed, "boom", agent)
+    text = tr.waited_result(failed, receipt, "[NoReply]: request failed: boom")
+    assert text == "[NoReply]: request failed: boom"

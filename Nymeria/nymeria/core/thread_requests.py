@@ -540,6 +540,21 @@ def request_receipt(req: ThreadRequest, *, queued: bool = False) -> str:
     return "\n".join(lines)
 
 
+def waited_result(req: ThreadRequest, receipt: str, outcome: str) -> str:
+    """The tool result of a request call that also waited inline.
+
+    While the request is still open the receipt's instructions (end your turn,
+    wait again, check progress) still apply, so both parts are returned. Once
+    the wait closed the request (the reply landed inline, or it failed) those
+    instructions are stale and would invite a redundant wait on a closed
+    record, so only the outcome is returned; the closed texts carry the
+    request id and the callable's name themselves.
+    """
+    if req.state != STATE_OPEN:
+        return outcome
+    return f"{receipt}\n\n{outcome}"
+
+
 # --- text: replies ---------------------------------------------------------------
 
 

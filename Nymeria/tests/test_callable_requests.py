@@ -71,6 +71,12 @@ class _Agent:
         self.unregistered.append((parent, child))
 
 
+def _request_id(text: str) -> str:
+    """The request id named in a tool result (followed by a space in a receipt,
+    by a comma in an inline reply block)."""
+    return text.split("request_id=")[1].split(",")[0].split()[0]
+
+
 def _wait_until(predicate, *, timeout: float = 5.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -197,10 +203,12 @@ def test_wait_seconds_returns_the_reply_inline_when_it_lands_in_time(agent, help
 
     result = helper_tool.invoke({"task": "find the directory", "wait_seconds": 5}, config=_config())
 
-    assert result.startswith("[Requested]: request_id=")
-    assert "[Reply from Helper]" in result
+    # The reply block REPLACES the receipt: its "end your turn / wait again"
+    # instructions are stale once the request is closed.
+    assert result.startswith("[Reply from Helper] (request_id=req-")
+    assert "[Requested]" not in result and "wait_for_reply" not in result
     assert result.rstrip().endswith("Staff directory: /nas/HR/staff.xlsx")
-    req = tr.get_request(result.split("request_id=")[1].split()[0])
+    req = tr.get_request(_request_id(result))
     assert req is not None and req.state == tr.STATE_REPLIED and req.delivered_via == "inline"
     assert agent.registered == [(CALLER, HELPER)] and agent.unregistered == [(CALLER, HELPER)]
     time.sleep(0.2)
@@ -378,7 +386,7 @@ def test_a_reply_landing_before_the_wait_starts_is_still_returned_inline(agent, 
     result = helper_tool.invoke({"task": "quick one", "wait_seconds": 5}, config=_config())
 
     assert "[Reply from Helper]" in result and result.rstrip().endswith("instant")
-    req = tr.requests_awaited_by(CALLER) or [tr.get_request(result.split("request_id=")[1].split()[0])]
+    req = tr.requests_awaited_by(CALLER) or [tr.get_request(_request_id(result))]
     assert req[0] is not None and req[0].delivered_via == "inline"
     time.sleep(0.2)
     assert seen == []

@@ -721,10 +721,12 @@ class TestInvokeSpawnedInternals:
             wait_seconds=5,
         )
 
-        assert result.startswith("[Requested]: request_id=req-")
-        assert "[Reply from ResponderBot]" in result
+        # The reply block replaces the receipt once the request is closed.
+        assert result.startswith("[Reply from ResponderBot] (request_id=req-")
+        assert "[Requested]" not in result
         assert result.rstrip().endswith("child reply")
-        req = tr.get_request(result.split("request_id=")[1].split()[0])
+        # The id is followed by a comma in the inline block and a space in a receipt.
+        req = tr.get_request(result.split("request_id=")[1].split(",")[0].split()[0])
         assert req is not None and req.state == tr.STATE_REPLIED
         assert req.delivered_via == "inline"
         assert registered == [("parent-1", "child-1")]

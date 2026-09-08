@@ -442,6 +442,7 @@ def request(
         finish_wait,
         open_request,
         request_receipt,
+        waited_result,
     )
 
     agent = get_current_agent()
@@ -567,7 +568,7 @@ def request(
                 agent.unregister_callable_invocation(caller_thread_id, thread_id)
             except Exception:  # noqa: BLE001
                 logger.debug("request wait: invocation unregistration failed", exc_info=True)
-    return f"{receipt}\n\n{outcome}", req
+    return waited_result(req, receipt, outcome), req
 
 
 def _run_request_worker(*, req, agent, **stream_kwargs) -> None:
