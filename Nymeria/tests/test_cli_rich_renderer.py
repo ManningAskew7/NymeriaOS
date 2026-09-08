@@ -959,6 +959,15 @@ def test_rich_runtime_scroll_region_gates_to_safe_interactive_rich_terminals() -
         renderer=renderer,
         capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
     ).scroll_region_enabled() is False
+    # A console that does not keep margin-scrolled lines in scrollback (a
+    # bare Windows conhost) runs Rich without the pinned footer.
+    assert _RichReplRuntime(
+        app=app,
+        renderer=renderer,
+        capabilities=FakeTerminalCapabilities(
+            width=80, height=24, renderer="rich", scroll_region_safe=False
+        ),
+    ).scroll_region_enabled() is False
 
 
 def test_rich_runtime_follow_footer_wraps_transcript_writes_without_terminal_run() -> None:

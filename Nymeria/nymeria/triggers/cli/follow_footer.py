@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import signal
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -148,7 +147,7 @@ class FollowFooterEngine:
             return False
         if getattr(self.capabilities, "renderer", "") != "rich":
             return False
-        if sys.platform == "win32":
+        if not bool(getattr(self.capabilities, "scroll_region_safe", True)):
             return False
         if not bool(getattr(self.capabilities, "is_interactive", False)):
             return False

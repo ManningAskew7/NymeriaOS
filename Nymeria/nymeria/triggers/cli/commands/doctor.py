@@ -59,6 +59,8 @@ async def _handle_doctor_terminal(
         ("TTY stdin", format_bool(data.get("stdin_isatty"))),
         ("TTY stdout", format_bool(data.get("stdout_isatty"))),
         ("TERM", data.get("term")),
+        ("TERM usable", format_bool(data.get("term_usable"))),
+        ("Scroll region", format_bool(data.get("scroll_region_safe"))),
         ("CI", format_bool(data.get("ci"))),
         ("Color", f"{format_bool(data.get('color_enabled'))} depth={data.get('color_depth')}"),
         ("Unicode", format_bool(data.get("unicode_enabled"))),

@@ -48,6 +48,14 @@ from .theme import CLITheme, DEFAULT_TOOL_ICON, load_cli_theme, load_tool_icon
 from .transport.base import AgentClient, Attachment
 from .transport.disconnected import is_disconnected_client
 
+# Human-readable forms of the `renderer_reason` values that can veto an
+# explicit `--renderer rich` (only the tty facts can; see
+# `capabilities.resolve_renderer_mode`).
+_RENDERER_FALLBACK_REASONS = {
+    "stdout-not-tty": "stdout is not a terminal",
+    "stdin-not-tty": "stdin is not a terminal",
+}
+
 if TYPE_CHECKING:
     from ...core.agent import NymeriaAgent
     from .commands import CommandResult
@@ -221,7 +229,24 @@ class CLIApp:
             sys.exit(0 if self.run_oneshot() else 1)
 
         capabilities = detect_terminal_capabilities(self.runtime_config)
+        self._warn_renderer_fallback(capabilities)
         self._run_repl(capabilities)
+
+    def _warn_renderer_fallback(self, capabilities: TerminalCapabilities) -> None:
+        """Say why an explicit ``--renderer rich`` still landed on plain.
+
+        Only the tty facts can veto an explicit request (the `TERM` and CI
+        heuristics steer ``auto`` alone), so this fires when stdin or stdout
+        is not a terminal; the default is silent about its own choice.
+        """
+
+        if capabilities.requested_renderer != "rich" or capabilities.renderer == "rich":
+            return
+        reason = _RENDERER_FALLBACK_REASONS.get(
+            capabilities.renderer_reason, capabilities.renderer_reason
+        )
+        sys.stderr.write(f"Rich renderer unavailable ({reason}); using the plain renderer.\n")
+        sys.stderr.flush()
 
     def run_oneshot(self) -> bool:
         """Send a single message, stream the response to stdout, and return success."""
@@ -279,11 +304,13 @@ class CLIApp:
         pin a footer can be resized into one.
         """
 
-        if sys.platform == "win32":
-            return False
         if capabilities.renderer != "rich" or not capabilities.is_interactive:
             return False
         if not bool(getattr(self.runtime_config, "rich_scroll_region", False)):
+            return False
+        # The verdict only matters to the pinned footer; a console that
+        # cannot host one (a bare Windows conhost) skips the probe.
+        if not bool(getattr(capabilities, "scroll_region_safe", True)):
             return False
         try:
             return resolve_atomic_repaint_support()
@@ -343,7 +370,7 @@ class CLIApp:
             use_prompt_toolkit
             and bool(getattr(self.runtime_config, "rich_scroll_region", False))
             and capabilities.renderer == "rich"
-            and sys.platform != "win32"
+            and bool(getattr(capabilities, "scroll_region_safe", True))
             and capabilities.is_interactive
             and capabilities.height >= _RICH_SCROLL_REGION_MIN_ROWS
         )

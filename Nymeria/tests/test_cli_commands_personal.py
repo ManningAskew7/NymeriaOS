@@ -419,7 +419,12 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
     assert run(registry.dispatch_async(confirmed, "/artifacts open 1")).ok is True
     assert run(registry.dispatch_async(confirmed, "/artifacts download 1")).ok is True
     assert run(registry.dispatch_async(confirmed, "/details tool tool-1")).ok is True
-    assert run(registry.dispatch_async(confirmed, "/doctor terminal")).ok is True
+    terminal = run(registry.dispatch_async(confirmed, "/doctor terminal"))
+    assert terminal.ok is True
+    # The two rows the Windows verification recipe (#354) reads first.
+    terminal_report = "\n".join(message.content for message in terminal.messages)
+    assert "TERM usable" in terminal_report
+    assert "Scroll region" in terminal_report
     assert run(registry.dispatch_async(confirmed, "/doctor api")).ok is True
     assert run(registry.dispatch_async(confirmed, "/doctor auth")).ok is True
     assert run(registry.dispatch_async(confirmed, "/doctor model")).ok is True

@@ -83,6 +83,9 @@ class FakeTerminalCapabilities:
     width: int = 80
     height: int = 24
     renderer: str = "rich"
+    requested_renderer: str = "auto"
+    renderer_reason: str = "auto-interactive"
+    scroll_region_safe: bool = True
 
     @property
     def is_interactive(self) -> bool:

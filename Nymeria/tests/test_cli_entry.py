@@ -110,7 +110,10 @@ def test_run_cli_parser_accepts_tui_contract_defaults(monkeypatch):
 
     assert args.thread is None
     assert runtime_config.transport == "api"
-    assert runtime_config.renderer == "rich"
+    # auto resolves to rich on any interactive terminal (and, via the
+    # Windows console probe, on Windows shells that set no TERM); only an
+    # explicit `--renderer rich` forces it past the heuristics.
+    assert runtime_config.renderer == "auto"
     assert runtime_config.api_url is None
     assert runtime_config.api_key is None
     assert runtime_config.user_id == "default"

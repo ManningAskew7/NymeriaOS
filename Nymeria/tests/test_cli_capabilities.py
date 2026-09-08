@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import sys
+
+import pytest
+
+import nymeria.triggers.cli.capabilities as capabilities_module
 from nymeria.triggers.cli.app import CLIRuntimeConfig
 from nymeria.triggers.cli.capabilities import (
     detect_terminal_capabilities,
+    enable_windows_vt_output,
     inside_terminal_multiplexer,
     probe_synchronized_output,
     resolve_atomic_repaint_support,
@@ -25,13 +31,16 @@ def runtime_config(**overrides):
     return replace(CLIRuntimeConfig(), **overrides)
 
 
-def detect(*, config=None, env=None, stdin=None, stdout=None, stderr=None):
+def detect(*, config=None, env=None, stdin=None, stdout=None, stderr=None, platform="linux"):
+    # `platform` pins POSIX so the suite never asks the host's real console
+    # (the win32 tests pass "win32" and fake the probe).
     return detect_terminal_capabilities(
         config or runtime_config(),
         stdin=stdin or FakeStream(),
         stdout=stdout or FakeStream(),
         stderr=stderr or FakeStream(),
         environ=env or {"TERM": "xterm-256color", "LANG": "en_US.UTF-8"},
+        platform=platform,
     )
 
 
@@ -431,3 +440,301 @@ def test_resolve_atomic_repaint_support_trusts_multiplexer_batching():
         )
         is False
     )
+
+
+# ----- explicit renderer requests versus the heuristics ------------------- #
+
+
+def test_explicit_rich_overrides_an_unset_term():
+    # Windows shells set no TERM; `--renderer rich` used to be vetoed there
+    # before the request was even read (backlog #354).
+    caps = detect(config=runtime_config(renderer="rich"), env={"LANG": "en_US.UTF-8"})
+
+    assert caps.renderer == "rich"
+    assert caps.renderer_reason == "rich-requested"
+
+
+def test_explicit_rich_overrides_dumb_term_and_ci():
+    dumb = detect(
+        config=runtime_config(renderer="rich"),
+        env={"TERM": "dumb", "LANG": "en_US.UTF-8"},
+    )
+    ci = detect(
+        config=runtime_config(renderer="rich"),
+        env={"TERM": "xterm-256color", "CI": "1", "LANG": "en_US.UTF-8"},
+    )
+
+    assert (dumb.renderer, dumb.renderer_reason) == ("rich", "rich-requested")
+    assert (ci.renderer, ci.renderer_reason) == ("rich", "rich-requested")
+
+
+def test_explicit_rich_cannot_override_a_missing_tty():
+    no_stdout = detect(config=runtime_config(renderer="rich"), stdout=FakeStream(isatty=False))
+    no_stdin = detect(config=runtime_config(renderer="rich"), stdin=FakeStream(isatty=False))
+
+    assert (no_stdout.renderer, no_stdout.renderer_reason) == ("plain", "stdout-not-tty")
+    assert (no_stdin.renderer, no_stdin.renderer_reason) == ("plain", "stdin-not-tty")
+
+
+def test_explicit_plain_is_reported_as_requested():
+    caps = detect(config=runtime_config(renderer="plain"))
+
+    assert (caps.renderer, caps.renderer_reason) == ("plain", "plain-requested")
+    assert caps.animation_enabled is False
+
+
+def test_auto_still_defers_to_the_heuristics():
+    # The default stays conservative: only an explicit request overrides.
+    dumb = detect(env={"TERM": "dumb", "LANG": "en_US.UTF-8"})
+    ci = detect(env={"TERM": "xterm-256color", "CI": "1", "LANG": "en_US.UTF-8"})
+
+    assert (dumb.renderer, dumb.renderer_reason) == ("plain", "dumb-terminal")
+    assert (ci.renderer, ci.renderer_reason) == ("plain", "ci")
+
+
+# ----- Windows consoles (no TERM) ----------------------------------------- #
+
+
+def _windows_console(monkeypatch, *, vt: bool, build: int | None = 19045) -> list[bool]:
+    """Fake the Windows console probe; returns the list of probe calls."""
+
+    calls: list[bool] = []
+
+    def fake_enable() -> bool:
+        calls.append(vt)
+        return vt
+
+    monkeypatch.setattr(capabilities_module, "enable_windows_vt_output", fake_enable)
+    monkeypatch.setattr(capabilities_module, "_windows_build_number", lambda: build)
+    return calls
+
+
+def test_windows_console_with_vt_is_interactive_and_rich(monkeypatch):
+    calls = _windows_console(monkeypatch, vt=True)
+
+    caps = detect(env={"LANG": "en_US.UTF-8"}, platform="win32")
+
+    assert caps.term == ""
+    assert caps.term_usable is True
+    assert (caps.renderer, caps.renderer_reason) == ("rich", "auto-interactive")
+    assert caps.is_interactive is True
+    assert caps.rich_allowed is True
+    assert caps.color_depth == 24
+    assert caps.color_enabled is True
+    assert caps.animation_enabled is True
+    # A bare conhost is not known to keep margin-scrolled lines in
+    # scrollback, so the pinned footer stays off there.
+    assert caps.scroll_region_safe is False
+    assert calls == [True]
+
+
+def test_windows_terminal_session_hosts_the_pinned_footer(monkeypatch):
+    _windows_console(monkeypatch, vt=True, build=None)
+
+    caps = detect(env={"LANG": "en_US.UTF-8", "WT_SESSION": "abc-123"}, platform="win32")
+
+    assert caps.renderer == "rich"
+    assert caps.scroll_region_safe is True
+    # Windows Terminal is 24-bit whatever the build says.
+    assert caps.color_depth == 24
+
+
+def test_old_windows_console_gets_16_colors(monkeypatch):
+    _windows_console(monkeypatch, vt=True, build=10240)
+    old = detect(env={"LANG": "en_US.UTF-8"}, platform="win32")
+    _windows_console(monkeypatch, vt=True, build=None)
+    unknown = detect(env={"LANG": "en_US.UTF-8"}, platform="win32")
+
+    assert old.color_depth == 16
+    assert unknown.color_depth == 16
+
+
+def test_windows_console_without_vt_stays_plain(monkeypatch):
+    calls = _windows_console(monkeypatch, vt=False)
+
+    caps = detect(env={"LANG": "en_US.UTF-8"}, platform="win32")
+    # prompt_toolkit's legacy Win32 output prints escapes literally, so not
+    # even a Windows Terminal marker can talk the gate into rich.
+    under_wt = detect(env={"LANG": "en_US.UTF-8", "WT_SESSION": "x"}, platform="win32")
+
+    assert caps.term_usable is False
+    assert (caps.renderer, caps.renderer_reason) == ("plain", "windows-console-no-vt")
+    assert caps.is_interactive is False
+    assert caps.rich_allowed is False
+    assert caps.color_depth == 0
+    assert caps.animation_enabled is False
+    assert caps.scroll_region_safe is False
+    assert under_wt.renderer == "plain"
+    assert calls == [False, False]
+
+
+def test_explicit_rich_is_honoured_on_a_windows_console_without_vt(monkeypatch):
+    # Same contract as a dumb TERM elsewhere: the user asked, the user gets
+    # it (on prompt_toolkit's and Rich's legacy Windows paths), footer off.
+    _windows_console(monkeypatch, vt=False)
+
+    caps = detect(
+        config=runtime_config(renderer="rich"),
+        env={"LANG": "en_US.UTF-8"},
+        platform="win32",
+    )
+
+    assert (caps.renderer, caps.renderer_reason) == ("rich", "rich-requested")
+    assert caps.term_usable is False
+    assert caps.scroll_region_safe is False
+
+
+def test_windows_console_probe_needs_a_tty(monkeypatch):
+    calls = _windows_console(monkeypatch, vt=True)
+
+    caps = detect(env={"LANG": "en_US.UTF-8"}, stdout=FakeStream(isatty=False), platform="win32")
+
+    assert (caps.renderer, caps.renderer_reason) == ("plain", "stdout-not-tty")
+    assert calls == []
+
+
+def test_windows_with_a_term_set_uses_the_term_rule(monkeypatch):
+    # MSYS/Cygwin/SSH shells on Windows do set TERM; the console is not asked.
+    calls = _windows_console(monkeypatch, vt=False)
+
+    xterm = detect(env={"TERM": "xterm-256color", "LANG": "en_US.UTF-8"}, platform="win32")
+    dumb = detect(env={"TERM": "dumb", "LANG": "en_US.UTF-8"}, platform="win32")
+
+    assert (xterm.renderer, xterm.color_depth) == ("rich", 256)
+    assert (dumb.renderer, dumb.renderer_reason) == ("plain", "dumb-terminal")
+    assert calls == []
+
+
+def test_forced_color_on_a_windows_console_uses_the_console_depth(monkeypatch):
+    _windows_console(monkeypatch, vt=True, build=19045)
+
+    caps = detect(
+        config=runtime_config(color="always"),
+        env={"LANG": "en_US.UTF-8"},
+        platform="win32",
+    )
+
+    assert caps.color_depth == 24
+
+
+def test_posix_never_probes_the_windows_console(monkeypatch):
+    def forbidden() -> bool:
+        raise AssertionError("the Windows console probe ran on POSIX")
+
+    monkeypatch.setattr(capabilities_module, "enable_windows_vt_output", forbidden)
+
+    caps = detect(env={"LANG": "en_US.UTF-8"}, platform="linux")
+
+    assert (caps.renderer, caps.renderer_reason) == ("plain", "dumb-terminal")
+    assert caps.scroll_region_safe is False
+
+
+def test_posix_interactive_terminal_is_scroll_region_safe():
+    assert detect().scroll_region_safe is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="talks to the real console there")
+def test_enable_windows_vt_output_is_a_noop_off_windows():
+    assert enable_windows_vt_output() is False
+
+
+# ----- the ctypes console enable, driven through a fake kernel32 ---------- #
+
+
+class _FakeKernel32:
+    """Stand-in for kernel32 with a scripted console mode."""
+
+    def __init__(self, *, handle=0x1234, mode=None, set_result=1):
+        self.handle = handle
+        self.mode = mode
+        self.set_result = set_result
+        self.set_calls: list[int] = []
+        self.GetStdHandle = _Callable(self._get_std_handle)
+        self.GetConsoleMode = _Callable(self._get_console_mode)
+        self.SetConsoleMode = _Callable(self._set_console_mode)
+
+    def _get_std_handle(self, which):
+        assert int(which.value) == 0xFFFFFFF5  # STD_OUTPUT_HANDLE as a DWORD
+        return self.handle
+
+    def _get_console_mode(self, handle, mode_ref):
+        assert handle == self.handle
+        if self.mode is None:
+            return 0
+        mode_ref._obj.value = self.mode
+        return 1
+
+    def _set_console_mode(self, handle, mode):
+        assert handle == self.handle
+        self.set_calls.append(int(mode))
+        return self.set_result
+
+
+class _Callable:
+    """A ctypes-style function stub that tolerates argtypes/restype writes."""
+
+    def __init__(self, fn):
+        self._fn = fn
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self._fn(*args)
+
+
+def _fake_windows(monkeypatch, kernel32):
+    import ctypes
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name: kernel32, raising=False)
+
+
+def test_enable_windows_vt_output_sets_the_bit_and_reports_the_result(monkeypatch):
+    # Start with processed output OFF (0x0002 is wrap-at-EOL alone) so the
+    # assertion sees both bits being added, not just VT.
+    kernel32 = _FakeKernel32(mode=0x0002)
+    _fake_windows(monkeypatch, kernel32)
+
+    assert enable_windows_vt_output() is True
+    # Processed output rides along, as the console API documents it should.
+    assert kernel32.set_calls == [0x0002 | 0x0001 | 0x0004]
+
+
+def test_enable_windows_vt_output_is_idempotent_when_already_on(monkeypatch):
+    kernel32 = _FakeKernel32(mode=0x0007)
+    _fake_windows(monkeypatch, kernel32)
+
+    assert enable_windows_vt_output() is True
+    assert kernel32.set_calls == []
+
+
+def test_enable_windows_vt_output_reports_a_refusing_console(monkeypatch):
+    kernel32 = _FakeKernel32(mode=0x0003, set_result=0)
+    _fake_windows(monkeypatch, kernel32)
+
+    assert enable_windows_vt_output() is False
+    assert kernel32.set_calls == [0x0007]
+
+
+def test_enable_windows_vt_output_fails_closed_without_a_console(monkeypatch):
+    no_handle = _FakeKernel32(handle=0, mode=0x0003)
+    _fake_windows(monkeypatch, no_handle)
+    assert enable_windows_vt_output() is False
+    assert no_handle.set_calls == []
+
+    not_a_console = _FakeKernel32(mode=None)  # GetConsoleMode fails: a pipe
+    _fake_windows(monkeypatch, not_a_console)
+    assert enable_windows_vt_output() is False
+    assert not_a_console.set_calls == []
+
+
+def test_enable_windows_vt_output_swallows_a_broken_kernel32(monkeypatch):
+    def explode(name):
+        raise OSError("no kernel32 here")
+
+    import ctypes
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", explode, raising=False)
+
+    assert enable_windows_vt_output() is False

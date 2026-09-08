@@ -478,6 +478,12 @@ def test_atomic_repaint_gate_requires_the_static_follow_footer_conditions() -> N
             app._resolve_atomic_repaint(FakeTerminalCapabilities(stdin_isatty=False))
             is False
         )
+        # A console that cannot host the pinned footer (bare Windows conhost)
+        # has no use for the verdict either.
+        assert (
+            app._resolve_atomic_repaint(FakeTerminalCapabilities(scroll_region_safe=False))
+            is False
+        )
         assert len(calls) == 2
 
         # A probe fault resolves conservatively instead of killing startup.
@@ -488,3 +494,46 @@ def test_atomic_repaint_gate_requires_the_static_follow_footer_conditions() -> N
         assert app._resolve_atomic_repaint(rich_caps) is False
     finally:
         app_module.resolve_atomic_repaint_support = original
+
+
+def test_explicit_rich_fallback_is_announced_once_on_stderr(capsys) -> None:
+    app = CLIApp(
+        DummyAgent(),
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", transport="local"),
+    )
+
+    app._warn_renderer_fallback(
+        FakeTerminalCapabilities(
+            requested_renderer="rich", renderer="plain", renderer_reason="stdout-not-tty"
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert captured.err == (
+        "Rich renderer unavailable (stdout is not a terminal); using the plain renderer.\n"
+    )
+
+
+def test_renderer_fallback_notice_is_silent_unless_rich_was_asked_for(capsys) -> None:
+    app = CLIApp(
+        DummyAgent(),
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(transport="local"),
+    )
+
+    # The default (auto) choosing plain is not a fallback worth a line...
+    app._warn_renderer_fallback(
+        FakeTerminalCapabilities(
+            requested_renderer="auto", renderer="plain", renderer_reason="dumb-terminal"
+        )
+    )
+    # ...and an honoured explicit request has nothing to explain.
+    app._warn_renderer_fallback(
+        FakeTerminalCapabilities(
+            requested_renderer="rich", renderer="rich", renderer_reason="rich-requested"
+        )
+    )
+
+    assert capsys.readouterr().err == ""

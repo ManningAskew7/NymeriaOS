@@ -59,6 +59,15 @@ class TerminalCapabilities:
     stdout_isatty: bool
     stderr_isatty: bool
     term: str
+    # Whether the terminal can take VT sequences at all. On POSIX this is
+    # `TERM` not being empty/dumb; on Windows, where shells set no `TERM`,
+    # it is the console accepting VT processing (see `_term_is_usable`).
+    term_usable: bool
+    # Whether a DEC scroll region keeps lines scrolled out of it in the
+    # terminal's scrollback, which the Rich REPL's pinned footer relies on.
+    # POSIX terminals do; on Windows only Windows Terminal (1.18+) is known
+    # to, so a bare conhost window runs Rich without the pinned footer.
+    scroll_region_safe: bool
     ci: bool
     no_color: bool
     force_color: bool
@@ -80,11 +89,10 @@ class TerminalCapabilities:
     def is_interactive(self) -> bool:
         """Whether stdin/stdout look safe for an interactive terminal UI."""
 
-        term = self.term.strip().lower()
         return (
             self.stdin_isatty
             and self.stdout_isatty
-            and term not in {"", "dumb"}
+            and self.term_usable
             and not self.ci
         )
 
@@ -98,8 +106,7 @@ class TerminalCapabilities:
     def rich_allowed(self) -> bool:
         """Whether Rich-style terminal output is safe for this terminal."""
 
-        term = self.term.strip().lower()
-        return self.stdout_isatty and term not in {"", "dumb"} and not self.ci
+        return self.stdout_isatty and self.term_usable and not self.ci
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +124,17 @@ def detect_terminal_capabilities(
     stdout: Any | None = None,
     stderr: Any | None = None,
     environ: Mapping[str, str] | None = None,
+    platform: str | None = None,
 ) -> TerminalCapabilities:
-    """Detect terminal features and choose the safest renderer fallback."""
+    """Detect terminal features and choose the safest renderer fallback.
+
+    ``platform`` defaults to ``sys.platform``; tests inject ``"win32"`` to
+    exercise the Windows console path from any host.
+    """
 
     config = runtime_config or _DefaultRuntimeOverrides()
     env = os.environ if environ is None else environ
+    platform_name = sys.platform if platform is None else platform
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
@@ -136,19 +149,28 @@ def detect_terminal_capabilities(
         env.get("CLICOLOR_FORCE")
     )
 
+    term_usable, term_unusable_reason = _term_is_usable(
+        term,
+        platform=platform_name,
+        stdout_isatty=stdout_isatty,
+    )
+
     requested_renderer = _coerce_renderer(getattr(config, "renderer", "auto"))
     color_mode = _coerce_color_mode(getattr(config, "color", "auto"))
     renderer, renderer_reason = resolve_renderer_mode(
         requested_renderer,
         stdin_isatty=stdin_isatty,
         stdout_isatty=stdout_isatty,
-        term=term,
         ci=ci,
+        term_usable=term_usable,
+        term_unusable_reason=term_unusable_reason,
     )
 
     color_depth = _detect_color_depth(
         env,
         term=term,
+        term_usable=term_usable,
+        platform=platform_name,
         stdout_isatty=stdout_isatty,
         color_mode=color_mode,
         no_color=no_color,
@@ -162,8 +184,10 @@ def detect_terminal_capabilities(
         getattr(config, "ascii_only", False)
     )
 
-    term_is_usable = term.strip().lower() not in {"", "dumb"}
-    interactive = stdin_isatty and stdout_isatty and term_is_usable and not ci
+    interactive = stdin_isatty and stdout_isatty and term_usable and not ci
+    scroll_region_safe = term_usable and (
+        platform_name != "win32" or windows_scroll_region_safe(env)
+    )
 
     color_policy_disables_animation = (
         no_color and not force_color and color_mode != "always"
@@ -185,6 +209,8 @@ def detect_terminal_capabilities(
         stdout_isatty=stdout_isatty,
         stderr_isatty=stderr_isatty,
         term=term,
+        term_usable=term_usable,
+        scroll_region_safe=scroll_region_safe,
         ci=ci,
         no_color=no_color,
         force_color=force_color,
@@ -209,30 +235,151 @@ def resolve_renderer_mode(
     *,
     stdin_isatty: bool,
     stdout_isatty: bool,
-    term: str,
     ci: bool,
+    term_usable: bool,
+    term_unusable_reason: str = "dumb-terminal",
 ) -> tuple[ResolvedRendererMode, str]:
     """Resolve the requested renderer against terminal safety constraints.
 
     The Rich REPL is the default and actively maintained renderer, so ``auto``
     resolves to ``rich`` on an interactive terminal.
+
+    Two kinds of constraint apply. The tty facts (a stream that is not a
+    terminal) veto everything, because prompt_toolkit cannot run without
+    one. The heuristics (`TERM` empty or dumb, `CI` set) only steer ``auto``:
+    an explicit ``rich`` or ``plain`` request is honoured over them, so a
+    user who knows their terminal better than the environment describes it
+    can say so (Windows shells set no `TERM` at all, and `--renderer rich`
+    used to be silently vetoed there, backlog #354).
+
+    ``term_usable`` is `_term_is_usable`'s platform-aware verdict, with
+    ``term_unusable_reason`` the reason to report when it is False.
     """
 
-    term_is_dumb = term.strip().lower() in {"", "dumb"}
     if not stdout_isatty:
         return "plain", "stdout-not-tty"
     if not stdin_isatty:
         return "plain", "stdin-not-tty"
-    if term_is_dumb:
-        return "plain", "dumb-terminal"
-    if ci:
-        return "plain", "ci"
 
     if requested == "plain":
         return "plain", "plain-requested"
     if requested == "rich":
         return "rich", "rich-requested"
+    if not term_usable:
+        return "plain", term_unusable_reason
+    if ci:
+        return "plain", "ci"
     return "rich", "auto-interactive"
+
+
+def _term_is_usable(
+    term: str,
+    *,
+    platform: str,
+    stdout_isatty: bool,
+) -> tuple[bool, str]:
+    """Whether the terminal takes VT sequences, plus the reason when not.
+
+    A set `TERM` answers for itself (``dumb`` means no). An EMPTY `TERM` is
+    only a verdict on POSIX; on Windows no shell sets it, so the console is
+    asked directly by enabling VT processing on it, which is also the exact
+    test prompt_toolkit runs to pick its VT output path. A console that
+    fails here keeps ``auto`` on plain (prompt_toolkit's legacy Win32
+    output prints escape sequences literally); an explicit ``rich`` is
+    still honoured, as on any dumb terminal, and runs on the legacy paths.
+    """
+
+    normalized = term.strip().lower()
+    if normalized == "dumb":
+        return False, "dumb-terminal"
+    if normalized:
+        return True, ""
+    if platform != "win32" or not stdout_isatty:
+        return False, "dumb-terminal"
+    if enable_windows_vt_output():
+        return True, ""
+    return False, "windows-console-no-vt"
+
+
+def windows_scroll_region_safe(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether this Windows console keeps margin-scrolled lines in scrollback.
+
+    Windows Terminal does since 1.18 (microsoft/terminal#14874, March
+    2023) and identifies itself with `WT_SESSION`; it sets no `TERM`
+    or `COLORTERM`, so that is the only signal. Classic conhost is
+    unverified either way, so it answers no and gets the Rich REPL without
+    the pinned footer.
+    """
+
+    env = os.environ if environ is None else environ
+    return bool(env.get("WT_SESSION", "").strip())
+
+
+_ENABLE_PROCESSED_OUTPUT = 0x0001
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+_STD_OUTPUT_HANDLE = -11
+
+
+def enable_windows_vt_output() -> bool:
+    """Turn on VT processing for the console behind stdout, for the session.
+
+    Windows Terminal and PowerShell-hosted conhost usually have it on
+    already; a plain ``cmd`` window in classic conhost does not, and there
+    Rich would otherwise pick its legacy Win32 path while prompt_toolkit
+    toggles VT around its own flushes, leaving the two out of step. Enabled
+    once and left on (colorama's ``just_fix_windows_console`` shape):
+    console modes belong to the console, not the process, and the shells
+    that need a different mode set it themselves. Idempotent; False on any
+    other platform or when the console refuses (pre-2016 conhost, or stdout
+    that is not a console at all).
+    """
+
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # `WinDLL` only exists on Windows; resolved by name so the module
+        # type-checks on every host.
+        win_dll: Any = getattr(ctypes, "WinDLL", None)
+        if win_dll is None:
+            return False
+        kernel32 = win_dll("kernel32")
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.SetConsoleMode.restype = wintypes.BOOL
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+
+        handle = kernel32.GetStdHandle(wintypes.DWORD(_STD_OUTPUT_HANDLE & 0xFFFFFFFF))
+        if not handle:
+            return False
+        mode = wintypes.DWORD()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if mode.value & _ENABLE_VIRTUAL_TERMINAL_PROCESSING:
+            return True
+        # VT processing is documented as requiring processed output; the
+        # console has it on by default, so this only matters where someone
+        # turned it off.
+        wanted = mode.value | _ENABLE_PROCESSED_OUTPUT | _ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        return bool(kernel32.SetConsoleMode(handle, wanted))
+    except Exception:  # noqa: BLE001 - a console probe must never take the CLI down.
+        return False
+
+
+def _windows_build_number() -> int | None:
+    """The running Windows build, or None off Windows / when unknown."""
+
+    getter = getattr(sys, "getwindowsversion", None)
+    if getter is None:
+        return None
+    try:
+        return int(getter().build)
+    except Exception:  # noqa: BLE001 - defensive around unusual runtimes.
+        return None
 
 
 def synchronized_output_override(
@@ -449,6 +596,8 @@ def _detect_color_depth(
     env: Mapping[str, str],
     *,
     term: str,
+    term_usable: bool,
+    platform: str,
     stdout_isatty: bool,
     color_mode: ColorMode,
     no_color: bool,
@@ -459,12 +608,35 @@ def _detect_color_depth(
 
     forced_depth = _forced_color_depth(env)
     if color_mode == "always" or force_color:
-        return forced_depth or _term_color_depth(env, term) or 16
+        return (
+            forced_depth
+            or _term_color_depth(env, term)
+            or _windows_color_depth(env, platform=platform)
+            or 16
+        )
 
-    if no_color or not stdout_isatty or term.strip().lower() in {"", "dumb"}:
+    if no_color or not stdout_isatty or not term_usable:
         return 0
 
-    return _term_color_depth(env, term)
+    return _term_color_depth(env, term) or _windows_color_depth(env, platform=platform)
+
+
+def _windows_color_depth(env: Mapping[str, str], *, platform: str) -> int:
+    """Color depth of a VT-capable Windows console that sets no `TERM`.
+
+    Windows Terminal is 24-bit and says so only through `WT_SESSION`;
+    conhost has been 24-bit since Windows 10 build 15063 (1703, the same
+    rule Rich applies) and 16-color before that.
+    """
+
+    if platform != "win32":
+        return 0
+    if env.get("WT_SESSION", "").strip():
+        return 24
+    build = _windows_build_number()
+    if build is not None and build >= 15063:
+        return 24
+    return 16
 
 
 def _forced_color_depth(env: Mapping[str, str]) -> int:
@@ -558,9 +730,11 @@ __all__ = [
     "SYNCHRONIZED_OUTPUT_ENV",
     "TerminalCapabilities",
     "detect_terminal_capabilities",
+    "enable_windows_vt_output",
     "inside_terminal_multiplexer",
     "probe_synchronized_output",
     "resolve_atomic_repaint_support",
     "resolve_renderer_mode",
     "synchronized_output_override",
+    "windows_scroll_region_safe",
 ]

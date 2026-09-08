@@ -464,6 +464,14 @@ def run_cli(args: argparse.Namespace) -> None:
     logging.getLogger("nymeria").setLevel(logging.CRITICAL)
 
     from nymeria.triggers.cli import run_cli as start_cli
+    from nymeria.triggers.cli.capabilities import enable_windows_vt_output
+
+    # Before anything constructs a Rich Console: Rich decides between VT
+    # and its legacy Win32 path once, at first construction, from the
+    # console mode it finds. Also the only enable for a Windows console
+    # whose shell did set TERM (capability detection asks the console only
+    # when TERM is empty). No-op off Windows.
+    enable_windows_vt_output()
 
     runtime_config = build_cli_runtime_config(args)
     agent = None
@@ -1444,8 +1452,12 @@ Examples:
     cli_parser.add_argument(
         "--renderer",
         choices=("rich", "plain", "auto"),
-        default="rich",
-        help="Renderer mode for CLI terminal output (default: rich)",
+        default="auto",
+        help=(
+            "Renderer for CLI terminal output: auto picks rich on any "
+            "interactive terminal and plain otherwise; rich or plain force "
+            "that renderer (default: auto)"
+        ),
     )
     cli_parser.add_argument(
         "--api-url",
