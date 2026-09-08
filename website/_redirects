@@ -1,0 +1,6 @@
+# Cloudflare Pages redirects (served from this dir; see the mirror-sync runbook).
+# Short brand URLs for the front-door installers shown on the landing page.
+# They 302 to the scripts at the public mirror's main so the site never
+# carries a stale copy. curl -L and PowerShell irm both follow redirects.
+/install.sh   https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh   302
+/install.ps1  https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1  302

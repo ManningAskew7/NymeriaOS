@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not found · NymeriaOS</title>
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark light">
+<script>try{var t=localStorage.getItem('nymeria-theme');if(t==='light'||t==='midnight'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}</script>
+<style>
+@font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/ibm-plex-mono-normal-400-latin.woff2") format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/ibm-plex-mono-normal-500-latin.woff2") format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+:root { --bg:#12151d; --ink:#e7e1cf; --soft:#7e7f76; --line:#2a2f3c; --accent:#5da893; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="midnight"]) { --bg:#f2ede2; --ink:#241f16; --soft:#7a7263; --line:#d8d0bd; --accent:#2e6f63; } }
+:root[data-theme="light"] { --bg:#f2ede2; --ink:#241f16; --soft:#7a7263; --line:#d8d0bd; --accent:#2e6f63; }
+:root[data-theme="midnight"] { --bg:#12151d; --ink:#e7e1cf; --soft:#7e7f76; --line:#2a2f3c; --accent:#5da893; }
+html, body { margin:0; padding:0; background:var(--bg); color:var(--ink); font-family:'IBM Plex Mono',monospace; }
+a { color:var(--ink); text-decoration:none; } a:hover { color:var(--accent); }
+.frame { position:fixed; inset:10px; border:1px solid var(--line); pointer-events:none; }
+.frame.inner { inset:15px; opacity:0.5; }
+main { min-height:100vh; min-height:100dvh; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:22px; padding:40px 24px; }
+.code { font-size:9px; letter-spacing:0.5em; color:var(--soft); padding-left:0.5em; }
+.rule { width:52px; height:1px; background:var(--soft); opacity:0.6; }
+h1 { margin:0; font-weight:500; font-size:13px; letter-spacing:0.38em; padding-left:0.38em; }
+p { margin:0; font-size:10px; letter-spacing:0.3em; color:var(--soft); max-width:40ch; line-height:1.9; }
+.back { font-size:10px; letter-spacing:0.3em; border:1px dashed var(--line); padding:11px 18px; }
+.back:hover { border-color:var(--soft); }
+</style>
+</head>
+<body>
+<div class="frame"></div><div class="frame inner"></div>
+<main>
+  <div class="code">404 · NOT FOUND</div>
+  <div class="rule"></div>
+  <h1>NYMERIA·OS</h1>
+  <p>NOTHING LIVES AT THIS PATH. THE INSTALLERS ARE /INSTALL.SH AND /INSTALL.PS1.</p>
+  <a class="back" href="/">BACK TO THE FRONT</a>
+</main>
+</body>
+</html>
