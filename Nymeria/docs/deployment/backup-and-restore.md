@@ -22,9 +22,39 @@ python run.py snapshot restore <artifact>   # offline only
 | Vault key | `NYMERIA_SECRETS_KEY`, embedded inside the encrypted envelope | Makes the artifact self-contained: one file + one passphrase restores the credential vault on a bare host |
 
 Not captured: `data/snapshots/` (the output dir), `data/logs/`, `data/flags/`,
-`data/voice/` (regenerable cache), and `data/backups/` (self-modification
+`data/voice/` (regenerable cache), `data/server-browser/` and
+`data/server-browser-home` (the server browser's rig and the pointer to a
+relocated one; see below), and `data/backups/` (self-modification
 source rollbacks; add with `--include-code-backups`). Redis holds nothing
 durable (pure pub/sub) and is skipped entirely.
+
+The server browser is excluded on purpose and cannot be opted back in: its
+`ext/config.json` carries a live account token and its `profile/` carries
+every site session a human signed the browser into, neither of which belongs
+in an artifact you are encouraged to copy off the box. Its `cft/` is a
+few hundred MB of re-downloadable Chrome besides. The exclusion covers both
+the name `server-browser` and the rig home resolved exactly the way
+`nymeria browser` resolves it (`SERVER_BROWSER_HOME`, the pointer file a
+`configure --home` leaves, the default), so moving the rig elsewhere inside
+the data dir does not put it back in the artifact. That pointer file,
+`data/server-browser-home`, is left out too: it holds no secret, but it is an
+absolute path that is only true on the host that wrote it.
+
+The restore direction follows from that, and is the half worth stating: an
+in-place restore leaves an existing rig alone. Restore sweeps every
+top-level entry of the data dir into `.pre-restore-<ts>/` before unpacking,
+and the rig and its pointer file are exempt from that sweep, because the
+artifact has nothing to put back in their place: sweeping the rig would move
+a running Chrome's profile out from under it and lose every signed-in
+session for nothing, and sweeping the pointer would lose the only record of
+where a hand-configured rig lives. What DOES change
+under it is the accounts database, so the browser's baked token is only
+still valid if the snapshot was taken after that token was minted. Run
+`nymeria browser status` afterwards and, if the token was rejected,
+re-`configure` with one minted from the restored install. On a fresh host
+there is no rig at all: build one with `nymeria browser install` and
+`nymeria browser configure`, and sign it back in.
+Details: [server-browser.md](server-browser.md).
 
 Consistency model: every individual store is internally consistent; across
 stores the capture window is a few seconds while the stack keeps running,
@@ -111,6 +141,13 @@ workspace, then vault-key reconciliation:
 Cross-backend restore (a Postgres-shape snapshot into a slim/SQLite
 deployment or vice versa) is not supported; the manifest records the backend
 and restore refuses on mismatch.
+
+The rename step covers every top-level entry the artifact could replace. The
+server browser's rig is the one exemption (above): it is never captured, so
+moving it aside would destroy live state rather than swap it. The other
+uncaptured entries (`snapshots/`, `logs/`, `flags/`, `voice/`) ARE swept
+aside, so your other artifacts end up under `.pre-restore-<ts>/snapshots/`
+rather than gone. Look there before concluding anything was lost.
 
 After a restore, start the stack and run `nymeria doctor`.
 

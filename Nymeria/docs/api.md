@@ -1877,7 +1877,10 @@ and `timestamp` fields plus the event-specific payload. Internal fields such as
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `user_id` | No | `"default"` | Legacy/user hint. For normal Bearer auth, the authenticated account is authoritative; the query value does not grant access to another user's events. |
-| `client_id` | No | - | Frontend client ID for filtering same-client sync events. Desktop and mobile send a per-session UUID. |
+| `client_id` | No | - | Frontend client ID for filtering same-client sync events. Desktop and mobile send a per-session UUID; the browser extension sends its persistent `nymeria-browser-<uuid>`, which registers the stream as a browser on the account's roster. |
+| `client_version` | No | - | The subscribing client's build version. The extension announces its manifest version so `chrome_reload_extension` and the tab-free `chrome_health` probe can report which build is connected. |
+| `client_kind` | No | `desktop` | Extension streams only: `server` (the server browser, the headless Chrome running beside the backend) or `desktop` (the user's own Chrome). Absent or any other value records `desktop`. Shown as `kind` on every roster row (`chrome_browsers`, `chrome_health`, `/browser list`); never a routing input. |
+| `client_label` | No | - | Extension streams only: a display name for the browser (one printable line, up to 60 characters). Seeds the account's label for that `client_id` on connect when none is set; a user's `/browser rename` is never overwritten. Written off the stream's critical path. |
 | `api_key` | No | - | Legacy fallback token for clients that cannot set headers |
 
 **Auth and filtering:**

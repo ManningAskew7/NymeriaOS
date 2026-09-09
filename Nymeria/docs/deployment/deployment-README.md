@@ -14,6 +14,7 @@ New here? Read [shapes-explained.md](deployment-shapes-explained.md) first for a
 | Self-host for personal use on a VPS or home server | **Slim** + [remote access](deployment-remote-access.md) |
 | Run a small team or business deployment | **Docker stack** + reverse proxy |
 | Need multi-machine scaling, network segmentation, or capability-dropped sandboxing | **Docker stack** |
+| Want the assistant to browse the web in a real Chrome out of the box | either shape + [the server browser](server-browser.md) |
 
 ## Shapes at a glance
 

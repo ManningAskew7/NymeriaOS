@@ -15,6 +15,7 @@ This page covers four paths, ordered roughly from simplest to most powerful. **Y
 | Public URL on a free tier, no VPS or custom domain needed | [Cloudflare Tunnel](#cloudflare-tunnel) |
 | Production deployment with a custom domain | [Domain + Caddy](#domain--caddy) |
 | Let the assistant drive my own browser | any path below that gives you **HTTPS** (see [Browser extension](#browser-extension)) |
+| Let the assistant browse at all, with no network setup | the [server browser](server-browser.md), which runs on the backend's own host |
 
 ---
 
@@ -232,6 +233,13 @@ For multi-user production, prefer the [Docker stack](PRODUCTION_DEPLOYMENT.md). 
 ---
 
 ## Browser extension
+
+This section is about the extension in **your own** Chrome. The other way to
+give the assistant a browser is the [server browser](server-browser.md): a
+headless Chrome that setup installs beside the backend and connects for you.
+It sits on the same host as the API, so it reaches it over `localhost` and
+none of the requirements below apply to it. The two coexist; each browser on
+your account shows its kind in `chrome_browsers` and `/browser list`.
 
 The Nymeria browser extension is the one client with a hard requirement on how
 you expose the backend: **it must reach an `https://` URL, or `localhost`.**
