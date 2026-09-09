@@ -929,3 +929,78 @@ def test_a_waited_call_returns_only_the_outcome_once_the_request_is_closed():
     tr.fail_request(failed, "boom", agent)
     text = tr.waited_result(failed, receipt, "[NoReply]: request failed: boom")
     assert text == "[NoReply]: request failed: boom"
+
+
+# --- the wake-up turn belongs to the caller, never to the callee's stream --------------
+
+
+class _StreamingAgent(_Agent):
+    """An agent whose ``astream`` is the caller's wake-up turn: it drives a
+    LangChain runnable (as the real graph would) and yields its own chunk."""
+
+    def __init__(self):
+        super().__init__()
+        self.turns: list[dict] = []
+
+    async def astream(self, **kwargs):
+        from langchain_core.runnables import RunnableLambda
+
+        self.turns.append(kwargs)
+        kwargs["_on_turn_started"]()
+        graph = RunnableLambda(lambda x: f"Delivered: {x}", name="caller-wake-up-graph")
+        text = await graph.ainvoke("relayed")
+        yield {"type": "response", "content": text}
+
+
+def test_the_reply_wake_up_turn_streams_to_the_caller_and_never_into_the_callees_turn():
+    """The callee replies from inside its reply_to_thread tool call, a LangChain
+    run the callee's turn is streaming via astream_events. The caller is idle, so
+    the reply wakes it with a fresh turn on a worker that copies the callee's
+    context. That turn's output must land on the CALLER's thread only: the
+    callee's run must see none of it (2026-09-09: the caller's "Delivered, ..."
+    was token-spliced into the callee's Telegram message)."""
+    import asyncio
+    import json
+
+    from langchain_core.runnables import RunnableLambda
+
+    from nymeria.core.turn_stream_buffer import (
+        get_turn_stream_registry,
+        reset_turn_stream_registry,
+    )
+
+    reset_turn_stream_registry()
+    agent = _StreamingAgent()
+    req = _open()
+    outcome: dict = {}
+
+    def callee_tool_call(_input):
+        outcome["result"] = tr.reply(
+            request_id=req.id, content="done", final=True, replier_thread_id=CALLEE, agent=agent
+        )
+        _wait_until(lambda: agent.turns and not req.delivering)
+        return "replied"
+
+    callee_run = RunnableLambda(callee_tool_call, name="reply_to_thread")
+
+    async def stream_callee_turn():
+        return [event async for event in callee_run.astream_events("go", version="v2")]
+
+    try:
+        callee_events = asyncio.run(stream_callee_turn())
+
+        assert outcome["result"].startswith("[Replied]") and "new prompt" in outcome["result"]
+        # The wake-up turn ran on the caller's thread with the reply prompt...
+        assert [turn["thread_id"] for turn in agent.turns] == [CALLER]
+        assert "[Reply from Helper]" in agent.turns[0]["message"]
+        # ...and its output landed on the caller's own turn stream...
+        caller_stream = get_turn_stream_registry().get(CALLER)
+        assert caller_stream is not None
+        buffered = [json.loads(payload) for _, payload in caller_stream._entries]
+        texts = [event.get("content") for event in buffered if event.get("type") == "response"]
+        assert texts == ["Delivered: relayed"]
+        assert all(event.get("thread_id") == CALLER for event in buffered)
+        # ...while the callee's own run saw nothing of it.
+        assert {event["name"] for event in callee_events} == {"reply_to_thread"}
+    finally:
+        reset_turn_stream_registry()

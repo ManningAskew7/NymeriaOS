@@ -193,8 +193,6 @@ call with a new task while one is open is a second, separate request.
             scheduled_for: Delay the request until a time such as "30s", "5m", "1h", "1d", or "YYYY-MM-DD HH:MM". Omit for an immediate request; cannot be combined with wait_seconds.
             if_busy: "queue" (default) queues the request behind the thread's current turn (it is absorbed at that turn's next tool-round boundary); "error" returns [Busy] instead when the thread is mid-turn.
         """
-        from langchain_core.runnables.config import var_child_runnable_config
-        from langchain_core.tracers.context import tracing_v2_callback_var, run_collector_var
         from ..core.thread_agent_executor import (
             invoke as thread_invoke,
             request as thread_request,
@@ -241,14 +239,10 @@ call with a new task while one is open is a second, separate request.
             _agent, user_id, parent_thread_id
         )
 
-        # Break the LangChain callback/tracing inheritance chain so an inner
-        # graph.invoke() doesn't propagate LLM token events back to the
-        # parent's astream_events() (stream leakage). The request path copies
-        # THIS context onto its worker thread, so the reset must happen
-        # before the dispatch; the no-caller-thread fallback runs inline here.
-        config_token = var_child_runnable_config.set(None)
-        callback_token = tracing_v2_callback_var.set(None)
-        collector_token = run_collector_var.set(None)
+        # The callee's turn (inline here without a caller, else on a worker
+        # that copies THIS context) crosses stream_bridge.iter_agent_astream,
+        # whose _detached_langchain_run_context keeps the nested graph run from
+        # reporting its token events into this tool call's stream.
         try:
             if not parent_thread_id:
                 # No calling thread to reply to (no turn context): the
@@ -293,10 +287,6 @@ call with a new task while one is open is a second, separate request.
         except Exception as e:
             logger.error(f"{_name} callable thread failed: {e}", exc_info=True)
             return f"[Error]: {_name} invocation failed: {str(e)}"
-        finally:
-            run_collector_var.reset(collector_token)
-            tracing_v2_callback_var.reset(callback_token)
-            var_child_runnable_config.reset(config_token)
 
     callable_thread_tool_func.description = tool_description
     # SafeToolNode reads this per call: a waiting call is killed at its own

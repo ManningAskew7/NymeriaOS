@@ -271,8 +271,9 @@ def test_a_dispatch_that_fails_leaves_no_record_behind(agent, helper_tool, monke
 
 
 def test_the_callee_worker_runs_in_a_copy_of_the_callers_context(agent, helper_tool, monkeypatch):
-    """The hook engine's re-entrance depth and LangChain's callback resets are
-    ContextVars; a bare worker thread would read them back as defaults."""
+    """The hook engine's re-entrance depth is a ContextVar (as is LangChain's
+    run context, which the stream bridge detaches at the turn seam); a bare
+    worker thread would read them back as defaults."""
     import contextvars
 
     marker: contextvars.ContextVar[str] = contextvars.ContextVar("request_test_marker", default="unset")

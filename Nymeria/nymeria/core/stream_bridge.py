@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
+import contextvars
 import logging
 import threading
 import time
@@ -269,14 +271,66 @@ def iter_agent_astream(agent: Any, **kwargs: Any) -> Iterator[Dict[str, Any]]:
     transports inside model instances; creating and closing a fresh loop for
     each callable invocation can leave concurrent streams trying to close a
     transport tied to a loop that has already been closed.
+
+    This is also the seam that isolates a NESTED turn from the turn that
+    started it (``_detached_langchain_run_context``): every bridge step copies
+    this worker thread's context onto the loop, so the detach must wrap the
+    whole generator here, in the worker, not inside the coroutine.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        yield from _iter_in_bridge_loop(agent, **kwargs)
+        with _detached_langchain_run_context():
+            yield from _iter_in_bridge_loop(agent, **kwargs)
         return
 
     raise RuntimeError("iter_agent_astream() is only supported from synchronous code")
+
+
+@contextlib.contextmanager
+def _detached_langchain_run_context() -> Iterator[None]:
+    """Sever LangChain's callback and tracing inheritance for a nested turn.
+
+    A worker spawned from inside a tool call (a callable reply's wake-up, a
+    spawn, a hook-fired workflow) copies the tool call's context, and with it
+    ``var_child_runnable_config``: LangChain's "you are inside this run"
+    pointer, set by ``BaseTool.invoke`` for the call's duration. Its callbacks
+    are the parent turn's child callback manager, whose inheritable handlers
+    include the parent's ``astream_events`` streamer. A graph run started under
+    it (``ensure_config`` merges the var into any config that names no
+    callbacks) registers as a CHILD of the parent's tool call, and every one of
+    its token events surfaces in the parent's stream as the parent's own: the
+    2026-09-09 Telegram garble, where a caller's wake-up turn was token-spliced
+    into the callee's final message (shipped/02). The tracer and run-collector
+    vars are cleared alongside, as the per-site resets this seam replaced did
+    (they only matter with LangSmith tracing on, which Nymeria does not run).
+    The caller's values are restored afterwards so a tool body that streams
+    inline keeps its own context once the turn is over.
+
+    Belt and braces: ``NymeriaAgent.astream`` also passes ``callbacks=[]`` in
+    its main graph config (as ``chat()`` does). No same-loop nested
+    ``astream`` caller exists today; if one appears, that line isolates its
+    main graph run only, and this seam is what isolates the whole turn.
+    """
+    from langchain_core.runnables.config import var_child_runnable_config
+    from langchain_core.tracers.context import run_collector_var, tracing_v2_callback_var
+
+    run_vars: tuple[contextvars.ContextVar[Any], ...] = (
+        var_child_runnable_config,
+        tracing_v2_callback_var,
+        run_collector_var,
+    )
+    tokens = [(var, var.set(None)) for var in run_vars]
+    try:
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            try:
+                var.reset(token)
+            except ValueError:
+                # Closed from a different Context (a generator finalized off
+                # its thread): that context never held the caller's values.
+                pass
 
 
 def stream_and_collect(

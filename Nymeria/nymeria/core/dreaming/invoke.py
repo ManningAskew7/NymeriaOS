@@ -502,16 +502,6 @@ def _run_dream_cycle(
     ``error=True`` rather than raised — the caller (HTTP endpoint or
     scheduler) has already returned by now.
     """
-    from langchain_core.runnables.config import var_child_runnable_config
-    from langchain_core.tracers.context import (
-        run_collector_var,
-        tracing_v2_callback_var,
-    )
-
-    # Default the tokens to None so the finally can run even if the setup below
-    # raises: a failed import or seed must still release the single-flight slot,
-    # or the parent would be barred from dreaming until the process restarts.
-    config_token = callback_token = collector_token = None
     task_id = f"dream-{uuid.uuid4().hex[:8]}"
     started_published = False
 
@@ -519,9 +509,9 @@ def _run_dream_cycle(
         from ..event_bus import publish_agent_stream_chunk, publish_autonomous_event
         from ..stream_bridge import stream_and_collect
 
-        config_token = var_child_runnable_config.set(None)
-        callback_token = tracing_v2_callback_var.set(None)
-        collector_token = run_collector_var.set(None)
+        # The dream turn crosses stream_bridge.iter_agent_astream, whose
+        # _detached_langchain_run_context keeps it from reporting into any
+        # parent run's stream; nothing here resets LangChain's run context.
 
         # Seed the shadow with the parent's conversation (forked + soft-pruned)
         # before the dream turn runs, so the dream reflects on what actually
@@ -664,13 +654,6 @@ def _run_dream_cycle(
             logger.warning("Failed to publish dream error event", exc_info=True)
 
     finally:
-        # Release the single-flight slot first, so a later reset failure (or a
-        # setup error that left the tokens unset) can never strand it and bar
-        # the parent from future dreams.
+        # Always release the single-flight slot, even when setup raised, or the
+        # parent would be barred from dreaming until the process restarts.
         _release_dream_slot(parent_thread_id)
-        if collector_token is not None:
-            run_collector_var.reset(collector_token)
-        if callback_token is not None:
-            tracing_v2_callback_var.reset(callback_token)
-        if config_token is not None:
-            var_child_runnable_config.reset(config_token)

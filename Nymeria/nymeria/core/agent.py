@@ -3471,9 +3471,15 @@ class NymeriaAgent:
             # handed to GraphStreamProcessor and used for the actual stream, so the
             # turn source is threaded HERE (a tool hook reads it via
             # _build_tool_hook_ctx); the pre-flight config above does not run tools.
+            # callbacks=[] (as in chat()) keeps a nested turn started from inside
+            # another turn's tool call from inheriting that call's callback
+            # manager, which would surface this turn's events in the parent's
+            # stream; the worker-thread half of that guard is the stream bridge's
+            # _detached_langchain_run_context.
             config = self._graph_run_config(
                 thread_id,
                 user_id,
+                callbacks=[],
                 hook_is_autonomous=is_autonomous_source,
                 hook_holder_kind=source,
                 hook_trigger_label=turn_trigger_label,

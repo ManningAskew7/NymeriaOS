@@ -1365,12 +1365,6 @@ def _invoke_spawned(
     tool name when the child is callable (None when ``make_callable=False``);
     it names the request's target in the ledger and receipts.
     """
-    from langchain_core.runnables.config import var_child_runnable_config
-    from langchain_core.tracers.context import (
-        run_collector_var,
-        tracing_v2_callback_var,
-    )
-
     from ..core import thread_requests as tr
     from ..core.autonomous_turn import AutonomousTurnEmitter
     from ..core.stream_bridge import stream_and_collect
@@ -1501,12 +1495,10 @@ def _invoke_spawned(
                 logger.warning("Failed to publish task-completed error event", exc_info=True)
             return f"[Error]: Initial message failed: {str(e)}"
 
-    # Break the LangChain callback/tracing inheritance chain so the child's
-    # graph run does not leak token events into the parent's stream. The
-    # worker copies THIS context, so the reset must precede the dispatch.
-    config_token = var_child_runnable_config.set(None)
-    callback_token = tracing_v2_callback_var.set(None)
-    collector_token = run_collector_var.set(None)
+    # The child's turn (inline, or on a worker that copies THIS context) crosses
+    # stream_bridge.iter_agent_astream, whose _detached_langchain_run_context
+    # keeps the child's graph run from leaking token events into the parent's
+    # stream.
     # A spawn that waits registers its waiter before the child is dispatched,
     # so a reply landing at once is still handed inline.
     seconds = tr.clamp_wait(wait_seconds) if req is not None else 0.0
@@ -1544,9 +1536,6 @@ def _invoke_spawned(
         outcome = tr.finish_wait(req, waiter, seconds=seconds, agent=agent)
         return tr.waited_result(req, receipt, outcome)
     finally:
-        run_collector_var.reset(collector_token)
-        tracing_v2_callback_var.reset(callback_token)
-        var_child_runnable_config.reset(config_token)
         if registered_wait and parent_thread_id:
             agent.unregister_callable_invocation(parent_thread_id, child_thread_id)
 

@@ -1071,7 +1071,12 @@ def _deliver(agent: Any, req: ThreadRequest, *, kind: str) -> str:
 
 def _start_delivery(agent: Any, req: ThreadRequest, *, kind: str) -> None:
     """Deliver on a worker: a must-deliver submit blocks until the caller's
-    queue absorbs the prompt, which must not hold the callee's tool call."""
+    queue absorbs the prompt, which must not hold the callee's tool call.
+
+    The worker copies the callee's TOOL-CALL context (hook depth and the like
+    must carry over). An idle caller's wake-up turn then runs on this worker,
+    and it is ``stream_bridge.iter_agent_astream`` that detaches LangChain's
+    run context so that turn never reports into the callee's stream."""
 
     def _run() -> None:
         try:

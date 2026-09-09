@@ -509,9 +509,10 @@ def request(
     waiter = begin_wait(req, caller_thread_id, agent) if seconds > 0 else None
 
     # Context copy: the hook engine's re-entrance depth is a ContextVar and a
-    # bare thread reads it back as zero (``core/hooks/dispatch.py``). The
-    # caller's LangChain callback resets ride along too, so the callee stream
-    # stays isolated from the caller's.
+    # bare thread reads it back as zero (``core/hooks/dispatch.py``). The copy
+    # also carries the caller's LangChain run context; the callee's turn
+    # crosses stream_bridge.iter_agent_astream, which detaches it so the
+    # callee stream never reports into the caller's.
     worker = threading.Thread(
         target=contextvars.copy_context().run,
         args=(_run_request_worker,),

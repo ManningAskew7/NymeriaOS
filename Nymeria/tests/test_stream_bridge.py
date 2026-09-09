@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from langchain_core.runnables import RunnableLambda
+from langchain_core.runnables.config import var_child_runnable_config
+from langchain_core.tracers.context import run_collector_var, tracing_v2_callback_var
 
 from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.config import LLMConfig
@@ -738,3 +743,104 @@ def test_stream_and_collect_error_carries_fanout_latch():
             },
         )
     assert getattr(excinfo.value, "fanout_observed", None) is True
+
+
+# --- nested-turn isolation: the LangChain run-context seam ---------------------------
+#
+# Every in-process turn that a sync caller starts crosses ``iter_agent_astream``,
+# and each bridge step copies the WORKER thread's context onto the bridge loop.
+# When that worker was spawned from inside a tool call (a callable reply, a
+# spawn, a hook-fired workflow), the copied context carries LangChain's
+# run-context vars, whose callbacks are the parent turn's child callback
+# manager: the nested turn would register as a child of the parent's tool call
+# and its token events would surface in the parent's stream as the parent's
+# own (the 2026-09-09 Telegram garble, shipped/02). The seam detaches those
+# vars for the whole nested turn and restores the caller's values afterwards.
+
+_RUN_CONTEXT_VARS = (var_child_runnable_config, tracing_v2_callback_var, run_collector_var)
+
+
+class _RunContextAgent:
+    """Records what LangChain's run-context vars hold inside ``astream``."""
+
+    def __init__(self):
+        self.seen: list[tuple] = []
+
+    async def astream(self, **kwargs):
+        self.seen.append(tuple(var.get() for var in _RUN_CONTEXT_VARS))
+        yield {"type": "response", "content": "first"}
+        yield {"type": "response", "content": "second"}
+
+
+def _current_run_context() -> tuple:
+    return tuple(var.get() for var in _RUN_CONTEXT_VARS)
+
+
+@pytest.fixture
+def parent_run_context():
+    """Stand in for a tool call's context: all three vars set in the caller."""
+    sentinels = ({"callbacks": ["parent-manager"], "tags": ["parent"]}, object(), object())
+    tokens = [var.set(value) for var, value in zip(_RUN_CONTEXT_VARS, sentinels)]
+    try:
+        yield sentinels
+    finally:
+        for var, token in zip(_RUN_CONTEXT_VARS, tokens):
+            var.reset(token)
+
+
+def test_iter_agent_astream_detaches_the_langchain_run_context_for_the_turn(parent_run_context):
+    agent = _RunContextAgent()
+
+    chunks = list(iter_agent_astream(agent, message="wake", thread_id="t-seam", user_id="owner"))
+
+    assert [chunk["content"] for chunk in chunks] == ["first", "second"]
+    assert agent.seen == [(None, None, None)]
+    # The caller's own view is restored once the turn is over.
+    assert _current_run_context() == parent_run_context
+
+
+def test_iter_agent_astream_restores_the_callers_run_context_when_closed_early(parent_run_context):
+    iterator = iter_agent_astream(_RunContextAgent(), message="wake")
+    assert next(iterator)["content"] == "first"
+
+    iterator.close()
+
+    assert _current_run_context() == parent_run_context
+
+
+def test_a_nested_turn_driven_through_the_bridge_never_reports_into_the_parents_stream():
+    """LLM-free reproduction of the leak: a parent runnable (the callee's tool
+    call) hands a copy of its context to a worker that drives a child runnable
+    through the bridge (the caller's wake-up turn). Without the seam LangChain
+    attaches the child's run to the parent's callback manager, so the parent's
+    ``astream_events`` carries the child's events as if they were its own."""
+    child_chunks: list[dict] = []
+
+    class _ChildAgent:
+        async def astream(self, **kwargs):
+            child = RunnableLambda(lambda x: x * 2, name="caller-wake-up-turn")
+            result = await child.ainvoke(21)
+            yield {"type": "response", "content": str(result)}
+
+    def parent_body(value):
+        finished = threading.Event()
+
+        def worker():
+            try:
+                child_chunks.extend(iter_agent_astream(_ChildAgent(), message="wake"))
+            finally:
+                finished.set()
+
+        threading.Thread(target=contextvars.copy_context().run, args=(worker,)).start()
+        assert finished.wait(10), "the nested turn did not finish"
+        return value
+
+    parent = RunnableLambda(parent_body, name="callee-tool-call")
+
+    async def collect():
+        return [event async for event in parent.astream_events("x", version="v2")]
+
+    events = asyncio.run(collect())
+
+    assert [chunk["content"] for chunk in child_chunks] == ["42"]
+    assert {event["name"] for event in events} == {"callee-tool-call"}
