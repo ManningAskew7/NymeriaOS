@@ -158,17 +158,15 @@ re-identifies the browser to the backend. Useful flags: `--base-url`,
 `--token-stdin`, `--label`, `--debug-port`, `--sandbox auto|on|off`, and
 `--adopt-home` (below).
 
-**Today the release fetch has nothing to fetch.** Two constants in
-`nymeria/server_browser.py` carry the pin: the release TAG, and a sha256 of
-the release asset that is currently the empty string, meaning "not pinned
-yet". No release has been published at that tag, so a `configure` without
-`--source` fails on the download and prints the releases URL. Until the
-release ships, every `configure` in this document needs
-`--source <dir-or-zip>` pointed at a build of `nymeria-browser`, and setup's
-own provisioning step warns and prints the manual commands rather than
-completing. Once a digest IS pinned, a download that does not match it is
-deleted and refused with both digests named; while it is empty the digest is
-computed and printed instead, which is the value to paste into the constant.
+**The release is pinned.** Two constants in `nymeria/server_browser.py`
+carry the pin: the release TAG (`v0.29.0`) and the sha256 of that release's
+zip as published by the extension repo's tag-driven workflow. A download that
+does not match the digest is deleted and refused with both digests named, so
+a tampered or partial asset never reaches `ext/`. `--source <dir-or-zip>`
+bypasses the fetch (and therefore the pin) for a local build; the extension
+guide's release notes describe how the zip is made reproducible so a locally
+built zip and the published one carry the same digest. Bumping the extension
+means a new tag, then updating both constants from the PUBLISHED asset.
 
 **`configure` stops a running rig and starts it again.** The extension
 adopts a changed `config.json` only when its service worker bootstraps, and
@@ -468,17 +466,18 @@ nymeria browser configure --root <root> --token-file <file>
 nymeria browser status --root <root>    # confirm: connected, new identity
 ```
 
-**A stale service-worker script survives a plain restart.** Chrome can keep
-running a cached script while announcing the new manifest version, so an
-extension upgrade can appear to have landed while old code executes. This
-is backlog #285 (the fix is a build id baked into the script itself, still
-open) and the rig inherits it on every extension upgrade. The only reliable
-invalidation is a fresh profile. The flag lives on `run`, which refuses
-while anything else holds the profile, so the browser has to be down first.
-`nymeria browser stop` does hold it down (the supervisor obeys the stop flag
-and exits cleanly, and every unit restarts on crash only), but the recipe
-below stops the unit with the platform's own command so that the same tool
-brings it back:
+**Chrome caches the extension's worker script inside the profile**
+(`Default/Service Worker/ScriptCache`, keyed by the extension's origin, which
+the manifest key pins), and a plain restart keeps EXECUTING the cached build
+while announcing the new manifest version. Measured on this rig: an adopted
+v0.28.0 profile ran the old worker (old identity, old token, no kind or
+label) through two full Chrome restarts and never adopted the new bake.
+`configure` therefore clears that cache on every run, with the rig stopped,
+so an upgrade or an adoption runs the staged build on its first start; the
+sessions beside the cache are untouched. A build id carried by the script
+itself, so a QA round can prove which code is running without trusting the
+manifest, is still backlog #285. The fresh-profile recipe below remains the
+last-resort reset for anything else the profile may be holding onto:
 
 ```bash
 systemctl --user stop nymeria-browser-<port>       # Linux; launchctl / schtasks elsewhere
@@ -514,8 +513,16 @@ nymeria browser configure --adopt-home ~/.nymeria-browser --token-file <file>
 
 The old profile is COPIED, not moved, and the original is left alone.
 Adoption refuses if the new home already has a profile: remove it first, or
-drop the flag. A hand-run rig whose bake predates this feature announces
-itself as kind `desktop` until it is re-baked, which is expected.
+drop the flag. The copy's cached service-worker script is dropped (see
+Upgrading), otherwise Chrome would keep running the OLD extension build out
+of the copy and the new bake would never be adopted. A hand-run rig whose
+bake predates this feature announces itself as kind `desktop` until it is
+re-baked, which is expected. `configure` provisions and connects the rig; it
+does not make it the account's default browser (the wizard does that on its
+own path). If the account also has another browser connected, every
+`chrome_*` call refuses until a target exists, so finish with `/browser
+default <browser id>` from any chat surface (the id is in `nymeria browser
+status`).
 
 ## Uninstalling
 

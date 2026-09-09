@@ -1068,6 +1068,7 @@ def probe_sandbox(
     binary: Path,
     *,
     run: Runner = subprocess.run,
+    popen: Callable[..., "subprocess.Popen[bytes]"] = subprocess.Popen,
     log: Callable[[str], None] = print,
 ) -> SandboxDecision:
     """Measure whether Chrome can build its sandbox here; fall back if not.
@@ -1075,28 +1076,64 @@ def probe_sandbox(
     One launch with the sandbox; only when that fails, one more with
     `--no-sandbox`. Both use a throwaway profile. Persisted by the caller so
     every later `run` reuses the answer instead of re-measuring.
+
+    The probe is "Chrome comes up and opens its DevTools endpoint", the same
+    readiness signal the rig itself lives on, NOT `--dump-dom`: measured on
+    Chrome for Testing 152 and 153 in new headless, `--dump-dom` never
+    returns on a server (about:blank, a data: URL, `--timeout` and
+    `--virtual-time-budget` all hang until killed), which made every
+    out-of-the-box `configure` spend 90 s timing out and then fail. A sandbox
+    that cannot be built exits within a second with its reason on stderr,
+    which is what the fallback branch keys on. ``run`` is still used for the
+    library hints on total failure.
     """
-    with tempfile.TemporaryDirectory(prefix="nymeria-sandbox-probe-") as tmp:
+    tmp = tempfile.mkdtemp(prefix="nymeria-sandbox-probe-")
+    try:
         base = [
             str(binary),
             "--headless=new",
             "--no-first-run",
             "--disable-gpu",
             f"--user-data-dir={tmp}",
-            "--dump-dom",
+            "--remote-debugging-port=0",
             "about:blank",
         ]
-        first = _probe_once(base, run=run)
+        first = _probe_once(base, popen=popen)
         if first.ok:
             return SandboxDecision(no_sandbox=False)
         log("Chrome could not start with its sandbox here; trying --no-sandbox...")
-        second = _probe_once(base + ["--no-sandbox"], run=run)
+        second = _probe_once(base + ["--no-sandbox"], popen=popen)
         if second.ok:
             return SandboxDecision(no_sandbox=True, reason=first.detail)
+    finally:
+        _remove_probe_profile(Path(tmp))
     raise ServerBrowserError(
         f"the browser could not start even without its sandbox: {second.detail[:400]}",
         hints=_library_hints_for(binary, run),
     )
+
+
+def _remove_probe_profile(path: Path, *, attempts: int = 10, delay: float = 0.2) -> None:
+    """Remove the probe's throwaway profile, tolerating Chrome's slow children.
+
+    `_stop_probe` waits for the browser process only; the helpers it signalled
+    (and the crashpad handler, which double-forks into its own session, so the
+    group signal may not reach it) can still be writing `Crashpad/` under the
+    profile for a moment, and the first rmtree then loses the race with
+    ENOTEMPTY (seen while adopting a live rig: `configure` died in
+    TemporaryDirectory's cleanup AFTER the probe had its answer). The answer
+    is the point; the directory is retried briefly and then abandoned quietly,
+    because a few KB left in the temp dir must never fail a configuration.
+    """
+    for _ in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(delay)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 @dataclass(frozen=True)
@@ -1105,18 +1142,151 @@ class _ProbeResult:
     detail: str = ""
 
 
-def _probe_once(argv: list[str], *, run: Runner) -> _ProbeResult:
+DEVTOOLS_READY_MARK = "DevTools listening on"
+
+
+def _probe_once(
+    argv: list[str],
+    *,
+    popen: Callable[..., "subprocess.Popen[bytes]"],
+    timeout: float = 45.0,
+) -> _ProbeResult:
+    """Start Chrome, wait for its DevTools endpoint, stop it; report which happened.
+
+    Success is `DevTools listening on` on stderr. Failure is the process
+    exiting first (a sandbox that cannot be built does, with the reason as its
+    last stderr lines) or the deadline passing. Whatever happened, the whole
+    process GROUP is stopped: Chrome's zygote, GPU and crashpad helpers
+    outlive the browser process, and a `run`-style kill of the parent alone
+    left them writing the probe profile while it was being removed.
+    """
+    import threading
+
+    spawn_kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        spawn_kwargs["start_new_session"] = True  # pid == pgid, so killpg reaches the helpers
     try:
-        result = run(argv, capture_output=True, text=True, timeout=45, env=child_env())
-    except subprocess.TimeoutExpired:
-        return _ProbeResult(False, "timed out after 45s")
+        proc = popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=child_env(),
+            **spawn_kwargs,
+        )
     except OSError as exc:
         return _ProbeResult(False, str(exc))
-    if result.returncode == 0 and "<html" in (result.stdout or "").lower():
+
+    lines: list[str] = []
+    ready = threading.Event()
+
+    def pump() -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        for raw in stream:
+            line = raw.decode("utf-8", "replace").rstrip()
+            lines.append(line)
+            if DEVTOOLS_READY_MARK in line:
+                ready.set()
+
+    reader = threading.Thread(target=pump, name="server-browser-probe-stderr", daemon=True)
+    reader.start()
+    deadline = time.monotonic() + timeout
+    ok = False
+    timed_out = False
+    try:
+        while True:
+            if ready.is_set():
+                ok = True
+                break
+            if proc.poll() is not None:
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(0.05)
+    finally:
+        _stop_probe(proc)
+    if ok:
         return _ProbeResult(True)
-    tail = (result.stderr or result.stdout or "").strip().splitlines()
-    detail = " | ".join(line.strip() for line in tail[-3:]) or f"exit {result.returncode}"
-    return _ProbeResult(False, detail)
+    # Chrome's helpers inherit the stderr pipe, so EOF arrives only once the
+    # whole tree is down: join AFTER the stop, or this waits for nothing.
+    reader.join(timeout=2)
+    said = _probe_failure_summary(lines)
+    if timed_out:
+        detail = f"no DevTools endpoint after {timeout:.0f}s"
+        return _ProbeResult(False, f"{detail}; last stderr: {said}" if said else detail)
+    return _ProbeResult(False, said or f"exit {proc.returncode}")
+
+
+_CHROME_LOG_PREFIX = re.compile(r"^\[[^\]]*\]\s*")
+_CHROME_ERROR_LEVEL = re.compile(r"^\[[^\]]*:(FATAL|ERROR):")
+_PROBE_KEY_WORDS = re.compile(r"sandbox|namespace|zygote|SUID|Operation not permitted", re.IGNORECASE)
+_PROBE_NOISE = re.compile(r"^(#\d+ |\s*[a-z0-9]{2,3}: [0-9a-f]{16}|\[end of stack trace\]|Received signal)")
+
+
+def _probe_failure_summary(lines: list[str]) -> str:
+    """The one line worth persisting from a failed probe's stderr.
+
+    A sandbox failure is a FATAL log line near the TOP of stderr ("No usable
+    sandbox! ...") followed by a crash dump: numbered frames, register rows,
+    `[end of stack trace]`. The last three lines are therefore registers,
+    which is what `rig.json` and `nymeria browser status` used to show as the
+    reason. Order of preference: the first FATAL line; else the first ERROR
+    line whose MESSAGE names the sandbox machinery (never a WARNING, and never
+    a match inside the `[pid:tid:date:LEVEL:file:line]` prefix: Chrome's GPU
+    process routinely warns about `sandbox_linux.cc` while starting fine);
+    else the last lines that are not crash-dump noise. Prefixes stripped.
+    """
+    cleaned = [line.strip() for line in lines if line.strip()]
+    for line in cleaned:
+        if ":FATAL:" in line:
+            return _CHROME_LOG_PREFIX.sub("", line)[:400]
+    for line in cleaned:
+        if _CHROME_ERROR_LEVEL.match(line) and _PROBE_KEY_WORDS.search(_CHROME_LOG_PREFIX.sub("", line)):
+            return _CHROME_LOG_PREFIX.sub("", line)[:400]
+    tail = [_CHROME_LOG_PREFIX.sub("", line) for line in cleaned if not _PROBE_NOISE.match(line)]
+    return " | ".join(tail[-3:])[:400]
+
+
+def _stop_probe(proc: Any) -> None:
+    """Stop the probe's Chrome and every helper it spawned, then reap it.
+
+    Process-group (POSIX) or tree (Windows `taskkill /T`) signalling applies to
+    a real ``subprocess.Popen`` only; anything else is a test double and gets
+    its own ``terminate``/``kill``, so no unit test ever signals a real pid.
+    """
+    real = isinstance(proc, subprocess.Popen)
+    if not real:
+        proc.terminate()
+    elif os.name == "nt":
+        _terminate(proc.pid)  # taskkill /T: the whole tree
+    else:
+        import signal
+
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            proc.terminate()
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass  # did not go quietly: escalate below
+    if not real or os.name == "nt":
+        proc.kill()
+    else:
+        import signal
+
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass  # reaped by init eventually; nothing more this process can do
 
 
 def build_chrome_argv(
@@ -1190,6 +1360,7 @@ def configure(
     adopt_home: str | Path | None = None,
     download: Downloader | None = None,
     run: Runner = subprocess.run,
+    popen: Callable[..., "subprocess.Popen[bytes]"] = subprocess.Popen,
     log: Callable[[str], None] = print,
     platform_key: str | None = None,
 ) -> RigConfig:
@@ -1260,7 +1431,7 @@ def configure(
         decision = SandboxDecision(no_sandbox=True, reason="disabled by operator")
     else:
         log("Checking that the browser can start here...")
-        decision = probe_sandbox(binary, run=run, log=log)
+        decision = probe_sandbox(binary, run=run, popen=popen, log=log)
     if decision.no_sandbox:
         log(
             "WARNING: the browser will run with --no-sandbox "
@@ -1271,6 +1442,7 @@ def configure(
             "configure --sandbox on` re-enables it."
         )
 
+    _drop_worker_script_cache(home, log=log)
     config = RigConfig(
         client_id=resolved_id,
         base_url=base_url,
@@ -1423,6 +1595,44 @@ def _cft_version_from_binary(binary: Path) -> str:
         if parent.parent.name == "cft":
             return parent.name
     return ""
+
+
+WORKER_SCRIPT_CACHE_DIR = Path("Default") / "Service Worker"
+
+
+def _drop_worker_script_cache(home: RigHome, *, log: Callable[[str], None]) -> None:
+    """Remove the profile's cached service-worker scripts so the STAGED extension runs.
+
+    Chrome keeps every service worker's script in the profile
+    (`Default/Service Worker/ScriptCache`), keyed by origin, and the
+    extension's origin is fixed by the key in its manifest. So a profile that
+    last ran an older build keeps EXECUTING that build's worker after a
+    restart, while `chrome.runtime.getManifest()` reports the new version from
+    disk: measured on an adopted v0.28.0 profile, two Chrome starts ran the old
+    worker (old identity, old token, no kind or label) and the new bake was
+    never adopted; the third start, after an extension reload refreshed the
+    cache, adopted it. The same mechanism hits an in-place upgrade. Cleared on
+    every `configure`, after `_stop_for_reconfigure` (a stop it could not
+    complete is already a printed WARNING, and a still-running Chrome would
+    at worst repopulate the cache once). Cookies, Local Storage and the
+    extension's own `chrome.storage.local` live in other profile
+    subdirectories and are untouched; the directory also holds the Cache API
+    storage of signed-in sites (`CacheStorage/`), which is a cache and is
+    rebuilt. Chrome recreates the whole directory on the next start.
+    """
+    cache = home.profile_dir / WORKER_SCRIPT_CACHE_DIR
+    if not cache.exists():
+        return
+    try:
+        shutil.rmtree(cache)
+    except OSError as exc:
+        log(
+            f"WARNING: could not clear the profile's service-worker cache at {cache} "
+            f"({exc}); if the rig keeps announcing an old extension version, remove it "
+            "by hand with the rig stopped."
+        )
+        return
+    log("Cleared the profile's cached service-worker scripts (the staged extension runs, not a previous build).")
 
 
 def _adopt_profile(old_home: Path, home: RigHome, *, log: Callable[[str], None]) -> None:
@@ -2118,6 +2328,7 @@ def provision(
     install_service: bool = True,
     log: Callable[[str], None] = print,
     run: Runner = subprocess.run,
+    popen: Callable[..., "subprocess.Popen[bytes]"] = subprocess.Popen,
     download: Downloader | None = None,
     fetch: Fetcher | None = None,
     platform_key: str | None = None,
@@ -2156,6 +2367,7 @@ def provision(
             label=label,
             source=source,
             run=run,
+            popen=popen,
             log=log,
             download=download,
             platform_key=platform_key,

@@ -87,15 +87,51 @@ class FakeRunner:
             if self.version_ok:
                 return completed(argv, 0, CHROME_VERSION_LINE + "\n")
             return completed(argv, 127, "", "error while loading shared libraries: libnss3.so")
-        if "--dump-dom" in argv:
-            if "--no-sandbox" in argv:
-                ok = self.no_sandbox_ok
-            else:
-                ok = self.sandbox_ok
-            if ok:
-                return completed(argv, 0, "<html><head></head><body></body></html>")
-            return completed(argv, 1, "", "Failed to move to new namespace: Operation not permitted")
         return completed(argv, 0)
+
+    def popen(self, argv, **kwargs):
+        """The sandbox probe: a Chrome that either opens DevTools or dies with a reason."""
+        argv = list(argv)
+        self.calls.append(argv)
+        assert "env" in kwargs and kwargs["env"] is not None, "every spawn must pass an env"
+        assert kwargs.get("stderr") is subprocess.PIPE, "the probe reads stderr"
+        ok = self.no_sandbox_ok if "--no-sandbox" in argv else self.sandbox_ok
+        if ok:
+            return FakeProc(["DevTools listening on ws://127.0.0.1:41000/devtools/browser/probe"])
+        return FakeProc(
+            ["[1:1:0909/000000.000000:FATAL:zygote_host_impl_linux.cc(1)] "
+             "Failed to move to new namespace: Operation not permitted"],
+            exit_code=1,
+        )
+
+
+class FakeProc:
+    """What `FakeRunner.popen` hands the probe: stderr lines, then alive or exited."""
+
+    def __init__(self, stderr_lines, *, exit_code=None):
+        self.stderr = iter([(line + "\n").encode() for line in stderr_lines])
+        self._exit_code = exit_code
+        self.returncode = None
+        self.pid = 2_000_000_000  # no such process; the tree stop must not need it
+        self.stopped = False
+
+    def poll(self):
+        if self._exit_code is not None:
+            self.returncode = self._exit_code
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            self.returncode = self._exit_code if self._exit_code is not None else -15
+        return self.returncode
+
+    def terminate(self):
+        self.stopped = True
+        if self.returncode is None:
+            self.returncode = -15
+
+    def kill(self):
+        self.terminate()
 
 
 def make_home(tmp_path: Path, *, with_binary: bool = True, platform_key: str = "linux64") -> RigHome:
@@ -438,14 +474,14 @@ def test_missing_library_parsing_and_generic_hint():
 
 def test_probe_sandbox_prefers_sandbox_and_falls_back_when_measured_failing(tmp_path):
     binary = tmp_path / "chrome"
-    ok = probe_sandbox(binary, run=FakeRunner(sandbox_ok=True), log=lambda _: None)
+    ok = probe_sandbox(binary, popen=FakeRunner(sandbox_ok=True).popen, log=lambda _: None)
     assert ok.no_sandbox is False and ok.reason == ""
     runner = FakeRunner(sandbox_ok=False, no_sandbox_ok=True)
-    fallback = probe_sandbox(binary, run=runner, log=lambda _: None)
+    fallback = probe_sandbox(binary, run=runner, popen=runner.popen, log=lambda _: None)
     assert fallback.no_sandbox is True
     assert "Operation not permitted" in fallback.reason
     # Exactly two launches: one with the sandbox, one without, in that order.
-    probes = [c for c in runner.calls if "--dump-dom" in c]
+    probes = [c for c in runner.calls if "--remote-debugging-port=0" in c]
     assert len(probes) == 2
     assert "--no-sandbox" not in probes[0] and "--no-sandbox" in probes[1]
 
@@ -454,7 +490,7 @@ def test_probe_sandbox_raises_when_even_no_sandbox_fails(tmp_path):
     with pytest.raises(ServerBrowserError, match="even without its sandbox"):
         probe_sandbox(
             tmp_path / "chrome",
-            run=FakeRunner(sandbox_ok=False, no_sandbox_ok=False),
+            popen=FakeRunner(sandbox_ok=False, no_sandbox_ok=False).popen,
             log=lambda _: None,
         )
 
@@ -515,6 +551,7 @@ def test_configure_stages_bakes_and_keeps_identity_across_reruns(tmp_path):
         source=build,
         debug_port=9300,
         run=runner,
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -538,6 +575,7 @@ def test_configure_stages_bakes_and_keeps_identity_across_reruns(tmp_path):
         source=build,
         sandbox="on",
         run=runner,
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -559,7 +597,8 @@ def test_configure_pins_the_rig_home_and_bake_modes(tmp_path):
         token="t",
         source=make_build_dir(tmp_path),
         sandbox="on",
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -608,7 +647,8 @@ def test_configure_warns_instead_of_claiming_a_mode_it_did_not_get(tmp_path, mon
         token="t",
         source=make_build_dir(tmp_path),
         sandbox="on",
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=logs.append,
         platform_key="linux64",
     )
@@ -630,7 +670,8 @@ def test_configure_refuses_an_unreadable_rig_json_instead_of_minting_a_new_ident
         token="t",
         source=build,
         sandbox="on",
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -642,7 +683,8 @@ def test_configure_refuses_an_unreadable_rig_json_instead_of_minting_a_new_ident
             token="t",
             source=build,
             sandbox="on",
-            run=FakeRunner(),
+            run=(runner := FakeRunner()),
+            popen=runner.popen,
             log=lambda _: None,
             platform_key="linux64",
         )
@@ -712,7 +754,8 @@ def test_configure_restarts_a_service_installed_rig_so_the_new_bake_is_adopted(t
         token="rotated",
         source=make_build_dir(tmp_path),
         sandbox="on",
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=logs.append,
         platform_key="linux64",
     )
@@ -734,7 +777,8 @@ def test_configure_without_a_service_says_loudly_how_to_start_the_rig_again(tmp_
         token="rotated",
         source=make_build_dir(tmp_path),
         sandbox="on",
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=logs.append,
         platform_key="linux64",
     )
@@ -766,7 +810,8 @@ def test_configure_retires_the_service_unit_the_old_debug_port_owned(tmp_path, m
         source=make_build_dir(tmp_path),
         debug_port=9401,
         sandbox="on",
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=logs.append,
         platform_key="linux64",
     )
@@ -780,7 +825,8 @@ def test_configure_retires_the_service_unit_the_old_debug_port_owned(tmp_path, m
         token="t",
         source=make_build_dir(tmp_path),
         sandbox="on",
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=logs.append,
         platform_key="linux64",
     )
@@ -807,7 +853,8 @@ def test_configure_rejects_bad_client_id(tmp_path):
             client_id="desktop-123",
             source=build,
             sandbox="on",
-            run=FakeRunner(),
+            run=(runner := FakeRunner()),
+            popen=runner.popen,
             platform_key="linux64",
         )
 
@@ -826,7 +873,8 @@ def test_configure_adopts_an_existing_profile(tmp_path):
         source=build,
         sandbox="on",
         adopt_home=old,
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -848,7 +896,8 @@ def _configured_home(tmp_path) -> RigHome:
         source=build,
         sandbox="on",
         debug_port=9400,
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -1392,7 +1441,8 @@ def test_provision_survives_failures_that_are_not_server_browser_errors(tmp_path
         source=build,
         fetch=lambda url: _cft_payload("https://cft/linux64.zip"),
         download=download,
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -1423,7 +1473,8 @@ def test_provision_survives_a_service_manager_that_raises_anything(tmp_path, mon
         source=build,
         fetch=lambda url: _cft_payload("https://cft/linux64.zip"),
         download=download,
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -1467,6 +1518,7 @@ def test_provision_installs_configures_and_installs_service(tmp_path, monkeypatc
         fetch=lambda url: _cft_payload("https://cft/linux64.zip"),
         download=download,
         run=runner,
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -1496,7 +1548,8 @@ def test_provision_without_service_prints_run_command(tmp_path):
         install_service=False,
         fetch=lambda url: _cft_payload("https://cft/linux64.zip"),
         download=download,
-        run=FakeRunner(),
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
         log=lambda _: None,
         platform_key="linux64",
     )
@@ -1687,7 +1740,8 @@ def test_configure_refuses_a_base_url_that_is_not_absolute_http(tmp_path):
                 token="t",
                 source=build,
                 sandbox="on",
-                run=FakeRunner(),
+                run=(runner := FakeRunner()),
+                popen=runner.popen,
                 log=lambda _: None,
                 platform_key="linux64",
             )
@@ -1831,3 +1885,203 @@ def test_browser_cli_with_an_explicit_root_ignores_the_launch_environment(tmp_pa
     monkeypatch.setattr("nymeria._runtime_paths.configure_project_root", lambda start=None: root)
     assert sb.browser_cli(args(None)) == 0
     assert seen[-1] == other_rig
+
+
+def test_probe_sandbox_outlives_chrome_children_still_writing_its_profile(tmp_path, monkeypatch):
+    """The stop waits for the browser process only; its helpers can keep touching
+    the throwaway profile for a moment, so the first rmtree fails ENOTEMPTY. Seen adopting a live rig: configure died in the temp dir's
+    cleanup after the probe already had its answer. The answer must come back,
+    the removal is retried, and the directory ends up gone."""
+    import errno
+
+    real_rmtree = sb.shutil.rmtree
+    attempts: list[str] = []
+
+    def flaky_rmtree(path, *args, **kwargs):
+        attempts.append(str(path))
+        if len(attempts) <= 2 and not kwargs.get("ignore_errors"):
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", "Default")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(sb.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(sb.time, "sleep", lambda _s: None)
+    runner = FakeRunner(sandbox_ok=True)
+    profiles: list[str] = []
+
+    def popen(argv, **kwargs):
+        profiles.append(next(a for a in argv if a.startswith("--user-data-dir=")).split("=", 1)[1])
+        return runner.popen(argv, **kwargs)
+
+    decision = probe_sandbox(tmp_path / "chrome", popen=popen, log=lambda _: None)
+
+    assert decision.no_sandbox is False
+    assert len(attempts) == 3 and all(a == profiles[0] for a in attempts)
+    assert not Path(profiles[0]).exists()
+
+
+def test_probe_gives_up_on_a_browser_that_never_opens_devtools_and_still_stops_it(tmp_path):
+    """The deadline path: a Chrome that neither dies nor announces DevTools
+    (the `--dump-dom` hang, seen live on CfT 152 and 153) is reported as a
+    failure with the deadline in the reason, and its process tree is stopped
+    rather than left running behind the wizard."""
+    spawned: list[FakeProc] = []
+
+    def popen(argv, **kwargs):
+        proc = FakeProc([])
+        spawned.append(proc)
+        return proc
+
+    result = sb._probe_once([str(tmp_path / "chrome")], popen=popen, timeout=0.2)
+
+    assert result.ok is False and "no DevTools endpoint after 0s" in result.detail
+    assert spawned and spawned[0].stopped
+
+
+def test_probe_stops_the_browser_it_started_even_on_success(tmp_path):
+    """Readiness is the answer; the probe Chrome must not outlive the question."""
+    runner = FakeRunner(sandbox_ok=True)
+    spawned: list = []
+
+    def popen(argv, **kwargs):
+        proc = runner.popen(argv, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    assert probe_sandbox(tmp_path / "chrome", popen=popen, log=lambda _: None).no_sandbox is False
+    assert [p.stopped for p in spawned] == [True]
+
+
+def test_configure_clears_the_profiles_cached_worker_script(tmp_path):
+    """Chrome runs the service-worker SCRIPT it cached in the profile, keyed by
+    the extension's (key-pinned) origin, so a profile that last ran an older
+    build keeps executing it after a restart while reporting the new manifest
+    version. Measured live on an adopted v0.28.0 profile: two starts ran the
+    old worker and never adopted the bake. Every configure (which has already
+    stopped the rig) drops that cache; the sessions beside it stay."""
+    home = make_home(tmp_path)
+    build = make_build_dir(tmp_path)
+    cache = home.profile_dir / "Default" / "Service Worker" / "ScriptCache"
+    cache.mkdir(parents=True)
+    (cache / "index").write_bytes(b"stale 0.28.0 worker")
+    (home.profile_dir / "Default" / "Cookies").write_text("session-bytes")
+    lines: list[str] = []
+
+    configure(
+        home,
+        base_url="http://localhost:8000",
+        token="t",
+        source=build,
+        sandbox="on",
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
+        log=lines.append,
+        platform_key="linux64",
+    )
+
+    assert not (home.profile_dir / "Default" / "Service Worker").exists()
+    assert (home.profile_dir / "Default" / "Cookies").read_text() == "session-bytes"
+    assert any("cached service-worker scripts" in line for line in lines)
+
+
+def test_adopting_a_profile_does_not_carry_its_cached_worker_script(tmp_path):
+    """The adopt path is where this bit: the copied profile brought the old
+    rig's worker cache along. The copy keeps the sessions and loses the cache;
+    the original is left exactly as it was."""
+    home = make_home(tmp_path)
+    build = make_build_dir(tmp_path)
+    old = tmp_path / "old-rig"
+    old_cache = old / "profile" / "Default" / "Service Worker" / "ScriptCache"
+    old_cache.mkdir(parents=True)
+    (old_cache / "index").write_bytes(b"stale")
+    (old / "profile" / "Default" / "Cookies").write_text("session-bytes")
+
+    configure(
+        home,
+        base_url="http://localhost:8000",
+        token="t",
+        source=build,
+        sandbox="on",
+        adopt_home=old,
+        run=(runner := FakeRunner()),
+        popen=runner.popen,
+        log=lambda _: None,
+        platform_key="linux64",
+    )
+
+    assert not (home.profile_dir / "Default" / "Service Worker").exists()
+    assert (home.profile_dir / "Default" / "Cookies").read_text() == "session-bytes"
+    assert (old_cache / "index").exists()
+
+
+def test_probe_failure_reason_is_the_fatal_line_not_the_register_dump():
+    """The reason lands in rig.json and `status`; a real sandbox failure puts the
+    one meaningful line at the top of stderr and a crash dump (frames, register
+    rows, `[end of stack trace]`) at the bottom, which is what the old
+    last-three-lines rule persisted."""
+    stderr = [
+        "[4011785:4011790:0909/153758.900000:WARNING:sandbox/policy/linux/sandbox_linux.cc:393] "
+        "InitializeSandbox() called with multiple threads in process gpu-process.",
+        "[4011785:4011785:0909/153758.910897:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:129] "
+        "No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled "
+        "unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md.",
+        "[0909/153758.919103:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq: No such file or directory (2)",
+        "[0909/153758.919169:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq: No such file or directory (2)",
+        "[4011785:4011785:0909/153758.920001:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll",
+        "[4011785:4011785:0909/153758.920100:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address",
+        "Received signal 6",
+        "#0 0x5c8da75de6b3 (/opt/rig/cft/153.0.8010.36/chrome-linux64/chrome+0x6a076b2)",
+        "#1 0x5c8dac2fa2e4 (/opt/rig/cft/153.0.8010.36/chrome-linux64/chrome+0xb7232e3)",
+        "  r8: 000029600013c269  r9: 0000000000000001 r10: 0000000000000008 r11: 0000000000000246",
+        "  ip: 0000716a5be9ec0c efl: 0000000000000246 cgf: 002b000000000033 erf: 0000000000000000",
+        "[end of stack trace]",
+    ]
+    reason = sb._probe_failure_summary(stderr)
+    assert reason.startswith("No usable sandbox! If you are running on Ubuntu 23.10+")
+    assert "efl:" not in reason and "[4011785" not in reason
+
+    # No FATAL: an ERROR whose message names the sandbox beats a WARNING that does.
+    assert sb._probe_failure_summary([
+        "[1:2:0909/000000.000000:WARNING:sandbox/policy/linux/sandbox_linux.cc:393] InitializeSandbox() called with multiple threads",
+        "[1:1:0909/000000.000000:ERROR:content/browser/zygote_host/zygote_host_impl_linux.cc:200] Failed to move to new namespace: Operation not permitted",
+        "#0 0xdeadbeef (chrome+0x1)",
+    ]) == "Failed to move to new namespace: Operation not permitted"
+
+    # No key line: the tail, minus crash-dump noise and prefixes.
+    plain = sb._probe_failure_summary([
+        "[1:1:0909/000000.000000:ERROR:gpu/ipc/service/gpu_init.cc:1] something odd",
+        "#0 0xdeadbeef (chrome+0x1)",
+        "[end of stack trace]",
+    ])
+    assert plain == "something odd"
+
+
+def test_probe_stops_a_real_process_tree_once_devtools_is_up():
+    """Real Popen, real process group: a child that announces DevTools and then
+    sleeps must be reported ready AND be dead when the probe returns, not left
+    sleeping behind the wizard. This is the branch the fakes cannot reach."""
+    import sys
+
+    script = "import sys, time; print('DevTools listening on ws://127.0.0.1:1/x', file=sys.stderr, flush=True); time.sleep(30)"
+    spawned: list[subprocess.Popen] = []
+
+    def popen(argv, **kwargs):
+        proc = subprocess.Popen(argv, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    result = sb._probe_once([sys.executable, "-c", script], popen=popen, timeout=20)
+
+    assert result.ok is True
+    assert spawned and spawned[0].poll() is not None
+
+
+def test_probe_reports_a_real_early_exit_with_its_fatal_line():
+    import sys
+
+    script = (
+        "import sys; print('[1:1:0909/000000.000000:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:129] "
+        "No usable sandbox! probe', file=sys.stderr, flush=True); sys.exit(1)"
+    )
+    result = sb._probe_once([sys.executable, "-c", script], popen=subprocess.Popen, timeout=20)
+    assert result.ok is False
+    assert result.detail.startswith("No usable sandbox! probe")
