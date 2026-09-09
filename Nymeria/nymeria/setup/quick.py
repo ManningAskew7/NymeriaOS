@@ -132,6 +132,7 @@ DEFAULT_STEP_IDS: tuple[str, ...] = (
     "stt",
     "backend_keys",
     "skill_kits",
+    "server_browser",
     "timezone",
     "context",
     "agent_limits",

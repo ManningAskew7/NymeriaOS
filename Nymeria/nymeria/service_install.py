@@ -43,6 +43,7 @@ current systemd/launchd guidance, 2026-06):
 
 from __future__ import annotations
 
+import codecs
 import os
 import plistlib
 import shutil
@@ -66,6 +67,35 @@ COMMAND_TIMEOUT_SECONDS = 90.0
 # Matches TimeoutStopSec in the generated unit; COMMAND_TIMEOUT_SECONDS must
 # stay comfortably above it (see test_command_timeout_clears_stop_timeout).
 UNIT_STOP_TIMEOUT_SECONDS = 30
+
+
+@dataclass(frozen=True)
+class ServiceSpec:
+    """The identity of one supervised service: unit name, label, description.
+
+    The managers below were written for the slim backend with these baked in
+    as module constants; the server browser (`server_browser.py`) needs a
+    second unit per rig on the same host, so the identity became a parameter.
+    The defaults reproduce the backend's artifacts byte for byte (pinned by
+    `test_service_install.py`), and every caller that passes nothing keeps
+    getting them.
+
+    ``windows_task_name`` opts a spec into the scheduled-task manager on
+    Windows; the backend leaves it None because install.ps1 owns its logon
+    task there (`_WINDOWS_HINTS`). ``log_basename`` names the launchd
+    stdout/stderr files under ``<root>/logs/``.
+    """
+
+    systemd_unit: str = SYSTEMD_UNIT_NAME
+    launchd_label: str = LAUNCHD_LABEL
+    description: str = SERVICE_DESCRIPTION
+    syslog_identifier: str = "nymeria"
+    log_basename: str = "service"
+    install_hint: str = "nymeria service install"
+    windows_task_name: str | None = None
+
+
+BACKEND_SERVICE = ServiceSpec()
 
 _SYSTEMD_HEADLESS_HINTS = (
     "Enable lingering so your user manager runs without a login session: "
@@ -337,16 +367,20 @@ def _systemd_env_line(key: str, value: str) -> str:
 
 
 def build_systemd_unit(
-    *, exec_argv: Sequence[str], root: Path, path_env: str
+    *,
+    exec_argv: Sequence[str],
+    root: Path,
+    path_env: str,
+    spec: ServiceSpec = BACKEND_SERVICE,
 ) -> str:
-    """The systemd user unit text for the slim backend."""
+    """The systemd user unit text for ``spec`` (the slim backend by default)."""
     exec_line = " ".join(_systemd_quote_arg(arg) for arg in exec_argv)
     root_str = str(root)
     if "\n" in root_str or "\r" in root_str:
         raise ServiceInstallError("project root path cannot contain newlines")
     lines = [
         "[Unit]",
-        f"Description={SERVICE_DESCRIPTION}",
+        f"Description={spec.description}",
         # Crash-loop guard: five failed starts inside five minutes parks the
         # unit in failed instead of looping forever on a broken config.
         "StartLimitIntervalSec=300",
@@ -363,7 +397,7 @@ def build_systemd_unit(
         "Restart=on-failure",
         "RestartSec=2",
         f"TimeoutStopSec={UNIT_STOP_TIMEOUT_SECONDS}",
-        "SyslogIdentifier=nymeria",
+        f"SyslogIdentifier={spec.syslog_identifier}",
         "",
         "[Install]",
         "WantedBy=default.target",
@@ -373,12 +407,16 @@ def build_systemd_unit(
 
 
 def build_launchd_plist(
-    *, exec_argv: Sequence[str], root: Path, path_env: str
+    *,
+    exec_argv: Sequence[str],
+    root: Path,
+    path_env: str,
+    spec: ServiceSpec = BACKEND_SERVICE,
 ) -> dict:
-    """The launchd agent payload for the slim backend (plistlib-ready)."""
+    """The launchd agent payload for ``spec`` (plistlib-ready)."""
     logs_dir = root / "logs"
     return {
-        "Label": LAUNCHD_LABEL,
+        "Label": spec.launchd_label,
         "ProgramArguments": list(exec_argv),
         "WorkingDirectory": str(root),
         "EnvironmentVariables": {
@@ -389,8 +427,8 @@ def build_launchd_plist(
         # Restart on crash only; a clean exit stays down. Deliberate stops go
         # through bootout, which removes the job so KeepAlive cannot respawn it.
         "KeepAlive": {"SuccessfulExit": False},
-        "StandardOutPath": str(logs_dir / "service-stdout.log"),
-        "StandardErrorPath": str(logs_dir / "service-stderr.log"),
+        "StandardOutPath": str(logs_dir / f"{spec.log_basename}-stdout.log"),
+        "StandardErrorPath": str(logs_dir / f"{spec.log_basename}-stderr.log"),
     }
 
 
@@ -442,26 +480,39 @@ class _SubprocessServiceBase:
 
 
 class SystemdUserService(_SubprocessServiceBase):
-    """Install/manage the slim backend as a systemd user unit."""
+    """Install/manage a service (the slim backend by default) as a systemd user unit."""
 
     name = "systemd user service"
 
     def __init__(
-        self, *, home: Path | None = None, runner: Runner = subprocess.run
+        self,
+        *,
+        home: Path | None = None,
+        runner: Runner = subprocess.run,
+        spec: ServiceSpec = BACKEND_SERVICE,
     ) -> None:
         self._home = home or Path.home()
         self._runner = runner
+        self._spec = spec
         self._env = self._build_env()
 
     @property
+    def spec(self) -> ServiceSpec:
+        return self._spec
+
+    @property
+    def _unit(self) -> str:
+        return self._spec.systemd_unit
+
+    @property
     def artifact_path(self) -> Path:
-        return self._home / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
+        return self._home / ".config" / "systemd" / "user" / self._unit
 
     def is_installed(self) -> bool:
         return self.artifact_path.exists()
 
     def log_hint(self) -> str:
-        return f"journalctl --user -u {SYSTEMD_UNIT_NAME} -n 50 --no-pager"
+        return f"journalctl --user -u {self._unit} -n 50 --no-pager"
 
     def _build_env(self) -> dict[str, str]:
         """Process env for systemctl/loginctl, repaired for headless shells.
@@ -496,7 +547,7 @@ class SystemdUserService(_SubprocessServiceBase):
         if state in {"running", "degraded", "starting", "initializing"}:
             return
         detail = probe.stderr or state or "no user service manager"
-        hints = list(_SYSTEMD_HEADLESS_HINTS)
+        hints: list[str] = list(_SYSTEMD_HEADLESS_HINTS)
         if _is_wsl():
             hints.extend(_WSL_HINTS)
         raise ServiceUnavailableError(
@@ -546,16 +597,16 @@ class SystemdUserService(_SubprocessServiceBase):
     def install(self, *, exec_argv: Sequence[str], root: Path) -> InstallReport:
         self.ensure_available()
         unit_text = build_systemd_unit(
-            exec_argv=exec_argv, root=root, path_env=service_path_env()
+            exec_argv=exec_argv, root=root, path_env=service_path_env(), spec=self._spec
         )
         self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
         self.artifact_path.write_text(unit_text, encoding="utf-8")
         lines = [f"Installed systemd user unit: {self.artifact_path}"]
         self._run(["systemctl", "--user", "daemon-reload"], check=True)
-        self._run(["systemctl", "--user", "enable", SYSTEMD_UNIT_NAME], check=True)
+        self._run(["systemctl", "--user", "enable", self._unit], check=True)
         # restart (not `enable --now`) so a reinstall picks up the new unit
         # instead of leaving a stale process running.
-        self._run(["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME], check=True)
+        self._run(["systemctl", "--user", "restart", self._unit], check=True)
         lines.append("Service enabled and started.")
         linger_lines, warnings = self._ensure_linger()
         lines.extend(linger_lines)
@@ -573,7 +624,7 @@ class SystemdUserService(_SubprocessServiceBase):
         if not self.is_installed():
             return (f"No systemd user unit at {self.artifact_path}; nothing to remove.",)
         lines: list[str] = []
-        stop = self._run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT_NAME])
+        stop = self._run(["systemctl", "--user", "disable", "--now", self._unit])
         if stop.returncode != 0:
             detail = stop.stderr or stop.stdout or f"exit {stop.returncode}"
             lines.append(
@@ -584,7 +635,7 @@ class SystemdUserService(_SubprocessServiceBase):
         self._run(["systemctl", "--user", "daemon-reload"])
         # Clear a parked-failed state so the removed unit does not linger in
         # `systemctl --user --failed`.
-        self._run(["systemctl", "--user", "reset-failed", SYSTEMD_UNIT_NAME])
+        self._run(["systemctl", "--user", "reset-failed", self._unit])
         lines.append(f"Removed systemd user unit: {self.artifact_path}")
         lines.append("Lingering was left as-is (other user services may rely on it).")
         return tuple(lines)
@@ -593,9 +644,9 @@ class SystemdUserService(_SubprocessServiceBase):
         self.ensure_available()
         if not self.is_installed():
             raise ServiceInstallError(
-                "service is not installed; run `nymeria service install` first"
+                f"service is not installed; run `{self._spec.install_hint}` first"
             )
-        self._run(["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME], check=True)
+        self._run(["systemctl", "--user", "restart", self._unit], check=True)
 
     def status(self) -> ServiceStatus:
         if not self.is_installed():
@@ -607,7 +658,7 @@ class SystemdUserService(_SubprocessServiceBase):
                 "systemctl",
                 "--user",
                 "show",
-                SYSTEMD_UNIT_NAME,
+                self._unit,
                 "--no-pager",
                 "--property=ActiveState,SubState,MainPID",
             ]
@@ -631,15 +682,20 @@ class SystemdUserService(_SubprocessServiceBase):
 
 
 class LaunchdAgentService(_SubprocessServiceBase):
-    """Install/manage the slim backend as a launchd LaunchAgent."""
+    """Install/manage a service (the slim backend by default) as a launchd LaunchAgent."""
 
     name = "launchd agent"
 
     def __init__(
-        self, *, home: Path | None = None, runner: Runner = subprocess.run
+        self,
+        *,
+        home: Path | None = None,
+        runner: Runner = subprocess.run,
+        spec: ServiceSpec = BACKEND_SERVICE,
     ) -> None:
         self._home = home or Path.home()
         self._runner = runner
+        self._spec = spec
         # launchd commands inherit the caller's environment (no XDG/DBus repair
         # is needed, unlike systemd --user); _env=None tells the base _run to
         # omit the env kwarg, matching the former hand-rolled call exactly.
@@ -647,8 +703,16 @@ class LaunchdAgentService(_SubprocessServiceBase):
         self._uid = os.getuid()
 
     @property
+    def spec(self) -> ServiceSpec:
+        return self._spec
+
+    @property
+    def _label(self) -> str:
+        return self._spec.launchd_label
+
+    @property
     def artifact_path(self) -> Path:
-        return self._home / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+        return self._home / "Library" / "LaunchAgents" / f"{self._label}.plist"
 
     def is_installed(self) -> bool:
         return self.artifact_path.exists()
@@ -690,7 +754,7 @@ class LaunchdAgentService(_SubprocessServiceBase):
     def install(self, *, exec_argv: Sequence[str], root: Path) -> InstallReport:
         self.ensure_available()
         payload = build_launchd_plist(
-            exec_argv=exec_argv, root=root, path_env=service_path_env()
+            exec_argv=exec_argv, root=root, path_env=service_path_env(), spec=self._spec
         )
         (root / "logs").mkdir(parents=True, exist_ok=True)
         self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -706,7 +770,7 @@ class LaunchdAgentService(_SubprocessServiceBase):
         # fails with "Bootstrap failed: 5: Input/output error". Wait for the
         # label to disappear (bounded), then retry bootstrap once.
         self._wait_for_label_gone()
-        self._run(["launchctl", "enable", f"{self._gui_target()}/{LAUNCHD_LABEL}"])
+        self._run(["launchctl", "enable", f"{self._gui_target()}/{self._label}"])
         bootstrap = ["launchctl", "bootstrap", self._gui_target(), str(self.artifact_path)]
         first = self._run(bootstrap)
         if first.returncode != 0:
@@ -723,13 +787,13 @@ class LaunchdAgentService(_SubprocessServiceBase):
                 "added. Nymeria must stay enabled under System Settings > "
                 "General > Login Items & Extensions.",
                 "A launchd agent runs only while you are logged in to this Mac.",
-                f"Logs: {root / 'logs' / 'service-stdout.log'}",
+                f"Logs: {root / 'logs' / f'{self._spec.log_basename}-stdout.log'}",
             ),
         )
 
     def _wait_for_label_gone(self, *, timeout: float = 5.0, interval: float = 0.2) -> None:
         """Poll until launchd no longer knows the label (bootout drained)."""
-        target = f"{self._gui_target()}/{LAUNCHD_LABEL}"
+        target = f"{self._gui_target()}/{self._label}"
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._run(["launchctl", "print", target]).returncode != 0:
@@ -747,9 +811,9 @@ class LaunchdAgentService(_SubprocessServiceBase):
         self.ensure_available()
         if not self.is_installed():
             raise ServiceInstallError(
-                "service is not installed; run `nymeria service install` first"
+                f"service is not installed; run `{self._spec.install_hint}` first"
             )
-        target = f"{self._gui_target()}/{LAUNCHD_LABEL}"
+        target = f"{self._gui_target()}/{self._label}"
         result = self._run(["launchctl", "kickstart", "-k", target])
         if result.returncode != 0:
             # The job may not be loaded (e.g. booted out earlier): re-register.
@@ -765,7 +829,7 @@ class LaunchdAgentService(_SubprocessServiceBase):
                 installed=False, running=False, detail="not installed"
             )
         result = self._run(
-            ["launchctl", "print", f"{self._gui_target()}/{LAUNCHD_LABEL}"]
+            ["launchctl", "print", f"{self._gui_target()}/{self._label}"]
         )
         if result.returncode != 0:
             return ServiceStatus(
@@ -786,19 +850,176 @@ class LaunchdAgentService(_SubprocessServiceBase):
         return ServiceStatus(installed=True, running=running, detail=detail, pid=pid)
 
 
-ServiceManager = SystemdUserService | LaunchdAgentService
+# --- Windows scheduled task ----------------------------------------------------
+
+
+class WindowsScheduledTaskService(_SubprocessServiceBase):
+    """Run a service at logon as a Windows scheduled task (opt-in per spec).
+
+    The same shape as install.ps1's backend task: a generated `.vbs` shim
+    launches the command through `WScript.Shell.Run(..., 0, False)` (hidden
+    window, no stored credential; the task runs in the interactive logon
+    session), registered with `schtasks`. Crash supervision is the launched
+    command's own job (the server browser passes `--supervise`), because a
+    scheduled task only starts things. Only specs that name a
+    ``windows_task_name`` get this manager; the backend keeps install.ps1's.
+    """
+
+    name = "Windows scheduled task"
+
+    def __init__(
+        self,
+        *,
+        spec: ServiceSpec,
+        home: Path | None = None,
+        runner: Runner = subprocess.run,
+    ) -> None:
+        if not spec.windows_task_name:
+            raise ServiceUnavailableError(
+                "this service has no Windows scheduled-task name", hints=_WINDOWS_HINTS
+            )
+        self._spec = spec
+        self._home = home or Path.home()
+        self._runner = runner
+        self._env = None
+
+    @property
+    def spec(self) -> ServiceSpec:
+        return self._spec
+
+    @property
+    def task_name(self) -> str:
+        return self._spec.windows_task_name or ""
+
+    @property
+    def artifact_path(self) -> Path:
+        slug = "".join(c if c.isalnum() else "-" for c in self.task_name.lower()).strip("-")
+        return self._home / ".nymeria" / f"{slug}.vbs"
+
+    def is_installed(self) -> bool:
+        return self.artifact_path.exists()
+
+    def log_hint(self) -> str:
+        return f'schtasks /Query /TN "{self.task_name}" /V /FO LIST'
+
+    def ensure_available(self) -> None:
+        if not sys.platform.startswith("win"):
+            raise ServiceUnavailableError("scheduled tasks exist only on Windows")
+        if shutil.which("schtasks") is None or shutil.which("wscript") is None:
+            raise ServiceUnavailableError("schtasks.exe or wscript.exe is not on PATH")
+
+    @staticmethod
+    def build_shim(exec_argv: Sequence[str]) -> str:
+        """The VBScript that launches ``exec_argv`` with no console window.
+
+        Text only; :meth:`write_shim` owns the encoding, which is not
+        incidental (see there).
+        """
+        quoted = " ".join(f'""{arg}""' if " " in arg or not arg else arg for arg in exec_argv)
+        return (
+            "' Generated by Nymeria. Launches a background service with no console\n"
+            "' window. Regenerated on every install; safe to delete (autostart stops).\n"
+            'Set shell = CreateObject("WScript.Shell")\n'
+            f'shell.Run "{quoted}", 0, False\n'
+        )
+
+    def write_shim(self, exec_argv: Sequence[str]) -> None:
+        """Write the .vbs shim as UTF-16LE with a BOM.
+
+        Two failures this avoids, both hit by ordinary Windows accounts whose
+        name is not ASCII (the shim embeds the project root, normally under
+        `C:\\Users\\<name>\\`). Writing it as ascii raised UnicodeEncodeError,
+        a ValueError that escaped every caller's OSError handler and turned
+        `nymeria init` into a traceback. Writing it as plain UTF-8 would
+        encode but then MOJIBAKE the path, because `wscript` reads a BOM-less
+        .vbs as ANSI. UTF-16LE with a BOM is the encoding WSH detects, and it
+        can represent every path Windows can name.
+        """
+        self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        text = self.build_shim(exec_argv)
+        self.artifact_path.write_bytes(codecs.BOM_UTF16_LE + text.encode("utf-16-le"))
+
+    def install(self, *, exec_argv: Sequence[str], root: Path) -> InstallReport:
+        self.ensure_available()
+        # Stop before starting, so install means the same thing here as it
+        # does on systemd (`systemctl restart`) and launchd (`bootout` then
+        # `bootstrap`). Without it a reinstall left the previously started
+        # command running with whatever configuration it had picked up, and
+        # `/Run` either no-opped on the still-registered task or started a
+        # second copy beside it. Best effort: `/End` on a task that is not
+        # registered or not running is a non-zero exit and nothing to report.
+        self._run(["schtasks", "/End", "/TN", self.task_name])
+        self.write_shim(exec_argv)
+        self._run(
+            [
+                "schtasks", "/Create", "/F",
+                "/TN", self.task_name,
+                "/TR", f'wscript.exe "{self.artifact_path}"',
+                "/SC", "ONLOGON",
+                "/RL", "LIMITED",
+            ],
+            check=True,
+        )
+        self._run(["schtasks", "/Run", "/TN", self.task_name])
+        return InstallReport(
+            artifact=self.artifact_path,
+            lines=(
+                f"Installed scheduled task '{self.task_name}' (runs hidden at logon).",
+                "Task started.",
+            ),
+            notes=(
+                f"Start it now: schtasks /Run /TN \"{self.task_name}\"",
+                f"Remove it: schtasks /Delete /TN \"{self.task_name}\" /F",
+            ),
+        )
+
+    def uninstall(self) -> tuple[str, ...]:
+        if not self.is_installed():
+            return (f"No scheduled task shim at {self.artifact_path}; nothing to remove.",)
+        self._run(["schtasks", "/End", "/TN", self.task_name])
+        self._run(["schtasks", "/Delete", "/F", "/TN", self.task_name])
+        self.artifact_path.unlink(missing_ok=True)
+        return (f"Removed scheduled task '{self.task_name}' and {self.artifact_path}",)
+
+    def restart(self) -> None:
+        self.ensure_available()
+        if not self.is_installed():
+            raise ServiceInstallError(
+                f"service is not installed; run `{self._spec.install_hint}` first"
+            )
+        self._run(["schtasks", "/End", "/TN", self.task_name])
+        self._run(["schtasks", "/Run", "/TN", self.task_name], check=True)
+
+    def status(self) -> ServiceStatus:
+        if not self.is_installed():
+            return ServiceStatus(installed=False, running=False, detail="not installed")
+        result = self._run(["schtasks", "/Query", "/TN", self.task_name, "/FO", "LIST", "/V"])
+        if result.returncode != 0:
+            return ServiceStatus(installed=True, running=False, detail="shim present, task not registered")
+        state = "unknown"
+        for raw in result.stdout.splitlines():
+            if raw.strip().lower().startswith("status:"):
+                state = raw.split(":", 1)[1].strip()
+        return ServiceStatus(installed=True, running=state.lower() == "running", detail=state)
+
+
+ServiceManager = SystemdUserService | LaunchdAgentService | WindowsScheduledTaskService
 
 
 # --- platform selection -------------------------------------------------------
 
 
-def service_manager(*, runner: Runner = subprocess.run) -> ServiceManager:
-    """The platform's service manager, or ServiceUnavailableError with hints."""
+def service_manager(
+    *, runner: Runner = subprocess.run, spec: ServiceSpec = BACKEND_SERVICE
+) -> ServiceManager:
+    """The platform's service manager for ``spec``, or ServiceUnavailableError with hints."""
     if sys.platform.startswith("linux"):
-        return SystemdUserService(runner=runner)
+        return SystemdUserService(runner=runner, spec=spec)
     if sys.platform == "darwin":
-        return LaunchdAgentService(runner=runner)
+        return LaunchdAgentService(runner=runner, spec=spec)
     if sys.platform == "win32":
+        if spec.windows_task_name:
+            return WindowsScheduledTaskService(spec=spec, runner=runner)
         raise ServiceUnavailableError(
             "background-service install is not automated on Windows yet",
             hints=_WINDOWS_HINTS,
@@ -808,15 +1029,17 @@ def service_manager(*, runner: Runner = subprocess.run) -> ServiceManager:
     )
 
 
-def installed_artifact_path() -> Path | None:
-    """The installed unit/plist path, if one exists. Cheap, never raises.
+def installed_artifact_path(spec: ServiceSpec = BACKEND_SERVICE) -> Path | None:
+    """The installed unit/plist/shim path, if one exists. Cheap, never raises.
 
     Used by setup hydration to recover the SERVICE hosting choice from disk.
     """
     if sys.platform.startswith("linux"):
-        path = Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
+        path = Path.home() / ".config" / "systemd" / "user" / spec.systemd_unit
     elif sys.platform == "darwin":
-        path = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+        path = Path.home() / "Library" / "LaunchAgents" / f"{spec.launchd_label}.plist"
+    elif sys.platform == "win32" and spec.windows_task_name:
+        path = WindowsScheduledTaskService(spec=spec).artifact_path
     else:
         return None
     return path if path.exists() else None
@@ -926,6 +1149,7 @@ def _cli_status(manager: ServiceManager, root: Path) -> int:
 
 
 __all__ = [
+    "BACKEND_SERVICE",
     "COMMAND_TIMEOUT_SECONDS",
     "InstallReport",
     "LAUNCHD_LABEL",
@@ -934,10 +1158,12 @@ __all__ = [
     "SYSTEMD_UNIT_NAME",
     "ServiceInstallError",
     "ServiceManager",
+    "ServiceSpec",
     "ServiceStatus",
     "ServiceUnavailableError",
     "SystemdUserService",
     "UNIT_STOP_TIMEOUT_SECONDS",
+    "WindowsScheduledTaskService",
     "build_launchd_plist",
     "build_systemd_unit",
     "default_health_url",

@@ -63,7 +63,7 @@ class BrowserCommandsMixin:
                 "thread, `/browser default <which>` account-wide)."
             )
         else:
-            head = "No browser is connected."
+            head = "No browser is connected. " + self._no_browser_hint()
         body = head + (
             (" Known browsers: " + "; ".join(lines) + ".") if lines else ""
         )
@@ -75,6 +75,45 @@ class BrowserCommandsMixin:
             "browsers": lines,
         }
         return body, data
+
+    def _no_browser_hint(self) -> str:
+        """User-voice recovery line for the none-connected overview, by what
+        the roster and the install say exists. The server browser is headless,
+        so it is never told to click a popup; the user's own Chrome is."""
+        from .browser_targets import (
+            EXTENSION_RELEASES_URL,
+            SERVER_BROWSER_INSTALL_COMMAND,
+            SERVER_BROWSER_RESTART_COMMAND,
+            SERVER_BROWSER_STATUS_COMMAND,
+            has_server_browser,
+        )
+        from .chrome_subscribers import (
+            BROWSER_KIND_DESKTOP,
+            BROWSER_KIND_SERVER,
+            chrome_browser_roster,
+        )
+
+        kinds = {record.kind for record in chrome_browser_roster(self.user_id)}
+        parts = []
+        if BROWSER_KIND_SERVER in kinds or (not kinds and has_server_browser(self.user_id)):
+            parts.append(
+                "The server browser has no popup: on the Nymeria host, "
+                f"`{SERVER_BROWSER_STATUS_COMMAND}` says whether it is running and "
+                f"`{SERVER_BROWSER_RESTART_COMMAND}` brings it back."
+            )
+        if BROWSER_KIND_DESKTOP in kinds:
+            parts.append(
+                "For your own Chrome, open the Nymeria Browser extension popup "
+                "and click Connect."
+            )
+        if not parts:
+            parts.append(
+                f"To get one: `{SERVER_BROWSER_INSTALL_COMMAND}` on the Nymeria "
+                "host installs the server browser (a headless Chrome the agent "
+                "drives, no screen needed), or install the Nymeria Browser "
+                f"extension in your own Chrome ({EXTENSION_RELEASES_URL})."
+            )
+        return " ".join(parts)
 
     async def _cmd_browser(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare family root = overview (structure rule 1): routing state plus
@@ -200,8 +239,12 @@ class BrowserCommandsMixin:
         if set_error:
             return command_error(set_error)
         if label is None:
+            # Removing a name is a decision, and it sticks: the browser
+            # announces a name on every reconnect, so without recording the
+            # removal the name would be back within the minute.
             return command_success(
-                f"Name removed from {describe_browser(self.user_id, client_id)}."
+                f"Name removed from {describe_browser(self.user_id, client_id)}. "
+                "It will not come back on its own when that browser reconnects."
             )
         return command_success(
             f"Browser {client_id[:24]}... is now named '{label}'."

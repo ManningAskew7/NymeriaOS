@@ -176,6 +176,9 @@ def test_watchdog_keys_are_restart_required():
 # never add a line without deciding the field should stay unreachable.
 _UNREACHABLE_SETTINGS_EXEMPT = frozenset({
     "account_bootstrap_token_ttl_hours", "account_max_active_tokens_per_user",
+    # account_*_token_ttl_days: read when a token is minted (init, the users
+    # CLI), never by the running API; a runtime PATCH would change nothing.
+    "account_server_browser_token_ttl_days",
     "account_token_ttl_days", "allow_unbound_tool_calls",
     "api_host", "api_port", "audit_log_enabled", "bash_env_passthrough",
     "checkpoint_executor_max_workers", "cors_origins", "database_backend",
@@ -222,7 +225,14 @@ _UNREACHABLE_SETTINGS_EXEMPT = frozenset({
     "scheduler_active_execution_stale_minutes",
     "scheduler_failure_alert_after", "scheduler_failure_pause_after",
     "scheduler_missed_work_policy", "seatable_api_token",
-    "seatable_base_url", "service_log_backup_count", "service_log_file",
+    "seatable_base_url",
+    # server_browser_home: a host path written by nymeria init or the launcher
+    # pointer. Read at runtime (the chrome_* refusals, doctor, snapshot), but
+    # visible implies patchable here, and a PATCH could claim a rig that does
+    # not exist on disk and make those refusals lie; deployment wiring like
+    # nymeria_snapshots_dir, settable only where the rig is provisioned.
+    "server_browser_home",
+    "service_log_backup_count", "service_log_file",
     "service_log_max_bytes",
     "service_token_warn_days", "servicenow_access_token",
     "servicenow_base_url", "servicenow_instance",

@@ -11,11 +11,17 @@ These tools are deliberately separate from the server-side Playwright
 ``browser_*`` tools in :mod:`nymeria.tools.browser`. A thread can have either
 or both:
 
-* ``browser_*`` -- headless Chromium on the Nymeria server. Fresh profile.
+* ``browser_*``: headless Chromium on the Nymeria server. Fresh profile.
   Survives the user closing their laptop. Works for autonomous ticker tasks.
-* ``chrome_*`` -- the user's actual logged-in Chrome. Inherits Gmail / GitHub /
-  bank sessions, so it can finish tasks that need to BE the user. Requires the
-  extension to be running, and the user can watch it work.
+* ``chrome_*``: a real Chrome running the Nymeria extension. Two KINDS share
+  one roster (``core/chrome_subscribers.py``): the SERVER browser, a headless
+  Chrome for Testing beside the backend that ``nymeria browser`` installs and
+  runs (always on, no screen, no popup, signed into nothing until a human
+  signs it in through the login handoff), and the user's own DESKTOP Chrome,
+  which inherits their Gmail / GitHub / bank sessions and which they can
+  watch. Either can finish tasks that need to BE the user. The no-browser
+  refusals below are kind- and install-aware because only the desktop kind
+  has a popup to click.
 
 Surface shape: each tool carries the schema weight its scoped purpose needs,
 no more and no less, and the ``browser-control`` kit binds the whole working
@@ -54,7 +60,7 @@ import math
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Annotated, Any, NamedTuple, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -81,10 +87,16 @@ from ..core.browser_login_sessions import (
 from ..core.browser_drive_leases import LeaseHolder, get_browser_drive_leases
 from ..core.browser_targets import (
     CLEAR_WORDS,
+    OWN_CHROME_INSTALL_STEPS,
     REASON_AMBIGUOUS,
+    SERVER_BROWSER_INSTALL_COMMAND,
+    SERVER_BROWSER_RESTART_COMMAND,
+    SERVER_BROWSER_STATUS_COMMAND,
     account_default_target,
+    browser_label_origins,
     browser_labels,
     describe_browser,
+    has_server_browser,
     resolve_browser_ref,
     resolve_target,
     roster_lines,
@@ -93,8 +105,11 @@ from ..core.browser_targets import (
     thread_target,
 )
 from ..core.chrome_subscribers import (
+    BROWSER_KIND_DESKTOP,
+    BROWSER_KIND_SERVER,
     BrowserRecord,
     chrome_browser_disconnect_age,
+    chrome_browser_kind,
     chrome_browser_roster,
     chrome_connect_count,
     chrome_disconnect_age,
@@ -427,6 +442,174 @@ _WAIT_DROP_TIMEOUT = "drop_timeout"  # recycle-grace hold expired unanswered
 _WAIT_LONG_GONE = "long_gone"  # disconnected beyond the grace window
 
 
+# Recovery and setup copy for the no-browser refusals, by KIND. Agent-voice
+# throughout ("ask the user ..."): a refusal is read by the agent and relayed.
+# The server browser is headless, so "open the popup and click Connect" is
+# advice nobody can follow there; it is never said of a browser known to be
+# one, and when a browser's kind is unknown (never seen this process) both
+# readings are given rather than a guess.
+_SERVER_BROWSER_RECOVERY = (
+    "The server browser has no popup to click: on the Nymeria host, "
+    f"`{SERVER_BROWSER_STATUS_COMMAND}` reports whether it is running and "
+    f"`{SERVER_BROWSER_RESTART_COMMAND}` brings it back."
+)
+_OWN_CHROME_RECOVERY = (
+    "Ask the user to open the Nymeria Browser extension popup in their Chrome "
+    "and click Connect."
+)
+_SERVER_BROWSER_INSTALL = (
+    "install the server browser, a headless Chrome beside the backend that "
+    f"needs no screen (`{SERVER_BROWSER_INSTALL_COMMAND}` on the Nymeria host)"
+)
+_OWN_CHROME_INSTALL = (
+    "install the Nymeria Browser extension in their own Chrome "
+    f"({OWN_CHROME_INSTALL_STEPS})"
+)
+
+
+def _lower_first(sentence: str) -> str:
+    return sentence[:1].lower() + sentence[1:]
+
+
+def _if_this_repeats(advice: str) -> str:
+    """Lead into the recovery advice with "if this repeats", unless the
+    advice is ALREADY conditional.
+
+    The unknown-kind advice opens with its own "If that is the server
+    browser:", and prefixing it produced "If this repeats, if that is the
+    server browser: ...". Two stacked conditionals read as one broken
+    sentence, and the second one is the load-bearing half, so it is the
+    lead-in that gives way.
+    """
+    if advice.startswith("If "):
+        return advice
+    return "If this repeats, " + _lower_first(advice)
+
+
+# How close two drops must be to read as ONE outage when naming what went
+# away. Same order as the recycle window and for the same reason, but its
+# own constant on purpose: _RECONNECT_GRACE_S is a WAIT budget that tests
+# shrink (to negative values) and tuning could move, and a wait budget must
+# not silently redefine what counts as the same outage.
+_SAME_OUTAGE_WINDOW_S = 75.0
+
+
+def _dropped_kinds(user_id: str) -> set[str]:
+    """The kinds of the browsers that actually DROPPED, not of every browser
+    this process has ever seen.
+
+    Roster rows persist for the process lifetime, so a desktop Chrome that
+    was up an hour ago still sits beside the server browser that dropped a
+    minute ago. Reading the whole roster turned a server-browser-only outage
+    into the mixed form and re-added popup advice for a browser nobody was
+    using. One outage is the rows that dropped within
+    :data:`_SAME_OUTAGE_WINDOW_S` of the most recent drop; anything older
+    belongs to an earlier one.
+    """
+    ages = [
+        (record.last_disconnect_age_s, record.kind)
+        for record in chrome_browser_roster(user_id)
+        if not record.connected and record.last_disconnect_age_s is not None
+    ]
+    if not ages:
+        return set()
+    newest = min(age for age, _ in ages)
+    return {kind for age, kind in ages if age - newest <= _SAME_OUTAGE_WINDOW_S}
+
+
+def _reconnect_advice(user_id: str, kinds: Collection[str]) -> str:
+    """How to bring the disconnected browsers back, by what they are.
+
+    ``kinds`` are the kinds of the browsers in question (the rows that
+    dropped in this outage for an account-wide one, the single row for a
+    selected target). Empty means this
+    process has seen none, so the INSTALL decides: a configured server
+    browser (``SERVER_BROWSER_HOME``) is named with its commands, else both
+    ways to get a browser are spelled out, since assuming an extension exists
+    somewhere is how the old refusal misled a fresh install.
+    """
+    wanted = set(kinds)
+    parts = []
+    if BROWSER_KIND_SERVER in wanted:
+        parts.append(_SERVER_BROWSER_RECOVERY)
+    if BROWSER_KIND_DESKTOP in wanted:
+        parts.append(_OWN_CHROME_RECOVERY)
+    if parts:
+        return " ".join(parts)
+    if has_server_browser(user_id):
+        return (
+            "This install has a server browser and it is not connected. "
+            f"{_SERVER_BROWSER_RECOVERY} The user can also {_OWN_CHROME_INSTALL}."
+        )
+    return (
+        "This install has no server browser and no browser is known. Two ways "
+        f"to get one: {_SERVER_BROWSER_INSTALL}; or {_OWN_CHROME_INSTALL}. Ask "
+        "the user which they prefer."
+    )
+
+
+def _target_reconnect_advice(user_id: str, kind: Optional[str]) -> str:
+    """Advice for ONE selected browser. A target this process has never seen
+    connect has no kind; on an install with a server browser it could be
+    either, so both readings are given, each attributed."""
+    if kind:
+        return _reconnect_advice(user_id, (kind,))
+    if has_server_browser(user_id):
+        return (
+            f"If that is the server browser: {_lower_first(_SERVER_BROWSER_RECOVERY)} "
+            f"If it is the user's own Chrome: {_lower_first(_OWN_CHROME_RECOVERY)}"
+        )
+    return _OWN_CHROME_RECOVERY
+
+
+# The four composers below all take the kinds of the browsers an outage is
+# ABOUT. An EMPTY set is its own case in each, never folded into the desktop
+# branch: "we do not know which browser this was" and "it was the user's own
+# Chrome" are different claims, and only one of them earns popup advice.
+
+
+def _outage_subject(kinds: set[str]) -> str:
+    """Who dropped, for the account-wide refusals, named by kind so the
+    server browser is never described as an extension with a popup. The
+    mixed form is a full clause on purpose: the continuation the callers
+    append ("dropped its connection Ns ago ...") reads on from either."""
+    if not kinds:
+        return "The browser that was connected"
+    if kinds == {BROWSER_KIND_SERVER}:
+        return "The server browser"
+    if kinds == {BROWSER_KIND_DESKTOP}:
+        return "The Nymeria browser extension"
+    return "Every browser on this account is disconnected; the last one"
+
+
+def _reconnects_clause(kinds: set[str]) -> str:
+    if kinds == {BROWSER_KIND_SERVER}:
+        return "It normally reconnects on its own within a minute"
+    if kinds == {BROWSER_KIND_DESKTOP}:
+        return "If Chrome is open it normally reconnects on its own within a minute"
+    return "A browser normally reconnects on its own within a minute"
+
+
+def _gone_cause(kinds: set[str]) -> str:
+    if kinds == {BROWSER_KIND_SERVER}:
+        return (
+            "Its service may have stopped, its backend URL or token may have "
+            "changed, or it may still be between retries after a longer outage. "
+        )
+    if kinds == {BROWSER_KIND_DESKTOP}:
+        return (
+            "Chrome may be closed, the extension may be disconnected, or it may "
+            "still be between retries after a longer outage. "
+        )
+    return ""
+
+
+def _never_connected_error(user_id: str) -> str:
+    """No browser has connected this process lifetime and none is recycling:
+    the first-run refusal, kind- and install-aware."""
+    return f"[Error]: No browser is connected for this user. {_reconnect_advice(user_id, ())}"
+
+
 async def _await_connection(
     is_connected: Callable[[], bool],
     disconnect_age: Callable[[], Optional[float]],
@@ -498,48 +681,48 @@ async def _await_reconnect(user_id: str) -> Optional[str]:
     if outcome == _WAIT_CONNECTED:
         return None
     if outcome == _WAIT_NEVER:
-        return (
-            "[Error]: No Nymeria browser extension connected for this user. "
-            "Open the extension popup and click Connect."
-        )
+        return _never_connected_error(user_id)
     if outcome == _WAIT_BOOT_TIMEOUT:
         # The hold was anchored on OUR restart, not on a measured drop:
-        # saying "the extension dropped" would assert a fact nobody has.
+        # saying "the browser dropped" would assert a fact nobody has, and
+        # the roster is empty here, so the install decides the advice.
         return (
             "[Error]: The backend restarted "
-            f"{int(round(age + waited))}s ago and no browser extension "
-            "has connected since. If Chrome is open the extension "
-            "normally re-subscribes within a minute of a backend "
-            "restart, so retry once shortly; if this repeats, the user "
-            "may not have the extension running: ask them to open the "
-            "extension popup and click Connect."
+            f"{int(round(age + waited))}s ago and no browser has connected "
+            "since. A connected browser normally re-subscribes within a "
+            "minute of a backend restart, so retry once shortly; if this "
+            "repeats, no browser may be running at all. "
+            + _reconnect_advice(user_id, ())
         )
+    # A drop was measured, so the roster knows what dropped: name it by kind,
+    # counting only the rows that dropped in THIS outage (see _dropped_kinds).
+    kinds = _dropped_kinds(user_id)
+    subject = _outage_subject(kinds)
+    advice = _reconnect_advice(user_id, kinds)
     if outcome == _WAIT_DROP_TIMEOUT:
         current_age = chrome_disconnect_age(user_id)
         dropped_s = int(round(current_age if current_age is not None else age + waited))
         return (
-            "[Error]: The Nymeria browser extension dropped its connection "
+            f"[Error]: {subject} dropped its connection "
             f"{dropped_s}s ago, most likely a routine service-worker recycle, "
             f"but did not reconnect within the {int(round(waited))}s this "
-            "command waited. If Chrome is open it normally reconnects on its "
-            "own within a minute, so retry once shortly; if this repeats, "
-            "open the extension popup and click Connect."
+            f"command waited. {_reconnects_clause(kinds)}, so retry once "
+            f"shortly. {_if_this_repeats(advice)}"
         )
     return (
-        "[Error]: The Nymeria browser extension disconnected "
-        f"{int(age // 60)}m ago and has not returned. Chrome may be closed, "
-        "the extension may be disconnected, or it may still be between "
-        "retries after a longer outage. Retry once shortly; if this "
-        "repeats, ask the user to open the extension popup and click "
-        "Connect."
+        f"[Error]: {subject} disconnected {int(age // 60)}m ago and has not "
+        f"returned. {_gone_cause(kinds)}Retry once shortly. "
+        f"{_if_this_repeats(advice)}"
     )
 
 
 def _connected_alternatives_line(user_id: str, exclude: str) -> str:
     """Name the OTHER connected browsers in a target-offline error, so the
     refusal hands over the escape route instead of a dead end."""
+    labels = browser_labels(user_id)
+    origins = browser_label_origins(user_id)
     others = [
-        describe_browser(user_id, record.client_id)
+        describe_browser(user_id, record.client_id, labels, origins)
         for record in chrome_browser_roster(user_id)
         if record.connected and record.client_id != exclude
     ]
@@ -568,10 +751,15 @@ async def _await_target(user_id: str, client_id: str) -> Optional[str]:
     if outcome == _WAIT_CONNECTED:
         return None
     handle = describe_browser(user_id, client_id)
+    # The selected browser's own kind decides the advice (a desktop target
+    # keeps the popup route even on an install with a server browser); a
+    # target never seen this process has none, and the advice says so.
+    advice = _target_reconnect_advice(user_id, chrome_browser_kind(user_id, client_id))
+    alternatives = _connected_alternatives_line(user_id, client_id)
     if outcome == _WAIT_NEVER:
         return (
             f"[Error]: The selected browser ({handle}) is not connected. "
-            + _connected_alternatives_line(user_id, client_id)
+            f"{advice} {alternatives}"
         )
     if outcome in (_WAIT_BOOT_TIMEOUT, _WAIT_DROP_TIMEOUT):
         return (
@@ -583,13 +771,12 @@ async def _await_target(user_id: str, client_id: str) -> Optional[str]:
             )
             + f" and did not return within the {int(round(waited))}s this "
             "command waited (a routine service-worker recycle reconnects "
-            "within a minute, so retry once shortly). "
-            + _connected_alternatives_line(user_id, client_id)
+            f"within a minute, so retry once shortly). "
+            f"{_if_this_repeats(advice)} {alternatives}"
         )
     return (
         f"[Error]: The selected browser ({handle}) disconnected "
-        f"{int(age // 60)}m ago and has not returned. "
-        + _connected_alternatives_line(user_id, client_id)
+        f"{int(age // 60)}m ago and has not returned. {advice} {alternatives}"
     )
 
 
@@ -762,10 +949,7 @@ async def _run(
     if resolution.client_id is None:
         if resolution.reason == REASON_AMBIGUOUS:
             return None, _ambiguous_target_error(user_id)
-        return None, (
-            "[Error]: No Nymeria browser extension connected for this user. "
-            "Open the extension popup and click Connect."
-        )
+        return None, _never_connected_error(user_id)
     target = resolution.client_id
     offline_error = await _await_target(user_id, target)
     if offline_error is not None:
@@ -4051,20 +4235,32 @@ def _health_notes(data: dict[str, Any], *, announced: Optional[str] = None) -> s
     return "\n".join(lines)
 
 
-def _browser_row(record: BrowserRecord, label: Optional[str]) -> dict[str, Any]:
+def _browser_row(
+    record: BrowserRecord, label: Optional[str], label_source: Optional[str] = None
+) -> dict[str, Any]:
     """One roster row for the tab-free probe's ``browsers`` list.
 
     Sparse on purpose (absent means not-applicable, mirroring the other
     probe fields): ``streams`` appears only when a browser briefly holds
     more than one stream (a reconnect overlap), ``disconnect_age_s`` only
-    for a disconnected row.
+    for a disconnected row. ``kind`` is always present (a closed set:
+    ``server`` or ``desktop``), so the agent can tell the headless server
+    browser from the user's own Chrome without reading a label.
+
+    ``label_source`` rides beside a label that the BROWSER announced rather
+    than the user choosing it. This row is inside the untrusted fence, which
+    is the only place the raw announced text appears; the prose composers
+    quote and attribute it instead (``core/browser_targets.describe_browser``).
     """
     row: dict[str, Any] = {
         "client_id": record.client_id,
         "connected": record.connected,
+        "kind": record.kind,
     }
     if label:
         row["label"] = label
+        if label_source:
+            row["label_source"] = label_source
     if record.version:
         row["version"] = record.version
     if record.streams > 1:
@@ -4076,11 +4272,46 @@ def _browser_row(record: BrowserRecord, label: Optional[str]) -> dict[str, Any]:
     return row
 
 
+def _probe_subject(kinds: set[str]) -> str:
+    # Empty is its own case, as in the outage composers: an unrecorded
+    # browser is not the same claim as the user's own Chrome.
+    if kinds == {BROWSER_KIND_SERVER}:
+        return "server browser"
+    if kinds == {BROWSER_KIND_DESKTOP}:
+        return "extension"
+    return "browser"
+
+
+def _probe_gone_reading(kinds: set[str]) -> str:
+    if kinds == {BROWSER_KIND_SERVER}:
+        return (
+            "the server browser is likely down (its service stopped, or its "
+            f"backend URL or token changed). {_SERVER_BROWSER_RECOVERY}"
+        )
+    if kinds == {BROWSER_KIND_DESKTOP}:
+        return (
+            "the extension is likely gone (Chrome closed, the extension "
+            f"disabled, or its backend URL changed). {_OWN_CHROME_RECOVERY}"
+        )
+    if not kinds:
+        return (
+            "this backend process has no roster row for it, so which browser "
+            "it was is not recorded. Both ways back: "
+            f"{_SERVER_BROWSER_RECOVERY} {_OWN_CHROME_RECOVERY}"
+        )
+    return (
+        "every browser on this account is gone. "
+        f"{_SERVER_BROWSER_RECOVERY} {_OWN_CHROME_RECOVERY}"
+    )
+
+
 def _connection_probe_note(
     *,
     connected: bool,
     disconnect_age: Optional[float],
     connected_browsers: int = 0,
+    kinds: Collection[str] = (),
+    server_browser_known: bool = False,
 ) -> str:
     """The tab-free probe's honesty lines, all our own text (#223).
 
@@ -4090,7 +4321,11 @@ def _connection_probe_note(
     execution diverge, so the weaker claim must say it is one. The branch
     lines interpolate only our own monotonic-clock ages, never
     extension-supplied strings: those stay inside the fence with the payload.
+    ``kinds`` (the roster's) and ``server_browser_known`` (roster or install)
+    make the not-connected readings name the right browser and the right way
+    back: the server browser has no popup.
     """
+    known = set(kinds)
     lines = [
         "[No tab_id: this is a CONNECTION PROBE answered from the backend's "
         "own records, with no command sent to the extension. It proves an "
@@ -4102,24 +4337,26 @@ def _connection_probe_note(
     if connected_browsers > 1:
         lines.append(
             f"[{connected_browsers} distinct browsers are connected on this "
-            "account (the payload's browsers list names them). Commands "
-            "route to exactly ONE: this thread's target if set, else the "
-            "account default. With neither set, chrome_* calls refuse until "
-            "a target is chosen (chrome_target, or the /browser command).]"
+            "account (the payload's browsers list names them, each with its "
+            "kind). Commands route to exactly ONE: this thread's target if "
+            "set, else the account default. With neither set, chrome_* calls "
+            "refuse until a target is chosen (chrome_target, or the /browser "
+            "command).]"
         )
     if not connected:
         if disconnect_age is not None and disconnect_age <= _RECONNECT_GRACE_S:
             lines.append(
-                f"[The last extension stream dropped {disconnect_age:.0f}s ago, "
-                "inside the worker-recycle window: Chrome idle-kills the MV3 "
-                "worker and a heartbeat reconnects it within about a minute. "
-                "Retry shortly before concluding the extension is gone.]"
+                f"[The last {_probe_subject(known)} stream dropped "
+                f"{disconnect_age:.0f}s ago, inside the worker-recycle window: "
+                "Chrome idle-kills the MV3 worker and a heartbeat reconnects it "
+                "within about a minute. Retry shortly before concluding it is "
+                "gone.]"
             )
         elif disconnect_age is not None:
             lines.append(
-                f"[The last extension stream dropped {disconnect_age:.0f}s ago "
-                "and has not returned: the extension is likely gone (Chrome "
-                "closed, the extension disabled, or its backend URL changed).]"
+                f"[The last {_probe_subject(known)} stream dropped "
+                f"{disconnect_age:.0f}s ago and has not returned: "
+                f"{_probe_gone_reading(known)}]"
             )
         else:
             # In-process, disconnect_age None means never-connected THIS
@@ -4136,12 +4373,20 @@ def _connection_probe_note(
                     "anything.]"
                 )
             else:
+                install = (
+                    "This install has a server browser, so if this persists it "
+                    f"is down: {_lower_first(_SERVER_BROWSER_RECOVERY)}"
+                    if server_browser_known
+                    else "This install has no server browser and no browser is "
+                    f"known: to get one, {_SERVER_BROWSER_INSTALL}; or "
+                    f"{_OWN_CHROME_INSTALL}."
+                )
                 lines.append(
                     "[No extension stream has subscribed this backend-process "
                     "lifetime. This record resets on a backend restart, so "
                     "right after a deploy it reads unknown rather than "
                     "absent: a connected extension resubscribes on its own "
-                    "within ~75s of the backend coming back.]"
+                    f"within ~75s of the backend coming back. {install}]"
                 )
     return "\n".join(lines)
 
@@ -4172,8 +4417,12 @@ def _connection_probe_result(user_id: str, thread_id: str) -> str:
     roster = chrome_browser_roster(user_id)
     if roster:
         labels = browser_labels(user_id)
+        origins = browser_label_origins(user_id)
         data["browsers"] = [
-            _browser_row(record, labels.get(record.client_id)) for record in roster
+            _browser_row(
+                record, labels.get(record.client_id), origins.get(record.client_id)
+            )
+            for record in roster
         ]
     body, note = _cap(
         _format_result({"ok": True, "data": data}),
@@ -4184,6 +4433,8 @@ def _connection_probe_result(user_id: str, thread_id: str) -> str:
         connected=connected,
         disconnect_age=disconnect_age,
         connected_browsers=sum(1 for record in roster if record.connected),
+        kinds=_dropped_kinds(user_id),
+        server_browser_known=has_server_browser(user_id),
     )
     return f"{_fence(body)}{_outside_fence(body, note=note, extra=extra)}"
 
@@ -4205,12 +4456,21 @@ async def chrome_health(
     so it works before any tab exists and cannot disturb driving state. It
     reports whether an extension event stream is subscribed, the build it
     announced, and how long ago, plus a ``browsers`` roster listing EVERY
-    known browser on the account (label, id, connected state, version) when
-    more than one Chrome runs the extension; which one commands drive is
-    chrome_target's job. The probe proves subscription, NOT execution (the
-    result says so), so use it to poll for a connection or a new build after a
-    deploy without paying a reload, and pass a tab_id when you need proof that
-    commands execute.
+    known browser on the account (label, id, kind, connected state, version);
+    which one commands drive is chrome_target's job. A label the browser
+    announced rather than the user choosing it is marked
+    ``label_source: "extension"``, and reads as the browser's claim, not as
+    a name the user picked. ``kind`` is ``server``
+    for the server browser (the headless Chrome beside the backend: always
+    on, no screen, no popup, signed into nothing until a human signs it in
+    through chrome_request_login) or ``desktop`` for the user's own Chrome
+    (already signed in, and they can watch). When nothing is connected the
+    note says how the browser comes back BY KIND: the server browser through
+    `nymeria browser status` on the Nymeria host, the user's own Chrome
+    through its extension popup. The probe proves subscription, NOT execution
+    (the result says so), so use it to poll for a connection or a new build
+    after a deploy without paying a reload, and pass a tab_id when you need
+    proof that commands execute.
 
     The payload carries: extension_version, the build that EXECUTED this
     command, so a round verifying a just-shipped capability can tell "broken"
@@ -4754,6 +5014,19 @@ async def chrome_request_login(
         fresh tab at url instead. The tab is returned to you when the
         session ends.
 
+    BEFORE YOU START ONE: the viewer lives in Nymeria Desktop and nowhere
+    else (not the CLI, not a chat app, not the phone), so a handoff started
+    while Desktop is closed is a window nobody can see: it burns its whole
+    10 minutes while the user hunts for it. Ask where the user is first. If
+    Desktop is not open, do not start one; offer the two routes instead:
+    open Nymeria Desktop (the viewer appears on its own, or they can run
+    `/browser login <url>` there), or have them use their own Chrome with
+    the Nymeria Browser extension, which joins the roster already signed in
+    to their sites (chrome_target switches this thread to it). And whichever
+    browser you are driving, passwords, 2FA codes, payment details, CAPTCHAs
+    and identity documents are the user's to enter, here or in their own
+    Chrome, never through you.
+
     Dispatch contract, like request_credential: returns immediately with
     status="dispatched" and a session_id. The session runs up to 10 minutes
     (hard cap, not extended by activity) and one session per user can be
@@ -4910,16 +5183,23 @@ async def chrome_target(
     """Which browser this thread's chrome_* commands drive; switch it here.
 
     More than one Nymeria browser extension can be connected on one account
-    (personal desktop Chrome, a headless rig, another machine). Every
-    command routes to exactly ONE: this thread's target if set, else the
-    account default, else automatically when exactly one is connected.
+    (the server browser, the user's own desktop Chrome, another machine).
+    Every command routes to exactly ONE: this thread's target if set, else
+    the account default, else automatically when exactly one is connected.
 
     Call with no arguments to see the current resolution and every known
-    browser (label, id, connected state, version). Pass ``browser`` (a
-    label, an id, or a unique fragment of either) to set THIS THREAD's
-    target, or "clear" to remove the override and fall back to the account
-    default. Only the user can change the account default (/browser
-    default), so never present a thread switch as account-wide.
+    browser (label, id, kind, connected state, version). ``kind`` is
+    ``server`` (the server browser: a headless Chrome beside the backend,
+    always on, nobody can watch it, signed into nothing until a human signs
+    it in through chrome_request_login) or ``desktop`` (the user's own
+    Chrome: already signed in to their sites, and they can watch). Kind
+    never decides routing. Pass ``browser`` (a label, an id, or a unique
+    fragment of either) to set THIS THREAD's target, or "clear" to remove
+    the override and fall back to the account default. Only the user can
+    change the account default (/browser default), so never present a
+    thread switch as account-wide; when the user's own Chrome joins while
+    the server browser is the target, say so and OFFER the switch rather
+    than making it.
 
     Switching is consequential: ALWAYS tell the user which browser you
     switched to and why, in the same reply. Tab ids do not survive a
@@ -4974,13 +5254,16 @@ async def chrome_target(
 
     resolution = resolve_target(user_id, thread_id)
     labels = browser_labels(user_id)
+    origins = browser_label_origins(user_id)
     data: dict[str, Any] = {
         "thread_target": thread_target(thread_id) if thread_id else None,
         "account_default": account_default_target(user_id),
         "resolved": resolution.client_id,
         "resolved_via": resolution.source or resolution.reason,
         "browsers": [
-            _browser_row(record, labels.get(record.client_id))
+            _browser_row(
+                record, labels.get(record.client_id), origins.get(record.client_id)
+            )
             for record in chrome_browser_roster(user_id)
         ],
     }
@@ -5001,21 +5284,29 @@ async def chrome_browsers(
 ) -> str:
     """Manage the account's browser fleet: list every known browser, name one.
 
-    An account can have several Nymeria browser extensions connected (a
-    desktop Chrome, a headless rig, another machine), each with a
+    An account can have several Nymeria browser extensions connected (the
+    server browser, a desktop Chrome, another machine), each with a
     persistent id. This tool manages that FLEET; which browser THIS
     THREAD's commands drive is chrome_target's job, not this one's.
 
     action="list" (default): one row per browser known this process (id,
-        label, connected state, streams, version, connect/disconnect
+        label, kind, connected state, streams, version, connect/disconnect
         ages), plus the account default, so the ownership picture is
-        complete. Disconnected browsers stay listed with their age.
+        complete. ``kind`` is ``server`` (the headless server browser
+        beside the backend: no screen, no popup, signed into nothing until
+        a human signs it in) or ``desktop`` (the user's own Chrome, signed
+        in and watchable). Disconnected browsers stay listed with their age.
+        A row whose name the BROWSER announced rather than the user
+        choosing it carries label_source="extension"; rosters and refusals
+        show that name quoted and attributed, never as Nymeria's own words.
     action="rename": name (or unname) one browser so it is easy to pick
         in chrome_target and /browser commands. browser: which one, by
         label, id, or unique fragment. label: the new name (plain text,
         one line, up to 60 characters); OMIT it to remove the current
         name. Renaming never moves any thread's target: targets store the
-        id, labels are display names on top.
+        id, labels are display names on top. Only rename on the user's
+        word: a rename (and a removal) is recorded as THEIR decision and
+        no later connect can undo it.
 
     Fails with the roster when `browser` matches nothing or several
     browsers; nothing changes on a failed call.
@@ -5051,10 +5342,13 @@ async def chrome_browsers(
             "'list' and 'rename'."
         )
     labels = browser_labels(user_id)
+    origins = browser_label_origins(user_id)
     data: dict[str, Any] = {
         "account_default": account_default_target(user_id),
         "browsers": [
-            _browser_row(record, labels.get(record.client_id))
+            _browser_row(
+                record, labels.get(record.client_id), origins.get(record.client_id)
+            )
             for record in chrome_browser_roster(user_id)
         ],
     }

@@ -63,7 +63,7 @@ def test_full_validation_set_matches_server_and_bot_commands():
 def test_exit_returning_commands():
     """Only the commands that return an exit code are marked exits=True."""
     exits = {name for name, command in run.COMMANDS.items() if command.exits}
-    assert exits == {"init", "doctor", "reembed", "users", "snapshot"}
+    assert exits == {"init", "doctor", "reembed", "users", "snapshot", "browser"}
 
 
 def test_dispatch_resolves_runner_through_module_namespace(monkeypatch):

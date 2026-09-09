@@ -289,6 +289,39 @@ def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _offline_server_browser_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the server-browser launcher off the network and off this host's rig.
+
+    `nymeria init` provisions a headless Chrome by default, and the wizard hook
+    runs for every finalize: unstubbed, a generic wizard test read Google's
+    Chrome for Testing feed and downloaded a real ~150 MB browser into its
+    tmp_path (the suite once did exactly that, silently, for minutes). Both HTTP
+    primitives raise here, so `install`/`provision` take their documented
+    failure path in milliseconds and the wizard finishes as it would on an
+    offline host. Launcher tests pass their own `fetch=`/`download=` fakes and
+    are unaffected; a test that forgets one now fails with this message instead
+    of reaching the internet.
+
+    The env key goes too: a dogfood box exports `SERVER_BROWSER_HOME`, and the
+    CLI-shaped resolver reads the process env first, so without this a test
+    would resolve (and could re-bake) the developer's own live rig.
+    """
+    import urllib.error
+
+    from nymeria import server_browser as sb
+
+    def _offline(url, *_args, **_kwargs):
+        raise urllib.error.URLError(
+            f"the test suite is offline; the launcher tried to fetch {url}. Pass "
+            "fetch=/download= fakes, or stub sb.install / sb.provision."
+        )
+
+    monkeypatch.setattr(sb, "_fetch_bytes", _offline)
+    monkeypatch.setattr(sb, "_download_file", _offline)
+    monkeypatch.delenv(sb.HOME_ENV_KEY, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def clear_settings_cache():
     """Reset the cached ``get_settings()`` between tests, suite-wide.
 

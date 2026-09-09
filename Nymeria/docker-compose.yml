@@ -421,6 +421,17 @@ services:
       HARNESS_REPORT_DIR: ${HARNESS_REPORT_DIR:-}
       HARNESS_REPORT_INSTANCE_LABEL: ${HARNESS_REPORT_INSTANCE_LABEL:-}
       HARNESS_REPORT_EMAIL: ${HARNESS_REPORT_EMAIL:-}
+      # Server browser (the headless Chrome running the Nymeria extension
+      # beside the backend). On this shape the rig is a HOST process talking
+      # to the containerized API, so the path itself means nothing in here:
+      # its PRESENCE is the only signal the container has that this install
+      # HAS a server browser, and the chrome_* no-browser refusals invert
+      # without it (they tell the operator to install what is already
+      # running, and tell a headless browser to click a popup) every time
+      # the api container restarts and the in-process roster is empty.
+      # `env_file:` shapes (docker-compose.single*.yml) get it for free;
+      # this file passes an explicit allowlist, so it must be listed.
+      SERVER_BROWSER_HOME: ${SERVER_BROWSER_HOME:-}
       # Voice (TTS/STT). Base URLs default EMPTY on purpose: an unconditional
       # sidecar default here would hijack hosted providers (an explicit base
       # URL beats the provider's own default in core/voice.py). The init

@@ -93,6 +93,17 @@ def snapshot_env(tmp_path, monkeypatch):
     for name in ("snapshots", "logs", "voice", "backups", "flags"):
         (data_dir / name).mkdir()
         (data_dir / name / "marker.txt").write_text("nope", encoding="utf-8")
+    # The server browser's rig: a live account token, the browser's logged-in
+    # site sessions, and a 200 MB Chrome, none of which belong in a portable
+    # artifact.
+    rig = data_dir / "server-browser"
+    (rig / "ext").mkdir(parents=True)
+    (rig / "ext" / "config.json").write_text('{"token": "nym_secret"}', encoding="utf-8")
+    (rig / "profile" / "Default").mkdir(parents=True)
+    (rig / "profile" / "Default" / "Cookies").write_bytes(b"SQLite format 3\x00session")
+    (rig / "cft" / "152.0.7977.64").mkdir(parents=True)
+    (rig / "cft" / "152.0.7977.64" / "chrome").write_bytes(b"ELF")
+    (rig / "rig.json").write_text('{"client_id": "nymeria-browser-x"}', encoding="utf-8")
     (data_dir / "orphan.db-wal").write_bytes(b"sidecar")
     (data_dir / "leftover.tmp").write_bytes(b"tmp")
 
@@ -124,6 +135,7 @@ def test_walker_excludes(snapshot_env):
     assert not any(name.startswith("logs/") for name in names)
     assert not any(name.startswith("voice/") for name in names)
     assert not any(name.startswith("backups/") for name in names)
+    assert not any(name.startswith("server-browser/") for name in names)
     assert "orphan.db-wal" not in names
     assert "leftover.tmp" not in names
     with_backups = {
@@ -551,3 +563,185 @@ def test_postgres_dump_refuses_missing_table(tmp_path):
             tmp_path / "pg",
             connect=lambda uri: FakeConn(cursor_obj=FakeCursor(tables=tables)),
         )
+
+
+def test_snapshot_never_carries_the_server_browsers_token_or_sessions(snapshot_env, tmp_path):
+    """The rig holds a live account token and the browser's logged-in site
+    sessions; a snapshot is a portable artifact, so a restore must not lay
+    either back down on the target host."""
+    result = _create(snapshot_env)
+    extracted = extract_snapshot(result.artifact, PASSPHRASE, tmp_path / "work")
+    laid_down = [p for p in extracted.root.rglob("*") if "server-browser" in p.parts]
+    assert laid_down == []
+    assert not any(
+        b"nym_secret" in path.read_bytes()
+        for path in extracted.root.rglob("*")
+        if path.is_file()
+    )
+
+
+def test_snapshot_exclusion_matches_the_rigs_default_home(monkeypatch):
+    """Pins the excluded name to the launcher's own default: move the rig home
+    without moving this and every snapshot silently starts carrying a token.
+
+    The env guard is load-bearing: `resolve_rig_home` reads SERVER_BROWSER_HOME
+    first, and a dogfood host exports it, so without this the test would assert
+    against that host's path instead of the default."""
+    from nymeria import server_browser as sb
+    from nymeria.core.snapshot_stores import DEFAULT_EXCLUDED_TOP_LEVEL
+
+    monkeypatch.delenv(sb.HOME_ENV_KEY, raising=False)
+    root = Path("/srv/nymeria")
+    home = sb.resolve_rig_home(root)
+    assert home.path.parent.name == "data"
+    assert home.path.name in DEFAULT_EXCLUDED_TOP_LEVEL
+
+
+def test_a_moved_rig_is_excluded_by_path_not_only_by_name(tmp_path, monkeypatch):
+    """`SERVER_BROWSER_HOME` and `nymeria browser configure --home` can put the
+    rig anywhere, including inside the data dir under another name, and a
+    name-only exclusion would quietly resume capturing a live account token and
+    every site session the browser is signed into."""
+    from nymeria.core.snapshot_stores import iter_data_dir_files
+
+    data_dir = tmp_path / "data"
+    rig = data_dir / "browser-rig"
+    (rig / "ext").mkdir(parents=True)
+    (rig / "ext" / "config.json").write_text('{"token": "nym_secret"}', encoding="utf-8")
+    (rig / "profile" / "Default").mkdir(parents=True)
+    (rig / "profile" / "Default" / "Cookies").write_bytes(b"session")
+    (data_dir / "todos").mkdir()
+    (data_dir / "todos" / "alice.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.delenv("SERVER_BROWSER_HOME", raising=False)
+    before = {rel for _, rel in iter_data_dir_files(data_dir)}
+    assert "browser-rig/ext/config.json" in before  # nothing says it is a rig yet
+
+    monkeypatch.setenv("SERVER_BROWSER_HOME", str(rig))
+    after = {rel for _, rel in iter_data_dir_files(data_dir)}
+    assert not any(name.startswith("browser-rig/") for name in after)
+    assert "todos/alice.json" in after
+
+
+def test_a_rig_outside_the_data_dir_is_simply_out_of_reach(tmp_path, monkeypatch):
+    """Not an exclusion so much as a fact worth pinning: the walker never
+    leaves the data dir, so a relocated rig needs no special handling."""
+    from nymeria.core.snapshot_stores import server_browser_rig_path
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setenv("SERVER_BROWSER_HOME", str(tmp_path / "elsewhere"))
+    assert server_browser_rig_path(data_dir) is None
+
+
+@pytest.fixture()
+def settings_root(tmp_path, monkeypatch):
+    """Point `get_settings()` at a throwaway project root.
+
+    `server_browser_rig_path` resolves the rig through the launcher, which
+    reads the root's env files and the `configure --home` pointer, so a test
+    about either needs a root it owns. The cache is cleared on the way out too:
+    a Settings built against tmp_path must not leak into the next test.
+    """
+    from nymeria.config import settings as settings_module
+
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
+    settings_module.get_settings.cache_clear()
+    yield tmp_path
+    settings_module.get_settings.cache_clear()
+
+
+def test_a_rig_named_only_by_the_configure_pointer_is_excluded(settings_root, monkeypatch):
+    """`nymeria browser configure --home` writes no env key: it records the rig
+    in a pointer file instead. A snapshot that resolved the home itself (env
+    key, then setting) therefore looked straight past a hand-configured rig and
+    captured the live token and site sessions it exists to keep out. Resolving
+    through the launcher's own chain is what closes it, and is why this must
+    never go back to reading the env key here.
+    """
+    from nymeria import server_browser as sb
+    from nymeria.core.snapshot_stores import iter_data_dir_files
+
+    monkeypatch.delenv(sb.HOME_ENV_KEY, raising=False)
+    data_dir = settings_root / "data"
+    rig = data_dir / "hand-configured"
+    (rig / "ext").mkdir(parents=True)
+    (rig / "ext" / "config.json").write_text('{"token": "nym_secret"}', encoding="utf-8")
+    (rig / "profile" / "Default").mkdir(parents=True)
+    (rig / "profile" / "Default" / "Cookies").write_bytes(b"session")
+    (data_dir / "todos").mkdir()
+    (data_dir / "todos" / "alice.json").write_text("{}", encoding="utf-8")
+
+    before = {rel for _, rel in iter_data_dir_files(data_dir)}
+    assert "hand-configured/ext/config.json" in before  # nothing names it a rig yet
+
+    sb.write_rig_home_pointer(settings_root, sb.RigHome(rig), log=lambda _m: None)
+    after = {rel for _, rel in iter_data_dir_files(data_dir)}
+    assert not any(name.startswith("hand-configured/") for name in after)
+    assert "todos/alice.json" in after
+
+
+def test_the_rig_home_pointer_is_host_local_and_never_travels(settings_root, monkeypatch):
+    """The pointer holds no secret, but it is an absolute path that is true
+    only on the host that wrote it. Captured, a restore elsewhere would aim the
+    install's rig at a directory that does not exist there."""
+    from nymeria import server_browser as sb
+    from nymeria.core.snapshot_stores import SERVER_BROWSER_POINTER, iter_data_dir_files
+
+    monkeypatch.delenv(sb.HOME_ENV_KEY, raising=False)
+    data_dir = settings_root / "data"
+    data_dir.mkdir()
+    # Pins the excluded name to the launcher's own: move one without the other
+    # and the pointer starts travelling again.
+    assert sb.rig_home_pointer(settings_root).name == SERVER_BROWSER_POINTER
+
+    sb.write_rig_home_pointer(
+        settings_root, sb.RigHome(settings_root / "elsewhere"), log=lambda _m: None
+    )
+    assert sb.rig_home_pointer(settings_root).exists()
+    assert SERVER_BROWSER_POINTER not in {rel for _, rel in iter_data_dir_files(data_dir)}
+
+
+def test_a_restore_leaves_the_live_rig_where_it_is(tmp_path, monkeypatch):
+    """The rig is never captured, so the artifact has nothing to put in its
+    place: sweeping it into .pre-restore would relocate a RUNNING Chrome's
+    user-data-dir, and Chrome would silently recreate an empty profile with
+    every site login gone while config.env still claimed a working browser."""
+    from nymeria.core.snapshot_stores import SERVER_BROWSER_DIR, server_browser_rig_path
+
+    data_dir = tmp_path / "data"
+    (data_dir / SERVER_BROWSER_DIR / "profile").mkdir(parents=True)
+    (data_dir / "todos").mkdir()
+    monkeypatch.delenv("SERVER_BROWSER_HOME", raising=False)
+
+    # The rule the restore loop applies, exercised directly: the default home is
+    # kept by name, and a moved one by resolved path.
+    kept_by_name = SERVER_BROWSER_DIR
+    assert (data_dir / kept_by_name).name == kept_by_name
+    monkeypatch.setenv("SERVER_BROWSER_HOME", str(data_dir / SERVER_BROWSER_DIR))
+    assert server_browser_rig_path(data_dir) == (data_dir / SERVER_BROWSER_DIR).resolve()
+
+
+def test_restore_keeps_the_rig_and_still_swaps_everything_else(snapshot_env, tmp_path):
+    """End to end through the real restore: an in-place DR restore must not
+    move the live rig aside."""
+    result = _create(snapshot_env)
+    extracted = extract_snapshot(result.artifact, PASSPHRASE, tmp_path / "work")
+
+    data_dir = snapshot_env.data_dir
+    rig = data_dir / "server-browser"
+    marker = rig / "profile" / "Default" / "Cookies"
+    # The pointer is excluded from capture, so sweeping it aside would delete
+    # the only record of a hand-configured rig's home: the next `nymeria init`
+    # would resolve the default, find nothing, and mint a SECOND rig.
+    pointer = data_dir / "server-browser-home"
+    pointer.write_text(f"{rig}\n", encoding="utf-8")
+    (data_dir / "todos" / "bob.json").write_text("{}", encoding="utf-8")
+
+    restore_snapshot(snapshot_env, extracted)
+
+    assert marker.exists(), "the live rig was swept into .pre-restore"
+    assert pointer.exists(), "the rig home pointer was swept into .pre-restore"
+    # The rest of the data dir really was swapped: a file created after the
+    # capture is gone from its place.
+    assert not (data_dir / "todos" / "bob.json").exists()

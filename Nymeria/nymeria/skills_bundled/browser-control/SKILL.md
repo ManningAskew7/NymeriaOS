@@ -1,12 +1,14 @@
 ---
 name: browser-control
-description: Drive the user's own logged-in Chrome to read pages and complete
-  real tasks on their behalf (shopping, forms, dashboards, anything behind a
-  login). Load this whenever the user asks you to DO something on a website
-  rather than just look one up, or when a task needs their own session, meaning
-  their account, their cart, their inbox, their data. Requires the Nymeria
-  browser extension to be connected. Not for plain web research, use web search
-  and fetch for that.
+description: Drive a real Chrome through the Nymeria browser extension to read
+  pages and complete real tasks on the user's behalf (shopping, forms,
+  anything behind a login). Load this whenever the user asks you to DO
+  something on a website rather than look one up, or when a task needs their
+  own session, their account, cart, inbox, data. A browser is normally already
+  connected (the server browser installed with Nymeria, or the user's own
+  Chrome running the extension); the kit also covers the no-browser case and
+  how a browser gets signed in. Not for plain web research, use web search and
+  fetch for that.
 metadata:
   nymeria:
     required_tools:
@@ -34,27 +36,56 @@ metadata:
 
 # Browser Control
 
-You are driving the user's REAL browser, signed in as them, and they can watch
-you do it. That is the whole point: you can finish things that need to be them.
-It is also why the rules below are not optional.
+You are driving a REAL Chrome through the Nymeria extension: either the
+user's own browser, signed in as them and visible to them, or the server
+browser that runs beside the backend, which starts signed into nothing.
+Either way you can finish things that need to BE the user, and that is why
+the rules below are not optional.
 
 ## When more than one browser is connected
 
-An account can have several browsers connected (their desktop Chrome, a
-headless rig, another machine), each running the extension. Your commands go
-to exactly ONE: this thread's target if set, else the account default, else
+An account can have several browsers connected (the server browser, their own
+desktop Chrome, another machine), each running the extension. Your commands
+go to exactly ONE: this thread's target if set, else the account default, else
 automatically when only one is connected. With several connected and nothing
 chosen, calls refuse and hand you the roster: pick with
 `chrome_target(browser=...)` and SAY which browser you picked and why, in the
 same reply. `chrome_target()` with no arguments shows the current resolution
 any time. Only the user can change the account-wide default (`/browser
 default`); your switches are per-thread. `chrome_browsers` is the fleet
-view (every known browser, connected or not) and where you NAME one
-(`action="rename"`), so rosters read as "desktop" and "rig" instead of raw
-ids; naming never moves any thread's target. After a switch, tab ids from
-the old browser are dead: list tabs before acting. If a tab refuses because
-another conversation is driving it, that is a real concurrent task: use your
-own tab, never fight over theirs.
+view (every known browser, connected or not, each with its kind) and where
+you NAME one (`action="rename"`), so rosters read as "laptop" and "rig"
+instead of raw ids; naming never moves any thread's target. After a switch,
+tab ids from the old browser are dead: list tabs before acting. If a tab
+refuses because another conversation is driving it, that is a real
+concurrent task: use your own tab, never fight over theirs.
+
+## Two kinds of browser
+
+Every roster row carries a `kind`, shown by `chrome_browsers`, `chrome_target`
+and the tab-free `chrome_health`:
+
+- `server`: the server browser, a headless Chrome that runs beside the
+  backend and connects on its own. Always on, no screen, no popup, and
+  normally the account default on a fresh install. It starts signed into
+  NOTHING: a login wall there is not a fault, it is the state until a human
+  signs it in through the handoff below, after which that site stays signed
+  in in its profile. Nobody can watch it work, so your narration is the
+  user's only view of it. When it is not connected, the refusal points at
+  `nymeria browser status` and `nymeria browser service restart` on the
+  Nymeria host: never tell the user to click a popup it does not have.
+- `desktop`: the user's own Chrome running the extension. Already signed in
+  to their sites, and they can watch you drive it. When it is not connected,
+  the fix is the extension popup in their Chrome (click Connect).
+
+Kind is information, not a routing rule: commands follow the target ladder
+above whichever kind is connected. When a `desktop` browser JOINS the roster
+while the server browser is your target, say so and OFFER to switch this
+thread to it with `chrome_target(browser=...)`: their own Chrome is already
+signed in and they can see it, which may be exactly what the task wants.
+Never switch silently, and never treat the account default as yours to
+change. The reverse holds too: if their own Chrome drops mid-task and the
+server browser is up, offer it rather than assuming.
 
 ## The loop
 
@@ -67,7 +98,8 @@ own tab, never fight over theirs.
    asked to be, and an error page COMMITS like a real page, so
    `http_status: 404`/`500` beside a clean-looking title is the only tell.
    `http_status` absent means unknown (it needs the extension's page-status
-   permission, granted once from its popup), never OK.
+   permission, granted once from its popup; the server browser has it from
+   install), never OK.
 3. Find what you need:
    - `chrome_find(tab_id, "the add to cart button")` when you know what you
      want. Cheapest, and it reaches elements scrolled out of view. It reads
@@ -455,9 +487,30 @@ window is ready, then `chrome_await_login(session_id)` to resume the moment
 they finish (call it again if it comes back still-active: 2FA takes time).
 One session per user at a time, hard 10-minute cap, and the signed-in state
 persists in the browser profile, so one handoff fixes a site for good.
-`chrome_cancel_login` ends it early if plans change. If the desktop app is
-not open anywhere, the handoff cannot be driven: say so instead of leaving
-the user hunting for a window.
+`chrome_cancel_login` ends it early if plans change.
+
+This handoff is how the server browser gets signed in, and it needs Nymeria
+Desktop open: the viewer lives there and nowhere else (not the CLI, not a
+chat app, not the phone). Before starting one, ask where the user is. If
+Desktop is not open, never start a handoff nobody can see (it runs out its
+10 minutes with the user hunting for a window); give them the two routes and
+let them choose:
+
+1. Open Nymeria Desktop. The viewer appears on its own when the handoff
+   starts, or they can type `/browser login <url>` there themselves.
+2. Use their own Chrome instead, by installing the Nymeria Browser
+   extension in it: a release zip from
+   https://github.com/ManningAskew7/nymeria-browser/releases, loaded
+   unpacked, then the backend URL and an account token pasted into its
+   popup. The exact step list is not repeated here on purpose: the
+   no-browser refusals carry it and are the one copy that stays current, so
+   relay theirs rather than a remembered one. Their Chrome joins the roster
+   as kind `desktop`, already signed in to their sites; switch this thread
+   to it with `chrome_target` and say that you did.
+
+Whichever browser you drive, passwords, 2FA codes, payment details, CAPTCHAs
+and identity documents stay the user's to enter, in the handoff viewer or in
+their own Chrome, never through you.
 
 ## When the obvious approach is not working
 
@@ -550,7 +603,9 @@ why, in the conversation, each time you use it.
 
 ## Telling the user what happened
 
-They can watch the browser, but they cannot see your reasoning. Narrate the
-consequential steps, quote what you actually saw on the page (totals, dates,
-names) rather than what you expected, and be explicit about what you did NOT
-do and why, especially where you stopped short on purpose.
+In their own Chrome they can watch the browser but not your reasoning; in the
+server browser they can see nothing at all, so your narration is their only
+view. Narrate the consequential steps, quote what you actually saw on the
+page (totals, dates, names) rather than what you expected, and be explicit
+about what you did NOT do and why, especially where you stopped short on
+purpose.

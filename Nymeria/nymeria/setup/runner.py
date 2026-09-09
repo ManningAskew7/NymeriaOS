@@ -31,6 +31,7 @@ from . import tuning_catalog, voice_catalog
 from .environment import detect_environment, hosting_gates, stack_resource_warnings
 from .finalize import finalize
 from .quick import SECTION_DEPENDENCIES, apply_quick_defaults, validate_section_id
+from .server_browser_catalog import SERVER_BROWSER_STEP_ID, SKIP
 from .state import WizardState
 
 DEFAULT_NEXT_ACTION = NextAction.PRINT_COMMANDS
@@ -269,6 +270,17 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--no-server-browser",
+        action="store_true",
+        help=(
+            "Do not install the server browser (the headless Chrome the agent "
+            "drives). It is installed by default, including with "
+            "--non-interactive, because it is what makes the browser tools "
+            "work on a fresh install; add it later with `nymeria browser "
+            "install`"
+        ),
+    )
+    parser.add_argument(
         "--skill-kit", action="append", default=None, metavar="KIT",
         help=(
             "Seed a default-on capability kit into enabled_global_skills "
@@ -452,6 +464,10 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         value = getattr(args, attr, None)
         if value:
             extras[attr] = str(value)
+    # The server browser installs by default (it is the whole point: the
+    # browser tools work on a fresh install), so only the refusal is a flag.
+    if getattr(args, "no_server_browser", False):
+        extras[SERVER_BROWSER_STEP_ID] = SKIP
     for attr, key in (
         ("context", "context_strategy"),
         ("timezone", "user_timezone"),

@@ -59,6 +59,8 @@ from .snapshot_crypto import (
 )
 from .snapshot_stores import (
     POSTGRES_CHECKPOINT_TABLES,
+    SERVER_BROWSER_DIR,
+    SERVER_BROWSER_POINTER,
     CheckpointSchemaMissing,
     SnapshotStoreError,
     dump_postgres_checkpoints,
@@ -66,6 +68,7 @@ from .snapshot_stores import (
     is_sqlite_file,
     iter_data_dir_files,
     restore_postgres_checkpoints,
+    server_browser_rig_path,
     sqlite_consistent_copy,
 )
 
@@ -693,10 +696,25 @@ def restore_snapshot(
     pre_restore = data_dir / f".pre-restore-{stamp}"
     pre_restore.mkdir(parents=True, exist_ok=False)
     extracted_root = extracted.root.resolve()
+    # The server browser's rig is never captured, so the artifact has nothing
+    # to put back in its place: sweeping it aside would destroy live state
+    # rather than replace it. It is a RUNNING Chrome's --user-data-dir, so an
+    # in-place restore would relocate every site session a human signed the
+    # browser into plus its baked token, Chrome would silently recreate an
+    # empty profile, and config.env would still claim a working browser. Both
+    # spellings are needed: the name covers the default home, the resolved path
+    # covers a moved one. The same argument applies to the rest of
+    # DEFAULT_EXCLUDED_TOP_LEVEL and is filed as its own item; this pass fixes
+    # only the store it introduced.
+    rig = server_browser_rig_path(data_dir)
     for entry in sorted(data_dir.iterdir(), key=lambda p: p.name):
         if entry.resolve() == extracted_root or entry == pre_restore:
             continue
         if entry.name.startswith(".pre-restore-"):
+            continue
+        if entry.name in (SERVER_BROWSER_DIR, SERVER_BROWSER_POINTER) or (
+            rig is not None and entry.resolve() == rig
+        ):
             continue
         entry.rename(pre_restore / entry.name)
 

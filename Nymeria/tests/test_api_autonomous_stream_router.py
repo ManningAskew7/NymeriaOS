@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from queue import Queue
+from types import SimpleNamespace
 from typing import Literal, cast
 
 import pytest
@@ -16,8 +19,10 @@ from nymeria.api.routers.autonomous_stream import (
     _resolve_stream_auth,
 )
 from nymeria.api.sse import SSE_KEEPALIVE_FRAME
+from nymeria.core import browser_targets, chrome_subscribers
 from nymeria.core.accounts import AccountsRepo
-from nymeria.core.event_bus import AutonomousEvent, EventBus
+from nymeria.core.event_bus import AutonomousEvent, EventBus, set_event_bus
+from nymeria.core.user_profile import UserProfile
 
 
 class FakeAgent:
@@ -750,3 +755,231 @@ def test_targeted_command_skips_every_other_connected_browser():
     )
     assert '"content": "marker"' in frame
     assert "browser_command" not in frame
+
+
+# -- the extension announces its kind and label on connect (E8 / E9, wire) -----
+#
+# `client_kind` lands on the roster row that chrome_browsers / chrome_health /
+# the refusals read; `client_label` seeds the account's label for that browser
+# once. Both ride the query string of the REAL route, parsed by FastAPI, so
+# these go through the app rather than calling the generator: the generator is
+# swapped for a one-frame stub so the otherwise endless stream completes and
+# the client's GET returns.
+
+_EXT_ID = "nymeria-browser-wiretest-0000-4000-8000-000000000001"
+
+
+async def _one_frame_stream(**_kwargs):
+    yield ": stub\n\n"
+
+
+@pytest.fixture
+def clean_chrome_registry():
+    chrome_subscribers.reset_for_tests()
+    set_event_bus(EventBus())
+    yield
+    chrome_subscribers.reset_for_tests()
+    set_event_bus(EventBus())
+
+
+def _connect_extension(
+    api_client_builder, tmp_path, monkeypatch, *, query: str, token: str | None = None
+) -> str:
+    """One real extension subscribe through the app; returns the account token.
+
+    A test that connects TWICE must pass the token back in: the accounts DB
+    lives in ``tmp_path`` and outlives the FakeAgent, so re-creating the user
+    trips its unique-email constraint.
+    """
+    monkeypatch.setattr(
+        autonomous_module, "_generate_autonomous_sse_events", _one_frame_stream
+    )
+    agent = FakeAgent(tmp_path)
+    token = token or _create_user(agent, "alice")
+    client = api_client_builder.client(agent, api_client_builder.settings(tmp_path))
+    response = client.get(
+        f"/autonomous/stream?{query}", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    return token
+
+
+@pytest.mark.usefixtures("clean_chrome_registry")
+@pytest.mark.parametrize(
+    ("kind_param", "expected"),
+    [
+        pytest.param("&client_kind=server", "server", id="server"),
+        pytest.param("&client_kind=desktop", "desktop", id="desktop"),
+        pytest.param("", "desktop", id="absent_defaults_to_desktop"),
+        pytest.param("&client_kind=headless", "desktop", id="unknown_value_stores_desktop"),
+    ],
+)
+def test_client_kind_on_the_connect_lands_on_the_roster_row(
+    api_client_builder, tmp_path, monkeypatch, kind_param, expected
+):
+    _connect_extension(
+        api_client_builder,
+        tmp_path,
+        monkeypatch,
+        query=f"client_id={_EXT_ID}&client_version=0.29.0{kind_param}",
+    )
+
+    (row,) = chrome_subscribers.chrome_browser_roster("alice")
+    assert (row.client_id, row.kind, row.version) == (_EXT_ID, expected, "0.29.0")
+
+
+@pytest.mark.usefixtures("clean_chrome_registry")
+def test_client_kind_is_ignored_for_non_extension_streams(
+    api_client_builder, tmp_path, monkeypatch
+):
+    """A desktop app claiming client_kind=server is not an extension (no
+    nymeria-browser- prefix), so it registers nothing on the roster."""
+    _connect_extension(
+        api_client_builder,
+        tmp_path,
+        monkeypatch,
+        query="client_id=6f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8&client_kind=server",
+    )
+
+    assert chrome_subscribers.chrome_browser_roster("alice") == []
+    assert not chrome_subscribers.known_server_browser("alice")
+
+
+def _stub_profile_host(monkeypatch) -> UserProfile:
+    profile = UserProfile(user_id="alice")
+
+    class _Profiles:
+        def get_profile(self, user_id):
+            return profile
+
+        @contextmanager
+        def atomic_update(self, user_id):
+            yield profile
+
+    monkeypatch.setattr(
+        browser_targets, "_agent", lambda: SimpleNamespace(profile_manager=_Profiles())
+    )
+    return profile
+
+
+class _SeedProbe:
+    """Watches the label seed a connect schedules, so these tests never sleep.
+
+    The seed runs on a worker thread off the request path, so "check the
+    profile a moment later" is a race: under `-n 2` on a loaded box a broken
+    overwrite landing after the old 0.2s sleep still passed the test. This
+    watches the seeder itself. ``finished`` fires when a seed has RUN, so a
+    negative about its result is read after the write rather than during it;
+    ``entered`` fires the instant one starts, so a test that says no seed
+    should happen at all fails the moment one does, instead of hoping a sleep
+    outlasts it. The assertions stay on the stored labels either way.
+    """
+
+    def __init__(self):
+        self.entered = threading.Event()
+        self.finished = threading.Event()
+
+    def install(self, monkeypatch) -> "_SeedProbe":
+        real = autonomous_module.seed_browser_label
+
+        def _watched(*args, **kwargs):
+            self.entered.set()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                self.finished.set()
+
+        monkeypatch.setattr(autonomous_module, "seed_browser_label", _watched)
+        return self
+
+    def await_seed(self) -> None:
+        assert self.finished.wait(10), "the scheduled label seed never ran"
+        self.finished.clear()
+        self.entered.clear()
+
+    def assert_no_seed(self) -> None:
+        assert not self.entered.wait(1.0), "a seed ran that should not have"
+
+
+@pytest.mark.usefixtures("clean_chrome_registry")
+def test_client_label_seeds_the_profile_and_a_rename_survives_a_reconnect(
+    api_client_builder, tmp_path, monkeypatch
+):
+    """E9 on the wire: the bake's label names the browser on first connect
+    when the user has not; the user's rename then wins over every later
+    connect announcing the bake label."""
+    profile = _stub_profile_host(monkeypatch)
+    probe = _SeedProbe().install(monkeypatch)
+    query = f"client_id={_EXT_ID}&client_kind=server&client_label=server%20browser"
+
+    token = _connect_extension(api_client_builder, tmp_path, monkeypatch, query=query)
+    probe.await_seed()
+    assert browser_targets.browser_labels("alice") == {_EXT_ID: "server browser"}
+
+    assert browser_targets.set_browser_label("alice", _EXT_ID, "rig") is None
+    _connect_extension(
+        api_client_builder, tmp_path, monkeypatch, query=query, token=token
+    )
+    # The reconnect's seed RAN and declined to write, which is the claim.
+    probe.await_seed()
+    assert profile.get_browser_preferences()["labels"] == {_EXT_ID: "rig"}
+
+
+@pytest.mark.usefixtures("clean_chrome_registry")
+def test_a_removed_name_is_not_restored_by_the_next_connect(
+    api_client_builder, tmp_path, monkeypatch
+):
+    """On the wire, the un-name case: the server browser announces its baked
+    label on EVERY reconnect (about once a minute), so a name the user took
+    off has to stay off or they cannot un-name the rig at all."""
+    profile = _stub_profile_host(monkeypatch)
+    probe = _SeedProbe().install(monkeypatch)
+    query = f"client_id={_EXT_ID}&client_kind=server&client_label=server%20browser"
+
+    token = _connect_extension(api_client_builder, tmp_path, monkeypatch, query=query)
+    probe.await_seed()
+    assert browser_targets.set_browser_label("alice", _EXT_ID, None) is None
+
+    _connect_extension(
+        api_client_builder, tmp_path, monkeypatch, query=query, token=token
+    )
+    probe.await_seed()
+
+    assert profile.get_browser_preferences()["labels"] == {}
+
+
+@pytest.mark.usefixtures("clean_chrome_registry")
+def test_connect_without_a_label_seeds_nothing(api_client_builder, tmp_path, monkeypatch):
+    profile = _stub_profile_host(monkeypatch)
+    probe = _SeedProbe().install(monkeypatch)
+
+    _connect_extension(
+        api_client_builder, tmp_path, monkeypatch, query=f"client_id={_EXT_ID}&client_kind=server"
+    )
+
+    probe.assert_no_seed()
+    assert profile.get_browser_preferences()["labels"] == {}
+
+
+@pytest.mark.usefixtures("clean_chrome_registry")
+def test_a_malformed_client_id_becomes_neither_a_roster_row_nor_a_label(
+    api_client_builder, tmp_path, monkeypatch
+):
+    """A labelled connect turns the client-chosen client_id into a DURABLE
+    profile key, and nothing else validates it: 300 characters of anything
+    were accepted on the strength of the prefix alone. A value that is not
+    the shape the extension mints is not an extension stream at all."""
+    profile = _stub_profile_host(monkeypatch)
+    probe = _SeedProbe().install(monkeypatch)
+    oversized = "nymeria-browser-" + "x" * 300
+
+    _connect_extension(
+        api_client_builder,
+        tmp_path,
+        monkeypatch,
+        query=f"client_id={oversized}&client_kind=server&client_label=rig",
+    )
+
+    probe.assert_no_seed()
+    assert chrome_subscribers.chrome_browser_roster("alice") == []
+    assert profile.get_browser_preferences()["labels"] == {}

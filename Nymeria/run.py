@@ -760,6 +760,13 @@ def run_service(args: argparse.Namespace) -> None:
     sys.exit(service_cli(action, root=root))
 
 
+def run_browser(args: argparse.Namespace) -> int:
+    """Manage the server browser (`nymeria browser install|configure|run|stop|status|service`)."""
+    from nymeria.server_browser import browser_cli
+
+    return browser_cli(args)
+
+
 def run_init(args: argparse.Namespace) -> int:
     """Run first-time package setup."""
     from nymeria.setup import run_init as start_init
@@ -1774,6 +1781,103 @@ Examples:
         ),
     )
 
+    # Server browser subcommand: the headless Chrome for Testing + extension
+    # rig the agent drives out of the box (nymeria/server_browser.py).
+    browser_parser = subparsers.add_parser(
+        "browser",
+        help="Manage the server browser (headless Chrome the agent drives through the Nymeria extension)",
+        description=(
+            "The server browser is a headless Chrome for Testing running beside the "
+            "backend with the Nymeria browser extension loaded and pre-connected to "
+            "the local API, so the browser-control kit works on a fresh install. "
+            "The setup wizard provisions it; these actions manage it afterwards."
+        ),
+    )
+    browser_actions = browser_parser.add_subparsers(dest="action")
+
+    def _browser_common(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument(
+            "--root",
+            default=None,
+            help="Project root (where config.env and data live); defaults to auto-discovery",
+        )
+        sub.add_argument(
+            "--home",
+            default=None,
+            help="Rig home (default: SERVER_BROWSER_HOME from the root's env, else <root>/data/server-browser)",
+        )
+
+    browser_install = browser_actions.add_parser(
+        "install", help="Download the current stable Chrome for Testing into the rig home"
+    )
+    _browser_common(browser_install)
+    browser_configure = browser_actions.add_parser(
+        "configure",
+        help="Stage the extension, bake the backend URL + token, decide the sandbox, write rig.json",
+    )
+    _browser_common(browser_configure)
+    browser_configure.add_argument(
+        "--base-url", default=None, help="Backend URL (default: http://localhost:<API_PORT>)"
+    )
+    browser_configure.add_argument("--token-file", default=None, help="File holding the account token")
+    browser_configure.add_argument(
+        "--token-stdin", action="store_true", help="Read the account token from stdin"
+    )
+    browser_configure.add_argument(
+        "--token", default=None, help="Account token (lands in shell history; prefer --token-file)"
+    )
+    browser_configure.add_argument(
+        "--client-id", default=None, help="Browser identity (default: keep the existing one, else mint)"
+    )
+    browser_configure.add_argument("--label", default=None, help="Roster label (default: server browser)")
+    browser_configure.add_argument(
+        "--source",
+        default=None,
+        help="Extension build dir or release zip (default: the pinned GitHub release)",
+    )
+    browser_configure.add_argument("--debug-port", type=int, default=None, help="Loopback DevTools port")
+    browser_configure.add_argument(
+        "--sandbox",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="auto measures whether Chrome's sandbox works here and falls back to --no-sandbox",
+    )
+    browser_configure.add_argument(
+        "--adopt-home",
+        default=None,
+        help="Reuse the Chrome profile of an existing rig home (keeps signed-in sessions)",
+    )
+    browser_run = browser_actions.add_parser(
+        "run", help="Launch the browser in the foreground (the service manager owns the lifecycle)"
+    )
+    _browser_common(browser_run)
+    browser_run.add_argument(
+        "--fresh-profile",
+        action="store_true",
+        help="Wipe the profile first (stale service-worker cache guard; loses site sessions)",
+    )
+    browser_run.add_argument(
+        "--supervise",
+        action="store_true",
+        help="Run Chrome as a child and restart it on abnormal exit (Windows task, no exec)",
+    )
+    browser_stop = browser_actions.add_parser("stop", help="Stop the rig's browser (pidfile plus strays)")
+    _browser_common(browser_stop)
+    browser_status = browser_actions.add_parser(
+        "status", help="Local facts (installed, running, worker) plus the backend's view"
+    )
+    _browser_common(browser_status)
+    browser_service = browser_actions.add_parser(
+        "service", help="Manage the browser's background service (systemd, launchd, or a Windows task)"
+    )
+    _browser_common(browser_service)
+    browser_service.add_argument(
+        "service_action",
+        nargs="?",
+        choices=["install", "uninstall", "status", "restart"],
+        default="status",
+    )
+
     # Users subcommand (account provisioning)
     from nymeria.cli import users as users_cli
     users_cli.build_parser(subparsers)
@@ -1848,6 +1952,7 @@ COMMANDS: dict[str, _Command] = {
     "mcp": _Command(run_mcp, full_validation=True),
     "claude-code-runner": _Command(run_claude_code_runner),
     "service": _Command(run_service),
+    "browser": _Command(run_browser, exits=True),
     "users": _Command(run_users, exits=True),
     "snapshot": _Command(run_snapshot, exits=True),
     "completion": _Command(run_completion),
@@ -1906,7 +2011,7 @@ def main() -> None:
     # logging internally so client transports are not corrupted. doctor and
     # snapshot are skipped too: they print operator-facing check reports and
     # must not interleave them with log lines.
-    if args.command not in ("service", "mcp", "init", "doctor", "snapshot"):
+    if args.command not in ("service", "browser", "mcp", "init", "doctor", "snapshot"):
         setup_logging(args.log_level)
 
     if service_token_required:

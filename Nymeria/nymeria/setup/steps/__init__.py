@@ -43,6 +43,7 @@ from .port import make_api_port_step
 from .rag import make_embedder_step, make_reranker_step
 from .provider import make_connection_step, make_provider_step
 from .review import make_review_step
+from .server_browser import make_server_browser_step
 from .start_now import make_start_now_step
 from .tier import make_setup_tier_step
 from .welcome import make_welcome_step
@@ -120,6 +121,9 @@ def _default_step_list() -> list[Step]:
         make_stt_step(),
         make_backend_keys_step(),
         make_skill_kits_step(),
+        # A headless Chrome of the agent's own (the browser-control kit's
+        # default browser), provisioned by finalize.
+        make_server_browser_step(),
         # The user's timezone (its own confirm step, prefilled from host
         # detection), then the tuning forms.
         make_timezone_step(),

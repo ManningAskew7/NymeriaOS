@@ -185,6 +185,13 @@ def _summary_markup(state: WizardState) -> str:
     kits = seeded_global_skills(state)
     if kits:
         tool_lines.append(f"Skill kits: {', '.join(kits)} (self-improve stays on)")
+    from ..server_browser_catalog import server_browser_selected
+
+    tool_lines.append(
+        "Server browser: install (headless Chrome + extension, background service)"
+        if server_browser_selected(state)
+        else "Server browser: skipped (connect your own Chrome later)"
+    )
     from .. import voice_catalog
 
     for name, value, label_fn in (

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from ...config import Settings
+from ...core.browser_targets import seed_browser_label
 from ...core.chrome_subscribers import (
     CHROME_ONLY_EVENT_TYPES,
     add_chrome_subscriber,
@@ -381,6 +382,28 @@ def create_autonomous_stream_router(
                 "report which build reconnected)"
             ),
         ),
+        client_kind: Optional[str] = Query(
+            default=None,
+            description=(
+                "Which kind of browser an extension stream belongs to: 'server' "
+                "(the headless server browser beside the backend) or 'desktop' "
+                "(the user's own Chrome). Absent or anything else records "
+                "'desktop'. Ignored for non-extension client ids."
+            ),
+        ),
+        client_label: Optional[str] = Query(
+            default=None,
+            description=(
+                "Display name the extension proposes for its browser (one "
+                "printable line, up to 60 characters). Seeds the account's "
+                "label for this client_id only when none is set, the user has "
+                "not already decided this browser's name (a rename, or a "
+                "removal), and no other browser on the account already uses "
+                "that name. A seeded name is shown attributed to the browser, "
+                "never as a name the user chose. Ignored for non-extension "
+                "client ids."
+            ),
+        ),
         authorization: Optional[str] = Header(None),
         x_nymeria_act_as: Optional[str] = Header(None),
         _settings: Settings = Depends(get_settings_fn),
@@ -420,7 +443,16 @@ def create_autonomous_stream_router(
                 subscriber_id=subscriber_id,
                 version=client_version,
                 client_id=client_id,
+                kind=client_kind,
             )
+            if client_label and client_id:
+                # Best-effort and OFF the stream's critical path: the seed
+                # takes the profile lock and writes a file, and a display
+                # name must never delay or fail a subscribe. The seeder
+                # swallows its own failures.
+                asyncio.get_running_loop().run_in_executor(
+                    None, seed_browser_label, stream_user_id, client_id, client_label
+                )
         logger.info(
             "[AUTONOMOUS SSE] subscriber_connect subscriber=%s user=%s firehose=%s "
             "client_id=%s local_subscribers=%d chrome=%s",

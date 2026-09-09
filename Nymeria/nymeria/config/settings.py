@@ -391,6 +391,21 @@ class Settings(BaseSettings):
             "hostname when unset."
         ),
     )
+    server_browser_home: Optional[str] = Field(
+        default=None,
+        description=(
+            "Home directory of this install's server browser (the headless "
+            "Chrome for Testing running the Nymeria browser extension beside "
+            "the backend; written by nymeria init, which retires it when a "
+            "reconfigure finds no rig. nymeria browser configure --home "
+            "writes no env key: it records a non-default home in "
+            "<root>/data/server-browser-home instead). Its presence tells "
+            "the chrome_* tools that the rig's own account HAS a server "
+            "browser, so a no-browser refusal points at nymeria browser "
+            "status rather than at an extension popup the server browser "
+            "does not have; the path itself is informational."
+        ),
+    )
     harness_report_email: Optional[str] = Field(
         default=None,
         description=(
@@ -405,6 +420,17 @@ class Settings(BaseSettings):
         default=90,
         ge=1,
         description="Lifetime, in days, for newly issued Nymeria account tokens",
+    )
+    account_server_browser_token_ttl_days: int = Field(
+        default=3650,
+        ge=1,
+        description=(
+            "Lifetime, in days, for the token baked into the server browser. "
+            "Long on purpose: it is a machine credential with no renewal path "
+            "and no human in the loop, so the ordinary account lifetime would "
+            "silently break every install's browser tools. Re-running "
+            "`nymeria browser configure` revokes and re-mints it at any time."
+        ),
     )
     account_max_active_tokens_per_user: int = Field(
         default=10,

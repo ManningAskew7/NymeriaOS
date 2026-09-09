@@ -208,6 +208,7 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
     _record_present_keys(state, values)
     _hydrate_cliproxy(state, values)
     _hydrate_local_model(state)
+    _hydrate_server_browser(state, values, config_root=config_path.parent)
 
     if for_docker:
         _hydrate_carrier_picks(state, values)
@@ -218,6 +219,45 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
         where = "Docker (.env.docker)" if for_docker else str(config_path)
         console.print(f"[green]Reconfiguring[/green] the existing install at {where}")
     return True
+
+
+def _hydrate_server_browser(
+    state: WizardState, values: dict[str, str], *, config_root: Path
+) -> None:
+    """Recover this install's server-browser state, in both directions.
+
+    Two signals say a rig exists: the `SERVER_BROWSER_HOME` key finalize writes,
+    and a rig.json at the default home (an install configured by hand with
+    `nymeria browser`). Either way the step defaults to "install", because a
+    re-run re-bakes the same rig and keeps its identity.
+
+    The absence of BOTH on a reconfigure is a signal too, and the one that was
+    missing: it means this install has no rig, either because the operator
+    declined or because it predates the feature. Defaulting to install there
+    would have any later `nymeria init --non-interactive` (a model change, say)
+    silently download 200 MB, mint an admin token and install a background
+    service on a host that never asked for one, and would make
+    `--no-server-browser` something the operator has to remember and re-pass
+    forever. So a reconfigure with no rig defaults to skip; the interactive
+    screen still offers it, truthfully pre-selected on what is actually true
+    today.
+
+    First runs never reach here (hydration returns early when there is no
+    config), so the fresh-install default stays "install", which is the point of
+    the feature.
+    """
+    from nymeria import server_browser as sb
+
+    # The key's PRESENCE is the signal, not its value: a key that names a home
+    # this process cannot stat still says the install owns a rig. Only the
+    # keyless case needs a path, and that one is the default home by definition.
+    # Root-only resolution: the launch environment may name ANOTHER install's rig,
+    # and a rig.json there is not this root's (the wrapper's docstring has the case).
+    rig = finalize._rig_home_for_root(config_root)
+    if _get(values, sb.HOME_ENV_KEY) or rig.rig_json.exists():
+        state.extras.setdefault("server_browser", "install")
+    else:
+        state.extras.setdefault("server_browser", "skip")
 
 
 def _locate_config(state: WizardState) -> Optional[tuple[Path, bool]]:

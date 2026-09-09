@@ -649,3 +649,166 @@ def test_command_timeout_clears_stop_timeout():
     assert f"TimeoutStopSec={si.UNIT_STOP_TIMEOUT_SECONDS}" in build_systemd_unit(
         exec_argv=["/usr/bin/python3", "slim"], root=Path("/tmp"), path_env="/usr/bin"
     )
+
+
+# --- ServiceSpec: a second supervised service beside the backend ------------------
+
+# The backend's unit text BEFORE the spec parameter existed, for these exact
+# inputs. Pinned verbatim so the refactor that made the identity a parameter
+# can never change what every existing install re-generates.
+_BACKEND_UNIT_GOLDEN = """[Unit]
+Description=Nymeria backend (slim)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 /opt/app/run.py slim
+WorkingDirectory=/home/nym/.nymeria
+Environment="NYMERIA_PROJECT_ROOT=/home/nym/.nymeria"
+Environment="PATH=/usr/bin:/bin"
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=30
+SyslogIdentifier=nymeria
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def test_default_spec_reproduces_the_backend_unit_byte_for_byte():
+    unit = build_systemd_unit(
+        exec_argv=["/usr/bin/python3", "/opt/app/run.py", "slim"],
+        root=Path("/home/nym/.nymeria"),
+        path_env="/usr/bin:/bin",
+    )
+    assert unit == _BACKEND_UNIT_GOLDEN
+    explicit = build_systemd_unit(
+        exec_argv=["/usr/bin/python3", "/opt/app/run.py", "slim"],
+        root=Path("/home/nym/.nymeria"),
+        path_env="/usr/bin:/bin",
+        spec=si.BACKEND_SERVICE,
+    )
+    assert explicit == unit
+    plist = build_launchd_plist(
+        exec_argv=["/x"], root=Path("/r"), path_env="/usr/bin"
+    )
+    assert plist["Label"] == LAUNCHD_LABEL
+    assert plist["StandardOutPath"] == "/r/logs/service-stdout.log"
+
+
+def test_spec_parametrises_unit_plist_and_paths(tmp_path):
+    spec = si.ServiceSpec(
+        systemd_unit="nymeria-browser-9222.service",
+        launchd_label="com.nymeria.browser.9222",
+        description="Nymeria server browser",
+        syslog_identifier="nymeria-browser",
+        log_basename="server-browser-9222",
+        install_hint="nymeria browser service install",
+    )
+    unit = build_systemd_unit(
+        exec_argv=["/x", "browser", "run"], root=Path("/r"), path_env="/usr/bin", spec=spec
+    )
+    assert "Description=Nymeria server browser" in unit
+    assert "SyslogIdentifier=nymeria-browser" in unit
+    plist = build_launchd_plist(exec_argv=["/x"], root=Path("/r"), path_env="/usr/bin", spec=spec)
+    assert plist["Label"] == "com.nymeria.browser.9222"
+    assert plist["StandardOutPath"] == "/r/logs/server-browser-9222-stdout.log"
+    systemd = SystemdUserService(home=tmp_path, runner=ScriptedRunner(), spec=spec)
+    assert systemd.artifact_path.name == "nymeria-browser-9222.service"
+    assert "nymeria-browser-9222.service" in systemd.log_hint()
+    launchd = LaunchdAgentService(home=tmp_path, runner=ScriptedRunner(), spec=spec)
+    assert launchd.artifact_path.name == "com.nymeria.browser.9222.plist"
+
+
+def test_spec_systemd_install_drives_its_own_unit_name(linux_host, tmp_path):
+    spec = si.ServiceSpec(systemd_unit="nymeria-browser-9300.service", description="d")
+    runner = ScriptedRunner({"is-system-running": (0, "running", "")})
+    manager = SystemdUserService(home=tmp_path, runner=runner, spec=spec)
+    manager.install(exec_argv=["/x", "browser", "run"], root=tmp_path)
+    lines = runner.command_lines()
+    assert "systemctl --user enable nymeria-browser-9300.service" in lines
+    assert "systemctl --user restart nymeria-browser-9300.service" in lines
+    assert not any("enable nymeria.service" in line for line in lines)
+    assert (tmp_path / ".config" / "systemd" / "user" / "nymeria-browser-9300.service").exists()
+    # The backend's own unit is untouched by a browser uninstall.
+    (tmp_path / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME).write_text("backend")
+    manager.uninstall()
+    assert (tmp_path / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME).read_text() == "backend"
+    assert not manager.artifact_path.exists()
+    with pytest.raises(ServiceInstallError, match="nymeria browser service install"):
+        SystemdUserService(
+            home=tmp_path,
+            runner=runner,
+            spec=si.ServiceSpec(systemd_unit="x.service", install_hint="nymeria browser service install"),
+        ).restart()
+
+
+def test_windows_task_manager_shim_and_command_sequence(tmp_path, monkeypatch):
+    spec = si.ServiceSpec(windows_task_name="NymeriaOS Server Browser 9222", install_hint="h")
+    runner = ScriptedRunner({"/Query": (0, "HostName: X\nStatus: Running\n", "")})
+    manager = si.WindowsScheduledTaskService(spec=spec, home=tmp_path, runner=runner)
+    monkeypatch.setattr(si.sys, "platform", "win32")
+    monkeypatch.setattr(si.shutil, "which", lambda name: f"C:/W/{name}.exe")
+    report = manager.install(
+        exec_argv=["C:/Program Files/py/python.exe", "C:/nym/run.py", "browser", "run"],
+        root=tmp_path,
+    )
+    shim = manager.artifact_path.read_text(encoding="utf-16")
+    # Paths with spaces are double-double-quoted for VBScript; plain args are not.
+    assert 'shell.Run "' in shim and '""C:/Program Files/py/python.exe""' in shim
+    assert " browser run" in shim
+    assert manager.artifact_path.name == "nymeriaos-server-browser-9222.vbs"
+    lines = runner.command_lines()
+    # The task is stopped before it is (re)created and run, so an install
+    # means the same thing here as `systemctl restart` and launchd's
+    # bootout+bootstrap: the previously started command does not survive it.
+    assert lines.index("schtasks /End /TN NymeriaOS Server Browser 9222") < lines.index(
+        "schtasks /Run /TN NymeriaOS Server Browser 9222"
+    )
+    assert any(
+        line.startswith("schtasks /Create /F /TN NymeriaOS Server Browser 9222 /TR wscript.exe")
+        and "/SC ONLOGON /RL LIMITED" in line
+        for line in lines
+    )
+    assert "schtasks /Run /TN NymeriaOS Server Browser 9222" in lines
+    assert report.artifact == manager.artifact_path
+    status = manager.status()
+    assert status.installed and status.running and status.detail == "Running"
+    removed = manager.uninstall()
+    assert "schtasks /Delete /F /TN NymeriaOS Server Browser 9222" in runner.command_lines()
+    assert not manager.artifact_path.exists() and removed
+
+
+def test_windows_shim_survives_a_non_ascii_project_root(tmp_path, monkeypatch):
+    # `C:\Users\<name>` carries whatever the account is called. Writing the
+    # shim as ascii raised UnicodeEncodeError (a ValueError, so it escaped
+    # every OSError handler and came out of `nymeria init` as a traceback),
+    # and plain UTF-8 would mojibake the path because wscript reads a
+    # BOM-less .vbs as ANSI.
+    spec = si.ServiceSpec(windows_task_name="NymeriaOS Server Browser 9222", install_hint="h")
+    manager = si.WindowsScheduledTaskService(spec=spec, home=tmp_path, runner=ScriptedRunner())
+    monkeypatch.setattr(si.sys, "platform", "win32")
+    monkeypatch.setattr(si.shutil, "which", lambda name: f"C:/W/{name}.exe")
+    argv = ["C:/Users/Jos\u00e9 \u041c\u0430\u0440\u0438\u044f/py.exe", "C:/nym/run.py", "browser", "run"]
+    manager.install(exec_argv=argv, root=tmp_path)
+    raw = manager.artifact_path.read_bytes()
+    assert raw[:2] == b"\xff\xfe", "wscript detects UTF-16 only by its BOM"
+    text = raw.decode("utf-16")
+    assert '""C:/Users/Jos\u00e9 \u041c\u0430\u0440\u0438\u044f/py.exe""' in text
+
+
+def test_windows_task_manager_requires_a_task_name():
+    with pytest.raises(ServiceUnavailableError):
+        si.WindowsScheduledTaskService(spec=si.ServiceSpec())
+
+
+def test_service_manager_on_windows_needs_a_task_name(monkeypatch):
+    monkeypatch.setattr(si.sys, "platform", "win32")
+    with pytest.raises(ServiceUnavailableError):
+        service_manager(runner=ScriptedRunner())
+    manager = service_manager(
+        runner=ScriptedRunner(), spec=si.ServiceSpec(windows_task_name="T")
+    )
+    assert isinstance(manager, si.WindowsScheduledTaskService)

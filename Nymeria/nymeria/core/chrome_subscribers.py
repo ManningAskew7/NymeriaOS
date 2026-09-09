@@ -23,6 +23,13 @@ Two granularities, deliberately:
   subscribed builds read as one healthy last-writer-wins entry, and it is
   the identity that browser-target routing selects on.
 
+Each browser row also carries a ``kind``, announced by the extension on
+its stream connect (``client_kind``): ``server`` is the headless Chrome that
+runs beside the backend (installed by ``nymeria browser``; no screen, no
+popup), ``desktop`` is the user's own Chrome. Kind is information for
+rosters, refusals and the kit's guidance, never a routing input: the target
+ladder in ``browser_targets`` does not read it.
+
 In-process state. The registry is rebuilt by reconnects; no persistence
 needed. Human-readable browser labels are NOT here: they are durable user
 data (``UserProfile.get_browser_preferences``).
@@ -30,6 +37,7 @@ data (``UserProfile.get_browser_preferences``).
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -38,6 +46,13 @@ from typing import Optional, Set
 # Stable prefix the extension's background SW generates when it first
 # initialises (see ``nymeria-browser/src/utils/storage.ts::ensureClientId``).
 CHROME_CLIENT_ID_PREFIX = "nymeria-browser-"
+
+# The closed set of browser kinds a connect may announce. Absent or
+# unrecognised values store as ``desktop``, so every install that predates
+# the field reads as what it was: the user's own Chrome.
+BROWSER_KIND_SERVER = "server"
+BROWSER_KIND_DESKTOP = "desktop"
+BROWSER_KINDS = frozenset({BROWSER_KIND_SERVER, BROWSER_KIND_DESKTOP})
 
 # Autonomous event types only the browser extension can act on, so only it is
 # served them. ``browser_command`` carries the whole command envelope, an
@@ -91,6 +106,7 @@ class _BrowserState:
 
     streams: int = 0
     version: Optional[str] = None
+    kind: str = BROWSER_KIND_DESKTOP
     connects: int = 0
     last_connect: Optional[float] = None
     last_disconnect: Optional[float] = None
@@ -108,8 +124,9 @@ class BrowserRecord:
 
     ``client_id`` is the extension's persistent identity (stable across
     worker recycles and browser restarts; reset only by the extension's
-    Forget). Ages are seconds, computed at read time; ``None`` means the
-    event never happened this process lifetime.
+    Forget). ``kind`` is what the browser announced on its last connect
+    (``server`` or ``desktop``). Ages are seconds, computed at read time;
+    ``None`` means the event never happened this process lifetime.
     """
 
     client_id: str
@@ -117,12 +134,33 @@ class BrowserRecord:
     connected: bool
     streams: int
     connects: int
+    kind: str
     last_connect_age_s: Optional[float] = field(default=None)
     last_disconnect_age_s: Optional[float] = field(default=None)
 
 
+# A client_id is not just an in-process roster key: it is a DURABLE profile
+# key (browser labels and their provenance are stored under it), announced by
+# the client and never otherwise validated. So the shape is bounded here
+# rather than trusted: the prefix, then a bounded run of the characters a
+# uuid uses. Anything else is not read as an extension stream at all, which
+# is the safe reading of an id this build does not recognise: it registers no
+# roster row, seeds no label, and is served none of the chrome-only events.
+_CLIENT_ID_TAIL_MAX_CHARS = 64
+_CLIENT_ID_RE = re.compile(
+    rf"^{re.escape(CHROME_CLIENT_ID_PREFIX)}"
+    rf"[A-Za-z0-9._-]{{1,{_CLIENT_ID_TAIL_MAX_CHARS}}}$"
+)
+
+
 def is_chrome_client_id(client_id: str | None) -> bool:
-    return bool(client_id) and client_id.startswith(CHROME_CLIENT_ID_PREFIX)
+    """True for a well-formed Nymeria browser extension client_id.
+
+    The extension mints ``nymeria-browser-<uuid4>`` once per Chrome profile;
+    a value that is not that shape (300 characters of anything, a newline, a
+    path) is rejected rather than carried into durable storage.
+    """
+    return bool(client_id) and _CLIENT_ID_RE.match(client_id) is not None
 
 
 # The announced version renders in trusted-voice platform text (roster
@@ -140,25 +178,37 @@ def _clean_version(version: str) -> Optional[str]:
     return cleaned[:_VERSION_MAX_CHARS] or None
 
 
+def clean_browser_kind(kind: Optional[str]) -> str:
+    """Normalise an announced kind onto the closed set; anything else is
+    ``desktop`` (the pre-kind default, and the safe reading of a value this
+    build does not know)."""
+    cleaned = str(kind or "").strip()
+    return cleaned if cleaned in BROWSER_KINDS else BROWSER_KIND_DESKTOP
+
+
 def add_chrome_subscriber(
     *,
     user_id: str,
     subscriber_id: str,
     version: Optional[str] = None,
     client_id: Optional[str] = None,
+    kind: Optional[str] = None,
 ) -> None:
     """Record that ``subscriber_id`` is a Chrome-extension SSE stream for
     ``user_id``. Idempotent for membership; every call still counts as a
-    connect and refreshes the announced version.
+    connect and refreshes the announced version and kind.
 
     ``client_id`` is the extension's persistent per-browser identity; it
     keys the per-browser roster row. A caller that omits it (older tests,
     hypothetical non-extension registrars) gets a row keyed by the
     subscriber id, which degrades to one-row-per-stream rather than
-    breaking.
+    breaking. ``kind`` is normalised onto :data:`BROWSER_KINDS` (default
+    ``desktop``) and the latest connect wins, so a rig re-baked as the
+    server browser reads as one from its next connect.
     """
     browser_key = client_id or subscriber_id
     version = _clean_version(version) if version else None
+    kind = clean_browser_kind(kind)
     now = time.monotonic()
     with _lock:
         _subscribers_by_user.setdefault(user_id, set()).add(subscriber_id)
@@ -175,6 +225,7 @@ def add_chrome_subscriber(
         row.streams += 1
         row.connects += 1
         row.last_connect = now
+        row.kind = kind
         if version:
             row.version = version
 
@@ -240,6 +291,7 @@ def chrome_browser_roster(user_id: str) -> list[BrowserRecord]:
                 connected=state.streams > 0,
                 streams=state.streams,
                 connects=state.connects,
+                kind=state.kind,
                 last_connect_age_s=(
                     None if state.last_connect is None else now - state.last_connect
                 ),
@@ -265,6 +317,26 @@ def is_chrome_browser_connected(user_id: str, client_id: str) -> bool:
     with _lock:
         row = _browsers_by_user.get(user_id, {}).get(client_id)
         return bool(row and row.streams > 0)
+
+
+def chrome_browser_kind(user_id: str, client_id: str) -> Optional[str]:
+    """The kind browser ``client_id`` last announced, or ``None`` when this
+    process has never seen it connect (a target known only from the profile,
+    or any browser right after a backend restart)."""
+    with _lock:
+        row = _browsers_by_user.get(user_id, {}).get(client_id)
+        return None if row is None else row.kind
+
+
+def known_server_browser(user_id: str) -> bool:
+    """True when any browser this process has seen for ``user_id`` announced
+    itself as the server browser, connected or not. In-process like the rest
+    of the registry: after a backend restart it reads False until the server
+    browser reconnects, which is why the refusals pair it with the install's
+    ``server_browser_home`` setting."""
+    with _lock:
+        rows = _browsers_by_user.get(user_id, {})
+        return any(state.kind == BROWSER_KIND_SERVER for state in rows.values())
 
 
 def chrome_browser_disconnect_age(user_id: str, client_id: str) -> Optional[float]:
@@ -338,14 +410,20 @@ def reset_for_tests() -> None:
 __all__ = [
     "CHROME_CLIENT_ID_PREFIX",
     "CHROME_ONLY_EVENT_TYPES",
+    "BROWSER_KIND_SERVER",
+    "BROWSER_KIND_DESKTOP",
+    "BROWSER_KINDS",
     "BrowserRecord",
     "is_chrome_client_id",
+    "clean_browser_kind",
     "add_chrome_subscriber",
     "remove_chrome_subscriber",
     "is_chrome_connected",
     "chrome_subscribers_for",
     "chrome_browser_roster",
     "is_chrome_browser_connected",
+    "chrome_browser_kind",
+    "known_server_browser",
     "chrome_browser_disconnect_age",
     "chrome_disconnect_age",
     "chrome_extension_version",

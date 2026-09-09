@@ -163,6 +163,26 @@ def _cmd_rotate_token(args: argparse.Namespace) -> int:
 def _cmd_issue_token(args: argparse.Namespace) -> int:
     repo = _repo()
     user_id = _resolve_user_id_by_ref(repo, args.user)
+    revoked = 0
+    if getattr(args, "replace", False):
+        # Machine tokens (the server browser's baked one, a bot's) are re-minted
+        # on every re-provision, and the old one is dead the moment the new one
+        # is baked over it. Without this they accumulate against
+        # account_max_active_tokens_per_user until minting simply starts failing,
+        # which is what happened to the wizard's Docker path. Scoped to the label
+        # on purpose: `rotate-token` revokes everything, including the service
+        # token the stack is running on.
+        if not args.label:
+            print("[error] --replace needs --label", file=sys.stderr)
+            return 2
+        try:
+            for record in repo.list_tokens_for_user(user_id):
+                if record.label == args.label and record.revoked_at is None:
+                    if repo.revoke_token(user_id, record.hash_prefix):
+                        revoked += 1
+        except UserNotFound:
+            print(f"[error] User not found: {args.user}", file=sys.stderr)
+            return 2
     try:
         token = repo.issue_token(user_id, label=args.label)
     except UserNotFound:
@@ -171,7 +191,13 @@ def _cmd_issue_token(args: argparse.Namespace) -> int:
     except TokenLimitExceeded as e:
         print(f"[error] {e}", file=sys.stderr)
         return 2
-    print(f"Issued new token for {user_id}. Existing tokens were not revoked.")
+    if revoked:
+        print(
+            f"Issued new token for {user_id}. Revoked {revoked} existing "
+            f"'{args.label}' token(s)."
+        )
+    else:
+        print(f"Issued new token for {user_id}. Existing tokens were not revoked.")
     print()
     print(f"  Token: {token}")
     print()
@@ -248,6 +274,15 @@ def build_parser(subparsers: argparse._SubParsersAction) -> None:
         help="User id or email, for example default or owner@localhost",
     )
     p_issue.add_argument("--label", default=None)
+    p_issue.add_argument(
+        "--replace",
+        action="store_true",
+        help=(
+            "Revoke this user's existing active tokens carrying the same "
+            "--label before minting. For machine tokens that are re-baked on "
+            "every provision; unlike rotate-token it leaves other labels alone"
+        ),
+    )
 
     p_rotate = actions.add_parser(
         "rotate-token",

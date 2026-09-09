@@ -69,6 +69,7 @@ from .providers import (
     valid_key_format_for_spec,
 )
 from .rag_catalog import apply_quickstart_rag, rag_env_for_state
+from .server_browser_catalog import server_browser_selected
 from .tuning_catalog import tuning_drop_env, tuning_env_for_state
 from .voice_catalog import (
     needs_local_voice_extra,
@@ -559,6 +560,15 @@ def finalize(
 
     optional_env = _resolve_optional_env(state, spec=spec, api_key=api_key)
     extra_env = _resolve_extra_env(state)
+    # The server browser's home rides the config so the backend (its refusals)
+    # and `nymeria doctor` know this install has one; recorded when selected or
+    # when a rig already exists (a skip on reconfigure keeps the rig).
+    rig_home = _server_browser_home_for_config(state, root=root)
+    from ..server_browser import HOME_ENV_KEY
+
+    if rig_home is not None:
+        extra_env[HOME_ENV_KEY] = str(rig_home)
+    drop_stale_server_browser = _server_browser_drop_env(rig_home)
     secrets_key = _resolve_secrets_key(config_path)
     is_full_stack = _is_full_stack(state)
     # Docker owns its `/data` volume, so the host cannot seed the bootstrap profile
@@ -602,6 +612,7 @@ def finalize(
         drop_cliproxy_management=not state.auth_method_is_cliproxy(),
         drop_public_url=should_drop_public_url(state),
         drop_stale_voice=voice_drop_env(state),
+        drop_stale_server_browser=drop_stale_server_browser,
         drop_stale_tuning=tuning_drop_env(state),
     )
 
@@ -628,6 +639,10 @@ def finalize(
     # reconfigure must not re-print an already-consumed token, so both leave this
     # None and the end-of-run printer falls back to the file-path handoff.
     connect_token: str | None = None
+    # The accounts repo of a native install; Docker mints in-container, so the
+    # server-browser hook takes the two-phase path there (see
+    # _maybe_install_server_browser) and this stays None.
+    repo: AccountsRepo | None = None
     if for_docker:
         # The container owns its data: it mints the bootstrap admin + token into
         # its `/data` volume on first boot. A host-side bootstrap would be
@@ -697,6 +712,19 @@ def finalize(
             for_docker=for_docker,
             full_stack=is_full_stack,
             non_interactive=non_interactive,
+        )
+
+    # The server browser (a headless Chrome the agent drives out of the box):
+    # install, connect to this install as the admin, and supervise. Runs for
+    # the full flow and its own scoped jump.
+    if scoped_section in (None, "server_browser"):
+        _finalize_server_browser_guarded(
+            state,
+            console,
+            root=root,
+            data_dir=data_dir,
+            repo=repo,
+            for_docker=for_docker,
         )
 
     if scoped_section is not None:
@@ -771,6 +799,7 @@ def write_config(
     drop_public_url: bool = False,
     drop_stale_voice: tuple[str, ...] = (),
     drop_stale_tuning: tuple[str, ...] = (),
+    drop_stale_server_browser: tuple[str, ...] = (),
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -929,6 +958,9 @@ def write_config(
     # strategies' trigger lines (tuning_catalog.tuning_drop_env); same
     # produced-wins-over-drop semantics.
     drop_env = drop_env + drop_stale_tuning
+    # SERVER_BROWSER_HOME when this install has neither a rig nor a pick;
+    # a produced key (the normal case) still wins over the drop.
+    drop_env = drop_env + drop_stale_server_browser
 
     # Reconfigure overlays produced keys onto the existing file; first-run writes
     # a fresh file with the generated-by header. Both go through the shared atomic
@@ -1629,6 +1661,441 @@ def _print_voice_hints(state: WizardState, console: Console) -> None:
         )
 
 
+def _server_browser_drop_env(rig_home: Path | None) -> tuple[str, ...]:
+    """The env keys this run must RETIRE for the server browser.
+
+    Exactly the inverse of writing the key: no pick and no rig on disk means the
+    line must go, or the refusals keep naming a browser the operator removed
+    (`nymeria browser service uninstall` plus an rm, then a reconfigure with
+    `--no-server-browser`, leaves `has_server_browser()` answering True off a
+    stale line forever). A produced key always wins over the drop, so this is
+    inert on every run that does have a rig.
+    """
+    from ..server_browser import HOME_ENV_KEY
+
+    return () if rig_home is not None else (HOME_ENV_KEY,)
+
+
+def _rig_home_for_root(root: Path):
+    """This ROOT's rig home, ignoring the launch process's environment.
+
+    Every setup-side rig lookup (the key write, the native and Docker
+    provisioning phases, hydration) goes through here. A bare
+    `resolve_rig_home(root)` reads `os.environ` first, which is right for the
+    CLI and wrong for setup: `run.py` loads the LAUNCH root's dotenv at import,
+    so on a two-install host `nymeria init --root /other` would resolve THIS
+    install's rig, write that path into the other install's config, and re-bake
+    the running rig with the other install's URL and token. Destructive, not
+    merely stale. The precedence chain itself (env files, the `configure
+    --home` pointer, the default) stays the launcher's: re-spelling it here is
+    how a source got missed once already.
+    """
+    from .. import server_browser as sb
+
+    return sb.resolve_rig_home(root, process_env=False)
+
+
+def _server_browser_home_for_config(state: WizardState, *, root: Path) -> Path | None:
+    """The rig home to record as SERVER_BROWSER_HOME, or None to retire the key.
+
+    Recorded when the step selected the server browser, or when a rig already
+    exists at this root (a skip on reconfigure keeps the rig, so the key must
+    stay true).
+
+    The key means "this install is MEANT to have a server browser", not "one is
+    installed and healthy": it is written from the pick, before provisioning
+    runs, and deliberately survives a provisioning failure, because the failure
+    path prints the commands that finish the job and the refusals should point
+    at `nymeria browser status` rather than at a Chrome extension popup the
+    operator was never going to use. What it must never do is outlive the rig:
+    None retires the key (see `drop_stale_server_browser` in `write_config`), so
+    a skip after the rig was deleted stops the refusals naming a browser that is
+    gone.
+    """
+    home = _rig_home_for_root(root)
+    if server_browser_selected(state) or home.rig_json.exists():
+        return home.path
+    return None
+
+
+def _finalize_server_browser_guarded(
+    state: WizardState,
+    console: Console,
+    *,
+    root: Path,
+    data_dir: Path,
+    repo: "AccountsRepo | None",
+    for_docker: bool,
+) -> None:
+    """Run the server-browser hook so that nothing it does can end setup.
+
+    Containment, not belt-and-braces. `provision` promises never to raise and is
+    written to keep that promise, but it drives a 200 MB download, an archive
+    extract, a service install and four chmods, so the ways it can surprise us
+    are open-ended: a full disk mid-extract, a read-only mount, a non-ASCII
+    Windows path in the scheduled-task shim. By the time this runs, config.env
+    is written and the bootstrap admin is minted, and what comes AFTER it is the
+    capability summary, the doctor run, the bootstrap-token handoff and the
+    start-now action. Losing those over an optional browser is the one outcome
+    worth a bare `except`. Loud in the log, loud on screen, and the install
+    finishes.
+    """
+    try:
+        _maybe_install_server_browser(
+            state,
+            console,
+            root=root,
+            data_dir=data_dir,
+            repo=repo,
+            for_docker=for_docker,
+        )
+    except Exception as exc:  # noqa: BLE001 - setup finishes regardless
+        logger.warning("Server browser provisioning failed", exc_info=True)
+        console.print(
+            f"\n[yellow]The server browser could not be set up "
+            f"({escape(str(exc))}). Everything else finished. Retry with: "
+            f"nymeria browser install --root {escape(str(root))}[/yellow]"
+        )
+
+
+def _maybe_install_server_browser(
+    state: WizardState,
+    console: Console,
+    *,
+    root: Path,
+    data_dir: Path,
+    repo: "AccountsRepo | None",
+    for_docker: bool,
+) -> None:
+    """Give the install a browser the agent can drive: Chrome for Testing plus
+    the Nymeria extension, connected to this install as the admin, supervised.
+
+    Native shapes do it all here: the accounts DB is local, so a token labelled
+    `server-browser` is minted in-process (any earlier token of that label is
+    revoked first, so re-runs do not pile them up), the rig is provisioned
+    (`server_browser.provision`, which never raises), and the admin profile
+    gets the rig as its labelled account-default browser. Docker mints in the
+    container, which exists only once the stack runs, so this phase only
+    downloads Chrome; `_finish_docker_server_browser` completes it after the
+    start-now health check, or the manual steps are printed.
+
+    Unlike the local-rag hook there is no confirm prompt: the wizard's own
+    step (or `--no-server-browser`) already asked, and a `--quick` run
+    applies the default deliberately (the download is the out-of-the-box
+    path, not a compiled extra). Failures never fail setup.
+    """
+    from .. import server_browser as sb
+
+    rig = _rig_home_for_root(root)
+    existing = sb.RigConfig.load(rig)
+    if not server_browser_selected(state):
+        if existing is not None:
+            console.print(
+                f"\n[yellow]Server browser kept as-is at {escape(str(rig.path))} "
+                "(skipped this run). Remove it with "
+                f"`nymeria browser service uninstall --root {escape(str(root))}`.[/yellow]"
+            )
+        return
+
+    console.print("\n[bold]Server browser[/bold]")
+    log = _server_browser_logger(console)
+    if for_docker:
+        try:
+            sb.install(rig, log=log)
+        except sb.ServerBrowserError as exc:
+            console.print(
+                f"[yellow]Could not install Chrome for Testing: {escape(str(exc))}[/yellow]"
+            )
+            for hint in exc.hints:
+                console.print(f"  - {escape(hint)}")
+            return
+        if state.next_action is NextAction.START_API_OPEN_FRONTEND:
+            console.print(
+                "Chrome is ready; the extension is connected once the stack is up (below)."
+            )
+        else:
+            _print_docker_server_browser_steps(console, state, root=root)
+        return
+
+    if repo is None:
+        console.print(
+            "[yellow]No accounts database to mint the browser's token from; "
+            f"finish with: nymeria browser configure --root {escape(str(root))} "
+            "--token-file <file>[/yellow]"
+        )
+        return
+    token = _mint_server_browser_token(repo, console)
+    if token is None:
+        return
+    client_id = existing.client_id if existing is not None else sb.new_client_id()
+    report = sb.provision(
+        root,
+        base_url=local_base_url(state),
+        token=token,
+        client_id=client_id,
+        label=sb.DEFAULT_LABEL,
+        home=rig,
+        log=log,
+    )
+    _print_provision_report(console, report)
+    if report.ok and report.config is not None:
+        _write_server_browser_prefs(
+            data_dir,
+            client_id=report.config.client_id,
+            label=report.config.label,
+            console=console,
+        )
+
+
+def _server_browser_logger(console: Console):
+    def log(line: str) -> None:
+        style = "yellow" if line.startswith("WARNING") else None
+        text = escape(line)
+        console.print(f"[{style}]{text}[/{style}]" if style else text)
+
+    return log
+
+
+def _mint_server_browser_token(repo: "AccountsRepo", console: Console) -> str | None:
+    """A fresh `server-browser` token for the admin; earlier ones of that label revoked."""
+    from ..core.accounts import BOOTSTRAP_USER_ID
+    from ..server_browser import TOKEN_LABEL
+
+    try:
+        for record in repo.list_tokens_for_user(BOOTSTRAP_USER_ID):
+            if record.label == TOKEN_LABEL and getattr(record, "revoked_at", None) is None:
+                repo.revoke_token(BOOTSTRAP_USER_ID, record.hash_prefix)
+        return repo.issue_token(BOOTSTRAP_USER_ID, label=TOKEN_LABEL)
+    except Exception as exc:  # noqa: BLE001 - setup must finish; the fix is printed
+        console.print(
+            f"[yellow]Could not mint a token for the server browser ({escape(str(exc))}). "
+            "Mint one later (Desktop > Account > Tokens, or `nymeria users issue-token "
+            "default --label server-browser`) and run `nymeria browser configure "
+            "--token-file <file>`.[/yellow]"
+        )
+        return None
+
+
+def _write_server_browser_prefs(
+    data_dir: Path, *, client_id: str, label: str, console: Console
+) -> None:
+    """Name the rig and make it the admin's account-default browser.
+
+    Direct profile write (the API is not up yet during finalize): the same
+    `browser` preference block `/browser default` and `/browser rename` edit.
+    A thread's own `chrome_target` still overrides; the user's later rename
+    wins because this runs only at provisioning. Best-effort.
+    """
+    from ..core.accounts import BOOTSTRAP_USER_ID
+    from ..core.user_profile import UserProfileManager
+
+    try:
+        manager = UserProfileManager(data_dir)
+        with manager.atomic_update(BOOTSTRAP_USER_ID) as profile:
+            prefs = profile.get_browser_preferences()
+            labels = dict(prefs.get("labels") or {})
+            labels[client_id] = label
+            profile.set_browser_preference("labels", labels)
+            profile.set_browser_preference("default_target", client_id)
+        console.print(
+            f"[green]Browser default:[/green] {escape(label)} ({escape(client_id)}) "
+            "for your account; a thread can switch with chrome_target."
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort, like the profile seeding
+        logger.warning("Failed to write server-browser preferences", exc_info=True)
+        console.print(
+            f"[yellow]Could not record the server browser as your default ({escape(str(exc))}); "
+            f"set it later with `/browser default {escape(client_id)}`.[/yellow]"
+        )
+
+
+def _print_provision_report(console: Console, report) -> None:
+    for line in report.lines:
+        console.print(f"[green]{escape(line)}[/green]")
+    for warning in report.warnings:
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
+    if report.manual_commands:
+        console.print("Finish the server browser by hand with:")
+        for command in report.manual_commands:
+            _print_command(console, command)
+
+
+def _print_docker_server_browser_steps(
+    console: Console, state: WizardState, *, root: Path
+) -> None:
+    """The three commands that connect the server browser to a Docker stack.
+
+    Printed by phase 1 when the wizard is not starting the stack, and by every
+    early return from `_start_now_docker`: phase 1 withholds them on the promise
+    that phase 2 runs, so a start that fails must hand them over instead of
+    leaving a downloaded Chrome, a written SERVER_BROWSER_HOME and no rig.
+    Silent for an install that declined the browser.
+    """
+    from ..server_browser import TOKEN_LABEL
+
+    if not server_browser_selected(state):
+        return
+    spec = _docker_stack_spec(state)
+    console.print(
+        "Once the stack is up, connect the server browser (mint a token in the "
+        "container, save it to a file, then configure and supervise the browser):"
+    )
+    _print_command(
+        console,
+        _compose_command_str(
+            spec, "exec", "-T", spec.service, "python", "run.py", "users",
+            "issue-token", "default", "--label", TOKEN_LABEL, "--replace",
+        ),
+    )
+    _print_command(
+        console,
+        f"nymeria browser configure --root {root} --base-url {local_base_url(state)} "
+        "--token-file <file>",
+    )
+    _print_command(console, f"nymeria browser service install --root {root}")
+
+
+def _finish_docker_server_browser(
+    state: WizardState, console: Console, *, root: Path, spec: _DockerStackSpec
+) -> None:
+    """Docker phase 2: mint in-container, provision the rig, set the account default.
+
+    Called once the stack answered its health check. The account default and
+    label go through the API (`/browser rename`, `/browser default`) because
+    the profile lives in the container's volume; `/browser default` resolves
+    only browsers the backend knows, so this waits (bounded) for the rig's
+    extension to subscribe first. Every failure prints the manual steps.
+    """
+    from .. import server_browser as sb
+
+    if not server_browser_selected(state):
+        return
+    rig = _rig_home_for_root(root)
+    try:
+        if rig.chrome_binary() is None:
+            return  # phase 1 failed and already said so
+    except sb.ServerBrowserError:
+        return
+    console.print("\n[bold]Server browser[/bold]")
+    token = _mint_docker_server_browser_token(spec=spec, root=root)
+    if token is None:
+        console.print(
+            "[yellow]Could not mint the browser's token in the container.[/yellow]"
+        )
+        _print_docker_server_browser_steps(console, state, root=root)
+        return
+    existing = sb.RigConfig.load(rig)
+    client_id = existing.client_id if existing is not None else sb.new_client_id()
+    report = sb.provision(
+        root,
+        base_url=local_base_url(state),
+        token=token,
+        client_id=client_id,
+        label=sb.DEFAULT_LABEL,
+        home=rig,
+        log=_server_browser_logger(console),
+    )
+    _print_provision_report(console, report)
+    if report.ok and report.config is not None:
+        _apply_server_browser_default_via_api(
+            base_url=local_base_url(state),
+            token=token,
+            client_id=report.config.client_id,
+            label=report.config.label,
+            home=rig,
+            console=console,
+        )
+
+
+def _mint_docker_server_browser_token(*, spec: _DockerStackSpec, root: Path) -> str | None:
+    """Issue a `server-browser` token for the admin inside the running container."""
+    from ..server_browser import TOKEN_LABEL
+
+    # `--replace` revokes this label's live tokens before minting. Without it
+    # every re-run leaves another admin-scoped token behind, baked into a
+    # config.json that has since been overwritten so nothing will ever revoke
+    # it, until account_max_active_tokens_per_user trips and minting simply
+    # starts failing. The native path has always revoked; this is the same rule.
+    command = _compose_argv(
+        spec, "exec", "-T", spec.service, "python", "run.py", "users",
+        "issue-token", "default", "--label", TOKEN_LABEL, "--replace",
+    )
+    try:
+        # env-gate: full-copy - same `_compose_env` as the token read above:
+        # compose resolves the project from `${...}` in the process env on
+        # the no-`--env-file` path, and this execs into an already-running
+        # container rather than starting a new image.
+        result = subprocess.run(
+            command,
+            cwd=str(root),
+            env=_compose_env(spec),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(BOOTSTRAP_TOKEN_REGEX, result.stdout)
+    return match.group(0) if match else None
+
+
+def _apply_server_browser_default_via_api(
+    *,
+    base_url: str,
+    token: str,
+    client_id: str,
+    label: str,
+    home,
+    console: Console,
+    wait_seconds: float = 30.0,
+) -> None:
+    from .. import server_browser as sb
+
+    deadline = time.monotonic() + wait_seconds
+    connected = False
+    while time.monotonic() < deadline:
+        try:
+            if sb.status(home).connected_per_backend:
+                connected = True
+                break
+        except Exception:  # noqa: BLE001 - polling
+            pass
+        time.sleep(2.0)
+    if not connected:
+        console.print(
+            "[yellow]The server browser has not connected yet, so it is not the "
+            f"account default; once it shows in `/browser list`, run "
+            f"`/browser default {escape(client_id)}`.[/yellow]"
+        )
+        return
+    # Only the default is set here. The NAME arrives on its own: the extension
+    # announces its baked label when it subscribes, and the backend seeds it for
+    # a browser that has none. `/browser rename` could not carry it anyway, its
+    # `label` is a single plain positional with no rest capture, so the two-word
+    # default label parsed as an extra argument and the command failed with
+    # "Unexpected argument". It failed at level="error" inside an HTTP 200, so
+    # nothing raised and success was printed regardless. Do not re-add it
+    # without making the command take a multi-word label.
+    try:
+        sb.http_json(
+            f"{base_url}/commands/execute",
+            token=token,
+            method="POST",
+            body={"command": f"/browser default {client_id}", "surface": "cli"},
+            timeout=10.0,
+        )
+        console.print(
+            f"[green]Browser default:[/green] {escape(label)} ({escape(client_id)}) for your account."
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort
+        console.print(
+            f"[yellow]Could not set the server browser as the account default ({escape(str(exc))}); "
+            f"run `/browser default {escape(client_id)}` from any Nymeria surface.[/yellow]"
+        )
+
+
 def _maybe_install_local_rag(
     extra_env: Mapping[str, str],
     console: Console,
@@ -2142,6 +2609,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             "Run it yourself:[/yellow]"
         )
         _print_docker_next_steps(console, state)
+        _print_docker_server_browser_steps(console, state, root=root)
         return 0
     if result.returncode != 0:
         console.print(
@@ -2156,6 +2624,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
                 "latest) and re-run the start command.[/yellow]"
             )
         _print_docker_next_steps(console, state)
+        _print_docker_server_browser_steps(console, state, root=root)
         return 0
     if not wait_for_health(
         console=console, url=spec.health_url, timeout=spec.health_timeout
@@ -2170,6 +2639,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             # them, so say where the relative commands work from.
             console.print(f"Run compose commands from {root}.")
         _print_docker_token_command(console, spec)
+        _print_docker_server_browser_steps(console, state, root=root)
         return 0
     console.print("[green]Nymeria is up.[/green]")
     verify_public_url_now(state, console)
@@ -2184,6 +2654,9 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
     _print_docker_bootstrap_token(
         console, spec=spec, root=root, base_url=local_base_url(state)
     )
+    # Phase 2 of the server browser for Docker: the stack is up, so a token
+    # can be minted in-container and the rig connected (see the hook).
+    _finish_docker_server_browser(state, console, root=root, spec=spec)
     return 0
 
 

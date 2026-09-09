@@ -17,8 +17,10 @@ backup-and-restore doc):
   the tables are consistent with each other. This is pure psycopg; the app
   image ships no ``pg_dump`` binary and does not need one.
 
-Nothing here imports settings or the agent runtime; callers inject paths and
-connection factories, which is also the test seam.
+Callers inject paths and connection factories, which is also the test seam.
+The one deliberate exception is :func:`server_browser_rig_path`, which reads
+settings lazily because the rig home it must exclude is a runtime setting
+rather than something the walker can be told from outside.
 """
 
 from __future__ import annotations
@@ -48,7 +50,28 @@ POSTGRES_CHECKPOINT_TABLES = (
 # (opt-in via include_code_backups); `logs`/`flags` are ephemeral; `voice` is
 # a regenerable synthesis cache. Hidden `.pre-restore-*`/`.snapshot-*` dirs
 # are prior restore leftovers and in-flight staging.
-DEFAULT_EXCLUDED_TOP_LEVEL = frozenset({"snapshots", "logs", "flags", "voice"})
+#
+# `server-browser` is the server browser's rig (`nymeria/server_browser.py`,
+# whose default home is `<root>/data/server-browser`). Excluded on three
+# counts, not one: its `ext/config.json` carries a live account token, its
+# `profile/` carries the browser's logged-in site sessions, and its `cft/` is
+# a ~200 MB re-downloadable Chrome. A snapshot is a portable artifact that
+# moves between machines, so none of that belongs in one; a restored install
+# re-provisions the rig (`nymeria browser install` + `configure`). The name
+# is pinned to `server_browser.resolve_rig_home`'s default by
+# `tests/test_snapshot.py`.
+# `server-browser-home` is the one-line pointer `nymeria browser configure
+# --home` leaves so the wizard reconfigures THAT rig instead of minting a
+# second one. It holds no secret, but it is an absolute path that is only true
+# on the host that wrote it: carried into a portable artifact it would aim a
+# restored install's rig at a directory that does not exist there. Host-local
+# state, so like the rig it is neither captured nor swept aside on restore.
+# The name is pinned to `server_browser.rig_home_pointer` by tests.
+SERVER_BROWSER_DIR = "server-browser"
+SERVER_BROWSER_POINTER = "server-browser-home"
+DEFAULT_EXCLUDED_TOP_LEVEL = frozenset(
+    {"snapshots", "logs", "flags", "voice", SERVER_BROWSER_DIR, SERVER_BROWSER_POINTER}
+)
 CODE_BACKUPS_DIR = "backups"
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
@@ -125,6 +148,49 @@ def sqlite_consistent_copy(source: Path, target: Path) -> None:
         ) from exc
 
 
+def server_browser_rig_path(data_dir: Path) -> Optional[Path]:
+    """The server browser's rig home, when it sits inside ``data_dir``.
+
+    The `server-browser` name in :data:`DEFAULT_EXCLUDED_TOP_LEVEL` covers the
+    default home, and that is the only home most installs have. But
+    `SERVER_BROWSER_HOME` (and `nymeria browser configure --home`) can put the
+    rig anywhere, INCLUDING elsewhere inside the data dir under another name,
+    and a name-only exclusion would then quietly resume capturing the one thing
+    it exists to keep out: `ext/config.json` holds a live account token and
+    `profile/` holds every site session a human signed the browser into.
+
+    Delegates to :func:`server_browser.resolve_rig_home` rather than reading
+    the env key itself. That resolver owns the precedence chain (explicit >
+    process env > the root's env files > the pointer a `configure --home`
+    leaves behind > the default), and it has already grown a source this
+    function did not know about: re-implementing it here means the next one
+    silently reopens the hole above.
+
+    Resolved rather than name-matched, so a relative or symlinked setting still
+    lands on the same path the walker sees. Returns None when the rig lives
+    outside ``data_dir`` (nothing to exclude, the walker cannot reach it) or
+    when the home cannot be resolved at all: a snapshot must not fail over
+    this, and the name-based exclusion still covers the default home.
+    """
+    try:
+        from ..config.settings import get_settings
+        from ..server_browser import resolve_rig_home
+
+        settings = get_settings()
+        home = resolve_rig_home(
+            Path(settings.project_root),
+            getattr(settings, "server_browser_home", None),
+        ).path
+    except Exception:  # noqa: BLE001 - a snapshot must not fail over a setting
+        logger.warning("Snapshot could not read the server browser home", exc_info=True)
+        return None
+    try:
+        home.relative_to(data_dir.resolve())
+    except (OSError, ValueError):
+        return None
+    return home
+
+
 def iter_data_dir_files(
     data_dir: Path,
     *,
@@ -137,11 +203,15 @@ def iter_data_dir_files(
     sidecars are skipped (the backup API copies are self-contained); the
     caller decides per-file whether to route through the backup API by
     checking :func:`is_sqlite_file`.
+
+    The server browser's rig is excluded by name AND by resolved path, because
+    it can be moved (:func:`server_browser_rig_path`).
     """
     data_dir = data_dir.resolve()
     excluded = set(DEFAULT_EXCLUDED_TOP_LEVEL)
     if not include_code_backups:
         excluded.add(CODE_BACKUPS_DIR)
+    rig = server_browser_rig_path(data_dir)
 
     def walk(directory: Path) -> Iterator[Tuple[Path, str]]:
         try:
@@ -153,6 +223,8 @@ def iter_data_dir_files(
             rel = entry.relative_to(data_dir)
             top = rel.parts[0]
             if top in excluded or top.startswith((".pre-restore-", ".snapshot-")):
+                continue
+            if rig is not None and entry == rig:
                 continue
             if entry.is_symlink():
                 # The data dir should not contain symlinks; a planted one
@@ -352,7 +424,9 @@ __all__ = [
     "ensure_postgres_checkpoint_schema",
     "is_sqlite_file",
     "is_sqlite_sidecar",
+    "SERVER_BROWSER_DIR",
     "iter_data_dir_files",
+    "server_browser_rig_path",
     "restore_postgres_checkpoints",
     "sqlite_consistent_copy",
     "sqlite_integrity_ok",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import socket
 import sqlite3
@@ -104,6 +105,15 @@ def _append_settings_checks(
             _check_port(settings),
         ]
     )
+    project_root_arg = getattr(args, "project_root", None)
+    project_root = (
+        Path(project_root_arg).expanduser().resolve()
+        if project_root_arg is not None
+        else PROJECT_ROOT
+    )
+    browser = _check_server_browser(settings, project_root)
+    if browser is not None:
+        results.append(browser)
 
 
 def _format_result(result: CheckResult) -> str:
@@ -415,6 +425,81 @@ def _check_redis(settings: Any) -> CheckResult:
     except Exception as exc:  # noqa: BLE001 - diagnostics must report all failures.
         return CheckResult("Redis", "fail", f"ping failed: {_compact_error(exc)}")
     return CheckResult("Redis", "pass", f"connected to {redact_url_credentials(settings.redis_url)}")
+
+
+def _check_server_browser(settings: Any, project_root: Path) -> CheckResult | None:
+    """The server browser (headless Chrome + extension), when this install has one.
+
+    None when nothing was ever configured, so a popup-only install shows no
+    row. Warn, never fail: the backend runs fine without it, and the detail
+    carries the fix (`nymeria browser status` names each problem). A rig that
+    had to fall back to `--no-sandbox` at configure time warns for as long as
+    it runs that way, with the durable fix named, because the opt-out was
+    measured rather than chosen.
+    """
+    from . import server_browser as sb
+
+    home_value = getattr(settings, "server_browser_home", None) or os.environ.get(sb.HOME_ENV_KEY)
+    home = sb.resolve_rig_home(project_root, home_value or None)
+    if not home_value and not home.rig_json.exists():
+        return None
+    if home_value and not home.path.exists():
+        # The key is a PRESENCE signal, and on the Docker stack it is set in
+        # the api and worker containers on purpose while the rig itself runs
+        # on the HOST: the path is meaningless in here. Reporting "not
+        # installed" from inside a container would accuse a healthy rig, so
+        # say what is actually known, which is that nothing is at that path
+        # on this machine.
+        return CheckResult(
+            "Server browser",
+            "warn",
+            f"no rig at {home.path} on this machine. On the Docker stack the "
+            "rig runs on the host, so check it there with `nymeria browser "
+            "status`; otherwise `nymeria browser install` provisions one.",
+        )
+    try:
+        report = sb.status(home)
+    except Exception as exc:  # noqa: BLE001 - diagnostics report, never raise
+        return CheckResult("Server browser", "warn", f"status failed: {_compact_error(exc)}")
+    if report.backend_reachable is False:
+        # `nymeria init --doctor` runs BEFORE start-now launches the backend, so
+        # on a healthy fresh install the rig's backend probes fail for the one
+        # reason that is not the rig's fault. Report what is locally true and
+        # say why the rest is unknown, rather than accusing a browser that is
+        # running exactly as installed.
+        local = "installed and running" if report.running else "installed"
+        if not report.installed:
+            local = "not installed"
+        return CheckResult(
+            "Server browser",
+            "warn",
+            f"{local}; the backend is not up, so whether it is connected is "
+            "unknown. Re-check with `nymeria browser status` once Nymeria is "
+            "running.",
+        )
+    if report.healthy:
+        summary = (
+            f"{report.chrome_version or 'Chrome'} connected"
+            + (f" as {report.identity}" if report.identity else "")
+            # The kind is a constant here, not a lookup: doctor only ever
+            # describes THIS install's rig, and a rig is a server browser by
+            # construction. It is named anyway because the refusals and the
+            # roster both speak in kinds, so the row should too.
+            + f" ({report.label or 'server browser'}, a server browser, "
+            f"debug port {report.debug_port})"
+        )
+        if report.no_sandbox:
+            return CheckResult(
+                "Server browser",
+                "warn",
+                summary
+                + "; running with --no-sandbox (user namespaces are restricted here; "
+                "an AppArmor profile for the Chrome binary is the durable fix, then "
+                "`nymeria browser configure --sandbox on`)",
+            )
+        return CheckResult("Server browser", "pass", summary)
+    problems = "; ".join(report.problems) or "not healthy"
+    return CheckResult("Server browser", "warn", f"{problems} (details: nymeria browser status)")
 
 
 def _check_voice(settings: Any) -> CheckResult:

@@ -38,6 +38,14 @@ TOKEN_PATTERN = re.compile(r"nym_[A-Za-z0-9_-]{32,}")
 DEFAULT_TOKEN_TTL_DAYS = 90
 DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS = 24
 DEFAULT_MAX_ACTIVE_TOKENS_PER_USER = 10
+# The server browser's baked token is a MACHINE credential: nothing renews it,
+# and the browser it authenticates has no way to ask a human for a new one, so
+# the ordinary 90-day lifetime would silently 401 every install a quarter after
+# setup. It gets its own long lifetime instead, still bounded and still
+# revocable (`nymeria browser configure` revokes and re-mints on every re-run).
+# Keep this label in step with `server_browser.TOKEN_LABEL`; a test pins them.
+SERVER_BROWSER_TOKEN_LABEL = "server-browser"
+DEFAULT_SERVER_BROWSER_TOKEN_TTL_DAYS = 3650
 
 UserRole = Literal["user", "admin"]
 Provider = Literal[
@@ -290,12 +298,14 @@ class AccountsRepo:
         token_ttl_days: int = DEFAULT_TOKEN_TTL_DAYS,
         max_active_tokens_per_user: int = DEFAULT_MAX_ACTIVE_TOKENS_PER_USER,
         bootstrap_token_ttl_hours: int = DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS,
+        server_browser_token_ttl_days: int = DEFAULT_SERVER_BROWSER_TOKEN_TTL_DAYS,
     ):
         self.db_path = Path(db_path)
         self._lock = threading.Lock()
         self.token_ttl_days = max(1, int(token_ttl_days))
         self.max_active_tokens_per_user = max(1, int(max_active_tokens_per_user))
         self.bootstrap_token_ttl_hours = max(1, int(bootstrap_token_ttl_hours))
+        self.server_browser_token_ttl_days = max(1, int(server_browser_token_ttl_days))
         self.bootstrap_token_path = self.db_path.parent / BOOTSTRAP_TOKEN_FILENAME
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
@@ -615,12 +625,28 @@ class AccountsRepo:
                 "account_bootstrap_token_ttl_hours",
                 DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS,
             ),
+            server_browser_token_ttl_days=getattr(
+                settings,
+                "account_server_browser_token_ttl_days",
+                DEFAULT_SERVER_BROWSER_TOKEN_TTL_DAYS,
+            ),
         )
 
     def _expiry_for_label(self, label: Optional[str], *, created_at: str) -> str:
+        """Lifetime by label: two labels are machine tokens with their own rule.
+
+        The bootstrap token is deliberately short (a human pastes it once). The
+        server browser's is deliberately long (nothing renews it and no human is
+        in the loop). Everything else takes the account default. This runs on the
+        migration path too (`:334`), so an existing token's expiry is recomputed
+        from its label, which is how a rig baked before this rule gets the long
+        lifetime without a re-mint.
+        """
         base = _parse_timestamp(created_at) or datetime.now(timezone.utc)
         if label == BOOTSTRAP_TOKEN_LABEL:
             expires_at = base + timedelta(hours=self.bootstrap_token_ttl_hours)
+        elif label == SERVER_BROWSER_TOKEN_LABEL:
+            expires_at = base + timedelta(days=self.server_browser_token_ttl_days)
         else:
             expires_at = base + timedelta(days=self.token_ttl_days)
         return expires_at.isoformat(timespec="seconds")
