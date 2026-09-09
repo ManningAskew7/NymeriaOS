@@ -1,6 +1,6 @@
 {
   "name": "nymeria-desktop",
-  "version": "0.2.0-beta.4",
+  "version": "0.2.0-beta.5",
   "description": "Desktop UI for NymeriaOS",
   "type": "module",
   "scripts": {
