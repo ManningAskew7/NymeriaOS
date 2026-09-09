@@ -12,7 +12,7 @@ Why Chrome for Testing: branded Google Chrome dropped `--load-extension` in
 v137 and `chrome-headless-shell` never supported extensions, so CfT is the
 only build that runs an MV3 extension headless. Why a headful User-Agent:
 the `HeadlessChrome/<v>` product token is a hard Google sign-in block
-(measured 3/3 on 2026-08-28, `docs/private/browser-login-research.md`), and
+(measured 3/3 against CfT 152 on 2026-08-28), and
 `--enable-automation` is an independent second trigger (`navigator.webdriver`),
 so the UA is overridden with the headful string DERIVED from the binary's
 major version and that flag is never passed.

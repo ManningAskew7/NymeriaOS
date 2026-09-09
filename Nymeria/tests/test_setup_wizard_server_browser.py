@@ -6,8 +6,8 @@ what setup DOES with it. Nothing here downloads a browser or starts a service:
 assertions are about the wiring setup owns (which token, which identity, which
 preferences, which config key, and what the user is told when it fails).
 
-Behaviour numbers (E1, E3, ...) are the plan's expected-behaviours list in
-``tmp/keep/server-browser-plan.md``.
+Behaviour numbers (E1, E3, ...) index the server-browser plan's
+expected-behaviours list; each test's docstring restates the behaviour it pins.
 """
 
 from __future__ import annotations

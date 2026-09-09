@@ -7292,8 +7292,8 @@ def test_browser_rename_command_labels_a_browser(monkeypatch) -> None:
 # `nymeria browser` runs beside the backend. It has no popup, so the old
 # "open the extension popup and click Connect" refusal was advice nobody could
 # follow once one existed, and on a fresh install with no extension anywhere it
-# pointed at nothing at all. These pin the plan's E8, E11, E12 and E13
-# (tmp/keep/server-browser-plan.md, section 6): every refusal names the
+# pointed at nothing at all. These pin the server-browser plan's E8, E11,
+# E12 and E13 (its refusal section): every refusal names the
 # browser it is about BY KIND and points at the way that browser comes back,
 # and kind never decides routing.
 
