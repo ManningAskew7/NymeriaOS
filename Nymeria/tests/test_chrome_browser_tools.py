@@ -7627,7 +7627,7 @@ def test_kind_is_taught_by_the_roster_tools_docstrings() -> None:
 
 def test_the_login_handoff_gate_stands_alone_in_the_tool(monkeypatch) -> None:
     """A gating safety rule lives in the tool, never only in a kit body
-    (nymeria/CLAUDE.md rule 3). An agent that arrives at chrome_request_login
+    (the tools and kits co-design rule). An agent that arrives at chrome_request_login
     through tool_search + bind, tool_invoke, default_thread_tools or a
     workflow has the schema and nothing else: the SKILL.md gate never loaded.
     So the tool's own description has to carry the two things that gate the

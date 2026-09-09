@@ -1375,7 +1375,7 @@ def configure(
     and the SSE fetch keeps that worker alive indefinitely, so a re-bake under
     a running browser is a silent no-op: the rig keeps using the old token and
     the old backend URL until something restarts it. Staging over the files it
-    is running from also strands it (`nymeria-browser/CLAUDE.md`), which is why
+    is running from also strands it, which is why
     the stop comes first.
     """
     if not base_url.strip() or not token.strip():

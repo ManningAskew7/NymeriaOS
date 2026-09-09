@@ -302,9 +302,9 @@ The server browser starts signed into nothing. A login wall there is not a
 fault, it is the state until a human signs it in, after which that site
 stays signed in in the profile.
 
-Two facts shape how that works, both measured (the derivations and the
-measurements are in `private/browser-login-research.md`; do not re-derive
-them):
+Two facts shape how that works, both measured against Chrome for Testing
+152 on 2026-08-28 (Google tunes sign-in risk logic server-side without
+notice, so re-measure before relying on them):
 
 - **The login must happen inside this browser.** Copying cookies from your
   desktop Chrome does not survive: Device Bound Session Credentials tie a
@@ -594,7 +594,7 @@ Two more places to look:
   living on the same host as the backend.
 - [backup-and-restore.md](backup-and-restore.md): what `nymeria snapshot`
   captures, including the caveat above.
-- `public/agent-systems/tools.md`, "Chrome Extension Tools": the tool
+- [../agent-systems/tools.md](../agent-systems/tools.md), "Chrome Extension Tools": the tool
   surface, the routing ladder and the roster.
-- `public/api.md`: `client_kind` and `client_label` on the extension's
+- [../api.md](../api.md): `client_kind` and `client_label` on the extension's
   stream connect.

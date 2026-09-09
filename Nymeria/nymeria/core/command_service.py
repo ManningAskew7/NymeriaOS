@@ -2647,7 +2647,7 @@ class CommandService:
                 seen_aliases[alias_path] = command_id
         # Naming canon (#131): built-in catalog only; runtime registrations
         # (tests, plugins) are exempt by design. Rules and constants:
-        # core/command_naming.py + docs/private/command-style-guide.md.
+        # core/command_naming.py and the command style guide.
         validate_command_naming(self._commands, AGENT_BLOCKED)
 
     def _resolve_agent(self, agent: Any | None = None) -> Any | None:
