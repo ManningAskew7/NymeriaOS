@@ -111,6 +111,12 @@ Both apps now use the same modular API service layout:
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
 | `components/notifications/index.ts` | KNOWN_DRIFT | Desktop exports notification profile/destination editors and the full panel; mobile only exports its notification center/item subset. |
 
+Both `chat.ts` clients route direct-stream replay gaps through `consumeTurnStream`
+before rendering. A regular turn enters history recovery, including when its
+start frame was evicted. A dispatched turn preserves its inline partial and
+target link and shows a loss message, since caller history cannot reconcile the
+target's turn.
+
 The shared module chain is:
 `base -> system -> accounts -> credentials -> chat -> threads -> todos -> tools -> mcp -> thread-config -> skills -> triggers -> commands -> reporting`.
 

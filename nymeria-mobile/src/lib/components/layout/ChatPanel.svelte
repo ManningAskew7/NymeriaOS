@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { consumeTurnStream } from '$lib/services/api/chat';
   import Icon from '$lib/components/common/Icon.svelte';
   import { ChatContainer, InputBar, ContextStatusBar, QueuedPromptsBar, MessageActionSheet } from '$lib/components/chat';
   import { ThreadSettingsPanel } from '$lib/components/threads';
@@ -274,13 +275,12 @@
     let recovering = false;
 
     try {
-      for await (const event of api.chatStream(message, threadId, attachments)) {
-        if (event.type === 'turn_started') {
-          activeTurnId = ((event.data as { turnId?: string })?.turnId) || null;
-          continue;
-        }
-        handleSSEEvent(event, threadId);
-      }
+      recovering = await consumeTurnStream(
+        api.chatStream(message, threadId, attachments),
+        (event) => handleSSEEvent(event, threadId),
+        (turnId) => { activeTurnId = turnId; },
+        (turnId) => { if (threadId) void recoverInterruptedTurn(threadId, turnId); }
+      );
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         // User cancelled
@@ -549,6 +549,7 @@
     try {
       for await (const event of api.reattachTurnStream(threadId, turnId)) {
         if (threadsStore.currentThreadId !== threadId) return 'abandon';
+        if (event.type === 'turn_replay_gap') return 'reconcile';
         if (event.type === 'turn_attach') {
           // Full-turn replay follows: rebuild the reply from scratch so the
           // re-rendered turn is exactly what the original stream carried.

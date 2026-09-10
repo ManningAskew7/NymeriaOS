@@ -129,13 +129,14 @@ restart-on-new-commit timer) should poll before restarting the backend.
 (interactive, autonomous, dream) takes in the API process.
 `interactive_active` counts held interactive admission slots (admission
 happens before the thread lock is taken, so this covers that gap).
-`background_jobs` counts running detached background bash jobs, which hold
-no thread lock by design. All-zero means a restart severs no tracked work;
-the one documented exception is detached Claude Code bridge runs, which
-have no registry and are not counted. Read "severs" literally: the
-background jobs counted here are TERMINATED by a restart or a shutdown,
-on the self-restart path as well as under a supervisor, so a non-zero
-count is work that will be killed rather than waited for.
+`background_jobs` counts detached bash jobs, runner tasks and pending embedding
+jobs. Runner tasks can overlap `active_turns`; the aggregate also covers work
+before lock acquisition and indexing after release. Detached bash jobs hold
+no thread lock by design. All-zero means no tracked work needs finishing or
+cancellation. Detached Claude Code jobs are not included in these counts.
+During graceful shutdown, runner tasks are cancelled and their cleanup is
+awaited, embedding jobs are drained, and owned child processes (including
+detached bash jobs) are terminated.
 
 Any authenticated caller gets the counts. `busy_threads` (thread ids,
 holder labels, held duration) is cross-user metadata and is populated only
@@ -684,6 +685,15 @@ queue a prompt behind a running turn (`queued` / `prompt_queued` streams) are
 not holder turns: they carry no `turn_started`/`seq`, and their recovery path
 is re-attaching to the holder turn that absorbs the prompt.
 
+The server owns a started turn independently of the POST connection. Closing
+the stream, switching clients, or losing the network leaves it running and
+retains its admission slot until completion. Use `POST /threads/{id}/stop`
+to stop it cooperatively. On service shutdown, existing connections have up to
+five seconds to settle before the server cancels and drains turn tasks. Losing
+a queued prompt's connection ends its
+observation but leaves the prompt queued. `/compact` and `/chat/sync` still
+use their separate execution paths.
+
 Dispatched `@thread` messages first emit:
 
 ```
@@ -827,11 +837,11 @@ Authorization: Bearer <token>
 
 Recovery endpoint for dropped `POST /chat` streams, and the live-attach
 endpoint for watching an in-flight turn from any client. The backend
-deliberately keeps a turn running when its SSE client disconnects; this
-endpoint replays the turn's buffered events (byte-identical to the original
-stream, `seq` stamps included) and then tails live events until the turn
-ends, so the client can re-render the full turn including the terminal `done`
-that the original response suppressed after the disconnect.
+runs a started turn independently of its SSE connection. This endpoint
+replays its buffered events (byte-identical to the POST stream, `seq` stamps
+included), then tails live events until the turn ends. Both endpoints read
+the same holder buffer, including the terminal `done`, even if the initiating
+connection closed before receiving its first event.
 
 The same replay-then-tail contract serves cross-client live attach: any
 client with thread access (the owner on another device, or an admin) that

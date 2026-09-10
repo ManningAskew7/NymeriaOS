@@ -353,7 +353,7 @@ class _HolderAgent:
 def _buffered_events(thread_id: str) -> list[dict]:
     buffer = get_turn_stream_registry().get(thread_id)
     assert buffer is not None
-    return [json.loads(payload) for _, payload in buffer._entries]
+    return [json.loads(payload) for _, _, payload in buffer._entries]
 
 
 def test_stream_and_collect_tees_local_holder_turn_into_buffer():
@@ -579,7 +579,7 @@ def test_stream_and_collect_buffers_each_chunk_before_on_chunk_fires():
     def on_chunk(chunk, collection):
         buffer = get_turn_stream_registry().get("t-order")
         assert buffer is not None, "buffer missing when on_chunk fired"
-        types = [json.loads(payload)["type"] for _, payload in buffer._entries]
+        types = [json.loads(payload)["type"] for _, _, payload in buffer._entries]
         assert types, "buffer empty when on_chunk fired"
         observed.append((chunk["type"], buffer.state, types[-1]))
 

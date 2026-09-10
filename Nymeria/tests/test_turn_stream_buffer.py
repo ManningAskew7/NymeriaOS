@@ -434,7 +434,7 @@ def test_connected_holder_turn_streams_turn_started_and_buffers_wire_payloads():
     assert buffer.turn_id == turn_id
     assert buffer.state == STATE_DONE
     # Wire and replay are byte-identical.
-    replayed = [payload for _, payload in buffer._entries]
+    replayed = [payload for _, _, payload in buffer._entries]
     wire = [
         line.removeprefix("data: ")
         for line in body.splitlines()
@@ -506,11 +506,15 @@ def test_self_invoke_holder_turn_buffers_autonomous_metadata():
 
 
 @pytest.mark.asyncio
-async def test_disconnected_holder_turn_buffers_done_and_auto_titles():
+async def test_holder_completion_does_not_poll_request_disconnect():
     agent = _FakeAgent(title="Named by turn")
     recorder = _PublishRecorder()
     endpoint = _chat_endpoint(_build_router(agent, recorder))
-    fake_request = _FakeRequest(disconnect_after=1)
+    class UnavailableRequest(_FakeRequest):
+        async def is_disconnected(self):
+            raise AssertionError("The turn must not inspect its request transport")
+
+    fake_request = UnavailableRequest()
 
     response = await endpoint(
         http_request=fake_request,
@@ -519,18 +523,17 @@ async def test_disconnected_holder_turn_buffers_done_and_auto_titles():
     )
     events = _sse_events(await _drain(response))
 
-    # The wire saw at most the first chunk; done was suppressed.
-    assert "done" not in [e["type"] for e in events]
+    assert events[-1]["type"] == "done"
 
     buffer = get_turn_stream_registry().get("t-drop")
     assert buffer is not None
     assert buffer.state == STATE_DONE
-    buffered_types = [json.loads(p)["type"] for _, p in buffer._entries]
+    buffered_types = [json.loads(p)["type"] for _, _, p in buffer._entries]
     assert buffered_types == ["turn_started", "response", "response", "done"]
-    done_event = json.loads(buffer._entries[-1][1])
+    done_event = json.loads(buffer._entries[-1][2])
     assert done_event["title"] == "Named by turn"
 
-    # Auto-title ran despite the disconnect and published the sync event.
+    # Title and sync publication belong to the turn, independent of Request.
     assert agent.titled == [("alice", "t-drop")]
     assert any(
         e.get("event_type") == "thread_updated" for e in recorder.sync_events
@@ -553,11 +556,11 @@ async def test_error_turn_finishes_buffer_as_error():
     buffer = get_turn_stream_registry().get("t-err")
     assert buffer is not None
     assert buffer.state == STATE_ERROR
-    assert json.loads(buffer._entries[-1][1])["type"] == "error"
+    assert json.loads(buffer._entries[-1][2])["type"] == "error"
 
 
 @pytest.mark.asyncio
-async def test_abandoned_generator_marks_buffer_aborted():
+async def test_abandoned_observer_stays_live_until_explicit_shutdown():
     agent = _FakeAgent(hang_after=1)
     endpoint = _chat_endpoint(_build_router(agent, _PublishRecorder()))
 
@@ -570,10 +573,18 @@ async def test_abandoned_generator_marks_buffer_aborted():
     first = await iterator.__anext__()
     assert "turn_started" in first
     await iterator.aclose()
+    await asyncio.sleep(0)
 
     buffer = get_turn_stream_registry().get("t-gone")
     assert buffer is not None
-    assert buffer.state == STATE_ABORTED
+    assert buffer.state == STATE_LIVE
+    from nymeria.core.turn_runner import open_turn_runner, shutdown_turns
+
+    try:
+        await shutdown_turns()
+        assert buffer.state == STATE_ABORTED
+    finally:
+        open_turn_runner()
 
 
 def test_non_holder_stream_creates_no_buffer():
@@ -621,7 +632,7 @@ def test_self_invoke_turn_buffers_turn_started_but_keeps_it_off_the_wire():
 
     buffer = get_turn_stream_registry().get("t-relay")
     assert buffer is not None
-    buffered_types = [json.loads(p)["type"] for _, p in buffer._entries]
+    buffered_types = [json.loads(p)["type"] for _, _, p in buffer._entries]
     assert buffered_types[0] == "turn_started"
 
 

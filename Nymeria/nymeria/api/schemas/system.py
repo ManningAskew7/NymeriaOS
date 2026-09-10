@@ -42,8 +42,8 @@ class TurnActivityResponse(BaseModel):
 
     active_turns: int
     interactive_active: int
-    # Detached background bash jobs hold no thread lock on purpose, so a
-    # restart would kill them while active_turns reads 0.
+    # Bash jobs, runner tasks and embedding tails can outlive thread locks.
+    # Runner tasks may also overlap active_turns while executing.
     background_jobs: int = 0
     # Populated only for admin callers: thread ids and holder labels are
     # cross-user metadata; the counts alone carry the idle predicate.

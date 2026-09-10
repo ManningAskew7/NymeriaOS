@@ -710,6 +710,10 @@ async def consume_chat_stream_with_recovery(
     try:
         async for event in api.chat_stream(message, thread_id, user_id, **kwargs):
             etype = event.get("type")
+            if etype == "turn_replay_gap":
+                from ..core.turn_stream_buffer import TURN_REPLAY_GAP_MESSAGE
+
+                return await _finish_turn_lost(handler, tool_call_count, TURN_REPLAY_GAP_MESSAGE)
             if etype == "turn_started":
                 new_id = event.get("turn_id")
                 if isinstance(new_id, str) and new_id:
@@ -894,7 +898,9 @@ async def consume_chat_stream_with_recovery(
     return await _finish_turn_lost(handler, tool_call_count)
 
 
-async def _finish_turn_lost(handler: SSEEventHandler, tool_call_count: int) -> str:
+async def _finish_turn_lost(
+    handler: SSEEventHandler, tool_call_count: int, message: str = TURN_LOST_MESSAGE,
+) -> str:
     """Best-effort honest ending for an unrecoverable turn.
 
     Never raises: at this point re-raising would send the caller into its
@@ -902,7 +908,7 @@ async def _finish_turn_lost(handler: SSEEventHandler, tool_call_count: int) -> s
     """
     try:
         await handler.flush_text(final=True)
-        await handler.on_error(TURN_LOST_MESSAGE)
+        await handler.on_error(message)
     except Exception:  # noqa: BLE001
         logger.warning("Failed to render turn-lost notice", exc_info=True)
     try:

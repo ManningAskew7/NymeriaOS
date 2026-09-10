@@ -630,6 +630,10 @@ async def nymeria_chat(
 
 def _overflow_note(ctx: Dict[str, Any]) -> Optional[str]:
     """Say when a dispatch stopped retaining, so a partial cannot read as whole."""
+    if ctx.get("replay_gap"):
+        from .core.turn_stream_buffer import TURN_REPLAY_GAP_MESSAGE
+
+        return "[Truncated]: " + TURN_REPLAY_GAP_MESSAGE
     if not ctx.get("overflowed"):
         return None
     thread_id = ctx.get("thread_id") or "the thread"
@@ -799,6 +803,13 @@ def _start_background_chat(
                 is_self_invoke=is_self_invoke,
                 source=resolved_source,
             ):
+                if evt.get("type") == "turn_replay_gap":
+                    from .core.turn_stream_buffer import TURN_REPLAY_GAP_MESSAGE
+
+                    ctx["error"] = TURN_REPLAY_GAP_MESSAGE
+                    ctx["replay_gap"] = True
+                    evt = {**evt, "type": "error", "code": "turn_replay_gap",
+                           "content": TURN_REPLAY_GAP_MESSAGE}
                 if not ctx["overflowed"]:
                     ctx["bytes"] += len(str(evt))
                     ctx["events"].append(evt)

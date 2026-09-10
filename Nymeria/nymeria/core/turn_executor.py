@@ -142,6 +142,10 @@ class APIClientExecutor:
     async def astream(self, **astream_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
         translated = self._translate_kwargs(astream_kwargs)
         async for chunk in self._client.chat_stream(**translated):
+            if chunk.get("type") == "turn_replay_gap":
+                from .turn_stream_buffer import TURN_REPLAY_GAP_MESSAGE, TurnReplayGapError
+
+                raise TurnReplayGapError(TURN_REPLAY_GAP_MESSAGE)
             yield chunk
 
     async def run_workflow(

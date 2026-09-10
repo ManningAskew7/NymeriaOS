@@ -20,7 +20,6 @@ from ...core.interactive_admission import (
     InteractiveCapacityError,
     TurnSlot,
     admit_interactive_turn,
-    attach_release_backstop,
 )
 from ...core.event_bus import (
     publish_agent_stream_chunk as default_publish_agent_stream_chunk,
@@ -36,14 +35,8 @@ from ...core.notification_dispatch import (
     create_autonomous_notification as default_create_autonomous_notification,
     should_notify_autonomous as default_should_notify_autonomous,
 )
-from ...core.pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
-from ...core.turn_stream_buffer import (
-    STATE_ABORTED,
-    STATE_DONE,
-    STATE_ERROR,
-    TurnStreamBuffer,
-    get_turn_stream_registry,
-)
+from ...core.turn_runner import AsyncTurnSink, HOLDER_STARTED, TurnSpec, start_turn
+from ...core.turn_stream_buffer import TurnReplayGapError
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..sse import SSE_RESPONSE_HEADERS, with_sse_keepalive
 from ..thread_config_helpers import effective_provider_model
@@ -51,6 +44,20 @@ from ..thread_config_helpers import effective_provider_model
 from ...core.thread_lock_manager import THREAD_DELETED_MESSAGE, get_thread_epoch, thread_admission_guard
 
 logger = logging.getLogger(__name__)
+
+
+class _TurnStreamingResponse(StreamingResponse):
+    """Close the observer even if ASGI never starts the body iterator."""
+
+    def __init__(self, content: Any, sink: AsyncTurnSink) -> None:
+        super().__init__(content, media_type="text/event-stream", headers=SSE_RESPONSE_HEADERS)
+        self._sink = sink
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._sink.detach()
 
 
 def run_sync_turn_with_tool_count(
@@ -1007,530 +1014,88 @@ def create_chat_router(
                 headers={"Retry-After": str(exc.retry_after)},
             ) from exc
 
-        # Everything from here until the response generator is created (which
-        # then owns slot release via its finally + backstop) must release the
-        # admission slot on failure, or the ceiling leaks a permit.
+        # Transfer the permit to a task before handing any response to ASGI.
+        # All request setup failures before that transfer return the permit.
         try:
-            # Chat-platform provenance (Discord/Telegram bots): record the
-            # origin message for the react tool and, on reaction-triggered
-            # turns, append the react-tool guidance block while the tool is
-            # unbound (backlog #45; core/bot_reactions.py + tools/react.py).
-            # AFTER the admission gate, so a shed request never touches the
-            # origin registry.
-            message = _apply_platform_origin(
-                agent,
-                request,
-                thread_id,
-                user_id,
-                message,
-                privileged=_privileged_platform_caller(user),
-            )
-
-            # Read client ID from header for sync event origin filtering
             client_id = http_request.headers.get("x-nymeria-client-id", "")
-
-            # For autonomous/self-invoke calls (e.g. watchdog worker), the "user
-            # message" isn't from a real user -- skip message_added so it doesn't
-            # appear in clients as a user-authored message. Frontend subscribes
-            # to /autonomous/stream for autonomous task events instead.
-            # A /resume adds no user message, so there is nothing to echo to
-            # other clients (they learn about the continuation via turn_resumed
-            # and the streamed events instead).
             if not request.is_self_invoke and not resume_halted_turn:
                 publish_sync_event_fn(
-                    event_type="message_added",
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    data={"role": "user", "content": display_message},
-                    origin_client_id=client_id,
+                    event_type="message_added", thread_id=thread_id, user_id=user_id,
+                    data={"role": "user", "content": display_message}, origin_client_id=client_id,
                 )
+            source, source_id, source_label = _agent_prompt_source(request)
+            origin = _effective_platform_origin(request, _privileged_platform_caller(user))
+            dispatch_fields = _dispatch_stream_fields(dispatched_target, original_thread_id)
+            trigger_fields = {
+                key: value for key, value in {
+                    "trigger_id": request.trigger_id, "trigger_name": request.trigger_name,
+                }.items() if value
+            }
+            spec = TurnSpec(
+                message=message, thread_id=thread_id, user_id=user_id,
+                attachments=_attachment_dicts(request), images=_legacy_image_dicts(request),
+                force_unsupported_attachments=request.force_unsupported_attachments,
+                is_self_invoke=request.is_self_invoke, trigger_override=request.trigger_override,
+                source=source, source_id=source_id, source_label=source_label,
+                resume_halted_turn=resume_halted_turn, thread_epoch=thread_epoch,
+                stream_thread_id=original_thread_id if dispatched_target else thread_id,
+                dispatch_fields=dispatch_fields,
+                quick_footer=_quick_continue_footer(thread_id) if is_quick else None,
+                client_id=client_id, auto_title=not request.is_self_invoke, refresh_activity=True,
+                holder_label=request.trigger_name or request.source_label or request.trigger_override or request.source,
+                platform_origin={
+                    "platform": origin.platform, "channel_id": origin.channel_id,
+                    "message_id": origin.message_id, "kind": origin.kind,
+                } if origin is not None else None,
+                autonomous_task_id=(
+                    f"{request.trigger_override or 'autonomous'}-{thread_id}"
+                    if request.is_self_invoke and request.publish_autonomous_events else None
+                ),
+                trigger_fields=trigger_fields, settings=get_settings_fn(),
+                publish_sync_event=publish_sync_event_fn,
+                publish_autonomous_event=publish_autonomous_event_fn,
+                publish_agent_stream_chunk=publish_agent_stream_chunk_fn,
+                create_autonomous_notification=create_autonomous_notification_fn,
+                should_notify_autonomous=should_notify_autonomous_fn,
+            )
+            sink = AsyncTurnSink()
+            start_turn(agent, spec, sink, turn_slot)
         except BaseException:
             if turn_slot is not None:
                 turn_slot.release()
             raise
 
-        # Autonomous task bookends: publish task_started/task_completed to Redis so
-        # /autonomous/stream subscribers see watchdog/ticker activity live. Matches
-        # the event pattern the former in-process watchdog emitted.
-        #
-        # Worker-relayed calls (Docker scheduler) carry
-        # ``publish_autonomous_events=False`` because the worker publishes
-        # bookends/chunks itself using stable task IDs (todo.id /
-        # trigger-<id>). Suppressing the API-side mirror via a None task_id
-        # gates task_started, the chunk fan-out, task_completed and the
-        # autonomous notification in one place.
-        should_publish_autonomous = (
-            request.is_self_invoke and request.publish_autonomous_events
-        )
-        autonomous_task_id = (
-            f"{request.trigger_override or 'autonomous'}-{thread_id}"
-            if should_publish_autonomous
-            else None
-        )
-        # Defer task_started publish until the first non-queued chunk arrives.
-        # A queued chunk means the astream call is still waiting on the thread
-        # lock while a user chat may still be streaming, so publishing
-        # task_started there would make the frontend enter autonomous-streaming
-        # mode at the wrong time.
-
-        def _trigger_fields() -> dict[str, Any]:
-            """Common trigger identity fields for autonomous event payloads."""
-            fields: dict[str, Any] = {}
-            if request.trigger_id:
-                fields["trigger_id"] = request.trigger_id
-            if request.trigger_name:
-                fields["trigger_name"] = request.trigger_name
-            return fields
-
-        def _maybe_create_autonomous_notification(content: str, task_id: str) -> None:
-            if not request.is_self_invoke:
-                return
-            create_autonomous_notification_fn(
-                user_id=user_id,
-                thread_id=thread_id,
-                task_id=task_id or None,
-                summary=(content or "Autonomous task completed")[:200],
-                settings=get_settings_fn(),
-                thread_config_manager=agent.thread_config_manager,
-            )
-
         async def event_generator():
-            """Generate SSE events from agent stream."""
-            autonomous_final_content_parts: list[str] = []
-            autonomous_completed = False
-            autonomous_started = False
-            # Latched on a prompt_queued chunk: this call queued behind a
-            # busy holder and is observing the holder's output via the
-            # fanout mailbox. Everything mirrored to the autonomous bus
-            # from then on is a second copy of the holder's turn and must
-            # carry the fanout marker so consumers drop it (the direct SSE
-            # yield to the caller stays unmarked; that is the caller's own
-            # receipt).
-            autonomous_fanout = False
-
-            # Turn stream buffer: created iff THIS request becomes the
-            # lock-holder turn (the astream callback fires after lock
-            # acquisition). Queued-prompt requests never create one, so the
-            # holder's events are buffered exactly once. The buffer retains
-            # the turn's wire payloads (including after a client disconnect)
-            # so GET /threads/{id}/turn/stream can replay them.
-            turn_buffer: Optional[TurnStreamBuffer] = None
-            turn_started_pending = False
-
-            # Graph message id for this turn's initiating HumanMessage,
-            # minted here so the buffer can expose it to live-attach viewers
-            # (they anchor hydrated history to it) and the agent can stamp
-            # the same id on the message it persists. Resume turns add no
-            # message, so they carry no anchor.
-            turn_user_message_id = (
-                None if resume_halted_turn else str(uuid.uuid4())
-            )
-
-            def _mark_turn_started() -> None:
-                nonlocal turn_buffer, turn_started_pending
-                # Holder metadata: relay turns (the Docker worker's
-                # APIClientExecutor) are self-invoke, so their buffer is a
-                # first-class attachable autonomous turn, matching the
-                # in-process tee in core/stream_bridge.py.
-                buffer_label = (
-                    request.trigger_name
-                    or request.source_label
-                    or request.trigger_override
-                    or request.source
-                )
-                turn_buffer = get_turn_stream_registry().begin_turn(
-                    thread_id,
-                    user_id,
-                    user_message_id=turn_user_message_id,
-                    holder_kind=(
-                        "autonomous" if request.is_self_invoke else "user"
-                    ),
-                    source_label=(
-                        str(buffer_label)[:80]
-                        if request.is_self_invoke and buffer_label
-                        else None
-                    ),
-                    user_message_internal=request.is_self_invoke,
-                )
-                turn_started_pending = True
-
-            def _wire_payload(event: dict[str, Any]) -> str:
-                """Serialize an outbound event, teeing holder events into the buffer.
-
-                The buffer stamps ``seq`` and returns the exact payload string,
-                so live wire and replay stay byte-identical.
-                """
-                if turn_buffer is not None:
-                    _, payload = turn_buffer.append(event)
-                    return payload
-                return json.dumps(event)
-
             try:
-                attachments = _attachment_dicts(request)
-                images = _legacy_image_dicts(request)
-                prompt_source, prompt_source_id, prompt_source_label = _agent_prompt_source(request)
-
-                client_disconnected = False
                 if dispatched_target is not None:
-                    dispatch_event = {
-                        "type": "dispatched",
-                        "thread_id": original_thread_id,
+                    event = {
+                        "type": "dispatched", "thread_id": original_thread_id,
                         "target_thread_id": dispatched_target.thread_id,
-                        "title": dispatched_target.title,
-                        "matched_ref": dispatched_target.reference,
-                        **_dispatch_stream_fields(
-                            dispatched_target,
-                            original_thread_id,
-                        ),
+                        "title": dispatched_target.title, "matched_ref": dispatched_target.reference,
+                        **dispatch_fields,
                     }
-                    yield f"data: {json.dumps(dispatch_event)}\n\n"
-
-                # Reset the idle-timeout clock when a user interactively runs a
-                # turn on a temporary spawned thread (e.g. continuing a /quick
-                # thread). Without this, only the callable-invoke path refreshes
-                # activity, so an actively-continued quick thread could be
-                # reaped by the idle sweep despite being in use. No-ops for
-                # permanent threads (self-guards on lifetime=temporary).
-                if not request.is_self_invoke and thread_id.startswith("spawned-"):
-                    from ...tools.spawn_thread import refresh_thread_activity
-
-                    refresh_thread_activity(agent, user_id, thread_id)
-
-                stream_thread_id = (
-                    original_thread_id if dispatched_target is not None else thread_id
-                )
-
-                async for chunk in agent.astream(
-                    message,
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    attachments=attachments,
-                    images=images,
-                    force_unsupported_attachments=request.force_unsupported_attachments,
-                    _is_self_invoke=request.is_self_invoke,
-                    _trigger_override=request.trigger_override,
-                    source=prompt_source,
-                    source_id=prompt_source_id,
-                    source_label=prompt_source_label or user_id,
-                    _on_turn_started=_mark_turn_started,
-                    _resume_halted_turn=resume_halted_turn,
-                    _turn_user_message_id=turn_user_message_id,
-                    _thread_epoch=thread_epoch,
-                ):
-                    # This request lost the lock race and queued its prompt
-                    # onto the running holder turn instead of starting one:
-                    # give the admission slot back while it observes the
-                    # holder's stream. Only prompt_queued proves the queued
-                    # outcome (the legacy bare `queued` event also fires on
-                    # paths that still become the holder).
-                    if turn_slot is not None and chunk.get("type") == "prompt_queued":
-                        turn_slot.release()
-
-                    # If the client disconnected, stop yielding SSE events but
-                    # keep consuming the generator so the agent finishes its
-                    # work, teeing holder events into the turn buffer so the
-                    # client can re-attach via GET /threads/{id}/turn/stream.
-                    # Results are also saved to thread history.
-                    # Explicit cancellation uses POST /threads/{id}/stop instead.
-                    if not client_disconnected and await http_request.is_disconnected():
-                        client_disconnected = True
-                        logger.info(
-                            "Client disconnected for thread %s, agent will continue in background",
-                            thread_id,
-                        )
-
-                    # Surface the holder-turn start on the wire (and as the
-                    # buffer's first event) so clients learn the turn_id used
-                    # for re-attach. Synthesized here, route-level, so direct
-                    # agent.astream() consumers never see it. Self-invoke
-                    # relay turns (the Docker worker's APIClientExecutor)
-                    # still buffer it but do not get it on the wire: the
-                    # trigger manager's task_started gate and the autonomous
-                    # event-bus mirror keep their pre-existing first-chunk
-                    # timing, and the relay consumer has no use for it.
-                    if turn_started_pending and turn_buffer is not None:
-                        turn_started_pending = False
-                        started_payload = _wire_payload(
-                            {
-                                "type": "turn_started",
-                                "turn_id": turn_buffer.turn_id,
-                                "thread_id": stream_thread_id,
-                                **_dispatch_stream_fields(
-                                    dispatched_target,
-                                    original_thread_id,
-                                ),
-                            }
-                        )
-                        if not client_disconnected and not request.is_self_invoke:
-                            yield f"data: {started_payload}\n\n"
-
-                    # Non-holder (queued-prompt) streams have nothing to tee;
-                    # skip payload building entirely once the client is gone.
-                    if client_disconnected and turn_buffer is None:
+                    yield f"data: {json.dumps(event)}\n\n"
+                while (event := await sink.get()) is not None:
+                    if event.get("type") != HOLDER_STARTED:
+                        yield f"data: {json.dumps(event)}\n\n"
                         continue
-
-                    event_data = _wire_payload(
-                        {
-                            **chunk,
-                            "thread_id": stream_thread_id,
-                            **_dispatch_stream_fields(
-                                dispatched_target,
-                                original_thread_id,
-                            ),
-                        }
-                    )
-
-                    if client_disconnected:
-                        continue
-
-                    # Publish task_started on the first non-queue-meta chunk
-                    # so the frontend handoff happens only after the thread
-                    # lock is acquired AND turn work has actually begun
-                    # (since the llm_call_started status event, that is LLM
-                    # dispatch, pre-first-token, rather than the first
-                    # content chunk). Queue-meta events (queued /
-                    # prompt_queued / prompt_injected / prompt_absorbed /
-                    # turn_halted / fanout_dropped) signal queue
-                    # transitions, not the start of work.
-                    if chunk.get("type") == "prompt_queued":
-                        autonomous_fanout = True
-
-                    if (
-                        autonomous_task_id
-                        and not autonomous_started
-                        and chunk.get("type") not in PENDING_QUEUE_META_EVENT_TYPES
-                    ):
-                        publish_autonomous_event_fn(
-                            event_type="task_started",
-                            thread_id=thread_id,
-                            user_id=user_id,
-                            task_id=autonomous_task_id,
-                            data={
-                                "prompt": message,
-                                "source": request.trigger_override or "autonomous",
-                                **_trigger_fields(),
-                                **({"fanout": True} if autonomous_fanout else {}),
-                            },
-                        )
-                        autonomous_started = True
-
-                    yield f"data: {event_data}\n\n"
-
-                    # Mirror streaming chunks to the autonomous event bus for
-                    # self-invoke calls so /autonomous/stream subscribers see
-                    # live progress.
-                    if autonomous_task_id:
-                        ctype = chunk.get("type")
-                        publish_agent_stream_chunk_fn(
-                            {**chunk, "fanout": True}
-                            if autonomous_fanout and ctype != "prompt_queued"
-                            else chunk,
-                            thread_id=thread_id,
-                            user_id=user_id,
-                            task_id=autonomous_task_id,
-                        )
-                        if ctype == "response":
-                            autonomous_final_content_parts.append(chunk.get("content", ""))
-
-                # Terminal handling. The done payload (context stats, model,
-                # auto-title) is built whenever the client is still connected
-                # OR this request ran the holder turn: a disconnected holder
-                # still buffers `done` so a re-attaching client gets a proper
-                # turn end, and auto-title no longer depends on the caller's
-                # connection (disconnected turns previously never titled
-                # their thread or published the title sync event).
-                late_disconnect = (
-                    not client_disconnected and await http_request.is_disconnected()
-                )
-                if late_disconnect:
-                    # Without this line a turn-end disconnect probe that trips
-                    # here withholds the wire `done` with NO trace anywhere
-                    # (the mid-turn latch above logs; this check did not), and
-                    # the client's spinner sticking on "Streaming" is
-                    # undiagnosable from the server log.
-                    logger.info(
-                        "Client disconnect detected at turn end for thread %s; "
-                        "done frame buffered for re-attach, not sent on the wire",
-                        thread_id,
-                    )
-                still_connected = not client_disconnected and not late_disconnect
-                if still_connected or turn_buffer is not None:
-                    # For /quick, append a display-only footer telling the user
-                    # how to continue the fresh thread. Emitted as a trailing
-                    # `response` chunk (re-tagged to the caller thread) BEFORE
-                    # `done`, so it accumulates into the same assistant bubble
-                    # on every surface and is never written to any checkpoint.
-                    # Buffered for holder turns so a re-attached client sees
-                    # the same footer.
-                    if is_quick:
-                        footer_payload = _wire_payload(
-                            {
-                                "type": "response",
-                                "content": _quick_continue_footer(thread_id),
-                                "thread_id": original_thread_id,
-                                **_dispatch_stream_fields(
-                                    dispatched_target,
-                                    original_thread_id,
-                                ),
-                            }
-                        )
-                        if still_connected:
-                            yield f"data: {footer_payload}\n\n"
-
-                    # Get context stats and model info for UI
+                    # Pin this producer's buffer, even if a later holder has
+                    # replaced the registry entry before we reach the marker.
+                    buffer = event["buffer"]
                     try:
-                        context_stats = agent.get_context_stats(thread_id)
-                    except Exception as e:
-                        logger.warning("Failed to get context stats: %s", e)
-                        context_stats = None
-
-                    done_data = {
-                        "type": "done",
-                        "thread_id": original_thread_id
-                        if dispatched_target is not None
-                        else thread_id,
-                        "context_stats": context_stats,
-                        "model": effective_provider_model(agent, thread_id).model,
-                        **_dispatch_stream_fields(
-                            dispatched_target,
-                            original_thread_id,
-                        ),
-                    }
-                    # End-of-turn confirmation of the react tool's reply
-                    # suppression (the live signal is the mid-stream
-                    # reply_suppressed event).
-                    if _turn_reply_suppressed(
-                        request,
-                        thread_id,
-                        privileged=_privileged_platform_caller(user),
-                    ):
-                        done_data["suppress_reply"] = True
-
-                    # Auto-title the thread from the user's message if untitled
-                    # (skipped on /resume: there is no user message to title
-                    # from, and the thread already existed at the halt).
-                    try:
-                        new_title = None
-                        with thread_admission_guard(thread_id) as current_epoch:
-                            if not resume_halted_turn and current_epoch == thread_epoch and current_epoch >= 0:
-                                new_title = agent.thread_metadata_manager.auto_title(
-                                    user_id, thread_id, message
-                                )
-                            if new_title:
-                                done_data["title"] = new_title
-                                done_data["title_source"] = "auto"
-                                # Publish title change so other clients update their sidebar
-                                publish_sync_event_fn(
-                                    event_type="thread_updated",
-                                    thread_id=thread_id,
-                                    user_id=user_id,
-                                    data={"title": new_title, "title_source": "auto"},
-                                    origin_client_id=client_id,
-                                )
-                    except Exception as e:
-                        logger.warning("Failed to auto-title thread %s: %s", thread_id, e)
-
-                    done_payload = _wire_payload(done_data)
-                    if turn_buffer is not None:
-                        turn_buffer.finish(STATE_DONE)
-                    if still_connected:
-                        yield f"data: {done_payload}\n\n"
-
-            except Exception as e:
-                logger.error("Stream error: %s", e, exc_info=True)
-                error_data = _wire_payload(
-                    {
-                        "type": "error",
-                        "content": str(e),
-                        "thread_id": original_thread_id
-                        if dispatched_target is not None
-                        else thread_id,
-                        **_dispatch_stream_fields(
-                            dispatched_target,
-                            original_thread_id,
-                        ),
-                    }
-                )
-                if turn_buffer is not None:
-                    turn_buffer.finish(STATE_ERROR)
-                yield f"data: {error_data}\n\n"
-                if autonomous_task_id and not autonomous_completed:
-                    error_text = str(e)
-                    if not autonomous_fanout:
-                        _maybe_create_autonomous_notification(
-                            error_text, autonomous_task_id
-                        )
-                    publish_autonomous_event_fn(
-                        event_type="task_completed",
-                        thread_id=thread_id,
-                        user_id=user_id,
-                        task_id=autonomous_task_id,
-                        data={
-                            "error": True,
-                            "content": error_text,
-                            "notify": should_notify_autonomous_fn(
-                                thread_id, agent.thread_config_manager
-                            ),
-                            "source": request.trigger_override or "autonomous",
-                            **_trigger_fields(),
-                            **({"fanout": True} if autonomous_fanout else {}),
-                        },
-                    )
-                    autonomous_completed = True
+                        async for _, kind, payload in buffer.stream_entries(0):
+                            if kind == "turn_started" and request.is_self_invoke:
+                                continue
+                            yield f"data: {payload}\n\n"
+                    except TurnReplayGapError:
+                        gap = {"type": "turn_replay_gap", "thread_id": spec.stream_thread_id,
+                               "turn_id": buffer.turn_id}
+                        yield f"data: {json.dumps(gap)}\n\n"
+                    return
             finally:
-                # The admission slot is held for the turn's whole life,
-                # including after a client disconnect (a disconnected holder
-                # turn keeps running and doing real work, so it keeps drawing
-                # against the interactive ceiling). release() is idempotent
-                # (no-op after the prompt_queued early release above).
-                if turn_slot is not None:
-                    turn_slot.release()
-                # A holder buffer still live here means the generator died
-                # without a terminal event (GeneratorExit / task cancel):
-                # mark it aborted so re-attachers get an honest end-of-stream
-                # instead of waiting on a turn that will never finish.
-                # finish() no-ops when a terminal state is already set.
-                if turn_buffer is not None:
-                    turn_buffer.finish(STATE_ABORTED)
-                if autonomous_task_id and not autonomous_completed:
-                    final_content = "".join(autonomous_final_content_parts)
-                    if not autonomous_fanout:
-                        _maybe_create_autonomous_notification(
-                            final_content, autonomous_task_id
-                        )
-                    publish_autonomous_event_fn(
-                        event_type="task_completed",
-                        thread_id=thread_id,
-                        user_id=user_id,
-                        task_id=autonomous_task_id,
-                        data={
-                            "content": final_content,
-                            "notify": should_notify_autonomous_fn(
-                                thread_id, agent.thread_config_manager
-                            ),
-                            "source": request.trigger_override or "autonomous",
-                            **_trigger_fields(),
-                            **({"fanout": True} if autonomous_fanout else {}),
-                        },
-                    )
+                sink.detach()
 
-        # Keepalive comments bridge long silent gaps (tool calls that emit
-        # nothing for minutes) so tunnel edges with idle timeouts, like
-        # Cloudflare's ~100s proxy limit, do not cut the turn mid-stream.
-        stream = event_generator()
-        if turn_slot is not None:
-            # Disconnect-before-first-byte backstop: if the client is already
-            # gone when the response starts, the server can cancel the
-            # response task before `stream` is ever iterated, and a
-            # never-started generator never runs the slot-releasing finally
-            # above. The finalize fires on GC of the orphaned generator;
-            # release() is idempotent so normal turns are unaffected.
-            attach_release_backstop(stream, turn_slot, asyncio.get_running_loop())
-        return StreamingResponse(
-            with_sse_keepalive(stream),
-            media_type="text/event-stream",
-            headers=SSE_RESPONSE_HEADERS,
-        )
+        return _TurnStreamingResponse(with_sse_keepalive(event_generator()), sink)
 
     @router.post("/chat/sync", response_model=ChatResponse)
     async def chat_sync(

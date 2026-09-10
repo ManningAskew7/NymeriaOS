@@ -166,3 +166,63 @@ def test_interactive_slice_mirrors_the_admission_gate(
         "/status/turns", headers=api_client_builder.auth(token)
     ).json()
     assert payload["interactive_active"] == 0
+
+
+@pytest.mark.parametrize("work_kind", ["embedding", "runner"])
+def test_detached_work_prevents_idle_after_thread_lock_releases(
+    work_kind, tmp_path, api_client_builder,
+):
+    import asyncio
+    import threading
+
+    import httpx
+
+    from nymeria.core.embedding_jobs import schedule_embedding_job, wait_for_pending_embedding_jobs
+    from nymeria.core.turn_runner import TurnSpec, open_turn_runner, start_turn
+    from tests.test_turn_stream_buffer import _FakeAgent
+
+    async def exercise():
+        open_turn_runner()
+        client, _, token = _client(tmp_path, api_client_builder)
+        entered = asyncio.Event()
+        release_sync = threading.Event()
+        release_async = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        task = None
+
+        def index():
+            loop.call_soon_threadsafe(entered.set)
+            assert release_sync.wait(10)
+
+        class WaitingAgent(_FakeAgent):
+            async def astream(self, message, **kwargs):
+                entered.set()
+                await release_async.wait()
+                kwargs["_on_turn_started"]()
+                yield {"type": "response", "content": "finished"}
+
+        if work_kind == "embedding":
+            schedule_embedding_job(index, site="test.idle")
+        else:
+            task = start_turn(WaitingAgent(), TurnSpec("hello", "idle-gap", "probe"))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url="http://test") as reader:
+                before = (await reader.get("/status/turns", headers=api_client_builder.auth(token))).json()
+                assert before["active_turns"] == before["interactive_active"] == 0
+                assert before["background_jobs"] == 1
+                release_sync.set()
+                release_async.set()
+                if task is not None:
+                    await task
+                await wait_for_pending_embedding_jobs()
+                after = (await reader.get("/status/turns", headers=api_client_builder.auth(token))).json()
+                assert after["background_jobs"] == 0
+        finally:
+            release_sync.set()
+            release_async.set()
+            if task is not None:
+                await task
+            await wait_for_pending_embedding_jobs()
+
+    asyncio.run(exercise())

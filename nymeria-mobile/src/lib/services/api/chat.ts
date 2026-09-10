@@ -52,6 +52,48 @@ function httpErrorMessage(status: number, bodyText: string): string {
   return `API error: ${status} - ${bodyText}`;
 }
 
+/** Route turn controls before rendering; true transfers cleanup to recovery. */
+export async function consumeTurnStream(
+  events: AsyncIterable<SSEEvent>,
+  onEvent: (event: SSEEvent) => void,
+  onTurnStarted: (turnId: string) => void,
+  onReplayGap: (turnId: string) => void
+): Promise<boolean> {
+  let activeTurnId: string | null = null;
+  let dispatched = false;
+  for await (const event of events) {
+    if (event.type === 'dispatched') dispatched = true;
+    if (event.type === 'turn_started') {
+      activeTurnId = (event.data as { turnId?: string })?.turnId || null;
+      if (activeTurnId) onTurnStarted(activeTurnId);
+      continue;
+    }
+    if (event.type === 'turn_replay_gap') {
+      if (dispatched) {
+        // The target's buffer cannot be reconciled against caller history.
+        // Preserve the inline partial and its existing link to that target.
+        onEvent({ ...event, type: 'error', data: {
+          message: 'The live stream lost part of this reply. Open the linked thread to view its saved history.',
+          code: 'turn_replay_gap'
+        } });
+        return false;
+      }
+      const turnId = (event.data as { turnId?: string })?.turnId || activeTurnId;
+      if (turnId) {
+        onReplayGap(turnId);
+        return true;
+      }
+      onEvent({ ...event, type: 'error', data: {
+        message: 'Some reply output is unavailable. Reload this thread to view its saved history.',
+        code: 'turn_replay_gap'
+      } });
+      return false;
+    }
+    onEvent(event);
+  }
+  return false;
+}
+
 export class ChatApi extends CredentialsApi {
   async *chatStream(
     message: string,
@@ -591,6 +633,14 @@ export class ChatApi extends CredentialsApi {
               code: data.code as string | undefined,
               details: data.details as Record<string, unknown> | undefined,
             },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'turn_replay_gap':
+          return {
+            type: 'turn_replay_gap',
+            data: { turnId: data.turn_id as string | undefined },
             timestamp: new Date(),
             threadId
           };

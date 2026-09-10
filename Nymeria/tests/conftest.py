@@ -117,6 +117,12 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     """
     _restore_pristine_env()
     _reset_env_loading_state()
+    # API lifespan shutdown closes turn admission process-wide. Each test
+    # models a fresh runtime, often constructing apps without entering lifespan.
+    # Reset admission only; never hide leaked live tasks by clearing the registry.
+    from nymeria.core.turn_runner import open_turn_runner
+
+    open_turn_runner()
 
 
 @pytest.fixture(autouse=True, scope="session")

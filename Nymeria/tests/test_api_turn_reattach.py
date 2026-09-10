@@ -124,7 +124,7 @@ def test_reattach_replays_finished_turn_byte_identical(
         for line in body.splitlines()
         if line.startswith("data: ")
     ][1:]
-    assert replayed_lines == [payload for _, payload in buffer._entries]
+    assert replayed_lines == [payload for _, _, payload in buffer._entries]
 
 
 def test_reattach_from_seq_skips_prefix(tmp_path: Path, api_client_builder):

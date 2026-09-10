@@ -1816,3 +1816,18 @@ def test_tool_step_status_reflects_an_error_result_rather_than_always_success():
     assert steps["c1"]["status"] == "error"
     assert steps["c2"]["status"] == "success"
     assert steps["c3"]["status"] == "success"
+
+
+def test_primary_replay_gap_reports_incomplete_mcp_capture(monkeypatch):
+    class GapClient:
+        async def stream_chat(self, **kwargs):
+            yield {"type": "turn_replay_gap", "turn_id": "gap-turn", "thread_id": "gap-thread"}
+
+        async def get(self, *args, **kwargs):
+            return {"messages": []}
+
+    result = _chat(monkeypatch, GapClient(), message="hello", thread_id="gap-thread", wait_seconds=1)
+    assert result["error"] and "history" in result["error"]
+    assert result["truncated"]
+    assert result["done"] is False
+    assert result["errors"][0]["code"] == "turn_replay_gap"

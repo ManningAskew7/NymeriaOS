@@ -920,8 +920,12 @@ def create_api_app(
             logger.exception("Failed to stop agent ticker during API shutdown")
 
     app.router.add_event_handler("startup", _resize_default_executor)
-    app.router.add_event_handler("shutdown", _close_provider_http_pools)
+    from ..core.turn_runner import open_turn_runner, shutdown_turns
+
+    app.router.add_event_handler("startup", open_turn_runner)
     app.router.add_event_handler("shutdown", _stop_agent_ticker)
+    app.router.add_event_handler("shutdown", shutdown_turns)
+    app.router.add_event_handler("shutdown", _close_provider_http_pools)
     app.router.add_event_handler("shutdown", _drain_observe_hooks)
     from ..core.embedding_jobs import wait_for_pending_embedding_jobs
 
@@ -1937,7 +1941,9 @@ def run_api(
     # lock everyone out. Opt-in via NYMERIA_FORWARDED_ALLOW_IPS (e.g.
     # "127.0.0.1" when Caddy is colocated); unset means do not trust the header.
     forwarded_allow_ips = os.environ.get("NYMERIA_FORWARDED_ALLOW_IPS", "").strip()
-    uvicorn_kwargs: dict = {"host": host, "port": port}
+    # Uvicorn drains HTTP connections before lifespan shutdown. Bound that
+    # wait so a connected observer cannot prevent shutdown_turns from running.
+    uvicorn_kwargs: dict = {"host": host, "port": port, "timeout_graceful_shutdown": 5}
     if forwarded_allow_ips:
         uvicorn_kwargs["proxy_headers"] = True
         uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips

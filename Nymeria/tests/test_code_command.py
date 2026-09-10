@@ -233,7 +233,7 @@ def _completed(env) -> bool:
 
 
 def _buffer_events(buffer) -> list[dict]:
-    return [json.loads(payload) for _, payload in buffer._entries_after(0)]
+    return [json.loads(payload) for _, _, payload in buffer._entries_after(0)]
 
 
 # --------------------------------------------------------------------------- #

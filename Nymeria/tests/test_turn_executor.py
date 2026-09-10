@@ -368,3 +368,16 @@ def test_api_executor_run_workflow_requires_envelope():
         assert "no envelope" in str(exc)
     else:
         raise AssertionError("missing envelope did not raise")
+
+
+def test_remote_primary_replay_gap_cannot_complete_autonomous_work_successfully():
+    import pytest
+
+    from nymeria.core.stream_bridge import stream_and_collect
+
+    client = _RecordingAPIClient()
+    client.chunks = [{"type": "turn_replay_gap", "turn_id": "remote-turn", "thread_id": "remote"}]
+    with pytest.raises(Exception, match="history"):
+        stream_and_collect(APIClientExecutor(client), astream_kwargs={
+            "message": "work", "thread_id": "remote", "user_id": "u1", "_is_self_invoke": True,
+        })

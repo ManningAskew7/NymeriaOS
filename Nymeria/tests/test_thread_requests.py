@@ -996,7 +996,7 @@ def test_the_reply_wake_up_turn_streams_to_the_caller_and_never_into_the_callees
         # ...and its output landed on the caller's own turn stream...
         caller_stream = get_turn_stream_registry().get(CALLER)
         assert caller_stream is not None
-        buffered = [json.loads(payload) for _, payload in caller_stream._entries]
+        buffered = [json.loads(payload) for _, _, payload in caller_stream._entries]
         texts = [event.get("content") for event in buffered if event.get("type") == "response"]
         assert texts == ["Delivered: relayed"]
         assert all(event.get("thread_id") == CALLER for event in buffered)

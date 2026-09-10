@@ -238,6 +238,12 @@ class APIAgentClient:
             ):
                 turn_id, last_seq = _track_turn_cursor(raw_event, turn_id, last_seq)
                 event_type = raw_event.get("type")
+                if event_type == "turn_replay_gap":
+                    from ....core.turn_stream_buffer import TURN_REPLAY_GAP_MESSAGE
+
+                    yield ErrorEvent(thread_id=thread_id, content=TURN_REPLAY_GAP_MESSAGE,
+                                     code="turn_replay_gap", details={"turn_id": raw_event.get("turn_id")})
+                    return
                 if event_type == "turn_started":
                     continue  # identity marker, not a renderable event
                 if event_type in ("done", "error"):

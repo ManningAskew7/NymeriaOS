@@ -3150,79 +3150,85 @@ class NymeriaAgent:
             if acquired:
                 pass
             else:
-                lock_info = self._thread_locks.get_lock_info(thread_id)
-                holder_label = lock_info.get("holder") if lock_info else None
-                held_seconds = lock_info.get("held_seconds", 0) if lock_info else 0
+                try:
+                    lock_info = self._thread_locks.get_lock_info(thread_id)
+                    holder_label = lock_info.get("holder") if lock_info else None
+                    held_seconds = lock_info.get("held_seconds", 0) if lock_info else 0
 
-                # Emit BOTH the legacy ``queued`` event (so existing
-                # consumers like api/routers/chat.py:909's task_started
-                # gate keep working) and the new ``prompt_queued`` event
-                # (richer info). Drop ``queued`` once frontends pick up
-                # ``prompt_queued``.
-                yield {
-                    "type": "queued",
-                    "content": "Waiting for current turn to halt...",
-                    "holder": holder_label,
-                    "held_seconds": held_seconds,
-                }
-                yield {
-                    "type": "prompt_queued",
-                    "position": position,
-                    "holder": holder_label,
-                    "held_seconds": held_seconds,
-                    "source": source,
-                }
+                    # Emit BOTH the legacy ``queued`` event (so existing
+                    # consumers like api/routers/chat.py:909's task_started
+                    # gate keep working) and the new ``prompt_queued`` event
+                    # (richer info). Drop ``queued`` once frontends pick up
+                    # ``prompt_queued``.
+                    yield {
+                        "type": "queued",
+                        "content": "Waiting for current turn to halt...",
+                        "holder": holder_label,
+                        "held_seconds": held_seconds,
+                    }
+                    yield {
+                        "type": "prompt_queued",
+                        "position": position,
+                        "holder": holder_label,
+                        "held_seconds": held_seconds,
+                        "source": source,
+                    }
 
-                if fanout_mailbox is not None:
-                    # Stream-observing path: fan-in the holder's events.
-                    while True:
-                        evt = await fanout_mailbox.get()
-                        if evt.get("type") == _SENTINEL_PROMPT_ABSORBED:
+                    if fanout_mailbox is not None:
+                        # Stream-observing path: fan-in the holder's events.
+                        while True:
+                            evt = await fanout_mailbox.get()
+                            if evt.get("type") == _SENTINEL_PROMPT_ABSORBED:
+                                yield {
+                                    "type": "prompt_absorbed",
+                                    "thread_id": thread_id,
+                                }
+                                return
+                            if evt.get("type") == "error":
+                                yield evt
+                                return
+                            yield evt
+                    else:
+                        # Fire-and-forget path: just wait for absorption.
+                        wait_ok = await async_event_wait(
+                            pending.notify_event,
+                            self.settings.lock_timeout,
+                        )
+                        if pending.restored:
+                            from .pending_prompt_queue import (
+                                RESTORED_ERROR_CODE,
+                                RESTORED_ERROR_CONTENT,
+                            )
                             yield {
-                                "type": "prompt_absorbed",
-                                "thread_id": thread_id,
+                                "type": "error",
+                                "code": RESTORED_ERROR_CODE,
+                                "content": RESTORED_ERROR_CONTENT,
                             }
                             return
-                        if evt.get("type") == "error":
-                            yield evt
+                        if pending.abandoned:
+                            yield {
+                                "type": "error",
+                                "code": "aborted",
+                                "content": "Turn aborted.",
+                            }
                             return
-                        yield evt
-                else:
-                    # Fire-and-forget path: just wait for absorption.
-                    wait_ok = await async_event_wait(
-                        pending.notify_event,
-                        self.settings.lock_timeout,
-                    )
-                    if pending.restored:
-                        from .pending_prompt_queue import (
-                            RESTORED_ERROR_CODE,
-                            RESTORED_ERROR_CONTENT,
-                        )
-                        yield {
-                            "type": "error",
-                            "code": RESTORED_ERROR_CODE,
-                            "content": RESTORED_ERROR_CONTENT,
-                        }
+                        if not wait_ok:
+                            logger.warning(
+                                "Thread %s: queued prompt wait timed out in astream()",
+                                thread_id,
+                            )
+                            yield {
+                                "type": "error",
+                                "content": "Thread is busy. Please try again.",
+                            }
+                            return
+                        yield {"type": "prompt_absorbed", "thread_id": thread_id}
                         return
-                    if pending.abandoned:
-                        yield {
-                            "type": "error",
-                            "code": "aborted",
-                            "content": "Turn aborted.",
-                        }
-                        return
-                    if not wait_ok:
-                        logger.warning(
-                            "Thread %s: queued prompt wait timed out in astream()",
-                            thread_id,
-                        )
-                        yield {
-                            "type": "error",
-                            "content": "Thread is busy. Please try again.",
-                        }
-                        return
-                    yield {"type": "prompt_absorbed", "thread_id": thread_id}
-                    return
+                finally:
+                    # Transport detachment ends observation, never queue intent.
+                    # Avoid retaining/copying fanout for a departed observer.
+                    if fanout_mailbox is not None:
+                        fanout_mailbox.close()
 
         if not thread_epoch_is_current(thread_id, turn_epoch):
             backend.release_lock(thread_id, lock)

@@ -2,11 +2,10 @@
 
 Backs turn re-attach and live watching: when a client's ``POST /chat`` SSE
 connection drops mid-turn, the backend keeps executing the turn (the
-deliberate disconnect-keeps-running posture in ``api/routers/chat.py``), and
+detached task owned by ``core/turn_runner.py``), and
 this buffer retains the turn's wire events so the client can rejoin via
 ``GET /threads/{thread_id}/turn/stream`` and re-render the full turn,
-including the terminal ``done``/``error`` event that the original response
-suppresses after a disconnect. Autonomous turns (TODOs, triggers, dreams,
+including terminal events produced after the observer left. Autonomous turns (TODOs, triggers, dreams,
 callables, spawns, watchdog) feed the same buffer via the
 ``stream_and_collect`` tee in ``core/stream_bridge.py``, so any client can
 attach to any in-flight turn regardless of who started it (backlog #90).
@@ -17,10 +16,10 @@ Design notes:
   lock-holder turn only. A new holder turn replaces the previous buffer.
   Only the holder turn writes here (queued-prompt requests observe the
   holder's stream via fanout mailboxes and must not double-write), which the
-  chat route guarantees by creating the buffer from ``NymeriaAgent.astream``'s
+  runner guarantees by creating the buffer from ``NymeriaAgent.astream``'s
   ``_on_turn_started`` callback, fired exactly once per holder turn right
   after lock acquisition.
-- Entries store the exact serialized SSE payload strings the original client
+- Typed entries store the exact serialized SSE payload strings the original client
   would have received (post thread-id/dispatch merge), each stamped with a
   monotonically increasing ``seq``, so replay is byte-identical and needs no
   re-serialization.
@@ -71,6 +70,11 @@ STATE_DONE = "done"
 STATE_ERROR = "error"
 STATE_ABORTED = "aborted"
 
+TURN_REPLAY_GAP_MESSAGE = (
+    "The live stream lost part of this reply. The turn may still be running; "
+    "check its thread history for the result."
+)
+
 # Poll ceiling for live readers; real wakeups come from the pulse event.
 _READER_WAIT_SECONDS = 15.0
 
@@ -97,7 +101,9 @@ class TurnStreamBuffer:
         holder_kind: str = "user",
         source_label: Optional[str] = None,
         user_message_internal: bool = False,
+        managed: bool = False,
     ) -> None:
+        self.managed = managed
         self.thread_id = thread_id
         self.user_id = user_id
         # Graph message id of the turn's initiating HumanMessage (None for
@@ -123,7 +129,7 @@ class TurnStreamBuffer:
         self.state = STATE_LIVE
         self.finished_at: Optional[float] = None
         self.truncated = False
-        self._entries: Deque[Tuple[int, str]] = deque()  # (seq, payload_json)
+        self._entries: Deque[Tuple[int, str, str]] = deque()  # (seq, event_type, payload_json)
         self._next_seq = 1
         self._bytes = 0
         # Pulsed (set + replaced) on every append/finish so any number of
@@ -147,13 +153,13 @@ class TurnStreamBuffer:
         payload = json.dumps(event)
         overflowed_now = False
         with self._meta_lock:
-            self._entries.append((seq, payload))
+            self._entries.append((seq, str(event.get("type", "")), payload))
             self._bytes += len(payload)
             while self._entries and (
                 len(self._entries) > MAX_EVENTS_PER_TURN
                 or self._bytes > MAX_BYTES_PER_TURN
             ):
-                _, dropped = self._entries.popleft()
+                _, _, dropped = self._entries.popleft()
                 self._bytes -= len(dropped)
                 if not self.truncated:
                     self.truncated = True
@@ -230,7 +236,7 @@ class TurnStreamBuffer:
         """True when events after ``from_seq`` were evicted by overflow."""
         with self._meta_lock:
             if not self._entries:
-                return self.truncated
+                return self.truncated and from_seq < self._next_seq - 1
             return self._entries[0][0] > from_seq + 1
 
     def snapshot(self) -> Dict[str, Any]:
@@ -247,17 +253,22 @@ class TurnStreamBuffer:
                 "user_message_internal": self.user_message_internal,
             }
 
-    def _entries_after(self, cursor: int) -> list[Tuple[int, str]]:
+    def _entries_after(self, cursor: int) -> list[Tuple[int, str, str]]:
         with self._meta_lock:
             if not self._entries or self._entries[-1][0] <= cursor:
                 return []
             skip = max(0, cursor + 1 - self._entries[0][0])
             return list(itertools.islice(self._entries, skip, None))
 
-    async def stream_payloads(
+    async def stream_payloads(self, from_seq: int = 0) -> AsyncGenerator[str, None]:
+        """Compatibility payload reader for the re-attach route."""
+        async for _, _, payload in self.stream_entries(from_seq):
+            yield payload
+
+    async def stream_entries(
         self,
         from_seq: int = 0,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[Tuple[int, str, str], None]:
         """Yield payload strings with seq > ``from_seq``: replay, then live tail.
 
         Ends after the last buffered event once the buffer leaves the live
@@ -273,18 +284,22 @@ class TurnStreamBuffer:
             # event; we re-check on wake).
             pulse = self._pulse_event
             batch = self._entries_after(cursor)
+            if not batch and self.has_replay_gap(cursor):
+                raise TurnReplayGapError(f"events after {cursor} evicted for turn {self.turn_id}")
             if batch and batch[0][0] > cursor + 1:
                 raise TurnReplayGapError(
                     f"events {cursor + 1}..{batch[0][0] - 1} evicted for "
                     f"turn {self.turn_id}"
                 )
-            for seq, payload in batch:
+            for seq, event_type, payload in batch:
                 cursor = seq
-                yield payload
+                yield seq, event_type, payload
             if self.state != STATE_LIVE:
                 # Drain-then-stop: one more check catches entries appended
                 # between the batch snapshot and the state read.
                 if not self._entries_after(cursor):
+                    if self.has_replay_gap(cursor):
+                        raise TurnReplayGapError(f"events after {cursor} evicted for turn {self.turn_id}")
                     return
                 continue
             try:
@@ -308,19 +323,15 @@ class TurnStreamRegistry:
         holder_kind: str = "user",
         source_label: Optional[str] = None,
         user_message_internal: bool = False,
+        managed: bool = False,
     ) -> TurnStreamBuffer:
         """Create the buffer for a new holder turn, replacing any previous one.
 
-        The per-thread lock serializes holder turns. A still-live previous
-        buffer usually means its writer died without a terminal event, but
-        there is also a benign race: the previous holder releases the thread
-        lock (inside astream's finally) slightly before its chat route runs
-        ``finish(STATE_DONE)``, so a fast next holder can mark a
-        cleanly-completed predecessor ``aborted`` here (the late ``finish``
-        then no-ops). Either way the aborted label only affects the replaced
-        buffer's retention/state snapshot; clients that pin ``turn_id`` are
-        unaffected, and marking it terminal gives late re-attachers an honest
-        end-of-stream.
+        The per-thread lock serializes agent execution, but its release can
+        precede the producer's terminal garnish. Managed producers own their
+        terminal state even after replacement: an already-attached observer
+        must receive the predecessor's done. Legacy producers retain the
+        abandoned-writer backstop until they move onto the runner.
         """
         buffer = TurnStreamBuffer(
             thread_id,
@@ -329,11 +340,12 @@ class TurnStreamRegistry:
             holder_kind=holder_kind,
             source_label=source_label,
             user_message_internal=user_message_internal,
+            managed=managed,
         )
         with self._lock:
             previous = self._buffers.get(thread_id)
             self._buffers[thread_id] = buffer
-        if previous is not None and previous.state == STATE_LIVE:
+        if previous is not None and not previous.managed and previous.state == STATE_LIVE:
             previous.finish(STATE_ABORTED)
         return buffer
 

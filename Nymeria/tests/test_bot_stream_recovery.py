@@ -423,3 +423,17 @@ def test_handler_exception_mid_turn_recovers_past_the_poison_event():
     assert handler.chunks == ["A", "POISON", "B"]
     assert api.reattach_calls == [("t1", 3)]
     assert api.chat_calls == 1  # never re-POSTed
+
+
+@pytest.mark.parametrize("has_start", [False, True])
+def test_primary_replay_gap_reports_loss_without_reposting(has_start):
+    primary = ([{"type": "turn_started", "turn_id": "t1"}] if has_start else []) + [
+        {"type": "turn_replay_gap", "turn_id": "t1", "thread_id": "th"},
+    ]
+    api = _RecoveryAPI(primary)
+    handler = _Handler()
+    assert _run(api, handler) == "lost"
+    assert handler.errors and "history" in handler.errors[0]
+    assert handler.done == []
+    assert handler.stream_ends == [0]
+    assert api.chat_calls == 1

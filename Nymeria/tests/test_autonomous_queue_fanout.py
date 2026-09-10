@@ -103,12 +103,11 @@ def test_trigger_manager_task_started_gate_uses_shared_meta_set():
     )
 
 
-def test_chat_router_task_started_gate_uses_shared_meta_set():
-    """api/routers/chat.py's autonomous-mirror branch must reject every
-    queue-meta event before firing task_started."""
-    import nymeria.api.routers.chat as chat_mod
+def test_turn_runner_task_started_gate_uses_shared_meta_set():
+    """The turn owner's autonomous mirror rejects all queue-meta events."""
+    from nymeria.core.turn_runner import run_turn
 
-    src = inspect.getsource(chat_mod.create_chat_router)
+    src = inspect.getsource(run_turn)
     assert "PENDING_QUEUE_META_EVENT_TYPES" in src, (
-        "chat router task_started gate must use the shared meta-event set"
+        "turn runner task_started gate must use the shared meta-event set"
     )

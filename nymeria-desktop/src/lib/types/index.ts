@@ -996,7 +996,8 @@ export type SSEEventType =
   | 'tool_reload'
   | 'hook_activity'
   | 'turn_started'
-  | 'turn_attach';
+  | 'turn_attach'
+  | 'turn_replay_gap';
 
 export type PendingPromptStatus = 'sending' | 'queued' | 'error';
 

@@ -64,6 +64,7 @@ EXACT_MATCH: set[str] = {
     "lib/services/api/hooks.ts",
     "lib/services/api/humanizeError.ts",
     "lib/services/api/humanizeError.test.ts",
+    "lib/services/api/chat.test.ts",
     "lib/services/api/index.ts",
     "lib/services/api/llm-fallback.ts",
     "lib/services/api/ui-prompts.ts",

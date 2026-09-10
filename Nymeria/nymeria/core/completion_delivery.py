@@ -500,7 +500,7 @@ def deliver_without_turn(
 
     from .activity_log import ActivityType
     from .autonomous_turn import AutonomousTurnEmitter
-    from .stream_bridge import begin_holder_turn_tee
+    from .turn_runner import begin_holder_turn_tee
 
     with hold_thread(
         agent,

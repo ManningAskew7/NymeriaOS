@@ -378,3 +378,16 @@ def test_http_status_errors_keep_plain_error_path() -> None:
     assert isinstance(events[0], ErrorEvent)
     assert events[0].code == "api_transport_error"
     assert fake.status_calls == 0
+
+
+@pytest.mark.parametrize("has_start", [False, True])
+def test_primary_replay_gap_is_an_honest_terminal_error(has_start):
+    fake = RecoveryFakeAPI()
+    fake.chat_script = (
+        [{"type": "turn_started", "turn_id": "turn-1", "seq": 1}] if has_start else []
+    ) + [{"type": "turn_replay_gap", "turn_id": "turn-1", "thread_id": "t-1"}]
+    events = _collect(APIAgentClient(fake))
+    assert len(events) == 1 and isinstance(events[0], ErrorEvent)
+    assert events[0].code == "turn_replay_gap"
+    assert "history" in events[0].content
+    assert not any(isinstance(event, DoneEvent) for event in events)

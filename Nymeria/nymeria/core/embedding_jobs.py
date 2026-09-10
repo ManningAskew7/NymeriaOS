@@ -24,6 +24,12 @@ _PENDING: set[_EmbeddingJob] = set()
 _PENDING_LOCK = threading.Lock()
 
 
+def pending_embedding_job_count() -> int:
+    """Unsettled jobs, including index writes after a holder releases its lock."""
+    with _PENDING_LOCK:
+        return len(_PENDING)
+
+
 def _execute(fn: Callable[..., _T], args: tuple, kwargs: dict, site: str, chunk_count: int) -> _T:
     started = time.monotonic()
     _WORKER.active = True
