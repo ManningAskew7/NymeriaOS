@@ -928,3 +928,48 @@ def test_content_block_to_steps_non_dict_and_unknown_blocks():
     assert _content_block_to_steps(
         {"type": "image_url", "image_url": {"url": "x"}}, {}, **_block_kwargs()
     ) == []
+
+
+def test_history_preserves_visible_batch_and_sources_after_checkpoint_round_trip():
+    from langchain_core.messages import messages_from_dict, messages_to_dict
+    from nymeria.core.agent_turn_loops import build_queued_prompt_messages
+    from nymeria.core.pending_prompt_queue import make_pending_prompt
+
+    prompts = [make_pending_prompt(message=text, source=source, source_id=None,
+        source_label=label, user_id='owner', is_autonomous=autonomous)
+        for text, source, label, autonomous in (
+            ('First separate request', 'user', 'Manning', False),
+            ('Second separate request', 'callable', 'Research Agent', True),
+        )]
+    inputs = build_queued_prompt_messages(prompts)
+    restored = messages_from_dict(messages_to_dict(inputs + [AIMessage(content='Shared reply')]))
+    history = format_conversation_history(restored, thread_id='visible-batch')
+    assert [entry.get('kind', entry['role']) for entry in history] == ['queued_batch', 'assistant']
+    batch = history[0]['queued_batch']
+    assert [item['text'] for item in batch['inputs']] == ['First separate request', 'Second separate request']
+    assert [item['source_label'] for item in batch['inputs']] == ['Manning', 'Research Agent']
+    assert [item['model_content'] for item in batch['inputs']] == [msg.content for msg in inputs]
+    assert batch['id'] == inputs[0].additional_kwargs['queued_batch']['id']
+    assert 'Batched inputs' in history[0]['content']
+    assert 'queued request 1/2' in history[0]['content']
+    assert 'queued request 2/2' in history[0]['content']
+    assert history[1]['content'] == 'Shared reply'
+
+
+def test_saved_batches_keep_separate_replies_and_do_not_merge_across_turns():
+    from nymeria.core.agent_turn_loops import build_queued_prompt_messages
+    from nymeria.core.pending_prompt_queue import make_pending_prompt
+
+    batches = [build_queued_prompt_messages([
+        make_pending_prompt(message=f'request {index}', source='ticker', source_id=None,
+            source_label='Daily task', user_id='owner', is_autonomous=True)
+    ]) for index in (1, 2)]
+    history = format_conversation_history(
+        batches[0] + [AIMessage(content='first reply')] + batches[1] + [AIMessage(content='second reply')],
+        thread_id='two-batches', show_autonomous_prompts=False)
+    assert [entry.get('kind', entry['role']) for entry in history] == [
+        'queued_batch', 'assistant', 'queued_batch', 'assistant']
+    assert history[0]['queued_batch']['id'] != history[2]['queued_batch']['id']
+    assert history[0]['queued_batch']['inputs'][0]['text'] == 'request 1'
+    assert history[2]['queued_batch']['inputs'][0]['text'] == 'request 2'
+    assert [history[i]['content'] for i in (1, 3)] == ['first reply', 'second reply']

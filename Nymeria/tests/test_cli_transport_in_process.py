@@ -362,6 +362,7 @@ def test_stop_returns_restored_prompts_payload() -> None:
     assert result["restored_prompts"] == [
         {
             "text": "held over",
+            "prompt_id": agent.restored_to_return[0].prompt_id,
             "source_label": "User",
             "user_id": "alice",
             "enqueued_at": 123.0,

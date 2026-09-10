@@ -538,6 +538,11 @@ function createAutonomousStore() {
     }
 
     switch (event.type) {
+      case 'queue_withdrawn': {
+        // IDs are globally unique, including queues on dispatch targets.
+        if (typeof event.prompt_id === 'string') chatStore.removePendingPromptByServerId(event.prompt_id);
+        break;
+      }
       case 'task_started':
         // Refresh scheduled todos
         todosStore.fetch();

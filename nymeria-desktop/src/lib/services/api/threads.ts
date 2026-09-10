@@ -209,6 +209,7 @@ export class ThreadsApi extends ChatApi {
           : undefined,
         attachments: m.attachments as Message['attachments'],
         graphMessageId: m.message_id as string | undefined,
+        queuedBatch: this.parseQueuedBatch(m.queued_batch),
         hidden: m.hidden === true ? true : undefined,
         contextSummary: (m.context_summary as string | undefined) || (m.contextSummary as string | undefined),
         messagesRemoved: (m.messages_removed as number | undefined) ?? (m.messagesRemoved as number | undefined),

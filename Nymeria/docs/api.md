@@ -694,6 +694,40 @@ a queued prompt's connection ends its
 observation but leaves the prompt queued. `/compact` and `/chat/sync` still
 use their separate execution paths.
 
+**Queued requests:** `prompt_queued` includes a unique `prompt_id` and the
+actual `queue_thread_id`. Use that queue thread for withdrawal, including when
+an `@thread` request was routed away from the caller. Closing the request only
+ends observation. `DELETE /threads/{queue_thread_id}/queue/{prompt_id}` removes
+that request if it is still pending, without stopping the holder. If admission
+instead produces `turn_started` (or a replay gap carrying its holder ID), the
+request has become its own turn and must render as a normal reply.
+
+At the post-tool boundary, all still-pending requests are absorbed FIFO into
+one model continuation. Each is a separate HumanMessage with its own request
+ordinal, source label, timestamp and body. `prompt_injected` announces only
+inputs committed to the checkpoint: `batch_id`, consumed `prompt_ids`, and
+`prompts` containing `position`, `total`, `source`, `source_label`, `user_id`,
+`enqueued_at`, `message_id`, `text` and exact `model_content`. Desktop and mobile show one
+expanded **Batched inputs** block followed by the shared reply. Autonomous and
+system inputs remain visible in this block. Saved history preserves the same
+group as a `system` entry with `kind: "queued_batch"`, a renderable `content`,
+and `queued_batch: {id, total, inputs}`. A single input uses **Queued input**.
+
+**Withdraw a queued request**
+
+`DELETE /threads/{thread_id}/queue/{prompt_id}` requires access to that thread
+and does not claim an unowned thread. It returns `200 {"withdrawn": true}` and
+publishes `queue_withdrawn {prompt_id}`. The queued observer ends with
+`error {code: "withdrawn", content: "Queued prompt withdrawn."}`. An unknown
+or already-drained ID returns `404` with `detail.code: "prompt_not_queued"`;
+this says the request is no longer pending, not that execution was cancelled.
+Withdrawal and drain are atomic competitors. Other access errors remain errors.
+
+An early X in the GUI records intent while the receipt is in flight, then
+withdraws on receipt. If the request already became a holder, it renders
+normally. Failed withdrawal remains visible and retryable; a lost receipt is
+reported as uncertain because the request may still run.
+
 Dispatched `@thread` messages first emit:
 
 ```
@@ -956,7 +990,7 @@ GET /threads/{thread_id}/history
 Authorization: Bearer <token>
 ```
 
-Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups and compact prompts) that are hidden by default. Compaction markers are visible by default as `system` messages with `kind: "compaction_notice"`. Notes about the effective config differing from the requested one appear as `system` messages with `kind: "fallback_notice"` (fields: `phase` `swap`|`end`|`rejected`, `note_kind` `refusal`|`transport`|`destination`, `from_model`, `to_model`, `reason`, and a renderable one-line `content`): the runtime explains a fallback swap, the end of a hold, or a per-thread `base_url` it refused to send the server's credential to, inside the conversation, and history strips that appended note from the user bubble and re-emits it as this typed entry. `note_kind` distinguishes them: `refusal`/`transport` are model swaps and carry `from_model`/`to_model`, while `destination` carries neither and must not be rendered as a model switch. A TTL lapse notice (`[System: Skill Kit ... tools expired ...]`, see `agent-systems/tool-hot-loading.md` "Expiry Notices") appears as a `system` message with `kind: "tool_expiry_notice"` and the exact framed line in `content`, emitted before the user entry it was prefixed to (next-turn form) or in place of the internal queued prompt that carried it (mid-turn form; shown regardless of `show_autonomous_prompts`).
+Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups and compact prompts) that are hidden by default. Compaction markers are visible by default as `system` messages with `kind: "compaction_notice"`. Notes about the effective config differing from the requested one appear as `system` messages with `kind: "fallback_notice"` (fields: `phase` `swap`|`end`|`rejected`, `note_kind` `refusal`|`transport`|`destination`, `from_model`, `to_model`, `reason`, and a renderable one-line `content`): the runtime explains a fallback swap, the end of a hold, or a per-thread `base_url` it refused to send the server's credential to, inside the conversation, and history strips that appended note from the user bubble and re-emits it as this typed entry. `note_kind` distinguishes them: `refusal`/`transport` are model swaps and carry `from_model`/`to_model`, while `destination` carries neither and must not be rendered as a model switch. A TTL lapse notice (`[System: Skill Kit ... tools expired ...]`, see `agent-systems/tool-hot-loading.md` "Expiry Notices") appears as a `system` message with `kind: "tool_expiry_notice"` and the exact framed line in `content`, emitted before the user entry it was prefixed to (next-turn form) or as an attributed system input in a `queued_batch` entry (mid-turn form; shown regardless of `show_autonomous_prompts`).
 
 Optional query: `show_autonomous_prompts=true|false` overrides the per-thread `show_autonomous_prompts` config for this request only (without mutating thread state). When omitted, the backend falls back to the per-thread field. The desktop and mobile clients pass this query param based on their global "Show autonomous prompts" preference (combined with the per-thread force-on override), so a single global setting can drive history filtering without flipping every thread's config. MCP and CLI callers don't pass it and keep today's behavior. Ignored when `include_internal=true` (which always returns everything).
 
@@ -1442,9 +1476,9 @@ Returns the callable thread tools actually available from that caller thread aft
 | `compacting` | Context summary generation has started after the compaction path passes its start checks | `message` |
 | `compacted` | Context was compacted; async streams may resume afterward | `messages_removed`, `auto_resumed`, `summary` |
 | `queued` | Legacy: thread is busy with another turn; client should wait. Now emitted alongside `prompt_queued`; will be dropped once frontends adopt the new event. | `content`, `holder`, `held_seconds` |
-| `prompt_queued` | Prompt was placed on the per-thread sub-turn queue because the thread was busy. The currently-running turn will halt at its next sub-turn boundary and absorb the queued prompt. | `position`, `holder`, `held_seconds`, `source` |
+| `prompt_queued` | Prompt was placed on the per-thread sub-turn queue because the thread was busy. The currently-running turn will halt at its next sub-turn boundary and absorb the queued prompt. | `prompt_id`, `queue_thread_id`, `position`, `holder`, `held_seconds`, `source` |
 | `turn_halted` | The running turn observed pending queued prompts and ended early at the post-tools boundary; the drain loop is about to inject the queued prompts. | `reason`, `count` |
-| `prompt_injected` | One or more queued prompts have been turned into HumanMessages and appended to the checkpoint; the graph is being re-driven to absorb them. `prompts` carries the queued texts (`{text, source_label, user_id, enqueued_at}`, index-parallel with `sources`) so clients that did not enqueue locally (live-attach viewers, other same-user clients) can render the injected user bubbles. `sources` may hold `system` (a mid-turn tool-expiry notice, `agent-systems/tool-hot-loading.md`): clients render that prompt's `text` as the `tool_expiry_notice` card, never as a user bubble. | `count`, `sources`, `prompts` |
+| `prompt_injected` | A FIFO batch was committed for one model continuation. Render its separate attributed inputs together, including autonomous/system sources, followed by the shared reply. | `batch_id`, `count`, `prompt_ids`, `sources`, `prompts` (per-input metadata and exact `model_content`, see Queued requests) |
 | `prompt_absorbed` | The queuer's specific prompt finished being absorbed. Mirrors the holder's full event stream to the queuer's connection in real time leading up to this. | `thread_id` |
 | `fanout_dropped` | The queuer's fanout mailbox overflowed its bound (slow consumer); some events were dropped from this queuer's mirror. | `dropped_count` |
 | `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection. A max-iterations halt lands at the sub-turn boundary AFTER the crossing tool batch executes, leaving a clean resumable tail. | `content`, `reason`, `scope` (`main_agent`/`sub_agent`), `max_iterations`, `tool_call_count`, `resumable` (true only for graceful main-agent cap halts; gates the client Resume affordance), optional `repeated_tool_name`, `repeated_count`, optional `agent_name` (sub-agent scope) |
@@ -1968,6 +2002,7 @@ The same stream also carries cross-client sync events used by open frontends:
 | `thread_deleted` | A thread was deleted | none |
 | `thread_rewound` | Trailing exchanges were removed via the rewind endpoint | `steps`, `removed`, optional `to_message_id` |
 | `queue_restored` | A user-initiated stop returned queued user prompts unprocessed; other open clients should restore their local queued copies to the composer. Suppressed for the originating client via `X-Nymeria-Client-Id`. | `count`, `prompts` (list of raw prompt texts) |
+| `queue_withdrawn` | One still-pending request was withdrawn without stopping the holder. Remove the chip matching its globally unique ID. | `prompt_id` |
 | `thread_teams_changed` | Callable-team entities or membership changed (teams REST, config PATCH, `team_manage`, `nym.threads.configure` team=, a teamed spawn). The payload is a hint; clients refetch `GET /thread-teams`. | optional `team_id`, `reason` (`created`/`renamed`/`described`/`membership`/`updated`/`deleted`) |
 | `browser_login_started` | A browser login handoff opened; the desktop raises the live viewer (see "Browser Login Handoff API"). Owner-only: excluded from the admin firehose | the session status object plus `origin` (`agent`/`command`) |
 | `browser_login_ended` | A login session ended by any path (operator button, agent cancel, TTL expiry, thread abort); every client retracts its viewer. Unknown session ids are ignored. Owner-only: excluded from the admin firehose | the final session status object (`end_reason` set) |

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -259,55 +260,47 @@ def build_queued_prompt_messages(
     *,
     agent: Any = None,
     thread_id: Optional[str] = None,
+    batch_id: Optional[str] = None,
 ) -> List[Any]:
-    """Build one HumanMessage per drained prompt.
+    """Build separate, attributed inputs for one queued-batch continuation.
 
-    Per-prompt visibility/history semantics survive the absorption:
-    autonomous prompts stay ``internal=True`` (filtered from user-facing
-    history); user prompts stay visible. A ``system`` prompt (the mid-turn
-    tool-expiry notice, nodes._enqueue_tool_expiry_notice) is internal
-    under its own ``internal_type`` so history renders it as a typed
-    ``tool_expiry_notice`` card rather than a wakeup (which the
-    show_autonomous_prompts toggle would hide, sub-turn included).
-
-    Absorb is where the notice COMMITS: with ``agent`` and ``thread_id`` the
-    system prompt's text is re-rendered from the still-un-notified records
-    and those records flip to notified (``consume_tool_expiry_notice``), so a
-    prompt dropped before this point (stop, abort, inject failure) is simply
-    carried by the next prompt's prefix instead. A system prompt whose
-    records are already delivered, or whose commit save failed, is skipped:
-    the next prompt covers it. Without an agent the queued text is used as
-    is (tests, and callers that only shape messages).
+    Internal flags retain their execution semantics. Batch identity also survives
+    checkpoints so the user can see which requests the model received together.
+    Stale system notices are skipped before numbering the actual model inputs.
     """
-    # Lazy: avoid circular import at module load (sibling convention).
     from .agent import _create_human_message
+    from .pending_prompt_queue import queued_prompt_source_label
 
-    messages: List[Any] = []
+    built = []
     for p in pending_batch:
+        text = p.message
         if p.source == "system":
-            text = p.message
             if agent is not None and thread_id:
                 from .agent_tools import consume_tool_expiry_notice
 
                 text = consume_tool_expiry_notice(agent, thread_id, commit=True)
                 if not text:
-                    logger.info(
-                        "Thread %s: queued tool expiry notice skipped at absorb "
-                        "(already delivered, or its commit save failed)",
-                        thread_id,
-                    )
+                    logger.info("Thread %s: queued tool expiry notice skipped at absorb", thread_id)
                     continue
-            msg = _create_human_message(
-                f"{queued_prompt_header(p)}\n\n{text}",
-                internal=True,
-                internal_type="tool_expiry_notice",
-            )
+            msg = _create_human_message(text, internal=True, internal_type="tool_expiry_notice")
             msg.additional_kwargs["tool_expiry_notice"] = text
         else:
             msg = _create_human_message(
-                f"{queued_prompt_header(p)}\n\n{p.message}",
-                internal=p.is_autonomous,
+                text, internal=p.is_autonomous,
                 internal_type="autonomous_wakeup" if p.is_autonomous else None,
             )
+        built.append((p, msg, text))
+
+    batch_id = batch_id or uuid.uuid4().hex
+    messages: List[Any] = []
+    for position, (p, msg, text) in enumerate(built, start=1):
+        msg.content = f"{queued_prompt_header(p, position=position, total=len(built))}\n\n{text}"
+        msg.id = msg.id or uuid.uuid4().hex
+        msg.additional_kwargs["queued_batch"] = {
+            "id": batch_id, "position": position, "total": len(built),
+            "prompt_id": p.prompt_id, "message_id": msg.id, "source": p.source,
+            "source_label": queued_prompt_source_label(p), "user_id": p.user_id,
+            "enqueued_at": p.enqueued_at, "text": text,
+        }
         messages.append(msg)
     return messages

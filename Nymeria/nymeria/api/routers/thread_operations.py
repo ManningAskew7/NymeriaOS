@@ -25,6 +25,7 @@ from ..schemas.thread_operations import (
     AttachmentLimitsResponse,
     AttachmentValidationRequest,
     AttachmentValidationResponse,
+    QueueWithdrawalResponse,
     ThreadRewindRequest,
     ThreadRewindResponse,
 )
@@ -475,6 +476,33 @@ def create_thread_operations_router(
             steps=steps_echo,
             removed=result.removed,
         )
+
+    @router.delete("/threads/{thread_id}/queue/{prompt_id}", response_model=QueueWithdrawalResponse)
+    async def withdraw_queued_prompt(
+        http_request: Request,
+        thread_id: str,
+        prompt_id: str,
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Withdraw an unabsorbed prompt without stopping its holder turn."""
+        from ...core.pending_prompt_queue import get_pending_queue
+
+        require_thread_access_fn(user, thread_id, claim=False)
+        if not get_pending_queue().withdraw(thread_id, prompt_id):
+            raise HTTPException(status_code=404, detail={
+                "code": "prompt_not_queued", "message": "This prompt is no longer queued.",
+            })
+        try:
+            publish_sync_event_fn(
+                event_type="queue_withdrawn", thread_id=thread_id, user_id=user_id,
+                data={"prompt_id": prompt_id},
+                origin_client_id=http_request.headers.get("x-nymeria-client-id", ""),
+            )
+        except Exception:
+            # Withdrawal already committed; its caller still needs a truthful receipt.
+            logger.warning("queue_withdrawn publish failed for thread %s", thread_id, exc_info=True)
+        return QueueWithdrawalResponse(withdrawn=True)
 
     @router.post("/threads/{thread_id}/stop")
     async def stop_thread(

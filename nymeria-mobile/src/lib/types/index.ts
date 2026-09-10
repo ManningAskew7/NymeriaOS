@@ -213,7 +213,7 @@ export interface CommandExecuteResponse {
 export interface Message {
   id: string;
   role: MessageRole;
-  kind?: 'compaction_notice' | 'command_result' | 'turn_rewound' | 'fallback_notice' | 'tool_expiry_notice';
+  kind?: 'compaction_notice' | 'command_result' | 'turn_rewound' | 'fallback_notice' | 'tool_expiry_notice' | 'queued_batch';
   // Sub-taxonomy of a `fallback_notice`: 'transport'/'refusal' are model
   // swaps, 'destination' is a per-thread endpoint the server refused to
   // send its credential to. Same channel, different event, so the
@@ -226,6 +226,7 @@ export interface Message {
   status: MessageStatus;
   toolCalls?: ToolCall[];         // Legacy history fallback for messages without steps
   attachments?: FileAttachment[]; // File attachments for multimodal messages
+  queuedBatch?: QueuedBatch;
   graphMessageId?: string;        // Backend LangGraph message id (user messages from history); rewind target for POST /threads/{id}/rewind
   hidden?: boolean;               // Invisible anchor stub (hidden autonomous wakeup, backlog #90): kept for anchor trimming, never rendered
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)
@@ -747,10 +748,29 @@ export type SSEEventType =
   | 'turn_attach'
   | 'turn_replay_gap';
 
-export type PendingPromptStatus = 'sending' | 'queued' | 'error';
+export interface QueuedInput {
+  messageId?: string;
+  promptId: string;
+  position: number;
+  source: string;
+  sourceLabel: string;
+  userId: string;
+  enqueuedAt: number;
+  text: string;
+  modelContent: string;
+}
+
+export interface QueuedBatch {
+  id: string;
+  total: number;
+  inputs: QueuedInput[];
+}
+
+export type PendingPromptStatus = 'sending' | 'queued' | 'withdrawing' | 'withdraw_error' | 'error';
 
 export interface PendingPrompt {
   id: string;
+  promptId?: string;
   content: string;
   attachments?: FileAttachment[];
   status: PendingPromptStatus;
@@ -761,6 +781,7 @@ export interface PendingPrompt {
 
 /** A queued prompt handed back by a user-initiated stop (backlog #16). */
 export interface RestoredPrompt {
+  promptId?: string;
   text: string;
   sourceLabel: string;
   userId: string;

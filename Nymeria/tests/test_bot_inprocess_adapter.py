@@ -435,6 +435,7 @@ def test_stop_returns_restored_prompt_payload():
     assert result["restored_prompts"] == [
         {
             "text": "queued text",
+            "prompt_id": pending.prompt_id,
             "source_label": "U1",
             "user_id": "u1",
             "enqueued_at": pending.enqueued_at,

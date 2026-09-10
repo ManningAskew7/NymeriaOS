@@ -622,6 +622,7 @@ def test_stop_route_returns_restored_prompts_and_publishes_queue_restored(
     assert body["restored_prompts"] == [
         {
             "text": "queued while busy",
+            "prompt_id": pending.prompt_id,
             "source_label": "Owner",
             "user_id": "owner",
             "enqueued_at": pending.enqueued_at,
@@ -841,3 +842,77 @@ def test_thread_share_available_skill_names_no_manager_is_quiet(caplog):
 
     assert result == set()
     assert "Failed to list installed skills" not in caplog.text
+
+
+def test_withdraw_queued_prompt_removes_only_target_and_publishes_sync(
+    tmp_path, api_client_builder, monkeypatch,
+):
+    from nymeria.core import event_bus, pending_prompt_queue as ppq
+
+    backend = ppq.InMemoryPendingPromptQueue()
+    monkeypatch.setattr(ppq, '_singleton', backend)
+    published = []
+    monkeypatch.setattr(event_bus, 'get_event_bus', lambda: SimpleNamespace(publish=published.append))
+    client, agent, token = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.claim_thread('withdraw-thread', 'owner')
+    prompts = [ppq.make_pending_prompt(message=text, source='user', source_id=None,
+        source_label='Owner', user_id='owner', is_autonomous=False) for text in ('keep first', 'withdraw me', 'keep last')]
+    for index, prompt in enumerate(prompts):
+        prompt.prompt_id = f'prompt-{index}'
+        backend.enqueue('withdraw-thread', prompt)
+    response = client.delete('/threads/withdraw-thread/queue/prompt-1',
+        headers=api_client_builder.auth(token, **{'x-nymeria-client-id': 'withdraw-client'}))
+    assert response.status_code == 200 and response.json() == {'withdrawn': True}
+    assert [p.message for p in backend.drain('withdraw-thread')] == ['keep first', 'keep last']
+    assert prompts[1].error_code == 'withdrawn' and prompts[1].notify_event.is_set()
+    assert not prompts[1].abandoned and not prompts[1].restored
+    assert agent.aborted_threads == []
+    assert [(e.event_type, e.thread_id, e.user_id, e.data) for e in published] == [
+        ('queue_withdrawn', 'withdraw-thread', 'owner', {'prompt_id': 'prompt-1', '_origin_client_id': 'withdraw-client'}),
+    ]
+    missing = client.delete('/threads/withdraw-thread/queue/prompt-1', headers=api_client_builder.auth(token))
+    assert missing.status_code == 404 and missing.json()['detail']['code'] == 'prompt_not_queued'
+
+
+def test_withdraw_queued_prompt_requires_access_without_claiming_unknown_thread(
+    tmp_path, api_client_builder, monkeypatch,
+):
+    from nymeria.core import pending_prompt_queue as ppq
+
+    backend = ppq.InMemoryPendingPromptQueue()
+    monkeypatch.setattr(ppq, '_singleton', backend)
+    client, agent, token = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.claim_thread('private-queue', 'owner')
+    agent.accounts_repo.create_user('other', 'other@example.com', 'Other')
+    other_token = agent.accounts_repo.issue_token('other')
+    prompt = ppq.make_pending_prompt(message='private pending text', source='user', source_id=None,
+        source_label='Owner', user_id='owner', is_autonomous=False)
+    prompt.prompt_id = 'private-id'
+    backend.enqueue('private-queue', prompt)
+    denied = client.delete('/threads/private-queue/queue/private-id', headers=api_client_builder.auth(other_token))
+    assert denied.status_code == 404 and denied.json()['detail'] == 'Not found'
+    unknown = client.delete('/threads/never-created/queue/private-id', headers=api_client_builder.auth(token))
+    assert unknown.status_code == 404 and unknown.json()['detail']['code'] == 'prompt_not_queued'
+    assert agent.accounts_repo.get_thread_owner('never-created') is None
+    assert backend.drain('private-queue') == [prompt]
+    assert not prompt.notify_event.is_set()
+
+
+def test_withdraw_reports_success_even_if_sync_publish_fails(tmp_path, api_client_builder, monkeypatch):
+    from nymeria.core import event_bus, pending_prompt_queue as ppq
+
+    backend = ppq.InMemoryPendingPromptQueue()
+    monkeypatch.setattr(ppq, '_singleton', backend)
+    def fail_publish(event):
+        raise RuntimeError('test bus unavailable')
+    monkeypatch.setattr(event_bus, 'get_event_bus', lambda: SimpleNamespace(publish=fail_publish))
+    client, agent, token = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.claim_thread('withdraw-publish-failed', 'owner')
+    prompt = ppq.make_pending_prompt(message='withdraw despite publish failure', source='user', source_id=None,
+        source_label='Owner', user_id='owner', is_autonomous=False)
+    backend.enqueue('withdraw-publish-failed', prompt)
+    response = client.delete(f'/threads/withdraw-publish-failed/queue/{prompt.prompt_id}',
+        headers=api_client_builder.auth(token))
+    assert response.json() == {'withdrawn': True}
+    assert backend.drain('withdraw-publish-failed') == []
+    assert prompt.error_code == 'withdrawn'

@@ -373,6 +373,31 @@ def _handle_human_history_message(
     ctx: _HistoryFormatContext,
     msg: HumanMessage,
 ) -> None:
+    queued = msg.additional_kwargs.get("queued_batch")
+    if isinstance(queued, dict) and queued.get("id"):
+        ctx.flush_current_turn()
+        item = {**queued, "model_content": msg.content}
+        if msg.id:
+            item["message_id"] = msg.id
+        previous = ctx.history[-1] if ctx.history else None
+        if (previous and previous.get("kind") == "queued_batch"
+                and previous["queued_batch"]["id"] == queued["id"]):
+            entry = previous
+            entry["queued_batch"]["inputs"].append(item)
+        else:
+            entry = {
+                "id": ctx.next_entry_id(), "role": "system", "kind": "queued_batch",
+                "queued_batch": {"id": queued["id"], "total": queued.get("total", 1), "inputs": [item]},
+            }
+            timestamp = ctx.timestamp_map.get(msg.id) if msg.id else None
+            if timestamp:
+                entry["timestamp"] = timestamp
+            ctx.history.append(entry)
+        inputs = entry["queued_batch"]["inputs"]
+        title = "Batched inputs" if entry["queued_batch"]["total"] > 1 else "Queued input"
+        entry["content"] = title + "\n\n" + "\n\n".join(str(i["model_content"]) for i in inputs)
+        return
+
     if msg.additional_kwargs.get("internal_type") in ("compaction_marker", "memory_seed_marker"):
         ctx.flush_current_turn()
 
@@ -730,6 +755,12 @@ def _filter_internal_messages(
             readback_expected = False
             readback_ids = set()
             is_internal = msg.additional_kwargs.get("internal", False)
+            if isinstance(msg.additional_kwargs.get("queued_batch"), dict):
+                # A batch shows every attributed request the model received,
+                # including autonomous inputs, independently of wakeup filtering.
+                filtered_messages.append(msg)
+                skip_until_next_human = False
+                continue
 
             if is_internal:
                 internal_type = msg.additional_kwargs.get("internal_type", "")

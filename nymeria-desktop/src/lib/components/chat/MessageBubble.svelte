@@ -14,6 +14,7 @@
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import ToolCallCard from './ToolCallCard.svelte';
+  import QueuedBatch from './QueuedBatch.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import AgentActivityIndicator from './AgentActivityIndicator.svelte';
   import SkillCard from '../skills/SkillCard.svelte';
@@ -455,7 +456,9 @@
   }
 </script>
 
-{#if message.kind === 'command_result'}
+{#if message.kind === 'queued_batch' && message.queuedBatch}
+  <QueuedBatch batch={message.queuedBatch} />
+{:else if message.kind === 'command_result'}
 <!-- Outcome accent keyed off the typed level (backlog #135). The status
      fallback is defensive: addCommandResult, the only producer, always
      stamps commandLevel. Polite live region, not role="alert": an alert

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { consumeTurnStream } from '$lib/services/api/chat';
+  import { adoptCurrentStream, consumeTurnReplay, consumeTurnStream } from '$lib/services/api/chat';
+  import { finishPromotedTurn, queuedPromptEvents } from '$lib/services/queuedPrompt';
   import Icon from '$lib/components/common/Icon.svelte';
   import { ChatContainer, InputBar, ContextStatusBar, QueuedPromptsBar, MessageActionSheet } from '$lib/components/chat';
   import { ThreadSettingsPanel } from '$lib/components/threads';
@@ -21,7 +22,7 @@
   import { humanizeErrorText, isConnectivityError } from '$lib/services/api/humanizeError';
   import { isTodoTool } from '$lib/utils/todoTools';
   import { untrack } from 'svelte';
-  import type { DispatchInfo, FileAttachment, RestoredPrompt, SSEEvent, ThreadStatus } from '$lib/types';
+  import type { DispatchInfo, FileAttachment, QueuedBatch, RestoredPrompt, SSEEvent, ThreadStatus } from '$lib/types';
 
   let currentTitle = $derived(threadsStore.currentThread?.title ?? 'New Thread');
   let showThreadSettings = $state(false);
@@ -267,8 +268,8 @@
       chatStore.addUserMessage(message, attachments);
     }
     chatStore.addAssistantMessage();
-    chatStore.setStreaming(true);
 
+    const generation = chatStore.beginStream(threadId);
     // Holder-turn id from the stream's turn_started event; the re-attach
     // handle if this connection drops mid-turn.
     let activeTurnId: string | null = null;
@@ -277,11 +278,12 @@
     try {
       recovering = await consumeTurnStream(
         api.chatStream(message, threadId, attachments),
-        (event) => handleSSEEvent(event, threadId),
+        (event) => { if (ownsTurn(threadId, generation)) handleSSEEvent(event, threadId); },
         (turnId) => { activeTurnId = turnId; },
-        (turnId) => { if (threadId) void recoverInterruptedTurn(threadId, turnId); }
+        (turnId) => { if (threadId && ownsTurn(threadId, generation)) void recoverInterruptedTurn(threadId, turnId, generation); }
       );
     } catch (error) {
+      if (!ownsTurn(threadId, generation)) return;
       if (error instanceof Error && error.name === 'AbortError') {
         // User cancelled
       } else if (isConnectivityError(error) && activeTurnId) {
@@ -295,7 +297,7 @@
         // another turn), so recovery could wipe the unsent user message or
         // replay a foreign turn; keep the plain error instead.
         recovering = true;
-        void recoverInterruptedTurn(threadId, activeTurnId);
+        void recoverInterruptedTurn(threadId, activeTurnId, generation);
         return;
       } else {
         chatStore.setLastMessageError(
@@ -304,7 +306,7 @@
       }
     } finally {
       if (!recovering) {
-        finalizeStreamCleanup();
+        finalizeStreamCleanup(threadId, generation);
       }
     }
   }
@@ -367,7 +369,7 @@
     if (chatStore.isStreaming || chatStore.isLoadingHistory) return;
     // Gate the composer before any await so a concurrent send queues
     // instead of racing the attach.
-    chatStore.setStreaming(true);
+    const generation = chatStore.beginStream(threadId);
 
     // The replay carries only assistant-side events, so the viewer keeps
     // history up to the turn's initiating user message and lets the replay
@@ -381,13 +383,14 @@
         // a checkpoint yet: refresh history once and re-anchor.
         try {
           const history = await api.getThreadHistory(threadId);
-          if (threadsStore.currentThreadId !== threadId || chatStore.isStopping) return;
+          if (!ownsTurn(threadId, generation) || chatStore.isStopping) return;
           chatStore.setMessages(history.messages);
           anchored = chatStore.trimAfterGraphMessageId(userMessageId);
         } catch {
           // Unreachable backend: the recovery loop below owns retries.
         }
       }
+      if (!ownsTurn(threadId, generation)) return;
       if (!anchored) {
         // Replay cannot re-render the user bubble; settle from history at
         // the end instead.
@@ -408,22 +411,23 @@
       reconcileOnFinish = true;
     }
 
-    await recoverInterruptedTurn(threadId, turnId, {
+    if (!ownsTurn(threadId, generation)) return;
+    chatStore.setStreamReplayStart(generation);
+    await recoverInterruptedTurn(threadId, turnId, generation, {
       silentFirstAttempt: true,
       reconcileOnFinish
     });
   }
 
   /** Standard end-of-stream cleanup, shared by the live stream and recovery. */
-  function finalizeStreamCleanup() {
-    // Stream closed while a stop was still pending (no cancelled frame
-    // arrived, e.g. the server tore the stream down first): finalize
-    // the stopped rendering before the generic completion cleanup.
-    if (chatStore.isStopping) chatStore.finalizeStopped();
+  function ownsTurn(threadId: string | undefined, generation: number): boolean {
+    return threadsStore.currentThreadId === threadId && chatStore.ownsStream(generation);
+  }
+
+  function finalizeStreamCleanup(threadId: string | undefined, generation: number) {
+    if (!ownsTurn(threadId, generation)) return;
     chatStore.reclassifyThinkingAsResponse();
-    chatStore.setLastMessageComplete();
-    chatStore.setStreaming(false);
-    chatStore.clearActiveToolCalls();
+    if (!chatStore.finishStream(generation)) return;
   }
 
   // Interactive-stream recovery (re-attachable turns): backoff mirrors the
@@ -451,11 +455,13 @@
   async function recoverInterruptedTurn(
     threadId: string,
     turnId: string | null,
+    generation: number,
     opts: { silentFirstAttempt?: boolean; reconcileOnFinish?: boolean } = {}
   ) {
+    if (!ownsTurn(threadId, generation)) return;
     let reconnectingShown = false;
     const showReconnecting = () => {
-      if (!reconnectingShown) {
+      if (!reconnectingShown && ownsTurn(threadId, generation)) {
         reconnectingShown = true;
         chatStore.setReconnecting(true);
       }
@@ -472,13 +478,13 @@
       while (true) {
         // Stop conditions: user switched threads (thread-switch machinery
         // owns the messages now) or a stop is finalizing the turn.
-        if (threadsStore.currentThreadId !== threadId) return;
+        if (!ownsTurn(threadId, generation)) return;
         if (chatStore.isStopping || !chatStore.isStreaming) return;
         if (attempt >= RECOVERY_MAX_ATTEMPTS) {
           // Bounded give-up: fall back to persisted history (which itself
           // degrades to the turn-lost error if even that is unreachable)
           // instead of reconnecting forever.
-          await reconcileFromHistory(threadId);
+          await reconcileFromHistory(threadId, generation);
           return;
         }
 
@@ -490,34 +496,39 @@
           // Backend unreachable; keep backing off like the autonomous stream.
         }
 
+        if (!ownsTurn(threadId, generation)) return;
         if (status) {
           const turn = status.turn;
           const turnMatches = turn && (!turnId || turn.turnId === turnId);
           if (turn && turnMatches && !turn.truncated) {
-            const outcome = await replayAndTailTurn(threadId, turn.turnId);
+            const outcome = await replayAndTailTurn(threadId, turn.turnId, generation);
             if (outcome === 'abandon') return;
+            if (outcome === 'failed') {
+              finalizeStreamCleanup(threadId, generation);
+              return;
+            }
             if (outcome === 'finished') {
-              if (threadsStore.currentThreadId === threadId) {
+              if (ownsTurn(threadId, generation)) {
                 if (opts.reconcileOnFinish) {
                   // The viewer rendered without the turn-start anchor (user
                   // bubble or pre-halt steps missing from the replay), so
                   // settle on the canonical persisted state.
-                  await reconcileFromHistory(threadId);
+                  await reconcileFromHistory(threadId, generation);
                 } else {
-                  finalizeStreamCleanup();
+                  finalizeStreamCleanup(threadId, generation);
                 }
               }
               return;
             }
             if (outcome === 'reconcile') {
-              await reconcileFromHistory(threadId);
+              await reconcileFromHistory(threadId, generation);
               return;
             }
             // 'retry': fall through to backoff.
           } else if (!status.processing) {
             // The turn is gone (API restart, buffer expired, or another turn
             // already ran): reconcile from persisted history.
-            await reconcileFromHistory(threadId);
+            await reconcileFromHistory(threadId, generation);
             return;
           }
           // Still processing but unattachable (truncated buffer or a foreign
@@ -533,56 +544,31 @@
       // Only clear our own claim: a switch to another live-turn thread can
       // start a newer recovery loop (which set the flag to its thread)
       // before this one notices the thread change and returns.
-      if (chatStore.bufferAttachedThreadId === threadId) {
+      if (ownsTurn(threadId, generation) && chatStore.bufferAttachedThreadId === threadId) {
         chatStore.setBufferAttachedThread(null);
       }
-      chatStore.setReconnecting(false);
+      if (ownsTurn(threadId, generation)) chatStore.setReconnecting(false);
     }
   }
 
   /** One re-attach pass: replay the buffered turn, then tail it live. */
-  async function replayAndTailTurn(
-    threadId: string,
-    turnId: string
-  ): Promise<'finished' | 'reconcile' | 'retry' | 'abandon'> {
-    let sawTerminal = false;
-    try {
-      for await (const event of api.reattachTurnStream(threadId, turnId)) {
-        if (threadsStore.currentThreadId !== threadId) return 'abandon';
-        if (event.type === 'turn_replay_gap') return 'reconcile';
-        if (event.type === 'turn_attach') {
-          // Full-turn replay follows: rebuild the reply from scratch so the
-          // re-rendered turn is exactly what the original stream carried.
-          chatStore.resetLastMessageForReplay();
-          continue;
-        }
-        if (event.type === 'turn_started') continue;
-        if (event.type === 'error') {
-          const code = (event.data as { code?: string })?.code;
-          if (code === 'turn_not_found' || code === 'turn_replay_gap') return 'reconcile';
-          if (code === 'reattach_failed') return 'retry';
-          sawTerminal = true;
-        }
-        if (event.type === 'done') sawTerminal = true;
-        handleSSEEvent(event, threadId);
-      }
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') return 'abandon';
-      return 'retry';
-    }
-    // A clean stream end without a terminal event means the turn's writer
-    // died without finishing (buffer state aborted): fall back to history.
-    return sawTerminal ? 'finished' : 'reconcile';
+  async function replayAndTailTurn(threadId: string, turnId: string, generation: number) {
+    return consumeTurnReplay(
+      api.reattachTurnStream(threadId, turnId),
+      (event) => handleSSEEvent(event, threadId),
+      () => chatStore.resetStreamForReplay(generation),
+      () => ownsTurn(threadId, generation)
+    );
   }
 
   /** Recovery fallback: replace local state with the persisted thread. */
-  async function reconcileFromHistory(threadId: string) {
+  async function reconcileFromHistory(threadId: string, generation: number) {
     try {
       const [history, stats] = await Promise.all([
         api.getThreadHistory(threadId),
         api.getThreadContextStats(threadId)
       ]);
-      if (threadsStore.currentThreadId !== threadId) return;
+      if (!ownsTurn(threadId, generation)) return;
       chatStore.setStreaming(false);
       chatStore.setLastMessageComplete();
       chatStore.clearActiveToolCalls();
@@ -591,9 +577,9 @@
       chatStore.setActiveModel(stats?.model ?? null);
     } catch (error) {
       console.error('Turn recovery reconciliation failed:', error);
-      if (threadsStore.currentThreadId !== threadId) return;
+      if (!ownsTurn(threadId, generation)) return;
       chatStore.setLastMessageError(TURN_LOST_MESSAGE);
-      finalizeStreamCleanup();
+      finalizeStreamCleanup(threadId, generation);
     }
   }
 
@@ -680,37 +666,51 @@
   async function queueOnBusyThread(message: string) {
     const threadId = threadsStore.currentThreadId;
     if (!threadId) return;
-    const promptId = chatStore.addPendingPrompt(message);
-    const controller = new AbortController();
-    chatStore.registerPendingPromptAbort(promptId, controller);
+    let generation: number | undefined;
+    let activeTurnId: string | null = null;
+    let recovering = false;
+    let dispatched = false;
+    let hasError = false;
+    let userMessageId = '';
+    const events = queuedPromptEvents(message, threadId, chatStore, api, (localId, controller) => {
+      if (threadsStore.currentThreadId !== threadId) return false;
+      generation = chatStore.promotePendingPrompt(localId, threadId);
+      if (generation === undefined) return false;
+      userMessageId = chatStore.messages.at(-2)!.id;
+      adoptCurrentStream(controller, threadId);
+      return true;
+    });
+    const ownsPromotion = () => generation !== undefined && ownsTurn(threadId, generation);
     try {
-      for await (const event of api.queuePromptStream(message, threadId, controller)) {
-        switch (event.type) {
-          case 'prompt_queued': {
-            const data = event.data as { position: number };
-            chatStore.setPendingPromptStatus(promptId, 'queued', undefined, data.position);
-            break;
-          }
-          case 'prompt_absorbed':
-            chatStore.removePendingPrompt(promptId);
-            return;
-          case 'error': {
-            const data = event.data as { message: string; code?: string };
-            if (data.code === 'restored') {
-              // A stop handed this prompt back (backlog #16); the stop path
-              // restores it to the composer, so drop the bar entry silently.
-              chatStore.removePendingPrompt(promptId);
-              return;
-            }
-            chatStore.setPendingPromptStatus(promptId, 'error', data.message);
-            return;
-          }
-        }
+      recovering = await consumeTurnStream(events,
+        (event) => {
+          if (!ownsPromotion()) return;
+          if (event.type === 'dispatched') dispatched = true;
+          if (event.type === 'error') hasError = true;
+          handleSSEEvent(event, threadId);
+        },
+        (turnId) => { activeTurnId = turnId; },
+        (turnId) => {
+          if (ownsPromotion()) void recoverInterruptedTurn(threadId, turnId, generation!, { reconcileOnFinish: true });
+        });
+    } catch (error) {
+      if (!ownsPromotion()) return;
+      if (error instanceof Error && error.name === 'AbortError') return;
+      if (dispatched) {
+        hasError = true;
+        chatStore.setLastMessageError('Lost the live reply. Open the linked thread to view its saved history.');
+      } else if (activeTurnId && isConnectivityError(error)) {
+        recovering = true;
+        void recoverInterruptedTurn(threadId, activeTurnId, generation!, { reconcileOnFinish: true });
+      } else {
+        hasError = true;
+        chatStore.setLastMessageError(humanizeErrorText(error, { action: 'send', resource: 'your message' }));
       }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      const msg = err instanceof Error ? err.message : 'Could not queue your prompt. Try again in a moment.';
-      chatStore.setPendingPromptStatus(promptId, 'error', msg);
+    } finally {
+      if (!recovering && ownsPromotion()) {
+        // Restore any predecessor output that arrived after promotion.
+        await finishPromotedTurn(chatStore, api, threadId, generation!, userMessageId, ownsPromotion, dispatched, hasError);
+      }
     }
   }
 
@@ -899,6 +899,8 @@
       case 'prompt_injected': {
         const data = event.data as {
           count: number;
+          promptIds?: string[];
+          queuedBatch?: QueuedBatch;
           sources?: string[];
           prompts?: RestoredPrompt[];
         };
@@ -910,7 +912,11 @@
         // prompts are user bubbles (matches history filtering), and a
         // `system` entry (mid-turn tool-expiry notice, backlog #320) is
         // the typed card. Autonomous sources render nothing here.
-        const consumed = chatStore.consumeQueuedPrompts(data.count);
+        if (data.queuedBatch) {
+          chatStore.addQueuedBatch(data.queuedBatch, data.promptIds);
+          break;
+        }
+        const consumed = chatStore.consumeQueuedPrompts(data.count, data.promptIds);
         chatStore.flushStreamingBuffers();
         chatStore.setLastMessageComplete();
         chatStore.clearActiveToolCalls();

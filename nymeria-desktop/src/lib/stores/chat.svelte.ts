@@ -13,6 +13,7 @@ import type {
   ContextStats,
   DispatchInfo,
   PendingPrompt,
+  QueuedBatch,
   PendingPromptStatus,
   StopThreadResult,
   ThreadTurnStatus,
@@ -55,6 +56,12 @@ export function createChatStore() {
   let pendingPrompts = $state<PendingPrompt[]>([]);
   // Map of pendingPrompt.id -> abort controller for in-flight queue POST
   const pendingPromptAborts = new Map<string, AbortController>();
+  const pendingPromptWithdrawals = new Map<string, () => Promise<void>>();
+  const pendingWithdrawalIds = new Set<string>();
+  let injectedPromptIds = new Set<string>();
+  let streamGeneration = 0;
+  let streamThreadId: string | undefined;
+  let replayStart = 0;
   // Stop lifecycle (backlog #11): true from the stop click until the backend's
   // cancelled frame (or the fallback timer) finalizes the turn.
   let isStopping = $state(false);
@@ -615,6 +622,40 @@ export function createChatStore() {
 
     setAssistantActivityPhase(phase: AssistantActivityPhase) {
       setLastAssistantActivityPhase(phase);
+    },
+
+    beginStream(threadId?: string): number {
+      streamGeneration += 1;
+      streamThreadId = threadId;
+      this.setReconnecting(false);
+      this.setBufferAttachedThread(null);
+      replayStart = Math.max(0, messages.length - 1);
+      isStreaming = true;
+      return streamGeneration;
+    },
+
+    ownsStream(generation: number): boolean {
+      return streamGeneration === generation;
+    },
+
+    setStreamReplayStart(generation: number) {
+      if (this.ownsStream(generation)) replayStart = Math.max(0, messages.length - 1);
+    },
+
+    resetStreamForReplay(generation: number) {
+      if (!this.ownsStream(generation)) return;
+      this._forceFlush();
+      messages = messages.slice(0, replayStart);
+      this.addAssistantMessage();
+    },
+
+    finishStream(generation: number): boolean {
+      if (!this.ownsStream(generation)) return false;
+      if (isStopping) this.finalizeStopped();
+      this.setStreaming(false);
+      this.setLastMessageComplete();
+      this.clearActiveToolCalls();
+      return true;
     },
 
     setStreaming(streaming: boolean) {
@@ -1197,6 +1238,8 @@ export function createChatStore() {
     },
 
     clearMessages() {
+      streamGeneration += 1;
+      streamThreadId = undefined;
       this._forceFlush();
       messages = [];
       activeToolCalls = new Map();
@@ -1219,6 +1262,8 @@ export function createChatStore() {
      * the empty-state flash that clearMessages() would cause.
      */
     prepareForThreadSwitch() {
+      streamGeneration += 1;
+      streamThreadId = undefined;
       this._forceFlush();
       activeToolCalls = new Map();
       isStreaming = false;
@@ -1250,6 +1295,7 @@ export function createChatStore() {
      */
     async stopGenerating(threadId?: string) {
       if (!isStreaming || isStopping) return;
+      const stopGeneration = streamGeneration;
       isStopping = true;
       stopRestoredTexts = new Set();
       this._forceFlush();
@@ -1264,7 +1310,7 @@ export function createChatStore() {
 
       stopFallbackTimer = setTimeout(() => {
         stopFallbackTimer = null;
-        if (isStopping) {
+        if (isStopping && this.ownsStream(stopGeneration)) {
           abortCurrentStream();
           this._restoreLocalPendingForStop();
           this.finalizeStopped();
@@ -1276,10 +1322,18 @@ export function createChatStore() {
         result = await api.stopThread(threadId);
       } catch {
         // Backend unreachable: force-stop locally with what we know.
-        if (isStopping) {
+        if (isStopping && this.ownsStream(stopGeneration)) {
           abortCurrentStream();
           this._restoreLocalPendingForStop();
           this.finalizeStopped();
+        }
+        return;
+      }
+
+      if (!this.ownsStream(stopGeneration)) {
+        // The old Stop response cannot clear a successor's queue or stream.
+        if (streamThreadId === threadId) {
+          this._restoreForStop(result.restoredPrompts.map(p => p.text));
         }
         return;
       }
@@ -1672,17 +1726,26 @@ export function createChatStore() {
       // GUI must not truncate its interactive transcript or push the
       // autonomous prompt into the composer. The live-attach reconcile settles
       // the view from history; bots deliver the explanation.
-      if (info.autonomous) return;
+      const batchIndex = info.toMessageId
+        ? messages.findIndex(m => m.queuedBatch?.inputs.some(input => input.messageId === info.toMessageId))
+        : -1;
+      if (info.autonomous && batchIndex < 0) return;
 
       this._forceFlush();
 
-      let cutIndex = -1;
-      if (info.toMessageId) {
+      let cutIndex = batchIndex;
+      if (cutIndex < 0 && info.toMessageId) {
         cutIndex = messages.findIndex((m) => m.graphMessageId === info.toMessageId);
       }
       if (cutIndex < 0) {
         for (let i = messages.length - 1; i >= 0; i--) {
           const msg = messages[i];
+          if (msg.queuedBatch) {
+            // Older live batches lack graph anchors. Stop at this boundary,
+            // never fall through to the original turn's optimistic user bubble.
+            if (!msg.queuedBatch.inputs.some(input => input.messageId)) cutIndex = i;
+            break;
+          }
           if (msg.role === 'user') {
             if (!msg.graphMessageId) {
               cutIndex = i;
@@ -1709,6 +1772,7 @@ export function createChatStore() {
         return;
       }
 
+      const refusedBatch = messages[cutIndex].queuedBatch;
       messages = messages.slice(0, cutIndex);
       if (editingMessageId && !messages.some((msg) => msg.id === editingMessageId)) {
         this.cancelEdit();
@@ -1735,7 +1799,9 @@ export function createChatStore() {
       // fires.
       this.clearPendingPrompts();
 
-      if (info.prompt) {
+      if (refusedBatch) {
+        this.restoreToComposer(refusedBatch.inputs.filter(input => input.source === 'user').map(input => input.text));
+      } else if (info.prompt && !info.autonomous) {
         this.restoreToComposer([info.prompt]);
       }
     },
@@ -1831,6 +1897,7 @@ export function createChatStore() {
       errorMessage?: string,
       position?: number
     ) {
+      if (status === 'withdraw_error') pendingWithdrawalIds.delete(id);
       pendingPrompts = pendingPrompts.map((p) =>
         p.id === id
           ? { ...p, status, errorMessage, position: position ?? p.position }
@@ -1838,22 +1905,83 @@ export function createChatStore() {
       );
     },
 
-    removePendingPrompt(id: string) {
+    setPendingPromptReceipt(id: string, promptId: string | undefined, position?: number) {
+      pendingPrompts = pendingPrompts.map(p => p.id === id
+        ? { ...p, promptId, position, status: pendingWithdrawalIds.has(id) ? 'withdrawing' : 'queued' }
+        : p);
+      if (promptId && injectedPromptIds.has(promptId)) this.removePendingPrompt(id);
+    },
+
+    removePendingPrompt(id: string, abort: boolean = true) {
       pendingPrompts = pendingPrompts.filter((p) => p.id !== id);
       const ctrl = pendingPromptAborts.get(id);
-      if (ctrl) {
-        try { ctrl.abort(); } catch { /* already aborted */ }
-        pendingPromptAborts.delete(id);
+      if (abort) ctrl?.abort();
+      this.unregisterPendingPromptRequest(id);
+    },
+
+    removePendingPromptByServerId(promptId: string) {
+      for (const prompt of pendingPrompts) {
+        if (prompt.promptId === promptId) this.removePendingPrompt(prompt.id);
       }
     },
 
+    registerPendingPromptWithdrawal(id: string, withdraw: () => Promise<void>) {
+      pendingPromptWithdrawals.set(id, withdraw);
+    },
+
+    async requestPendingPromptWithdrawal(id: string) {
+      const withdraw = pendingPromptWithdrawals.get(id);
+      if (!withdraw) { this.removePendingPrompt(id); return; }
+      pendingWithdrawalIds.add(id);
+      await withdraw();
+    },
+
+    unregisterPendingPromptRequest(id: string, keepWithdrawal: boolean = false) {
+      pendingPromptAborts.delete(id);
+      if (!keepWithdrawal) {
+        pendingPromptWithdrawals.delete(id);
+        pendingWithdrawalIds.delete(id);
+      }
+    },
+
+    promotePendingPrompt(id: string, threadId?: string): number | undefined {
+      const prompt = pendingPrompts.find(p => p.id === id);
+      if (!prompt) return undefined;
+      this._forceFlush();
+      if (isStopping) this.finalizeStopped();
+      this.setLastMessageComplete();
+      this.clearActiveToolCalls();
+      this.removePendingPrompt(id, false);
+      this.addUserMessage(prompt.content, prompt.attachments);
+      this.addAssistantMessage();
+      isQueued = false;
+      return this.beginStream(threadId);
+    },
+
+    addQueuedBatch(batch: QueuedBatch, promptIds?: string[]) {
+      this.consumeQueuedPrompts(batch.inputs.length, promptIds ?? batch.inputs.map(input => input.promptId));
+      if (!batch.inputs.length || messages.some(message => message.queuedBatch?.id === batch.id)) return;
+      this._forceFlush();
+      this.setLastMessageComplete();
+      this.clearActiveToolCalls();
+      messages = [...messages, {
+        id: generateId(), role: 'system', kind: 'queued_batch', queuedBatch: batch,
+        content: batch.inputs.map(input => input.modelContent).join('\n\n'),
+        timestamp: new Date(), status: 'complete'
+      }];
+      this.addAssistantMessage();
+    },
+
     /** Pop the first ``n`` queued prompts in FIFO order, skipping errored ones. */
-    consumeQueuedPrompts(n: number): PendingPrompt[] {
-      if (n <= 0) return [];
+    consumeQueuedPrompts(n: number, promptIds?: string[]): PendingPrompt[] {
+      if (promptIds) {
+        injectedPromptIds = new Set([...injectedPromptIds, ...promptIds].slice(-512));
+      }
+      if (n <= 0 && !promptIds?.length) return [];
       const consumed: PendingPrompt[] = [];
       const remaining: PendingPrompt[] = [];
       for (const p of pendingPrompts) {
-        if (consumed.length < n && p.status !== 'error') {
+        if (promptIds ? !!p.promptId && promptIds.includes(p.promptId) : consumed.length < n && p.status !== 'error') {
           consumed.push(p);
         } else {
           remaining.push(p);
@@ -1861,11 +1989,8 @@ export function createChatStore() {
       }
       pendingPrompts = remaining;
       for (const p of consumed) {
-        const ctrl = pendingPromptAborts.get(p.id);
-        if (ctrl) {
-          try { ctrl.abort(); } catch { /* already aborted */ }
-          pendingPromptAborts.delete(p.id);
-        }
+        pendingPromptAborts.get(p.id)?.abort();
+        this.unregisterPendingPromptRequest(p.id);
       }
       return consumed;
     },
@@ -1875,10 +2000,16 @@ export function createChatStore() {
     },
 
     clearPendingPrompts() {
-      for (const ctrl of pendingPromptAborts.values()) {
-        try { ctrl.abort(); } catch { /* already aborted */ }
+      for (const [id, ctrl] of pendingPromptAborts) {
+        // An early X still needs its receipt even if the user switches threads.
+        if (pendingWithdrawalIds.has(id)) continue;
+        ctrl.abort();
+        this.unregisterPendingPromptRequest(id);
       }
-      pendingPromptAborts.clear();
+      for (const id of pendingPromptWithdrawals.keys()) {
+        if (!pendingWithdrawalIds.has(id)) this.unregisterPendingPromptRequest(id);
+      }
+      injectedPromptIds.clear();
       pendingPrompts = [];
     }
   };

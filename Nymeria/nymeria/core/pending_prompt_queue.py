@@ -31,6 +31,7 @@ import collections
 import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional, Protocol
 
@@ -167,6 +168,8 @@ class PendingPrompt:
     # abort, a restore, an eviction, an inject failure) rather than absorbed,
     # so a producer without a mailbox can still read the outcome.
     error_code: Optional[str] = field(default=None)
+    error_content: Optional[str] = field(default=None)
+    prompt_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 def _wake_prompt(
@@ -189,6 +192,7 @@ def _wake_prompt(
         prompt.restored = True
     if error_code:
         prompt.error_code = error_code
+        prompt.error_content = error_content
     if prompt.fanout_mailbox is not None:
         if error_code:
             prompt.fanout_mailbox.put({
@@ -219,6 +223,7 @@ class PendingPromptQueueBackend(Protocol):
     """
 
     def enqueue(self, thread_id: str, prompt: PendingPrompt) -> int: ...
+    def withdraw(self, thread_id: str, prompt_id: str) -> bool: ...
     def drain(self, thread_id: str) -> List[PendingPrompt]: ...
     def peek(self, thread_id: str) -> bool: ...
     def size(self, thread_id: str) -> int: ...
@@ -269,6 +274,22 @@ class InMemoryPendingPromptQueue:
                 error_content="Queued prompt was dropped because the pending queue is full.",
             )
         return position
+
+    def withdraw(self, thread_id: str, prompt_id: str) -> bool:
+        """Remove one undrained request atomically with respect to absorption."""
+        with self._lock:
+            pending = self._queues.get(thread_id)
+            if not pending:
+                return False
+            prompt = next((p for p in pending if p.prompt_id == prompt_id), None)
+            if prompt is None:
+                return False
+            pending.remove(prompt)
+            if not pending:
+                self._queues.pop(thread_id, None)
+        self._wake_prompt(prompt, abandoned=False, error_code="withdrawn",
+                          error_content="Queued prompt withdrawn.")
+        return True
 
     def drain(self, thread_id: str) -> List[PendingPrompt]:
         with self._lock:
@@ -490,7 +511,13 @@ def make_pending_prompt(
     )
 
 
-def queued_prompt_header(prompt: PendingPrompt) -> str:
+def queued_prompt_source_label(prompt: PendingPrompt) -> str:
+    """A single-line source label shared by the model and batch display."""
+    label = " ".join(str(prompt.source_label or prompt.source_id or prompt.user_id or prompt.source).split())
+    return label.replace("[", "(").replace("]", ")")[:80]
+
+
+def queued_prompt_header(prompt: PendingPrompt, *, position: int | None = None, total: int | None = None) -> str:
     """Build the metadata header prefixed to each drained prompt's HumanMessage.
 
     The label comes from ``prompts.SOURCE_TRIGGER_LABELS``, the same table
@@ -503,9 +530,13 @@ def queued_prompt_header(prompt: PendingPrompt) -> str:
     from .time_utils import format_user_time
 
     label = SOURCE_TRIGGER_LABELS.get(prompt.source, prompt.source.capitalize())
+    source_label = queued_prompt_source_label(prompt)
+    segment = f" | queued request {position}/{total}" if position is not None else ""
+    # Keep the two-line Time/Trigger envelope recognized by history stripping.
+    # Separate messages may be merged by a provider, so the segment stays explicit.
     return (
         f"[Time: {format_user_time(prompt.enqueued_at)}]\n"
-        f"[Trigger: {label}]"
+        f"[Trigger: {label}{segment} | source: {source_label}]"
     )
 
 
@@ -520,6 +551,7 @@ def restored_prompts_payload(prompts: List[PendingPrompt]) -> List[Dict[str, Any
     return [
         {
             "text": p.message,
+            "prompt_id": p.prompt_id,
             "source_label": p.source_label,
             "user_id": p.user_id,
             "enqueued_at": p.enqueued_at,

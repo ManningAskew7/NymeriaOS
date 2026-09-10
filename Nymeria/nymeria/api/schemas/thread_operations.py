@@ -56,6 +56,12 @@ class AttachmentLimitsResponse(BaseModel):
     limits: AttachmentLimits
 
 
+class QueueWithdrawalResponse(BaseModel):
+    """Receipt for withdrawing a prompt that had not yet been absorbed."""
+
+    withdrawn: bool
+
+
 class ThreadRewindRequest(BaseModel):
     """Request model for rewinding thread state by count or by message id."""
 

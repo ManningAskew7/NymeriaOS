@@ -538,7 +538,7 @@ def test_mid_turn_notice_rides_the_pending_queue(pending_queue, no_agent):
     injected = build_queued_prompt_messages(batch, agent=agent, thread_id="t")[0]
     assert injected.additional_kwargs.get("internal") is True
     assert injected.additional_kwargs.get("internal_type") == "tool_expiry_notice"
-    assert "[Trigger: System Notice]" in injected.content
+    assert "[Trigger: System Notice | queued request 1/1 | source: System notice]" in injected.content
     assert injected.content.endswith(prompt.message)
     # Absorb is the commit: the records are delivered now, and the next
     # prompt carries nothing.
@@ -810,9 +810,10 @@ def test_history_mid_turn_notice_is_a_card_and_keeps_its_sub_turn_visible():
     assert [(e["role"], e.get("kind")) for e in history] == [
         ("user", None),
         ("assistant", None),
-        ("system", "tool_expiry_notice"),
+        ("system", "queued_batch"),
         ("assistant", None),
     ]
-    assert history[2]["content"] == NOTICE
+    assert history[2]["queued_batch"]["inputs"][0]["text"] == NOTICE
+    assert history[2]["queued_batch"]["inputs"][0]["model_content"] == injected.content
     assert history[3]["content"] == "kit re-activated"
     assert not any(e.get("hidden") for e in history)

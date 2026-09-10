@@ -5,6 +5,7 @@ import type {
   DispatchInfo,
   FileAttachment,
   SSEEvent,
+  QueuedBatch,
   SSEEventType
 } from '$lib/types';
 import { CredentialsApi } from './credentials';
@@ -24,6 +25,13 @@ export function abortCurrentStream(): void {
     currentAbortController = null;
   }
   currentStreamThreadId = null;
+}
+
+/** Adopt a promoted queue observer as the active interactive stream. */
+export function adoptCurrentStream(controller: AbortController, threadId: string): void {
+  if (currentAbortController !== controller) currentAbortController?.abort();
+  currentAbortController = controller;
+  currentStreamThreadId = threadId;
 }
 
 /** Check if there's an active interactive chat stream for the given thread. */
@@ -92,6 +100,38 @@ export async function consumeTurnStream(
     onEvent(event);
   }
   return false;
+}
+
+/** Consume a replay without treating an unsaved server error as saved success. */
+export async function consumeTurnReplay(
+  events: AsyncIterable<SSEEvent>,
+  onEvent: (event: SSEEvent) => void,
+  onAttach: () => void,
+  ownsTurn: () => boolean
+): Promise<'finished' | 'failed' | 'reconcile' | 'retry' | 'abandon'> {
+  let terminal = false;
+  let failed = false;
+  try {
+    for await (const event of events) {
+      if (!ownsTurn()) return 'abandon';
+      if (event.type === 'turn_replay_gap') return 'reconcile';
+      if (event.type === 'turn_attach') { onAttach(); continue; }
+      if (event.type === 'turn_started') continue;
+      if (event.type === 'error') {
+        const code = (event.data as { code?: string })?.code;
+        if (code === 'turn_not_found' || code === 'turn_replay_gap') return 'reconcile';
+        if (code === 'reattach_failed') return 'retry';
+        failed = true;
+        terminal = true;
+      }
+      if (event.type === 'done') terminal = true;
+      onEvent(event);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') return 'abandon';
+    return failed ? 'failed' : 'retry';
+  }
+  return failed ? 'failed' : terminal ? 'finished' : 'reconcile';
 }
 
 export class ChatApi extends CredentialsApi {
@@ -226,9 +266,8 @@ export class ChatApi extends CredentialsApi {
    * Submit a prompt to a thread that may be mid-turn. Uses its own abort
    * controller (separate from chatStream's module-level one) so cancelling
    * a queued prompt does not abort the primary stream and vice-versa.
-   * Only lifecycle events (prompt_queued / prompt_injected / prompt_absorbed
-   * / error) are yielded. Content events arrive on the holder's stream and
-   * would otherwise be rendered twice.
+   * Queuers yield lifecycle events only. A holder start promotes this stream
+   * to full output; the visible panel then adopts its controller for Stop.
    */
   async *queuePromptStream(
     message: string,
@@ -287,16 +326,32 @@ export class ChatApi extends CredentialsApi {
 
     const decoder = new TextDecoder();
     let buffer = '';
-    const LIFECYCLE: ReadonlySet<string> = new Set([
-      'prompt_queued',
-      'prompt_injected',
-      'prompt_absorbed',
-      'queued',
-      'turn_halted',
-      'fanout_dropped',
-      'error'
-    ]);
-
+    let promoted = false;
+    const preamble: SSEEvent[] = [];
+    const lifecycle = new Set(['prompt_queued', 'prompt_injected', 'prompt_absorbed',
+      'queued', 'turn_halted', 'fanout_dropped', 'error']);
+    const parseLine = (line: string): SSEEvent[] => {
+      if (!line.startsWith('data: ')) return [];
+      const raw = line.slice(6).trim();
+      if (!raw || raw === '[DONE]') return [];
+      let event: SSEEvent | null;
+      try { event = this.parseSSEEvent(JSON.parse(raw)); }
+      catch { return []; } // Incomplete or malformed wire data is not an event.
+      if (!event) return [];
+      if (!promoted && event.type === 'dispatched') {
+        preamble.push(event);
+        return [];
+      }
+      if (event.type === 'turn_replay_gap' && (event.data as { turnId?: string }).turnId) {
+        promoted = true;
+        return [...preamble.splice(0), event];
+      }
+      if (event.type === 'turn_started') {
+        promoted = true;
+        return [event, ...preamble.splice(0)];
+      }
+      return promoted || lifecycle.has(event.type) ? [event] : [];
+    };
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -304,29 +359,38 @@ export class ChatApi extends CredentialsApi {
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
-
         for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const jsonStr = line.slice(6).trim();
-          if (jsonStr === '[DONE]') return;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const event = this.parseSSEEvent(parsed);
-            // Drop content/lifecycle events the holder stream already shows.
-            if (event && LIFECYCLE.has(event.type)) {
-              yield event;
-              if (event.type === 'prompt_absorbed' || event.type === 'error') {
-                return;
-              }
-            }
-          } catch (e) {
-            console.error('Failed to parse queued SSE event:', e, jsonStr);
+          for (const event of parseLine(line)) {
+            if (abortController.signal.aborted) return;
+            yield event;
+            if (event.type === 'prompt_absorbed' || event.type === 'error' || event.type === 'done') return;
           }
         }
       }
+      buffer += decoder.decode();
+      for (const event of parseLine(buffer)) yield event;
     } finally {
+      try { await reader.cancel(); } catch { /* Transport may already be closed. */ }
       reader.releaseLock();
+      if (currentAbortController === abortController) {
+        currentAbortController = null;
+        currentStreamThreadId = null;
+      }
     }
+  }
+
+  async withdrawQueuedPrompt(threadId: string, promptId: string): Promise<void> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(promptId)}`, {
+      method: 'DELETE', headers: this.getHeaders()
+    });
+    if (response.ok) return;
+    const body = await response.text();
+    if (response.status === 404) {
+      try {
+        if (JSON.parse(body)?.detail?.code === 'prompt_not_queued') return;
+      } catch { /* Report an unexpected response normally. */ }
+    }
+    throw new Error(httpErrorMessage(response.status, body));
   }
 
   /**
@@ -500,6 +564,20 @@ export class ChatApi extends CredentialsApi {
     const filename = filenameMatch?.[1] || path.split('/').pop() || 'download';
 
     return { blob, filename, contentType };
+  }
+
+  protected parseQueuedBatch(value: unknown): QueuedBatch | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const batch = value as Record<string, unknown>;
+    if (typeof batch.id !== 'string' || !Array.isArray(batch.inputs)) return undefined;
+    const inputs = batch.inputs.filter(item => item && typeof item === 'object').map((item, index) => ({
+      messageId: typeof item.message_id === 'string' ? item.message_id : undefined,
+      promptId: String(item.prompt_id ?? ''), position: Number(item.position) || index + 1,
+      source: String(item.source ?? 'user'), sourceLabel: String(item.source_label ?? ''),
+      userId: String(item.user_id ?? ''), enqueuedAt: Number(item.enqueued_at) || 0,
+      text: String(item.text ?? ''), modelContent: String(item.model_content ?? item.text ?? '')
+    }));
+    return { id: batch.id, total: Number(batch.total) || inputs.length, inputs };
   }
 
   private parseSSEEvent(data: Record<string, unknown>): SSEEvent | null {
@@ -705,6 +783,8 @@ export class ChatApi extends CredentialsApi {
           return {
             type: 'prompt_queued',
             data: {
+              promptId: data.prompt_id as string | undefined,
+              queueThreadId: data.queue_thread_id as string | undefined,
               position: (data.position as number) ?? 0,
               holder: (data.holder as string) || undefined,
               heldSeconds: (data.held_seconds as number) || undefined,
@@ -721,6 +801,8 @@ export class ChatApi extends CredentialsApi {
           // queued prompt text (backlog #87).
           const rawPrompts = (data.prompts as Array<{
             text?: string;
+            prompt_id?: string;
+            total?: number;
             source_label?: string;
             user_id?: string;
             enqueued_at?: number;
@@ -729,9 +811,12 @@ export class ChatApi extends CredentialsApi {
             type: 'prompt_injected',
             data: {
               count: (data.count as number) ?? 1,
+              promptIds: data.prompt_ids as string[] | undefined,
+              queuedBatch: this.parseQueuedBatch({ id: data.batch_id, total: rawPrompts?.[0]?.total, inputs: rawPrompts }),
               sources: (data.sources as string[]) || [],
               prompts: rawPrompts?.map((p) => ({
                 text: p.text ?? '',
+                promptId: p.prompt_id,
                 sourceLabel: p.source_label ?? '',
                 userId: p.user_id ?? '',
                 enqueuedAt: p.enqueued_at ?? 0

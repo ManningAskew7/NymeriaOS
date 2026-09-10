@@ -26,6 +26,9 @@ MOBILE_SRC = REPO_ROOT / "nymeria-mobile" / "src"
 # edit. Fix by copying the intended version to both apps.
 
 EXACT_MATCH: set[str] = {
+    "lib/services/queuedPrompt.ts",
+    "lib/services/queuedPrompt.test.ts",
+    "lib/components/chat/QueuedBatch.svelte",
     "lib/actions/focus.ts",
     "lib/components/account/RoleChip.svelte",
     "lib/components/chat/FallbackPromptCard.svelte",

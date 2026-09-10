@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from urllib.parse import urlparse
@@ -2350,6 +2351,8 @@ class NymeriaAgent:
                         f"Thread {thread_id}: queued chat() prompt timed out"
                     )
                     return "Thread is busy with another request. Please try again."
+                if pending.error_code:
+                    return pending.error_content or "Queued prompt could not be processed."
                 # Absorbed by the holder. Read the most recent AI message
                 # from the checkpoint -- that is the response to our prompt
                 # (or to a batch that included it). This is best-effort:
@@ -3168,6 +3171,8 @@ class NymeriaAgent:
                     }
                     yield {
                         "type": "prompt_queued",
+                        "prompt_id": pending.prompt_id,
+                        "queue_thread_id": thread_id,
                         "position": position,
                         "holder": holder_label,
                         "held_seconds": held_seconds,
@@ -3211,6 +3216,10 @@ class NymeriaAgent:
                                 "code": "aborted",
                                 "content": "Turn aborted.",
                             }
+                            return
+                        if pending.error_code:
+                            yield {"type": "error", "code": pending.error_code,
+                                   "content": pending.error_content or "Queued prompt was not processed."}
                             return
                         if not wait_ok:
                             logger.warning(
@@ -3699,32 +3708,21 @@ class NymeriaAgent:
                         if not pending_batch:
                             continue
 
-                    from .pending_prompt_queue import restored_prompts_payload
-
-                    inject_evt = {
-                        "type": "prompt_injected",
-                        "count": len(pending_batch),
-                        "sources": [p.source for p in pending_batch],
-                        # Raw prompt texts (index-parallel with ``sources``),
-                        # so ANY same-thread client can render the injected
-                        # user bubbles: without this only the client that
-                        # queued a given prompt has its text (a cross-client
-                        # or live-attach viewer would show the sub-turn with
-                        # the user message missing).
-                        "prompts": restored_prompts_payload(pending_batch),
-                    }
-                    yield inject_evt
-                    for p in pending_batch:
-                        if p.fanout_mailbox is not None:
-                            p.fanout_mailbox.put(inject_evt)
-
-                    # Build one HumanMessage per drained prompt so
-                    # per-prompt visibility/history semantics survive
-                    # the absorption (autonomous prompts stay
-                    # internal=True; user prompts stay visible).
+                    batch_id = uuid.uuid4().hex
                     new_messages = build_queued_prompt_messages(
-                        pending_batch, agent=self, thread_id=thread_id
+                        pending_batch, agent=self, thread_id=thread_id, batch_id=batch_id,
                     )
+                    visible_inputs = [
+                        {**msg.additional_kwargs["queued_batch"], "model_content": msg.content}
+                        for msg in new_messages
+                    ]
+                    inject_evt = {
+                        "type": "prompt_injected", "batch_id": batch_id,
+                        "count": len(pending_batch),
+                        "prompt_ids": [p.prompt_id for p in pending_batch],
+                        "sources": [item["source"] for item in visible_inputs],
+                        "prompts": visible_inputs,
+                    }
 
                     try:
                         # A repeated-tool safety halt ends the drive with the
@@ -3747,6 +3745,11 @@ class NymeriaAgent:
                                 f"failed: {patch_err}"
                             )
                         await graph.aupdate_state(config, {"messages": new_messages})
+                        # Announce only committed inputs, matching saved history.
+                        yield inject_evt
+                        for p in pending_batch:
+                            if p.fanout_mailbox is not None:
+                                p.fanout_mailbox.put(inject_evt)
 
                         # Re-drive the graph with ``{"messages": []}`` (NOT
                         # None) so it re-enters at the entrypoint reading

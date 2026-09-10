@@ -6,7 +6,7 @@
   let prompts = $derived(chatStore.pendingPrompts);
 
   function dismiss(id: string) {
-    chatStore.removePendingPrompt(id);
+    void chatStore.requestPendingPromptWithdrawal(id);
   }
 
   function statusLabel(p: PendingPrompt): string {
@@ -17,18 +17,30 @@
         return p.position && p.position > 0
           ? `Queued · position ${p.position}`
           : 'Queued · will send at next halt';
+      case 'withdrawing':
+        return p.promptId ? 'Withdrawing…' : 'Waiting for receipt to withdraw…';
+      case 'withdraw_error':
+        return p.errorMessage || 'Could not withdraw. This prompt may still run.';
       case 'error':
-        return p.errorMessage ? `Failed · ${p.errorMessage}` : 'Failed';
+        return p.errorMessage || 'Could not send your prompt.';
     }
+  }
+
+  function dismissLabel(p: PendingPrompt): string {
+    if (p.status === 'error') return 'Dismiss this notice';
+    if (p.status === 'withdraw_error') return 'Retry withdrawing this queued prompt';
+    return 'Withdraw this queued prompt';
   }
 
   function statusIcon(p: PendingPrompt): string {
     switch (p.status) {
       case 'sending':
+      case 'withdrawing':
         return 'loading';
       case 'queued':
         return 'clock';
       case 'error':
+      case 'withdraw_error':
         return 'error';
     }
   }
@@ -39,13 +51,13 @@
     <div class="queued-header">
       <Icon name="clock" size={12} />
       <span>{prompts.length === 1 ? '1 queued' : `${prompts.length} queued`}</span>
-      <span class="queued-hint">(sends at next halt)</span>
+      <span class="queued-hint">(added at the next tool-round boundary)</span>
     </div>
     <ul class="queued-list">
       {#each prompts as prompt (prompt.id)}
-        <li class="queued-item" class:error={prompt.status === 'error'}>
+        <li class="queued-item" class:error={prompt.status === 'error' || prompt.status === 'withdraw_error'}>
           <div class="queued-row">
-            <span class="queued-status" class:queued={prompt.status === 'queued'} class:sending={prompt.status === 'sending'} class:errored={prompt.status === 'error'}>
+            <span class="queued-status" class:queued={prompt.status === 'queued'} class:sending={prompt.status === 'sending'} class:errored={prompt.status === 'error' || prompt.status === 'withdraw_error'}>
               <Icon name={statusIcon(prompt)} size={12} />
               <span>{statusLabel(prompt)}</span>
             </span>
@@ -53,7 +65,8 @@
               type="button"
               class="dismiss"
               onclick={() => dismiss(prompt.id)}
-              aria-label="Cancel this queued prompt"
+              disabled={prompt.status === 'withdrawing'}
+              aria-label={dismissLabel(prompt)}
             >
               <Icon name="x" size={12} />
             </button>

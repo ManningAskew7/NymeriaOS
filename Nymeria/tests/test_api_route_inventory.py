@@ -233,6 +233,7 @@ EXPECTED_ROUTES = [
     ('/threads/{thread_id}/notepad', ('PUT',)),
     ('/threads/{thread_id}/overview', ('GET',)),
     ('/threads/{thread_id}/prune', ('POST',)),
+    ('/threads/{thread_id}/queue/{prompt_id}', ('DELETE',)),
     ('/threads/{thread_id}/rewind', ('POST',)),
     ('/threads/{thread_id}/skills', ('GET',)),
     ('/threads/{thread_id}/status', ('GET',)),

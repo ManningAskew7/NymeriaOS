@@ -48,6 +48,21 @@ install or for pointing the app at a different server; the Tauri desktop app
 and a browser build not served by a backend open on the hub directly.
 Routing lives in `src/lib/utils/firstRun.ts`.
 
+## Sending while a turn is running
+
+A follow-up appears in the queue while its receipt is pending. X withdraws that
+specific request without stopping the active turn. An early X waits for the
+receipt; if the request has already started its own turn, it appears as a normal
+user message and streaming reply. Stop then controls that turn. A failed
+withdrawal stays visible with a retry action. Closing the app or losing its
+connection leaves accepted work running on the server.
+
+Requests waiting at a tool-round boundary are sent together for one model
+continuation. An expanded **Batched inputs** block shows every separate request,
+its source and the exact input text, followed by the shared reply. This includes
+autonomous inputs and system notices. Reloading the thread keeps the same
+grouping. A single queued request uses **Queued input**.
+
 ## What is desktop-only
 
 Everything else works from the browser, including admin settings, thread

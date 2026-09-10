@@ -1166,3 +1166,128 @@ def test_astream_hook_seams_get_the_label_the_agent_was_shown():
     stamped = [c for c in run_configs if "hook_trigger_label" in c]
     assert [c["hook_trigger_label"] for c in stamped] == ["Event Trigger"]
     assert [c["hook_holder_kind"] for c in stamped] == ["trigger"]
+
+
+@pytest.mark.parametrize("fail_checkpoint", [False, True])
+def test_queued_batch_enters_one_continuation_with_distinct_source_markings(fail_checkpoint):
+    from nymeria.core.agent_history import CONTEXT_PREFIX_PATTERN
+    from nymeria.vendor.react_agent.nodes import route_after_tools
+
+    thread_id = 'batch-request-markings'
+    agent = _stream_agent(thread_id)
+    backend = InMemoryPendingPromptQueue()
+    set_pending_queue(backend)
+    first = _prompt(message='first separate request', user_id='user-a', source_label='Manning')
+    second = _prompt(message='second separate request', user_id='user-a', source='callable',
+                     source_label='Research Agent', is_autonomous=True)
+    backend.enqueue(thread_id, first)
+    backend.enqueue(thread_id, second)
+
+    async def no_continuation(**kwargs):
+        return None
+
+    agent._maybe_done_continuation = no_continuation
+    agent._fire_done_observe = no_continuation
+
+    async def model_events():
+        if len(graph.stream_inputs) == 1:
+            assert route_after_tools({'messages': [AIMessage(content='tool round finished')]},
+                                     {'configurable': {'thread_id': thread_id}}) == 'end'
+            yield {'event': 'on_chat_model_end', 'data': {'output': AIMessage(content='initial')}}
+        else:
+            yield {'event': 'on_chat_model_end', 'data': {'output': AIMessage(content='both requests received')}}
+
+    graph = _FakeAsyncGraph(model_events)
+    if fail_checkpoint:
+        async def fail_update(*args, **kwargs):
+            raise RuntimeError("checkpoint unavailable")
+        graph.aupdate_state = fail_update
+    agent._get_async_graph_for_user = lambda *args, **kwargs: graph
+    try:
+        async def collect():
+            result = [e async for e in agent.astream('start', thread_id=thread_id, user_id='user-a', _is_self_invoke=True)]
+            from nymeria.core.embedding_jobs import wait_for_pending_embedding_jobs
+            await wait_for_pending_embedding_jobs()
+            return result
+        events = asyncio.run(collect())
+    finally:
+        reset_pending_queue_for_tests()
+    if fail_checkpoint:
+        assert not any(e['type'] == 'prompt_injected' for e in events)
+        assert len(graph.stream_inputs) == 1
+        assert first.error_code == second.error_code == 'inject_failed'
+        assert first.notify_event.is_set() and second.notify_event.is_set()
+        return
+    injected = next(e for e in events if e['type'] == 'prompt_injected')
+    assert injected['prompt_ids'] == [first.prompt_id, second.prompt_id]
+    assert [p['message_id'] for p in injected['prompts']] == [
+        msg.id for msg in graph.state_updates[0][1]['messages']]
+    assert all(p['message_id'] for p in injected['prompts'])
+    assert [p['model_content'] for p in injected['prompts']] == [
+        msg.content for msg in graph.state_updates[0][1]['messages']]
+    assert len(graph.stream_inputs) == 2
+    assert graph.stream_inputs[1][0] == {'messages': []}
+    assert len(graph.state_updates) == 1
+    messages = graph.state_updates[0][1]['messages']
+    assert len(messages) == 2
+    assert 'queued request 1/2 | source: Manning' in messages[0].content
+    assert 'queued request 2/2 | source: Research Agent' in messages[1].content
+    assert CONTEXT_PREFIX_PATTERN.sub('', messages[0].content) == 'first separate request'
+    assert CONTEXT_PREFIX_PATTERN.sub('', messages[1].content) == 'second separate request'
+    assert not messages[0].additional_kwargs.get('internal')
+    assert messages[1].additional_kwargs['internal'] is True
+    assert [e['count'] for e in events if e['type'] == 'prompt_injected'] == [2]
+    assert first.notify_event.is_set() and second.notify_event.is_set()
+
+
+@pytest.mark.parametrize('source', ['user', 'ticker'])
+def test_astream_queuer_receives_id_and_withdrawn_instead_of_absorbed(source):
+    thread_id = 'withdraw-real-queuer'
+    agent = _stream_agent(thread_id)
+    backend = InMemoryPendingPromptQueue()
+    set_pending_queue(backend)
+    lock = agent._thread_locks.lock
+    lock.acquire()
+    try:
+        async def exercise():
+            stream = agent.astream('withdraw before next round', thread_id=thread_id,
+                user_id='alice', source=source, _is_self_invoke=source != 'user')
+            try:
+                assert (await anext(stream))['type'] == 'queued'
+                receipt = await anext(stream)
+                assert receipt['type'] == 'prompt_queued'
+                assert receipt['queue_thread_id'] == thread_id
+                assert backend.withdraw(thread_id, receipt['prompt_id'])
+                events = [event async for event in stream]
+                assert events == [{'type': 'error', 'code': 'withdrawn', 'content': 'Queued prompt withdrawn.'}]
+                assert backend.drain(thread_id) == []
+                assert lock.locked()
+                assert not agent._thread_locks.abort_event.is_set()
+            finally:
+                await stream.aclose()
+        asyncio.run(exercise())
+    finally:
+        lock.release()
+        reset_pending_queue_for_tests()
+
+
+def test_sync_chat_queuer_reports_withdrawal_without_reading_an_unrelated_answer():
+    thread_id = 'sync-withdrawal'
+    agent = _stream_agent(thread_id)
+    agent._chat_turn_local = threading.local()
+    agent._get_graph_for_user = lambda *args, **kwargs: pytest.fail('withdrawn request read a response')
+    backend = InMemoryPendingPromptQueue()
+    enqueue = backend.enqueue
+    def enqueue_then_withdraw(thread, prompt):
+        position = enqueue(thread, prompt)
+        assert backend.withdraw(thread, prompt.prompt_id)
+        return position
+    backend.enqueue = enqueue_then_withdraw
+    set_pending_queue(backend)
+    agent._thread_locks.lock.acquire()
+    try:
+        assert agent.chat('withdraw me', thread_id=thread_id, user_id='user-a') == 'Queued prompt withdrawn.'
+        assert backend.drain(thread_id) == []
+    finally:
+        agent._thread_locks.lock.release()
+        reset_pending_queue_for_tests()
