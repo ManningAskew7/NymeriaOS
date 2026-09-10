@@ -275,7 +275,8 @@ def _cmd_restore(args: argparse.Namespace) -> int:
     print(f"  Backend:     {meta.get('checkpoint_backend')}")
     print(f"  Counts:      {counts}")
     print(f"  Target dir:  {data_dir}")
-    print("  The current data dir contents will be moved aside, not deleted.")
+    print("  Replaced data will be moved aside, not deleted.")
+    print("  Excluded stores stay in place when the snapshot has no replacement.")
     if not args.yes:
         if not sys.stdin.isatty():
             shutil.rmtree(staging, ignore_errors=True)

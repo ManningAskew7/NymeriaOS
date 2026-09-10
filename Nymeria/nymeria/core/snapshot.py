@@ -58,6 +58,8 @@ from .snapshot_crypto import (
     sniff_artifact,
 )
 from .snapshot_stores import (
+    CODE_BACKUPS_DIR,
+    DEFAULT_EXCLUDED_TOP_LEVEL,
     POSTGRES_CHECKPOINT_TABLES,
     SERVER_BROWSER_DIR,
     SERVER_BROWSER_POINTER,
@@ -645,7 +647,9 @@ def restore_snapshot(
     Order: Postgres first (transactional; fails without touching files), then
     the data-dir content swap (pure same-filesystem renames), then workspace,
     then vault-key reconciliation. The previous data dir contents are moved
-    into ``.pre-restore-<ts>/`` inside the data dir, never deleted.
+    into ``.pre-restore-<ts>/`` inside the data dir, never deleted. Excluded
+    stores stay in place unless the manifest supplies replacement content;
+    the host-local browser rig and pointer always stay in place.
     """
     data_dir = Path(settings.data_dir)
     manifest = extracted.manifest
@@ -703,14 +707,25 @@ def restore_snapshot(
     # browser into plus its baked token, Chrome would silently recreate an
     # empty profile, and config.env would still claim a working browser. Both
     # spellings are needed: the name covers the default home, the resolved path
-    # covers a moved one. The same argument applies to the rest of
-    # DEFAULT_EXCLUDED_TOP_LEVEL and is filed as its own item; this pass fixes
-    # only the store it introduced.
+    # covers a moved one.
     rig = server_browser_rig_path(data_dir)
+    # Exclusions describe today's capture policy; the manifest describes THIS
+    # artifact. A captured store must be moved aside in full before _move_into,
+    # whose cross-device fallback would otherwise merge old and restored files.
+    # Normal application stores still swap even when absent from the snapshot,
+    # so records created after capture cannot survive a rollback (#363).
+    captured_stores = {
+        name.removeprefix(DATA_PREFIX).split("/", 1)[0]
+        for name in manifest.get("files", {})
+        if name.startswith(DATA_PREFIX)
+    }
+    uncaptured_stores = (DEFAULT_EXCLUDED_TOP_LEVEL | {CODE_BACKUPS_DIR}) - captured_stores
     for entry in sorted(data_dir.iterdir(), key=lambda p: p.name):
         if entry.resolve() == extracted_root or entry == pre_restore:
             continue
         if entry.name.startswith(".pre-restore-"):
+            continue
+        if entry.name in uncaptured_stores:
             continue
         if entry.name in (SERVER_BROWSER_DIR, SERVER_BROWSER_POINTER) or (
             rig is not None and entry.resolve() == rig

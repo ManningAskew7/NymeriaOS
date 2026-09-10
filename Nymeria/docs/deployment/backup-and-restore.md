@@ -40,10 +40,7 @@ the data dir does not put it back in the artifact. That pointer file,
 `data/server-browser-home`, is left out too: it holds no secret, but it is an
 absolute path that is only true on the host that wrote it.
 
-The restore direction follows from that, and is the half worth stating: an
-in-place restore leaves an existing rig alone. Restore sweeps every
-top-level entry of the data dir into `.pre-restore-<ts>/` before unpacking,
-and the rig and its pointer file are exempt from that sweep, because the
+An in-place restore leaves an existing rig and its pointer alone, because the
 artifact has nothing to put back in their place: sweeping the rig would move
 a running Chrome's profile out from under it and lose every signed-in
 session for nothing, and sweeping the pointer would lose the only record of
@@ -111,8 +108,9 @@ in `<data_dir>/snapshots/`.
 Restore is offline-only: it refuses while the stack looks live (API health on
 localhost and on the compose-internal `nymeria-api` hostname, plus service
 heartbeats) unless `--force`. `--force` overrides the liveness guard ONLY;
-verification always gates the restore. It never deletes: the current data dir
-contents are moved into `.pre-restore-<utc>/` inside the data dir.
+verification always gates the restore. Replaced data-dir entries are moved
+into `.pre-restore-<utc>/` inside the data dir, never deleted. Intentionally
+excluded stores remain in place when the artifact supplies no replacement.
 
 Docker shape (Postgres must be up, everything else down):
 
@@ -142,12 +140,19 @@ Cross-backend restore (a Postgres-shape snapshot into a slim/SQLite
 deployment or vice versa) is not supported; the manifest records the backend
 and restore refuses on mismatch.
 
-The rename step covers every top-level entry the artifact could replace. The
-server browser's rig is the one exemption (above): it is never captured, so
-moving it aside would destroy live state rather than swap it. The other
-uncaptured entries (`snapshots/`, `logs/`, `flags/`, `voice/`) ARE swept
-aside, so your other artifacts end up under `.pre-restore-<ts>/snapshots/`
-rather than gone. Look there before concluding anything was lost.
+The rename step replaces application stores in full, including moving aside
+stores and records created after the snapshot. It preserves `snapshots/`,
+`logs/`, `flags/`, `voice/`, and `backups/` when the artifact's manifest has no
+files for that store. Your other snapshot artifacts and uncaptured source
+rollback backups therefore stay at their original paths.
+
+If the manifest does contain a normally excluded store, restore replaces it
+in full instead of merging old and restored files. This includes `backups/`
+captured with `--include-code-backups` and stores captured by older versions.
+The format records files, not empty directories or the code-backup opt-in:
+an opted-in but empty backup store supplies no replacement, so current code
+backups remain in place. The browser rig and its pointer retain their
+unconditional host-local exemption described above.
 
 After a restore, start the stack and run `nymeria doctor`.
 

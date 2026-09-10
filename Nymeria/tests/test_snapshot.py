@@ -722,14 +722,20 @@ def test_a_restore_leaves_the_live_rig_where_it_is(tmp_path, monkeypatch):
     assert server_browser_rig_path(data_dir) == (data_dir / SERVER_BROWSER_DIR).resolve()
 
 
-def test_restore_keeps_the_rig_and_still_swaps_everything_else(snapshot_env, tmp_path):
+@pytest.mark.parametrize("rig_name", ["server-browser", "relocated-browser"])
+def test_restore_keeps_the_rig_and_replaces_application_stores(
+    snapshot_env, tmp_path, monkeypatch, rig_name
+):
     """End to end through the real restore: an in-place DR restore must not
     move the live rig aside."""
+    data_dir = snapshot_env.data_dir
+    rig = data_dir / rig_name
+    if rig_name != "server-browser":
+        (data_dir / "server-browser").rename(rig)
+    monkeypatch.setenv("SERVER_BROWSER_HOME", str(rig))
     result = _create(snapshot_env)
     extracted = extract_snapshot(result.artifact, PASSPHRASE, tmp_path / "work")
 
-    data_dir = snapshot_env.data_dir
-    rig = data_dir / "server-browser"
     marker = rig / "profile" / "Default" / "Cookies"
     # The pointer is excluded from capture, so sweeping it aside would delete
     # the only record of a hand-configured rig's home: the next `nymeria init`
@@ -740,8 +746,93 @@ def test_restore_keeps_the_rig_and_still_swaps_everything_else(snapshot_env, tmp
 
     restore_snapshot(snapshot_env, extracted)
 
-    assert marker.exists(), "the live rig was swept into .pre-restore"
-    assert pointer.exists(), "the rig home pointer was swept into .pre-restore"
-    # The rest of the data dir really was swapped: a file created after the
-    # capture is gone from its place.
+    assert marker.read_bytes() == b"SQLite format 3\x00session"
+    assert pointer.read_text(encoding="utf-8") == f"{rig}\n"
+    # Application stores really were swapped: a file created after the
+    # capture is gone from its place, without losing the captured records.
     assert not (data_dir / "todos" / "bob.json").exists()
+    assert json.loads((data_dir / "todos" / "alice.json").read_text()) == {
+        "todos": [{"id": "t1", "title": "water plants"}]
+    }
+
+
+@pytest.mark.parametrize("code_backups", ["omitted", "included", "empty"])
+def test_restore_preserves_uncaptured_stores(snapshot_env, tmp_path, code_backups):
+    """A restore must leave uncaptured operational state at its current paths,
+    while replacing captured stores wholesale, without merging later files.
+
+    The format lists files, not empty directories or the code-backup opt-in:
+    an empty capture has no backup replacement and preserves the live store.
+    """
+    data_dir = snapshot_env.data_dir
+    if code_backups == "empty":
+        (data_dir / "backups" / "marker.txt").rename(tmp_path / "source-backup.txt")
+    result = _create(snapshot_env, include_code_backups=code_backups != "omitted")
+    artifact_bytes = result.artifact.read_bytes()
+    # Use the CLI's staging layout. Both the source artifact and its siblings
+    # must survive at their old paths.
+    staging = data_dir / ".snapshot-restore-test"
+    extracted = extract_snapshot(result.artifact, PASSPHRASE, staging)
+
+    store_names = ("snapshots", "logs", "flags", "voice", "backups")
+    for name in store_names:
+        (data_dir / name / "marker.txt").write_text(f"current {name}", encoding="utf-8")
+        (data_dir / name / "later.txt").write_text("after capture", encoding="utf-8")
+    (data_dir / "new-store").mkdir()
+    (data_dir / "new-store" / "later.json").write_text("{}", encoding="utf-8")
+    (data_dir / "todos" / "bob.json").write_text("{}", encoding="utf-8")
+
+    report = restore_snapshot(snapshot_env, extracted)
+
+    assert report.data_moved_aside is not None
+    for name in store_names:
+        store = data_dir / name
+        if name == "backups" and code_backups == "included":
+            assert (store / "marker.txt").read_text() == "nope"
+            assert not (store / "later.txt").exists()
+            previous = report.data_moved_aside / name
+            assert (previous / "marker.txt").read_text() == "current backups"
+            assert (previous / "later.txt").read_text() == "after capture"
+        else:
+            assert (store / "marker.txt").read_text() == f"current {name}"
+            assert (store / "later.txt").read_text() == "after capture"
+            assert not (report.data_moved_aside / name).exists()
+    assert result.artifact.read_bytes() == artifact_bytes
+    assert not staging.exists()
+    assert not (data_dir / "new-store").exists()
+    assert (report.data_moved_aside / "new-store" / "later.json").read_text() == "{}"
+    assert not (data_dir / "todos" / "bob.json").exists()
+    assert json.loads((data_dir / "todos" / "alice.json").read_text()) == {
+        "todos": [{"id": "t1", "title": "water plants"}]
+    }
+
+
+@pytest.mark.parametrize("store_name", ["logs", "flags", "voice", "snapshots"])
+def test_restore_replaces_an_excluded_store_when_the_artifact_contains_it(
+    snapshot_env, tmp_path, monkeypatch, store_name
+):
+    """The artifact's actual coverage wins over today's capture exclusions,
+    as it must for an older snapshot or a changed capture configuration.
+    """
+    from nymeria.core import snapshot_stores
+
+    with monkeypatch.context() as capture_config:
+        capture_config.setattr(
+            snapshot_stores,
+            "DEFAULT_EXCLUDED_TOP_LEVEL",
+            snapshot_stores.DEFAULT_EXCLUDED_TOP_LEVEL - {store_name},
+        )
+        result = _create(snapshot_env, output=tmp_path / "legacy.nysnap")
+    extracted = extract_snapshot(result.artifact, PASSPHRASE, tmp_path / "work")
+    store = snapshot_env.data_dir / store_name
+    (store / "marker.txt").write_text("current", encoding="utf-8")
+    (store / "later.txt").write_text("after capture", encoding="utf-8")
+
+    report = restore_snapshot(snapshot_env, extracted)
+
+    assert (store / "marker.txt").read_text() == "nope"
+    assert not (store / "later.txt").exists()
+    assert report.data_moved_aside is not None
+    previous = report.data_moved_aside / store_name
+    assert (previous / "marker.txt").read_text() == "current"
+    assert (previous / "later.txt").read_text() == "after capture"
