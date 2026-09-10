@@ -48,17 +48,31 @@ def test_map_mode_invalid_raises():
 # --- parse_roots / resolve_cwd_against_roots ---------------------------------
 
 
-def test_parse_roots_default_to_project_root(tmp_path):
-    roots = b.parse_roots(None, tmp_path)
+@pytest.mark.parametrize("raw", [None, "", " \t\n", f",\n{os.pathsep} ,"])
+def test_parse_roots_default_to_project_root(tmp_path, raw):
+    roots = b.parse_roots(raw, tmp_path)
     assert roots == [tmp_path.resolve()]
 
 
-def test_parse_roots_comma_and_pathsep(tmp_path):
-    a = tmp_path / "a"
-    c = tmp_path / "c"
-    raw = f"{a},{c}"
+@pytest.mark.parametrize("separator", [",", "\n", os.pathsep, f",\n{os.pathsep} ,"])
+def test_parse_roots_separators_preserve_allowlist(tmp_path, separator):
+    # #342: the former comma-and-pathsep test only exercised commas.
+    a = tmp_path / "project a"
+    c = tmp_path / "project c"
+    for root in (a, c):
+        (root / "pkg").mkdir(parents=True)
+    raw = f" {a} {separator} {c} "
     roots = b.parse_roots(raw, tmp_path)
-    assert a.resolve() in roots and c.resolve() in roots
+    assert roots == [a.resolve(), c.resolve()]
+    for root in (a, c):
+        assert b.resolve_cwd_against_roots(str(root / "pkg"), roots, tmp_path) == (
+            root / "pkg"
+        ).resolve()
+
+    outside = tmp_path / "project a sibling"
+    outside.mkdir()
+    with pytest.raises(b.ClaudeCodeError, match="outside the allowed roots"):
+        b.resolve_cwd_against_roots(str(outside), roots, tmp_path)
 
 
 def test_resolve_cwd_default_is_root(tmp_path):

@@ -939,7 +939,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 |----------|---------|-------------|
 | `NYMERIA_CLAUDE_CODE_URL` | - | Host runner base URL (e.g. `http://host.docker.internal:8200`). Unset = local in-process mode. |
 | `NYMERIA_CLAUDE_CODE_TOKEN` | - | Bearer token shared by the tool and the runner. Always set it for a networked runner. |
-| `NYMERIA_CLAUDE_CODE_ROOTS` | project root | Allowed working-directory roots (os.pathsep or comma separated). The directory sandbox. |
+| `NYMERIA_CLAUDE_CODE_ROOTS` | project root | Allowed working-directory roots, separated by commas, newlines, or the host path separator (`:` on Linux/macOS, `;` on Windows). The directory sandbox. |
 | `NYMERIA_CLAUDE_CODE_MODEL` | - | Model alias/id Claude Code runs with (e.g. `opus`). Empty = Claude Code's own default. |
 | `NYMERIA_CLAUDE_CODE_FALLBACK_MODEL` | - | Fallback model when the primary is unavailable. |
 | `NYMERIA_CLAUDE_CODE_MAX_TURNS` | - | Cap on Claude Code ReAct turns per run. Empty = no explicit cap. |

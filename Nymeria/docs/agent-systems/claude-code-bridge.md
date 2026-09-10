@@ -239,7 +239,7 @@ OAuth/keychain are never read).
 | --- | --- |
 | `NYMERIA_CLAUDE_CODE_URL` | Host runner base URL. Unset = local mode. |
 | `NYMERIA_CLAUDE_CODE_TOKEN` | Bearer token shared by the tool and runner. |
-| `NYMERIA_CLAUDE_CODE_ROOTS` | Allowed working-directory roots (os.pathsep or comma separated). Empty = project root only. |
+| `NYMERIA_CLAUDE_CODE_ROOTS` | Allowed working-directory roots, separated by commas, newlines, or the host path separator (`:` on Linux/macOS, `;` on Windows). Empty = project root only. |
 | `NYMERIA_CLAUDE_CODE_MODEL` | Model alias/id Claude Code runs with (e.g. `opus`). |
 | `NYMERIA_CLAUDE_CODE_FALLBACK_MODEL` | Fallback model. |
 | `NYMERIA_CLAUDE_CODE_MAX_TURNS` | Cap on Claude Code turns per run. |

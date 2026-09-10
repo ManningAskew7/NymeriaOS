@@ -278,11 +278,11 @@ def resolve_cwd_against_roots(
 
 
 def parse_roots(raw: Optional[str], default_root: Path) -> list[Path]:
-    """Parse the allowlist env value (``os.pathsep`` or comma separated)."""
+    """Parse the allowlist env value (``os.pathsep``, comma or newline separated)."""
     if not raw or not str(raw).strip():
         return [default_root.resolve()]
     parts: list[str] = []
-    for chunk in str(raw).replace(",", "\n").split("\n"):
+    for chunk in str(raw).replace(os.pathsep, ",").replace(",", "\n").split("\n"):
         chunk = chunk.strip()
         if chunk:
             parts.append(chunk)
