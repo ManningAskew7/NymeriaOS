@@ -230,6 +230,7 @@ class PendingPromptQueueBackend(Protocol):
     def consume_halt_observation(self, thread_id: str) -> int: ...
     def begin_release(self, thread_id: str) -> None: ...
     def end_release(self, thread_id: str) -> None: ...
+    def release_lock(self, thread_id: str, lock: threading.Lock) -> None: ...
     def is_releasing(self, thread_id: str) -> bool: ...
 
 
@@ -386,6 +387,16 @@ class InMemoryPendingPromptQueue:
     def end_release(self, thread_id: str) -> None:
         """Allow queueing for the next holder after the lock has been released."""
         with self._lock:
+            self._releasing.discard(thread_id)
+
+    def release_lock(self, thread_id: str, lock: threading.Lock) -> None:
+        """Unlock and clear this holder's release marker as one handoff.
+
+        The next holder may acquire the turn lock immediately, but cannot set
+        its own releasing marker until this holder has finished clearing it.
+        """
+        with self._lock:
+            lock.release()
             self._releasing.discard(thread_id)
 
     def is_releasing(self, thread_id: str) -> bool:

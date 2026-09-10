@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ...core.accounts import AuthenticatedUser
+from ...core.embedding_jobs import run_embedding_job
 from ...core.memory_limits import (
     get_global_memory_char_limit,
     get_memory_max_entries,
@@ -120,7 +121,10 @@ def create_memory_router(
                 status_code=400,
                 detail=memory_entries_full_error(max_entries),
             )
-        _upsert_memory_rag_chunk(user_id, request.key, stored_value)
+        await run_embedding_job(
+            _upsert_memory_rag_chunk, user_id, request.key, stored_value,
+            site="memory.save", chunk_count=1, cancel_queued=False,
+        )
         return {"status": "ok", "key": request.key}
 
     @router.delete("/users/{user_id}/memories/{key}")
@@ -136,7 +140,9 @@ def create_memory_router(
             removed = profile.remove_memory(key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"No memory with key '{key}'")
-        _delete_memory_rag_chunk(user_id, key)
+        await run_embedding_job(
+            _delete_memory_rag_chunk, user_id, key, site="memory.delete", cancel_queued=False,
+        )
         return {"status": "ok", "key": key}
 
     @router.get("/users/{user_id}/memories/search")

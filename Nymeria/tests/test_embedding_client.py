@@ -27,6 +27,67 @@ class _FakeEncoder:
         return [[1.0] + [0.0] * (self.width - 1) for _ in inputs]
 
 
+def test_local_encode_serializes_background_and_direct_callers(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nymeria.core import embedding_client
+    from nymeria.core.embedding_jobs import schedule_embedding_job
+
+    first_started = threading.Event()
+    second_attempted = threading.Event()
+    release = threading.Event()
+    guard = threading.Lock()
+    real_lock = threading.Lock()
+    active = peak = attempts = 0
+
+    class ObservedLock:
+        def __enter__(self):
+            nonlocal attempts
+            with guard:
+                attempts += 1
+                if attempts == 2:
+                    second_attempted.set()
+            real_lock.acquire()
+
+        def __exit__(self, *args):
+            real_lock.release()
+
+    class Encoder:
+        def encode(self, inputs, **kwargs):
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            try:
+                if inputs == ["background"]:
+                    first_started.set()
+                    assert release.wait(5)
+                else:
+                    # Also release the test when the mutex is removed: the
+                    # observable failure is overlapping inference, not a hang.
+                    second_attempted.set()
+                return [[1.0, 0.0, 0.0, 0.0]]
+            finally:
+                with guard:
+                    active -= 1
+
+    monkeypatch.setattr(embedding_client, "_LOCAL_INFERENCE_LOCK", ObservedLock())
+    monkeypatch.setattr(EmbeddingClient, "_get_local_embedder", lambda self: Encoder())
+    client = EmbeddingClient(provider="local", model="test-model", dimensions=4)
+    background = schedule_embedding_job(client._embed_local, ["background"], site="test.local")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            assert first_started.wait(5)
+            direct = pool.submit(client._embed_local, ["direct"])
+            assert second_attempted.wait(5)
+        finally:
+            release.set()
+        assert background.result(timeout=5) == [[1.0, 0.0, 0.0, 0.0]]
+        assert direct.result(timeout=5) == [[1.0, 0.0, 0.0, 0.0]]
+    assert peak == 1
+
+
 # ----------------------------------------------------------------------
 # availability gate
 # ----------------------------------------------------------------------

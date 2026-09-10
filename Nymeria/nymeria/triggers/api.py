@@ -923,6 +923,9 @@ def create_api_app(
     app.router.add_event_handler("shutdown", _close_provider_http_pools)
     app.router.add_event_handler("shutdown", _stop_agent_ticker)
     app.router.add_event_handler("shutdown", _drain_observe_hooks)
+    from ..core.embedding_jobs import wait_for_pending_embedding_jobs
+
+    app.router.add_event_handler("shutdown", wait_for_pending_embedding_jobs)
     # Registered LAST on purpose: it kills child processes, and a hook's
     # `run_command` child cut off mid-flight would make the observe-plane drain
     # above report a failure it caused itself.

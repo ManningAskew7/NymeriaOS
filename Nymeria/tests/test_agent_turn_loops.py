@@ -16,6 +16,8 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from langchain_core.messages import AIMessage
 
 from nymeria.core.agent import NymeriaAgent
@@ -499,6 +501,206 @@ def _stream_agent(thread_id) -> Any:
     agent._record_turn_usage = lambda *args, **kwargs: (0, 0, False)
     agent._hook_registry_for_turn = lambda *args, **kwargs: None
     return agent
+
+
+def test_astream_indexes_after_stream_end_and_lock_release():
+    thread_id = "embedding-after-turn"
+    agent = _stream_agent(thread_id)
+    indexed = []
+    loop_thread = threading.get_ident()
+    release_index = threading.Event()
+    index_finished = threading.Event()
+
+    async def events():
+        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="final answer")}}
+
+    agent._get_async_graph_for_user = lambda *args, **kwargs: _FakeAsyncGraph(events)
+    def index_turn(**kwargs):
+        indexed.append((threading.get_ident(), agent._thread_locks.lock.locked(), kwargs))
+        try:
+            if threading.get_ident() != loop_thread:
+                assert release_index.wait(5), "stream waited for indexing"
+        finally:
+            index_finished.set()
+
+    agent._index_conversation_turn = index_turn
+    set_pending_queue(InMemoryPendingPromptQueue())
+    try:
+        async def collect():
+            try:
+                chunks = [chunk async for chunk in agent.astream(
+                    "hello", thread_id=thread_id, user_id="user-a", _is_self_invoke=True,
+                )]
+                assert chunks == [{"type": "response", "content": "final answer"}]
+                assert not agent._thread_locks.lock.locked()
+                assert not index_finished.is_set(), "stream must finish before slow indexing"
+            finally:
+                release_index.set()
+            from nymeria.core.embedding_jobs import wait_for_pending_embedding_jobs
+
+            await wait_for_pending_embedding_jobs()
+
+        asyncio.run(collect())
+    finally:
+        reset_pending_queue_for_tests()
+    assert len(indexed) == 1
+    worker_thread, was_locked, payload = indexed[0]
+    assert worker_thread != loop_thread
+    assert was_locked is False
+    assert payload == {
+        "user_id": "user-a", "thread_id": thread_id, "user_message": "hello",
+        "ai_response": "final answer", "messages": [],
+    }
+
+
+@pytest.mark.parametrize("rewound", [True, False])
+def test_astream_background_index_preserves_refusal_rewind_gate(rewound):
+    from nymeria.core.embedding_jobs import wait_for_pending_embedding_jobs
+
+    thread_id = "embedding-refusal"
+    agent = _stream_agent(thread_id)
+    indexed = []
+
+    async def events():
+        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="notice")}}
+
+    agent._get_async_graph_for_user = lambda *args, **kwargs: _FakeAsyncGraph(events)
+    agent._maybe_rewind_refused_turn = lambda *args: {"rewound": rewound, "content": "refusal notice"}
+    agent._index_conversation_turn = lambda **kwargs: indexed.append(kwargs)
+    set_pending_queue(InMemoryPendingPromptQueue())
+    try:
+        async def collect():
+            chunks = [chunk async for chunk in agent.astream(
+                "prompt", thread_id=thread_id, user_id="user-a", _is_self_invoke=True,
+            )]
+            await wait_for_pending_embedding_jobs()
+            return chunks
+
+        chunks = asyncio.run(collect())
+    finally:
+        reset_pending_queue_for_tests()
+    if rewound:
+        assert indexed == []
+        assert any(chunk["type"] == "turn_rewound" for chunk in chunks)
+    else:
+        assert len(indexed) == 1
+        assert indexed[0]["user_message"] == "prompt"
+        assert indexed[0]["ai_response"] == "notice"
+
+
+def test_astream_releases_turn_when_background_submission_fails(monkeypatch, caplog):
+    thread_id = "embedding-submit-error"
+    agent = _stream_agent(thread_id)
+
+    async def events():
+        yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="answer delivered")}}
+
+    def reject(*args, **kwargs):
+        raise RuntimeError("executor unavailable")
+
+    agent._get_async_graph_for_user = lambda *args, **kwargs: _FakeAsyncGraph(events)
+    monkeypatch.setattr("nymeria.core.agent.schedule_embedding_job", reject)
+    backend = InMemoryPendingPromptQueue()
+    set_pending_queue(backend)
+    try:
+        async def collect():
+            return [chunk async for chunk in agent.astream(
+                "hello", thread_id=thread_id, user_id="user-a", _is_self_invoke=True,
+            )]
+
+        assert asyncio.run(collect()) == [{"type": "response", "content": "answer delivered"}]
+        assert not agent._thread_locks.lock.locked()
+        assert not backend.is_releasing(thread_id)
+        assert "Could not schedule turn indexing" in caplog.text
+        assert "executor unavailable" in caplog.text
+    finally:
+        reset_pending_queue_for_tests()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_turn_rejects_authorization_from_before_thread_deletion(streaming):
+    from nymeria.core.thread_lock_manager import begin_thread_deletion, end_thread_deletion, get_thread_epoch
+
+    thread_id = "deleted-admission"
+    epoch = get_thread_epoch(thread_id)
+    begin_thread_deletion(thread_id)
+    end_thread_deletion(thread_id)
+    agent = _stream_agent(thread_id)
+    agent._chat_turn_local = threading.local()
+    if streaming:
+        async def collect():
+            return [chunk async for chunk in agent.astream("stale prompt", thread_id=thread_id, _thread_epoch=epoch)]
+
+        chunks = asyncio.run(collect())
+        assert [chunk["type"] for chunk in chunks] == ["error"]
+        assert chunks[0]["code"] == "thread_deleted"
+        assert "Retry in a new thread" in chunks[0]["content"]
+    else:
+        assert "Retry in a new thread" in agent.chat("stale prompt", thread_id=thread_id, _thread_epoch=epoch)
+    assert not agent._thread_locks.lock.locked()
+
+
+def test_sync_stale_after_lock_rejection_does_not_fire_done_hooks(monkeypatch):
+    thread_id = "sync-deleted-while-admitting"
+    agent = _stream_agent(thread_id)
+    agent._chat_turn_local = threading.local()
+    effects = []
+    agent._fire_done_observe_sync = lambda **kwargs: effects.append("done hook")
+    agent._compaction = SimpleNamespace(note_turn_end=lambda *args: effects.append("turn end"))
+    # Deletion wins between the entry check and lock acquisition. Keep this
+    # test independent of sleeps or OS scheduling: the facade is the boundary.
+    checks = iter([True, False])
+    monkeypatch.setattr("nymeria.core.agent.thread_epoch_is_current", lambda *args: next(checks))
+    result = agent.chat("stale prompt", thread_id=thread_id, _is_self_invoke=True)
+    assert "Retry in a new thread" in result
+    assert effects == []
+    assert not agent._thread_locks.lock.locked()
+
+
+def test_waiting_turn_rechecks_deletion_epoch_after_lock_acquisition():
+    from nymeria.core.thread_lock_manager import begin_thread_deletion, end_thread_deletion
+
+    thread_id = "deleted-while-waiting"
+    agent = _stream_agent(thread_id)
+    effects = []
+    agent._fire_done_observe_sync = lambda **kwargs: effects.append("done hook")
+    agent._compaction = SimpleNamespace(note_turn_end=lambda *args: effects.append("turn end"))
+    backend = InMemoryPendingPromptQueue()
+    set_pending_queue(backend)
+    agent._thread_locks.lock.acquire()
+    backend.begin_release(thread_id)
+    try:
+        async def exercise():
+            stream = agent.astream("waiting prompt", thread_id=thread_id, _is_self_invoke=True)
+            assert (await anext(stream))["type"] == "queued"
+            begin_thread_deletion(thread_id)
+            end_thread_deletion(thread_id)
+            agent._thread_locks.lock.release()
+            backend.end_release(thread_id)
+            chunks = [chunk async for chunk in stream]
+            assert [chunk["type"] for chunk in chunks] == ["error"]
+            assert chunks[0]["code"] == "thread_deleted"
+            assert not agent._thread_locks.lock.locked()
+            assert backend.size(thread_id) == 0
+            assert effects == []
+
+            async def events():
+                yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="new turn")}}
+
+            agent._get_async_graph_for_user = lambda *args, **kwargs: _FakeAsyncGraph(events)
+            new_chunks = [chunk async for chunk in agent.astream(
+                "fresh prompt", thread_id=thread_id, _is_self_invoke=True,
+            )]
+            assert new_chunks == [{"type": "response", "content": "new turn"}]
+            from nymeria.core.embedding_jobs import wait_for_pending_embedding_jobs
+
+            await wait_for_pending_embedding_jobs()
+
+        asyncio.run(exercise())
+    finally:
+        if agent._thread_locks.lock.locked():
+            agent._thread_locks.lock.release()
+        reset_pending_queue_for_tests()
 
 
 def test_astream_reload_preserves_holder_kind_for_done_hooks():

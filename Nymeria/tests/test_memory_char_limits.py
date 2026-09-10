@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.memory_limits import (
     DEFAULT_MEMORY_MAX_ENTRIES,
@@ -159,6 +161,90 @@ class _MemoryApiAgent:
 
     def sync_agent_tools(self) -> None:
         return None
+
+
+@pytest.mark.parametrize("operation", ["save", "delete"])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_memory_rest_updates_rag_off_loop(operation, cancel, tmp_path, monkeypatch):
+    import asyncio
+    import threading
+
+    import httpx
+    from fastapi import FastAPI
+
+    from nymeria.api.routers.memory import create_memory_router
+    from nymeria.core.memory_index import MemoryIndex
+
+    agent = _MemoryApiAgent(tmp_path)
+    with agent.profile_manager.atomic_update("owner") as profile:
+        profile.add_memory("key", "old")
+    index = MemoryIndex(tmp_path / "memory.db", embedding_provider="none")
+    index.add_chunk("key: old", {"key": "key"}, "memory", "owner")
+    agent._get_memory_index = lambda uid: index
+    delete = index.delete_memory_key
+    threads = []
+    loop_thread = threading.get_ident()
+
+    def delete_key(*args):
+        threads.append(threading.get_ident())
+        return delete(*args)
+
+    monkeypatch.setattr(index, "delete_memory_key", delete_key)
+
+    async def user():
+        return None
+
+    app = FastAPI()
+    app.include_router(create_memory_router(user, lambda: agent, lambda *args: None))
+
+    async def exercise():
+        from nymeria.core.embedding_jobs import run_embedding_job, schedule_embedding_job, wait_for_pending_embedding_jobs
+
+        queued = asyncio.Event()
+        release = threading.Event()
+        entered = threading.Event()
+
+        def blocked():
+            entered.set()
+            assert release.wait(5)
+
+        async def signal_job(*args, **kwargs):
+            queued.set()
+            return await run_embedding_job(*args, **kwargs)
+
+        monkeypatch.setattr("nymeria.api.routers.memory.run_embedding_job", signal_job)
+        if cancel:
+            schedule_embedding_job(blocked, site="test.memory.blocked")
+            assert await asyncio.to_thread(entered.wait, 5)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            request = (client.post("/users/owner/memories", json={"key": "key", "value": "new"})
+                       if operation == "save" else client.delete("/users/owner/memories/key"))
+            task = asyncio.create_task(request)
+            try:
+                if cancel:
+                    await asyncio.wait_for(queued.wait(), 5)
+                    task.cancel()
+                    await asyncio.sleep(0)
+            finally:
+                release.set()
+            if cancel:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                await wait_for_pending_embedding_jobs()
+            else:
+                response = await task
+                assert response.status_code == 200
+                assert response.json() == {"status": "ok", "key": "key"}
+
+    try:
+        asyncio.run(exercise())
+        assert threads and all(tid != loop_thread for tid in threads)
+        rows = index._get_connection().execute("SELECT content FROM chunks").fetchall()
+        assert [row["content"] for row in rows] == (["key: new"] if operation == "save" else [])
+        memory = agent.profile_manager.get_profile("owner").get_memory("key")
+        assert (memory.value if memory else None) == ("new" if operation == "save" else None)
+    finally:
+        index.close()
 
 
 def test_memory_rest_save_enforces_global_char_limit(tmp_path, api_client_builder):

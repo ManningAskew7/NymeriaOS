@@ -325,6 +325,75 @@ def test_cascade_delete_thread_reports_missing_thread_owner_as_zero(tmp_path: Pa
     assert agent.accounts_repo.get_thread_owner(target) is None
 
 
+def test_cascade_delete_cancels_pending_index_writes(tmp_path, api_client_builder):
+    import asyncio
+
+    from nymeria.core.embedding_jobs import schedule_embedding_job, wait_for_pending_embedding_jobs
+    from nymeria.core.memory_index import MemoryIndex
+
+    settings = api_client_builder.settings(tmp_path)
+    agent = FakeAgent(tmp_path)
+    index = MemoryIndex(tmp_path / "index.db", embedding_provider="none")
+    agent.memory_index = index
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked():
+        entered.set()
+        assert release.wait(5)
+
+    schedule_embedding_job(blocked, site="test.other", thread_key="other")
+    try:
+        assert entered.wait(5)
+        schedule_embedding_job(index.add_chunk, "deleted content", {}, "conversation", "default", "gone",
+                               site="test.gone", thread_key="gone")
+        schedule_embedding_job(index.add_chunk, "kept content", {}, "conversation", "default", "kept",
+                               site="test.kept", thread_key="kept")
+        result = cascade_delete_thread(agent, settings, "default", "gone")
+        assert result.warnings == []
+    finally:
+        release.set()
+    try:
+        asyncio.run(wait_for_pending_embedding_jobs())
+        rows = index._get_connection().execute("SELECT thread_id, content FROM chunks").fetchall()
+        assert [(row["thread_id"], row["content"]) for row in rows] == [("kept", "kept content")]
+    finally:
+        index.close()
+
+
+@pytest.mark.parametrize("operation", ["clear", "delete"])
+def test_stale_maintenance_cannot_modify_a_recreated_thread(operation, tmp_path, api_client_builder):
+    import asyncio
+    from types import SimpleNamespace
+
+    from nymeria.core.thread_deletion import ThreadDeletionBusy, clear_thread_history
+    from nymeria.core.thread_lock_manager import begin_thread_deletion, end_thread_deletion, get_thread_epoch
+
+    target = "recreated-maintenance"
+    old_epoch = get_thread_epoch(target)
+    begin_thread_deletion(target)
+    end_thread_deletion(target)
+    settings = api_client_builder.settings(tmp_path)
+    agent = FakeAgent(tmp_path)
+    agent.accounts_repo.create_user("default", "owner@example.test", "Owner")
+    agent.accounts_repo.claim_thread(target, "default")
+    agent.thread_metadata_manager.upsert_thread("default", target, title="Fresh thread")
+
+    async def state(config):
+        return SimpleNamespace(values={"messages": []})
+
+    agent._default_async_graph = SimpleNamespace(aget_state=state)
+    with pytest.raises(ThreadDeletionBusy, match="Retry in a new thread"):
+        if operation == "clear":
+            asyncio.run(clear_thread_history(agent, settings, "default", target, _thread_epoch=old_epoch))
+        else:
+            cascade_delete_thread(agent, settings, "default", target, _thread_epoch=old_epoch)
+    assert agent.accounts_repo.get_thread_owner(target) == "default"
+    assert agent.thread_metadata_manager.get_thread("default", target).title == "Fresh thread"
+    assert agent.aborted == []
+    assert not agent._thread_locks.get_lock(target).locked()
+
+
 def test_busy_delete_says_it_aborted_the_turn_and_that_nothing_was_deleted(tmp_path: Path):
     """A refused delete is not a no-op: it aborts the running turn first.
 

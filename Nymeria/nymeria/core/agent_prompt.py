@@ -585,6 +585,7 @@ def index_tool_results(
     max_chars = getattr(settings, "rag_tool_result_max_chars", 2000)
     dedup_near = getattr(settings, "rag_ingest_dedup_enabled", True)
     dedup_threshold = getattr(settings, "rag_ingest_dedup_threshold", 0.97)
+    chunks = []
     for a in activity:
         name = a.get("name", "")
         if not name or _is_index_read_tool(name):
@@ -597,22 +598,19 @@ def index_tool_results(
         # identity rides after the marker, included in the embedding but excluded
         # from the dedup hash (the same payload dedups regardless of caller).
         content = f"{result[:max_chars]}\n\nTools used:\n- {name}({args_str})"
+        chunks.append((content, {
+            "role": "tool_result",
+            "tool_name": name,
+            "tool_args": a.get("args", {}),
+        }))
+    if chunks:
         try:
-            memory_index.add_chunk(
-                content=content,
-                metadata={
-                    "role": "tool_result",
-                    "tool_name": name,
-                    "tool_args": a.get("args", {}),
-                },
-                chunk_type="tool",
-                user_id=user_id,
-                thread_id=thread_id,
-                dedup_near=dedup_near,
-                dedup_threshold=dedup_threshold,
+            memory_index.add_chunks(
+                chunks, chunk_type="tool", user_id=user_id, thread_id=thread_id,
+                dedup_near=dedup_near, dedup_threshold=dedup_threshold,
             )
         except Exception as e:
-            logger.warning(f"Failed to index tool result ({name}): {e}")
+            logger.warning("Failed to index tool results: %s", e)
 
 
 def index_conversation_turn(

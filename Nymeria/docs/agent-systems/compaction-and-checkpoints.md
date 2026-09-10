@@ -71,7 +71,7 @@ There is no pending-summary stash and no restart-recovery step: the carried cont
 
 The `memory_seed_marker` opener is projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary. (Legacy threads compacted before this redesign may still carry a single `compaction_marker` HumanMessage; the history projection handles both.)
 
-The pre-compact RAG flush (step 2) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
+The pre-compact RAG flush (step 2) runs on the dedicated embedding worker and finishes before pruning, so the conversation remains queryable via `rag_search` after the in-context messages are cleared. Turn-end indexing runs in the background after the thread lock is released; slow embedding no longer extends the streamed answer. Tool results from each turn are embedded in one batch. See `tools.md` → `rag_search` for the full list of indexing hooks.
 
 The summary prompt requires these exact sections:
 
@@ -379,7 +379,7 @@ Use `/prune` when the conversation flow is still useful but the tool returns the
 ### Key properties
 
 - **No LLM**: the entire operation is a single state read + state update. Sub-second.
-- **No data destruction**: the per-turn conversation indexer (`rag_search`) has already indexed each tool result into the per-user RAG store, so the agent can recover specific content via search even after pruning.
+- **No data destruction**: the per-turn conversation indexer preserves tool results in the per-user RAG store. Once the background indexing job finishes, the agent can retrieve the indexed content via `rag_search`.
 - **No token tracker reset**: unlike `/compact`, `/prune` does not call `reset_after_compact`. The next turn's real `input_tokens` reported by the provider will naturally overwrite the stale `last_input_tokens` cache.
 - **No checkpoint pruning**: `/prune` does not delete historical checkpoint rows. It only mutates the latest state. Older `checkpoint_blobs` still contain the original tool results.
 - **Idempotent**: running `/prune` twice on the same thread yields `pruned_count=0` on the second call.

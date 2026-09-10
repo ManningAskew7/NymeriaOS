@@ -48,6 +48,8 @@ from ..schemas.chat import ChatRequest, ChatResponse
 from ..sse import SSE_RESPONSE_HEADERS, with_sse_keepalive
 from ..thread_config_helpers import effective_provider_model
 
+from ...core.thread_lock_manager import THREAD_DELETED_MESSAGE, get_thread_epoch, thread_admission_guard
+
 logger = logging.getLogger(__name__)
 
 
@@ -573,7 +575,11 @@ def create_chat_router(
         is_quick = False
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
-        require_thread_access_fn(user, thread_id)
+        with thread_admission_guard(thread_id) as thread_epoch:
+            if thread_epoch < 0:
+                require_thread_access_fn(user, thread_id, claim=False)
+                raise HTTPException(status_code=409, detail=THREAD_DELETED_MESSAGE)
+            require_thread_access_fn(user, thread_id)
 
         # Per-model attachment cap. Raises 413 with the limit before any
         # SSE handshake so the frontend can show the cap inline.
@@ -618,7 +624,11 @@ def create_chat_router(
                     headers=SSE_RESPONSE_HEADERS,
                 )
             if isinstance(mention_resolution, MentionTarget):
-                require_thread_access_fn(user, mention_resolution.thread_id)
+                with thread_admission_guard(mention_resolution.thread_id) as thread_epoch:
+                    if thread_epoch < 0:
+                        require_thread_access_fn(user, mention_resolution.thread_id, claim=False)
+                        raise HTTPException(status_code=409, detail=THREAD_DELETED_MESSAGE)
+                    require_thread_access_fn(user, mention_resolution.thread_id)
                 dispatched_target = mention_resolution
                 thread_id = mention_resolution.thread_id
                 message = mention_resolution.message
@@ -832,6 +842,7 @@ def create_chat_router(
             message = quick_prompt
             display_message = quick_prompt
             is_quick = True
+            thread_epoch = get_thread_epoch(thread_id)
 
         # Handle /done slash command (chat_stream execution).
         # /done <prompt> arms a one-shot single_use DONE hook on the busy
@@ -1204,6 +1215,7 @@ def create_chat_router(
                     _on_turn_started=_mark_turn_started,
                     _resume_halted_turn=resume_halted_turn,
                     _turn_user_message_id=turn_user_message_id,
+                    _thread_epoch=thread_epoch,
                 ):
                     # This request lost the lock race and queued its prompt
                     # onto the running holder turn instead of starting one:
@@ -1399,21 +1411,22 @@ def create_chat_router(
                     # from, and the thread already existed at the halt).
                     try:
                         new_title = None
-                        if not resume_halted_turn:
-                            new_title = agent.thread_metadata_manager.auto_title(
-                                user_id, thread_id, message
-                            )
-                        if new_title:
-                            done_data["title"] = new_title
-                            done_data["title_source"] = "auto"
-                            # Publish title change so other clients update their sidebar
-                            publish_sync_event_fn(
-                                event_type="thread_updated",
-                                thread_id=thread_id,
-                                user_id=user_id,
-                                data={"title": new_title, "title_source": "auto"},
-                                origin_client_id=client_id,
-                            )
+                        with thread_admission_guard(thread_id) as current_epoch:
+                            if not resume_halted_turn and current_epoch == thread_epoch and current_epoch >= 0:
+                                new_title = agent.thread_metadata_manager.auto_title(
+                                    user_id, thread_id, message
+                                )
+                            if new_title:
+                                done_data["title"] = new_title
+                                done_data["title_source"] = "auto"
+                                # Publish title change so other clients update their sidebar
+                                publish_sync_event_fn(
+                                    event_type="thread_updated",
+                                    thread_id=thread_id,
+                                    user_id=user_id,
+                                    data={"title": new_title, "title_source": "auto"},
+                                    origin_client_id=client_id,
+                                )
                     except Exception as e:
                         logger.warning("Failed to auto-title thread %s: %s", thread_id, e)
 
@@ -1535,7 +1548,11 @@ def create_chat_router(
         message = request.message
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
-        require_thread_access_fn(user, thread_id)
+        with thread_admission_guard(thread_id) as thread_epoch:
+            if thread_epoch < 0:
+                require_thread_access_fn(user, thread_id, claim=False)
+                raise HTTPException(status_code=409, detail=THREAD_DELETED_MESSAGE)
+            require_thread_access_fn(user, thread_id)
 
         # Per-model attachment cap (same surface as /chat). 413 lands as a
         # JSON error response since this endpoint is non-streaming.
@@ -1560,7 +1577,11 @@ def create_chat_router(
                     tool_call_count=0,
                 )
             if isinstance(mention_resolution, MentionTarget):
-                require_thread_access_fn(user, mention_resolution.thread_id)
+                with thread_admission_guard(mention_resolution.thread_id) as thread_epoch:
+                    if thread_epoch < 0:
+                        require_thread_access_fn(user, mention_resolution.thread_id, claim=False)
+                        raise HTTPException(status_code=409, detail=THREAD_DELETED_MESSAGE)
+                    require_thread_access_fn(user, mention_resolution.thread_id)
                 thread_id = mention_resolution.thread_id
                 message = mention_resolution.message
 
@@ -1592,6 +1613,7 @@ def create_chat_router(
                 )
             message = quick_prompt
             is_quick = True
+            thread_epoch = get_thread_epoch(thread_id)
 
         # /done <prompt>: sync parity with the streaming intercept above.
         done_tokens = msg_stripped.split(maxsplit=1)
@@ -1717,6 +1739,7 @@ def create_chat_router(
                 source_id=prompt_source_id,
                 source_label=prompt_source_label or user_id,
                 _resume_halted_turn=resume_halted_turn,
+                _thread_epoch=thread_epoch,
             )
         finally:
             if turn_slot is not None:

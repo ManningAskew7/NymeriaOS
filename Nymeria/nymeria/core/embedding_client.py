@@ -51,6 +51,9 @@ _EMBED_UA = (
 # indexes reuse one resident model.
 _LOCAL_EMBEDDERS: Dict[str, Any] = {}
 _LOCAL_EMBEDDER_LOCK = threading.Lock()
+# Tools and background catalog warmers already run off-loop, outside the
+# indexing executor. Keep their encode calls mutually exclusive with its jobs.
+_LOCAL_INFERENCE_LOCK = threading.Lock()
 
 # Copy shared verbatim by the skills and tool-search gates (pinned by their
 # tests); the memory index has no boolean gate and fails per call instead.
@@ -528,10 +531,11 @@ class EmbeddingClient:
             return [None] * len(inputs)
         out: List[Optional[List[float]]] = [None] * len(inputs)
         try:
-            vecs = model.encode(
-                inputs, normalize_embeddings=True, convert_to_numpy=True,
-                show_progress_bar=False,
-            )
+            with _LOCAL_INFERENCE_LOCK:
+                vecs = model.encode(
+                    inputs, normalize_embeddings=True, convert_to_numpy=True,
+                    show_progress_bar=False,
+                )
             for i, v in enumerate(vecs):
                 vec = [float(x) for x in v]
                 if len(vec) == self.dimensions:

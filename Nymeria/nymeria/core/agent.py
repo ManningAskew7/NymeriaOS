@@ -28,6 +28,7 @@ from .token_usage import extract_last_from_messages
 from .agent_text_extract import (
     extract_content_parts as _extract_content_parts,
 )
+from .embedding_jobs import run_embedding_job, run_embedding_job_sync, schedule_embedding_job
 from .agent_context import RewindResult
 from .agent_streaming import GraphStreamProcessor, compact_with_progress
 from .agent_turn_loops import (
@@ -47,7 +48,10 @@ from .memory_index import MemoryIndex
 from .hook_manager import HookManager
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
-from .thread_lock_manager import ThreadLockManager, async_event_wait, async_lock_acquire
+from .thread_lock_manager import (
+    THREAD_DELETED_MESSAGE, ThreadLockManager, async_event_wait, async_lock_acquire,
+    get_thread_epoch, thread_epoch_is_current,
+)
 from .time_utils import utc_now
 from .checkpointer_config import (
     build_async_checkpointer_config,
@@ -2229,6 +2233,7 @@ class NymeriaAgent:
         source_id: Optional[str] = None,
         source_label: Optional[str] = None,
         _resume_halted_turn: bool = False,
+        _thread_epoch: Optional[int] = None,
     ) -> str:
         """
         Send a message and get a response (non-streaming).
@@ -2255,6 +2260,10 @@ class NymeriaAgent:
         # reports 0 tool calls instead of a stale count from a previous turn
         # that ran on the same pooled thread.
         self._chat_turn_local.tool_calls = 0
+
+        turn_epoch = get_thread_epoch(thread_id) if _thread_epoch is None else _thread_epoch
+        if not thread_epoch_is_current(thread_id, turn_epoch):
+            return THREAD_DELETED_MESSAGE
 
         if _resume_halted_turn:
             # Message-less resume: nothing to sandbox, nothing to queue.
@@ -2368,6 +2377,10 @@ class NymeriaAgent:
             # else: the previous holder was already releasing; we acquired
             # the lock via the closing-error fallback. Fall through to the
             # holder path below so the prompt runs as the next normal turn.
+
+        if not thread_epoch_is_current(thread_id, turn_epoch):
+            backend.release_lock(thread_id, lock)
+            return THREAD_DELETED_MESSAGE
 
         completed_normally = False
         # Mirrors astream: the finally fires the deferred DONE observe for turn
@@ -2655,7 +2668,8 @@ class NymeriaAgent:
                 # no longer exists, so indexing it would resurrect it in RAG.
                 # Gated (not-rewound) refusals still index: the turn persists.
                 if not refusal_rewound:
-                    self._index_conversation_turn(
+                    run_embedding_job_sync(
+                        self._index_conversation_turn, site="chat.turn", thread_key=thread_id, chunk_count=len(messages),
                         user_id=user_id,
                         thread_id=thread_id,
                         user_message=message,
@@ -2912,8 +2926,7 @@ class NymeriaAgent:
             if _compaction is not None:
                 _compaction.note_turn_end(thread_id, user_id)
             self._thread_locks.clear_lock_info(thread_id)
-            lock.release()
-            backend.end_release(thread_id)
+            backend.release_lock(thread_id, lock)
             try:
                 self._clear_expired_llm_fallback_if_idle(thread_id)
             except Exception as e:
@@ -2935,6 +2948,7 @@ class NymeriaAgent:
         source_label: Optional[str] = None,
         _on_turn_started: Optional[Callable[[], None]] = None,
         _resume_halted_turn: bool = False,
+        _thread_epoch: Optional[int] = None,
         _turn_user_message_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
@@ -2989,6 +3003,11 @@ class NymeriaAgent:
             ``prompt_absorbed``, ``turn_halted``, ``fanout_dropped``
             and the legacy ``queued`` alias.
         """
+        turn_epoch = get_thread_epoch(thread_id) if _thread_epoch is None else _thread_epoch
+        if not thread_epoch_is_current(thread_id, turn_epoch):
+            yield {"type": "error", "code": "thread_deleted", "content": THREAD_DELETED_MESSAGE}
+            return
+
         if _resume_halted_turn:
             # Message-less resume: nothing to sandbox, nothing to queue.
             message, image_attachments, sandbox_records = "", [], []
@@ -3205,7 +3224,13 @@ class NymeriaAgent:
                     yield {"type": "prompt_absorbed", "thread_id": thread_id}
                     return
 
+        if not thread_epoch_is_current(thread_id, turn_epoch):
+            backend.release_lock(thread_id, lock)
+            yield {"type": "error", "code": "thread_deleted", "content": THREAD_DELETED_MESSAGE}
+            return
+
         completed_normally = False
+        index_after_turn = None
         # Tracks whether either in-band DONE observe fire point ran; the finally
         # fires the deferred one for turn ends that skip both (hard cancel,
         # the successful overflow-recovery return).
@@ -3922,10 +3947,13 @@ class NymeriaAgent:
                         }
                 elif self.settings.context_management == "sliding_window":
                     # Legacy sliding window trimming
-                    self.trim_context_window(thread_id, user_id=user_id)
+                    await run_embedding_job(
+                        self.trim_context_window, thread_id, user_id=user_id,
+                        site="sliding_window.flush", thread_key=thread_id,
+                    )
 
-                # Index conversation turn in RAG (if enabled). This runs after
-                # auto-compact so streamed resume output is included too. Called
+                # Capture the completed turn for background RAG indexing after
+                # lock release. Capture after auto-compact so streamed resume output is included too. Called
                 # unconditionally so a tool-only turn with no final text still has
                 # its tool results indexed; index_conversation_turn self-skips the
                 # conversation chunk when there is no response prose. Skipped
@@ -3933,12 +3961,12 @@ class NymeriaAgent:
                 # longer exists, so indexing it would resurrect it in RAG.
                 # Gated (not-rewound) refusals still index: the turn persists.
                 if not refusal_rewound:
-                    self._index_conversation_turn(
+                    index_after_turn = dict(
                         user_id=user_id,
                         thread_id=thread_id,
                         user_message=message,
                         ai_response="".join(final_response_parts),
-                        messages=result_messages,
+                        messages=list(result_messages),
                     )
 
                 _elapsed = time.monotonic() - _stream_start
@@ -4098,9 +4126,24 @@ class NymeriaAgent:
             _compaction = getattr(self, "_compaction", None)
             if _compaction is not None:
                 _compaction.note_turn_end(thread_id, user_id)
-            self._thread_locks.clear_lock_info(thread_id)
-            lock.release()
-            backend.end_release(thread_id)
+            # Register the write before unlock so a concurrent deletion sees
+            # it. The worker waits until release before touching the index.
+            index_ready = threading.Event()
+            try:
+                if index_after_turn is not None:
+                    schedule_embedding_job(
+                        self._index_conversation_turn, site="astream.turn", thread_key=thread_id,
+                        start_after=index_ready,
+                        chunk_count=len(index_after_turn["messages"]), **index_after_turn,
+                    )
+            except Exception:
+                logger.warning("Could not schedule turn indexing for %s", thread_id, exc_info=True)
+            finally:
+                self._thread_locks.clear_lock_info(thread_id)
+                try:
+                    backend.release_lock(thread_id, lock)
+                finally:
+                    index_ready.set()
             try:
                 self._clear_expired_llm_fallback_if_idle(thread_id)
             except Exception as e:

@@ -597,6 +597,12 @@ treated as normal chat. If it matches multiple threads, `/chat` emits an `error`
 event with
 `code: "mention_ambiguous"` and candidate thread IDs.
 
+**Thread deletion:** a request targeting a thread being deleted returns HTTP
+409 before streaming. If deletion starts after authorization but before the
+request acquires the turn lock, streaming chat emits `error` with
+`code: "thread_deleted"`; synchronous chat returns the retry explanation.
+Retry in a new thread. Rejected requests do not run a model or turn-end hooks.
+
 **Capacity shedding (HTTP 429):** the API enforces an optional global ceiling
 on concurrent interactive turns (`MAX_CONCURRENT_INTERACTIVE`, default `0` =
 unlimited, feature off). When the ceiling is saturated, a request that would
@@ -1214,7 +1220,10 @@ Authorization: Bearer <token>
 
 Deletes checkpoint history for the thread and removes its metadata entry while
 preserving thread config, notepad content, and other thread settings. Use
-`DELETE /threads/{thread_id}` for full cascade deletion.
+`DELETE /threads/{thread_id}` for full cascade deletion. The clear holds the
+thread lock through its off-loop memory flush and checkpoint deletion, so a
+new prompt waits to run afterward. If the current holder does not release the
+lock within ten seconds, clear returns HTTP 409 without deleting history.
 
 **Response:**
 ```json
@@ -4084,7 +4093,16 @@ Manage RAG (Retrieval Augmented Generation) settings and indexes per user.
 
 `rag_enabled` defaults to `true` as of 2026-04. Existing profiles created before that are migrated once on load (watermarked by `opt_in.rag_migrated`). To disable, set `rag_enabled=false` via this API or the frontend settings UI  -  the watermark prevents re-flipping.
 
-Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and thread chunks are removed as part of the full `DELETE /threads/{id}` cascade. Saved profile memories are also synced into the memory chunk index when created or updated through the REST API or agent tools, and removed from the index when forgotten. See `architecture.md` → "RAG (Semantic Conversation Recall)".
+Streaming turns index conversations and tool results in the background after
+releasing the thread lock. Compaction and history clearing flush their captured
+history before removing it. A dedicated worker runs these jobs off the event
+loop; results become searchable after indexing finishes. Full thread deletion
+fences pending writes before removing that thread's chunks, and clearing the
+RAG index runs behind already-submitted jobs so those writes cannot restore
+pre-clear content afterward. Saved profile memories are also indexed when
+created or updated and removed when forgotten. Once a REST memory change is
+committed, its index update completes even if that request disconnects. See
+`architecture.md` → "RAG (Semantic Conversation Recall)".
 
 ### Get RAG Settings
 

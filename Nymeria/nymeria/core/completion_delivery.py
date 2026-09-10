@@ -473,8 +473,7 @@ def hold_thread(
         yield True
     finally:
         locks.clear_lock_info(thread_id)
-        lock.release()
-        backend.end_release(thread_id)
+        backend.release_lock(thread_id, lock)
 
 
 def deliver_without_turn(

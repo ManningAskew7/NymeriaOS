@@ -16,12 +16,48 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from contextlib import contextmanager
+from collections.abc import Iterator
 from typing import Any, Dict, Optional
 
 # Poll granularity for the async wait helpers below. The waits they serve are
 # short by construction (a holder releasing at a sub-turn boundary), so a
 # coarse interval costs little latency while keeping the loop free.
 _ASYNC_WAIT_POLL_INTERVAL = 0.05
+
+# Deletion invalidates requests authorized against the old thread, even if
+# they do not reach lock admission until its owner row has been removed.
+_EPOCH_LOCK = threading.RLock()
+_THREAD_EPOCHS: Dict[str, int] = {}
+_DELETING: set[str] = set()
+THREAD_DELETED_MESSAGE = "This thread was deleted or is being deleted. Retry in a new thread."
+
+
+def get_thread_epoch(thread_id: str) -> int:
+    with _EPOCH_LOCK:
+        return -1 if thread_id in _DELETING else _THREAD_EPOCHS.get(thread_id, 0)
+
+
+@contextmanager
+def thread_admission_guard(thread_id: str) -> Iterator[int]:
+    """Keep the epoch snapshot and ownership claim atomic against deletion."""
+    with _EPOCH_LOCK:
+        yield get_thread_epoch(thread_id)
+
+
+def thread_epoch_is_current(thread_id: str, epoch: int) -> bool:
+    return epoch >= 0 and epoch == get_thread_epoch(thread_id)
+
+
+def begin_thread_deletion(thread_id: str) -> None:
+    with _EPOCH_LOCK:
+        _THREAD_EPOCHS[thread_id] = _THREAD_EPOCHS.get(thread_id, 0) + 1
+        _DELETING.add(thread_id)
+
+
+def end_thread_deletion(thread_id: str) -> None:
+    with _EPOCH_LOCK:
+        _DELETING.discard(thread_id)
 
 
 async def async_lock_acquire(

@@ -9,6 +9,88 @@ from types import SimpleNamespace
 from nymeria.core.memory_index import EMBEDDING_DIMENSIONS, MemoryIndex
 
 
+def test_turn_tool_results_embed_as_one_batch_and_preserve_metadata(tmp_path, monkeypatch):
+    from nymeria.core.agent_prompt import index_tool_results
+
+    index = MemoryIndex(tmp_path / "batch.db", embedding_provider="none")
+    batches = []
+
+    def embed(texts, input_type):
+        batches.append(list(texts))
+        return [None] * len(texts)
+
+    monkeypatch.setattr(index, "_embed_batch", embed)
+    host = SimpleNamespace(
+        settings=SimpleNamespace(rag_ingest_dedup_enabled=False),
+        _get_memory_index=lambda user_id: index,
+    )
+    try:
+        index_tool_results(host, "u1", "t1", [
+            {"name": "bash_execute", "args": {"command": "pwd"}, "result": "project directory"},
+            {"name": "file_read", "args": {"path": "notes"}, "result": "meeting notes"},
+            {"name": "rag_search", "args": {}, "result": "do not reindex retrieval"},
+            {"name": "file_read", "result": "  "},
+        ])
+        assert len(batches) == 1
+        assert len(batches[0]) == 2
+        rows = index._get_connection().execute(
+            "SELECT content, metadata, chunk_type, user_id, thread_id FROM chunks ORDER BY rowid"
+        ).fetchall()
+        import json
+
+        assert [(row["chunk_type"], row["user_id"], row["thread_id"]) for row in rows] == [
+            ("tool", "u1", "t1"), ("tool", "u1", "t1"),
+        ]
+        assert rows[0]["content"].startswith("project directory\n\nTools used:\n- bash_execute(")
+        assert rows[1]["content"].startswith("meeting notes\n\nTools used:\n- file_read(")
+        assert json.loads(rows[0]["metadata"])["tool_args"] == {"command": "pwd"}
+        assert json.loads(rows[1]["metadata"])["role"] == "tool_result"
+    finally:
+        index.close()
+
+
+def test_add_chunks_aligns_split_vectors_and_applies_within_batch_dedup(tmp_path, monkeypatch):
+    import json
+    import struct
+
+    index = MemoryIndex(tmp_path / "batch-vectors.db", embedding_provider="none", embedding_dimensions=4)
+    vectors = {"alpha": [1., 0., 0., 0.], "beta": [0., 1., 0., 0.],
+               "alpha paraphrase": [1., 0., 0., 0.], "gamma": [0., 0., 1., 0.]}
+    batches = []
+
+    def embed(texts, input_type):
+        batches.append(list(texts))
+        return [vectors[text] for text in texts]
+
+    monkeypatch.setattr(index, "_chunk_text", lambda content: content.split("|"))
+    monkeypatch.setattr(index, "_embed_batch", embed)
+    try:
+        ids = index.add_chunks([
+            ("alpha|beta", {"name": "split"}),
+            ("alpha paraphrase", {"name": "near duplicate"}),
+            ("gamma", {"name": "distinct"}),
+            ("gamma", {"name": "exact duplicate"}),
+            ("  ", {}),
+        ], "tool", "u1", "t1", dedup_near=True)
+        assert len(batches) == 1
+        assert len(ids) == 3
+        rows = index._get_connection().execute(
+            "SELECT c.content, c.metadata, v.embedding FROM chunks c JOIN vec_chunks v ON v.chunk_id=c.id ORDER BY c.rowid"
+        ).fetchall()
+        assert [(row["content"], list(struct.unpack("4f", row["embedding"]))) for row in rows] == [
+            ("alpha", vectors["alpha"]), ("beta", vectors["beta"]), ("gamma", vectors["gamma"]),
+        ]
+        assert [json.loads(row["metadata"])["name"] for row in rows] == ["split", "split", "distinct"]
+        assert [json.loads(row["metadata"])["chunk_index"] for row in rows] == [0, 1, 0]
+        # Dedup remains scoped to the owner, while tool results dedup across
+        # that owner's threads, exactly like the single-item ingest path.
+        assert index.add_chunks([("gamma", {})], "tool", "u1", "t2") == []
+        assert len(index.add_chunks([("gamma", {})], "tool", "u2", "t2", dedup_near=True)) == 1
+        assert index.add_chunks([], "tool", "u1") == []
+    finally:
+        index.close()
+
+
 def test_delete_memory_key_removes_only_matching_memory_chunks():
     with TemporaryDirectory() as tmpdir:
         index = MemoryIndex(Path(tmpdir) / "memory.db", embedding_provider="none")

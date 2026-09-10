@@ -53,6 +53,49 @@ def test_enqueue_and_drain_preserve_fifo_order():
     assert backend.peek("t1") is False
 
 
+def test_lock_handoff_cannot_clear_the_next_holders_release_marker():
+    from concurrent.futures import ThreadPoolExecutor
+
+    import pytest
+
+    backend = InMemoryPendingPromptQueue()
+    lock = threading.Lock()
+    lock.acquire()
+    backend.begin_release("handoff")
+    unlocked = threading.Event()
+    next_acquired = threading.Event()
+
+    class HandoffLock:
+        def release(self):
+            lock.release()
+            unlocked.set()
+            assert next_acquired.wait(5)
+
+    def next_holder():
+        assert unlocked.wait(5)
+        lock.acquire()
+        try:
+            # Force the dangerous schedule without a timing assertion: if
+            # cleanup is unguarded, install the next marker before it clears.
+            if backend._lock.acquire(blocking=False):
+                backend._lock.release()
+                backend.begin_release("handoff")
+                next_acquired.set()
+            else:
+                next_acquired.set()
+                backend.begin_release("handoff")
+        finally:
+            lock.release()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        next_turn = pool.submit(next_holder)
+        backend.release_lock("handoff", HandoffLock())
+        next_turn.result(timeout=5)
+    with pytest.raises(PendingPromptQueueClosingError):
+        backend.enqueue("handoff", _make_prompt("must wait for the model-free holder"))
+    assert backend.size("handoff") == 0
+
+
 def test_peek_and_size_per_thread():
     backend = InMemoryPendingPromptQueue()
     backend.enqueue("t1", _make_prompt("x"))

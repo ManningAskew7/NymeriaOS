@@ -220,7 +220,10 @@ def create_rag_router(
                 "message": "All RAG content types are disabled.",
             }
 
-        results = memory_index.search(
+        from ...core.embedding_jobs import run_embedding_job
+
+        results = await run_embedding_job(
+            memory_index.search, site="rag.search", chunk_count=1,
             query=q,
             user_id=user_id,
             limit=max_results,
@@ -270,22 +273,30 @@ def create_rag_router(
             )
 
         try:
-            db_path = _memory_db_path(agent, user_id)
-            memory_index = MemoryIndex(db_path)
-            try:
-                cleared = memory_index.delete_by_type(user_id, "memory")
+            from ...core.embedding_jobs import run_embedding_job
 
-                indexed_memories = 0
-                for memory in profile.memories:
-                    memory_index.add_chunk(
-                        content=f"{memory.key}: {memory.value}",
-                        metadata={"key": memory.key},
-                        chunk_type="memory",
-                        user_id=user_id,
-                    )
-                    indexed_memories += 1
-            finally:
-                memory_index.close()  # throwaway instance: release its connection
+            def rebuild():
+                db_path = _memory_db_path(agent, user_id)
+                memory_index = MemoryIndex(db_path)
+                try:
+                    cleared = memory_index.delete_by_type(user_id, "memory")
+
+                    indexed_memories = 0
+                    for memory in profile.memories:
+                        memory_index.add_chunk(
+                            content=f"{memory.key}: {memory.value}",
+                            metadata={"key": memory.key},
+                            chunk_type="memory",
+                            user_id=user_id,
+                        )
+                        indexed_memories += 1
+                finally:
+                    memory_index.close()  # throwaway instance: release its connection
+                return cleared, indexed_memories
+
+            cleared, indexed_memories = await run_embedding_job(
+                rebuild, site="rag.reindex", chunk_count=len(profile.memories),
+            )
 
             return {
                 "status": "ok",
@@ -310,25 +321,30 @@ def create_rag_router(
         agent = get_agent_fn()
 
         try:
-            db_path = _memory_db_path(agent, user_id)
+            from ...core.embedding_jobs import run_embedding_job
 
-            if not db_path.exists():
+            def clear():
+                db_path = _memory_db_path(agent, user_id)
+
+                if not db_path.exists():
+                    return {
+                        "status": "ok",
+                        "cleared_chunks": 0,
+                        "message": "No index found for this user.",
+                    }
+
+                memory_index = MemoryIndex(db_path)
+                try:
+                    cleared = memory_index.clear_index(user_id)
+                finally:
+                    memory_index.close()  # throwaway instance: release its connection
+
                 return {
                     "status": "ok",
-                    "cleared_chunks": 0,
-                    "message": "No index found for this user.",
+                    "cleared_chunks": cleared,
                 }
 
-            memory_index = MemoryIndex(db_path)
-            try:
-                cleared = memory_index.clear_index(user_id)
-            finally:
-                memory_index.close()  # throwaway instance: release its connection
-
-            return {
-                "status": "ok",
-                "cleared_chunks": cleared,
-            }
+            return await run_embedding_job(clear, site="rag.clear")
 
         except Exception as e:
             logger.error(f"Failed to clear index for user {user_id}: {e}")

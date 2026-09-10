@@ -237,3 +237,41 @@ def test_async_event_wait_times_out():
     start = time.monotonic()
     assert asyncio.run(_scenario()) is False
     assert time.monotonic() - start < 2.0
+def test_admission_claim_cannot_recreate_ownership_after_deletion(tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nymeria.core import thread_lock_manager as lifecycle
+    from nymeria.core.accounts import AccountsRepo
+
+    repo = AccountsRepo(tmp_path / "accounts.db")
+    repo.create_user("owner", "owner@example.test", "Owner")
+    thread_id = "guarded-claim"
+    probed = threading.Event()
+
+    def delete():
+        def remove():
+            lifecycle.begin_thread_deletion(thread_id)
+            try:
+                repo.delete_thread_owner(thread_id)
+            finally:
+                lifecycle.end_thread_deletion(thread_id)
+
+        # If the guard is broken, force deletion to complete in the gap
+        # between snapshot and claim. Otherwise it must wait for the claim.
+        if lifecycle._EPOCH_LOCK.acquire(blocking=False):
+            lifecycle._EPOCH_LOCK.release()
+            remove()
+            probed.set()
+        else:
+            probed.set()
+            remove()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with lifecycle.thread_admission_guard(thread_id) as epoch:
+            future = pool.submit(delete)
+            assert probed.wait(5)
+            repo.claim_thread(thread_id, "owner")
+        future.result(timeout=5)
+    assert repo.get_thread_owner(thread_id) is None
+    assert not lifecycle.thread_epoch_is_current(thread_id, epoch)

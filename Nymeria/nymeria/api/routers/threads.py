@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from ...core.accounts import AuthenticatedUser, InvalidIdentityId
-from ...core.checkpoint_cleanup import delete_thread_checkpoints
 from ...core.checkpoint_status import (
     get_graph_state_revision,
     get_latest_checkpoint_revision,
@@ -757,11 +756,19 @@ def create_threads_router(
         TODOs/schedule rows, triggers, chat bindings, bind codes, owner rows,
         activity entries, notifications, and device thread filters.
         """
-        require_thread_access_fn(user, thread_id)
+        from ...core.thread_lock_manager import THREAD_DELETED_MESSAGE, thread_admission_guard
+
+        with thread_admission_guard(thread_id) as thread_epoch:
+            if thread_epoch < 0:
+                require_thread_access_fn(user, thread_id, claim=False)
+                raise HTTPException(status_code=409, detail=THREAD_DELETED_MESSAGE)
+            require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
         settings = get_settings_fn()
         try:
-            deletion = cascade_delete_thread(agent, settings, user_id, thread_id)
+            deletion = await run_in_threadpool(
+                cascade_delete_thread, agent, settings, user_id, thread_id, _thread_epoch=thread_epoch,
+            )
         except ThreadDeletionBusy as e:
             raise HTTPException(status_code=409, detail=str(e))
         except Exception as e:
@@ -799,25 +806,22 @@ def create_threads_router(
         notepad content, and metadata. Use DELETE /threads/{id} to
         remove everything.
         """
-        require_thread_access_fn(user, thread_id)
+        from ...core.thread_lock_manager import THREAD_DELETED_MESSAGE, thread_admission_guard
+
+        with thread_admission_guard(thread_id) as thread_epoch:
+            if thread_epoch < 0:
+                require_thread_access_fn(user, thread_id, claim=False)
+                raise HTTPException(status_code=409, detail=THREAD_DELETED_MESSAGE)
+            require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
         settings = get_settings_fn()
 
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = await agent._default_async_graph.aget_state(config)
-            messages = state.values.get("messages", [])
-            if messages:
-                agent._flush_memories_before_trim(user_id, thread_id, messages)
-        except Exception as e:
-            logger.warning(f"Pre-clear RAG flush failed for {thread_id}: {e}")
-
-        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
+        from ...core.thread_deletion import clear_thread_history
 
         try:
-            delete_thread_checkpoints(settings, thread_id)
-        except Exception as e:
-            logger.warning(f"Failed to delete checkpoints for {thread_id}: {e}")
+            await clear_thread_history(agent, settings, user_id, thread_id, _thread_epoch=thread_epoch)
+        except ThreadDeletionBusy as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
         logger.info(f"Thread {thread_id} conversation cleared (config + notepad preserved)")
 

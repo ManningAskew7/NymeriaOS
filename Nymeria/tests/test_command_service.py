@@ -3133,6 +3133,9 @@ def test_clear_clears_history_and_preserves_notepad(
     import nymeria.core.agent as agent_module
 
     fake_agent = _FakeAgent()
+    from nymeria.core.thread_lock_manager import ThreadLockManager
+
+    fake_agent._thread_locks = ThreadLockManager()
     monkeypatch.setattr(agent_module, "get_current_agent", lambda: fake_agent)
 
     # Monkeypatch delete_thread_checkpoints to a no-op

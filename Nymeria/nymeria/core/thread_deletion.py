@@ -14,13 +14,63 @@ from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
 
 from .checkpoint_cleanup import delete_thread_checkpoints
+from .embedding_jobs import cancel_thread_embedding_jobs
 from .storage_paths import safe_path_segment
+from .thread_lock_manager import (
+    THREAD_DELETED_MESSAGE, begin_thread_deletion, end_thread_deletion,
+    get_thread_epoch, thread_admission_guard, thread_epoch_is_current,
+)
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
     from ..config.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+
+async def clear_thread_history(
+    agent: "NymeriaAgent", settings: "Settings", user_id: str, thread_id: str,
+    *, _thread_epoch: int | None = None,
+) -> None:
+    """Flush and clear one captured history while excluding newly admitted turns."""
+    from .checkpoint_cleanup import delete_thread_checkpoints
+    from .embedding_jobs import run_embedding_job
+    from .pending_prompt_queue import get_pending_queue
+    from .thread_lock_manager import async_lock_acquire
+
+    turn_epoch = get_thread_epoch(thread_id) if _thread_epoch is None else _thread_epoch
+    if not thread_epoch_is_current(thread_id, turn_epoch):
+        raise ThreadDeletionBusy(THREAD_DELETED_MESSAGE)
+    lock = agent._thread_locks.get_lock(thread_id)
+    if not await async_lock_acquire(lock, 10.0):
+        raise ThreadDeletionBusy("Thread is busy. Stop its turn before clearing history.")
+    backend = get_pending_queue()
+    try:
+        if not thread_epoch_is_current(thread_id, turn_epoch):
+            raise ThreadDeletionBusy(THREAD_DELETED_MESSAGE)
+        # A clear is model-free: contenders must wait to become holders rather
+        # than enqueue for absorption by a holder that will never drain them.
+        backend.begin_release(thread_id)
+        agent._thread_locks.set_lock_info(thread_id, "clearing")
+        try:
+            config = {"configurable": {"thread_id": thread_id}}
+            state = await agent._default_async_graph.aget_state(config)
+            messages = state.values.get("messages", [])
+            if messages:
+                await run_embedding_job(
+                    agent._flush_memories_before_trim, user_id, thread_id, messages,
+                    site="clear.flush", thread_key=thread_id, chunk_count=len(messages),
+                )
+        except Exception as error:
+            logger.warning("Pre-clear RAG flush failed for %s: %s", thread_id, error)
+        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
+        try:
+            delete_thread_checkpoints(settings, thread_id)
+        except Exception as error:
+            logger.warning("Failed to delete checkpoints for %s: %s", thread_id, error)
+    finally:
+        agent._thread_locks.clear_lock_info(thread_id)
+        backend.release_lock(thread_id, lock)
 
 
 class ThreadDeletionBusy(RuntimeError):
@@ -80,6 +130,7 @@ def cascade_delete_thread(
     thread_id: str,
     *,
     lock_timeout_seconds: float = 10.0,
+    _thread_epoch: int | None = None,
 ) -> ThreadDeletionResult:
     """
     Delete a thread across all thread-bound stores.
@@ -88,8 +139,15 @@ def cascade_delete_thread(
     before invoking this helper.
     """
     result = ThreadDeletionResult(thread_id=thread_id, user_id=user_id)
+    from .pending_prompt_queue import get_pending_queue
 
-    agent.abort_with_cascade(thread_id)
+    backend = get_pending_queue()
+
+    with thread_admission_guard(thread_id) as epoch:
+        turn_epoch = epoch if _thread_epoch is None else _thread_epoch
+        if not thread_epoch_is_current(thread_id, turn_epoch):
+            raise ThreadDeletionBusy(THREAD_DELETED_MESSAGE)
+        agent.abort_with_cascade(thread_id)
     lock = agent._thread_locks.get_lock(thread_id)
     acquired = lock.acquire(timeout=lock_timeout_seconds)
     if not acquired:
@@ -106,7 +164,13 @@ def cascade_delete_thread(
         )
 
     try:
+        if not thread_epoch_is_current(thread_id, turn_epoch):
+            raise ThreadDeletionBusy(THREAD_DELETED_MESSAGE)
+        begin_thread_deletion(thread_id)
+        backend.begin_release(thread_id)
+        backend.clear(thread_id, abandoned=True)
         agent._thread_locks.set_lock_info(thread_id, "deleting")
+        cancel_thread_embedding_jobs(thread_id)
 
         _delete_metadata(agent, thread_id, result)
         _delete_checkpoints(settings, thread_id, result)
@@ -123,7 +187,8 @@ def cascade_delete_thread(
     finally:
         agent._thread_locks.clear_lock_info(thread_id)
         agent._thread_locks.clear_abort(thread_id)
-        lock.release()
+        end_thread_deletion(thread_id)
+        backend.release_lock(thread_id, lock)
 
     return result
 

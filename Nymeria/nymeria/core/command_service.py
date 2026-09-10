@@ -1367,28 +1367,23 @@ class CommandBackendClient:
 
     async def clear_thread(self, thread_id: str) -> dict:
         """Clear conversation history; preserve notepad + tool config."""
-        self._require_thread_access(thread_id)
+        from .thread_lock_manager import THREAD_DELETED_MESSAGE, thread_admission_guard
+
+        with thread_admission_guard(thread_id) as thread_epoch:
+            if thread_epoch < 0:
+                self._require_thread_access(thread_id, claim=False)
+                _raise_http_status(409, THREAD_DELETED_MESSAGE)
+            self._require_thread_access(thread_id)
         agent = self.agent
         settings = self._settings()
         user_id = self.user.id
 
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = await agent._default_async_graph.aget_state(config)
-            messages = state.values.get("messages", [])
-            if messages:
-                agent._flush_memories_before_trim(user_id, thread_id, messages)
-        except Exception as e:
-            logger.warning("Pre-clear RAG flush failed for %s: %s", thread_id, e)
-
-        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
+        from .thread_deletion import ThreadDeletionBusy, clear_thread_history
 
         try:
-            from .checkpoint_cleanup import delete_thread_checkpoints
-
-            delete_thread_checkpoints(settings, thread_id)
-        except Exception as e:
-            logger.warning("Failed to delete checkpoints for %s: %s", thread_id, e)
+            await clear_thread_history(agent, settings, user_id, thread_id, _thread_epoch=thread_epoch)
+        except ThreadDeletionBusy as e:
+            _raise_http_status(409, str(e))
 
         logger.info("Thread %s conversation cleared (config + notepad preserved)", thread_id)
         return {"status": "ok", "thread_id": thread_id}
@@ -1581,12 +1576,18 @@ class CommandBackendClient:
     async def delete_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         # Mirrors DELETE /threads/{id}: full cascade delete of every resource
         # that could recreate the thread.
-        self._require_thread_access(thread_id)
+        from .thread_lock_manager import THREAD_DELETED_MESSAGE, thread_admission_guard
+
+        with thread_admission_guard(thread_id) as thread_epoch:
+            if thread_epoch < 0:
+                self._require_thread_access(thread_id, claim=False)
+                _raise_http_status(409, THREAD_DELETED_MESSAGE)
+            self._require_thread_access(thread_id)
         from .thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 
         try:
-            deletion = cascade_delete_thread(
-                self.agent, self._settings(), self.user.id, thread_id
+            deletion = await asyncio.to_thread(cascade_delete_thread,
+                self.agent, self._settings(), self.user.id, thread_id, _thread_epoch=thread_epoch,
             )
         except ThreadDeletionBusy as e:
             _raise_http_status(409, str(e))

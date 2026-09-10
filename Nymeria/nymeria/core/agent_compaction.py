@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
 from ..config.model_capabilities import estimate_image_tokens, get_context_limit
 from .checkpoint_cleanup import prune_checkpoints_before
+from .embedding_jobs import run_embedding_job, run_embedding_job_sync
 from .time_utils import utc_now
 
 if TYPE_CHECKING:
@@ -743,7 +744,10 @@ class CompactionManager:
         logger.info(f"Thread {thread_id}: Manual compact starting ({msg_count_before} messages)")
 
         try:
-            agent._flush_memories_before_trim(user_id, thread_id, messages)
+            await run_embedding_job(
+                agent._flush_memories_before_trim, user_id, thread_id, messages,
+                site="compaction.flush", thread_key=thread_id, chunk_count=len(messages),
+            )
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
@@ -882,7 +886,10 @@ class CompactionManager:
         logger.info(f"Thread {thread_id}: Auto-compact starting ({msg_count_before} messages)")
 
         try:
-            agent._flush_memories_before_trim(user_id, thread_id, messages)
+            await run_embedding_job(
+                agent._flush_memories_before_trim, user_id, thread_id, messages,
+                site="compaction.flush", thread_key=thread_id, chunk_count=len(messages),
+            )
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
@@ -958,7 +965,10 @@ class CompactionManager:
         logger.info(f"Thread {thread_id}: Sync auto-compact starting ({msg_count} messages)")
 
         try:
-            agent._flush_memories_before_trim(user_id, thread_id, messages)
+            run_embedding_job_sync(
+                agent._flush_memories_before_trim, user_id, thread_id, messages,
+                site="compaction.flush.sync", thread_key=thread_id, chunk_count=len(messages),
+            )
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
@@ -1270,7 +1280,10 @@ class CompactionManager:
                 thread_id,
                 msg_count_before,
             )
-            self._flush_recovery_messages(user_id, thread_id, messages)
+            await run_embedding_job(
+                self._flush_recovery_messages, user_id, thread_id, messages,
+                site="overflow.flush", thread_key=thread_id, chunk_count=len(messages),
+            )
 
             rewound = await self._rewind_to_older_checkpoint(
                 graph,
@@ -1450,7 +1463,10 @@ class CompactionManager:
     ) -> None:
         """Flush the current oversized state to RAG before any rewind/trim."""
         try:
-            self._agent._flush_memories_before_trim(user_id, thread_id, messages)
+            run_embedding_job_sync(
+                self._agent._flush_memories_before_trim, user_id, thread_id, messages,
+                site="overflow.flush.sync", thread_key=thread_id, chunk_count=len(messages),
+            )
         except Exception as e:
             logger.warning(
                 "Thread %s: Overflow recovery RAG flush failed: %s",

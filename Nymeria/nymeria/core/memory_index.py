@@ -939,11 +939,62 @@ class MemoryIndex:
         """
         if not content or not content.strip():
             return []
+        return self._add_prepared_chunks(
+            self._chunk_text(content), metadata, chunk_type, user_id, thread_id,
+            event_time, context, dedup_near, dedup_threshold,
+        )
 
+    def add_chunks(
+        self,
+        chunks: List[tuple[str, Dict[str, Any]]],
+        chunk_type: str,
+        user_id: str,
+        thread_id: Optional[str] = None,
+        *,
+        event_time: Optional[datetime] = None,
+        context: Optional[str] = None,
+        dedup_near: bool = False,
+        dedup_threshold: float = 0.97,
+    ) -> List[str]:
+        """Embed an ingest batch once, retaining each item's metadata and dedup.
+
+        Split before embedding so long results and short results share one
+        provider batch. Inserts still apply the existing hash/semantic guards,
+        including duplicates within this batch, and reuse the computed vectors.
+        """
+        prepared = [(self._chunk_text(content), metadata)
+                    for content, metadata in chunks if content and content.strip()]
+        inputs = [(f"{context}\n\n{text}" if context else text)
+                  for texts, _ in prepared for text in texts]
+        if not inputs:
+            return []
+        embeddings = self._embed_texts(inputs)
+        offset = 0
+        chunk_ids: List[str] = []
+        event_time = event_time or utc_now()
+        for texts, metadata in prepared:
+            chunk_ids.extend(self._add_prepared_chunks(
+                texts, metadata, chunk_type, user_id, thread_id, event_time,
+                context, dedup_near, dedup_threshold,
+                embeddings=embeddings[offset:offset + len(texts)],
+            ))
+            offset += len(texts)
+        return chunk_ids
+
+    def _add_prepared_chunks(
+        self,
+        text_chunks: List[str],
+        metadata: Dict[str, Any],
+        chunk_type: str,
+        user_id: str,
+        thread_id: Optional[str],
+        event_time: Optional[datetime],
+        context: Optional[str],
+        dedup_near: bool,
+        dedup_threshold: float,
+        embeddings: Optional[List[Optional[List[float]]]] = None,
+    ) -> List[str]:
         event_iso = ensure_aware_utc(event_time or utc_now()).isoformat()
-
-        # Split into chunks if necessary
-        text_chunks = self._chunk_text(content)
         chunk_ids = []
 
         with self._lock:
@@ -999,7 +1050,8 @@ class MemoryIndex:
                 if text_chunks and dedup_near:
                     embed0 = (f"{context}\n\n{text_chunks[0]}"
                               if context else text_chunks[0])
-                    first_embedding = self.embed_text(embed0)
+                    first_embedding = (embeddings[0] if embeddings is not None
+                                       else self.embed_text(embed0))
                     if first_embedding and self._has_near_dup_chunk(
                             cursor, user_id, chunk_type, first_embedding,
                             dedup_threshold):
@@ -1019,18 +1071,18 @@ class MemoryIndex:
                 embed_inputs = [
                     (f"{context}\n\n{c}" if context else c) for c in text_chunks
                 ]
-                embeddings: List[Optional[List[float]]] = [None] * len(text_chunks)
-                if text_chunks:
-                    embeddings[0] = (
-                        first_embedding if first_embedding is not None
-                        else self.embed_text(embed_inputs[0])
-                    )
-                    if len(embed_inputs) > 1:
-                        for offset, vec in enumerate(
-                            self._embed_texts(embed_inputs[1:]), start=1
-                        ):
-                            embeddings[offset] = vec
-
+                if embeddings is None:
+                    embeddings = [None] * len(text_chunks)
+                    if text_chunks:
+                        embeddings[0] = (
+                            first_embedding if first_embedding is not None
+                            else self.embed_text(embed_inputs[0])
+                        )
+                        if len(embed_inputs) > 1:
+                            for offset, vec in enumerate(
+                                self._embed_texts(embed_inputs[1:]), start=1
+                            ):
+                                embeddings[offset] = vec
                 for i, chunk_content in enumerate(text_chunks):
                     # Generate unique ID
                     chunk_id = str(uuid.uuid4())

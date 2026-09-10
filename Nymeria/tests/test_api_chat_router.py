@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from nymeria.core.accounts import AccountsRepo
+from nymeria.core.thread_lock_manager import get_thread_epoch
 
 
 class _FakeThreadMeta:
@@ -168,6 +169,24 @@ def _sse_events(body: str) -> list[dict[str, Any]]:
     ]
 
 
+def test_chat_rejects_deleting_thread_without_claiming_it(tmp_path, api_client_builder):
+    from nymeria.core.thread_lock_manager import begin_thread_deletion, end_thread_deletion
+
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    thread_id = "being-deleted"
+    begin_thread_deletion(thread_id)
+    try:
+        for endpoint in ("/chat", "/chat/sync"):
+            response = client.post(endpoint, headers=api_client_builder.auth(token), json={
+                "thread_id": thread_id, "message": "late prompt",
+            })
+            assert response.status_code == 409
+            assert "Retry in a new thread" in response.json()["detail"]
+            assert agent.accounts_repo.get_thread_owner(thread_id) is None
+    finally:
+        end_thread_deletion(thread_id)
+
+
 def test_chat_sync_uses_authenticated_user_not_body_user_id(
     tmp_path: Path,
     api_client_builder,
@@ -207,6 +226,7 @@ def test_chat_sync_uses_authenticated_user_not_body_user_id(
             "source_id": None,
             "source_label": "alice",
             "_resume_halted_turn": False,
+            "_thread_epoch": get_thread_epoch("thread-sync"),
         }
     ]
     assert agent.accounts_repo.get_thread_owner("thread-sync") == "alice"
@@ -405,6 +425,7 @@ def test_chat_stream_preserves_sse_shape_and_attachment_conversion(
             "source_label": "alice",
             "_on_turn_started": True,
             "_resume_halted_turn": False,
+            "_thread_epoch": get_thread_epoch("thread-stream"),
             "_turn_user_message_id": True,
         }
     ]
@@ -541,6 +562,7 @@ def test_quick_stream_creates_temporary_thread_and_streams_inline(
             "source_label": "alice",
             "_on_turn_started": True,
             "_resume_halted_turn": False,
+            "_thread_epoch": get_thread_epoch(quick_id),
             "_turn_user_message_id": True,
         }
     ]
@@ -630,6 +652,7 @@ def test_quick_sync_creates_thread_and_appends_footer(
             "source_id": None,
             "source_label": "alice",
             "_resume_halted_turn": False,
+            "_thread_epoch": get_thread_epoch(quick_id),
         }
     ]
     meta = agent.thread_metadata_manager.get_thread("alice", quick_id)
@@ -1599,3 +1622,23 @@ def test_chat_grandfathered_non_canonical_thread_still_runs(
     assert response.status_code == 200
     assert response.json()["thread_id"] == "legacy.thread"
     assert [call["thread_id"] for call in agent.chat_calls] == ["legacy.thread"]
+
+
+def test_deleted_turn_cannot_recreate_metadata_by_auto_title(tmp_path, api_client_builder):
+    from nymeria.core.thread_lock_manager import begin_thread_deletion, end_thread_deletion
+
+    class DeletedAgent(FakeChatAgent):
+        async def astream(self, message, **kwargs):
+            thread_id = kwargs["thread_id"]
+            begin_thread_deletion(thread_id)
+            end_thread_deletion(thread_id)
+            yield {"type": "error", "code": "thread_deleted", "content": "Retry in a new thread."}
+
+    settings = api_client_builder.settings(tmp_path)
+    agent = DeletedAgent(tmp_path)
+    client, token = api_client_builder.authenticated_client(agent, settings, user_id="alice")
+    response = client.post("/chat", headers=api_client_builder.auth(token),
+                           json={"thread_id": "deleted-title", "message": "Rejected prompt"})
+    assert '"code": "thread_deleted"' in response.text
+    assert agent.thread_metadata_manager.auto_title_calls == []
+    assert '"title": "Auto Title"' not in response.text
