@@ -1,0 +1,1 @@
+async function e(n,r={},o){return window.__TAURI_INTERNALS__.invoke(n,r,o)}async function p(n,r){await e("plugin:opener|open_url",{url:n,with:r})}async function t(n,r){await e("plugin:opener|open_path",{path:n,with:r})}async function i(n){return e("plugin:opener|reveal_item_in_dir",{paths:typeof n=="string"?[n]:n})}export{t as openPath,p as openUrl,i as revealItemInDir};
