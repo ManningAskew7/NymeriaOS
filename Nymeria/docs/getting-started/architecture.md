@@ -104,7 +104,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
 | `thread_deletion.py` | Cascade deletion for a thread  -  removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
 | `thread_agent_executor.py` | Delegates tasks to callable threads through `stream_and_collect()` over the sync `iter_agent_astream()` bridge. Publishes live SSE events. |
-| `stream_bridge.py` | Lets synchronous autonomous/callable workers consume `NymeriaAgent.astream()` through one process-local asyncio loop, while provider HTTP pools and async graph caches remain local to whichever event loop owns the invocation. |
+| `turn_runner.py`, `stream_bridge.py` | The runner owns HTTP and local worker turns. The bridge adapts synchronous workers to it on one process-local loop, preserving caller-thread callbacks; provider pools and graph caches remain loop-local. |
 | `trigger_manager.py` | Event-driven trigger coordination, fires agent prompts or direct actions |
 | `activity_log.py` | Per-thread activity feed with time-based retention |
 | `prompts.py` | System prompt templates, mode-specific rules, time context generation |
@@ -578,7 +578,7 @@ The agent has one streaming implementation: `NymeriaAgent.astream()`.
 - Captures complete tool call information via `on_tool_start` events
 - Returns tool calls with full arguments
 - Used by FastAPI for SSE responses to desktop UI
-- Also used by the CLI, scheduled TODOs, triggers, callable-thread execution, and spawned-thread dispatch through `core/stream_bridge.py`; autonomous callers share `stream_and_collect()` for response collection, error propagation, and iteration-limit bookkeeping while still publishing caller-specific events. Sync callers share a process-local bridge event loop so concurrent callable threads do not create short-lived event loops. Async graph caches and provider SDK HTTP pools are keyed by their owning loop, so FastAPI-loop chat and bridge-loop callable calls do not share loop-bound transports.
+- Scheduled TODOs, triggers, callable-thread execution, and spawned-thread dispatch use `core/stream_bridge.py`; local `stream_and_collect()` callers run through the same `core/turn_runner.py` as HTTP turns, retaining response collection, error propagation, iteration-limit bookkeeping and caller-specific publishing. Each chunk is buffered before the initiating worker receives it, and the runner waits for that worker callback before advancing the source. The CLI and remote worker executors use the API runner through HTTP. Sync callers share a process-local bridge event loop so concurrent callable threads do not create short-lived event loops. Async graph caches and provider SDK HTTP pools are keyed by their owning loop, so FastAPI-loop chat and bridge-loop callable calls do not share loop-bound transports.
 
 **Why these stream modes?**
 

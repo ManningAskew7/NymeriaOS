@@ -808,7 +808,8 @@ def test_iter_agent_astream_restores_the_callers_run_context_when_closed_early(p
     assert _current_run_context() == parent_run_context
 
 
-def test_a_nested_turn_driven_through_the_bridge_never_reports_into_the_parents_stream():
+@pytest.mark.parametrize("collect", [False, True])
+def test_a_nested_turn_driven_through_the_bridge_never_reports_into_the_parents_stream(collect):
     """LLM-free reproduction of the leak: a parent runnable (the callee's tool
     call) hands a copy of its context to a worker that drives a child runnable
     through the bridge (the caller's wake-up turn). Without the seam LangChain
@@ -827,7 +828,11 @@ def test_a_nested_turn_driven_through_the_bridge_never_reports_into_the_parents_
 
         def worker():
             try:
-                child_chunks.extend(iter_agent_astream(_ChildAgent(), message="wake"))
+                if collect:
+                    stream_and_collect(_ChildAgent(), astream_kwargs={"message": "wake"},
+                                       on_chunk=lambda chunk, _: child_chunks.append(chunk))
+                else:
+                    child_chunks.extend(iter_agent_astream(_ChildAgent(), message="wake"))
             finally:
                 finished.set()
 
@@ -844,3 +849,281 @@ def test_a_nested_turn_driven_through_the_bridge_never_reports_into_the_parents_
 
     assert [chunk["content"] for chunk in child_chunks] == ["42"]
     assert {event["name"] for event in events} == {"callee-tool-call"}
+
+
+def test_runner_waits_for_worker_callback_without_blocking_bridge_loop():
+    from nymeria.core.stream_bridge import _get_bridge_loop
+    from nymeria.core.turn_runner import active_turn_task_count
+
+    entered, release, advanced, closed = (threading.Event() for _ in range(4))
+    callback_threads = []
+
+    class Agent:
+        async def astream(self, **kwargs):
+            kwargs['_on_turn_started']()
+            try:
+                yield {'type': 'response', 'content': 'first'}
+                advanced.set()
+                yield {'type': 'response', 'content': 'second'}
+            finally:
+                closed.set()
+
+    def callback(chunk, collection):
+        callback_threads.append(threading.get_ident())
+        if chunk['content'] == 'first':
+            entered.set()
+            assert release.wait(5)
+
+    def consume():
+        caller = threading.get_ident()
+        result = stream_and_collect(Agent(), astream_kwargs={
+            'message': 'run', 'thread_id': 'callback-wait', 'user_id': 'owner',
+        }, on_chunk=callback)
+        return caller, result
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(consume)
+        try:
+            assert entered.wait(5)
+            assert _get_bridge_loop().result(asyncio.sleep(0, result='responsive')) == 'responsive'
+            assert not advanced.is_set()
+            assert not closed.is_set()
+            assert active_turn_task_count() == 1
+            assert [e['type'] for e in _buffered_events('callback-wait')] == ['turn_started', 'response']
+        finally:
+            release.set()
+        caller, result = future.result(timeout=5)
+    assert result.response_text() == 'firstsecond'
+    assert callback_threads == [caller, caller]
+    assert closed.is_set()
+    assert active_turn_task_count() == 0
+    assert _buffered_events('callback-wait')[-1]['type'] == 'done'
+
+
+@pytest.mark.parametrize('error_type, terminal', [
+    (ValueError, 'error'), (asyncio.CancelledError, 'aborted'), (KeyboardInterrupt, 'aborted'),
+])
+def test_worker_callback_failure_drains_source_before_return(error_type, terminal):
+    closed, advanced = threading.Event(), threading.Event()
+    failure = error_type('callback failed')
+
+    class Agent:
+        async def astream(self, **kwargs):
+            kwargs['_on_turn_started']()
+            try:
+                yield {'type': 'response', 'content': 'partial'}
+                advanced.set()
+            finally:
+                await asyncio.sleep(0.02)
+                closed.set()
+
+    def callback(chunk, collection):
+        raise failure
+
+    with pytest.raises(error_type) as raised:
+        stream_and_collect(Agent(), astream_kwargs={
+            'message': 'run', 'thread_id': 'callback-error', 'user_id': 'owner',
+        }, on_chunk=callback)
+    assert raised.value is failure
+    assert closed.is_set()
+    assert not advanced.is_set()
+    assert get_turn_stream_registry().get('callback-error').state == terminal
+    events = _buffered_events('callback-error')
+    assert [e['type'] for e in events] == ['turn_started', 'response'] + (['error'] if terminal == 'error' else [])
+    if terminal == 'error':
+        assert events[-1]['content'] == 'callback failed'
+
+
+def test_shutdown_drains_turn_while_worker_callback_is_blocked():
+    from nymeria.core.turn_runner import active_turn_task_count, shutdown_turns
+
+    entered, release, closed = (threading.Event() for _ in range(3))
+
+    class Agent:
+        async def astream(self, **kwargs):
+            kwargs['_on_turn_started']()
+            try:
+                yield {'type': 'response', 'content': 'partial'}
+                yield {'type': 'response', 'content': 'unreached'}
+            finally:
+                await asyncio.sleep(0.02)
+                closed.set()
+
+    def callback(chunk, collection):
+        entered.set()
+        assert release.wait(5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(stream_and_collect, Agent(), astream_kwargs={
+            'message': 'run', 'thread_id': 'shutdown-callback', 'user_id': 'owner',
+        }, on_chunk=callback)
+        try:
+            assert entered.wait(5)
+            asyncio.run(asyncio.wait_for(shutdown_turns(), timeout=2))
+            assert closed.is_set()
+            assert active_turn_task_count() == 0
+            assert get_turn_stream_registry().get('shutdown-callback').state == 'aborted'
+        finally:
+            release.set()
+        with pytest.raises(concurrent.futures.CancelledError):
+            future.result(timeout=5)
+    assert [e['type'] for e in _buffered_events('shutdown-callback')] == ['turn_started', 'response']
+
+
+def test_yielded_error_closes_wrapped_agent_before_raising():
+    from nymeria.core.turn_executor import LocalAgentExecutor
+
+    closed = threading.Event()
+
+    class Agent:
+        async def astream(self, **kwargs):
+            kwargs['_on_turn_started']()
+            try:
+                yield {'type': 'error', 'content': 'provider refused', 'code': 'refused'}
+            finally:
+                await asyncio.sleep(0.02)
+                closed.set()
+
+    with pytest.raises(RuntimeError, match='provider refused'):
+        stream_and_collect(LocalAgentExecutor(Agent()), astream_kwargs={
+            'message': 'run', 'thread_id': 'wrapped-error', 'user_id': 'owner',
+        })
+    assert closed.is_set()
+    assert get_turn_stream_registry().get('wrapped-error').state == 'error'
+    assert [e['type'] for e in _buffered_events('wrapped-error')] == ['turn_started', 'error']
+
+
+def test_collection_restores_parent_context_after_callback_error(parent_run_context):
+    agent = _RunContextAgent()
+    seen = []
+
+    def callback(chunk, collection):
+        seen.append(_current_run_context())
+        raise ValueError('callback failed')
+
+    with pytest.raises(ValueError, match='callback failed'):
+        stream_and_collect(agent, astream_kwargs={'message': 'run'}, on_chunk=callback)
+    assert agent.seen == [(None, None, None)]
+    assert seen == [(None, None, None)]
+    assert _current_run_context() == parent_run_context
+
+
+def test_bridge_rejects_new_turn_after_shutdown_without_stranding_reader():
+    from nymeria.core.turn_runner import shutdown_turns
+
+    agent = _HolderAgent([{'type': 'response', 'content': 'must not run'}])
+    asyncio.run(shutdown_turns())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(stream_and_collect, agent, astream_kwargs={
+            'message': 'run', 'thread_id': 'after-shutdown', 'user_id': 'owner',
+        })
+        with pytest.raises(RuntimeError, match='shutting down'):
+            future.result(timeout=5)
+    assert agent.seen_kwargs == {}
+    assert get_turn_stream_registry().get('after-shutdown') is None
+
+
+def test_bridge_stop_drains_source_before_closing_provider_pools(monkeypatch):
+    from nymeria.core import stream_bridge
+
+    bridge = stream_bridge._StreamBridgeLoop()
+    monkeypatch.setattr(stream_bridge, '_get_bridge_loop', lambda: bridge)
+    entered, release, closed = (threading.Event() for _ in range(3))
+    pool_close_observations = []
+
+    class Agent:
+        async def astream(self, **kwargs):
+            kwargs['_on_turn_started']()
+            try:
+                yield {'type': 'response', 'content': 'partial'}
+            finally:
+                await asyncio.sleep(0.02)
+                closed.set()
+
+    def callback(chunk, collection):
+        entered.set()
+        assert release.wait(5)
+
+    async def close_pools(loop):
+        pool_close_observations.append((closed.is_set(),
+            get_turn_stream_registry().get('bridge-stop').state))
+
+    monkeypatch.setattr(providers, 'close_provider_async_http_pools_for_loop', close_pools)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(stream_and_collect, Agent(), astream_kwargs={
+            'message': 'run', 'thread_id': 'bridge-stop', 'user_id': 'owner',
+        }, on_chunk=callback)
+        try:
+            assert entered.wait(5)
+            bridge.stop()
+            assert pool_close_observations == [(True, 'aborted')]
+            assert bridge.closed
+        finally:
+            release.set()
+            if not bridge.closed:
+                bridge.stop()
+        with pytest.raises(concurrent.futures.CancelledError):
+            future.result(timeout=5)
+
+
+def test_collection_preserves_default_thread_and_user_identity():
+    class Agent:
+        async def astream(self, message, thread_id='default', user_id='default', **kwargs):
+            kwargs['_on_turn_started']()
+            yield {'type': 'response', 'content': f'{thread_id}/{user_id}: {message}'}
+
+    result = stream_and_collect(Agent(), astream_kwargs={'message': 'hello'})
+    assert result.response_text() == 'default/default: hello'
+    assert _buffered_events('default')[-1]['type'] == 'done'
+
+
+@pytest.mark.parametrize('autonomous', [True, False])
+def test_bridge_turn_does_not_write_an_auto_title(tmp_path, autonomous):
+    from nymeria.core.thread_metadata import ThreadMetadataManager
+
+    agent = _HolderAgent([{'type': 'response', 'content': 'done'}])
+    agent.thread_metadata_manager = ThreadMetadataManager(tmp_path)
+    before = agent.thread_metadata_manager.upsert_thread('owner', 'no-title')
+    stream_and_collect(agent, astream_kwargs={
+        'message': 'This prompt must not become the thread title',
+        'thread_id': 'no-title', 'user_id': 'owner', '_is_self_invoke': autonomous,
+    })
+    after = agent.thread_metadata_manager.get_thread('owner', 'no-title')
+    assert (after.title, after.title_source) == (before.title, before.title_source)
+    assert 'title' not in _buffered_events('no-title')[-1]
+
+
+def test_interrupted_sink_receive_drains_source_and_preserves_failure(monkeypatch):
+    from nymeria.core.turn_runner import ThreadTurnSink, active_turn_task_count, shutdown_turns
+
+    closed = threading.Event()
+    failure = KeyboardInterrupt('worker stopped receiving')
+    original_get = ThreadTurnSink.get
+
+    def interrupted_get(sink):
+        original_get(sink)
+        raise failure
+
+    class Agent:
+        async def astream(self, **kwargs):
+            kwargs['_on_turn_started']()
+            try:
+                yield {'type': 'response', 'content': 'partial'}
+                yield {'type': 'response', 'content': 'unreached'}
+            finally:
+                await asyncio.sleep(0.02)
+                closed.set()
+
+    monkeypatch.setattr(ThreadTurnSink, 'get', interrupted_get)
+    try:
+        with pytest.raises(KeyboardInterrupt) as raised:
+            stream_and_collect(Agent(), astream_kwargs={
+                'message': 'run', 'thread_id': 'receive-interrupted', 'user_id': 'owner',
+            })
+        assert raised.value is failure
+        assert closed.is_set()
+        assert active_turn_task_count() == 0
+        assert get_turn_stream_registry().get('receive-interrupted').state == 'aborted'
+        assert [e['type'] for e in _buffered_events('receive-interrupted')] == ['turn_started', 'response']
+    finally:
+        asyncio.run(shutdown_turns())

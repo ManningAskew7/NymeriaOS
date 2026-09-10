@@ -8,6 +8,7 @@ Only stop and process shutdown govern holder execution after admission.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import queue
 import threading
@@ -93,26 +94,61 @@ class AsyncTurnSink:
             self.on_detach()
 
 
+@dataclass
+class ThreadTurnDelivery:
+    """One raw chunk; the worker settles delivery after its callback returns."""
+
+    event: dict[str, Any]
+    delivered: concurrent.futures.Future[BaseException | None] = field(
+        default_factory=concurrent.futures.Future,
+    )
+
+    def acknowledge(self, error: BaseException | None = None) -> None:
+        try:
+            self.delivered.set_result(error)
+        except concurrent.futures.InvalidStateError:
+            # Shutdown can cancel the producer while its worker is in a callback.
+            pass
+
+
 class ThreadTurnSink:
-    """Raw chunk delivery to an initiating worker thread (no asyncio reads)."""
+    """One-at-a-time raw delivery without blocking the producer's event loop."""
 
     wants_holder_chunks = True
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._queue: queue.Queue[ThreadTurnDelivery | None] = queue.Queue()
+        self._lock = threading.Lock()
         self._closed = False
+        self._pending: ThreadTurnDelivery | None = None
 
     def put(self, event: dict[str, Any]) -> None:
-        if not self._closed:
-            self._queue.put_nowait(event)
+        with self._lock:
+            if not self._closed:
+                self._pending = ThreadTurnDelivery(event)
+                self._queue.put_nowait(self._pending)
 
-    def get(self) -> dict[str, Any] | None:
+    async def wait_for_delivery(self) -> None:
+        pending = self._pending
+        if pending is None:
+            return
+        error = await asyncio.wrap_future(pending.delivered)
+        self._pending = None
+        if error is not None:
+            if isinstance(error, Exception) and not isinstance(error, concurrent.futures.CancelledError):
+                raise error
+            # Do not inject a worker's KeyboardInterrupt/SystemExit into the
+            # bridge event loop. Its caller re-raises the original after drain.
+            raise asyncio.CancelledError() from None
+
+    def get(self) -> ThreadTurnDelivery | None:
         return self._queue.get()
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._queue.put_nowait(None)
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._queue.put_nowait(None)
 
 
 @dataclass
@@ -159,6 +195,28 @@ class TurnSpec:
             self.turn_user_message_id = str(uuid.uuid4())
         if self.thread_epoch is None:
             self.thread_epoch = get_thread_epoch(self.thread_id)
+
+    @classmethod
+    def from_astream_kwargs(cls, kwargs: dict[str, Any]) -> TurnSpec:
+        """Preserve worker inputs while extracting shared holder metadata."""
+        overrides = dict(kwargs)
+        message = overrides.pop("message", "")
+        on_started = overrides.pop("_on_turn_started", None)
+        # An omitted autonomous label must retain the agent's own fallback,
+        # rather than taking the HTTP adapter's default user label.
+        overrides.setdefault("source_label", None)
+        return cls(
+            message=message, thread_id=str(kwargs.get("thread_id", "default") or ""),
+            user_id=str(kwargs.get("user_id", "default") or ""),
+            is_self_invoke=bool(kwargs.get("_is_self_invoke")),
+            trigger_override=kwargs.get("_trigger_override"),
+            source=kwargs.get("source"), source_id=kwargs.get("source_id"),
+            source_label=kwargs.get("source_label"),
+            resume_halted_turn=bool(kwargs.get("_resume_halted_turn")),
+            turn_user_message_id=kwargs.get("_turn_user_message_id"),
+            thread_epoch=kwargs.get("_thread_epoch"),
+            on_turn_started=on_started, astream_overrides=overrides, stop_on_error=True,
+        )
 
     def wire_event(self, event: dict[str, Any]) -> dict[str, Any]:
         return {**event, "thread_id": self.stream_thread_id or self.thread_id, **self.dispatch_fields}
@@ -265,6 +323,8 @@ def begin_holder_turn_tee(
 async def run_turn(agent: Any, spec: TurnSpec, sink: TurnSink | None = None,
                    slot: TurnSlot | None = None) -> TurnResult:
     """Run to completion; consumers must never cancel a holder task."""
+    stream_executor = agent
+    agent = getattr(stream_executor, "agent", None) or stream_executor
     holder = HolderTurn(agent, spec)
     result = TurnResult()
     autonomous_started = False
@@ -321,7 +381,7 @@ async def run_turn(agent: Any, spec: TurnSpec, sink: TurnSink | None = None,
             **spec.astream_overrides,
             "_on_turn_started": started, "_turn_user_message_id": spec.turn_user_message_id,
         }
-        async with aclosing(agent.astream(message, **kwargs)) as stream:
+        async with aclosing(stream_executor.astream(message=message, **kwargs)) as stream:
             async for chunk in stream:
                 kind = chunk.get("type")
                 if kind == "prompt_queued":
@@ -329,6 +389,8 @@ async def run_turn(agent: Any, spec: TurnSpec, sink: TurnSink | None = None,
                     if slot is not None:
                         slot.release()
                 emit(chunk, raw=True)
+                if isinstance(sink, ThreadTurnSink):
+                    await sink.wait_for_delivery()
                 if kind == "error":
                     saw_error = True
                 if kind == "response":
@@ -374,6 +436,8 @@ async def run_turn(agent: Any, spec: TurnSpec, sink: TurnSink | None = None,
             holder.finish_done(done)
         else:
             emit(done)
+    except concurrent.futures.CancelledError:
+        raise asyncio.CancelledError() from None
     except Exception as exc:
         result.error = exc
         logger.error("Turn failed for thread %s", spec.thread_id, exc_info=True)

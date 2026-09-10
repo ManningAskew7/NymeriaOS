@@ -72,8 +72,21 @@ class LocalAgentExecutor:
         return self._agent
 
     async def astream(self, **astream_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
-        async for chunk in self._agent.astream(**astream_kwargs):
-            yield chunk
+        stream = self._agent.astream(**astream_kwargs)
+        try:
+            iterator = stream.__aiter__()
+        except AttributeError as exc:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+            raise TypeError("agent.astream() must return an async iterator") from exc
+        try:
+            async for chunk in iterator:
+                yield chunk
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                await close()
 
     async def run_workflow(
         self,
