@@ -42,6 +42,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -414,6 +415,7 @@ class NymeriaTwitchBot(_BotBase):
         pulse_min_messages: int = 10,
         command_context_count: int = 50,
         user_id: str = "default",
+        stop_flag_path: Optional[Path] = None,
     ):
         super().__init__(
             client_id=client_id,
@@ -449,6 +451,8 @@ class NymeriaTwitchBot(_BotBase):
         # State
         self._start_time = time.time()
         self._stopped = False  # Kill switch: disables all agent prompts
+        # Marker file that makes !stop survive a process restart (None: off).
+        self._stop_flag_path = stop_flag_path
         self._pulse_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
         self._closing_down = False
@@ -472,6 +476,7 @@ class NymeriaTwitchBot(_BotBase):
         # awaiting its connect, so two concurrent subscribes for one token can
         # each open a socket and the orphan would double-deliver every event.
         self._reconcile_lock = asyncio.Lock()
+        self._restore_stop_flag()
 
         # Register commands explicitly (TwitchIO v3 doesn't auto-discover from
         # subclass methods).
@@ -591,6 +596,8 @@ class NymeriaTwitchBot(_BotBase):
         print(f"\nTwitch bot ready! Watching #{self._channel_name}")
         print(f"  Thread: {self._thread_id}")
         print(f"  Pulse: {'enabled' if self._pulse_enabled else 'disabled'}")
+        if self._stopped:
+            print(f"  STOPPED: !stop marker {self._stop_flag_path} is present; a mod must !start")
         self._start_health_heartbeat()
 
     def _spawn_background_task(self, coro) -> asyncio.Task:
@@ -627,6 +634,7 @@ class NymeriaTwitchBot(_BotBase):
                 "subscription_count": len(present_types),
                 "missing_subscriptions": missing,
                 "stopped": self._stopped,
+                "stop_flag": str(self._stop_flag_path) if self._stop_flag_path else None,
             },
         )
 
@@ -1268,6 +1276,12 @@ class NymeriaTwitchBot(_BotBase):
             if origin_message_id
             else None
         )
+        if self._stopped:
+            # !stop landed between the caller's gate and the relay (or the
+            # caller never gated); the server-side abort cannot reach a turn
+            # that has not been POSTed yet, so this is the last check.
+            logger.info("[%s] dropped: bot is stopped", label)
+            return None, None
         try:
             await consume_chat_stream_with_recovery(
                 self.api,
@@ -1284,6 +1298,9 @@ class NymeriaTwitchBot(_BotBase):
                 label,
                 stream_error,
             )
+            if self._stopped:
+                logger.info("[%s] sync fallback skipped: bot is stopped", label)
+                return None, None
             try:
                 await self.api.chat(
                     prompt,
@@ -1360,6 +1377,10 @@ class NymeriaTwitchBot(_BotBase):
                         f"@{chatter_name} question acknowledged, the bot chose "
                         "not to reply in chat this time."
                     )
+            if notice and self._stopped:
+                # !stop landed while this ask ran (and likely aborted it);
+                # a "chose not to reply" or error line would be noise.
+                notice = ""
             if notice:
                 try:
                     await ctx.send(notice)
@@ -1457,16 +1478,40 @@ class NymeriaTwitchBot(_BotBase):
         """Emergency kill switch: disables all agent prompts. Mods and broadcaster."""
         if not self._is_privileged(ctx):
             return
+        who = ctx.chatter.name if ctx.chatter else "?"
         if self._stopped:
-            await ctx.send("Bot is already stopped. Use !start to resume.")
+            # A repeat !stop is the natural reaction to "could not persist" or
+            # to a turn that slipped past the abort: redo both side effects
+            # rather than answer with a bare "already stopped".
+            await self._abort_thread_turn()
+            persisted = self._write_stop_flag(who)
+            if persisted is False:
+                await ctx.send(
+                    "Bot is already stopped, but the stop still could not be "
+                    "persisted: a restart will re-arm it. Use !start to resume."
+                )
+            else:
+                await ctx.send("Bot is already stopped. Use !start to resume.")
             return
         self._stopped = True
         if self._pulse_task and not self._pulse_task.done():
             self._pulse_task.cancel()
             self._pulse_task = None
         self._pulse_enabled = False
-        await ctx.send("Bot stopped. All responses disabled. Use !start to resume.")
-        logger.warning("Bot stopped via !stop by %s", ctx.chatter.name if ctx.chatter else "?")
+        await self._abort_thread_turn()
+        persisted = self._write_stop_flag(who)
+        if persisted is None:
+            await ctx.send("Bot stopped. All responses disabled. Use !start to resume.")
+        elif persisted:
+            await ctx.send(
+                "Bot stopped. All responses disabled, survives restarts. Use !start to resume."
+            )
+        else:
+            await ctx.send(
+                "Bot stopped. All responses disabled until !start or a restart "
+                "(could not persist the stop)."
+            )
+        logger.warning("Bot stopped via !stop by %s", who)
 
     async def _handle_start(self, ctx: Any) -> None:
         """Resume the bot after a !stop. Mods and broadcaster."""
@@ -1476,7 +1521,14 @@ class NymeriaTwitchBot(_BotBase):
             await ctx.send("Bot is already running.")
             return
         self._stopped = False
-        await ctx.send("Bot resumed. Responses re-enabled. (Pulse stays off until !pulse on.)")
+        if self._clear_stop_flag() is False:
+            await ctx.send(
+                "Bot resumed, but the stop marker could not be removed: the bot "
+                "will start stopped after a restart until it is cleared. "
+                "(Pulse stays off until !pulse on.)"
+            )
+        else:
+            await ctx.send("Bot resumed. Responses re-enabled. (Pulse stays off until !pulse on.)")
         logger.info("Bot resumed via !start by %s", ctx.chatter.name if ctx.chatter else "?")
 
     async def _handle_context(self, ctx: Any) -> None:
@@ -1512,6 +1564,79 @@ class NymeriaTwitchBot(_BotBase):
                 " | !stop/!start: Kill switch"
             )
         await ctx.send(msg)
+
+    # -----------------------------------------------------------------
+    # Kill switch persistence and abort
+    # -----------------------------------------------------------------
+
+    def _restore_stop_flag(self) -> None:
+        """Start stopped when a previous !stop left its marker on disk.
+
+        Mirrors the post-state of a live !stop (pulse off too), so !start
+        behaves the same either way: responses resume, pulse waits for
+        !pulse on. A read failure is logged and treated as "not stopped".
+        """
+        path = self._stop_flag_path
+        if path is None:
+            return
+        try:
+            # is_file, not exists: a stray directory at the path must not
+            # read as a stop nobody can !start out of (unlink would fail).
+            present = path.is_file()
+        except Exception:
+            logger.error("Could not read the !stop marker %s", path, exc_info=True)
+            return
+        if not present:
+            return
+        self._stopped = True
+        self._pulse_enabled = False
+        logger.warning(
+            "Starting STOPPED: !stop marker %s is present; a mod must !start", path
+        )
+
+    def _write_stop_flag(self, who: str) -> Optional[bool]:
+        """Persist the !stop so a restart honors it.
+
+        True when written, False when it could not be, None when persistence
+        is off (no path configured).
+        """
+        path = self._stop_flag_path
+        if path is None:
+            return None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            path.write_text(f"stopped by {who} at {stamp}\n", encoding="utf-8")
+            return True
+        except Exception:
+            logger.error("Could not write the !stop marker %s", path, exc_info=True)
+            return False
+
+    def _clear_stop_flag(self) -> Optional[bool]:
+        """Remove the marker: True removed or absent, False failed, None off."""
+        path = self._stop_flag_path
+        if path is None:
+            return None
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except Exception:
+            logger.error("Could not remove the !stop marker %s", path, exc_info=True)
+            return False
+
+    async def _abort_thread_turn(self) -> None:
+        """Abort the in-flight turn (and drain queued prompts) on the thread.
+
+        Reuses the thread stop endpoint the GUI Stop button calls. Best
+        effort: the in-memory kill switch is already set, so a failure here
+        only means the current turn finishes on its own.
+        """
+        try:
+            result = await self.api.stop(self._thread_id, self._user_id)
+            status = result.get("status") if isinstance(result, dict) else result
+            logger.info("Thread %s stop requested: %s", self._thread_id, status)
+        except Exception:
+            logger.error("Could not abort the in-flight turn on %s", self._thread_id, exc_info=True)
 
     @staticmethod
     def _is_privileged(ctx: Any) -> bool:

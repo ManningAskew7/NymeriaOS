@@ -1250,6 +1250,9 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         pulse_interval=settings.twitch_pulse_interval,
         pulse_min_messages=settings.twitch_pulse_min_messages,
         command_context_count=settings.twitch_command_context_count,
+        # !stop marker: honored on the next boot so a container restart
+        # cannot silently re-arm a bot a mod switched off.
+        stop_flag_path=settings.data_dir / "flags" / f"twitch-{settings.twitch_channel}-stopped",
     )
 
     _install_exit_handlers("\nShutdown signal received, stopping Twitch bot...")

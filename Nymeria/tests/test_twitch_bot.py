@@ -68,6 +68,8 @@ class _FakeAPI:
     def __init__(self):
         self.sync_chats = []
         self.cleared = []
+        self.stops = []
+        self.stop_fail = False
         self.chatlog_posts = []
         self.chatlog_fail = False
         self.chatlog_fail_after = None  # fail the Nth post (1-based) once
@@ -93,6 +95,12 @@ class _FakeAPI:
         self.cleared.append((thread_id, user_id))
         return {}
 
+    async def stop(self, thread_id, user_id=None):
+        if self.stop_fail:
+            raise RuntimeError("api down")
+        self.stops.append((thread_id, user_id))
+        return {"status": "stopping", "thread_id": thread_id, "restored_prompts": []}
+
     async def get_context_stats(self, thread_id, user_id=None):
         return {"total_tokens": 10, "context_limit": 100, "usage_percentage": 10, "compaction_count": 1}
 
@@ -116,6 +124,7 @@ def make_bot(**overrides):
     bot._broadcaster_id = "999"
     bot._bot_login = None
     bot._stopped = False
+    bot._stop_flag_path = None
     bot._start_time = time.time()
     bot._pulse_task = None
     bot._health_task = None
@@ -598,6 +607,232 @@ async def test_stop_and_start_are_mod_gated(monkeypatch):
     pleb = _Ctx("!stop", _Chatter())
     await bot._handle_stop(pleb)
     assert not bot._stopped and pleb.sent == []
+
+
+# ---------------------------------------------------------------------------
+# Behavior 15b: !stop persists across restarts and aborts the running turn
+# ---------------------------------------------------------------------------
+
+
+def _flag(tmp_path):
+    return tmp_path / "flags" / "twitch-silk-stopped"
+
+
+def _real_bot(flag, api=None):
+    """Construct through the real __init__ so the boot-time restore is exercised."""
+    return NymeriaTwitchBot(
+        api=api or _FakeAPI(),
+        client_id="cid",
+        client_secret="sec",
+        bot_user_id="1",
+        access_token="tok",
+        refresh_token=None,
+        channel="silk",
+        stop_flag_path=flag,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_writes_marker_naming_the_mod_and_start_removes_it(tmp_path):
+    flag = _flag(tmp_path)
+    bot = make_bot(stop_flag_path=flag)
+
+    stop_ctx = _Ctx("!stop", _Chatter(moderator=True, name="modbob"))
+    await bot._handle_stop(stop_ctx)
+    assert flag.exists()
+    assert "modbob" in flag.read_text()
+    assert "survives restarts" in stop_ctx.sent[0]
+
+    start_ctx = _Ctx("!start", _Chatter(moderator=True))
+    await bot._handle_start(start_ctx)
+    assert not flag.exists()
+    assert "Bot resumed" in start_ctx.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_marker_present_at_boot_starts_stopped(tmp_path, monkeypatch):
+    flag = _flag(tmp_path)
+    flag.parent.mkdir(parents=True)
+    flag.write_text("stopped by modbob at earlier\n")
+    calls = _capture_consume(monkeypatch)
+
+    bot = _real_bot(flag)
+    assert bot._stopped is True
+    assert bot._pulse_enabled is False
+    for i in range(12):
+        bot._buffer.append(_msg(f"m{i}"))
+    assert await bot._pulse_tick() == "stopped"
+    ask_ctx = _Ctx("!ask hi?", _Chatter(moderator=True))
+    await bot._handle_ask(ask_ctx)
+    await _drain(bot)
+    assert calls == [] and ask_ctx.sent == []
+
+    await bot._handle_start(_Ctx("!start", _Chatter(moderator=True)))
+    assert not bot._stopped and not flag.exists()
+    await bot._handle_ask(_Ctx("!ask hi again?", _Chatter(moderator=True)))
+    await _drain(bot)
+    assert len(calls) == 1
+
+
+def test_no_marker_at_boot_leaves_startup_state_alone(tmp_path):
+    bot = _real_bot(_flag(tmp_path))
+    assert bot._stopped is False
+    assert bot._pulse_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_stop_still_stops_when_marker_cannot_be_written(tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the flags dir should be")
+    bot = make_bot(stop_flag_path=blocker / "twitch-silk-stopped")
+
+    ctx = _Ctx("!stop", _Chatter(moderator=True))
+    await bot._handle_stop(ctx)
+    assert bot._stopped is True and bot._pulse_enabled is False
+    assert "could not persist" in ctx.sent[0]
+    assert "Bot stopped" in ctx.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_no_flag_path_means_no_disk_io(tmp_path, monkeypatch):
+    bot = make_bot()  # stop_flag_path=None
+    monkeypatch.chdir(tmp_path)
+    await bot._handle_stop(_Ctx("!stop", _Chatter(moderator=True)))
+    assert bot._stopped is True
+    await bot._handle_start(_Ctx("!start", _Chatter(moderator=True)))
+    assert bot._stopped is False
+    assert list(tmp_path.iterdir()) == []
+    stop_ctx = _Ctx("!stop", _Chatter(moderator=True))
+    await bot._handle_stop(stop_ctx)
+    assert stop_ctx.sent == ["Bot stopped. All responses disabled. Use !start to resume."]
+    await bot._handle_start(_Ctx("!start", _Chatter(moderator=True)))
+    bot._restore_stop_flag()
+    assert bot._stopped is False
+
+
+@pytest.mark.asyncio
+async def test_start_resumes_when_marker_was_removed_by_hand(tmp_path):
+    flag = _flag(tmp_path)
+    bot = make_bot(stop_flag_path=flag)
+    await bot._handle_stop(_Ctx("!stop", _Chatter(moderator=True)))
+    flag.unlink()
+    ctx = _Ctx("!start", _Chatter(moderator=True))
+    await bot._handle_start(ctx)
+    assert not bot._stopped and "Bot resumed" in ctx.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_non_mod_stop_writes_nothing_and_sends_no_abort(tmp_path):
+    flag = _flag(tmp_path)
+    bot = make_bot(stop_flag_path=flag)
+    await bot._handle_stop(_Ctx("!stop", _Chatter(subscriber=True)))
+    assert not bot._stopped and not flag.exists() and bot.api.stops == []
+
+
+@pytest.mark.asyncio
+async def test_stop_aborts_the_in_flight_turn_and_mutes_its_ask_notice(monkeypatch):
+    bot = make_bot()
+    release = asyncio.Event()
+
+    async def hold_open(handler):
+        await release.wait()
+        return "completed"  # no twitch_send happened: would normally post the ack
+
+    _capture_consume(monkeypatch, behavior=hold_open)
+    for i in range(3):
+        bot._buffer.append(_msg(f"m{i}"))
+    ask_ctx = _Ctx("!ask what patch is this?", _Chatter(subscriber=True))
+    await bot._handle_ask(ask_ctx)
+    await asyncio.sleep(0)  # let the turn task start and park on the event
+    assert bot._background_tasks
+
+    stop_ctx = _Ctx("!stop", _Chatter(moderator=True))
+    await bot._handle_stop(stop_ctx)
+    assert bot.api.stops == [("twitch_silk", "default")]
+    assert stop_ctx.sent and "Bot stopped" in stop_ctx.sent[0]
+
+    release.set()
+    await _drain(bot)
+    assert ask_ctx.sent == []  # no "question acknowledged" after a !stop
+
+
+@pytest.mark.asyncio
+async def test_stop_survives_abort_endpoint_failure(tmp_path):
+    bot = make_bot(stop_flag_path=_flag(tmp_path))
+    bot.api.stop_fail = True
+    ctx = _Ctx("!stop", _Chatter(broadcaster=True))
+    await bot._handle_stop(ctx)
+    assert bot._stopped is True
+    assert "Bot stopped" in ctx.sent[0]
+    assert _flag(tmp_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_repeat_stop_retries_persist_and_abort(tmp_path):
+    blocker = tmp_path / "flags"
+    blocker.write_text("a file where the flags dir should be")
+    flag = blocker / "twitch-silk-stopped"
+    bot = make_bot(stop_flag_path=flag)
+
+    await bot._handle_stop(_Ctx("!stop", _Chatter(moderator=True)))
+    assert not flag.exists() and len(bot.api.stops) == 1
+
+    again = _Ctx("!stop", _Chatter(moderator=True))
+    await bot._handle_stop(again)
+    assert "already stopped" in again.sent[0] and "restart will re-arm" in again.sent[0]
+    assert len(bot.api.stops) == 2
+
+    blocker.unlink()  # operator fixes the mount; the mod just types !stop again
+    fixed = _Ctx("!stop", _Chatter(moderator=True))
+    await bot._handle_stop(fixed)
+    assert flag.exists() and "already stopped" in fixed.sent[0]
+    assert "re-arm" not in fixed.sent[0]
+    assert len(bot.api.stops) == 3
+
+
+@pytest.mark.asyncio
+async def test_directory_at_marker_path_never_reads_as_stopped(tmp_path):
+    flag = _flag(tmp_path)
+    flag.mkdir(parents=True)
+    bot = _real_bot(flag)
+    assert bot._stopped is False and bot._pulse_enabled is True
+
+    stop_ctx = _Ctx("!stop", _Chatter(moderator=True))
+    await bot._handle_stop(stop_ctx)
+    assert bot._stopped and "could not persist" in stop_ctx.sent[0]
+
+    start_ctx = _Ctx("!start", _Chatter(moderator=True))
+    await bot._handle_start(start_ctx)
+    assert not bot._stopped and "could not be removed" in start_ctx.sent[0]
+    assert flag.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_stop_between_ask_accept_and_relay_drops_the_prompt(monkeypatch):
+    bot = make_bot()
+    calls = _capture_consume(monkeypatch)
+    for i in range(3):
+        bot._buffer.append(_msg(f"m{i}"))
+    ask_ctx = _Ctx("!ask hi?", _Chatter(subscriber=True))
+    await bot._handle_ask(ask_ctx)  # accepted: task spawned, not yet running
+    assert bot._background_tasks
+    bot._stopped = True  # !stop lands before the task gets the loop
+    await _drain(bot)
+    assert calls == [] and ask_ctx.sent == []
+
+
+@pytest.mark.asyncio
+async def test_sync_fallback_is_skipped_once_stopped(monkeypatch):
+    bot = make_bot()
+
+    async def fail_pre_turn_after_stop(handler):
+        bot._stopped = True
+        raise RuntimeError("relay down")
+
+    _capture_consume(monkeypatch, behavior=fail_pre_turn_after_stop)
+    error, handler = await bot._run_agent_turn("prompt-x", label="pulse")
+    assert (error, handler) == (None, None)
+    assert bot.api.sync_chats == []
 
 
 # ---------------------------------------------------------------------------

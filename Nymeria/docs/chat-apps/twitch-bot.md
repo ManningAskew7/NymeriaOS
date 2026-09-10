@@ -274,7 +274,7 @@ something in the batch clearly warranted a look, a search, or a note.
 | `!clear` | Mods, Broadcaster | None | Clear the thread's conversation history (via the API) |
 | `!pulse on/off/<seconds>/min <count>` | Mods, Broadcaster | None | Control pulse (enable/disable/interval/min messages) |
 | `!context` | Mods, Broadcaster | None | Context window token usage and compaction count |
-| `!stop` / `!start` | Mods, Broadcaster | None | Kill switch: no new agent prompts until !start (in-flight turns finish) |
+| `!stop` / `!start` | Mods, Broadcaster | None | Kill switch: aborts the running turn, drains queued prompts, and blocks new ones until !start. Survives bot restarts (marker file, see Reliability Notes) |
 | `!help` | Everyone | None | List commands (shows mod commands to mods) |
 
 Backend slash commands are deliberately NOT reachable from Twitch chat (a
@@ -425,6 +425,22 @@ already-seen tail), so the agent never needs to pull it.
   the live `channel.chat.message` EventSub subscription specifically (not
   just "some subscriptions"), a reachable API, and the kill switch off.
   Heartbeat details name any tracked subscription that is missing.
+- Kill switch persistence: `!stop` writes
+  `{data_dir}/flags/twitch-<channel>-stopped` (`/data/flags/...` in
+  Docker; the file names the mod and time) and `!start` removes it. A bot
+  process that boots with the marker present starts stopped with the pulse
+  off, exactly the post-`!stop` state, so `restart: unless-stopped`, a
+  redeploy, or a crash cannot silently re-arm a bot a mod switched off. The
+  container log says "Starting STOPPED" when this happens. If the marker
+  cannot be written, `!stop` still stops in memory and the chat reply says
+  the stop will not survive a restart. `!stop` also calls
+  `POST /threads/twitch_<channel>/stop` (the GUI Stop button's endpoint) so
+  an in-flight pulse or `!ask` turn is aborted rather than finishing; an
+  `!ask` aborted this way posts no outcome notice. A repeat `!stop` while
+  already stopped re-sends the abort and retries the marker write (the
+  reply says if it still could not persist); `!start` says if the marker
+  could not be removed. Operator override: delete the marker by hand and
+  restart, or type `!start` in chat.
 - Subscription watchdog: TwitchIO 3.3.x drops a subscription for good when
   its re-create after a websocket reconnect fails (logged, no retry, no
   event), which once left the bot deaf to chat for a week while ban/unban
