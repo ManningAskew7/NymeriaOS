@@ -559,10 +559,46 @@ def test_clip_requires_202_and_returns_edit_url(monkeypatch):
         {f"{HELIX}/clips": FakeResponse(202, {"data": [{"id": "c1", "edit_url": "http://e"}]})},
     )
 
+    calls = _mod_handler(
+        monkeypatch,
+        {f"{HELIX}/clips": FakeResponse(202, {"data": [{"id": "c1", "edit_url": "http://e"}]})},
+    )
+
     result = tools.twitch_clip.func(config=None)
 
     assert "https://clips.twitch.tv/c1" in result and "15 s" in result
-    assert "Edit: http://e" in result
+    assert "(60 s ending now)" in result and "http://e" in result
+    call = [c for c in calls if c["url"] == f"{HELIX}/clips"][0]
+    assert call["method"] == "POST"
+    assert call["params"] == {"broadcaster_id": "999", "duration": 60.0}  # no title key
+
+
+def test_clip_duration_is_clamped_to_helix_bounds_and_title_is_cleaned(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch)
+    ok = FakeResponse(202, {"data": [{"id": "c1", "edit_url": "http://e"}]})
+    calls = _mod_handler(monkeypatch, {f"{HELIX}/clips": ok})
+
+    tools.twitch_clip.func(title="  big   play  ", duration=90, config=None)
+    tools.twitch_clip.func(duration=2, config=None)
+    result = tools.twitch_clip.func(title="x" * 300, duration=12.34, config=None)
+
+    sent = [c["params"] for c in calls if c["url"] == f"{HELIX}/clips"]
+    assert sent[0] == {"broadcaster_id": "999", "duration": 60.0, "title": "big play"}
+    assert sent[1] == {"broadcaster_id": "999", "duration": 5.0}
+    assert sent[2]["duration"] == 12.3 and len(sent[2]["title"]) == 100
+    assert "(12.3 s ending now)" in result
+
+
+def test_clip_duration_helper_falls_back_on_garbage():
+    from nymeria.core.twitch_clips import clip_duration
+
+    assert clip_duration("abc") == 60.0
+    assert clip_duration(None, default=45) == 45.0
+    assert clip_duration(float("nan")) == 60.0
+    assert clip_duration("30") == 30.0
 
 
 def test_clip_offline_is_a_plain_message(monkeypatch):

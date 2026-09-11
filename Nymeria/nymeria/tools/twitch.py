@@ -44,6 +44,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.http_policy import policy_http_client as _http_client
+from ..core.twitch_clips import CLIP_URL_BASE, clean_clip_title, clip_duration
 from ..core.twitch_chatlog import MAX_QUERY_HOURS, get_chat_log_store, render_chatter_log
 from .credential_registry import (
     CredentialFieldGroup,
@@ -63,7 +64,7 @@ from .service_integration_base import (
 logger = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT = 30.0
-_CLIP_URL_BASE = "https://clips.twitch.tv"
+_CLIP_URL_BASE = CLIP_URL_BASE
 _HELIX_BASE_URL = "https://api.twitch.tv/helix"
 _TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 
@@ -1102,16 +1103,31 @@ def twitch_get_schedule(
 
 @tool
 def twitch_clip(
+    title: str = "",
+    duration: float = 60,
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
-    """Create a clip of roughly the last 30 seconds of the live stream and return its public URL. The stream must be live. The clip takes up to about 15 seconds to become playable, so say so if you post the link right away with twitch_send."""
+    """Clip the last `duration` seconds of the live stream, ending at the moment you call this, and return the public URL. Chat reacts 20 to 60 s or more AFTER the moment (compare the [HH:MM:SS] stamps with the pulse's now stamp), so use the full 60 s unless the reaction is fresh, and skip the clip when the reaction is older than about 80 s: it would miss the moment. Give the clip a short title from chat when you can. Twitch keeps about 85 s of stream behind the call, and the returned Edit link lets the broadcaster re-trim any 5 to 60 s span of it for 24 hours. The stream must be live. The clip takes up to about 15 seconds to become playable, so say so if you post the link right away with twitch_send.
+
+    Args:
+        title: Short clip title (optional; Twitch's default otherwise). Max 100 chars.
+        duration: Clip length in seconds, 5 to 60 (default 60, the longest Twitch allows).
+    """
     try:
+        seconds = clip_duration(duration)
+        params: dict[str, Any] = {
+            "broadcaster_id": _broadcaster_id("twitch_clip", config),
+            "duration": seconds,
+        }
+        clean_title = clean_clip_title(title)
+        if clean_title:
+            params["title"] = clean_title
         resp = _helix(
             "POST",
             "clips",
             tool_name="twitch_clip",
             config=config,
-            params={"broadcaster_id": _broadcaster_id("twitch_clip", config)},
+            params=params,
         )
         if resp.status_code == 404:
             return "[Error]: cannot clip: the stream is offline."
@@ -1122,8 +1138,9 @@ def twitch_clip(
             clip_id = data[0].get("id", "unknown")
             edit_url = data[0].get("edit_url", "")
             return (
-                f"Clip created: {_CLIP_URL_BASE}/{clip_id} (playable in about 15 s) | "
-                f"ID: {clip_id} | Edit: {edit_url}"
+                f"Clip created ({seconds:g} s ending now): {_CLIP_URL_BASE}/{clip_id} "
+                f"(playable in about 15 s) | ID: {clip_id} | "
+                f"Edit (re-trim within the ~85 s buffer, 24 h): {edit_url}"
             )
         return "Clip request accepted but no ID returned."
     except Exception as e:

@@ -225,7 +225,12 @@ overwritten by the bot):
   call is clear (allow obvious false positives, deny obvious abuse).
 - Shoutouts and clips are yours to use without being asked: shout out a
   raiding or visiting streamer once, and clip a moment chat is clearly
-  reacting to. Once per moment; never spam either.
+  reacting to. Once per moment; never spam either. Chatters can also clip
+  with !clip; a [CLIP] line in the batch means that moment is already
+  clipped, so do not clip it again. Chat reacts 20 to 60 s or more after
+  a moment: compare the line stamps with the pulse's now stamp, take the
+  full 60 s when clipping, and skip it once the reaction is older than
+  about 80 s.
 
 ## Working the pulse
 During periodic chat pulses you see the new messages since your last look.
@@ -270,6 +275,7 @@ something in the batch clearly warranted a look, a search, or a note.
 | Command | Access | Cooldown | Description |
 |---------|--------|----------|-------------|
 | `!ask <question>` (or `@<bot login> <question>`) | Subs, VIPs, Mods, Broadcaster | 30s/user, 10s/global | Ask the AI a question with unseen chat context. A leading mention of the bot (case-insensitive, optional `,`/`:`) is rewritten to `!ask` before the command framework sees it, so the same gate and cooldowns apply. A mention mid-sentence, or the auto-inserted one on a reply thread to a bot message (usually a thank-you from someone who has not noticed it is a bot), is ordinary chat; a reply that types `!ask` still runs. Always answered: the agent's twitch_send reply, an "acknowledged, chose not to reply" notice, or the generic error copy |
+| `!clip [seconds] [title]` | Subs, VIPs, Mods, Broadcaster | 60s/user, 20s/global | Clip the stream right now, no agent turn: the bot creates it through its own token (default 45 s ending at the command; a leading 1 to 3 digit number sets 5 to 60 s, the rest is the title), posts `Clip by <user> (45 s): <url>` once Twitch reports it playable (polls up to ~21 s), and leaves a `[CLIP]` line in the buffer so the agent does not clip the same moment. Offline / clips-disabled / failure each get a plain line. The access guard runs before the cooldown buckets (a non-sub cannot lock subs out) and a cooldown-blocked `!clip` gets no reply (the link is already on its way). Silent while `!stop` is active, including a link that becomes ready after the stop |
 | `!status` | Everyone | None | Uptime, buffer count, unseen count, pulse status |
 | `!clear` | Mods, Broadcaster | None | Clear the thread's conversation history (via the API) |
 | `!pulse on/off/<seconds>/min <count>` | Mods, Broadcaster | None | Control pulse (enable/disable/interval/min messages) |
@@ -287,6 +293,9 @@ interesting is happening.
 
 - **Interval**: `TWITCH_PULSE_INTERVAL` (default 300s; live via `!pulse <seconds>`)
 - **Minimum activity**: `TWITCH_PULSE_MIN_MESSAGES` (default 10; live via `!pulse min <count>`)
+- **Stamps**: every line carries `[HH:MM:SS]` (UTC) and the pulse and !ask
+  headers carry `now HH:MM:SS UTC`, so the agent can tell a 5 s old
+  reaction from a 55 s old one before it clips or replies.
 - **Behavior**: the agent receives only **unseen** messages, closed by a
   tone-free action menu (reply via `twitch_send`, moderate, research with its
   info or web tools, or no action) with no stated default, since a "usually
@@ -347,7 +356,7 @@ vault-first (provider `twitch`) with the `TWITCH_*` settings as fallback.
 | `twitch_get_banned` | Banned users with reasons (broadcaster token, `moderation:read`) |
 | `twitch_get_chatter_log` | One chatter's recent messages from the API-side chat log (see Chatter history) |
 | `twitch_get_schedule` | Upcoming stream schedule |
-| `twitch_clip` | Clip the last ~30 seconds of a live stream; returns the public `clips.twitch.tv` URL |
+| `twitch_clip` | Clip the last `duration` seconds (5 to 60, default 60) of a live stream ending at the call, optional `title`; returns the public `clips.twitch.tv` URL plus the 24 h edit link (re-trim within Twitch's ~85 s buffer). The description tells the agent to read the `[HH:MM:SS]` stamps against the pulse's `now` and skip reactions older than ~80 s |
 
 ### Broadcaster Actions (broadcaster token)
 
@@ -484,6 +493,7 @@ See the Messaging Platforms table in `docs/configuration.md` for every
 | `nymeria/triggers/twitch_bot.py` | Thin-client bot: EventSub, buffer + cursor, !commands, pulse, relay |
 | `nymeria/tools/twitch.py` | The 24 direct-Helix tools + `twitch_get_chatter_log` + the `twitch` credential spec |
 | `nymeria/core/twitch_chatlog.py` | The API-side per-chatter chat log store (bot-fed via `POST /twitch/chat-log`) |
+| `nymeria/core/twitch_clips.py` | Clip window facts and helpers shared by the tool and the bot's `!clip` (bounds, clamp, `!clip` arg parser); dependency-free on purpose |
 | `nymeria/config/settings.py` | `TWITCH_*` settings fields |
 | `run.py` | `twitch-bot` subcommand |
 | `docker-compose.yml` | `twitch-bot` service (profile: twitch) |

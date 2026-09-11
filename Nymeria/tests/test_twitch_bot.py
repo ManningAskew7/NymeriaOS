@@ -17,6 +17,7 @@ import pytest
 
 from nymeria.triggers.bot_helpers import SeenEventCache
 from nymeria.core.twitch_chatlog import CHATLOG_BATCH_MAX
+from nymeria.core.twitch_clips import parse_clip_args
 from nymeria.triggers.twitch_bot import (
     CHAT_SUBSCRIPTION_TYPE,
     CHATLOG_QUEUE_CAP,
@@ -231,6 +232,21 @@ def test_ask_prompt_marks_seen_tail_separately():
     assert "2 earlier messages, already seen" in prompt
     assert prompt.index("old1") < prompt.index("fresh")
     assert "1 new chat messages since last check" in prompt
+
+
+def test_prompts_stamp_lines_to_the_second_and_carry_a_now_clock():
+    when = datetime(2026, 9, 11, 9, 41, 7, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 11, 9, 42, 2, tzinfo=timezone.utc)
+    msg = _msg("CLIP IT")
+    msg.timestamp = when
+    pulse = compose_pulse_prompt([msg], now=now)
+    assert "[09:41:07] " in pulse
+    assert "now 09:42:02 UTC" in pulse
+    ask = compose_ask_prompt([msg], [], "bob", "q?", now=now)
+    assert "[09:41:07] " in ask and "now 09:42:02 UTC" in ask
+    # A non-UTC clock is normalised so both stamps share one zone.
+    sydney = now.astimezone(timezone(timedelta(hours=10)))
+    assert "now 09:42:02 UTC" in compose_pulse_prompt([msg], now=sydney)
 
 
 def test_pulse_prompt_has_no_seen_section_and_permits_silence():
@@ -1944,3 +1960,271 @@ async def test_reply_thread_on_a_bot_message_is_plain_chat_not_an_ask():
         "@silkgpt !ask and this one?",  # untouched: twitchio strips the mention, runs !ask
         "!ask typed on purpose",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Behavior 16: bot-side !clip (no agent turn)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_clip_args_leading_seconds_then_title():
+    assert parse_clip_args("!clip") == (45.0, "")
+    assert parse_clip_args("!clip 60 huge play") == (60.0, "huge play")
+    assert parse_clip_args("!clip 3") == (5.0, "")
+    assert parse_clip_args("!clip 999") == (60.0, "")
+    assert parse_clip_args("!clip nice   one") == (45.0, "nice one")
+    assert parse_clip_args("!clip 12.34 x") == (12.3, "x")
+    assert parse_clip_args("!clip 120 x") == (60.0, "x")  # 1 to 3 digits are seconds
+    # Reply threads: Twitch auto-inserts the mention and TwitchIO hands the
+    # command the ORIGINAL line; the prefix must not become the clip title.
+    assert parse_clip_args("@silkgpt !clip 30 nice play") == (30.0, "nice play")
+    assert parse_clip_args("@SilkGPT, !clip") == (45.0, "")
+    assert parse_clip_args("!clip shoutout @bob") == (45.0, "shoutout @bob")
+    assert parse_clip_args("!clip 2026 was wild") == (45.0, "2026 was wild")  # 4+ digits: title
+
+
+class _CreatedClip:
+    def __init__(self, clip_id="c1"):
+        self.id = clip_id
+        self.edit_url = "http://edit"
+
+
+def _clip_bot(monkeypatch, *, ready_after=1, create_error=None):
+    """A bot whose TwitchIO clip calls are stubbed; returns (bot, record)."""
+    import nymeria.triggers.twitch_bot as module
+
+    bot = make_bot()
+    record = {"creates": [], "polls": 0, "sleeps": []}
+
+    async def fake_create(*, title, duration):
+        if create_error is not None:
+            raise create_error
+        record["creates"].append({"title": title, "duration": duration})
+        return _CreatedClip()
+
+    async def fake_ready(clip_id):
+        record["polls"] += 1
+        return record["polls"] >= ready_after
+
+    async def fake_sleep(seconds):
+        record["sleeps"].append(seconds)
+
+    monkeypatch.setattr(bot, "_create_clip", fake_create)
+    monkeypatch.setattr(bot, "_clip_is_ready", fake_ready)
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+    return bot, record
+
+
+@pytest.mark.asyncio
+async def test_clip_by_sub_creates_45s_clip_and_posts_when_ready(monkeypatch):
+    bot, record = _clip_bot(monkeypatch, ready_after=2)
+    ctx = _Ctx("!clip", _Chatter(subscriber=True, name="carol"))
+    await bot._handle_clip(ctx)
+    await _drain(bot)
+    assert record["creates"] == [{"title": None, "duration": 45.0}]
+    assert record["polls"] == 2  # not fetchable on the first poll, posted on the second
+    assert ctx.sent == ["Clip by carol (45 s): https://clips.twitch.tv/c1"]
+    line = bot._buffer.get_since(0)[-1]
+    assert line.is_system and line.system_tag == "CLIP"
+    assert line.message == "carol clipped (45 s): https://clips.twitch.tv/c1"
+    rendered = compose_pulse_prompt([line])
+    assert "] [CLIP] carol clipped (45 s): https://clips.twitch.tv/c1" in rendered
+
+
+@pytest.mark.asyncio
+async def test_clip_args_set_duration_and_title(monkeypatch):
+    bot, record = _clip_bot(monkeypatch)
+    await bot._handle_clip(_Ctx("!clip 60 huge play", _Chatter(vip=True)))
+    await bot._handle_clip(_Ctx("!clip 3", _Chatter(moderator=True)))
+    await bot._handle_clip(_Ctx("!clip nice one", _Chatter(broadcaster=True)))
+    await _drain(bot)
+    assert record["creates"] == [
+        {"title": "huge play", "duration": 60.0},
+        {"title": None, "duration": 5.0},
+        {"title": "nice one", "duration": 45.0},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clip_is_gated_to_the_ask_tier(monkeypatch):
+    bot, record = _clip_bot(monkeypatch)
+    ctx = _Ctx("!clip", _Chatter())
+    await bot._handle_clip(ctx)
+    await _drain(bot)
+    assert record["creates"] == []
+    assert ctx.sent == ["!clip is available to subs, VIPs, and mods only."]
+
+
+@pytest.mark.asyncio
+async def test_clip_is_silent_while_stopped(monkeypatch):
+    bot, record = _clip_bot(monkeypatch)
+    bot._stopped = True
+    ctx = _Ctx("!clip", _Chatter(moderator=True))
+    await bot._handle_clip(ctx)
+    await _drain(bot)
+    assert record["creates"] == [] and ctx.sent == []
+
+
+@pytest.mark.asyncio
+async def test_clip_maps_twitch_errors_to_plain_chat_lines(monkeypatch):
+    class _Http(Exception):
+        def __init__(self, status):
+            super().__init__(f"http {status}")
+            self.status = status
+
+    for err, expected in (
+        (_Http(404), "Nothing to clip: the stream is offline."),
+        (_Http(403), "Clips are not allowed on this channel right now."),
+        (RuntimeError("secret upstream detail"), "Clip failed on Twitch's side, try again in a bit."),
+    ):
+        bot, record = _clip_bot(monkeypatch, create_error=err)
+        ctx = _Ctx("!clip", _Chatter(subscriber=True))
+        await bot._handle_clip(ctx)
+        await _drain(bot)
+        assert ctx.sent == [expected]
+        assert "secret" not in ctx.sent[0]
+        assert bot._buffer.get_since(0) == []
+
+
+@pytest.mark.asyncio
+async def test_clip_that_never_becomes_fetchable_reports_failure(monkeypatch):
+    import nymeria.triggers.twitch_bot as module
+
+    bot, record = _clip_bot(monkeypatch, ready_after=10_000)
+    ctx = _Ctx("!clip", _Chatter(subscriber=True, name="dave"))
+    await bot._handle_clip(ctx)
+    await _drain(bot)
+    assert record["polls"] == module.CLIP_READY_POLLS
+    assert ctx.sent == ["@dave the clip did not finish creating on Twitch's side, try again."]
+    assert bot._buffer.get_since(0) == []  # no [CLIP] line for a clip that does not exist
+
+
+@pytest.mark.asyncio
+async def test_clip_before_broadcaster_resolution_creates_nothing(monkeypatch):
+    bot, record = _clip_bot(monkeypatch)
+    bot._broadcaster_id = None
+    ctx = _Ctx("!clip", _Chatter(subscriber=True))
+    await bot._handle_clip(ctx)
+    await _drain(bot)
+    assert record["creates"] == []
+    assert ctx.sent == ["Can't clip right now: the channel is not resolved yet."]
+
+
+@pytest.mark.asyncio
+async def test_help_advertises_clip():
+    bot = make_bot()
+    ctx = _Ctx("!help", _Chatter())
+    await bot._handle_help(ctx)
+    assert "!clip [seconds] [title]" in ctx.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_clip_announce_is_muted_by_a_stop_during_the_poll(monkeypatch):
+    bot, record = _clip_bot(monkeypatch, ready_after=2)
+
+    async def ready_then_stopped(clip_id):
+        record["polls"] += 1
+        bot._stopped = True  # a mod typed !stop while Twitch was still encoding
+        return True
+
+    monkeypatch.setattr(bot, "_clip_is_ready", ready_then_stopped)
+    ctx = _Ctx("!clip", _Chatter(subscriber=True, name="carol"))
+    await bot._handle_clip(ctx)
+    await _drain(bot)
+    assert record["creates"] and ctx.sent == [] and bot._buffer.get_since(0) == []
+
+    # Same for the failure line: a stopped bot says nothing at all.
+    bot2, record2 = _clip_bot(monkeypatch, ready_after=10_000)
+    ctx2 = _Ctx("!clip", _Chatter(subscriber=True, name="dave"))
+    await bot2._handle_clip(ctx2)
+    bot2._stopped = True
+    await _drain(bot2)
+    assert ctx2.sent == []
+
+
+class _FakeCreatedUser:
+    def __init__(self, record):
+        self.record = record
+
+    async def create_clip(self, *, token_for, title, duration):
+        self.record["created"].append({"token_for": token_for, "title": title, "duration": duration})
+        return _CreatedClip("real1")
+
+
+class _AsyncClips:
+    def __init__(self, clips):
+        self._clips = list(clips)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._clips:
+            raise StopAsyncIteration
+        return self._clips.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_clip_helpers_drive_the_twitchio_client_as_documented(monkeypatch):
+    """Exercises _create_clip and _clip_is_ready against fake client objects
+    shaped like TwitchIO 3.3.2 (kw-only create_clip, async-iterable fetch)."""
+    import nymeria.triggers.twitch_bot as module
+
+    bot = make_bot()
+    bot._bot_user_id = "42"
+    record = {"created": [], "fetches": [], "sleeps": []}
+
+    def create_partialuser(user_id, user_login=None):
+        record["partial"] = user_id
+        return _FakeCreatedUser(record)
+
+    def fetch_clips(*, clip_ids, token_for):
+        record["fetches"].append((list(clip_ids), token_for))
+        other = type("C", (), {"id": "someone-elses"})()
+        found = type("C", (), {"id": "real1"})()
+        return _AsyncClips([other] if len(record["fetches"]) == 1 else [other, found])
+
+    async def fake_sleep(seconds):
+        record["sleeps"].append(seconds)
+
+    monkeypatch.setattr(bot, "create_partialuser", create_partialuser, raising=False)
+    monkeypatch.setattr(bot, "fetch_clips", fetch_clips, raising=False)
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+    ctx = _Ctx("!clip 50 gg", _Chatter(moderator=True, name="erin"))
+    await bot._handle_clip(ctx)
+    await _drain(bot)
+
+    assert record["partial"] == "999"
+    assert record["created"] == [{"token_for": "42", "title": "gg", "duration": 50.0}]
+    assert record["fetches"] == [(["real1"], "42"), (["real1"], "42")]
+    assert record["sleeps"] == [module.CLIP_READY_POLL_SECONDS] * 2
+    assert ctx.sent == ["Clip by erin (50 s): https://clips.twitch.tv/real1"]
+
+
+class _ErrCtx(_Ctx):
+    def __init__(self, text, chatter, command):
+        super().__init__(text, chatter)
+        self.command = type("Cmd", (), {"name": command})()
+
+
+@pytest.mark.asyncio
+async def test_clip_cooldown_is_silent_and_its_gate_line_is_the_ask_one():
+    from twitchio.ext import commands
+
+    bot = make_bot()
+    cooldown = commands.CommandOnCooldown(cooldown=None, remaining=12.0)
+    ctx = _ErrCtx("!clip", _Chatter(subscriber=True), "clip")
+    await bot.event_command_error(type("P", (), {"exception": cooldown, "context": ctx})())
+    assert ctx.sent == []  # the link is already on its way; no "Cooldown!" per chatter
+
+    gate = commands.GuardFailure("nope")
+    ctx = _ErrCtx("!clip", _Chatter(), "clip")
+    await bot.event_command_error(type("P", (), {"exception": gate, "context": ctx})())
+    assert ctx.sent == ["!clip is available to subs, VIPs, and mods only."]
+
+    # !ask keeps its cooldown reply.
+    ctx = _ErrCtx("!ask hi", _Chatter(subscriber=True), "ask")
+    await bot.event_command_error(type("P", (), {"exception": cooldown, "context": ctx})())
+    assert ctx.sent == ["Cooldown! Try again in 12s"]
+
