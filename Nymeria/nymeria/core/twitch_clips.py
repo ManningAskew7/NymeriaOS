@@ -52,15 +52,24 @@ def clean_clip_title(value: Any) -> str:
     return " ".join(str(value or "").split())[:CLIP_TITLE_MAX]
 
 
-def parse_clip_args(text: str, default: float = CHAT_CLIP_DEFAULT_SECONDS) -> Tuple[float, str]:
-    """``!clip [seconds] [title]`` -> ``(duration, title)``.
+def parse_clip_args(text: str, default: float = CHAT_CLIP_DEFAULT_SECONDS) -> Tuple[int, str]:
+    """``!clip [seconds] [title]`` -> ``(whole seconds, title)``.
 
     A leading number is the length in seconds (clamped to Helix bounds); the
     rest, if any, is the title. ``!clip nice one`` is a 45 s clip titled
     "nice one"; ``!clip 60`` is a 60 s clip with Twitch's default title.
+
+    Whole seconds on purpose: the bot sends this through TwitchIO, whose
+    3.3.2 ``Route.build_url`` only serialises ``str``/``int`` query values
+    and iterates anything else, so the ``float`` its own ``create_clip``
+    accepts raises ``TypeError: 'float' object is not iterable`` before the
+    request leaves (measured live 2026-09-11). Sub-second precision is
+    worthless for a typed command anyway.
     """
     body = _COMMAND_PREFIX.sub("", text, count=1)
     match = _LEADING_SECONDS.match(body)
     if match:
-        return clip_duration(match.group(1), default=default), clean_clip_title(match.group(2))
-    return clip_duration(default, default=default), clean_clip_title(body)
+        seconds, title = clip_duration(match.group(1), default=default), clean_clip_title(match.group(2))
+    else:
+        seconds, title = clip_duration(default, default=default), clean_clip_title(body)
+    return int(round(seconds)), title

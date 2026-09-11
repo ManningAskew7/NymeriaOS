@@ -1968,18 +1968,20 @@ async def test_reply_thread_on_a_bot_message_is_plain_chat_not_an_ask():
 
 
 def test_parse_clip_args_leading_seconds_then_title():
-    assert parse_clip_args("!clip") == (45.0, "")
-    assert parse_clip_args("!clip 60 huge play") == (60.0, "huge play")
-    assert parse_clip_args("!clip 3") == (5.0, "")
-    assert parse_clip_args("!clip 999") == (60.0, "")
-    assert parse_clip_args("!clip nice   one") == (45.0, "nice one")
-    assert parse_clip_args("!clip 12.34 x") == (12.3, "x")
-    assert parse_clip_args("!clip 120 x") == (60.0, "x")  # 1 to 3 digits are seconds
+    assert parse_clip_args("!clip") == (45, "")
+    assert parse_clip_args("!clip 60 huge play") == (60, "huge play")
+    assert parse_clip_args("!clip 3") == (5, "")
+    assert parse_clip_args("!clip 999") == (60, "")
+    assert parse_clip_args("!clip nice   one") == (45, "nice one")
+    assert parse_clip_args("!clip 12.6 x") == (13, "x")
+    assert parse_clip_args("!clip 120 x") == (60, "x")  # 1 to 3 digits are seconds
+    for text in ("!clip", "!clip 30", "!clip 12.6 x"):
+        assert type(parse_clip_args(text)[0]) is int  # TwitchIO cannot serialise a float
     # Reply threads: Twitch auto-inserts the mention and TwitchIO hands the
     # command the ORIGINAL line; the prefix must not become the clip title.
-    assert parse_clip_args("@silkgpt !clip 30 nice play") == (30.0, "nice play")
-    assert parse_clip_args("@SilkGPT, !clip") == (45.0, "")
-    assert parse_clip_args("!clip shoutout @bob") == (45.0, "shoutout @bob")
+    assert parse_clip_args("@silkgpt !clip 30 nice play") == (30, "nice play")
+    assert parse_clip_args("@SilkGPT, !clip") == (45, "")
+    assert parse_clip_args("!clip shoutout @bob") == (45, "shoutout @bob")
     assert parse_clip_args("!clip 2026 was wild") == (45.0, "2026 was wild")  # 4+ digits: title
 
 
@@ -2196,7 +2198,8 @@ async def test_clip_helpers_drive_the_twitchio_client_as_documented(monkeypatch)
     await _drain(bot)
 
     assert record["partial"] == "999"
-    assert record["created"] == [{"token_for": "42", "title": "gg", "duration": 50.0}]
+    assert record["created"] == [{"token_for": "42", "title": "gg", "duration": 50}]
+    assert type(record["created"][0]["duration"]) is int
     assert record["fetches"] == [(["real1"], "42"), (["real1"], "42")]
     assert record["sleeps"] == [module.CLIP_READY_POLL_SECONDS] * 2
     assert ctx.sent == ["Clip by erin (50 s): https://clips.twitch.tv/real1"]
@@ -2227,4 +2230,17 @@ async def test_clip_cooldown_is_silent_and_its_gate_line_is_the_ask_one():
     ctx = _ErrCtx("!ask hi", _Chatter(subscriber=True), "ask")
     await bot.event_command_error(type("P", (), {"exception": cooldown, "context": ctx})())
     assert ctx.sent == ["Cooldown! Try again in 12s"]
+
+
+def test_twitchio_route_serialises_the_clip_params_we_send():
+    """Pins the live failure of 2026-09-11: TwitchIO 3.3.2's Route.build_url
+    iterates a float query value, so !clip must hand it whole-second ints."""
+    from twitchio.http import Route
+
+    duration, title = parse_clip_args("!clip 45 testing manual clipping")
+    params = {"broadcaster_id": "999", "title": title, "duration": duration}
+    url = Route("POST", "clips", params=params, token_for="42").build_url()
+    assert "duration=45" in url and "broadcaster_id=999" in url
+    with pytest.raises(TypeError):  # the float shape the SDK's own signature invites
+        Route("POST", "clips", params={"broadcaster_id": "999", "duration": 45.0}, token_for="42").build_url()
 

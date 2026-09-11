@@ -1481,10 +1481,16 @@ class NymeriaTwitchBot(_BotBase):
         logger.info("!clip by %s: %s s, id %s", who, duration, clip_id)
         self._spawn_background_task(self._announce_clip(ctx, who, clip_id, duration))
 
-    async def _create_clip(self, *, title: Optional[str], duration: float) -> Any:
-        """POST /clips through TwitchIO; returns its CreatedClip (id, edit_url)."""
+    async def _create_clip(self, *, title: Optional[str], duration: int) -> Any:
+        """POST /clips through TwitchIO; returns its CreatedClip (id, edit_url).
+
+        ``duration`` MUST be an int: TwitchIO 3.3.2's URL builder iterates a
+        float query value (``parse_clip_args`` docstring).
+        """
         user = self.create_partialuser(self._broadcaster_id or "")
-        return await user.create_clip(token_for=self._bot_user_id or "", title=title, duration=duration)
+        return await user.create_clip(
+            token_for=self._bot_user_id or "", title=title, duration=int(duration)
+        )
 
     async def _clip_is_ready(self, clip_id: str) -> bool:
         """True once Get Clips returns the id (creation is asynchronous)."""
