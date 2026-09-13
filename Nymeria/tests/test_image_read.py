@@ -337,3 +337,69 @@ def test_missing_file_returns_error(tmp_path):
     )
     assert out_bytes is None
     assert error is not None
+
+
+# --------------------------------------------------------------------------- #
+# bytes input + verify_decode (the ingress gate's contract, backlog #181)
+# --------------------------------------------------------------------------- #
+
+def test_bytes_source_fast_path_matches_the_file_path():
+    data = _save_bytes(Image.new("RGB", (40, 40), "blue"), "PNG")
+    out_bytes, mime, error = prepare_image_for_native_context(
+        data, max_image_bytes=5 * 1024 * 1024, long_edge_ceiling=2000
+    )
+    assert (out_bytes, mime, error) == (None, "image/png", None)
+
+
+def test_bytes_source_is_downscaled_over_the_ceiling():
+    data = _save_bytes(Image.new("RGB", (3000, 40), "blue"), "PNG")
+    out_bytes, mime, error = prepare_image_for_native_context(
+        data, max_image_bytes=5 * 1024 * 1024, long_edge_ceiling=2000
+    )
+    assert error is None and mime == "image/png" and out_bytes is not None
+    with Image.open(io.BytesIO(out_bytes)) as fitted:
+        assert max(fitted.size) <= 2000
+
+
+def test_empty_bytes_are_not_an_image():
+    assert prepare_image_for_native_context(b"", max_image_bytes=1024) == (None, None, None)
+
+
+def test_verify_decode_catches_truncated_pixel_data_behind_a_valid_header():
+    """A header the fast path would trust over pixel data the provider rejects.
+
+    Without ``verify_decode`` the fast path returns "sound" (the brick the
+    ingress gate exists to refuse); with it the truncation is reported.
+    """
+    whole = _save_bytes(Image.new("RGB", (64, 64), "red"), "PNG")
+    truncated = whole[: len(whole) // 2]
+    assert prepare_image_for_native_context(
+        truncated, max_image_bytes=5 * 1024 * 1024, long_edge_ceiling=2000
+    ) == (None, "image/png", None)
+
+    out_bytes, mime, error = prepare_image_for_native_context(
+        truncated, max_image_bytes=5 * 1024 * 1024, long_edge_ceiling=2000,
+        verify_decode=True,
+    )
+    assert out_bytes is None and mime is None
+    assert error is not None and "corrupt" in error
+
+
+def test_verify_decode_leaves_a_sound_fast_path_image_untouched():
+    data = _save_bytes(Image.new("RGB", (40, 40), "blue"), "JPEG")
+    assert prepare_image_for_native_context(
+        data, max_image_bytes=5 * 1024 * 1024, long_edge_ceiling=2000, verify_decode=True
+    ) == (None, "image/jpeg", None)
+
+
+def test_pixel_budget_refuses_before_realizing_the_pixels(monkeypatch):
+    """A header may promise any size; nothing past the budget is ever decoded."""
+    import nymeria.tools.image_read as image_read
+
+    monkeypatch.setattr(image_read, "_MAX_DECODE_PIXELS", 50_000)
+    data = _save_bytes(Image.new("RGB", (300, 300), "red"), "PNG")  # 90k px, over the ceiling
+    out_bytes, mime, error = prepare_image_for_native_context(
+        data, max_image_bytes=5 * 1024 * 1024, long_edge_ceiling=200
+    )
+    assert out_bytes is None and mime is None
+    assert error is not None and "megapixels" in error

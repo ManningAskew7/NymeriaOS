@@ -180,11 +180,28 @@ _IMAGE_UNSUPPORTED_TEMPLATE_MODALITY_RE = re.compile(
     r"\b(?:image|images|vision|document|documents|pdf|pdfs|file|files"
     r"|modality|modalities|multimodal)\b"
 )
-_IMAGE_UNSUPPORTED_EXCLUDE_MARKERS = (
-    # Decode / format / media-type: fixable by re-encode/convert, not stripping.
+# A 400 about the IMAGE BYTES themselves (mislabeled, empty, corrupt, over the
+# pixel ceiling or the byte cap). Every wording here was measured on a real
+# wedged thread (backlog #181) or is a vendor's documented phrasing. Such a
+# request fails on any provider that validates images, so a cross-provider
+# swap cannot fix it and only spends a fallback hold per replay (87 swaps on
+# one thread, measured): ``is_image_payload_error`` makes it TERMINAL. The
+# ingress gate (``core/agent_streaming_input``) and the replay safety net
+# (``core/generated_image_context``) fit or drop such bytes before they are
+# sent, so seeing one now means a provider ceiling tighter than the configured
+# one, which the user should read once, verbatim.
+_IMAGE_PAYLOAD_MARKERS = (
     "could not process image",
     "could not process pdf",
     "image does not match the provided media type",
+    "the image appears to be a",  # Anthropic's actual mismatch wording (measured)
+    "malformed url parameter",  # Anthropic, an empty base64 image payload (measured)
+    "image dimensions exceed",  # Anthropic, over the pixel ceiling (measured)
+    "image too large",
+)
+_IMAGE_UNSUPPORTED_EXCLUDE_MARKERS = _IMAGE_PAYLOAD_MARKERS + (
+    # Format / media-type: a payload the provider rejects, not a model that
+    # cannot see. Stripping would not fix it and nothing here re-encodes.
     "input should be 'image/jpeg'",
     "acceptable media types are",
     "unsupported media type",
@@ -200,8 +217,7 @@ _IMAGE_UNSUPPORTED_EXCLUDE_MARKERS = (
     "cannot fetch content from the provided url",
     "invalid or unsupported file uri",
     "invalid_image_url",
-    # Size / count / page limits.
-    "image too large",
+    # Count / page limits.
     "pdf pages may be provided",
     "image(s) is allowed per prompt",
     "too many images",
@@ -377,6 +393,20 @@ def is_context_overflow_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _CONTEXT_OVERFLOW_ERROR_MARKERS)
 
 
+def is_image_payload_error(exc: BaseException) -> bool:
+    """True for a 400/422 that rejects the image BYTES (not the modality).
+
+    Terminal by policy: neither strip-and-retry (the model may well see) nor a
+    model switch (the payload is what is wrong) helps, so the turn fails once
+    with the provider's own message.
+    """
+    status = _extract_status_code(exc)
+    if status is not None and status not in (400, 422):
+        return False
+    text = _llm_exception_text(exc)
+    return bool(text) and any(marker in text for marker in _IMAGE_PAYLOAD_MARKERS)
+
+
 def is_image_unsupported_error(exc: BaseException) -> bool:
     """Return True when a provider rejected the request because the model cannot
     accept image (or PDF/file) input, so the attachment can be stripped and the
@@ -417,13 +447,18 @@ def _is_model_switchable_llm_error(exc: BaseException) -> bool:
     Status-driven (never marker-driven) so it cannot swallow the neighbours
     that own their own recovery paths: context overflow (agent-level
     compaction rescue) and image-unsupported (the strip-and-retry) are
-    excluded explicitly, both being 400-shaped. See
+    excluded explicitly, both being 400-shaped, as is an image-payload
+    rejection, which no other provider would accept either. See
     ``_MODEL_SWITCH_STATUS_CODES`` for the policy rationale.
     """
     status = _extract_status_code(exc)
     if status not in _MODEL_SWITCH_STATUS_CODES:
         return False
-    if is_context_overflow_error(exc) or is_image_unsupported_error(exc):
+    if (
+        is_context_overflow_error(exc)
+        or is_image_unsupported_error(exc)
+        or is_image_payload_error(exc)
+    ):
         return False
     return True
 

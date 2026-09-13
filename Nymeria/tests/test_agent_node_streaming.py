@@ -707,6 +707,51 @@ def test_is_image_unsupported_error_excludes_fixable_and_wrong_status():
         ), status
 
 
+def test_measured_image_payload_400s_never_trigger_a_strip_retry():
+    """The three wordings measured on wedged threads (backlog #181).
+
+    Each is a PAYLOAD rejection (the model may well see): pinned as excluded
+    by an explicit marker, not by the accident of matching no positive one.
+    """
+    measured = [
+        "messages.4.content.1.image.source.base64.data: The image was specified "
+        "using the image/png media type, but the image appears to be a image/gif image",
+        "Malformed url parameter. Must be either an image URL "
+        "(https://example.com/image.jpg) or base64 encoded string",
+        "At least one of the image dimensions exceed max allowed size: 8000 pixels",
+        "At least one of the image dimensions exceed max allowed size for "
+        "many-image requests: 2000 pixels",
+    ]
+    for msg in measured:
+        assert nodes_module.is_image_unsupported_error(_StatusError(msg, 400)) is False, msg
+        assert any(m in msg.lower() for m in nodes_module._IMAGE_UNSUPPORTED_EXCLUDE_MARKERS), msg
+
+
+def test_image_payload_400s_are_terminal_not_model_switchable():
+    """A payload the provider rejects is not a provider-availability problem.
+
+    Before: every replay of a wedged thread burned a cross-provider fallback
+    swap (87 on one thread). Now the turn fails once with the message; an
+    unrelated 400 keeps its switch, and the same wording on a non-400 status
+    is not a payload verdict.
+    """
+    payload_400s = [
+        "The image was specified using the image/png media type, but the image "
+        "appears to be a image/gif image",
+        "Malformed url parameter. Must be either an image URL or base64 encoded string",
+        "At least one of the image dimensions exceed max allowed size: 8000 pixels",
+        "Could not process image",
+    ]
+    for msg in payload_400s:
+        exc = _StatusError(msg, 400)
+        assert nodes_module.is_image_payload_error(exc) is True, msg
+        assert nodes_module._is_model_switchable_llm_error(exc) is False, msg
+    unrelated = _StatusError("Invalid request: unknown parameter 'foo'", 400)
+    assert nodes_module.is_image_payload_error(unrelated) is False
+    assert nodes_module._is_model_switchable_llm_error(unrelated) is True
+    assert nodes_module.is_image_payload_error(_StatusError("Could not process image", 500)) is False
+
+
 def test_is_image_unsupported_error_reads_gateway_nested_text():
     # LiteLLM/OpenRouter wrap the upstream message; the flattened text still matches.
     exc = _StatusError(
@@ -982,3 +1027,12 @@ def _invoke_single_tool_graph(*, tool, tool_name: str, call_id: str, tool_output
     graph.add_conditional_edges("agent", agent_router, {"tools": "tools", "end": END})
     graph.add_edge("tools", END)
     return graph.compile().invoke({"messages": []})
+
+
+def test_every_payload_marker_is_also_excluded_from_strip_retry():
+    """One list derives from the other, so a payload 400 can never strip-retry."""
+    for marker in nodes_module._IMAGE_PAYLOAD_MARKERS:
+        assert marker in nodes_module._IMAGE_UNSUPPORTED_EXCLUDE_MARKERS, marker
+    exc = _StatusError("Image too large: max 20MB", 400)
+    assert nodes_module.is_image_payload_error(exc) is True
+    assert nodes_module._is_model_switchable_llm_error(exc) is False

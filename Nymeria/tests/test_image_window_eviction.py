@@ -12,7 +12,19 @@ from nymeria.core.generated_image_context import (
 )
 from nymeria.vendor.react_agent.config import LLMConfig
 
-_DATA_URL = "data:image/png;base64,QUJD"
+
+
+def _real_png_data_url(size=(4, 4)) -> str:
+    """A real PNG payload: the window's safety net refuses what it cannot read."""
+    import base64
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, "white").save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+_DATA_URL = _real_png_data_url()
 
 
 def _anthropic() -> LLMConfig:

@@ -16,7 +16,10 @@ back.
 
 This is also the last point an inbound image block is assembled before it
 becomes checkpoint state, so it is where a declared media type gets checked
-against the payload's magic bytes (``_correct_declared_image_mimes``).
+against the payload's magic bytes (``_correct_declared_image_mimes``) and
+where an image the provider would certainly reject is fitted or dropped
+(``_fit_inbound_images``): history replays verbatim, so nothing that would
+400 may be persisted (backlog #181).
 """
 
 from __future__ import annotations
@@ -237,6 +240,155 @@ def _correct_declared_image_mimes(
     return corrected
 
 
+def _decode_data_url_payload(data_url: str) -> Optional[bytes]:
+    """The bytes a base64 data URL carries, or ``None`` if it cannot be read."""
+    if not data_url.startswith("data:"):
+        return None
+    header, sep, payload = data_url.partition(",")
+    if not sep or ";base64" not in header.lower():
+        return None
+    try:
+        return base64.b64decode("".join(payload.split()), validate=False)
+    except Exception:  # noqa: BLE001 - undecodable is a verdict here, not a fault
+        return None
+
+
+def _saved_clause(att: Dict[str, Any], *, dropped: bool) -> str:
+    path = att.get("workspace_path")
+    if not path:
+        return " Nothing was saved to disk." if dropped else ""
+    if dropped:
+        return f" The raw upload is saved at {path}."
+    return f" The full-size original is saved at {path}."
+
+
+def _fit_inbound_images(
+    image_atts: List[Dict[str, Any]], thread_id: str, model: str
+) -> tuple[List[Dict[str, Any]], List[str]]:
+    """Fit or drop inbound image blocks so history never holds a certain 400.
+
+    History replays verbatim and nothing edits it, so an image the provider
+    will reject (any dimension over the model's ceiling, a zero-byte payload,
+    corrupt bytes behind a valid header, a format no provider takes) fails
+    THIS turn and every later one, `/compact` included, until the thread is
+    deleted. Measured repeatedly (backlog #181): a 1.2 KB 9000x40 PNG, an
+    empty ``data:image/png;base64,``, and 77 bytes of PNG header plus garbage
+    each killed a thread in two messages. The byte and count caps on the HTTP
+    door never looked at any of that, and the trigger, CLI and slim doors have
+    no caps at all; this is the one seam every door shares.
+
+    Uses the same fit helper as ``file_read`` and the replay hydration, with
+    ``verify_decode`` because this is the one call that PERSISTS the bytes.
+    Returns the attachments to keep (fitted in place: ``data_url``,
+    ``mime_type``, delivered ``width``/``height``; ``workspace_path`` stays on
+    the untouched original) plus one disclosure clause per image that was
+    changed or dropped, for the caller to append to the message. A dropped
+    image is removed from the list so the k-th block still pairs with the k-th
+    metadata entry, the invariant the image window and history reload rely on.
+    The turn never fails over an image: a dropped one is named, with the path
+    the agent can ``file_read`` later, and the text still goes out.
+    """
+    if not image_atts:
+        return image_atts, []
+    # Lazy, like the sniff above: keeps nymeria.tools off this module's import.
+    from ..config.model_capabilities import get_attachment_limits
+    from ..tools.image_read import (
+        format_byte_budget,
+        prepare_image_for_native_context,
+        probe_image,
+        read_image_dimensions,
+    )
+    from .image_limits import get_model_max_image_dimension
+
+    limits = get_attachment_limits(model)
+    max_image_bytes = limits.get("max_image_bytes")
+    if not isinstance(max_image_bytes, int) or max_image_bytes <= 0:
+        max_image_bytes = 5 * 1024 * 1024
+    ceiling = get_model_max_image_dimension(model)
+
+    kept: List[Dict[str, Any]] = []
+    clauses: List[str] = []
+    for att in image_atts:
+        name = att.get("file_name") or "image"
+        data_url = att.get("data_url") or ""
+        if not data_url.startswith("data:"):
+            # A remote URL the provider fetches itself: not bytes this project
+            # holds, so nothing here may judge it.
+            kept.append(att)
+            continue
+        raw = _decode_data_url_payload(data_url)
+        try:
+            if raw is None:
+                out: tuple[Optional[bytes], Optional[str], Optional[str]] = (
+                    None, None, "its data could not be decoded",
+                )
+                probed = None
+            else:
+                probed = probe_image(raw, apply_exif=True)
+                out = prepare_image_for_native_context(
+                    raw,
+                    max_image_bytes=max_image_bytes,
+                    long_edge_ceiling=ceiling,
+                    verify_decode=True,
+                )
+        except Exception:  # noqa: BLE001 - a gate fault must not fail the turn
+            # Fail CLOSED: the invariant this gate exists for is that nothing
+            # the provider may reject enters history, and an image the gate
+            # could not check is exactly that. The raw upload is still on
+            # disk for the agent to read back once the fault is fixed.
+            logger.warning(
+                "Thread %s: image gate faulted on '%s'; dropping it unchecked",
+                thread_id, name, exc_info=True,
+            )
+            out = (None, None, "it could not be checked before sending")
+            probed = None
+        out_bytes, out_mime, error = out
+
+        if out_bytes is None and out_mime is not None and error is None:
+            kept.append(att)  # fast path: sound, supported, in budget
+            continue
+
+        if out_bytes is None or out_mime is None or raw is None:
+            reason = error or "it could not be read as an image"
+            clauses.append(
+                f"[Attached image '{name}' not shown: {reason}."
+                f"{_saved_clause(att, dropped=True)}]"
+            )
+            logger.warning(
+                "Thread %s: dropped inbound image '%s' before checkpoint: %s",
+                thread_id, name, reason,
+            )
+            continue
+
+        original = probed[0] if probed else None
+        actual_mime = (probed[1] if probed else None) or att.get("mime_type") or "its original format"
+        delivered = read_image_dimensions(out_bytes)
+        if original and max(original) > ceiling:
+            what = f"downscaled from {original[0]}x{original[1]}"
+            if delivered:
+                what += f" to {delivered[0]}x{delivered[1]}"
+            why = f"to fit this model's {ceiling}px image limit"
+        elif len(raw) > max_image_bytes:
+            what = "re-encoded"
+            why = f"to fit this model's {format_byte_budget(max_image_bytes)} image budget"
+        else:
+            what = f"converted from {actual_mime} to {out_mime}"
+            why = "because this model does not accept that format"
+        clauses.append(
+            f"[Attached image '{name}' {what} {why}.{_saved_clause(att, dropped=False)}]"
+        )
+        logger.info(
+            "Thread %s: fitted inbound image '%s' (%s %s)", thread_id, name, what, why
+        )
+        fitted = dict(att)
+        fitted["data_url"] = f"data:{out_mime};base64," + base64.b64encode(out_bytes).decode("ascii")
+        fitted["mime_type"] = out_mime
+        if delivered:
+            fitted["width"], fitted["height"] = delivered
+        kept.append(fitted)
+    return kept, clauses
+
+
 def prepare_astream_input(
     agent: "NymeriaAgent",
     *,
@@ -361,13 +513,25 @@ def prepare_astream_input(
     # mismatch is a permanent, thread-wedging 400). Rebinding the list also
     # corrects the metadata block below, which reads the same name.
     image_atts = _correct_declared_image_mimes(image_atts, thread_id)
+    # Then fit or drop what the provider would certainly reject (oversized,
+    # undecodable, unsupported format), for the same reason and at the same
+    # seam. The clauses are appended after the image blocks so the model reads
+    # them beside the images and every client renders them at the foot of the
+    # user's message.
+    image_atts, fit_clauses = _fit_inbound_images(image_atts, thread_id, effective_model)
 
-    content: List[Dict[str, Any] | str] = [{"type": "text", "text": message_with_context}]
+    content: List[Dict[str, Any] | str] = []
+    if message_with_context.strip() or not fit_clauses:
+        # An empty text block is itself a provider 400 ("text content blocks
+        # must be non-empty"); with a clause to carry the turn's text, skip it.
+        content.append({"type": "text", "text": message_with_context})
     for att in image_atts:
         content.append({
             "type": "image_url",
             "image_url": {"url": att["data_url"]},
         })
+    for clause in fit_clauses:
+        content.append({"type": "text", "text": clause})
 
     if is_self_invoke:
         # The autonomous run guidance is already baked into the text block of

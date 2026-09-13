@@ -25,7 +25,7 @@ from __future__ import annotations
 import io
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,15 @@ _NATIVE_SUPPORTED_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 # Smallest long edge we will shrink to while trying to hit the byte budget.
 _MIN_LONG_EDGE = 256
+
+# Most pixels this module will REALIZE for one image. A header can promise any
+# size for a few hundred KB of file, and Pillow's own bomb guard only trips
+# near 179 megapixels, past which a solid 13000x13000 PNG has already
+# decoded to ~676 MB on the event loop. The ingress gate runs this on bytes
+# from any bot or email sender, so the bound is enforced here, before
+# ``load()``, for every caller. 80 MP is above any phone or screenshot and a
+# fraction of the guard's threshold.
+_MAX_DECODE_PIXELS = 80_000_000
 
 # Pillow format name -> MIME for the formats we surface or convert.
 _FORMAT_MIME = {
@@ -126,9 +135,11 @@ def probe_image(
     way), but a caller that DISCLOSES a before/after pair does, since the after
     side is measured post-transpose.
 
-    The mime is what Pillow DECODED, never what the filename claimed, and it is
-    ``None`` for a format this module does not surface. That distinction is the
-    reason the probe returns it at all: a caller reading an image back out of an
+    The mime is what Pillow DECODED, never what the filename claimed: one of
+    ``_FORMAT_MIME``'s values (so bmp and tiff ARE reported, and a caller that
+    only sends native types must check ``_NATIVE_SUPPORTED_MIME`` itself), or
+    ``None`` for a format outside that table. That distinction is the reason
+    the probe returns it at all: a caller reading an image back out of an
     agent-writable directory cannot treat the extension as evidence of the
     contents, and a payload whose declared media type does not match its bytes
     is refused by the provider exactly like an oversized one.
@@ -300,18 +311,31 @@ def _encode_to_fit(
 
 
 def prepare_image_for_native_context(
-    path: Path,
+    source: Path | bytes,
     *,
     max_image_bytes: int,
     long_edge_ceiling: Optional[int] = None,
+    verify_decode: bool = False,
 ) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
     """Probe an image and decide how to surface it to a vision model.
+
+    ``source`` is a file on disk (the ``file_read`` and replay-hydration
+    callers) or the raw bytes of an inline upload (the ingress gate and the
+    replay safety net over inline user blocks, which have no file of their own
+    to point at).
 
     ``long_edge_ceiling`` is the model's pixel limit
     (``core.image_limits.get_model_max_image_dimension``); an image over it is
     downscaled, because the provider rejects the whole REQUEST rather than the
     one image. Callers that know their model pass it; ``None`` resolves the safe
     default, lazily so this module keeps no import-time dependency on config.
+
+    ``verify_decode`` makes the fast path realize the pixels too. The header
+    read that decides "already in budget" cannot tell a sound file from a valid
+    header over truncated or garbage pixel data, and the provider rejects that
+    payload just like an oversized one. A caller about to PERSIST an image into
+    history (the ingress gate) pays the one full decode here so the brick can
+    never be written; the per-call replay callers keep the cheap header read.
 
     Returns ``(out_bytes, mime, error)``:
 
@@ -337,13 +361,18 @@ def prepare_image_for_native_context(
 
         long_edge_ceiling = DEFAULT_MAX_IMAGE_DIMENSION
 
-    try:
-        size_bytes = path.stat().st_size
-    except OSError as exc:
-        return None, None, f"could not stat image: {exc}"
+    if isinstance(source, bytes):
+        size_bytes = len(source)
+        opener: Any = io.BytesIO(source)
+    else:
+        try:
+            size_bytes = source.stat().st_size
+        except OSError as exc:
+            return None, None, f"could not stat image: {exc}"
+        opener = source
 
     try:
-        with Image.open(path) as img:
+        with Image.open(opener) as img:
             fmt_mime = _FORMAT_MIME.get((img.format or "").upper())
             width, height = img.size
             mode = img.mode
@@ -359,13 +388,38 @@ def prepare_image_for_native_context(
             if not needs_work:
                 # Fast path: leave the file untouched (keeps animated GIF/WebP
                 # frames and EXIF orientation, which the provider applies).
+                if verify_decode:
+                    # The header said "sound"; only realizing the pixels can
+                    # prove it. Truncated or garbage pixel data surfaces here
+                    # as an OSError/ValueError and is reported as corrupt, the
+                    # same verdict the resize path below gives it.
+                    try:
+                        img.load()
+                    except Image.DecompressionBombError as exc:
+                        return None, None, f"image too large to process safely ({exc})"
+                    except (OSError, ValueError) as exc:
+                        return None, None, f"image is corrupt or unreadable ({exc})"
                 return None, fmt_mime, None
+
+            if width * height > _MAX_DECODE_PIXELS:
+                return None, None, (
+                    f"image too large to process safely ({width}x{height} exceeds "
+                    f"{_MAX_DECODE_PIXELS // 1_000_000} megapixels)"
+                )
 
             # Resize/convert path: realize pixels (decompression bombs and
             # truncation surface here) and downscale to fit.
             try:
+                if max(width, height) > long_edge_ceiling:
+                    # JPEG can decode at a reduced DCT scale; asking for the
+                    # ceiling here makes ``load()`` realize a fraction of the
+                    # pixels a full decode would (draft is a no-op elsewhere).
+                    img.draft(None, (long_edge_ceiling, long_edge_ceiling))
                 img.load()
-                oriented = ImageOps.exif_transpose(img) or img
+                # In place: the copy the default makes on an untagged image is
+                # a second full-size buffer for nothing.
+                ImageOps.exif_transpose(img, in_place=True)
+                oriented = img
                 if max(oriented.width, oriented.height) > long_edge_ceiling:
                     oriented.thumbnail(
                         (long_edge_ceiling, long_edge_ceiling), Image.Resampling.LANCZOS

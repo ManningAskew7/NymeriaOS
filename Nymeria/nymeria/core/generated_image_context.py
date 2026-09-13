@@ -13,6 +13,13 @@ model's BYTE cap the image is skipped, over its PIXEL ceiling it is downscaled
 to fit and the ToolMessage says so. The asymmetry is deliberate: an oversized
 image the provider would reject costs the whole turn, and a downscaled picture
 is worth far more to the agent than a 400.
+
+Inline USER images get the same fit on the way out (a safety net behind the
+ingress gate in ``agent_streaming_input``): a block the provider would reject
+(over the ceiling, unreadable, mislabeled) is fitted, relabeled or replaced by
+a placeholder on the outbound clone, which is what heals a thread whose
+history already holds such a block. The request's ``max_total_bytes`` budget
+is then applied newest-first over everything kept.
 """
 
 from __future__ import annotations
@@ -410,54 +417,110 @@ def _fit_image_payload(
     exception: nothing here can run, so the pre-existing behaviour stands and the
     image goes out as it is.)
 
+    The media type on the wire is the one Pillow DECODED, never the one the
+    artifact metadata or the filename claimed. ``image_generation`` stamps a
+    remote ``Content-Type`` into that metadata and ``file_read`` names files
+    from extensions; the provider validates the label against the bytes and
+    400s the whole request on a mismatch, exactly as for an oversized image.
+    A supported format under a wrong label is relabeled; an unsupported one
+    (bmp, tiff) takes the fit path, which converts it.
+
     Cost: a header read decides, so an image already inside the ceiling pays one
     cheap probe and no re-encode. An oversized one is resized ONCE and the result
     persisted (``threads/<id>/fitted/``), because this runs over the whole history
     on every LLM call and a per-call resize would cost seconds on a thread full of
     screenshots. Later calls read the fitted copy instead.
     """
-    from ..tools.image_read import (
-        prepare_image_for_native_context,
-        probe_image,
-        read_image_dimensions,
-    )
+    from ..tools.image_read import probe_image
 
-    original = read_image_dimensions(path, apply_exif=True)
-    if original is None:
+    probed = probe_image(path, apply_exif=True)
+    if probed is None:
         if not _pillow_available():  # pragma: no cover - Pillow is a hard dependency
             return _ImagePayload(_image_data_url(path, mime_type), False, None, None)
         logger.info("[IMAGE CONTEXT] Skipping image whose dimensions cannot be read: %s", path)
         return _UnfittableImage(
             "its dimensions could not be read", pixel_related=True, size_related=True
         )
-    if max(original) <= long_edge_ceiling:
-        return _ImagePayload(_image_data_url(path, mime_type), False, original, original)
-
-    stem = _fitted_stem(path, st, long_edge_ceiling, max_image_bytes)
-    already = _persisted_fit(stem, thread_id)
-    if already is not None:
-        fitted_path, fitted_mime = already
-        # The copy is re-PROBED, not trusted. It is a file in an agent-writable
-        # workspace and a crashed write can tear it, so serving it unchecked
-        # would put the exact brick this pass exists to kill one branch below
-        # the check that kills it. Both halves of the payload are checked, since
-        # a media type that does not match the bytes is refused by the provider
-        # just like an oversized image, and the extension is not evidence of
-        # either. Anything wrong means "no persisted copy": drop it and re-fit.
-        probed = probe_image(fitted_path)
-        if probed is None:
-            _discard_fit(fitted_path, "unreadable")
-        elif max(probed[0]) > long_edge_ceiling:
-            _discard_fit(fitted_path, "over the ceiling")
-        elif probed[1] != fitted_mime:
-            _discard_fit(fitted_path, f"holds {probed[1] or 'unknown'} bytes, not {fitted_mime}")
-        else:
-            return _ImagePayload(
-                _image_data_url(fitted_path, fitted_mime), True, original, probed[0]
+    original, actual_mime = probed
+    if actual_mime is not None and actual_mime in _SUPPORTED_IMAGE_MIME_TYPES:
+        if actual_mime != mime_type:
+            logger.info(
+                "[IMAGE CONTEXT] %s holds %s bytes, not the declared %s; sending the real type",
+                path, actual_mime, mime_type,
             )
+            mime_type = actual_mime
+        if max(original) <= long_edge_ceiling:
+            return _ImagePayload(_image_data_url(path, mime_type), False, original, original)
+    # Else: an unsupported format (bmp, tiff) or over the ceiling; the fit
+    # path converts and/or downscales.
+
+    return _fit_and_persist(
+        path,
+        _fitted_stem(path, st, long_edge_ceiling, max_image_bytes),
+        original,
+        long_edge_ceiling=long_edge_ceiling,
+        max_image_bytes=max_image_bytes,
+        thread_id=thread_id,
+    )
+
+
+def _serve_persisted_fit(
+    stem: str, thread_id: str | None, original: tuple[int, int], long_edge_ceiling: int
+) -> _ImagePayload | None:
+    """The persisted fit for ``stem`` if it is sound, else ``None``.
+
+    The copy is re-PROBED, not trusted. It is a file in an agent-writable
+    workspace and a crashed write can tear it, so serving it unchecked would
+    put the exact brick this pass exists to kill one branch below the check
+    that kills it. Both halves of the payload are checked, since a media type
+    that does not match the bytes is refused by the provider just like an
+    oversized image, and the extension is not evidence of either. Anything
+    wrong means "no persisted copy": drop it and let the caller re-fit.
+    """
+    from ..tools.image_read import probe_image
+
+    already = _persisted_fit(stem, thread_id)
+    if already is None:
+        return None
+    fitted_path, fitted_mime = already
+    probed = probe_image(fitted_path)
+    if probed is None:
+        _discard_fit(fitted_path, "unreadable")
+    elif max(probed[0]) > long_edge_ceiling:
+        _discard_fit(fitted_path, "over the ceiling")
+    elif probed[1] != fitted_mime:
+        _discard_fit(fitted_path, f"holds {probed[1] or 'unknown'} bytes, not {fitted_mime}")
+    else:
+        return _ImagePayload(_image_data_url(fitted_path, fitted_mime), True, original, probed[0])
+    return None
+
+
+def _fit_and_persist(
+    source: Path | bytes,
+    stem: str,
+    original: tuple[int, int],
+    *,
+    long_edge_ceiling: int,
+    max_image_bytes: int,
+    thread_id: str | None,
+) -> _ImagePayload | _UnfittableImage:
+    """Serve the persisted fit for ``stem`` if it is sound, else fit and persist.
+
+    Shared by the tool-image path (a file on disk) and the inline user-image
+    safety net (bytes out of the checkpoint): the same limits, the same
+    fitted store, the same re-measurement of what the store hands back. Both
+    callers arrive only with an image that NEEDS work (unsupported format,
+    over the ceiling, or over the byte cap), so the fit helper's own fast
+    path cannot answer here; if it ever did, the generic drop below says so.
+    """
+    from ..tools.image_read import prepare_image_for_native_context, read_image_dimensions
+
+    served = _serve_persisted_fit(stem, thread_id, original, long_edge_ceiling)
+    if served is not None:
+        return served
 
     out_bytes, out_mime, error = prepare_image_for_native_context(
-        path, max_image_bytes=max_image_bytes, long_edge_ceiling=long_edge_ceiling
+        source, max_image_bytes=max_image_bytes, long_edge_ceiling=long_edge_ceiling
     )
     if out_bytes is None or not out_mime:
         logger.info(
@@ -465,14 +528,15 @@ def _fit_image_payload(
             original[0],
             original[1],
             long_edge_ceiling,
-            path,
+            source if isinstance(source, Path) else "<inline>",
             error or "no reduced image",
         )
-        # Reaching here means the image WAS over the ceiling, so the pixel
-        # sentence is true of every reason except one: the source vanishing
-        # between the resolve and the encode is a missing FILE, and it gets the
-        # same plain sentence the resolve-time check gives, rather than a pixel
-        # limit and an offer to re-capture a region of something that is gone.
+        # Reaching here means the image WAS over a limit (or unreadable), so
+        # the pixel sentence is true of every reason except one: the source
+        # vanishing between the resolve and the encode is a missing FILE, and
+        # it gets the same plain sentence the resolve-time check gives, rather
+        # than a pixel limit and an offer to re-capture a region of something
+        # that is gone.
         if (error or "").startswith("could not stat image"):
             return _UnfittableImage("the file is no longer on disk")
         return _UnfittableImage(
@@ -549,6 +613,267 @@ def _fit_image_payload_cached(
         while len(_ENCODE_CACHE) > _ENCODE_CACHE_MAX:
             _ENCODE_CACHE.popitem(last=False)
     return payload
+
+
+# Verdicts for INLINE user image blocks (the checkpoint holds the bytes, so
+# there is no path or mtime to key on). The key is the message id and block
+# index (stable for the life of a checkpoint; LangGraph stamps every message)
+# plus the data URL's length, a hash of three 8 KiB samples (head, middle,
+# tail) and the two limits, so a message whose block changed cannot serve a
+# stale verdict, and two images can share a verdict only if they share a
+# message. Every stored verdict is SMALL: ``None`` (sound, send as stored),
+# a relabel (one mime), an unfittable reason, or a POINTER to a fitted copy
+# (its stem). The fitted bytes themselves live in the persisted store and in
+# a separate, byte-bounded LRU, so this cache can be sized to the largest
+# image window (1500 on GPT-5) without pinning hundreds of MB of base64.
+_InlineKey = tuple[str, int, int, str, int, int]
+
+
+class _RelabelVerdict(NamedTuple):
+    """Sound bytes under a wrong label: rewrite the header, no re-encode."""
+
+    mime: str
+    original: tuple[int, int]
+
+
+class _FitPointer(NamedTuple):
+    """The image needed a fit; the copy is under ``stem`` in the fitted store."""
+
+    stem: str
+    original: tuple[int, int]
+
+
+_INLINE_VERDICT_CACHE: "OrderedDict[_InlineKey, _RelabelVerdict | _UnfittableImage | _FitPointer | None]" = OrderedDict()
+_INLINE_VERDICT_CACHE_MAX = 4096
+# Wire-ready fitted payloads for inline images, by stem. Same sizing argument
+# as ``_ENCODE_CACHE``: a miss is a file read of the persisted copy, not a
+# resize.
+_INLINE_FIT_CACHE: "OrderedDict[str, _ImagePayload]" = OrderedDict()
+_INLINE_FIT_CACHE_MAX = 32
+_INLINE_KEY_SAMPLE = 8 * 1024
+# How much of the base64 payload the header probe decodes first. PNG and GIF
+# headers sit in the first bytes; a JPEG's SOF marker follows its APP
+# segments, and 64 KiB covers every EXIF block and most ICC profiles. A probe
+# that fails on the prefix falls back to the whole payload, so the prefix is
+# a cost optimization, never a verdict.
+_PROBE_BASE64_CHARS = 64 * 1024
+
+
+def _inline_verdict_key(
+    message_id: str | None, block_index: int, data_url: str, ceiling: int, max_bytes: int
+) -> _InlineKey:
+    n = len(data_url)
+    mid = max(0, n // 2 - _INLINE_KEY_SAMPLE // 2)
+    sample = (
+        data_url[:_INLINE_KEY_SAMPLE]
+        + data_url[mid:mid + _INLINE_KEY_SAMPLE]
+        + data_url[-_INLINE_KEY_SAMPLE:]
+    ).encode("ascii", "replace")
+    return (
+        message_id or "",
+        block_index,
+        n,
+        hashlib.sha256(sample).hexdigest()[:24],
+        ceiling,
+        max_bytes,
+    )
+
+
+def _inline_fitted_stem(raw: bytes, ceiling: int, max_bytes: int) -> str:
+    """The fitted-store name for inline bytes: content-keyed, limits included."""
+    digest = hashlib.sha256(raw).hexdigest()
+    return _FITTED_PREFIX + hashlib.sha256(
+        f"inline|{digest}|{ceiling}|{max_bytes}".encode("utf-8")
+    ).hexdigest()[:20]
+
+
+def _split_base64_data_url(data_url: str) -> tuple[str, str] | None:
+    """``(declared_mime, base64_payload)`` for a base64 data URL, else ``None``."""
+    if not data_url.startswith("data:"):
+        return None
+    header, sep, payload = data_url.partition(",")
+    if not sep or ";base64" not in header.lower():
+        return None
+    declared = header[len("data:"):].partition(";")[0].lower()
+    return declared, payload
+
+
+def _decode_base64_payload(payload: str) -> bytes:
+    try:
+        return base64.b64decode("".join(payload.split()), validate=False)
+    except Exception:  # noqa: BLE001 - undecodable is the verdict, not a fault
+        return b""
+
+
+def _fit_inline_user_image(
+    data_url: str,
+    *,
+    message_id: str | None,
+    block_index: int,
+    long_edge_ceiling: int,
+    max_image_bytes: int,
+    thread_id: str | None,
+) -> _ImagePayload | _UnfittableImage | None:
+    """The replay safety net over a user image that is already in history.
+
+    ``None`` means the block is sound and goes out exactly as stored (the
+    common case, and after the first call the only cost is a key hash over
+    24 KiB of the string). An ``_ImagePayload`` is a fitted or relabeled
+    replacement; an ``_UnfittableImage`` is a block the provider would reject
+    and that has to become a placeholder. A non-data URL (a remote image the
+    provider fetches itself) is not this net's to judge and passes through.
+
+    Why this exists when the ingress gate already refuses the same payloads:
+    threads bricked BEFORE that gate still hold the bytes, nothing rewrites a
+    checkpoint, and any producer that reaches ``agent.astream`` around the gate
+    would brick a thread the same way. Applying the fit here, on the outbound
+    clone, heals both on the next LLM call, and because compaction's summary
+    is also an LLM call, it makes ``/compact`` work on them again.
+
+    Cost discipline: a header probe over a decoded PREFIX decides, never a
+    full decode (ingress already paid that for anything it admitted; a
+    legacy corrupt block is caught by the probe or by the fit path's own
+    pixel realization). Fits are persisted like tool fits, and verdicts are
+    cached in memory.
+    """
+    key = _inline_verdict_key(message_id, block_index, data_url, long_edge_ceiling, max_image_bytes)
+    with _ENCODE_CACHE_LOCK:
+        hit = key in _INLINE_VERDICT_CACHE
+        verdict = _INLINE_VERDICT_CACHE.get(key)
+        if hit:
+            _INLINE_VERDICT_CACHE.move_to_end(key)
+    if not hit:
+        verdict = _judge_inline_user_image(
+            data_url,
+            long_edge_ceiling=long_edge_ceiling,
+            max_image_bytes=max_image_bytes,
+            thread_id=thread_id,
+        )
+        with _ENCODE_CACHE_LOCK:
+            _INLINE_VERDICT_CACHE[key] = verdict
+            _INLINE_VERDICT_CACHE.move_to_end(key)
+            while len(_INLINE_VERDICT_CACHE) > _INLINE_VERDICT_CACHE_MAX:
+                _INLINE_VERDICT_CACHE.popitem(last=False)
+
+    if verdict is None or isinstance(verdict, _UnfittableImage):
+        return verdict
+    if isinstance(verdict, _RelabelVerdict):
+        header, _sep, payload = data_url.partition(",")
+        params = header[len("data:"):].partition(";")[2]
+        relabeled = f"data:{verdict.mime}" + (f";{params}" if params else "") + "," + payload
+        return _ImagePayload(relabeled, False, verdict.original, verdict.original)
+    return _resolve_fit_pointer(
+        verdict,
+        data_url,
+        long_edge_ceiling=long_edge_ceiling,
+        max_image_bytes=max_image_bytes,
+        thread_id=thread_id,
+    )
+
+
+def _judge_inline_user_image(
+    data_url: str,
+    *,
+    long_edge_ceiling: int,
+    max_image_bytes: int,
+    thread_id: str | None,
+) -> _RelabelVerdict | _UnfittableImage | _FitPointer | None:
+    from ..tools.image_read import probe_image
+
+    split = _split_base64_data_url(data_url)
+    if split is None:
+        return None  # not bytes this project holds; nothing here may judge it
+    declared, payload = split
+    payload = "".join(payload.split())
+    if not payload:
+        return _UnfittableImage("it could not be read as an image")
+    if not _pillow_available():  # pragma: no cover - Pillow is a hard dependency
+        return None
+    raw_len = len(payload) * 3 // 4 - payload[-2:].count("=")
+
+    raw: bytes | None = None
+    prefix = _decode_base64_payload(payload[: _PROBE_BASE64_CHARS // 4 * 4])
+    probed = probe_image(prefix, apply_exif=True) if prefix else None
+    if probed is None:
+        raw = _decode_base64_payload(payload)
+        probed = probe_image(raw, apply_exif=True) if raw else None
+        if probed is None:
+            return _UnfittableImage("it could not be read as an image")
+    original, actual_mime = probed
+    if (
+        actual_mime in _SUPPORTED_IMAGE_MIME_TYPES
+        and max(original) <= long_edge_ceiling
+        and raw_len <= max_image_bytes
+    ):
+        if actual_mime == declared:
+            return None
+        # A pre-gate mislabel (the third #181 variant): the bytes are fine and
+        # only the label is wrong, so the fix is a header rewrite, no re-encode.
+        assert actual_mime is not None
+        return _RelabelVerdict(actual_mime, original)
+
+    if raw is None:
+        raw = _decode_base64_payload(payload)
+    if not raw:
+        return _UnfittableImage("it could not be read as an image")
+    stem = _inline_fitted_stem(raw, long_edge_ceiling, max_image_bytes)
+    fitted = _fit_and_persist(
+        raw,
+        stem,
+        original,
+        long_edge_ceiling=long_edge_ceiling,
+        max_image_bytes=max_image_bytes,
+        thread_id=thread_id,
+    )
+    if isinstance(fitted, _UnfittableImage):
+        return fitted
+    _remember_inline_fit(stem, fitted)
+    return _FitPointer(stem, original)
+
+
+def _remember_inline_fit(stem: str, payload: _ImagePayload) -> None:
+    with _ENCODE_CACHE_LOCK:
+        _INLINE_FIT_CACHE[stem] = payload
+        _INLINE_FIT_CACHE.move_to_end(stem)
+        while len(_INLINE_FIT_CACHE) > _INLINE_FIT_CACHE_MAX:
+            _INLINE_FIT_CACHE.popitem(last=False)
+
+
+def _resolve_fit_pointer(
+    pointer: _FitPointer,
+    data_url: str,
+    *,
+    long_edge_ceiling: int,
+    max_image_bytes: int,
+    thread_id: str | None,
+) -> _ImagePayload | _UnfittableImage:
+    """Wire bytes for a pointer: the fit LRU, else the persisted copy, else re-fit."""
+    with _ENCODE_CACHE_LOCK:
+        cached = _INLINE_FIT_CACHE.get(pointer.stem)
+        if cached is not None:
+            _INLINE_FIT_CACHE.move_to_end(pointer.stem)
+            return cached
+    served = _serve_persisted_fit(pointer.stem, thread_id, pointer.original, long_edge_ceiling)
+    if served is not None:
+        _remember_inline_fit(pointer.stem, served)
+        return served
+    # The persisted copy is gone (trimmed, or a thread with nowhere to persist):
+    # one more fit, paid from the full payload.
+    split = _split_base64_data_url(data_url)
+    raw = _decode_base64_payload(split[1]) if split else b""
+    if not raw:
+        return _UnfittableImage("it could not be read as an image")
+    fitted = _fit_and_persist(
+        raw,
+        pointer.stem,
+        pointer.original,
+        long_edge_ceiling=long_edge_ceiling,
+        max_image_bytes=max_image_bytes,
+        thread_id=thread_id,
+    )
+    if not isinstance(fitted, _UnfittableImage):
+        _remember_inline_fit(pointer.stem, fitted)
+    return fitted
 
 
 def _recovery_clause(source: Any) -> str:
@@ -657,13 +982,16 @@ def _evicted_image_placeholder(
     meta: dict[str, Any] | None,
     *,
     unsupported_reason: str | None,
+    omitted: str | None = None,
 ) -> dict[str, Any]:
     """Placeholder text for an image dropped from the outbound message.
 
     ``unsupported_reason`` (from ``explain_image_context_support``) is set when
     the image is dropped because the route cannot carry it (so the copy is
     accurate: a non-vision model vs. a vision model on a chat_completions route);
-    ``None`` means the image was evicted by the sliding window.
+    ``omitted`` names a drop by the replay safety net or the byte budget (the
+    clause to print, already worded); ``None`` for both means the image was
+    evicted by the sliding window.
     """
     path = (meta or {}).get("workspace_path")
     where = f" It is saved at {path}." if path else ""
@@ -674,6 +1002,8 @@ def _evicted_image_placeholder(
         )
     elif unsupported_reason is not None:
         text = f"[Attached image omitted: this model cannot view images.{where}]"
+    elif omitted is not None:
+        text = f"[Attached image omitted: {omitted}.{where}]"
     else:
         text = (
             "[Earlier attached image evicted from context to stay within the "
@@ -700,11 +1030,16 @@ def window_images_for_llm(
     routes no images are surfaced, and user images are stripped so they cannot
     error the provider.
 
-    A kept TOOL image is also fitted to the model's pixel ceiling: over it, the
-    image is downscaled and its ToolMessage carries a one-clause note naming the
-    original and delivered sizes (nothing is said when nothing changed); one that
-    cannot be fitted at all is replaced by a note saying so, never sent. User
-    images are inline in the checkpoint and are only windowed here, not fitted.
+    Every KEPT image is then fitted to the model's limits, tool and user alike:
+    over the pixel ceiling it is downscaled and a one-clause note names the
+    original and delivered sizes (nothing is said when nothing changed); one
+    that cannot be fitted or read at all is replaced by a note saying so, never
+    sent. For user images this is a safety net behind the ingress gate
+    (``agent_streaming_input._fit_inbound_images``): it heals threads whose
+    history already holds a payload the provider rejects, and it is what lets
+    ``/compact`` run on them again. Last, the model's per-request byte budget
+    (``max_total_bytes``) is applied newest-first over what is left, so a
+    window of individually legal images cannot build an illegal request.
 
     This is an OUTBOUND transform on cloned messages; the checkpoint is never
     mutated. It is deterministic on a given checkpoint (re-running over the same
@@ -725,10 +1060,15 @@ def window_images_for_llm(
     # Model-specific byte cap (live override -> family fallback -> global
     # default), so a model that accepts larger images is not penalized.
     max_image_bytes = _MAX_NATIVE_IMAGE_BYTES
+    max_total_bytes: int | None = None
     if llm_config is not None:
-        cap = get_attachment_limits(model).get("max_image_bytes")
+        limits = get_attachment_limits(model)
+        cap = limits.get("max_image_bytes")
         if isinstance(cap, int) and cap > 0:
             max_image_bytes = cap
+        total = limits.get("max_total_bytes")
+        if isinstance(total, int) and total > 0:
+            max_total_bytes = total
     # Model-specific pixel ceiling. Its twin above skips an over-cap image;
     # this one downscales, because dimensions fail the whole REQUEST.
     max_image_dimension = get_model_max_image_dimension(model)
@@ -763,17 +1103,96 @@ def window_images_for_llm(
         # Keep the newest `window` slots (the chronological tail).
         keep_ids = set(range(len(slots) - window, len(slots)))
 
-    hydrate_tool: dict[int, dict[str, Any]] = {}
-    evict_user: dict[int, dict[int, dict[str, Any] | None]] = {}
-    for slot_id, (msg_index, kind, payload) in enumerate(slots):
-        keep = slot_id in keep_ids
+    # Phase 2: resolve a payload for every kept slot. A tool slot hydrates and
+    # fits its file; a user slot is judged as stored (None = send untouched).
+    resolved: dict[int, _ImagePayload | _UnfittableImage | None] = {}
+    for slot_id, (msg_index, kind, payload_ref) in enumerate(slots):
+        if slot_id not in keep_ids:
+            continue
         if kind == "tool":
-            if keep:
-                hydrate_tool[msg_index] = payload
-        else:  # user image block
-            if not keep:
-                block_index, am = payload
-                evict_user.setdefault(msg_index, {})[block_index] = am
+            resolved[slot_id] = _resolve_tool_payload(
+                payload_ref,
+                long_edge_ceiling=max_image_dimension,
+                max_image_bytes=max_image_bytes,
+                thread_id=thread_id,
+            )
+        else:
+            block = messages[msg_index].content[payload_ref[0]]
+            url = block.get("image_url", {}).get("url", "") if isinstance(block, dict) else ""
+            try:
+                resolved[slot_id] = _fit_inline_user_image(
+                    url,
+                    message_id=getattr(messages[msg_index], "id", None),
+                    block_index=payload_ref[0],
+                    long_edge_ceiling=max_image_dimension,
+                    max_image_bytes=max_image_bytes,
+                    thread_id=thread_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - the net must not eat the turn
+                logger.warning("[IMAGE CONTEXT] Inline image safety net faulted: %s", exc)
+                resolved[slot_id] = None
+
+    # Phase 3: the per-request byte budget, newest first, over what would be
+    # sent. Base64 is what the JSON body carries, so that is what is counted.
+    # A CUT, not a fill: the first image that does not fit takes every older
+    # one with it, so what survives is always the newest run. (A greedy fill
+    # would let an old small image outlive a newer large one, which is the
+    # opposite of what a window means.) Only image bytes are counted; the
+    # text of a thread is small beside a 32 MB image budget.
+    budget_evicted: set[int] = set()
+    if max_total_bytes is not None:
+        spent = 0
+        cutting = False
+        for slot_id in sorted(resolved, reverse=True):
+            verdict = resolved[slot_id]
+            if isinstance(verdict, _UnfittableImage):
+                continue
+            if cutting:
+                budget_evicted.add(slot_id)
+                continue
+            if verdict is None:
+                msg_index, _kind, payload_ref = slots[slot_id]
+                block = messages[msg_index].content[payload_ref[0]]
+                size = len(block.get("image_url", {}).get("url", "")) if isinstance(block, dict) else 0
+            else:
+                size = len(verdict.data_url)
+            if spent + size > max_total_bytes:
+                budget_evicted.add(slot_id)
+                cutting = True
+                continue
+            spent += size
+
+    budget_note = (
+        f"it was left out to keep this request within this model's "
+        f"{_format_budget(max_total_bytes)} image byte budget"
+        if max_total_bytes is not None else ""
+    )
+
+    # Phase 4: emit. Per-message edit maps, keyed the way the emit loop reads.
+    tool_edits: dict[int, tuple[Any, _ImagePayload | _UnfittableImage]] = {}
+    user_edits: dict[int, dict[int, tuple[str, Any]]] = {}
+    for slot_id, (msg_index, kind, payload_ref) in enumerate(slots):
+        if kind == "tool":
+            if slot_id in budget_evicted:
+                tool_edits[msg_index] = (payload_ref.get("source"), _UnfittableImage(budget_note))
+            elif slot_id in keep_ids:
+                verdict = resolved[slot_id]
+                if verdict is not None:  # tool slots always resolve to a payload
+                    tool_edits[msg_index] = (payload_ref.get("source"), verdict)
+            continue
+        block_index, am = payload_ref
+        if slot_id not in keep_ids:
+            user_edits.setdefault(msg_index, {})[block_index] = ("evict", am)
+        elif slot_id in budget_evicted:
+            user_edits.setdefault(msg_index, {})[block_index] = ("budget", am)
+        else:
+            verdict = resolved[slot_id]
+            if verdict is None:
+                continue
+            if isinstance(verdict, _UnfittableImage):
+                user_edits.setdefault(msg_index, {})[block_index] = ("omit", (am, verdict))
+            else:
+                user_edits.setdefault(msg_index, {})[block_index] = ("fit", verdict)
 
     out: list[BaseMessage] = []
     changed = False
@@ -782,34 +1201,8 @@ def window_images_for_llm(
     unfittable_count = 0
     evicted_count = 0
     for index, message in enumerate(messages):
-        if index in hydrate_tool and isinstance(message, ToolMessage):
-            metadata = hydrate_tool[index]
-            source = metadata.get("source")
-            payload: _ImagePayload | _UnfittableImage
-            resolved = _resolve_image_file(metadata, max_image_bytes)
-            if isinstance(resolved, _UnfittableImage):
-                payload = resolved  # rejected before we ever opened it
-            else:
-                path, mime_type = resolved
-                try:
-                    # First replay of a long already-poisoned thread pays one
-                    # resize per over-ceiling image here, on the event loop.
-                    # Accepted: it is once per image ever (the fitted copy is
-                    # persisted), and the alternative was the thread staying dead.
-                    payload = _fit_image_payload_cached(
-                        path,
-                        mime_type,
-                        long_edge_ceiling=max_image_dimension,
-                        max_image_bytes=max_image_bytes,
-                        thread_id=thread_id,
-                    )
-                except OSError as exc:
-                    logger.warning(
-                        "[IMAGE CONTEXT] Failed to read generated image %s: %s", path, exc
-                    )
-                    # A real storage fault (permissions, EIO, a source that
-                    # vanished mid-fit) is still an image the model does not get.
-                    payload = _UnfittableImage(f"it could not be read from disk ({exc})")
+        if index in tool_edits and isinstance(message, ToolMessage):
+            source, payload = tool_edits[index]
             if isinstance(payload, _UnfittableImage):
                 # Say so rather than leave the tool's own "attached for you to
                 # view" standing over an image that is not there.
@@ -840,32 +1233,50 @@ def window_images_for_llm(
                 downscaled_count += 1
             continue
 
-        if index in evict_user and isinstance(message, HumanMessage) and isinstance(message.content, list):
-            evicted_blocks = evict_user[index]
+        if index in user_edits and isinstance(message, HumanMessage) and isinstance(message.content, list):
+            edits = user_edits[index]
             new_content: list[Any] = []
-            removed = False
             for block_index, block in enumerate(message.content):
-                if block_index in evicted_blocks and _is_image_url_block(block):
-                    new_content.append(
-                        _evicted_image_placeholder(
-                            evicted_blocks[block_index], unsupported_reason=unsupported_reason
-                        )
-                    )
-                    removed = True
-                    evicted_count += 1
-                else:
+                if block_index not in edits or not _is_image_url_block(block):
                     new_content.append(block)
-            if removed:
-                out.append(_copy_message_with_content(message, new_content))
-                changed = True
-                continue
+                    continue
+                action, detail = edits[block_index]
+                if action == "evict":
+                    new_content.append(_evicted_image_placeholder(
+                        detail, unsupported_reason=unsupported_reason
+                    ))
+                    evicted_count += 1
+                elif action == "budget":
+                    new_content.append(_evicted_image_placeholder(
+                        detail, unsupported_reason=None, omitted=budget_note
+                    ))
+                    evicted_count += 1
+                elif action == "omit":
+                    am, verdict = detail
+                    new_content.append(_evicted_image_placeholder(
+                        am, unsupported_reason=None, omitted=verdict.reason
+                    ))
+                    unfittable_count += 1
+                else:  # "fit": a replacement payload, disclosed when it shrank
+                    new_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": detail.data_url},
+                    })
+                    note = _downscale_note(detail, None, max_image_dimension, max_image_bytes)
+                    if note:
+                        new_content.append({"type": "text", "text": note})
+                    if detail.downscaled:
+                        downscaled_count += 1
+            out.append(_copy_message_with_content(message, new_content))
+            changed = True
+            continue
 
         out.append(message)
 
     if changed:
         logger.info(
             "[IMAGE CONTEXT] Image window: hydrated %d (%d downscaled), unfittable %d, "
-            "evicted %d (window=%d, slots=%d, ceiling=%dpx)",
+            "evicted %d (window=%d, slots=%d, ceiling=%dpx, budget-evicted=%d)",
             hydrated_count,
             downscaled_count,
             unfittable_count,
@@ -873,5 +1284,43 @@ def window_images_for_llm(
             window,
             len(slots),
             max_image_dimension,
+            len(budget_evicted),
         )
     return out if changed else messages
+
+
+def _resolve_tool_payload(
+    metadata: dict[str, Any],
+    *,
+    long_edge_ceiling: int,
+    max_image_bytes: int,
+    thread_id: str | None,
+) -> _ImagePayload | _UnfittableImage:
+    """Hydrate and fit one tool image, or say why it cannot be sent."""
+    resolved = _resolve_image_file(metadata, max_image_bytes)
+    if isinstance(resolved, _UnfittableImage):
+        return resolved  # rejected before we ever opened it
+    path, mime_type = resolved
+    try:
+        # First replay of a long already-poisoned thread pays one resize per
+        # over-ceiling image here, on the event loop. Accepted: it is once per
+        # image ever (the fitted copy is persisted), and the alternative was
+        # the thread staying dead.
+        return _fit_image_payload_cached(
+            path,
+            mime_type,
+            long_edge_ceiling=long_edge_ceiling,
+            max_image_bytes=max_image_bytes,
+            thread_id=thread_id,
+        )
+    except OSError as exc:
+        logger.warning("[IMAGE CONTEXT] Failed to read generated image %s: %s", path, exc)
+        # A real storage fault (permissions, EIO, a source that vanished
+        # mid-fit) is still an image the model does not get.
+        return _UnfittableImage(f"it could not be read from disk ({exc})")
+
+
+def _format_budget(byte_count: int | None) -> str:
+    from ..tools.image_read import format_byte_budget
+
+    return format_byte_budget(byte_count or 0)

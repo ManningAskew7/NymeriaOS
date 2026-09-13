@@ -915,3 +915,282 @@ def test_hydration_respects_model_image_byte_cap(tmp_path, monkeypatch):
     # Exceeds the 4-byte model cap: dropped, and disclosed as dropped.
     assert not any(b["type"] == "image_url" for b in _blocks(hydrated[0]))
     assert "over this model's 4-byte image limit" in "".join(_texts(hydrated[0]))
+
+
+# --------------------------------------------------------------------------- #
+# The replay safety net over INLINE user image blocks (backlog #181)
+# --------------------------------------------------------------------------- #
+
+def _png_data_url(size, fmt: str = "PNG", *, declared: str | None = None) -> str:
+    buf = io.BytesIO()
+    Image.new("RGB", size, "white").save(buf, format=fmt)
+    mime = declared or f"image/{fmt.lower()}"
+    return f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _user_message(data_url: str, *, path: str | None = "/ws/images/shot-1234abcd.png") -> HumanMessage:
+    msg = HumanMessage(content=[
+        {"type": "text", "text": "what is this"},
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ])
+    meta = {"type": "image", "name": "shot.png", "data_url": data_url}
+    if path:
+        meta["workspace_path"] = path
+    msg.additional_kwargs["attachments"] = [meta]
+    return msg
+
+
+@pytest.fixture(autouse=True)
+def _fresh_inline_verdicts():
+    generated_image_context._INLINE_VERDICT_CACHE.clear()
+    yield
+    generated_image_context._INLINE_VERDICT_CACHE.clear()
+
+
+def test_legacy_oversized_user_image_is_fitted_on_replay(vision_workspace):
+    """A thread bricked before the ingress gate heals on its next LLM call.
+
+    The checkpoint still holds the 9000x40 class inline; the outbound clone
+    carries a fitted copy plus the same disclosure the tool path gives, and
+    the stored message is never touched.
+    """
+    original = _user_message(_png_data_url((3000, 40)))
+    history = [original, AIMessage(content="...")]
+
+    out = window_images_for_llm(history, _ANTHROPIC, thread_id="t-legacy")
+
+    assert out[1] is history[1]
+    assert out[0] is not original
+    assert _image_block(original)["image_url"]["url"] == _png_data_url((3000, 40))  # unmutated
+    w, h = _delivered_size(out[0])
+    assert max(w, h) <= 2000
+    blocks = _blocks(out[0])
+    assert [b["type"] for b in blocks] == ["text", "image_url", "text"]
+    assert blocks[2]["text"].startswith(f"[Image downscaled from 3000x40 to {w}x{h} to fit this model's 2000px")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["", "QUJD", base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"garbage" * 8).decode("ascii")],
+    ids=["zero-byte", "three-bytes", "png-header-plus-garbage"],
+)
+def test_legacy_unreadable_user_image_becomes_a_placeholder(vision_workspace, payload):
+    """The two cheapest measured bricks (empty file, header plus garbage)."""
+    history = [_user_message(f"data:image/png;base64,{payload}")]
+
+    out = window_images_for_llm(history, _ANTHROPIC, thread_id="t-legacy")
+
+    blocks = _blocks(out[0])
+    assert [b["type"] for b in blocks] == ["text", "text"]
+    assert blocks[1]["text"] == (
+        "[Attached image omitted: it could not be read as an image. "
+        "It is saved at /ws/images/shot-1234abcd.png.]"
+    )
+
+
+def test_sound_user_image_passes_through_as_the_same_object(vision_workspace):
+    history = [_user_message(_png_data_url((640, 480)))]
+
+    out = window_images_for_llm(history, _ANTHROPIC, thread_id="t1")
+
+    assert out is history
+
+
+def test_legacy_mislabeled_user_image_is_relabeled_not_reencoded(vision_workspace):
+    """GIF bytes stored under image/png, from before the ingress sniff shipped."""
+    stored = _png_data_url((8, 8), "GIF", declared="image/png")
+    history = [_user_message(stored)]
+
+    out = window_images_for_llm(history, _ANTHROPIC, thread_id="t1")
+
+    url = _image_block(out[0])["image_url"]["url"]
+    assert url.startswith("data:image/gif;base64,")
+    assert url.partition(",")[2] == stored.partition(",")[2]  # same bytes
+    assert [b["type"] for b in _blocks(out[0])] == ["text", "image_url"]  # no note
+
+
+def test_inline_fit_is_persisted_and_reused_across_processes(vision_workspace, monkeypatch):
+    """The resize is paid once per image ever, like a tool image's fit."""
+    import nymeria.tools.image_read as image_read
+
+    calls: list[int] = []
+    real = image_read.prepare_image_for_native_context
+
+    def counting(source, **kwargs):
+        calls.append(1)
+        return real(source, **kwargs)
+
+    monkeypatch.setattr(image_read, "prepare_image_for_native_context", counting)
+    history = [_user_message(_png_data_url((2600, 20)))]
+
+    first = window_images_for_llm(history, _ANTHROPIC, thread_id="t-persist")
+    generated_image_context._INLINE_VERDICT_CACHE.clear()  # a fresh process
+    second = window_images_for_llm(history, _ANTHROPIC, thread_id="t-persist")
+
+    assert calls == [1]
+    assert _image_block(first[0]) == _image_block(second[0])
+    fitted_dir = vision_workspace / "threads" / "t-persist" / "fitted"
+    assert any(p.name.startswith("fitted_") for p in fitted_dir.iterdir())
+
+
+def test_request_byte_budget_evicts_the_oldest_images_first(vision_workspace, monkeypatch):
+    """Individually legal images must not add up to an illegal request."""
+    one = _png_data_url((64, 64))
+    monkeypatch.setattr(
+        generated_image_context, "get_attachment_limits",
+        lambda _model: {"max_image_bytes": 5 * 1024 * 1024, "max_total_bytes": len(one) * 2 + 10},
+    )
+    history = [
+        _user_message(one, path="/ws/images/first.png"),
+        _user_message(one, path="/ws/images/second.png"),
+        _user_message(one, path="/ws/images/third.png"),
+    ]
+
+    out = window_images_for_llm(history, _ANTHROPIC, thread_id="t-budget")
+
+    assert out[1] is history[1] and out[2] is history[2]
+    blocks = _blocks(out[0])
+    assert [b["type"] for b in blocks] == ["text", "text"]
+    assert "image byte budget" in blocks[1]["text"]
+    assert "It is saved at /ws/images/first.png." in blocks[1]["text"]
+
+
+def test_request_byte_budget_covers_tool_images_too(vision_workspace, monkeypatch):
+    old = vision_workspace / "old.png"
+    new = vision_workspace / "new.png"
+    _png(old, (64, 64))
+    _png(new, (64, 64))
+    one_url_len = len(generated_image_context._image_data_url(new, "image/png"))
+    monkeypatch.setattr(
+        generated_image_context, "get_attachment_limits",
+        lambda _model: {"max_image_bytes": 5 * 1024 * 1024, "max_total_bytes": one_url_len + 1},
+    )
+
+    out = window_images_for_llm(
+        [_tool_message(str(old), source="browser_screenshot"), _tool_message(str(new))],
+        _ANTHROPIC,
+        thread_id="t-budget",
+    )
+
+    assert not any(b["type"] == "image_url" for b in _blocks(out[0]))
+    assert "image byte budget" in "".join(_texts(out[0]))
+    assert any(b["type"] == "image_url" for b in _blocks(out[1]))
+
+
+def test_tool_fast_path_sends_the_decoded_type_not_the_filename(vision_workspace):
+    """A .png holding GIF bytes, under the ceiling: the label the provider
+    validates comes from the bytes, on the fast path like the fit path."""
+    path = vision_workspace / "really-a-gif.png"
+    Image.new("P", (16, 16)).save(path, format="GIF")
+
+    out = window_images_for_llm([_tool_message(str(path))], _ANTHROPIC)
+
+    url = _image_block(out[0])["image_url"]["url"]
+    assert url.startswith("data:image/gif;base64,")
+
+
+def test_tool_fast_path_converts_bmp_bytes_instead_of_sending_them(vision_workspace):
+    """bmp is decoded by Pillow but accepted by no provider: convert, never relabel."""
+    path = vision_workspace / "scan.png"
+    Image.new("RGB", (16, 16), "white").save(path, format="BMP")
+
+    out = window_images_for_llm([_tool_message(str(path))], _ANTHROPIC, thread_id="t1")
+
+    url = _image_block(out[0])["image_url"]["url"]
+    assert url.startswith("data:image/png;base64,") or url.startswith("data:image/jpeg;base64,")
+    assert "image/bmp" not in url
+
+
+def _bmp_data_url(fill_row: int, size=(400, 400)) -> str:
+    """Two of these share length, head and tail; only a middle row differs."""
+    img = Image.new("RGB", size, "white")
+    for x in range(size[0]):
+        img.putpixel((x, fill_row), (0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="BMP")
+    return "data:image/bmp;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_two_inline_images_that_share_length_head_and_tail_get_their_own_verdicts(vision_workspace):
+    """The verdict key must not let one image's fitted bytes stand in for another's."""
+    first = _user_message(_bmp_data_url(200), path="/ws/a.bmp")
+    second = _user_message(_bmp_data_url(201), path="/ws/b.bmp")
+    first.id, second.id = "m-1", "m-2"
+    assert len(first.content[1]["image_url"]["url"]) == len(second.content[1]["image_url"]["url"])
+
+    out = window_images_for_llm([first, second], _ANTHROPIC, thread_id="t-collide")
+
+    a = _image_block(out[0])["image_url"]["url"]
+    b = _image_block(out[1])["image_url"]["url"]
+    assert a != b
+    with Image.open(io.BytesIO(base64.b64decode(a.partition(",")[2]))) as ia, \
+            Image.open(io.BytesIO(base64.b64decode(b.partition(",")[2]))) as ib:
+        assert ia.getpixel((10, 200)) != ia.getpixel((10, 201))
+        assert ib.getpixel((10, 201)) != ib.getpixel((10, 200))
+
+
+def test_request_byte_budget_is_a_newest_first_cut_not_a_greedy_fill(vision_workspace, monkeypatch):
+    """[small, large, large]: the oldest small image must NOT outlive a newer large one."""
+    small = _png_data_url((8, 8))
+    large = _png_data_url((300, 300), "JPEG")
+    assert len(large) > len(small)
+    monkeypatch.setattr(
+        generated_image_context, "get_attachment_limits",
+        lambda _model: {"max_image_bytes": 5 * 1024 * 1024, "max_total_bytes": len(large) + len(small) + 1},
+    )
+    history = [
+        _user_message(small, path="/ws/images/old-small.png"),
+        _user_message(large, path="/ws/images/mid-large.jpg"),
+        _user_message(large, path="/ws/images/new-large.jpg"),
+    ]
+
+    out = window_images_for_llm(history, _ANTHROPIC, thread_id="t-cut")
+
+    assert out[2] is history[2]  # newest kept as stored
+    assert [b["type"] for b in _blocks(out[1])] == ["text", "text"]  # did not fit: cut
+    assert [b["type"] for b in _blocks(out[0])] == ["text", "text"]  # older than the cut: gone too
+
+
+def test_a_sound_inline_image_costs_no_full_decode_on_a_warm_cache(vision_workspace, monkeypatch):
+    calls: list[int] = []
+    real = generated_image_context._decode_base64_payload
+
+    def counting(payload):
+        calls.append(len(payload))
+        return real(payload)
+
+    monkeypatch.setattr(generated_image_context, "_decode_base64_payload", counting)
+    msg = _user_message(_png_data_url((640, 480)))
+    msg.id = "m-warm"
+    history = [msg]
+
+    first = window_images_for_llm(history, _ANTHROPIC, thread_id="t1")
+    second = window_images_for_llm(history, _ANTHROPIC, thread_id="t1")
+
+    assert first is history and second is history
+    # One PREFIX decode on the cold call, nothing on the warm one.
+    assert len(calls) == 1
+    assert calls[0] <= generated_image_context._PROBE_BASE64_CHARS
+
+
+def test_several_inline_images_in_one_message_are_judged_independently(vision_workspace):
+    oversized = _png_data_url((2600, 20))
+    sound = _png_data_url((32, 32))
+    msg = HumanMessage(content=[
+        {"type": "text", "text": "two images"},
+        {"type": "image_url", "image_url": {"url": oversized}},
+        {"type": "image_url", "image_url": {"url": sound}},
+    ])
+    msg.additional_kwargs["attachments"] = [
+        {"type": "image", "name": "a.png", "workspace_path": "/ws/a.png"},
+        {"type": "image", "name": "b.png", "workspace_path": "/ws/b.png"},
+    ]
+
+    out = window_images_for_llm([msg], _ANTHROPIC, thread_id="t-multi")
+
+    blocks = _blocks(out[0])
+    assert [b["type"] for b in blocks] == ["text", "image_url", "text", "image_url"]
+    with Image.open(io.BytesIO(base64.b64decode(blocks[1]["image_url"]["url"].partition(",")[2]))) as fitted:
+        assert max(fitted.size) <= 2000
+    assert blocks[2]["text"].startswith("[Image downscaled from 2600x20")
+    assert blocks[3]["image_url"]["url"] == sound

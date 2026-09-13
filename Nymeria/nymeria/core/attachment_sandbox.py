@@ -581,8 +581,9 @@ def build_attached_image_note(paths: list[str]) -> str:
         plural = "these images"
     return (
         f"[{location}\n"
-        f"You can already see {plural} directly in this message, so do NOT re-read "
-        "with file_read just to be safe. Use a saved path only if an image did not "
-        "come through, or to view it again in a later turn or thread (past images "
-        "live under workspace/images/). You may rename or organize files there.]\n\n"
+        f"You can already see {plural} directly in this message (unless a note "
+        "below says one was not shown), so do NOT re-read with file_read just to "
+        "be safe. Use a saved path only if an image did not come through, or to "
+        "view it again in a later turn or thread (past images live under "
+        "workspace/images/). You may rename or organize files there.]\n\n"
     )

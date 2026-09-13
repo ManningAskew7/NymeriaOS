@@ -56,6 +56,18 @@ def _patch_image_compatibility(
     )
 
 
+def _b64_image(fmt: str, size: tuple[int, int] = (4, 4)) -> str:
+    """Real encoded image bytes, base64'd, so the sniffer sees true magic bytes."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, "white").save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+_PNG_URL = f"data:image/png;base64,{_b64_image('PNG')}"
+
+
 def _record(name: str = "doc.pdf", *, mime: str = "application/pdf") -> AttachmentRecord:
     """Build an in-memory sandbox record without touching disk."""
     return AttachmentRecord(
@@ -140,7 +152,7 @@ def test_user_message_id_stamped_on_text_and_image_paths(
         message_with_context="look at this",
         thread_id="t1",
         image_attachments=[
-            {"data_url": "data:image/png;base64,AAAA", "mime_type": "image/png"}
+            {"data_url": _PNG_URL, "mime_type": "image/png"}
         ],
         sandbox_records=None,
         force_unsupported_attachments=False,
@@ -236,7 +248,7 @@ def test_image_attachment_inlines_image_url(monkeypatch: pytest.MonkeyPatch):
     agent = _fake_agent()
     image_att = {
         "file_type": "image",
-        "data_url": "data:image/png;base64,XYZ",
+        "data_url": _PNG_URL,
         "mime_type": "image/png",
         "file_name": "snap.png",
     }
@@ -255,7 +267,7 @@ def test_image_attachment_inlines_image_url(monkeypatch: pytest.MonkeyPatch):
     assert msg.content[0] == {"type": "text", "text": "describe"}
     assert msg.content[1] == {
         "type": "image_url",
-        "image_url": {"url": "data:image/png;base64,XYZ"},
+        "image_url": {"url": _PNG_URL},
     }
     metadata = msg.additional_kwargs["attachments"]
     assert metadata[0]["type"] == "image"
@@ -271,7 +283,7 @@ def test_image_plus_sandbox_emits_both_in_metadata(monkeypatch: pytest.MonkeyPat
         thread_id="t1",
         image_attachments=[{
             "file_type": "image",
-            "data_url": "data:image/png;base64,AAA",
+            "data_url": _PNG_URL,
             "mime_type": "image/png",
             "file_name": "fig.png",
         }],
@@ -303,7 +315,7 @@ def test_image_attachment_incompatible_blocks_by_default(monkeypatch: pytest.Mon
         thread_id="t1",
         image_attachments=[{
             "file_type": "image",
-            "data_url": "data:image/png;base64,AAA",
+            "data_url": _PNG_URL,
             "mime_type": "image/png",
         }],
         sandbox_records=None,
@@ -332,7 +344,7 @@ def test_image_attachment_incompatible_forced_succeeds(monkeypatch: pytest.Monke
         thread_id="t1",
         image_attachments=[{
             "file_type": "image",
-            "data_url": "data:image/png;base64,AAA",
+            "data_url": _PNG_URL,
             "mime_type": "image/png",
         }],
         sandbox_records=None,
@@ -345,17 +357,27 @@ def test_image_attachment_incompatible_forced_succeeds(monkeypatch: pytest.Monke
     assert msg.content[1]["type"] == "image_url"
 
 
-def _b64_image(fmt: str, size: tuple[int, int] = (4, 4)) -> str:
-    """Real encoded image bytes, base64'd, so the sniffer sees true magic bytes."""
-    from PIL import Image
-
-    buf = io.BytesIO()
-    Image.new("RGB", size, "white").save(buf, format=fmt)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
-
-
 def _image_blocks(msg: HumanMessage) -> list[dict[str, Any]]:
     return [part for part in msg.content if isinstance(part, dict) and part.get("type") == "image_url"]
+
+
+def _clauses(msg: HumanMessage) -> list[str]:
+    """The disclosure text blocks the ingress gate appends after the images."""
+    return [
+        part["text"] for part in msg.content[1:]
+        if isinstance(part, dict) and part.get("type") == "text"
+    ]
+
+
+def _decoded(data_url: str):
+    from PIL import Image
+
+    return Image.open(io.BytesIO(base64.b64decode(data_url.partition(",")[2])))
+
+
+def _decoded_format(data_url: str) -> str:
+    with _decoded(data_url) as img:
+        return img.format or ""
 
 
 def _relabel_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -474,17 +496,15 @@ def test_lying_mime_type_field_loses_to_the_bytes_too(
     assert len(_relabel_warnings(caplog)) == 1
 
 
-def test_bmp_bytes_declared_png_pass_through_unchanged(
+def test_bmp_bytes_declared_png_are_converted_not_relabeled(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
     """Only a provider-supported sniff may relabel a block.
 
     ``sniff_image_mime`` also recognizes bmp and tiff, and Anthropic accepts
     neither: relabeling to one would swap a permanent wedge for a permanent
-    wedge, and the resulting 400 wording IS in
-    ``nodes.py::_IMAGE_UNSUPPORTED_EXCLUDE_MARKERS``, so strip-and-retry
-    would still never fire. Leave it exactly as it arrived and let the
-    existing conversion paths deal with it.
+    wedge. The label correction leaves it alone; the ingress gate one step
+    later CONVERTS the bytes to a native format instead, and says so.
     """
     _patch_image_compatibility(monkeypatch)
     agent = _fake_agent()
@@ -510,8 +530,14 @@ def test_bmp_bytes_declared_png_pass_through_unchanged(
     assert state is not None
     [msg] = state["messages"]
     [block] = _image_blocks(msg)
-    assert block["image_url"]["url"] == data_url
-    assert msg.additional_kwargs["attachments"][0]["mime_type"] == "image/png"
+    assert block["image_url"]["url"] != data_url
+    fmt = _decoded_format(block["image_url"]["url"])
+    assert fmt in ("PNG", "JPEG")  # whichever the shared fit helper picks, it is native
+    delivered_mime = f"image/{fmt.lower()}"
+    assert block["image_url"]["url"].startswith(f"data:{delivered_mime};base64,")
+    assert msg.additional_kwargs["attachments"][0]["mime_type"] == delivered_mime
+    [clause] = _clauses(msg)
+    assert "'scan.png' converted" in clause and delivered_mime in clause
     assert _relabel_warnings(caplog) == []
 
 
@@ -640,24 +666,21 @@ def test_correctly_declared_png_passes_through_byte_identical(
     assert _relabel_warnings(caplog) == []
 
 
-def test_unidentifiable_bytes_pass_through_unchanged(
+def test_unidentifiable_bytes_are_dropped_with_a_clause(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
-    """Bytes the sniffer cannot name keep today's behavior: untouched.
+    """Bytes nothing can decode never enter history; the turn still runs.
 
-    Refusing or re-encoding undecodable payloads is a separate, larger gate;
-    this correction only ever swaps a label it can prove wrong.
-
-    The filename deliberately CONTRADICTS both the header and the bytes:
-    ``sniff_image_mime`` falls back to the extension when the magic bytes
-    match nothing, so if this correction ever started passing the filename
-    in, that fallback would vote ``image/gif`` here and relabel an
-    unidentifiable payload off a name anyone can choose. That is the exact
-    trust-the-label mistake being fixed, and this is what pins it.
+    Measured (backlog #181, probe P50): 77 bytes of PNG header plus garbage
+    passed every byte and count cap, reached the provider, and wedged the
+    thread permanently because history replays verbatim. Now the block and
+    its metadata entry are dropped before the checkpoint, one clause names
+    the file, and the text goes out. The filename deliberately CONTRADICTS
+    the header: nothing here may trust a name anyone can choose.
     """
     _patch_image_compatibility(monkeypatch)
     agent = _fake_agent()
-    garbage = base64.b64encode(b"\x00\x01not an image at all\xff\xfe" * 4).decode("ascii")
+    garbage = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00\x01not a png\xff\xfe" * 4).decode("ascii")
     data_url = f"data:image/png;base64,{garbage}"
 
     with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_streaming_input"):
@@ -670,6 +693,7 @@ def test_unidentifiable_bytes_pass_through_unchanged(
                 "data_url": data_url,
                 "mime_type": "image/png",
                 "file_name": "mystery.gif",
+                "workspace_path": "/ws/images/mystery-abcd1234.png",
             }],
             sandbox_records=None,
             force_unsupported_attachments=False,
@@ -679,10 +703,14 @@ def test_unidentifiable_bytes_pass_through_unchanged(
     assert error is None
     assert state is not None
     [msg] = state["messages"]
-    [block] = _image_blocks(msg)
-    assert block["image_url"]["url"] == data_url
-    assert msg.additional_kwargs["attachments"][0]["mime_type"] == "image/png"
-    assert _relabel_warnings(caplog) == []
+    assert _image_blocks(msg) == []
+    assert msg.content[0] == {"type": "text", "text": "what is this"}
+    [clause] = _clauses(msg)
+    assert clause.startswith("[Attached image 'mystery.gif' not shown:")
+    assert "saved at /ws/images/mystery-abcd1234.png" in clause
+    assert msg.additional_kwargs["attachments"] == []
+    [warning] = _relabel_warnings(caplog)
+    assert "dropped inbound image 'mystery.gif'" in warning.getMessage()
 
 
 @pytest.mark.parametrize(
@@ -694,18 +722,18 @@ def test_unidentifiable_bytes_pass_through_unchanged(
         ("!!!!not base64 at all!!!!", "not decodable as base64"),
     ],
 )
-def test_unsniffable_payloads_pass_through_unchanged(
+def test_undecodable_payloads_are_dropped_never_faulting(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     payload: str,
     why: str,
 ):
-    """Payload shapes the sniffer cannot read are no-ops, never faults.
+    """Payload shapes nothing can read are dropped, and never fault the turn.
 
-    An empty or truncated payload used to be the obvious way to fault the
-    decode on the turn's hot path, so each shape is pinned as pass-through
-    AND as non-raising: the correction runs on every image turn, and a
-    decode error here would fail the whole turn over a label.
+    The empty data URL is the cheapest thread brick measured (backlog #181,
+    probe P50: two messages, one empty file). Each shape is pinned as
+    dropped AND as non-raising: the gate runs on every image turn, and a
+    decode error here would fail the whole turn over a payload.
     """
     _patch_image_compatibility(monkeypatch)
     agent = _fake_agent()
@@ -730,10 +758,11 @@ def test_unsniffable_payloads_pass_through_unchanged(
     assert error is None
     assert state is not None
     [msg] = state["messages"]
-    [block] = _image_blocks(msg)
-    assert block["image_url"]["url"] == data_url
-    assert msg.additional_kwargs["attachments"][0]["mime_type"] == "image/png"
-    assert _relabel_warnings(caplog) == []
+    assert _image_blocks(msg) == []
+    [clause] = _clauses(msg)
+    assert "'blob.png' not shown" in clause and "Nothing was saved" in clause
+    assert msg.additional_kwargs["attachments"] == []
+    assert len(_relabel_warnings(caplog)) == 1
 
 
 def test_sandbox_record_self_invoke_marks_internal():
@@ -753,3 +782,247 @@ def test_sandbox_record_self_invoke_marks_internal():
     assert msg.additional_kwargs.get("internal_type") == "autonomous_wakeup"
     metadata = msg.additional_kwargs["attachments"]
     assert metadata[0]["name"] == "data.csv"
+
+
+# --------------------------------------------------------------------------- #
+# Ingress gate: fit or drop what the provider would certainly reject (#181)
+# --------------------------------------------------------------------------- #
+
+def _run_images(agent: Any, atts: list[dict[str, Any]], text: str = "look") -> HumanMessage:
+    state, _summary, error = prepare_astream_input(
+        cast(Any, agent),
+        message_with_context=text,
+        thread_id="t1",
+        image_attachments=atts,
+        sandbox_records=None,
+        force_unsupported_attachments=False,
+        is_self_invoke=False,
+    )
+    assert error is None and state is not None
+    [msg] = state["messages"]
+    return msg
+
+
+def test_oversized_upload_is_downscaled_before_checkpoint(monkeypatch: pytest.MonkeyPatch):
+    """The 9000x40 class: tiny in bytes, over the ceiling, permanent 400.
+
+    Fitted under the ceiling BEFORE it becomes history, disclosed on the
+    message with the sizes and the full-size path, and the metadata carries
+    the DELIVERED dimensions (what token accounting sizes) while
+    ``workspace_path`` still names the untouched original on disk.
+    """
+    _patch_image_compatibility(monkeypatch)
+    upload = f"data:image/png;base64,{_b64_image('PNG', (3000, 40))}"
+    msg = _run_images(_fake_agent(), [{
+        "file_type": "image",
+        "data_url": upload,
+        "mime_type": "image/png",
+        "file_name": "banner.png",
+        "workspace_path": "/ws/images/banner-1234abcd.png",
+        "width": 3000,
+        "height": 40,
+    }])
+
+    [block] = _image_blocks(msg)
+    with _decoded(block["image_url"]["url"]) as fitted:
+        assert max(fitted.size) <= 2000
+        delivered = fitted.size
+    [clause] = _clauses(msg)
+    assert clause.startswith(
+        f"[Attached image 'banner.png' downscaled from 3000x40 to {delivered[0]}x{delivered[1]} "
+        "to fit this model's 2000px image limit."
+    )
+    assert "saved at /ws/images/banner-1234abcd.png" in clause
+    [meta] = msg.additional_kwargs["attachments"]
+    assert (meta["width"], meta["height"]) == delivered
+    assert meta["workspace_path"] == "/ws/images/banner-1234abcd.png"
+    assert meta["data_url"] == block["image_url"]["url"]
+
+
+def test_truncated_pixel_data_behind_a_valid_header_is_dropped(monkeypatch: pytest.MonkeyPatch):
+    """A header the byte/count caps and a header probe would all pass.
+
+    Only realizing the pixels finds the truncation, and that is what the
+    gate pays for, once, because this is the one call that persists the bytes.
+    """
+    _patch_image_compatibility(monkeypatch)
+    whole = base64.b64decode(_b64_image("PNG", (64, 64)))
+    truncated = base64.b64encode(whole[: len(whole) // 2]).decode("ascii")
+    msg = _run_images(_fake_agent(), [{
+        "file_type": "image",
+        "data_url": f"data:image/png;base64,{truncated}",
+        "mime_type": "image/png",
+        "file_name": "cut.png",
+    }])
+
+    assert _image_blocks(msg) == []
+    [clause] = _clauses(msg)
+    assert "'cut.png' not shown: image is corrupt or unreadable" in clause
+
+
+def test_in_budget_upload_is_persisted_byte_identical_and_silently(monkeypatch: pytest.MonkeyPatch):
+    _patch_image_compatibility(monkeypatch)
+    upload = f"data:image/jpeg;base64,{_b64_image('JPEG', (640, 480))}"
+    msg = _run_images(_fake_agent(), [{
+        "file_type": "image",
+        "data_url": upload,
+        "mime_type": "image/jpeg",
+        "file_name": "photo.jpg",
+    }])
+
+    [block] = _image_blocks(msg)
+    assert block["image_url"]["url"] == upload
+    assert _clauses(msg) == []
+
+
+def test_a_dropped_image_keeps_block_and_metadata_pairing_exact(monkeypatch: pytest.MonkeyPatch):
+    """[good, bad, good]: the k-th block must still pair with the k-th entry.
+
+    Both the image window's eviction placeholder and history reload pair
+    positionally, so a dropped image must leave BOTH lists, not just one.
+    """
+    _patch_image_compatibility(monkeypatch)
+    first = f"data:image/png;base64,{_b64_image('PNG', (8, 8))}"
+    third = f"data:image/gif;base64,{_b64_image('GIF', (6, 6))}"
+    msg = _run_images(_fake_agent(), [
+        {"file_type": "image", "data_url": first, "mime_type": "image/png", "file_name": "a.png"},
+        {"file_type": "image", "data_url": "data:image/png;base64,", "mime_type": "image/png", "file_name": "empty.png"},
+        {"file_type": "image", "data_url": third, "mime_type": "image/gif", "file_name": "c.gif"},
+    ])
+
+    blocks = _image_blocks(msg)
+    assert [b["image_url"]["url"] for b in blocks] == [first, third]
+    assert [m["name"] for m in msg.additional_kwargs["attachments"]] == ["a.png", "c.gif"]
+    [clause] = _clauses(msg)
+    assert "'empty.png' not shown" in clause
+    # Clauses come AFTER every image block, so the model reads them beside the
+    # images and clients render them at the foot of the user's text.
+    kinds = [p["type"] for p in msg.content if isinstance(p, dict)]
+    assert kinds == ["text", "image_url", "image_url", "text"]
+
+
+def test_upload_over_the_byte_cap_is_reencoded_under_it(monkeypatch: pytest.MonkeyPatch):
+    """The per-image byte cap is a real limit on some models; fit it, say why."""
+    import nymeria.config.model_capabilities as mc
+
+    _patch_image_compatibility(monkeypatch)
+    real_limits = mc.get_attachment_limits
+    monkeypatch.setattr(
+        mc, "get_attachment_limits",
+        lambda model: {**real_limits(model), "max_image_bytes": 40_000},
+    )
+    from PIL import Image
+    import os
+
+    noisy = Image.frombytes("RGB", (200, 200), os.urandom(200 * 200 * 3))
+    buf = io.BytesIO()
+    noisy.save(buf, format="PNG")
+    raw = buf.getvalue()
+    assert len(raw) > 40_000
+    upload = f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
+
+    msg = _run_images(_fake_agent(), [{
+        "file_type": "image",
+        "data_url": upload,
+        "mime_type": "image/png",
+        "file_name": "noise.png",
+    }])
+
+    [block] = _image_blocks(msg)
+    fitted = base64.b64decode(block["image_url"]["url"].partition(",")[2])
+    assert len(fitted) <= 40_000
+    [clause] = _clauses(msg)
+    assert "'noise.png' re-encoded to fit this model's" in clause
+    assert "image budget" in clause
+
+
+def test_a_gate_fault_drops_the_image_rather_than_persisting_it_unchecked(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """Fail CLOSED: an image the gate could not check is exactly what it exists to refuse."""
+    import nymeria.tools.image_read as image_read
+
+    _patch_image_compatibility(monkeypatch)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("pillow exploded")
+
+    monkeypatch.setattr(image_read, "prepare_image_for_native_context", boom)
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_streaming_input"):
+        msg = _run_images(_fake_agent(), [{
+            "file_type": "image",
+            "data_url": _PNG_URL,
+            "mime_type": "image/png",
+            "file_name": "fine.png",
+            "workspace_path": "/ws/images/fine-1234abcd.png",
+        }])
+
+    assert _image_blocks(msg) == []
+    [clause] = _clauses(msg)
+    assert "'fine.png' not shown: it could not be checked before sending" in clause
+    assert "saved at /ws/images/fine-1234abcd.png" in clause
+    assert any("gate faulted" in w.getMessage() for w in _relabel_warnings(caplog))
+
+
+def test_a_remote_image_url_is_not_the_gates_to_judge(monkeypatch: pytest.MonkeyPatch):
+    _patch_image_compatibility(monkeypatch)
+    url = "https://example.com/photo.jpg"
+    msg = _run_images(_fake_agent(), [{
+        "file_type": "image", "data_url": url, "mime_type": "image/jpeg", "file_name": "photo.jpg",
+    }])
+
+    [block] = _image_blocks(msg)
+    assert block["image_url"]["url"] == url
+    assert _clauses(msg) == []
+
+
+def test_two_oversized_uploads_are_both_fitted_with_clauses_in_order(monkeypatch: pytest.MonkeyPatch):
+    _patch_image_compatibility(monkeypatch)
+    msg = _run_images(_fake_agent(), [
+        {"file_type": "image", "data_url": f"data:image/png;base64,{_b64_image('PNG', (2500, 10))}",
+         "mime_type": "image/png", "file_name": "one.png"},
+        {"file_type": "image", "data_url": f"data:image/png;base64,{_b64_image('PNG', (10, 2500))}",
+         "mime_type": "image/png", "file_name": "two.png"},
+    ])
+
+    blocks = _image_blocks(msg)
+    assert len(blocks) == 2
+    for block in blocks:
+        with _decoded(block["image_url"]["url"]) as fitted:
+            assert max(fitted.size) <= 2000
+    clauses = _clauses(msg)
+    assert clauses[0].startswith("[Attached image 'one.png' downscaled from 2500x10")
+    assert clauses[1].startswith("[Attached image 'two.png' downscaled from 10x2500")
+    assert [m["name"] for m in msg.additional_kwargs["attachments"]] == ["one.png", "two.png"]
+
+
+def test_a_dropped_image_with_no_text_leaves_no_empty_text_block(monkeypatch: pytest.MonkeyPatch):
+    """An empty text block is itself a provider 400; the clause carries the turn."""
+    _patch_image_compatibility(monkeypatch)
+    msg = _run_images(_fake_agent(), [{
+        "file_type": "image", "data_url": "data:image/png;base64,",
+        "mime_type": "image/png", "file_name": "empty.png",
+    }], text="")
+
+    assert [p["type"] for p in msg.content if isinstance(p, dict)] == ["text"]
+    assert msg.content[0]["text"].startswith("[Attached image 'empty.png' not shown")
+
+
+def test_the_label_correction_never_trusts_the_filename():
+    """``sniff_image_mime`` falls back to the extension when the magic bytes
+    match nothing; the correction must never hand it a filename, or a payload
+    anyone can name ``.gif`` would be relabeled off that name. (Formerly
+    pinned through the whole input builder; the gate now drops such bytes,
+    so the guard is pinned here, on the correction itself.)"""
+    from nymeria.core.agent_streaming_input import _correct_declared_image_mimes
+
+    garbage = base64.b64encode(b"\x00\x01not an image at all\xff\xfe" * 4).decode("ascii")
+    att = {
+        "file_type": "image",
+        "data_url": f"data:image/png;base64,{garbage}",
+        "mime_type": "image/png",
+        "file_name": "mystery.gif",
+    }
+    [out] = _correct_declared_image_mimes([att], "t1")
+    assert out["mime_type"] == "image/png"
+    assert out["data_url"] == att["data_url"]

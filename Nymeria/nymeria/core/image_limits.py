@@ -35,9 +35,12 @@ def get_model_max_image_dimension(model: str) -> int:
     cannot see: a tall screenshot is tiny in bytes and still rejected outright,
     with a 400 that kills the whole turn rather than dropping one image.
 
-    Honoured today by the two paths that surface a TOOL image: ``file_read``
-    and the hydrated replay in ``generated_image_context``. User-uploaded images
-    are inline in the checkpoint and are NOT fitted against it (backlog 03).
+    Honoured everywhere an image is sent: ``file_read`` and the hydrated
+    replay in ``generated_image_context`` for TOOL images, and for USER
+    uploads both at ingress (``agent_streaming_input._fit_inbound_images``,
+    before the bytes become checkpoint state) and again on replay (the
+    inline-block safety net in ``window_images_for_llm``), since a dimension
+    400 fails the whole request and history replays verbatim (backlog #181).
     """
     cap = get_attachment_limits(model or "").get("max_image_dimension")
     if isinstance(cap, int) and cap >= 1:
