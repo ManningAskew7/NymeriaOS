@@ -223,9 +223,9 @@ def register_default_commands(service: "CommandService") -> None:
         "help",
         description="Show available commands",
         category="General",
-        usage="/help [command|all]",
+        usage="/help [command|all [category]]",
         aliases=("h",),
-        examples=("/help provider", "/help all"),
+        examples=("/help provider", "/help all", "/help all thread"),
     )  # params-exempt: the dispatcher special-cases /help before binding
     service.register(
         "status",

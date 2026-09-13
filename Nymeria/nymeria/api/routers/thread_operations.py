@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from ...core.accounts import AuthenticatedUser
+from ...core.agent_compaction import COMPACT_BUSY_MESSAGE
 from ...core.claude_code_delivery import cancel_active_job as cancel_active_code_job
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.turn_stream_buffer import (
@@ -31,6 +32,7 @@ from ..schemas.thread_operations import (
 )
 from ..sse import SSE_RESPONSE_HEADERS, with_sse_keepalive
 from ..thread_config_helpers import effective_provider_model
+from ..thread_overview import is_thread_processing
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +360,13 @@ def create_thread_operations_router(
         """
         require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
+        # Mid-turn guard, the same one POST /threads/{id}/branch has: a manual
+        # compaction on a processing thread would run its summary invoke
+        # CONCURRENTLY with the live turn and fail blaming the summarizer
+        # (#258). Only the user-facing entries carry it: auto-compaction
+        # legitimately runs under the held lock at a sub-turn boundary.
+        if is_thread_processing(agent, thread_id):
+            raise HTTPException(status_code=409, detail=COMPACT_BUSY_MESSAGE)
         result = await agent.compact_now(thread_id, user.id, priority=priority)
         return result
 

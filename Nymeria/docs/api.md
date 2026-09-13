@@ -1302,6 +1302,10 @@ Optional `priority` query param: a free-text focus instruction that steers what 
 
 Manual compaction persists a visible `compaction_notice` immediately. When `summary_pending` is `true`, the same summary will be attached to the user's next message in that thread.
 
+A thread that is mid-turn refuses with **409** `Cannot compact while the thread is processing` (the same guard `POST /threads/{id}/branch` has); nothing is attempted, retry when the turn ends. The `/thread compact` slash command and the chat-endpoint `/compact` message carry the identical refusal. Auto-compaction is unaffected: it runs at a sub-turn boundary under the thread's own lock and never enters this route.
+
+A compaction that ran but produced no summary returns `{"success": false, "failure": <code>, "reason": <sentence>}` with `failure` one of `timeout` (the summary call exceeded the compaction timeout), `error` (the summary call raised; `reason` names the exception) or `empty` (the summarizer answered without a summary). A thread too short to compact is a decline, not a failure: `{"success": false, "declined": true, "reason": "Not enough messages (...)"}`.
+
 ---
 
 ### Prune Thread Tool Returns
@@ -1766,7 +1770,14 @@ created seconds ago work there without a restart.
 **Guidance behavior (2026-08-02).** Unknown commands and unknown subcommands
 answer with a nearest-match suggestion ("Did you mean `/provider`?") derived
 from the registry. Bare `/help` returns a compact per-category index of root
-commands; `/help all` returns the full usage table; `/help <command>` (and
+commands; `/help all` returns the full usage table on roomy surfaces (cli,
+desktop, mobile, api) and, on compact surfaces (chat platforms, the agent,
+unknown callers), a category index with counts, because the full table
+(~17k chars) would clip mid-row inside the 12k compact budget; `/help all
+<category>` (case-insensitive) renders one category's table on every
+surface, and an unknown category answers with the category list. The
+per-surface output budget is applied once at the dispatcher's outermost
+exit, so no command result can escape it; `/help <command>` (and
 `/<command> help`, including group roots like `/tools help`) returns one
 command's card: usage, subcommands visible on the calling surface, aliases,
 access notes, and `examples`. Family roots given a bad or missing subcommand
@@ -3859,7 +3870,12 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-Updates thread config. Key fields for callable threads:
+Updates thread config. A write on a thread id that has no metadata row yet
+creates one (title `New Chat`, `title_source: default`) so a thread that is
+configured before its first message is listed by `GET /threads` and
+addressable by every by-name command from the moment of the write; a write
+on a thread that already has a row leaves its timestamps alone (config is
+not activity). Key fields for callable threads:
 
 | Field | Type | Description |
 |-------|------|-------------|

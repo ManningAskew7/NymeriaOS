@@ -199,6 +199,47 @@ class ThreadMetadataManager:
                 store.threads[thread_id] = meta
                 return meta
 
+    def ensure_thread(self, user_id: str, thread_id: str) -> ThreadMetadata:
+        """Make sure a metadata row exists; never touch one that does.
+
+        The listing and every by-name command resolve against this store, so a
+        thread that exists elsewhere (a config row, a checkpoint) but has no
+        row here is unaddressable (#272). Callers that merely PROVE a thread
+        exists (a config write, a turn that errored before its title step) use
+        this rather than ``upsert_thread``, which stamps ``updated_at`` on an
+        existing row: a config write is not activity, and must not reorder
+        the recent-threads list.
+        """
+        present = self.get_store(user_id).threads.get(thread_id)
+        if present is not None:
+            return present  # no write: the common case must not touch the file
+        with self.atomic_update(user_id) as store:
+            existing = store.threads.get(thread_id)
+            if existing is not None:
+                return existing
+            meta = ThreadMetadata(
+                thread_id=thread_id, platform=classify_platform(thread_id)
+            )
+            store.threads[thread_id] = meta
+            return meta
+
+    def ensure_thread_unless_deleting(
+        self, user_id: str, thread_id: str
+    ) -> Optional[ThreadMetadata]:
+        """:meth:`ensure_thread`, atomic against a concurrent thread deletion.
+
+        A bare epoch read followed by the write leaves a window in which
+        ``begin_thread_deletion`` + the metadata delete interleave and the row
+        is resurrected; holding the admission guard across the write (the
+        turn runner's shape) closes it. Returns None while deleting.
+        """
+        from .thread_lock_manager import thread_admission_guard
+
+        with thread_admission_guard(thread_id) as epoch:
+            if epoch < 0:
+                return None
+            return self.ensure_thread(user_id, thread_id)
+
     def delete_thread(self, user_id: str, thread_id: str) -> bool:
         """Remove a thread's metadata."""
         with self.atomic_update(user_id) as store:

@@ -18,6 +18,7 @@ from nymeria.core.agent_compaction import (
     COMPACT_PROMPT,
     MAX_COMPACT_PRIORITY_CHARS,
     CompactionManager,
+    SummaryOutcome,
     _normalize_priority,
 )
 from nymeria.core.agent_history import format_conversation_history
@@ -56,7 +57,7 @@ def _manager_with(messages, monkeypatch, *, summary="## Active Goal\nship"):
     manager = CompactionManager(agent)  # type: ignore[bad-argument-type]
 
     async def fake_summary(thread_id, user_id, priority=None):
-        return summary
+        return SummaryOutcome(summary=summary)
 
     manager._generate_summary = fake_summary  # type: ignore[method-assign]
     monkeypatch.setattr(agent_memory_seed, "read_global_memory", lambda u, t: "GLOBAL-NOW")
@@ -182,7 +183,7 @@ def test_run_compact_turn_and_prune_failure_discards_delta(monkeypatch):
             HumanMessage(content="compact prompt", id="cp"),
             AIMessage(content="partial", id="partial"),
         ]
-        return None  # failed to produce a summary
+        return SummaryOutcome(failure="empty", reason="no summary")  # failed
 
     manager._generate_summary = fake_summary_with_delta  # type: ignore[method-assign]
 
@@ -404,7 +405,7 @@ def test_run_compact_turn_and_prune_threads_priority(monkeypatch):
 
     async def spy_summary(thread_id, user_id, priority=None):
         captured["priority"] = priority
-        return "## Active Goal\nx"
+        return SummaryOutcome(summary="## Active Goal\nx")
 
     manager._generate_summary = spy_summary  # type: ignore[method-assign]
 

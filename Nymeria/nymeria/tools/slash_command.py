@@ -32,8 +32,10 @@ command surface through the agent seam, which is less exercised than
 the native tools, and a few commands can error or disrupt the current
 thread, so treat it as the fallback rather than the default.
 
-ALWAYS call `/help all` first to see the full list of commands and
-their exact syntax (bare `/help` is only a compact name index). Pass
+ALWAYS start with `/help all`: on this surface it lists the command
+categories with counts; then `/help all <category>` gives that category's
+exact syntax table, and `/help <command>` one command's card (bare `/help`
+is only a compact name index). Pass
 natural command strings with or without the leading slash. Most
 commands declare an argument schema and are validated before they run,
 so a missing, unknown, or mistyped argument comes back as a usage error

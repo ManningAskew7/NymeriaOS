@@ -32,11 +32,20 @@ class _FakeThreadMeta:
 class FakeThreadMetadataManager:
     def __init__(self) -> None:
         self.auto_title_calls: list[tuple[str, str, str]] = []
+        self.ensure_thread_calls: list[tuple[str, str]] = []
         self.threads: dict[tuple[str, str], _FakeThreadMeta] = {}
 
     def auto_title(self, user_id: str, thread_id: str, message: str) -> str:
         self.auto_title_calls.append((user_id, thread_id, message))
         return "Auto Title"
+
+    def ensure_thread(self, user_id: str, thread_id: str) -> _FakeThreadMeta:
+        self.ensure_thread_calls.append((user_id, thread_id))
+        meta = self.threads.get((user_id, thread_id))
+        if meta is None:
+            meta = _FakeThreadMeta()
+            self.threads[(user_id, thread_id)] = meta
+        return meta
 
     def upsert_thread(
         self,
@@ -74,6 +83,11 @@ class _FakeThreadLocks:
 
     def __init__(self) -> None:
         self.busy_responses: list[bool] = []
+        # What is_thread_processing() reads (the /compact and branch guards).
+        self.lock_info: dict[str, Any] | None = None
+
+    def get_lock_info(self, thread_id: str):
+        return self.lock_info
 
     def is_thread_busy(self, thread_id: str) -> bool:
         if self.busy_responses:
@@ -1642,3 +1656,64 @@ def test_deleted_turn_cannot_recreate_metadata_by_auto_title(tmp_path, api_clien
     assert '"code": "thread_deleted"' in response.text
     assert agent.thread_metadata_manager.auto_title_calls == []
     assert '"title": "Auto Title"' not in response.text
+
+
+def test_chat_stream_compact_refuses_a_processing_thread(tmp_path, api_client_builder):
+    """The desktop's `/compact` enters through the chat endpoint; it gets the
+    same mid-turn refusal as the REST route and the slash command (#258), as a
+    response line plus done, with no compaction task ever started."""
+    from nymeria.core.agent_compaction import COMPACT_BUSY_MESSAGE
+
+    settings = api_client_builder.settings(tmp_path)
+    agent = FakeChatAgent(tmp_path)
+    agent._thread_locks.lock_info = {"holder": "turn"}
+    client, token = api_client_builder.authenticated_client(agent, settings, user_id="alice")
+
+    response = client.post(
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/compact keep the auth decisions", "thread_id": "thread-busy"},
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert [event["type"] for event in events] == ["response", "done"]
+    assert COMPACT_BUSY_MESSAGE in events[0]["content"]
+    assert events[1]["thread_id"] == "thread-busy"
+    assert agent.compact_calls == []
+    assert agent.astream_calls == []
+
+
+def test_errored_first_turn_still_leaves_a_metadata_row(tmp_path, api_client_builder):
+    """A turn that errors skips auto-title (there is nothing to title from) but
+    the thread now exists, so it gets its default row: without one it was
+    invisible to /thread list and every by-name command (#272). A clean turn
+    keeps taking the title path and never the ensure path."""
+
+    class ErroringAgent(FakeChatAgent):
+        async def astream(self, message, **kwargs):
+            yield {"type": "error", "code": "provider_error", "content": "upstream 500"}
+
+    settings = api_client_builder.settings(tmp_path)
+    agent = ErroringAgent(tmp_path)
+    client, token = api_client_builder.authenticated_client(agent, settings, user_id="alice")
+    response = client.post(
+        "/chat", headers=api_client_builder.auth(token),
+        json={"thread_id": "errored-first", "message": "hello"},
+    )
+    assert '"provider_error"' in response.text
+    assert agent.thread_metadata_manager.auto_title_calls == []
+    assert agent.thread_metadata_manager.ensure_thread_calls == [("alice", "errored-first")]
+
+    clean_dir = tmp_path / "clean"
+    clean_dir.mkdir()
+    clean = FakeChatAgent(clean_dir)
+    client, token = api_client_builder.authenticated_client(
+        clean, api_client_builder.settings(clean_dir), user_id="bob"
+    )
+    client.post(
+        "/chat", headers=api_client_builder.auth(token),
+        json={"thread_id": "clean-first", "message": "hello"},
+    )
+    assert clean.thread_metadata_manager.auto_title_calls == [("bob", "clean-first", "hello")]
+    assert clean.thread_metadata_manager.ensure_thread_calls == []

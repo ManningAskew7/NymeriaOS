@@ -404,6 +404,13 @@ def create_thread_config_router(
             raise HTTPException(status_code=500, detail="Failed to save thread config")
 
         agent.invalidate_thread_config_cache(thread_id)
+        # A configured thread is a thread: give it the metadata row the
+        # listing and every by-name command resolve against, so "configure
+        # first, chat second" (the natural API-client order) is addressable
+        # from the moment of the write rather than after its first turn
+        # (#272). Creation only; an existing row keeps its timestamps.
+        # Skipped mid-deletion so a racing write cannot resurrect the row.
+        agent.thread_metadata_manager.ensure_thread_unless_deleting(user_id, thread_id)
 
         if (
             request.callable is not None

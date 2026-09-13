@@ -418,10 +418,17 @@ async def run_turn(agent: Any, spec: TurnSpec, sink: TurnSink | None = None,
 
             if reply_suppressed(spec.thread_id):
                 done["suppress_reply"] = True
-        if spec.auto_title and not spec.resume_halted_turn and not result.fanout_observed and not saw_error:
+        if spec.auto_title and not spec.resume_halted_turn and not result.fanout_observed:
             try:
                 with thread_admission_guard(spec.thread_id) as epoch:
-                    if epoch >= 0 and epoch == spec.thread_epoch:
+                    if epoch >= 0 and epoch == spec.thread_epoch and saw_error:
+                        # No title from a failed turn, but the thread served a
+                        # request and may hold a checkpoint, so it gets
+                        # its metadata row: without one it is invisible to
+                        # /thread list and every by-name command (#272). The
+                        # default title source lets the next good turn title it.
+                        agent.thread_metadata_manager.ensure_thread(spec.user_id, spec.thread_id)
+                    elif epoch >= 0 and epoch == spec.thread_epoch:
                         title = agent.thread_metadata_manager.auto_title(spec.user_id, spec.thread_id, message)
                         if title:
                             done.update(title=title, title_source="auto")

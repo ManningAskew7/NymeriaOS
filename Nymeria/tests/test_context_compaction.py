@@ -340,3 +340,128 @@ def test_manual_compact_start_callback_runs_when_compaction_starts():
 
     assert result["success"] is True
     assert started == ["started"]
+
+
+# ── Summary failures name their cause (#258) ───────────────────────────────────
+
+
+class _SummaryGraph:
+    """An agent graph whose summary invoke times out, raises, or answers empty."""
+
+    def __init__(self, behavior: str) -> None:
+        self.behavior = behavior
+
+    async def ainvoke(self, _input: Any, config: dict[str, Any]) -> dict[str, Any]:
+        if self.behavior == "timeout":
+            await asyncio.sleep(5)
+        if self.behavior == "error":
+            raise RuntimeError("provider returned 400: image too large")
+        return {"messages": [HumanMessage(content="prompt only, no AIMessage")]}
+
+
+def _summary_agent(graph: _SummaryGraph) -> Any:
+    return SimpleNamespace(
+        _get_async_graph_for_user=lambda user_id, thread_id=None: graph,
+        _compacting_threads=set(),
+    )
+
+
+def test_generate_summary_distinguishes_timeout_error_and_empty(monkeypatch):
+    """One "Failed to generate summary" covered a timeout, any exception and an
+    empty summarizer answer alike, so a caller could not tell a transient from a
+    dead thread. Each cause now carries its own code and sentence."""
+    from nymeria.core import agent_compaction
+
+    monkeypatch.setattr(agent_compaction, "COMPACTION_TIMEOUT_SECONDS", 0.05)
+    agents = {b: _summary_agent(_SummaryGraph(b)) for b in ("timeout", "error", "empty")}
+    outcomes = {
+        behavior: asyncio.run(
+            CompactionManager(agent)  # type: ignore[bad-argument-type]
+            ._generate_summary("thread-a", "user-a")
+        )
+        for behavior, agent in agents.items()
+    }
+    for outcome in outcomes.values():
+        assert outcome.summary is None
+
+    assert outcomes["timeout"].failure == "timeout"
+    assert "timed out after 0.05 seconds" in (outcomes["timeout"].reason or "")
+    assert outcomes["error"].failure == "error"
+    assert "RuntimeError: provider returned 400: image too large" in (outcomes["error"].reason or "")
+    assert outcomes["empty"].failure == "empty"
+    assert outcomes["empty"].reason == "The summarizer returned no summary"
+
+    results = {name: outcome.failure_result() for name, outcome in outcomes.items()}
+    assert all(result["success"] is False and "declined" not in result for result in results.values())
+    assert {result["failure"] for result in results.values()} == {"timeout", "error", "empty"}
+    assert {result["reason"] for result in results.values()} == {
+        outcome.reason for outcome in outcomes.values()
+    }
+    # And the thread is released from the compacting set on every path.
+    assert all(agent._compacting_threads == set() for agent in agents.values())
+
+
+def test_run_compact_turn_reports_the_summary_failure_it_got():
+    """The compaction result carries the cause through to the renderers, and the
+    generic sentence is gone from the producer."""
+    from nymeria.core.agent_compaction import SummaryOutcome
+
+    pre = [HumanMessage(content="one", id="m1"), HumanMessage(content="two", id="m2")]
+
+    class _Graph(_StubAsyncGraph):
+        async def aupdate_state(self, config, update):
+            pass
+
+    manager = CompactionManager(  # type: ignore[bad-argument-type]
+        SimpleNamespace(_default_async_graph=_Graph(pre))
+    )
+
+    async def timed_out(thread_id, user_id, priority=None):
+        return SummaryOutcome(failure="timeout", reason="Summary generation timed out after 900 seconds")
+
+    manager._generate_summary = timed_out  # type: ignore[method-assign]
+    result = asyncio.run(manager._run_compact_turn_and_prune("t1", "u1", auto_resumed=False))
+    assert result == {
+        "success": False,
+        "failure": "timeout",
+        "reason": "Summary generation timed out after 900 seconds",
+    }
+
+
+def test_sync_summary_path_reports_the_same_failure_codes(monkeypatch):
+    """The sync sibling (auto-compaction, overflow recovery) shares the outcome
+    contract: timeout / error / empty, mapped into the same result keys."""
+    from langchain_core.messages import AIMessage
+
+    from nymeria.core import agent_compaction
+
+    monkeypatch.setattr(agent_compaction, "COMPACTION_TIMEOUT_SECONDS", 0.05)
+
+    class _SyncGraph:
+        def __init__(self, behavior: str) -> None:
+            self.behavior = behavior
+
+        def invoke(self, _input, config):
+            if self.behavior == "timeout":
+                import time
+
+                time.sleep(0.5)
+            if self.behavior == "error":
+                raise ValueError("boom")
+            if self.behavior == "ok":
+                return {"messages": [AIMessage(content="## Active Goal\nsummary text")]}
+            return {"messages": []}
+
+    def manager_for(behavior: str) -> CompactionManager:
+        agent = SimpleNamespace(
+            _get_graph_for_user=lambda user_id, thread_id=None: _SyncGraph(behavior),
+            _compacting_threads=set(),
+        )
+        return CompactionManager(agent)  # type: ignore[bad-argument-type]
+
+    assert manager_for("timeout")._generate_summary_sync("t", "u").failure == "timeout"
+    error = manager_for("error")._generate_summary_sync("t", "u")
+    assert error.failure == "error" and "ValueError: boom" in (error.reason or "")
+    assert manager_for("empty")._generate_summary_sync("t", "u").failure == "empty"
+    ok = manager_for("ok")._generate_summary_sync("t", "u")
+    assert ok.failure is None and ok.summary and "summary text" in ok.summary

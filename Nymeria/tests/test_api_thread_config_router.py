@@ -928,3 +928,76 @@ def test_an_empty_enabled_tools_list_erases_a_gated_name(
 
     assert emptied.status_code == 200, emptied.json()
     assert agent.thread_config_manager.get_config("t1").enabled_tools == []
+
+
+def test_thread_config_patch_on_a_new_thread_creates_its_metadata_row(
+    tmp_path: Path, api_client_builder
+):
+    """Configure first, chat second: the configured thread must be listable and
+    addressable by name from the write, not from its first turn (#272).
+
+    The row is created with the default title (so the first good turn still
+    auto-titles it) and a second config write leaves its timestamps alone: a
+    config write is not activity and must not reorder the recent list.
+    """
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "configured-first"
+    store = agent.thread_metadata_manager.get_store("owner")
+    assert thread_id not in store.threads
+
+    response = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"llm_config": {"reasoning_effort": "low"}},
+    )
+    assert response.status_code == 200
+    row = agent.thread_metadata_manager.get_store("owner").threads[thread_id]
+    assert (row.title, row.title_source) == ("New Chat", "default")
+
+    response = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"llm_config": {"reasoning_effort": "high"}},
+    )
+    assert response.status_code == 200
+    again = agent.thread_metadata_manager.get_store("owner").threads[thread_id]
+    assert (again.created_at, again.updated_at) == (row.created_at, row.updated_at)
+    assert again.title_source == "default"
+
+
+def test_thread_config_patch_does_not_resurrect_a_deleting_thread(
+    tmp_path: Path, api_client_builder
+):
+    from nymeria.core.thread_lock_manager import begin_thread_deletion, end_thread_deletion
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "deleting-config"
+    begin_thread_deletion(thread_id)
+    try:
+        client.patch(
+            f"/threads/{thread_id}/config",
+            headers=headers,
+            json={"llm_config": {"reasoning_effort": "low"}},
+        )
+    finally:
+        end_thread_deletion(thread_id)
+    assert thread_id not in agent.thread_metadata_manager.get_store("owner").threads
+
+
+def test_ensured_row_is_auto_titled_by_the_next_good_turn(tmp_path: Path):
+    """ensure_thread leaves the default title source, so the first good turn
+    still titles the thread; a second ensure never rewrites the row."""
+    manager = ThreadMetadataManager(tmp_path)
+    row = manager.ensure_thread("owner", "cfg-first")
+    assert (row.title, row.title_source) == ("New Chat", "default")
+    path = manager._get_path("owner")
+    stamp = path.stat().st_mtime_ns
+    assert manager.ensure_thread("owner", "cfg-first") == row
+    assert path.stat().st_mtime_ns == stamp  # no rewrite for an existing row
+
+    assert manager.auto_title("owner", "cfg-first", "Plan the Q3 budget review") is not None
+    titled = manager.get_store("owner").threads["cfg-first"]
+    assert titled.title_source == "auto" and titled.title != "New Chat"
+    assert titled.created_at == row.created_at

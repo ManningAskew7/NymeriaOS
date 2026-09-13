@@ -916,3 +916,33 @@ def test_withdraw_reports_success_even_if_sync_publish_fails(tmp_path, api_clien
     assert response.json() == {'withdrawn': True}
     assert backend.drain('withdraw-publish-failed') == []
     assert prompt.error_code == 'withdrawn'
+
+
+def test_compact_route_refuses_a_processing_thread(tmp_path: Path, api_client_builder):
+    """POST /threads/{id}/compact mirrors branch's mid-turn 409 (#258).
+
+    A manual compaction on a processing thread ran its summary invoke against
+    the live turn and reported the summarizer's failure; now it refuses with
+    the cause, before any compaction work, and compacts once the turn ends.
+    """
+    from nymeria.core.agent_compaction import COMPACT_BUSY_MESSAGE
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-compact-busy"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._thread_locks.lock_info = {"holder": "turn", "since": 1.0}
+
+    response = client.post(
+        f"/threads/{thread_id}/compact", headers=api_client_builder.auth(token)
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == COMPACT_BUSY_MESSAGE
+    assert agent.compactions == []
+
+    agent._thread_locks.lock_info = None
+    response = client.post(
+        f"/threads/{thread_id}/compact", headers=api_client_builder.auth(token)
+    )
+    assert response.status_code == 200
+    assert agent.compactions == [(thread_id, "owner", None)]

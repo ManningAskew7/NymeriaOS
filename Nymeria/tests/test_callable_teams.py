@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.team_manager import TeamManager
+from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.vendor.react_agent.nodes import SafeToolNode
 
@@ -16,6 +17,8 @@ class FakeAgent:
     def __init__(self, data_dir: Path):
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
         self.thread_config_manager = ThreadConfigManager(data_dir)
+        # PATCH /threads/{id}/config ensures the thread's metadata row (#272).
+        self.thread_metadata_manager = ThreadMetadataManager(data_dir)
         self.team_manager = TeamManager(
             data_dir,
             thread_config_manager=self.thread_config_manager,

@@ -20,7 +20,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, Callable, Literal, Mapping, NoReturn, Optional
 from urllib.parse import quote
 
@@ -599,6 +599,28 @@ def _parse_hook_on_fault(raw: str) -> tuple[str | None, str]:
     if value not in ("allow", "deny"):
         return None, "--on-fault must be 'allow' or 'deny'."
     return value, ""
+
+
+_HELP_QUOTING_HINT = (
+    'Values with spaces can be quoted, for example `/memory save color "deep blue"`.'
+)
+
+
+def _help_category_table(commands: Sequence["CommandInfo"], category: str) -> list[str]:
+    """Markdown table rows for the commands of one category (shared by every
+    `/help all` shape, so the row format cannot drift between them)."""
+    lines = ["| Command | Usage | Description |", "| --- | --- | --- |"]
+    for cmd in commands:
+        if cmd.category != category:
+            continue
+        desc = cmd.description
+        if cmd.aliases:
+            desc = f"{desc.rstrip('.')}. Alias: {cmd.aliases[0]}"
+        if cmd.note:
+            desc = f"{desc.rstrip('.')}. {cmd.note}"
+        usage = cmd.usage.replace("|", "\\|")
+        lines.append(f"| `/{cmd.name}` | `{usage}` | {desc} |")
+    return lines
 
 
 def _truncate(text: str, limit: int = OUTPUT_BUDGET_COMPACT) -> str:
@@ -1626,7 +1648,15 @@ class CommandBackendClient:
             _raise_http_status(400, str(e))
 
     async def compact_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        # Mirrors POST /threads/{id}/compact, its mid-turn 409 included: the
+        # summary invoke of a manual compaction must not race the live turn
+        # (#258; auto-compaction is exempt because it never enters here).
         self._require_thread_access(thread_id)
+        from ..api.thread_overview import is_thread_processing
+        from .agent_compaction import COMPACT_BUSY_MESSAGE
+
+        if is_thread_processing(self.agent, thread_id):
+            _raise_http_status(409, COMPACT_BUSY_MESSAGE)
         return await self.agent.compact_now(thread_id, self.user.id)
 
     async def get_settings(self, user_id: Optional[str] = None) -> dict:
@@ -2401,6 +2431,11 @@ class CommandBackendClient:
         if not self.agent.thread_config_manager.save_config(tc):
             _raise_http_status(500, "Failed to save thread config")
         self.agent.invalidate_thread_config_cache(thread_id)
+        # Same as PATCH /threads/{id}/config: a configured thread gets its
+        # metadata row so the listing can address it (#272).
+        self.agent.thread_metadata_manager.ensure_thread_unless_deleting(
+            self.user.id, thread_id
+        )
         return tc.model_dump(mode="json") | {"has_customizations": tc.has_customizations()}
 
     async def get_env_vars(self, *, user_id: Optional[str] = None) -> dict:
@@ -2852,18 +2887,57 @@ class CommandService:
         for category in categories:
             lines.append(f"### {category}")
             lines.append("")
-            lines.append("| Command | Usage | Description |")
-            lines.append("| --- | --- | --- |")
-            for cmd in [c for c in commands if c.category == category]:
-                desc = cmd.description
-                if cmd.aliases:
-                    desc = f"{desc.rstrip('.')}. Alias: {cmd.aliases[0]}"
-                if cmd.note:
-                    desc = f"{desc.rstrip('.')}. {cmd.note}"
-                usage = cmd.usage.replace("|", "\\|")
-                lines.append(f"| `/{cmd.name}` | `{usage}` | {desc} |")
+            lines.extend(_help_category_table(commands, category))
             lines.append("")
-        lines.append("Values with spaces can be quoted, for example `/memory save color \"deep blue\"`.")
+        lines.append(_HELP_QUOTING_HINT)
+        return "\n".join(lines).strip()
+
+    def _help_categories(self, source: str | None, **list_kwargs: Any) -> list[str]:
+        """Category names in display order (case-insensitive sort)."""
+        commands = self.list_commands(source, **list_kwargs)
+        return sorted({cmd.category for cmd in commands}, key=str.casefold)
+
+    def _help_category_markdown(
+        self, source: str | None, category: str, **list_kwargs: Any
+    ) -> str | None:
+        """One category's usage table, or None when no category matches.
+
+        The match is case-insensitive on the display name (`/help all thread`
+        finds "Thread"), the same leniency the command tokens themselves get.
+        """
+        commands = self.list_commands(source, **list_kwargs)
+        wanted = category.strip().casefold()
+        matched = next(
+            (cmd.category for cmd in commands if cmd.category.casefold() == wanted),
+            None,
+        )
+        if matched is None:
+            return None
+        lines = [f"## Nymeria Slash Commands: {matched}", ""]
+        lines.extend(_help_category_table(commands, matched))
+        lines.append("")
+        lines.append(_HELP_QUOTING_HINT)
+        return "\n".join(lines).strip()
+
+    def _help_category_index_markdown(
+        self, source: str | None, **list_kwargs: Any
+    ) -> str:
+        """`/help all` on a compact surface: categories with counts, no table."""
+        commands = self.list_commands(source, **list_kwargs)
+        counts: dict[str, int] = {}
+        for cmd in commands:
+            counts[cmd.category] = counts.get(cmd.category, 0) + 1
+        lines = ["## Nymeria Slash Commands", ""]
+        for category in sorted(counts, key=str.casefold):
+            count = counts[category]
+            noun = "command" if count == 1 else "commands"
+            lines.append(f"- **{category}** ({count} {noun}): `/help all {category.lower()}`")
+        lines.append("")
+        lines.append(
+            "The full table is too long for this surface, so it is split by "
+            "category: `/help all <category>` renders one category's usage "
+            "table, `/help <command>` one command's card."
+        )
         return "\n".join(lines).strip()
 
     def _help_index_markdown(
@@ -2898,9 +2972,20 @@ class CommandService:
             )
             lines.append(f"**{category}:** {roots}")
         lines.append("")
+        # The drill-down copy promises what `/help all` actually gives on this
+        # surface: the full table where there is room to scroll it, the
+        # category list (one table per `/help all <category>`) under the
+        # compact budget.
+        if output_budget(surface) < OUTPUT_BUDGET_ROOMY:
+            all_hint = (
+                "`/help all` for the category list, or `/help all <category>` "
+                "for one category's table"
+            )
+        else:
+            all_hint = "`/help all` for the full table"
         lines.append(
             "Type `/help <command>` for one command's usage and subcommands, "
-            "or `/help all` for the full table. Values with spaces can be "
+            f"or {all_hint}. Values with spaces can be "
             'quoted, for example `/memory save color "deep blue"`.'
         )
         return "\n".join(lines).strip()
@@ -3325,6 +3410,32 @@ class CommandService:
         *,
         api: Any | None = None,
     ) -> CommandResult:
+        """Dispatch one slash command and return its budgeted result.
+
+        The per-surface output budget is applied HERE, at the one exit every
+        result passes through, rather than on the handler branch alone. The
+        dispatch body below has some fifteen return sites (gates, help cards,
+        error branches, the generic handler path), and when the budget lived
+        on only the last of them `/help all` escaped it for months (#251,
+        #259): 19k chars charged to an agent's context or chunked into a
+        five-message wall on a chat platform. Truncation is still the last
+        resort the budget test says it is (a clipped table reads as a complete
+        one), so listings are shaped to fit; this wrapper is the guarantee that
+        nothing can outgrow the budget by construction.
+        """
+        result = await self._execute_unbudgeted(ctx, raw_command, api=api)
+        markdown = _truncate(result.markdown, limit=output_budget(ctx.effective_surface))
+        if markdown is result.markdown:
+            return result
+        return dataclasses.replace(result, markdown=markdown)
+
+    async def _execute_unbudgeted(
+        self,
+        ctx: CommandContext,
+        raw_command: str,
+        *,
+        api: Any | None = None,
+    ) -> CommandResult:
         # User-defined aliases (#133) expand HERE and not in the parser:
         # execute() is the one dispatch seam that knows the user, and the
         # rewrite happens before parsing so every gate below reads the
@@ -3433,12 +3544,43 @@ class CommandService:
             )
             args = [arg for arg in parsed.args if arg.strip()]
             if args and args[0].lower() == "all":
-                markdown = self._help_markdown(
-                    ctx.source,
+                catalog_kwargs: dict[str, Any] = dict(
                     user_id=ctx.user_id,
                     agent=getattr(api, "agent", None),
                     **help_kwargs,
                 )
+                if len(args) > 1:
+                    # `/help all <category>`: one category's table, on every
+                    # surface. Small by construction (the largest category
+                    # renders ~2.5k chars), so it fits the compact budget.
+                    markdown_or_none = self._help_category_markdown(
+                        ctx.source, " ".join(args[1:]), **catalog_kwargs
+                    )
+                    if markdown_or_none is None:
+                        categories = self._help_categories(ctx.source, **catalog_kwargs)
+                        listed = ", ".join(f"`{name}`" for name in categories)
+                        return CommandResult(
+                            False,
+                            render_outcome(
+                                "error",
+                                f"Unknown help category `{' '.join(args[1:])}`. "
+                                f"Categories: {listed}. Use `/help all <category>`.",
+                            ),
+                            command_label,
+                            level="error",
+                        )
+                    markdown = markdown_or_none
+                elif output_budget(surface) < OUTPUT_BUDGET_ROOMY:
+                    # Compact surfaces (chat platforms, the agent, unknown
+                    # callers): the full table is ~17k chars against a 12k
+                    # budget, and a clipped table reads as a complete one, so
+                    # the firehose becomes a two-step: categories with counts
+                    # here, one table per `/help all <category>`.
+                    markdown = self._help_category_index_markdown(
+                        ctx.source, **catalog_kwargs
+                    )
+                else:
+                    markdown = self._help_markdown(ctx.source, **catalog_kwargs)
             elif args:
                 card = self._command_help_markdown(tuple(args), **help_kwargs)
                 if card is None:
@@ -3620,9 +3762,11 @@ class CommandService:
                     raw_output = f"{body.rstrip()}\n\n{joined}" if body.strip() else joined
                 data = {k: v for k, v in data.items() if k != "form"} or None
             success, level, markdown = _render_result_markdown(raw_output, level)
+            # No per-branch truncation: execute() budgets every result at the
+            # outermost exit, this branch included.
             return _with_hook_notes(CommandResult(
                 success,
-                _truncate(markdown, limit=output_budget(ctx.effective_surface)),
+                markdown,
                 command_label,
                 level=level,
                 data=data if success else None,

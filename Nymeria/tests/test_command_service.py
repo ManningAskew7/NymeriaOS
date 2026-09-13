@@ -1146,6 +1146,8 @@ def test_sequential_tools_in_process_whitelist_persists_tristate() -> None:
     manager = _Manager()
     agent = SimpleNamespace(
         thread_config_manager=manager,
+        # The config write also ensures the thread's metadata row (#272).
+        thread_metadata_manager=SimpleNamespace(ensure_thread_unless_deleting=lambda uid, tid: None),
         accounts_repo=SimpleNamespace(claim_thread=lambda tid, uid: uid),
         invalidate_thread_config_cache=lambda tid: None,
     )
@@ -8898,3 +8900,199 @@ def test_context_still_says_none_for_a_genuinely_default_thread() -> None:
 
     assert result.success is True
     assert "none (using global defaults)" in result.markdown
+
+
+# ── /help all: two-step on compact surfaces (#251, #259) ───────────────────────
+
+
+def test_help_all_on_a_compact_surface_is_a_category_index() -> None:
+    """The full table (~17k chars) would clip mid-row inside a 12k budget, so a
+    compact caller gets categories with counts and the per-category verb."""
+    result = run(
+        CommandService().execute(_ctx("telegram"), "/help all", api=FakeCommandApi())
+    )
+    assert result.success is True
+    assert "| Command | Usage | Description |" not in result.markdown
+    assert "- **Thread** (" in result.markdown
+    assert "`/help all thread`" in result.markdown
+    assert "`/help all <category>`" in result.markdown
+    # Every category the roomy table would show is listed here, with a count.
+    roomy = run(CommandService().execute(_ctx("cli"), "/help all", api=FakeCommandApi()))
+    headings = [line[4:] for line in roomy.markdown.splitlines() if line.startswith("### ")]
+    assert len(headings) >= 10
+    for heading in headings:
+        assert f"- **{heading}** (" in result.markdown, heading
+    # And the agent surface (charged to the model's context) is compact too;
+    # its discovery set differs from a chat platform's, so the shape is what
+    # is shared, not the bytes.
+    agent = run(CommandService().execute(_ctx("agent"), "/help all", api=FakeCommandApi()))
+    assert "| Command | Usage | Description |" not in agent.markdown
+    assert "`/help all thread`" in agent.markdown
+    assert len(agent.markdown) < 2_000
+
+
+def test_help_all_category_renders_one_table_on_every_surface() -> None:
+    """`/help all <category>` is the second step: one category's table, same
+    rows as that category's slice of the full table, case-insensitive."""
+    for surface in ("telegram", "cli"):
+        result = run(
+            CommandService().execute(_ctx(surface), "/help all THREAD", api=FakeCommandApi())
+        )
+        assert result.success is True, surface
+        assert result.markdown.startswith("## Nymeria Slash Commands: Thread")
+        assert "| `/thread list` |" in result.markdown
+        assert "| `/provider list` |" not in result.markdown
+        assert "### " not in result.markdown  # one category: no per-category headings
+
+    full = run(CommandService().execute(_ctx("cli"), "/help all", api=FakeCommandApi()))
+    one = run(CommandService().execute(_ctx("cli"), "/help all thread", api=FakeCommandApi()))
+    # The category's slice of the full table: rows between "### Thread" and
+    # the next heading (the category holds /clear, /stop, /notepad too, not
+    # only the /thread family).
+    section = full.markdown.split("### Thread\n", 1)[1].split("\n### ", 1)[0]
+    full_rows = {line for line in section.splitlines() if line.startswith("| `/")}
+    one_rows = {line for line in one.markdown.splitlines() if line.startswith("| `/")}
+    assert len(full_rows) > 10
+    assert one_rows == full_rows
+
+
+def test_help_all_unknown_category_names_the_categories() -> None:
+    result = run(
+        CommandService().execute(_ctx("telegram"), "/help all nonsense", api=FakeCommandApi())
+    )
+    assert result.success is False
+    assert result.level == "error"
+    assert "Unknown help category `nonsense`" in result.markdown
+    assert "`Thread`" in result.markdown and "`LLM`" in result.markdown
+    assert "`/help all <category>`" in result.markdown
+
+
+def test_help_index_hint_matches_what_help_all_gives_on_that_surface() -> None:
+    compact = run(CommandService().execute(_ctx("telegram"), "/help", api=FakeCommandApi()))
+    assert "`/help all` for the category list" in compact.markdown
+    assert "`/help all <category>`" in compact.markdown
+    roomy = run(CommandService().execute(_ctx("cli"), "/help", api=FakeCommandApi()))
+    assert "`/help all` for the full table" in roomy.markdown
+    assert "category list" not in roomy.markdown
+
+
+# ── Manual compaction refuses a processing thread (#258) ───────────────────────
+
+
+def test_in_process_compact_thread_refuses_while_processing() -> None:
+    """CommandBackendClient.compact_thread mirrors the route's mid-turn 409.
+
+    Measured live: `/thread compact` on a thread mid-turn ran the summary
+    invoke concurrently with the live turn and reported "Failed to generate
+    summary", while its sibling `/thread branch` refused cleanly. The guard
+    sits on the user-facing entry, never inside compact_now (auto-compaction
+    legitimately runs under the held lock).
+    """
+    from nymeria.core.agent_compaction import COMPACT_BUSY_MESSAGE
+
+    compactions: list[tuple[str, str]] = []
+
+    class _Locks:
+        def __init__(self, busy: bool) -> None:
+            self.busy = busy
+
+        def get_lock_info(self, thread_id: str):
+            return {"holder": "turn"} if self.busy else None
+
+    async def compact_now(thread_id: str, user_id: str, **_kwargs):
+        compactions.append((thread_id, user_id))
+        return {"success": True, "messages_removed": 3}
+
+    user = _CommandBackendUser(id="alice", role="admin")
+    busy_agent = SimpleNamespace(
+        _thread_locks=_Locks(True),
+        accounts_repo=SimpleNamespace(claim_thread=lambda tid, uid: uid),
+        compact_now=compact_now,
+    )
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(CommandBackendClient(busy_agent, user=user).compact_thread("thread-1"))
+    assert excinfo.value.response.status_code == 409
+    assert COMPACT_BUSY_MESSAGE in excinfo.value.response.text
+    assert compactions == []
+
+    idle_agent = SimpleNamespace(
+        _thread_locks=_Locks(False),
+        accounts_repo=SimpleNamespace(claim_thread=lambda tid, uid: uid),
+        compact_now=compact_now,
+    )
+    result = run(CommandBackendClient(idle_agent, user=user).compact_thread("thread-1"))
+    assert result["success"] is True
+    assert compactions == [("thread-1", "alice")]
+
+
+def test_thread_compact_renders_the_busy_refusal_as_a_typed_error() -> None:
+    """Through execute(): the 409 arrives as an error result naming the cause,
+    not as the summarizer's failure and not as an informational skip."""
+    from nymeria.core.agent_compaction import COMPACT_BUSY_MESSAGE
+
+    class _BusyCompactApi(FakeCommandApi):
+        async def compact_thread(self, thread_id: str, user_id: str | None = None) -> dict:
+            request = httpx.Request("POST", f"http://backend/threads/{thread_id}/compact")
+            response = httpx.Response(
+                409, json={"detail": COMPACT_BUSY_MESSAGE}, request=request
+            )
+            raise httpx.HTTPStatusError("busy", request=request, response=response)
+
+    result = run(
+        CommandService().execute(_cli_ctx(), "/thread compact", api=_BusyCompactApi())
+    )
+    assert result.success is False
+    assert result.level == "error"
+    assert COMPACT_BUSY_MESSAGE in result.markdown
+    assert "Skipped" not in result.markdown
+    assert "summary" not in result.markdown.lower()
+
+
+# ── Configured threads are listable (#272) ─────────────────────────────────────
+
+
+def test_in_process_update_thread_config_creates_the_metadata_row(tmp_path) -> None:
+    """A config write on a never-used thread leaves a default-titled metadata
+    row (the listing and every by-name command resolve against that store);
+    a second write leaves the row's timestamps alone (config is not activity)."""
+    from nymeria.core.thread_config import ThreadConfigManager
+    from nymeria.core.thread_metadata import ThreadMetadataManager
+
+    agent = SimpleNamespace(
+        thread_config_manager=ThreadConfigManager(tmp_path),
+        thread_metadata_manager=ThreadMetadataManager(tmp_path),
+        accounts_repo=SimpleNamespace(claim_thread=lambda tid, uid: uid),
+        invalidate_thread_config_cache=lambda thread_id: None,
+    )
+    user = _CommandBackendUser(id="alice", role="admin")
+    client = CommandBackendClient(agent, user=user)
+
+    assert agent.thread_metadata_manager.get_store("alice").threads.get("fresh-1") is None
+    run(client.update_thread_config("fresh-1", llm_config={"reasoning_effort": "low"}))
+    row = agent.thread_metadata_manager.get_store("alice").threads["fresh-1"]
+    assert (row.title, row.title_source) == ("New Chat", "default")
+
+    run(client.update_thread_config("fresh-1", llm_config={"reasoning_effort": "high"}))
+    again = agent.thread_metadata_manager.get_store("alice").threads["fresh-1"]
+    assert (again.created_at, again.updated_at) == (row.created_at, row.updated_at)
+
+
+def test_thread_list_renders_a_row_without_timestamps_and_resolves_it_by_id() -> None:
+    """A metadata-less thread reaches the listing as a null-timestamp payload
+    (title "New Chat"); it is rendered (last, never dropped) and resolves."""
+    from nymeria.core.command_executor_threads import (
+        _format_thread_list,
+        resolve_thread_reference,
+    )
+
+    threads = [
+        {"thread_id": "bare-000", "title": "New Chat", "pinned": False,
+         "updated_at": None, "created_at": None, "platform": "desktop"},
+        {"thread_id": "live-111", "title": "Active", "pinned": False,
+         "updated_at": "2026-05-10T12:00:00Z", "platform": "desktop"},
+    ]
+    lines = _format_thread_list(threads, active_thread_id=None)
+    rows = [line for line in lines if "bare-000" in line or "live-111" in line]
+    assert len(rows) == 2
+    assert "live-111" in rows[0] and "bare-000" in rows[1]
+    assert resolve_thread_reference(threads, "bare-000").thread == threads[0]

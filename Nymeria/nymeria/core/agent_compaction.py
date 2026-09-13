@@ -15,6 +15,7 @@ import threading
 import time
 import uuid as _uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
@@ -78,6 +79,56 @@ COMPACTION_TIMEOUT_SECONDS = 900
 # Idle thresholds are per-thread settings; this only bounds detection latency.
 PROACTIVE_SWEEP_INTERVAL_SECONDS = 30
 COMPACTING_MESSAGE = "Compacting thread context..."
+# The refusal every user-facing manual-compaction entry gives a processing
+# thread (REST route, in-process command client, the chat-endpoint /compact
+# branch). One constant so the three surfaces cannot drift (#258).
+COMPACT_BUSY_MESSAGE = "Cannot compact while the thread is processing"
+
+
+@dataclass(frozen=True)
+class SummaryOutcome:
+    """What a compaction-summary attempt produced.
+
+    ``summary`` is the text on success. Otherwise ``failure`` is one of the
+    three machine codes (``timeout``, ``error``, ``empty``) and ``reason`` the
+    human sentence the command surfaces render after "Compaction failed:".
+    """
+
+    summary: Optional[str] = None
+    failure: Optional[str] = None
+    reason: Optional[str] = None
+
+    def failure_result(self) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "failure": self.failure or "empty",
+            "reason": self.reason or "The summarizer returned no summary",
+        }
+
+
+def _summary_outcome(summary: Optional[str]) -> SummaryOutcome:
+    if summary:
+        return SummaryOutcome(summary=summary)
+    return SummaryOutcome(
+        failure="empty", reason="The summarizer returned no summary"
+    )
+
+
+def _summary_timeout_outcome() -> SummaryOutcome:
+    return SummaryOutcome(
+        failure="timeout",
+        reason=(
+            f"Summary generation timed out after {COMPACTION_TIMEOUT_SECONDS} seconds"
+        ),
+    )
+
+
+def _summary_error_outcome(exc: BaseException) -> SummaryOutcome:
+    detail = str(exc).strip() or exc.__class__.__name__
+    return SummaryOutcome(
+        failure="error",
+        reason=f"Summary generation failed: {exc.__class__.__name__}: {detail}",
+    )
 CompactionStartCallback = Callable[[], Any]
 
 # ---------------------------------------------------------------------------
@@ -804,8 +855,14 @@ class CompactionManager:
         thread_id: str,
         user_id: str,
         priority: Optional[str] = None,
-    ) -> Optional[str]:
-        """Generate a summary by injecting a compaction prompt and running the agent."""
+    ) -> "SummaryOutcome":
+        """Generate a summary by injecting a compaction prompt and running the agent.
+
+        Returns the summary text, or a typed failure naming which of the three
+        ways it can fail actually happened (timeout, the invoke raising, an
+        invoke that returned no summary): one "Failed to generate summary" for
+        all of them hid a busy-thread race behind the summarizer (#258).
+        """
         agent = self._agent
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._get_async_graph_for_user(user_id, thread_id=thread_id)
@@ -816,20 +873,22 @@ class CompactionManager:
                 graph.ainvoke(self._summary_input(priority), config=config),
                 timeout=COMPACTION_TIMEOUT_SECONDS,
             )
-            return self._extract_summary_from_result(result.get("messages", []))
+            return _summary_outcome(
+                self._extract_summary_from_result(result.get("messages", []))
+            )
         except asyncio.TimeoutError:
             logger.warning(
                 "Thread %s: Async summary generation timed out after %s seconds",
                 thread_id,
                 COMPACTION_TIMEOUT_SECONDS,
             )
-            return None
+            return _summary_timeout_outcome()
         except Exception as e:
             logger.error(
                 f"Thread {thread_id}: Async summary generation failed: {e}",
                 exc_info=True,
             )
-            return None
+            return _summary_error_outcome(e)
         finally:
             agent._compacting_threads.discard(thread_id)
 
@@ -983,8 +1042,9 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str,
-    ) -> Optional[str]:
-        """Generate context summary via sync graph.invoke()."""
+    ) -> "SummaryOutcome":
+        """Generate context summary via sync graph.invoke() (same outcome contract
+        as :meth:`_generate_summary`)."""
         agent = self._agent
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._get_graph_for_user(user_id, thread_id=thread_id)
@@ -1005,7 +1065,9 @@ class CompactionManager:
                 config=config,
             )
             result = future.result(timeout=COMPACTION_TIMEOUT_SECONDS)
-            return self._extract_summary_from_result(result.get("messages", []))
+            return _summary_outcome(
+                self._extract_summary_from_result(result.get("messages", []))
+            )
         except concurrent.futures.TimeoutError:
             logger.warning(
                 "Thread %s: Sync summary generation timed out after %s seconds",
@@ -1014,13 +1076,13 @@ class CompactionManager:
             )
             if future is not None:
                 future.cancel()
-            return None
+            return _summary_timeout_outcome()
         except Exception as e:
             logger.error(
                 f"Thread {thread_id}: Sync summary generation failed: {e}",
                 exc_info=True,
             )
-            return None
+            return _summary_error_outcome(e)
         finally:
             agent._compacting_threads.discard(thread_id)
             executor.shutdown(wait=False, cancel_futures=True)
@@ -1089,10 +1151,11 @@ class CompactionManager:
         pre_ids = {m.id for m in pre_messages}
         conversational_before = self._count_conversational_messages(pre_messages)
 
-        summary = await self._generate_summary(thread_id, user_id, priority=priority)
-        if not summary:
+        outcome = await self._generate_summary(thread_id, user_id, priority=priority)
+        if outcome.summary is None:
             await self._discard_turn_delta(graph, config, pre_ids)
-            return {"success": False, "reason": "Failed to generate summary"}
+            return outcome.failure_result()
+        summary = outcome.summary
 
         tail = build_resume_compaction_tail(
             user_id=user_id, thread_id=thread_id, summary=summary
@@ -1172,10 +1235,11 @@ class CompactionManager:
         pre_ids = {m.id for m in pre_messages}
         conversational_before = self._count_conversational_messages(pre_messages)
 
-        summary = self._generate_summary_sync(thread_id, user_id)
-        if not summary:
+        outcome = self._generate_summary_sync(thread_id, user_id)
+        if outcome.summary is None:
             self._discard_turn_delta_sync(graph, config, pre_ids)
-            return {"success": False, "reason": "Failed to generate summary"}
+            return outcome.failure_result()
+        summary = outcome.summary
 
         tail = build_resume_compaction_tail(
             user_id=user_id, thread_id=thread_id, summary=summary

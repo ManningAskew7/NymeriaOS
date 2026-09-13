@@ -6,11 +6,13 @@ chat-platform-shaped limit, and it leaked onto the surfaces with real
 scrollback: a `/provider list` in the terminal came back clipped
 mid-row, which reads as a complete answer and is not one.
 
-These tests pin the replacement: a budget keyed by surface, applied both
-at the dispatcher and inside the handlers that pre-truncate their own
-listings, plus a ratchet that fails when a built-in listing grows past
-the compact budget (the remedy then is to split or filter that command,
-never to let it truncate).
+These tests pin the replacement: a budget keyed by surface, applied ONCE
+at the dispatcher's outermost exit (every return path of ``execute()``,
+help cards and error branches included; the handler branch alone was the
+site until `/help all` escaped it, #251/#259), with handlers that
+pre-truncate their own listings underneath, plus a ratchet that fails when
+a built-in listing grows past the compact budget (the remedy then is to
+split or filter that command, never to let it truncate).
 """
 
 from __future__ import annotations
@@ -227,3 +229,81 @@ def test_built_in_listings_stay_well_inside_the_compact_budget() -> None:
             f"{command} renders {len(rendered.markdown)} chars and now "
             "truncates on chat platforms; paginate it"
         )
+
+
+def test_budget_applies_at_the_outermost_exit_including_help(monkeypatch) -> None:
+    """Every return path of execute() is budgeted, the help family included.
+
+    The budget used to sit on ONE of execute()'s ~15 return sites (the generic
+    handler branch); `/help` returned earlier and escaped it for months (#251,
+    #259). The guard now wraps the whole dispatch, so an oversized help
+    rendering is cut on a compact surface and left whole on a roomy one, and
+    cut on a roomy one too once it passes the roomy budget.
+    """
+    big = "x" * (OUTPUT_BUDGET_COMPACT + 8_000)
+    monkeypatch.setattr(
+        cs.CommandService, "_help_category_index_markdown", lambda self, *a, **k: big
+    )
+    monkeypatch.setattr(cs.CommandService, "_help_markdown", lambda self, *a, **k: big)
+
+    compact = _run_command(FakeCommandApi(), "/help all", surface="telegram")
+    assert compact.success is True
+    assert _TRUNCATION_MARKER in compact.markdown
+    assert len(compact.markdown) <= OUTPUT_BUDGET_COMPACT
+
+    roomy = _run_command(FakeCommandApi(), "/help all", surface="cli")
+    assert _TRUNCATION_MARKER not in roomy.markdown
+    assert len(roomy.markdown) == len(big)
+
+    huge = "y" * (cs.OUTPUT_BUDGET_ROOMY + 1)
+    monkeypatch.setattr(cs.CommandService, "_help_markdown", lambda self, *a, **k: huge)
+    roomy_cut = _run_command(FakeCommandApi(), "/help all", surface="cli")
+    assert _TRUNCATION_MARKER in roomy_cut.markdown
+    assert len(roomy_cut.markdown) <= cs.OUTPUT_BUDGET_ROOMY
+
+    # An early ERROR return is budgeted too: an unknown command's error text
+    # cannot outgrow the budget on its own, so prove the wrapper reaches it by
+    # patching the renderer that shapes it.
+    monkeypatch.setattr(cs, "render_outcome", lambda kind, text: big)
+    error = _run_command(FakeCommandApi(), "/no-such-command-here", surface="telegram")
+    assert error.success is False
+    assert _TRUNCATION_MARKER in error.markdown
+    assert len(error.markdown) <= OUTPUT_BUDGET_COMPACT
+
+
+def test_help_all_fits_every_surface_by_shape_not_by_truncation() -> None:
+    """`/help all` is the one catalog dump the ratchet never covered (#251/#259).
+
+    Compact surfaces get a category index (measured: ~860 chars against a
+    16.8k full table); each `/help all <category>` table stays under the
+    compact budget on its own; roomy surfaces keep the full table. None of
+    them may reach the truncation marker: a clipped table reads as complete.
+    """
+    for surface in COMPACT:
+        rendered = _run_command(FakeCommandApi(), "/help all", surface=surface)
+        assert rendered.success is True, surface
+        assert _TRUNCATION_MARKER not in rendered.markdown
+        assert "| Command | Usage | Description |" not in rendered.markdown, surface
+        assert len(rendered.markdown) <= OUTPUT_BUDGET_COMPACT // 2, (
+            f"/help all renders {len(rendered.markdown)} chars on {surface}"
+        )
+
+    service = cs.CommandService()
+    categories = service._help_categories(None, actor="user", surface="telegram", is_admin=True)
+    assert len(categories) >= 10
+    for category in categories:
+        rendered = _run_command(FakeCommandApi(), f"/help all {category}", surface="telegram")
+        assert rendered.success is True, category
+        assert _TRUNCATION_MARKER not in rendered.markdown
+        assert "| Command | Usage | Description |" in rendered.markdown
+        assert len(rendered.markdown) <= OUTPUT_BUDGET_COMPACT, (
+            f"/help all {category} renders {len(rendered.markdown)} chars and now "
+            "truncates on chat platforms; split the category"
+        )
+
+    for surface in ROOMY:
+        rendered = _run_command(FakeCommandApi(), "/help all", surface=surface)
+        assert rendered.success is True
+        assert _TRUNCATION_MARKER not in rendered.markdown
+        # The full table: every category heading, in one reply.
+        assert all(f"### {category}" in rendered.markdown for category in categories), surface

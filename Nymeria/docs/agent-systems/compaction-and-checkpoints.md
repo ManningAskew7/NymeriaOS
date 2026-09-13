@@ -86,6 +86,12 @@ The `RAG Search Queries` section should contain 3-5 quoted search strings that t
 
 The prompt also frames the summary as an internal handoff, not a reply: the output is notes to the agent's future self, typically never shown to the user, and the model is explicitly told not to answer, greet, or address the user or respond to a still-pending question (open questions belong under `## Pending Work` for the resumed session to answer). Without this directive, a compaction firing while a user question was still open (common on the sub-turn path) tended to produce an answer to the user instead of the handoff, and that answer was then lost with the discarded compaction turn.
 
+### Manual compaction on a busy thread, and failure reasons
+
+Every user-facing manual entry (`POST /threads/{id}/compact`, the `/thread compact` slash command, and the chat endpoint's `/compact` message) refuses a thread that is mid-turn with one sentence, `Cannot compact while the thread is processing` (HTTP 409 on the route, an error result on the command surface, a response line on the chat stream), before any summary call is made. Before this guard a manual compaction ran its summary invoke concurrently with the live turn and reported the summarizer's failure. The guard lives at those entries and never inside `compact_now`: sub-turn auto-compaction legitimately runs under the held lock.
+
+A compaction that produced no summary reports which of three things happened, as `failure` plus a human `reason` in the result: `timeout` (the summary call outlived `COMPACTION_TIMEOUT_SECONDS`), `error` (the invoke raised; the reason names the exception) or `empty` (the summarizer returned no summary text). The command surface renders it as `Compaction failed: <reason>`; a too-short thread is a decline (`declined: true`), rendered as `Skipped: ...`.
+
 ### Steering the summary (`/compact <focus instruction>`)
 
 A manual `/compact` may carry an optional free-text focus instruction, for example `/compact keep the exact auth-flow decisions and the failing test names`. The text is normalized (trimmed, control-character stripped, `<<<`/`>>>` fence markers removed, capped at 1,000 chars; empty collapses to none) and, when present, inserts a one-line primer before the section list and appends a focus addendum after the base prompt.

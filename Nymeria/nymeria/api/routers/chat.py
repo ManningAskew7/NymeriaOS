@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ...core.accounts import AuthenticatedUser
-from ...core.agent_compaction import COMPACTING_MESSAGE
+from ...core.agent_compaction import COMPACT_BUSY_MESSAGE, COMPACTING_MESSAGE
 from ...core.command_forms import CommandResultLevel, render_outcome
 from ...core.interactive_admission import (
     InteractiveCapacityError,
@@ -40,6 +40,7 @@ from ...core.turn_stream_buffer import TurnReplayGapError
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..sse import SSE_RESPONSE_HEADERS, with_sse_keepalive
 from ..thread_config_helpers import effective_provider_model
+from ..thread_overview import is_thread_processing
 
 from ...core.thread_lock_manager import THREAD_DELETED_MESSAGE, get_thread_epoch, thread_admission_guard
 
@@ -650,6 +651,40 @@ def create_chat_router(
             msg_stripped,
             is_compact_cmd,
         )
+        if is_compact_cmd and is_thread_processing(agent, thread_id):
+            # Same mid-turn guard as POST /threads/{id}/compact and /thread
+            # compact (#258): this is the entry the desktop's `/compact` takes,
+            # and it used to spawn a summary invoke against the live turn.
+            # A pre-check before any task exists, so it stays orthogonal to
+            # the holder-shape work #367 plans for this branch.
+            busy_thread_id = original_thread_id if dispatched_target else thread_id
+
+            async def compact_busy_response():
+                if dispatched_target is not None:
+                    yield "data: " + json.dumps({
+                        "type": "dispatched", "thread_id": original_thread_id,
+                        "target_thread_id": dispatched_target.thread_id,
+                        "title": dispatched_target.title,
+                        "matched_ref": dispatched_target.reference,
+                        **_dispatch_stream_fields(dispatched_target, original_thread_id),
+                    }) + "\n\n"
+                yield "data: " + json.dumps({
+                    "type": "response", "content": COMPACT_BUSY_MESSAGE + ".",
+                    "thread_id": busy_thread_id,
+                    **_dispatch_stream_fields(dispatched_target, original_thread_id),
+                }) + "\n\n"
+                yield "data: " + json.dumps({
+                    "type": "done", "thread_id": busy_thread_id,
+                    "context_stats": agent.get_context_stats(thread_id),
+                    "model": effective_provider_model(agent, thread_id).model,
+                    **_dispatch_stream_fields(dispatched_target, original_thread_id),
+                }) + "\n\n"
+
+            return StreamingResponse(
+                compact_busy_response(),
+                media_type="text/event-stream",
+                headers=SSE_RESPONSE_HEADERS,
+            )
         if is_compact_cmd:
             # Optional trailing text steers what the summary prioritizes. Parse it
             # from the original (case-preserved) message, not msg_stripped (lowered).
