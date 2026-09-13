@@ -7,6 +7,7 @@ vi.mock('$lib/services/api.svelte', () => ({
   api: {
     getCLIProxyStatus: vi.fn(),
     listCLIProxyAuthFiles: vi.fn(),
+    applyCLIProxyRoute: vi.fn(),
   },
 }));
 vi.mock('@tauri-apps/api/core', () => ({
@@ -102,5 +103,74 @@ describe('authFilesFor', () => {
     expect(
       cliproxyStore.authFilesFor('gemini-cli').map((file) => file.name)
     ).toEqual(['gemini-v7.json', 'gemini-v6.json', 'gemini-file-shaped.json']);
+  });
+});
+
+// The per-thread CLIProxy walkthrough (thread Settings > Model) applies
+// through the same store call as the global Proxy tab; the scope is the
+// only thing that keeps "Use for this thread" from rewriting every chat.
+describe('applyRoute', () => {
+  const APPLIED_THREAD = {
+    scope: 'thread' as const,
+    provider: 'openai',
+    model: 'gpt-6-astra',
+    base_url: 'http://cli-proxy-api:8317/v1',
+    api_mode: 'responses',
+    thread_id: 'twitch_silk',
+    restart_required: false,
+  };
+
+  it('sends scope thread with the thread id and reports a thread-scoped message', async () => {
+    vi.mocked(api.applyCLIProxyRoute).mockResolvedValue(APPLIED_THREAD);
+    const applied = await cliproxyStore.applyRoute('codex', {
+      model: 'gpt-6-astra',
+      scope: 'thread',
+      threadId: 'twitch_silk',
+    });
+    expect(api.applyCLIProxyRoute).toHaveBeenCalledWith({
+      provider: 'codex',
+      model: 'gpt-6-astra',
+      scope: 'thread',
+      thread_id: 'twitch_silk',
+      gatekeeper_key: undefined,
+    });
+    expect(applied).toEqual(APPLIED_THREAD);
+    expect(cliproxyStore.message).toBe('Thread routed through CLIProxy (gpt-6-astra).');
+    expect(cliproxyStore.error).toBeNull();
+  });
+
+  it('defaults to global scope with no thread id when none is given', async () => {
+    vi.mocked(api.applyCLIProxyRoute).mockResolvedValue({
+      ...APPLIED_THREAD,
+      scope: 'global',
+      thread_id: null,
+    });
+    await cliproxyStore.applyRoute('codex', { model: 'gpt-6-astra' });
+    expect(api.applyCLIProxyRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex', scope: 'global', thread_id: undefined })
+    );
+    expect(cliproxyStore.message).toBe('Backend route set to openai via CLIProxy (gpt-6-astra).');
+  });
+
+  it('clearNotices drops a previous scope\'s banner so a fresh panel mount starts clean', async () => {
+    vi.mocked(api.applyCLIProxyRoute).mockResolvedValue({ ...APPLIED_THREAD, scope: 'global', thread_id: null });
+    await cliproxyStore.applyRoute('codex', { model: 'gpt-6-astra' });
+    expect(cliproxyStore.message).not.toBeNull();
+    cliproxyStore.clearNotices();
+    expect(cliproxyStore.message).toBeNull();
+    expect(cliproxyStore.error).toBeNull();
+  });
+
+  it('surfaces a failed apply as an error, returns null, and leaves no success message', async () => {
+    vi.mocked(api.applyCLIProxyRoute).mockRejectedValue(
+      new Error('CLIPROXY_MANAGEMENT_URL is not set; configure the proxy before applying a route')
+    );
+    const applied = await cliproxyStore.applyRoute('codex', {
+      scope: 'thread',
+      threadId: 'twitch_silk',
+    });
+    expect(applied).toBeNull();
+    expect(cliproxyStore.message).toBeNull();
+    expect(cliproxyStore.error).toContain('CLIPROXY_MANAGEMENT_URL is not set');
   });
 });

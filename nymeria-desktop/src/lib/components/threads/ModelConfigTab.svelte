@@ -1,8 +1,18 @@
 <script lang="ts">
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
-  import type { ActiveLLMFallback, LLMProviderSpec, ProviderRoute } from '$lib/types';
+  import type {
+    ActiveLLMFallback,
+    CLIProxyApplyRouteResponse,
+    LLMProviderSpec,
+    ProviderRoute,
+  } from '$lib/types';
+  import Button from '$lib/components/common/Button.svelte';
+  import CLIProxyPanel from '$lib/components/common/CLIProxyPanel.svelte';
+  import Icon from '$lib/components/common/Icon.svelte';
+  import Modal from '$lib/components/common/Modal.svelte';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
@@ -58,6 +68,12 @@
     fallbackRevertBusy?: boolean;
     fallbackRevertError?: string;
     onRevertFallback?: () => void;
+    /** The thread the CLIProxy route walkthrough applies to; absent hides it. */
+    threadId?: string;
+    threadTitle?: string;
+    /** Fires after the walkthrough applied a route server-side; the host
+     *  re-seeds its form and answers false when it could not. */
+    onRouteApplied?: (applied: CLIProxyApplyRouteResponse) => boolean | Promise<boolean>;
   }
 
   let {
@@ -88,7 +104,31 @@
     fallbackRevertBusy = false,
     fallbackRevertError = '',
     onRevertFallback = undefined,
+    threadId = '',
+    threadTitle = '',
+    onRouteApplied = undefined,
   }: Props = $props();
+
+  // The per-thread CLIProxy walkthrough: the Settings > Proxy panel hosted in
+  // a modal with scope=thread. Admin-only because POST /cliproxy/apply-route
+  // is admin-gated server-side; a non-admin still has the raw fields below.
+  const isAdmin = $derived(configStore.identity?.role === 'admin');
+  const showRouteWalkthrough = $derived(Boolean(threadId) && isAdmin);
+  let routeModalOpen = $state(false);
+  let routeNotice = $state('');
+
+  async function handleRouteApplied(applied: CLIProxyApplyRouteResponse) {
+    routeModalOpen = false;
+    routeNotice = '';
+    // The route is applied server-side regardless; the notice claims the
+    // form reflects it, so it waits for the host's re-seed to succeed (a
+    // failed reload surfaces as the panel's own error instead).
+    const reseeded = (await onRouteApplied?.(applied)) ?? true;
+    if (!reseeded) return;
+    routeNotice = `Routed through CLIProxy: ${applied.provider} / ${applied.model}`
+      + (applied.api_mode ? ` (${applied.api_mode === 'responses' ? 'Responses API' : 'Chat Completions'})` : '')
+      + '. Saved for this thread.';
+  }
 
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
   let providerCatalog = $state<LLMProviderSpec[]>([]);
@@ -240,6 +280,30 @@
       {#if fallbackRevertError}
         <span class="field-hint revert-error">{fallbackRevertError}</span>
       {/if}
+    {/if}
+
+    {#if showRouteWalkthrough}
+      <!-- Same idiom as the global Settings "Provider Setup" callout: the
+           guided path sits above the raw fields it would otherwise take
+           hand-typing (the /v1 URL, the cpx gatekeeper key) to fill. -->
+      <div class="route-callout">
+        <div>
+          <span class="route-callout-title">Subscription route</span>
+          <span class="field-hint">Log in to a CLIProxy subscription target and route only this thread through it; the base URL, API mode and gatekeeper key are filled for you.</span>
+        </div>
+        <Button variant="secondary" onclick={() => { routeNotice = ''; routeModalOpen = true; }}>
+          <Icon name="key" size={14} />
+          Route via CLIProxy
+        </Button>
+      </div>
+      <!-- Persistent live region (ChatContainer idiom): a node inserted
+           together with its text is not reliably announced. -->
+      <div class="route-notice" class:shown={Boolean(routeNotice)} role="status" aria-live="polite">
+        {#if routeNotice}
+          <Icon name="success" size={14} />
+          <span>{routeNotice}</span>
+        {/if}
+      </div>
     {/if}
 
     <div class="field-group">
@@ -513,9 +577,57 @@
   {/if}
 </div>
 
+{#if showRouteWalkthrough}
+  <Modal
+    title={threadTitle ? `Route "${threadTitle}" via CLIProxy` : 'Route this thread via CLIProxy'}
+    isOpen={routeModalOpen}
+    onClose={() => (routeModalOpen = false)}
+  >
+    <!-- Modal unmounts its children on close, so the panel mounts fresh
+         each time and its onDestroy dismisses an in-flight OAuth poller. -->
+    <CLIProxyPanel
+      scope={{ kind: 'thread', threadId }}
+      onRouteApplied={handleRouteApplied}
+    />
+  </Modal>
+{/if}
+
 <style>
   .tab-body {
     padding: var(--spacing-lg);
+  }
+
+  .route-callout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated-2);
+  }
+  .route-callout > div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+  }
+  .route-callout-title {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+  .route-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    font-size: var(--font-size-xs);
+    color: var(--success);
+  }
+  .route-notice.shown {
+    margin-bottom: var(--spacing-md);
   }
 
   .grid-2 {

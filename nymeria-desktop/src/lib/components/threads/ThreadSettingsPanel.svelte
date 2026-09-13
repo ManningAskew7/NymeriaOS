@@ -19,14 +19,10 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
   import { computeEffectiveToolCounts, isMcpToolName, liveTemporaryToolNames } from '$lib/utils/toolCounts';
-  import {
-    DEFAULT_CUSTOM_OPENAI_BASE_URL,
-    fromThreadDisplayProvider,
-    supportsOpenAiApiMode,
-    toThreadDisplayProvider,
-    type ThreadDisplayProvider,
-  } from '$lib/utils/providerMapping';
+  import { toThreadDisplayProvider, type ThreadDisplayProvider } from '$lib/utils/providerMapping';
   import { detectThreadPlatform, isNativeDisplayPlatform } from '$lib/utils/platform';
+  import { isTopOverlay, pushOverlay, removeOverlay } from '$lib/utils/overlayStack';
+  import { llmRouteConfigFrom, llmRouteFieldsFrom, type ThreadLlmRouteFields } from '$lib/utils/threadLlmSeed';
   import BehaviorConfigTab from './BehaviorConfigTab.svelte';
   import ModelConfigTab from './ModelConfigTab.svelte';
   import ToolsConfigTab from './ToolsConfigTab.svelte';
@@ -231,27 +227,12 @@
   let disabledTools = $state<Set<string>>(initialToolState.disabled);
   let enabledTools = $state<Set<string>>(initialToolState.enabled);
 
-  function getInitialThreadDisplayProvider(): ThreadDisplayProvider {
-    return toThreadDisplayProvider(
-      threadConfig?.llmConfig?.provider ?? '',
-      threadConfig?.llmConfig?.base_url
-    );
-  }
-
-  function getInitialLlmProvider(): string {
-    return threadConfig?.llmConfig?.provider ?? '';
-  }
-
-  function getInitialLlmModel(): string {
-    return threadConfig?.llmConfig?.model ?? '';
-  }
-
-  function getInitialLlmBaseUrl(): string {
-    return threadConfig?.llmConfig?.base_url ?? '';
-  }
-
-  function getInitialLlmApiKey(): string {
-    return threadConfig?.llmConfig?.api_key ?? '';
+  // Route fields (provider, model, URL, key, API mode, provider route) share
+  // ONE derivation with the post-apply re-seed (handleRouteApplied), so a
+  // route landed server-side by the CLIProxy walkthrough reads back into the
+  // form exactly the way a mount would.
+  function initialLlmRoute(): ThreadLlmRouteFields {
+    return llmRouteFieldsFrom(threadConfig);
   }
 
   function getInitialLlmTemperature(): string {
@@ -292,14 +273,6 @@
     return threadConfig?.llmConfig?.use_model_defaults != null
       ? String(threadConfig.llmConfig.use_model_defaults) as 'true' | 'false'
       : 'default';
-  }
-
-  function getInitialLlmOpenAiApiMode(): 'default' | 'chat_completions' | 'responses' {
-    return threadConfig?.llmConfig?.openai_api_mode ?? 'default';
-  }
-
-  function getInitialLlmProviderRoute(): 'default' | ProviderRoute {
-    return threadConfig?.llmConfig?.provider_route ?? 'default';
   }
 
   function getInitialCompactThresholdMode(): 'default' | 'percentage' | 'tokens' {
@@ -344,11 +317,11 @@
   }
 
   // LLM form state
-  let threadDisplayProvider = $state<ThreadDisplayProvider>(getInitialThreadDisplayProvider());
-  let llmProvider = $state(getInitialLlmProvider());
-  let llmModel = $state(getInitialLlmModel());
-  let llmBaseUrl = $state(getInitialLlmBaseUrl());
-  let llmApiKey = $state(getInitialLlmApiKey());
+  let threadDisplayProvider = $state<ThreadDisplayProvider>(initialLlmRoute().threadDisplayProvider);
+  let llmProvider = $state(initialLlmRoute().llmProvider);
+  let llmModel = $state(initialLlmRoute().llmModel);
+  let llmBaseUrl = $state(initialLlmRoute().llmBaseUrl);
+  let llmApiKey = $state(initialLlmRoute().llmApiKey);
   let llmTemperature = $state<string>(getInitialLlmTemperature());
   let llmMaxTokens = $state<string>(getInitialLlmMaxTokens());
   let llmContextLength = $state<string>(getInitialLlmContextLength());
@@ -356,8 +329,8 @@
   let llmExtendedThinking = $state<'default' | 'true' | 'false'>(getInitialLlmExtendedThinking());
   let llmReasoningEffort = $state(getInitialLlmReasoningEffort());
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(getInitialLlmUseModelDefaults());
-  let llmProviderRoute = $state<'default' | ProviderRoute>(getInitialLlmProviderRoute());
-  let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(getInitialLlmOpenAiApiMode());
+  let llmProviderRoute = $state<'default' | ProviderRoute>(initialLlmRoute().llmProviderRoute);
+  let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(initialLlmRoute().llmOpenAiApiMode);
   let compactThresholdMode = $state<'default' | 'percentage' | 'tokens'>(getInitialCompactThresholdMode());
   let compactThresholdPct = $state<string>(getInitialCompactThreshold());
   let compactThresholdTokens = $state<string>(getInitialCompactThresholdTokens());
@@ -366,10 +339,6 @@
   let proactiveCompactMinPct = $state<string>(getInitialProactiveCompactMinPct());
   let fallbackSwitchMode = $state<'default' | 'auto' | 'ask'>(getInitialFallbackSwitchMode());
   let refusalSwapMode = $state<'default' | 'off' | 'ask' | 'auto'>(getInitialRefusalSwapMode());
-
-  function getEffectiveProvider(): string {
-    return llmProvider || serverSettingsStore.provider || '';
-  }
 
   // System prompt & agent fields
   function getInitialSystemPrompt(): string {
@@ -861,19 +830,27 @@
         fallbackSwitchMode !== 'default' || refusalSwapMode !== 'default';
 
       if (hasLlm) {
-        const llm: Record<string, unknown> = {};
-        const mapped = fromThreadDisplayProvider(threadDisplayProvider);
-        llm.provider = mapped.provider || null;
-        const effectiveProviderForSave = mapped.provider || getEffectiveProvider();
-        if (threadDisplayProvider === 'openai_custom') {
-          llm.base_url = llmBaseUrl || DEFAULT_CUSTOM_OPENAI_BASE_URL;
-        } else if (supportsOpenAiApiMode(effectiveProviderForSave)) {
-          llm.base_url = llmBaseUrl || mapped.baseUrl;
-        } else {
-          llm.base_url = mapped.baseUrl;
-        }
-        llm.api_key = llmApiKey || null;
-        llm.model = llmModel || null;
+        // Route keys (provider, model, URL, key, API mode, provider route)
+        // come from the same pure derivation the mount-time seed and the
+        // post-apply re-seed use, so a re-seeded form Saves back the route
+        // it was seeded from (round trip pinned in threadLlmSeed.test.ts).
+        const llm: Record<string, unknown> = {
+          ...llmRouteConfigFrom(
+            {
+              threadDisplayProvider,
+              llmProvider,
+              llmModel,
+              llmBaseUrl,
+              llmApiKey,
+              llmOpenAiApiMode,
+              llmProviderRoute,
+            },
+            {
+              savedBaseUrl: threadConfig?.llmConfig?.base_url,
+              globalProvider: serverSettingsStore.provider || '',
+            }
+          ),
+        };
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
         llm.context_length = llmContextLength ? parseInt(llmContextLength, 10) : null;
@@ -887,10 +864,6 @@
         } else {
           llm.use_model_defaults = null;
         }
-        llm.provider_route = llmProviderRoute !== 'default' ? llmProviderRoute : null;
-        llm.openai_api_mode = supportsOpenAiApiMode(getEffectiveProvider()) && llmOpenAiApiMode !== 'default'
-          ? llmOpenAiApiMode
-          : null;
         llm.compact_threshold_mode = compactThresholdMode === 'default' ? null : compactThresholdMode;
         llm.compact_threshold = compactThresholdPct ? parseFloat(compactThresholdPct) : null;
         llm.compact_threshold_tokens = compactThresholdTokens ? parseInt(compactThresholdTokens, 10) : null;
@@ -999,14 +972,7 @@
       });
 
       onSaved(result);
-
-      const savedThreadId = thread.id;
-      api.getThreadContextStats(savedThreadId).then((stats) => {
-        if (stats && threadsStore.currentThreadId === savedThreadId) {
-          chatStore.setContextStats(stats);
-          chatStore.setActiveModel(stats.model);
-        }
-      });
+      refreshActiveModelChip();
 
       onClose();
     } catch (e) {
@@ -1033,6 +999,52 @@
       fallbackRevertError = humanizeErrorText(e, { action: 'update', resource: 'the fallback hold' });
     } finally {
       fallbackRevertBusy = false;
+    }
+  }
+
+  // The chat header's model chip reads chatStore.activeModel, which only
+  // the context-stats probe refreshes; run it after any write that can
+  // change the thread's effective model (Save, a route apply).
+  function refreshActiveModelChip() {
+    const savedThreadId = thread.id;
+    void api.getThreadContextStats(savedThreadId).then((stats) => {
+      if (stats && threadsStore.currentThreadId === savedThreadId) {
+        chatStore.setContextStats(stats);
+        chatStore.setActiveModel(stats.model);
+      }
+    });
+  }
+
+  // The CLIProxy walkthrough applied a route SERVER-SIDE (apply-route,
+  // scope=thread). The form's route fields are now stale, and Save re-sends
+  // the whole llm_config, so re-seed them from the fresh config before the
+  // user can Save over the route. Only route fields are touched: unsaved
+  // edits elsewhere in the panel survive.
+  function applyLlmRouteFields(fields: ThreadLlmRouteFields) {
+    threadDisplayProvider = fields.threadDisplayProvider;
+    llmProvider = fields.llmProvider;
+    llmModel = fields.llmModel;
+    llmBaseUrl = fields.llmBaseUrl;
+    llmApiKey = fields.llmApiKey;
+    llmOpenAiApiMode = fields.llmOpenAiApiMode;
+    llmProviderRoute = fields.llmProviderRoute;
+  }
+
+  // Returns false when the reload failed: the route IS applied server-side
+  // either way, but the form could not be re-seeded, so the Model tab must
+  // not claim the form reflects it.
+  async function handleRouteApplied(): Promise<boolean> {
+    try {
+      const fresh = await threadConfigStore.loadConfig(thread.id);
+      applyLlmRouteFields(llmRouteFieldsFrom(fresh));
+      // Hosts get the fresh config the same way they do after Save (the
+      // threadConfig prop is store-backed, so hasChanges() reads clean).
+      onSaved(fresh);
+      refreshActiveModelChip();
+      return true;
+    } catch (e) {
+      error = humanizeErrorText(e, { action: 'load', resource: 'the updated thread settings' });
+      return false;
     }
   }
 
@@ -1162,8 +1174,24 @@
     }
   }
 
+  // Mounted-when-open (the host conditionally renders this panel), so the
+  // overlay layer registers on mount. Escape acts only when this is the
+  // topmost open overlay: the Model tab's CLIProxy route modal stacks on
+  // top, and Escape there must close the modal, not this panel with its
+  // unsaved edits (see $lib/utils/overlayStack).
+  let layer: symbol | null = null;
+
+  $effect(() => {
+    const id = pushOverlay('thread-settings');
+    layer = id;
+    return () => {
+      removeOverlay(id);
+      layer = null;
+    };
+  });
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') onClose();
+    if (e.key === 'Escape' && layer && isTopOverlay(layer)) onClose();
   }
 </script>
 
@@ -1286,6 +1314,9 @@
                 {fallbackRevertBusy}
                 {fallbackRevertError}
                 onRevertFallback={revertActiveFallback}
+                threadId={thread.id}
+                threadTitle={thread.title}
+                onRouteApplied={handleRouteApplied}
               />
             {:else if activeTab === 'tools-native' || activeTab === 'tools-mcp'}
               {#if toolSection === 'mcp'}

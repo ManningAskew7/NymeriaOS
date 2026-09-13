@@ -126,6 +126,15 @@ function createCLIProxyStore() {
     }
   }
 
+  // A panel mounting in a new scope (the thread walkthrough opening over a
+  // Settings > Proxy visit, or the reverse) must not inherit the previous
+  // scope's success banner: "Backend route set to ..." inside a thread modal
+  // reads as if THIS thread was just routed.
+  function clearNotices() {
+    error = null;
+    message = null;
+  }
+
   function stopOAuthPolling() {
     if (oauthTimer) {
       clearInterval(oauthTimer);
@@ -437,6 +446,7 @@ function createCLIProxyStore() {
     startOAuth,
     deliverCallback,
     dismissOAuth,
+    clearNotices,
     setAuthFileDisabled,
     importAuthFile,
     deleteAuthFile,

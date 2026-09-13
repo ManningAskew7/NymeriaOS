@@ -1,9 +1,30 @@
 <script lang="ts">
   import { cliproxyStore } from '$lib/stores/cliproxy.svelte';
-  import type { CLIProxyProviderInfo } from '$lib/types';
+  import type { CLIProxyApplyRouteResponse, CLIProxyProviderInfo } from '$lib/types';
   import { onDestroy, onMount } from 'svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
+
+  /**
+   * Where a route apply lands. Global is the Settings > Proxy tab (the
+   * default, unchanged); thread is the per-thread walkthrough opened from a
+   * thread's Model tab, which applies through the same backend apply-route
+   * with scope=thread. The login/import/model-pick walkthrough is identical
+   * in both: only the apply target and the global-only blocks (proxy knobs,
+   * the desktop-managed local container) differ.
+   */
+  type CLIProxyPanelScope =
+    | { kind: 'global' }
+    | { kind: 'thread'; threadId: string };
+
+  interface Props {
+    scope?: CLIProxyPanelScope;
+    /** Fires after a successful apply (either scope) with the backend's response. */
+    onRouteApplied?: (applied: CLIProxyApplyRouteResponse) => void;
+  }
+
+  let { scope = { kind: 'global' }, onRouteApplied }: Props = $props();
+  const isThreadScope = $derived(scope.kind === 'thread');
 
   const TOS_DISCLAIMER =
     'Subscription OAuth routes a personal AI subscription through CLIProxy instead of a pay-per-token API key. '
@@ -28,6 +49,12 @@
   async function loadPanel() {
     await cliproxyStore.refresh();
     if (cliproxyStore.reachable) {
+      if (isThreadScope) {
+        // Proxy knobs are a global concern; the thread walkthrough never
+        // renders them, so it never fetches them either.
+        await cliproxyStore.loadModels();
+        return;
+      }
       await Promise.all([cliproxyStore.loadKnobs(), cliproxyStore.loadModels()]);
       // An explicit refresh must not eat typed-but-unsaved knob edits.
       if (!knobsDirty) syncKnobInputs();
@@ -36,6 +63,7 @@
   }
 
   onMount(() => {
+    cliproxyStore.clearNotices();
     void loadPanel();
   });
 
@@ -68,8 +96,16 @@
     callbackUrl = '';
   }
 
-  async function applyGlobal(provider: CLIProxyProviderInfo) {
-    await cliproxyStore.applyRoute(provider.id, { model: modelFor(provider).trim() });
+  async function applyRoute(provider: CLIProxyProviderInfo) {
+    const model = modelFor(provider).trim();
+    const applied = scope.kind === 'thread'
+      ? await cliproxyStore.applyRoute(provider.id, {
+          model,
+          scope: 'thread',
+          threadId: scope.threadId,
+        })
+      : await cliproxyStore.applyRoute(provider.id, { model });
+    if (applied) onRouteApplied?.(applied);
   }
 
   // Auth-file import (migrating a login from another host without shell
@@ -265,11 +301,11 @@
             </Button>
             <Button
               variant="primary"
-              onclick={() => applyGlobal(provider)}
+              onclick={() => applyRoute(provider)}
               disabled={provider.supported === false || !provider.logged_in}
             >
               <Icon name="check" size={14} />
-              Use for all chats
+              {isThreadScope ? 'Use for this thread' : 'Use for all chats'}
             </Button>
           </div>
         </section>
@@ -288,7 +324,7 @@
       {/each}
     </datalist>
 
-    {#if knobsLoaded}
+    {#if knobsLoaded && !isThreadScope}
       <div class="field">
         <span class="field-label">Proxy settings</span>
         <div class="knob-row">
@@ -322,7 +358,7 @@
     {/if}
   {/if}
 
-  {#if cliproxyStore.localRunning || cliproxyStore.localSessions.length > 0}
+  {#if !isThreadScope && (cliproxyStore.localRunning || cliproxyStore.localSessions.length > 0)}
     <div class="field">
       <span class="field-label">Local container (this machine)</span>
       <p class="hint">A desktop-managed CLIProxy container is {cliproxyStore.localRunning ? 'running' : 'stopped'}.</p>

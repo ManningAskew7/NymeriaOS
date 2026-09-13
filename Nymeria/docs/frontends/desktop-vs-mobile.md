@@ -322,7 +322,7 @@ rendering, and stale-tool refresh after install/retry/delete.
 
 #### `components/threads/ThreadSettingsPanel.svelte`
 
-Both exist and provide per-thread LLM config UI plus dedicated Agent, MCP, Skills, and Triggers tabs for callable-thread settings, MCP tool overrides, skill overrides, and trigger setup. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
+Both exist and provide per-thread LLM config UI (desktop's Model tab adds an admin-only CLIProxy route walkthrough, backlog #377 for mobile) plus dedicated Agent, MCP, Skills, and Triggers tabs for callable-thread settings, MCP tool overrides, skill overrides, and trigger setup. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
 
 Skills parity is intentionally partial on mobile: mobile can list installed skills and set per-thread enable/disable overrides, while marketplace install, uninstall, and global skill defaults remain desktop-only because those are administrative/library-management workflows.
 
@@ -407,7 +407,7 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `components/threads/ThreadHeader.svelte` | Current thread title + platform indicator; callable count badge uses the per-thread `/threads/{id}/callable-tools` endpoint | Integrated into `ChatPanel` header with the same per-thread callable count lookup |
 | `components/threads/FolderItem.svelte` | Folder display in thread list | Not needed (folders not in mobile UI) |
 | Thread config sharing UI | Import `.nymeria-thread.json` files from the desktop thread list and export portable config-only shares from thread context menus | Backend API exists for mobile, but mobile has no UI in v1 |
-| `components/common/CLIProxyPanel.svelte` | CLIProxy management UI | Desktop-only, tied to Tauri/local proxy workflows |
+| `components/common/CLIProxyPanel.svelte` | CLIProxy management UI; also hosted in thread scope by the thread Model tab (admin-only "Route via CLIProxy" walkthrough, apply-route scope thread) | Desktop-only; mobile's `CLIProxySection` applies globally only (backlog #377) |
 | `components/common/ProviderSetupWizard.svelte` | Admin provider credential setup and test flow | Desktop-only for now; configures the connected backend through settings APIs |
 | `components/common/StartupOverlay.svelte` | Tauri startup/readiness overlay | Source-checkout dev mode can display local backend startup; release client-only builds normally transition to ready immediately |
 | `components/common/ToggleSwitch.svelte` | Shared desktop switch primitive used by tool, trigger, and MCP management surfaces | Mobile still uses platform-specific switch markup pending a touch-target-focused mobile primitive |
