@@ -85,6 +85,7 @@ def test_send_with_small_attachment_drafts_attaches_inline_then_sends(monkeypatc
         ("POST", "/me/messages/D1/attachments", (True, {"id": "A1"})),
         ("POST", "/me/messages/D1/send", (True, {})),
     ])
+    monkeypatch.setattr(oe, "require_scopes", lambda *a, **k: None)
     out = oe.outlook_send_email.invoke(
         {"to": "a@x.com", "subject": "S", "body": "B", "attachments": str(small_file), "mailbox": "s@x.com"}, config=_CFG,
     )
@@ -418,3 +419,37 @@ def test_save_to_outside_workspace_warns_but_extraction_still_returns(monkeypatc
     out = oa.outlook_get_attachments.invoke({"email_id": "M1", "save_to": "/etc"}, config=_CFG)
     assert out.startswith("[Attachment: notes.txt (text/plain)]\n\nhi")
     assert "[Warning]: save_to failed: Path outside workspace: /etc" in out
+
+
+# ---------------------------------------------------------------------------
+# Review fix: sending from a shared mailbox is gated on Mail.Send.Shared
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("outlook_send_email", {"to": "a@x.com", "subject": "S", "body": "B"}),
+    ("outlook_reply_email", {"email_id": "M1", "body": "B"}),
+    ("outlook_forward_email", {"email_id": "M1", "to": "a@x.com"}),
+    ("outlook_send_draft", {"draft_id": "D1"}),
+])
+def test_shared_mailbox_send_is_refused_when_the_scope_is_missing(monkeypatch, tool, args):
+    g = _install(monkeypatch, [])
+    asked = []
+
+    def _scopes(user_id, needed, account_id=None, *, mailbox=None, thread_id=None, purpose=""):
+        asked.append((list(needed), mailbox, purpose))
+        return "the connected account lacks Mail.Send.Shared; reconnect with request_credential(...)"
+
+    monkeypatch.setattr(oe, "require_scopes", _scopes)
+    out = getattr(oe, tool).invoke({**args, "mailbox": "sales@x.com"}, config=_CFG)
+    assert out == "[Error]: the connected account lacks Mail.Send.Shared; reconnect with request_credential(...)"
+    assert asked == [(["Mail.Send.Shared"], "sales@x.com", "sending from a shared mailbox")]
+    assert g.calls == []  # nothing composed, nothing sent
+
+
+def test_own_mailbox_send_never_consults_the_shared_scope(monkeypatch):
+    g = _install(monkeypatch, [("POST", "/me/sendMail", (True, {}))])
+    monkeypatch.setattr(oe, "require_scopes", lambda *a, **k: (_ for _ in ()).throw(AssertionError("gate consulted")))
+    out = oe.outlook_send_email.invoke({"to": "a@x.com", "subject": "S", "body": "B"}, config=_CFG)
+    assert out.startswith("[Success]")
+    assert [c["endpoint"] for c in g.calls] == ["/me/sendMail"]

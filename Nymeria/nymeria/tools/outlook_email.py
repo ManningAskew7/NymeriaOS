@@ -29,6 +29,7 @@ from .outlook_graph import (  # noqa: F401  (re-exports, see module docstring)
     INTERESTING_HEADERS,
     OUTLOOK_CACHE_FILENAME as _OUTLOOK_CACHE_FILENAME,
     OutlookTokenError,
+    SCOPE_SHARED_SEND,
     TOKEN_URL,
     _resolve_folder_alias,
     _select_account,
@@ -40,6 +41,7 @@ from .outlook_graph import (  # noqa: F401  (re-exports, see module docstring)
     graph_batch,
     graph_request,
     odata_quote,
+    require_scopes,
     resolve_folder,
     resolve_targets,
     summarize_batch,
@@ -883,6 +885,15 @@ def _send_message_object(
     return True, note
 
 
+
+def _shared_send_gate(user_id: str, account_id: Optional[str], mailbox: Optional[str]) -> Optional[str]:
+    """Sending from a shared mailbox needs Mail.Send.Shared; say so before composing."""
+    if not mailbox or not mailbox.strip():
+        return None
+    return require_scopes(
+        user_id, [SCOPE_SHARED_SEND], account_id, mailbox=mailbox, purpose="sending from a shared mailbox"
+    )
+
 @tool
 def outlook_send_email(
     to: str,
@@ -923,6 +934,9 @@ def outlook_send_email(
         Success (naming any attachments) or error message.
     """
     user_id = get_user_id(config)
+    gate = _shared_send_gate(user_id, account_id, mailbox)
+    if gate:
+        return f"[Error]: {gate}"
 
     files, err = _resolve_attachments_or_error(attachments)
     if err:
@@ -1056,6 +1070,9 @@ def outlook_reply_email(
         Success (naming any attachments) or error message.
     """
     user_id = get_user_id(config)
+    gate = _shared_send_gate(user_id, account_id, mailbox)
+    if gate:
+        return f"[Error]: {gate}"
     files, err = _resolve_attachments_or_error(attachments)
     if err:
         return f"[Error]: {err}"
@@ -1501,6 +1518,9 @@ def outlook_forward_email(
         Success (naming any added attachments) or error message.
     """
     user_id = get_user_id(config)
+    gate = _shared_send_gate(user_id, account_id, mailbox)
+    if gate:
+        return f"[Error]: {gate}"
     files, err = _resolve_attachments_or_error(attachments)
     if err:
         return f"[Error]: {err}"
@@ -1554,6 +1574,9 @@ def outlook_send_draft(
         Subject and recipients of the sent message, or an error.
     """
     user_id = get_user_id(config)
+    gate = _shared_send_gate(user_id, account_id, mailbox)
+    if gate:
+        return f"[Error]: {gate}"
     if not draft_id.strip():
         return "[Error]: draft_id is required."
     ok, draft = graph_request(user_id, "GET", f"/me/messages/{draft_id.strip()}", account_id=account_id,
@@ -1652,7 +1675,8 @@ def outlook_set_category(
 
     requests = []
     unchanged: list[str] = []
-    for i, mid in enumerate(targets):
+    to_patch: list[str] = []
+    for mid in targets:
         if action == "replace":
             updated = list(wanted)
         else:
@@ -1666,7 +1690,9 @@ def outlook_set_category(
             if updated == have:
                 unchanged.append(mid)
                 continue
-        requests.append({"id": str(i), "method": "PATCH", "url": f"/me/messages/{mid}", "body": {"categories": updated}})
+        # Batch ids index the COMPACTED list: summarize_batch maps them back.
+        requests.append({"id": str(len(to_patch)), "method": "PATCH", "url": f"/me/messages/{mid}", "body": {"categories": updated}})
+        to_patch.append(mid)
 
     verb = {"add": "tagged with", "remove": "cleared of", "replace": "set to"}[action]
     label = ", ".join(wanted) if wanted else "(none)"
@@ -1677,8 +1703,7 @@ def outlook_set_category(
         return f"[Info]: No changes needed; {len(targets)} messages already in the requested state."
 
     results = graph_batch(user_id, requests, account_id=account_id, mailbox=mailbox)
-    touched = [targets[int(r["id"])] for r in results]
-    summary = summarize_batch(results, touched, f"{verb} '{label}'")
+    summary = summarize_batch(results, to_patch, f"{verb} '{label}'")
     if unchanged:
         summary += f"\n  ({len(unchanged)} already in the requested state, left as-is)"
 
@@ -1825,12 +1850,21 @@ def _split_sync_cursor(cursor: str) -> tuple[Optional[str], Optional[str], Optio
     stamp, sep, link = raw.partition(_SYNC_CURSOR_SEP)
     if not sep:
         stamp, link = "", raw
-    if not link.startswith(GRAPH_BASE + "/"):
+    if not link.startswith(GRAPH_BASE + "/") or not _SYNC_LINK_RE.match(link[len(GRAPH_BASE):]):
         return None, None, (
             "cursor not recognised: pass the exact cursor string a previous outlook_sync_changes "
             "call returned, or omit it to start a fresh sync"
         )
     return (stamp or None), link[len(GRAPH_BASE):], None
+
+
+# A cursor is replayed as a GET with the user's token, so it may name ONLY a
+# folder delta endpoint carrying Graph's own continuation tokens; anything else
+# under the Graph host (calendar, contacts, a search) is refused.
+_SYNC_LINK_RE = re.compile(
+    r"^/(?:me|users/[^/?#]+)/mailFolders(?:\('[^'/?#]*'\)|/[^/?#]+)/messages/delta"
+    r"\?(?:(?:%24|\$)(?:deltatoken|skiptoken)=[^&#]*)(?:&(?:%24|\$)(?:deltatoken|skiptoken)=[^&#]*)*$"
+)
 
 
 @tool
@@ -1853,7 +1887,10 @@ def outlook_sync_changes(
     reading it, flagging it, or changing its categories. That makes this the way to
     notice corrections to labels you applied earlier. Delta tracking is per folder:
     run one cursor per folder you watch. Cursors expire after a long idle period;
-    when Graph rejects one, start again without it.
+    when Graph rejects one, start again without it. since_days scopes the cursor
+    for its whole life: mail received before the first call's cutoff is never
+    reported as changed or removed later, so use since_days=0 when you need to
+    track edits to older mail too.
 
     Args:
         folder: Folder to track (default "inbox"): well-known name, display name,

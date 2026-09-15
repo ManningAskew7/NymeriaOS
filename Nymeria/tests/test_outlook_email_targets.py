@@ -274,3 +274,39 @@ def test_list_emails_resolves_custom_folders(monkeypatch):
     assert calls[1]["endpoint"] == "/me/mailFolders/CLI/messages"
     assert calls[1]["mailbox"] == "s@x.com"
     assert "categories" in calls[1]["params"]["$select"]
+
+
+# ---------------------------------------------------------------------------
+# Review fix: a skipped (unchanged) target must not shift the failure report
+# ---------------------------------------------------------------------------
+
+
+def test_set_category_reports_the_right_failure_after_a_skipped_target(monkeypatch):
+    current = {"m1": ["X"], "m2": [], "m3": []}
+    recorded = []
+
+    def _batch(user_id, requests, account_id=None, *, mailbox=None, thread_id=None):
+        recorded.append(requests)
+        out = []
+        for r in requests:
+            if r["method"] == "GET":
+                mid = r["url"].split("/me/messages/")[1].split("?")[0]
+                out.append({"id": r["id"], "status": 200, "ok": True, "body": {"categories": current[mid]}, "error": None})
+            elif r["url"].endswith("/m3"):
+                out.append({"id": r["id"], "status": 404, "ok": False, "body": None, "error": "API Error (404): ErrorItemNotFound"})
+            else:
+                out.append({"id": r["id"], "status": 200, "ok": True, "body": {}, "error": None})
+        return out
+
+    monkeypatch.setattr(oe, "graph_batch", _batch)
+    monkeypatch.setattr(og, "graph_batch", _batch)
+    monkeypatch.setattr(oe, "graph_request", lambda *a, **k: (True, {"value": [{"displayName": "X"}]}))
+
+    out = oe.outlook_set_category.invoke({"email_ids": "m1,m2,m3", "category": "X"}, config=_CFG)
+    assert out.splitlines()[0] == "[Partial]: 1/2 messages tagged with 'X'; 1 failed:"
+    assert "  - m3...: API Error (404): ErrorItemNotFound" in out
+    assert "  - m2" not in out
+    assert "(1 already in the requested state, left as-is)" in out
+    patched = recorded[1]
+    assert [r["url"] for r in patched] == ["/me/messages/m2", "/me/messages/m3"]
+    assert [r["id"] for r in patched] == ["0", "1"]  # batch ids index the patched list

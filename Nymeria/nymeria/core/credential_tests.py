@@ -523,6 +523,112 @@ async def _test_openai_compatible_llm(
     )
 
 
+
+async def _test_outlook(
+    provider: str,
+    kind: str,
+    metadata: dict[str, Any],
+    secret_fields: dict[str, str],
+    settings: Any,
+) -> CredentialTestResult:
+    # An Outlook credential is only as alive as its REFRESH token: the access
+    # token dies an hour after connect, so a probe that merely sends the stored
+    # access token to Graph reports "active" for a credential every tool call
+    # will reject tomorrow (intake 20260908-024925Z). Refresh first, with the
+    # scope string the tools themselves use, then prove the resulting token at
+    # GET /me. The refreshed token is NOT persisted here (a tester has no vault
+    # handle); Entra keeps the previous refresh token valid, so the next tool
+    # call refreshes again on its own. Both hosts are fixed constants, so the
+    # policy client is about proxy neutralisation, not SSRF.
+    _ = provider, kind, settings
+    from ..tools import outlook_graph as og
+    from .http_policy import policy_http_client
+
+    access_token = _first_secret(secret_fields, "access_token")
+    refresh_token = secret_fields.get("refresh_token")
+    refresh_token = refresh_token.strip() if isinstance(refresh_token, str) else ""
+    account = {
+        "scopes": metadata.get("scopes"),
+        "client_id": metadata.get("client_id"),
+    }
+    reconnect = 'Reconnect it with request_credential(provider="outlook", kind="oauth").'
+
+    def _probe() -> CredentialTestResult:
+        token = access_token
+        refreshed = False
+        granted: list[str] | None = None
+        if refresh_token:
+            status, data, detail = og.refresh_token_grant(
+                refresh_token,
+                client_id=og._client_id(account),
+                scope=og._refresh_scope_string(account),
+                timeout=_DEFAULT_TIMEOUT_SECONDS,
+            )
+            if status != 200:
+                return CredentialTestResult(
+                    ok=False,
+                    message=(
+                        f"Outlook token refresh was rejected ({status}: {detail or 'no detail'}); "
+                        f"the credential will stop working once the access token expires. {reconnect}"
+                    ),
+                    code="refresh_rejected",
+                    verified=True,
+                    metadata={"status_code": status},
+                )
+            token = data.get("access_token") or token
+            refreshed = True
+            scope_text = data.get("scope")
+            if isinstance(scope_text, str) and scope_text.strip():
+                granted = scope_text.split()
+        if not token:
+            return CredentialTestResult(
+                ok=False,
+                message=f"The credential holds neither an access token nor a refresh token. {reconnect}",
+                code="missing_secret",
+                verified=False,
+            )
+        with policy_http_client(timeout=_DEFAULT_TIMEOUT_SECONDS) as client:
+            response = client.get(
+                f"{og.GRAPH_BASE}/me",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            )
+        if response.status_code == 200:
+            try:
+                me = response.json()
+            except Exception:
+                me = {}
+            email = me.get("mail") or me.get("userPrincipalName") or "unknown"
+            refresh_note = (
+                "refresh token verified"
+                if refreshed
+                else "no refresh token stored, so it cannot outlive the current access token"
+            )
+            return CredentialTestResult(
+                ok=refreshed,
+                message=f"Outlook token works for {email} ({refresh_note}).",
+                code="verified" if refreshed else "no_refresh_token",
+                verified=True,
+                metadata={
+                    "status_code": 200,
+                    "email": email,
+                    "refreshed": refreshed,
+                    **({"scopes": granted} if granted else {}),
+                },
+            )
+        return CredentialTestResult(
+            ok=False,
+            message=(
+                f"Microsoft Graph returned HTTP {response.status_code}: "
+                f"{http_error_detail(response, token, refresh_token or None)}. {reconnect}"
+            ),
+            code="http_error",
+            verified=True,
+            metadata={"status_code": response.status_code, "refreshed": refreshed},
+        )
+
+    return await asyncio.to_thread(_probe)
+
+
 register_credential_tester("github", _test_github)
 register_credential_tester("todoist", _test_todoist)
 register_credential_tester("anthropic", _test_anthropic)
@@ -536,6 +642,7 @@ register_credential_tester("searxng", _test_searxng)
 register_credential_tester("perplexity", _test_perplexity)
 register_credential_tester("perplexity_api", _test_perplexity)
 register_credential_tester("pplx", _test_perplexity)
+register_credential_tester("outlook", _test_outlook)
 
 
 __all__ = [

@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1265
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1279
 
 
 def test_catalog_key_equals_tool_name():
@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1283
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1297
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -1197,16 +1197,30 @@ BASELINE_CATALOG_NAMES = [
     "outlook_delete_email",
     "outlook_draft_reply",
     "outlook_edit_draft",
+    "outlook_flag_email",
+    "outlook_focused_overrides",
     "outlook_forward_email",
     "outlook_get_attachments",
+    "outlook_get_conversation",
     "outlook_get_email",
+    "outlook_get_mailbox_settings",
+    "outlook_list_categories",
     "outlook_list_emails",
+    "outlook_list_folders",
+    "outlook_list_rules",
+    "outlook_manage_categories",
+    "outlook_manage_folder",
+    "outlook_manage_rule",
     "outlook_mark_email",
     "outlook_move_email",
     "outlook_reply_email",
     "outlook_search_emails",
+    "outlook_send_draft",
     "outlook_send_email",
+    "outlook_set_auto_reply",
     "outlook_set_category",
+    "outlook_sync_changes",
+    "outlook_unsubscribe",
     "paddle_create_coupon",
     "paddle_get_order",
     "paddle_list_coupons",
@@ -2476,16 +2490,30 @@ BASELINE_STATIC_NAMES = [
     "outlook_delete_email",
     "outlook_draft_reply",
     "outlook_edit_draft",
+    "outlook_flag_email",
+    "outlook_focused_overrides",
     "outlook_forward_email",
     "outlook_get_attachments",
+    "outlook_get_conversation",
     "outlook_get_email",
+    "outlook_get_mailbox_settings",
+    "outlook_list_categories",
     "outlook_list_emails",
+    "outlook_list_folders",
+    "outlook_list_rules",
+    "outlook_manage_categories",
+    "outlook_manage_folder",
+    "outlook_manage_rule",
     "outlook_mark_email",
     "outlook_move_email",
     "outlook_reply_email",
     "outlook_search_emails",
+    "outlook_send_draft",
     "outlook_send_email",
+    "outlook_set_auto_reply",
     "outlook_set_category",
+    "outlook_sync_changes",
+    "outlook_unsubscribe",
     "paddle_create_coupon",
     "paddle_get_order",
     "paddle_list_coupons",

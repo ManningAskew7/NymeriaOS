@@ -80,9 +80,10 @@ _DIRECT_CLIENT_CALLS = {
         "two module-constant Microsoft hosts (MICROSOFT_TOKEN_URI, GRAPH_BASE). The "
         "Graph request builds its URL from a module constant plus a tool-chosen "
         "path segment, so the HOST is never caller-supplied; the one absolute URL "
-        "it accepts (graph_request_raw's upload-session address) is issued by Graph "
-        "itself in a response body, the same vendor-controlled provenance as the "
-        "BFL poll target above"
+        "it accepts (graph_upload_put's upload-session address, host-pinned to "
+        "outlook.office.com / office365.com and sent WITHOUT the bearer token) is "
+        "issued by Graph itself in a response body, the same vendor-controlled "
+        "provenance as the BFL poll target above"
     ),
     "auth_cache_utils.py": (
         "one hard-coded Google userinfo host, plus the OAuth token endpoint, which "

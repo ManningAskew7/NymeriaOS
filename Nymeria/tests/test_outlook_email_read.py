@@ -7,6 +7,8 @@ delta mechanics: initial bound, cursor round-trip, page following, and the
 new / changed / removed split (B12).
 """
 
+import pytest
+
 from nymeria.tools import outlook_email as oe
 from nymeria.tools import outlook_graph as og
 
@@ -349,3 +351,36 @@ def test_sync_shared_mailbox_and_custom_folder(monkeypatch):
     oe.outlook_sync_changes.invoke({"folder": "Clients", "mailbox": "s@x.com"}, config=_CFG)
     assert calls[1]["endpoint"] == "/me/mailFolders/CLI/messages/delta"
     assert calls[1]["mailbox"] == "s@x.com"
+
+
+# ---------------------------------------------------------------------------
+# Review fix: a cursor may only replay a folder delta endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("link", [
+    f"{og.GRAPH_BASE}/me/calendarView/delta?$deltatoken=T",
+    f"{og.GRAPH_BASE}/me/contacts/delta?$deltatoken=T",
+    f"{og.GRAPH_BASE}/me/messages?$top=1",
+    f"{og.GRAPH_BASE}/me/mailFolders/inbox/messages?$search=%22secret%22",
+    f"{og.GRAPH_BASE}/me/mailFolders/inbox/messages/delta?$deltatoken=T&$select=body",
+    f"{og.GRAPH_BASE}/me/mailFolders/inbox/messages/delta",
+    f"{og.GRAPH_BASE}/me/mailFolders/../users/other@x.com/mailFolders/inbox/messages/delta?$deltatoken=T",
+])
+def test_sync_refuses_a_cursor_that_is_not_a_folder_delta_link(monkeypatch, link):
+    calls = _fake_graph(monkeypatch, [])
+    out = oe.outlook_sync_changes.invoke({"cursor": f"2026-09-15T10:00:00Z|{link}"}, config=_CFG)
+    assert out.startswith("[Error]: cursor not recognised")
+    assert calls == []
+
+
+@pytest.mark.parametrize("link", [
+    f"{og.GRAPH_BASE}/me/mailFolders('inbox')/messages/delta?$deltatoken=3DE7yRCv.syQd",
+    f"{og.GRAPH_BASE}/me/mailFolders/AQMkAD-_x==/messages/delta?%24skiptoken=abc",
+    f"{og.GRAPH_BASE}/users/sales%40x.com/mailFolders('AQMk')/messages/delta?$deltatoken=T",
+])
+def test_sync_accepts_graphs_own_delta_link_spellings(monkeypatch, link):
+    calls = _fake_graph(monkeypatch, [(True, {"value": [], "@odata.deltaLink": link})])
+    out = oe.outlook_sync_changes.invoke({"cursor": f"2026-09-15T10:00:00Z|{link}"}, config=_CFG)
+    assert out.startswith("[Success]: inbox: 0 new, 0 changed, 0 removed")
+    assert calls[0]["endpoint"] == link[len(og.GRAPH_BASE):]

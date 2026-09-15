@@ -476,6 +476,25 @@ def test_graph_request_error_text_carries_the_graph_error_code(monkeypatch):
     assert not ok and err == "API Error (403): ErrorAccessDenied: Access is denied."
 
 
+@pytest.mark.parametrize("status,code,message", [
+    (404, "ErrorItemNotFound", "The specified object was not found in the store., Default folder Inbox not found."),
+    (403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."),
+])
+def test_graph_request_names_the_shared_mailbox_on_403_and_404(monkeypatch, status, code, message):
+    # Verified live 2026-09-15: an account without delegated access gets a bare
+    # 404 "Default folder Inbox not found", which reads like a bug in the tool.
+    _bind_cache(monkeypatch, {"A": _live_account()})
+    _stub_policy_client(monkeypatch, lambda m, u, **kw: _resp(status, {"error": {"code": code, "message": message}}, text="x"))
+    ok, err = og.graph_request("u1", "GET", "/me/mailFolders/inbox/messages", mailbox="sales@_prv_a.com.au")
+    assert not ok
+    assert err == (
+        f"API Error ({status}): {code}: {message} (shared mailbox sales@_prv_a.com.au: the signed-in account "
+        "may not have been granted access to it in Exchange, or the address is wrong)"
+    )
+    ok, err = og.graph_request("u1", "GET", "/me/mailFolders/inbox/messages")
+    assert err == f"API Error ({status}): {code}: {message}"  # own mailbox: no hint
+
+
 # ---------------------------------------------------------------------------
 # B27: compatibility re-exports
 # ---------------------------------------------------------------------------
@@ -502,3 +521,46 @@ def test_legacy_positional_graph_request_shape_still_works(monkeypatch):
     assert calls[0][0] == "PATCH"
     assert calls[0][2]["json"] == {"isRead": True}
     assert calls[0][2]["params"] == {"$select": "id"}
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: mailbox must be a plain address; the conversation cap is judged
+# on what Graph returned, before the Deleted Items filter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [
+    "sales@x.com/../me", "sales@x.com?$select=body", "sales@x.com#frag", "sales%40x.com",
+    "sales@x.com/messages", "not-an-address", "a@b", "two words@x.com",
+])
+def test_graph_request_and_batch_refuse_a_malformed_mailbox_before_touching_the_token(monkeypatch, bad):
+    def _boom(*a, **k):
+        raise AssertionError("token acquired for a malformed mailbox")
+
+    monkeypatch.setattr(og, "acquire_access_token", _boom)
+    monkeypatch.setattr(og, "_http_client", _boom)
+    ok, err = og.graph_request("u1", "GET", "/me/messages", mailbox=bad)
+    assert ok is False
+    assert err.startswith("mailbox must be a plain address such as sales@example.com (got ")
+    results = og.graph_batch("u1", [{"id": "0", "method": "GET", "url": "/me/messages/m1"}], mailbox=bad)
+    assert len(results) == 1 and results[0]["ok"] is False
+    assert results[0]["error"] == err
+
+
+@pytest.mark.parametrize("good", ["sales@x.com", "o'brien@x.co.uk", "first.last+tag@sub.example.com"])
+def test_mailbox_error_accepts_ordinary_addresses(good):
+    assert og.mailbox_error(good) is None
+    assert og.mailbox_error("  " + good + " ") is None
+    assert og.mailbox_error("") is None and og.mailbox_error(None) is None
+
+
+def test_resolve_targets_conversation_cap_is_judged_before_the_deleted_filter(monkeypatch):
+    # 51 messages come back, 40 of them in Deleted Items: the cap is still hit,
+    # because a longer conversation than the page shows cannot be mutated as a
+    # silent subset.
+    rows = [{"id": f"m{i}", "parentFolderId": "DELETED" if i < 40 else "INBOX"} for i in range(51)]
+    calls = _fake_graph(monkeypatch, [(True, {"value": rows}), (True, {"id": "DELETED"})])
+    ok, err = og.resolve_targets("u1", conversation_id="big")
+    assert ok is False
+    assert err.startswith("Conversation 'big...' has more than 50 messages; the limit is 50 per call.")
+    assert len(calls) == 1  # refused before the Deleted Items lookup

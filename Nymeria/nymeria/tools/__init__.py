@@ -178,6 +178,7 @@ except ImportError:
     _PRV_TOOLS_A4 = []
     _PRV_TOOLS_A5 = []
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
+from .outlook_organize import OUTLOOK_ORGANIZE_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_order import run_tools_in_order
@@ -1382,8 +1383,9 @@ from .registry import ToolGroup, all_tool_groups, register_tool_group
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
-# Combined Outlook tools list
-OUTLOOK_TOOLS = EMAIL_TOOLS
+# Combined Outlook tools list: message tools plus the organisation tools
+# (folders, categories, flags, rules, settings, overrides, unsubscribe).
+OUTLOOK_TOOLS = EMAIL_TOOLS + OUTLOOK_ORGANIZE_TOOLS
 
 # Combined _PRV_A tools list (all Google Sheets-based _PRV_A tools)
 _PRV_TOOLS_A = (
@@ -1795,6 +1797,7 @@ __all__ = [
     "NOTIFY_TOOLS",
     "OPERATIONS_MONITORING_SERVICE_TOOLS",
     "OUTLOOK_ATTACHMENT_TOOLS",
+    "OUTLOOK_ORGANIZE_TOOLS",
     "OUTLOOK_TOOLS",
     "PERSONAL_DEVICE_SERVICE_TOOLS",
     "_PRV_TOOLS_A3",

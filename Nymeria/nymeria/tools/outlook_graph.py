@@ -249,8 +249,8 @@ def try_complete_pending_auth(user_id: str) -> bool:
                     user_info = user_response.json()
                     email = user_info.get("mail") or user_info.get("userPrincipalName", "unknown")
                     name = user_info.get("displayName", "Unknown User")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Graph /me lookup after pending auth failed: %s", exc)
 
             account_id = email.lower().replace("@", "_at_").replace(".", "_")
             cache["accounts"] = cache.get("accounts", {})
@@ -289,6 +289,41 @@ def _refresh_scope_string(account: dict) -> str:
     if "offline_access" not in scopes:
         scopes.insert(0, "offline_access")
     return " ".join(scopes)
+
+
+def refresh_token_grant(
+    refresh_token: str,
+    *,
+    client_id: str,
+    scope: str,
+    timeout: float = 30,
+) -> tuple[int, dict, str]:
+    """POST the refresh grant and return ``(status, body, error_detail)``.
+
+    Transport failures propagate to the caller. A non-200 status leaves
+    ``body`` empty and ``error_detail`` carrying Entra's ``error_description``
+    (or ``error``, or the first 200 chars of a non-JSON body). Shared by the
+    tool-side refresh and the ``auth_test`` credential probe so both request
+    the SAME scope string.
+    """
+    with _http_client(timeout=timeout) as client:
+        response = client.post(
+            TOKEN_URL,
+            data={
+                "client_id": client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "scope": scope,
+            },
+        )
+    if response.status_code != 200:
+        try:
+            body = response.json()
+            detail = body.get("error_description") or body.get("error") or ""
+        except Exception:
+            detail = (response.text or "")[:200]
+        return response.status_code, {}, str(detail)
+    return 200, response.json(), ""
 
 
 def acquire_access_token(
@@ -341,16 +376,11 @@ def acquire_access_token(
         )
 
     try:
-        with _http_client(timeout=30) as client:
-            response = client.post(
-                TOKEN_URL,
-                data={
-                    "client_id": _client_id(account),
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "scope": _refresh_scope_string(account),
-                },
-            )
+        status, data, detail = refresh_token_grant(
+            refresh_token,
+            client_id=_client_id(account),
+            scope=_refresh_scope_string(account),
+        )
     except Exception as e:
         logger.error("Outlook token refresh transport failure for %s: %s", aid, e)
         raise OutlookTokenError(
@@ -358,21 +388,14 @@ def acquire_access_token(
             "Retry shortly; if it persists, reconnect the account."
         ) from e
 
-    if response.status_code != 200:
-        detail = ""
-        try:
-            body = response.json()
-            detail = body.get("error_description") or body.get("error") or ""
-        except Exception:
-            detail = (response.text or "")[:200]
-        logger.error("Outlook token refresh rejected for %s: %s %s", aid, response.status_code, detail)
+    if status != 200:
+        logger.error("Outlook token refresh rejected for %s: %s %s", aid, status, detail)
         raise OutlookTokenError(
             f"Outlook account '{label}' ({aid}): the access token expired and the refresh "
-            f"was rejected ({response.status_code}: {detail or 'no detail'}). "
+            f"was rejected ({status}: {detail or 'no detail'}). "
             f"Reconnect it with {_RECONNECT_HINT}."
         )
 
-    data = response.json()
     account["access_token"] = data.get("access_token")
     account["refresh_token"] = data.get("refresh_token", refresh_token)
     account["expires_at"] = time.time() + data.get("expires_in", 3600)
@@ -409,6 +432,25 @@ def get_access_token(
 # ---------------------------------------------------------------------------
 # Requests
 # ---------------------------------------------------------------------------
+
+
+_MAILBOX_RE = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
+
+
+def mailbox_error(mailbox: Optional[str]) -> Optional[str]:
+    """Refuse anything but a plain address for ``mailbox``.
+
+    The value becomes a path segment (``/users/{upn}``) both in direct requests
+    and inside ``$batch`` sub-request URLs that Graph parses itself, so a
+    stray ``/``, ``?`` or ``%`` must never reach the wire.
+    """
+    if not mailbox or not mailbox.strip():
+        return None
+    if _MAILBOX_RE.match(mailbox.strip()):
+        return None
+    return (
+        f"mailbox must be a plain address such as sales@example.com (got {mailbox.strip()[:60]!r})."
+    )
 
 
 def mail_root(mailbox: Optional[str] = None) -> str:
@@ -465,6 +507,9 @@ def graph_request(
     selection and token errors come back as ``(False, text)`` with the account
     named, never as exceptions.
     """
+    bad_mailbox = mailbox_error(mailbox)
+    if bad_mailbox:
+        return False, bad_mailbox
     try:
         token, _ = acquire_access_token(user_id, account_id, thread_id=thread_id)
     except (OAuthAccountSelectionError, OutlookTokenError) as e:
@@ -494,61 +539,21 @@ def graph_request(
                 payload = response.json() if response.text else {}
             except Exception:
                 payload = {}
-            return False, _graph_error_text(response.status_code, payload, response.text)
+            text = _graph_error_text(response.status_code, payload, response.text)
+            if mailbox and response.status_code in (403, 404):
+                # Graph answers a mailbox the account cannot see with a bare 404
+                # ("Default folder Inbox not found") or 403: say what that means.
+                text += (
+                    f" (shared mailbox {mailbox.strip()}: the signed-in account may not have been "
+                    "granted access to it in Exchange, or the address is wrong)"
+                )
+            return False, text
         if response.status_code in (202, 204) or not response.text:
             return True, {}
         return True, response.json()
     except Exception as e:
         return False, f"Request failed: {e}"
 
-
-def graph_request_raw(
-    user_id: str,
-    method: str,
-    endpoint: str,
-    account_id: Optional[str] = None,
-    *,
-    content: Optional[bytes] = None,
-    headers: Optional[dict] = None,
-    mailbox: Optional[str] = None,
-    thread_id: Optional[str] = None,
-    absolute_url: Optional[str] = None,
-    timeout: float = 60,
-) -> tuple[bool, Any]:
-    """A Graph request with a raw byte body (attachment upload sessions).
-
-    ``absolute_url`` is used verbatim when given: upload-session URLs are
-    Graph-issued absolute addresses on the same host family. Returns
-    ``(True, json_or_headers_dict)`` or ``(False, error_text)``.
-    """
-    try:
-        token, _ = acquire_access_token(user_id, account_id, thread_id=thread_id)
-    except (OAuthAccountSelectionError, OutlookTokenError) as e:
-        return False, str(e)
-    if not token:
-        return False, _no_account_error()
-
-    url = absolute_url or f"{GRAPH_BASE}{_apply_mailbox(endpoint, mailbox)}"
-    request_headers = {"Authorization": f"Bearer {token}"}
-    if headers:
-        request_headers.update(headers)
-    try:
-        with _http_client(timeout=timeout) as client:
-            response = client.request(method=method, url=url, headers=request_headers, content=content)
-        if response.status_code >= 400:
-            try:
-                payload = response.json() if response.text else {}
-            except Exception:
-                payload = {}
-            return False, _graph_error_text(response.status_code, payload, response.text)
-        if not response.text:
-            return True, {"status": response.status_code, "headers": dict(response.headers)}
-        try:
-            return True, response.json()
-        except Exception:
-            return True, {"status": response.status_code, "headers": dict(response.headers)}
-    except Exception as e:
-        return False, f"Request failed: {e}"
 
 
 def graph_upload_put(
@@ -614,11 +619,14 @@ def graph_batch(
     if not requests:
         return []
 
-    try:
-        token, _ = acquire_access_token(user_id, account_id, thread_id=thread_id)
-        whole_error = None if token else _no_account_error()
-    except (OAuthAccountSelectionError, OutlookTokenError) as e:
-        token, whole_error = None, str(e)
+    whole_error = mailbox_error(mailbox)
+    token = None
+    if not whole_error:
+        try:
+            token, _ = acquire_access_token(user_id, account_id, thread_id=thread_id)
+            whole_error = None if token else _no_account_error()
+        except (OAuthAccountSelectionError, OutlookTokenError) as e:
+            token, whole_error = None, str(e)
 
     for start in range(0, len(requests), BATCH_LIMIT):
         chunk = requests[start : start + BATCH_LIMIT]
@@ -919,6 +927,12 @@ def resolve_targets(
         if not ok:
             return False, str(result)
         messages = list(result.get("value") or [])
+        if len(messages) > max_targets:
+            return False, (
+                f"Conversation '{conversation_id.strip()[:24]}...' has more than {max_targets} "
+                f"messages; the limit is {max_targets} per call. Select messages with email_ids "
+                "instead so each call stays readable."
+            )
         if not include_deleted and messages:
             ok_d, deleted = graph_request(
                 user_id, "GET", "/me/mailFolders/deleteditems", account_id=account_id,

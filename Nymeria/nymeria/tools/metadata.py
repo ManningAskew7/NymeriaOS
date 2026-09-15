@@ -299,10 +299,20 @@ _EMAIL_SAFE_TOOL_NAMES = frozenset(
     {
         "outlook_list_emails",
         "outlook_get_email",
+        "outlook_get_conversation",
+        "outlook_sync_changes",
         "outlook_search_emails",
         "outlook_mark_email",
         "outlook_get_attachments",
         "outlook_set_category",
+        # Organisation reads and the label-shaped mutations (a flag is as
+        # reversible as a category). Folder, category-list, rule, auto-reply,
+        # Focused-override and unsubscribe changes stay MODERATE.
+        "outlook_list_folders",
+        "outlook_list_categories",
+        "outlook_flag_email",
+        "outlook_list_rules",
+        "outlook_get_mailbox_settings",
     }
 )
 

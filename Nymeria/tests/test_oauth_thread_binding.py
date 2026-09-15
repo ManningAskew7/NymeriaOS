@@ -511,9 +511,10 @@ def test_outlook_tool_resolves_the_calling_threads_binding_without_plumbing(vaul
     _bind(repo, b.id, THREAD)
 
     from nymeria.tools import outlook_email as oe
+    from nymeria.tools import outlook_graph as og
 
     graph = _GraphStub()
-    monkeypatch.setattr(oe, "_http_client", graph)
+    monkeypatch.setattr(og, "_http_client", graph)
 
     bound_result = oe.outlook_list_emails.invoke(
         {"limit": 1}, config={"configurable": {"user_id": USER, "thread_id": THREAD}}
