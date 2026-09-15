@@ -551,6 +551,48 @@ def graph_request_raw(
         return False, f"Request failed: {e}"
 
 
+def graph_upload_put(
+    upload_url: str,
+    content: bytes,
+    *,
+    content_range: str,
+    timeout: float = 120,
+) -> tuple[bool, Any]:
+    """PUT one byte range of an attachment upload session.
+
+    The session URL Graph hands back (``uploadUrl``) lives on
+    ``outlook.office.com`` and is PRE-AUTHENTICATED: Microsoft's contract is
+    that the PUT carries no ``Authorization`` header at all. The URL is
+    vendor-issued from a Graph response body, never caller-supplied. Returns
+    ``(True, {"status", "headers", "body"})`` or ``(False, error_text)``.
+    """
+    if not upload_url.startswith("https://outlook.office.com/") and not upload_url.startswith("https://outlook.office365.com/"):
+        return False, "Upload session URL is not on the Outlook service host; refusing to send bytes to it."
+    headers = {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(len(content)),
+        "Content-Range": content_range,
+    }
+    try:
+        with _http_client(timeout=timeout) as client:
+            response = client.request(method="PUT", url=upload_url, headers=headers, content=content)
+        if response.status_code >= 400:
+            try:
+                payload = response.json() if response.text else {}
+            except Exception:
+                payload = {}
+            return False, _graph_error_text(response.status_code, payload, response.text)
+        body: Any = {}
+        if response.text:
+            try:
+                body = response.json()
+            except Exception:
+                body = {}
+        return True, {"status": response.status_code, "headers": dict(response.headers), "body": body}
+    except Exception as e:
+        return False, f"Upload request failed: {e}"
+
+
 def graph_batch(
     user_id: str,
     requests: list[dict],

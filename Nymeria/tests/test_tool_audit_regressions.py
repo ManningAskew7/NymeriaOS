@@ -237,7 +237,7 @@ def test_google_docs_write_passes_user_id_to_segment_executor(monkeypatch):
 def test_outlook_attachments_pass_user_and_account(monkeypatch):
     seen = {}
 
-    def fake_download(user_id, email_id, account_id=None):
+    def fake_download(user_id, email_id, account_id=None, mailbox=None):
         seen.update({"user_id": user_id, "email_id": email_id, "account_id": account_id})
         return [], 0
 

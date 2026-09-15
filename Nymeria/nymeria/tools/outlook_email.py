@@ -830,6 +830,59 @@ def outlook_search_emails(
     return "\n\n".join(sections)
 
 
+def _resolve_attachments_or_error(attachments: str) -> tuple[Optional[list[dict]], Optional[str]]:
+    """Resolve the ``attachments`` argument up front so nothing is sent on a bad path."""
+    if not (attachments or "").strip():
+        return [], None
+    from .outlook_attachments import resolve_outbound_files
+
+    ok, result = resolve_outbound_files(attachments)
+    if not ok:
+        return None, str(result)
+    return list(result), None  # type: ignore[arg-type]
+
+
+def _attach_files(
+    user_id: str, message_id: str, files: list[dict], account_id: Optional[str], mailbox: Optional[str],
+) -> tuple[bool, str]:
+    from .outlook_attachments import attach_files_to_message
+
+    return attach_files_to_message(user_id, message_id, files, account_id, mailbox=mailbox)
+
+
+def _send_message_object(
+    user_id: str,
+    message: dict,
+    files: list[dict],
+    account_id: Optional[str],
+    mailbox: Optional[str],
+) -> tuple[bool, str]:
+    """Send ``message``: directly via sendMail, or draft, attach, send when files ride along.
+
+    Graph's one-shot sendMail cannot carry attachments over 3 MB, so every send
+    with attachments takes the same three-step path; a failure to attach leaves
+    the draft in Drafts (named in the error) rather than sending a partial mail.
+    """
+    if not files:
+        ok, result = graph_request(
+            user_id, "POST", "/me/sendMail", account_id=account_id,
+            json_data={"message": message}, mailbox=mailbox,
+        )
+        return (True, "") if ok else (False, str(result))
+
+    ok, draft = graph_request(user_id, "POST", "/me/messages", account_id=account_id, json_data=message, mailbox=mailbox)
+    if not ok or not isinstance(draft, dict) or not draft.get("id"):
+        return False, f"Could not create the message: {draft}"
+    draft_id = str(draft["id"])
+    ok, note = _attach_files(user_id, draft_id, files, account_id, mailbox)
+    if not ok:
+        return False, f"{note}. The unsent draft (ID: {draft_id}) is in Drafts."
+    ok, result = graph_request(user_id, "POST", f"/me/messages/{draft_id}/send", account_id=account_id, mailbox=mailbox)
+    if not ok:
+        return False, f"Attached {note} but sending failed: {result}. The draft (ID: {draft_id}) is in Drafts."
+    return True, note
+
+
 @tool
 def outlook_send_email(
     to: str,
@@ -839,6 +892,9 @@ def outlook_send_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     is_html: bool = False,
+    attachments: str = "",
+    reply_to: str = "",
+    importance: str = "",
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
@@ -853,16 +909,29 @@ def outlook_send_email(
         cc: CC recipients, comma-separated (optional)
         bcc: BCC recipients, comma-separated (optional)
         is_html: Set to True if body contains HTML (default False)
+        attachments: Comma-separated server-side file paths to attach (workspace paths
+                     such as "reports/summary.docx", or absolute paths the file tools can
+                     read). Each file up to 25 MB; files over 3 MB upload in chunks.
+                     Credential stores are refused.
+        reply_to: Address replies should go to, when different from the sender
+        importance: "high" or "low" to mark the message; default normal
         mailbox: Address of a SHARED mailbox to send from instead of the signed-in
                  account's own address (default). Needs Send As rights on it plus the
                  Mail.Send.Shared permission.
 
     Returns:
-        Success or error message.
+        Success (naming any attachments) or error message.
     """
     user_id = get_user_id(config)
 
-    message = {
+    files, err = _resolve_attachments_or_error(attachments)
+    if err:
+        return f"[Error]: {err}"
+    imp = importance.strip().lower()
+    if imp and imp not in ("high", "normal", "low"):
+        return "[Error]: importance must be high, normal, or low."
+
+    message: dict[str, Any] = {
         "subject": subject,
         "body": {
             "contentType": "HTML" if is_html else "Text",
@@ -875,18 +944,83 @@ def outlook_send_email(
         message["ccRecipients"] = _parse_recipients(cc)
     if bcc:
         message["bccRecipients"] = _parse_recipients(bcc)
+    if reply_to.strip():
+        message["replyTo"] = _parse_recipients(reply_to)
+    if imp and imp != "normal":
+        message["importance"] = imp
 
-    success, result = graph_request(user_id, "POST",
-        "/me/sendMail",
-        account_id=account_id,
-        json_data={"message": message},
-        mailbox=mailbox,
-    )
+    ok, note = _send_message_object(user_id, message, files or [], account_id, mailbox)
+    if not ok:
+        return f"[Error]: {note}"
+    suffix = f" with attachments: {note}" if note else ""
+    return f"[Success]: Email sent to {to}{suffix}"
 
-    if not success:
-        return f"[Error]: {result}"
 
-    return f"[Success]: Email sent to {to}"
+def _compose_over_draft(new_body: str, is_html: bool, draft: dict, quote_original: bool) -> dict:
+    """Body payload for a createReply/createForward draft.
+
+    Graph pre-fills the draft with the quoted original (HTML). ``quote_original``
+    keeps it beneath the new text like any mail client would; otherwise the new
+    text replaces the body wholesale. Plain text over an HTML quote is wrapped
+    so line breaks survive.
+    """
+    quoted = ""
+    draft_body = draft.get("body") or {}
+    if quote_original and draft_body.get("content"):
+        quoted = str(draft_body["content"])
+    if not quoted:
+        return {"contentType": "html" if is_html else "text", "content": new_body}
+    if draft_body.get("contentType", "").lower() == "html":
+        if is_html:
+            top = new_body
+        else:
+            from html import escape
+
+            top = "<div style=\"white-space:pre-wrap\">" + escape(new_body) + "</div>"
+        return {"contentType": "html", "content": f"{top}<br><br>{quoted}"}
+    return {"contentType": "text", "content": f"{new_body}\n\n{quoted}"}
+
+
+def _reply_or_forward_via_draft(
+    user_id: str,
+    email_id: str,
+    create_action: str,
+    body: str,
+    is_html: bool,
+    files: list[dict],
+    account_id: Optional[str],
+    mailbox: Optional[str],
+    *,
+    to: Optional[str] = None,
+    quote_original: bool = True,
+    send: bool = True,
+) -> tuple[bool, str, dict]:
+    """createReply / createReplyAll / createForward, set body, attach, optionally send.
+
+    Returns ``(ok, note_or_error, draft)``.
+    """
+    ok, draft = graph_request(user_id, "POST", f"/me/messages/{email_id}/{create_action}", account_id=account_id, mailbox=mailbox)
+    if not ok or not isinstance(draft, dict) or not draft.get("id"):
+        return False, f"Failed to create the {create_action} draft: {draft}", {}
+    draft_id = str(draft["id"])
+
+    patch: dict[str, Any] = {"body": _compose_over_draft(body, is_html, draft, quote_original)}
+    if to is not None:
+        patch["toRecipients"] = _parse_recipients(to)
+    ok, result = graph_request(user_id, "PATCH", f"/me/messages/{draft_id}", account_id=account_id, json_data=patch, mailbox=mailbox)
+    if not ok:
+        return False, f"Draft created (ID: {draft_id}) but setting its content failed: {result}", draft
+
+    note = ""
+    if files:
+        ok, note = _attach_files(user_id, draft_id, files, account_id, mailbox)
+        if not ok:
+            return False, f"{note}. The unsent draft (ID: {draft_id}) is in Drafts.", draft
+    if send:
+        ok, result = graph_request(user_id, "POST", f"/me/messages/{draft_id}/send", account_id=account_id, mailbox=mailbox)
+        if not ok:
+            return False, f"Draft ready (ID: {draft_id}) but sending failed: {result}", draft
+    return True, note, draft
 
 
 @tool
@@ -895,6 +1029,9 @@ def outlook_reply_email(
     body: str,
     account_id: Optional[str] = None,
     reply_all: bool = False,
+    is_html: bool = False,
+    attachments: str = "",
+    quote_original: bool = True,
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
@@ -906,29 +1043,40 @@ def outlook_reply_email(
         body: Reply message body
         account_id: Microsoft account ID (optional)
         reply_all: If True, reply to all recipients (default False)
+        is_html: Set to True if body contains HTML (default False, plain text)
+        attachments: Comma-separated server-side file paths to attach (workspace paths
+                     such as "reports/summary.docx", or absolute paths the file tools can
+                     read). Each file up to 25 MB; files over 3 MB upload in chunks.
+        quote_original: Keep the original message quoted beneath the reply (default
+                        True, like a mail client). False sends only your text.
         mailbox: Address of a SHARED mailbox the email lives in, when not the
                  signed-in account's own mailbox (default).
 
     Returns:
-        Success or error message.
+        Success (naming any attachments) or error message.
     """
     user_id = get_user_id(config)
-    endpoint = f"/me/messages/{email_id}/replyAll" if reply_all else f"/me/messages/{email_id}/reply"
-
-    success, result = graph_request(user_id, "POST",
-        endpoint,
-        account_id=account_id,
-        json_data={
-            "comment": body,
-        },
-        mailbox=mailbox,
-    )
-
-    if not success:
-        return f"[Error]: {result}"
-
+    files, err = _resolve_attachments_or_error(attachments)
+    if err:
+        return f"[Error]: {err}"
     reply_type = "all recipients" if reply_all else "sender"
-    return f"[Success]: Reply sent to {reply_type}"
+
+    if not files and not is_html and quote_original:
+        # The one-shot action: Graph prepends the comment to the quoted original.
+        endpoint = f"/me/messages/{email_id}/replyAll" if reply_all else f"/me/messages/{email_id}/reply"
+        success, result = graph_request(user_id, "POST", endpoint, account_id=account_id, json_data={"comment": body}, mailbox=mailbox)
+        if not success:
+            return f"[Error]: {result}"
+        return f"[Success]: Reply sent to {reply_type}"
+
+    action = "createReplyAll" if reply_all else "createReply"
+    ok, note, _ = _reply_or_forward_via_draft(
+        user_id, email_id, action, body, is_html, files or [], account_id, mailbox, quote_original=quote_original,
+    )
+    if not ok:
+        return f"[Error]: {note}"
+    suffix = f" with attachments: {note}" if note else ""
+    return f"[Success]: Reply sent to {reply_type}{suffix}"
 
 
 @tool
@@ -938,6 +1086,8 @@ def outlook_draft_reply(
     reply_all: bool = False,
     is_html: bool = False,
     account_id: Optional[str] = None,
+    attachments: str = "",
+    quote_original: bool = True,
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
@@ -958,57 +1108,43 @@ def outlook_draft_reply(
         reply_all: If True, reply to all recipients (default False)
         is_html: If True, body is HTML formatted (default False, plain text)
         account_id: Microsoft account ID (optional)
+        attachments: Comma-separated server-side file paths to attach (workspace paths
+                     such as "quotes/Q-1234.pdf", or absolute paths the file tools can
+                     read). Each file up to 25 MB; files over 3 MB upload in chunks.
+        quote_original: Keep the original message quoted beneath the reply (default
+                        True, like a mail client). False leaves only your text.
         mailbox: Address of a SHARED mailbox the email lives in, when not the
                  signed-in account's own mailbox (default).
 
     Returns:
-        Draft ID and subject for confirmation.
+        Draft ID, subject, recipients and attachments for confirmation.
     """
     user_id = get_user_id(config)
-    # Step 1: Create the reply draft (pre-populates recipients and thread headers)
-    endpoint = f"/me/messages/{email_id}/createReplyAll" if reply_all else f"/me/messages/{email_id}/createReply"
+    files, err = _resolve_attachments_or_error(attachments)
+    if err:
+        return f"[Error]: {err}"
 
-    success, result = graph_request(user_id, "POST",
-        endpoint,
-        account_id=account_id,
-        mailbox=mailbox,
+    action = "createReplyAll" if reply_all else "createReply"
+    ok, note, draft = _reply_or_forward_via_draft(
+        user_id, email_id, action, body, is_html, files or [], account_id, mailbox,
+        quote_original=quote_original, send=False,
     )
+    if not ok:
+        return f"[Error]: {note}"
 
-    if not success:
-        return f"[Error]: Failed to create reply draft: {result}"
-
-    draft_id = result.get("id")
-    subject = result.get("subject", "(no subject)")
-
-    if not draft_id:
-        return "[Error]: Reply draft created but no ID returned."
-
-    # Step 2: Update the draft body with the agent's content
-    content_type = "html" if is_html else "text"
-    success, patch_result = graph_request(user_id, "PATCH",
-        f"/me/messages/{draft_id}",
-        account_id=account_id,
-        json_data={
-            "body": {
-                "contentType": content_type,
-                "content": body,
-            },
-        },
-        mailbox=mailbox,
-    )
-
-    if not success:
-        return f"[Warning]: Reply draft created (ID: {draft_id}) but failed to update body: {patch_result}"
-
-    to_list = [r.get("emailAddress", {}).get("address", "") for r in result.get("toRecipients", [])]
+    draft_id = draft.get("id")
+    subject = draft.get("subject", "(no subject)")
+    to_list = [r.get("emailAddress", {}).get("address", "") for r in draft.get("toRecipients", [])]
     reply_type = "reply-all" if reply_all else "reply"
-
-    return (
-        f"[Success]: Draft {reply_type} created for '{subject}'\n"
-        f"  To: {', '.join(to_list)}\n"
-        f"  Draft ID: {draft_id}\n"
-        f"  Status: In Drafts folder, ready for review and send."
-    )
+    lines = [
+        f"[Success]: Draft {reply_type} created for '{subject}'",
+        f"  To: {', '.join(to_list)}",
+        f"  Draft ID: {draft_id}",
+    ]
+    if note:
+        lines.append(f"  Attachments: {note}")
+    lines.append("  Status: In Drafts folder, ready for review and send (outlook_send_draft sends it).")
+    return "\n".join(lines)
 
 
 @tool
@@ -1020,11 +1156,12 @@ def outlook_create_draft(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     is_html: bool = False,
+    attachments: str = "",
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
-    Create an email draft without sending it.
+    Create an email draft without sending it (outlook_send_draft sends it later).
 
     Args:
         to: Recipient email address(es), comma-separated
@@ -1036,13 +1173,19 @@ def outlook_create_draft(
              cannot see each other. Use this for supplier RFQs where suppliers
              should not see who else was contacted.
         is_html: Set to True if body contains HTML content (default False)
+        attachments: Comma-separated server-side file paths to attach (workspace paths
+                     such as "reports/summary.docx", or absolute paths the file tools can
+                     read). Each file up to 25 MB; files over 3 MB upload in chunks.
         mailbox: Address of a SHARED mailbox to create the draft in, when not the
                  signed-in account's own mailbox (default).
 
     Returns:
-        Success message with draft ID and recipient counts.
+        Success message with draft ID, recipient counts and attachments.
     """
     user_id = get_user_id(config)
+    files, err = _resolve_attachments_or_error(attachments)
+    if err:
+        return f"[Error]: {err}"
 
     message = {
         "subject": subject,
@@ -1074,7 +1217,13 @@ def outlook_create_draft(
 
     draft_id = result.get("id", "")
     bcc_note = f" with {bcc_count} BCC recipient(s)" if bcc_count else ""
-    return f"[Success]: Draft created{bcc_note} (ID: {draft_id})"
+    att_note = ""
+    if files:
+        ok, note = _attach_files(user_id, draft_id, files, account_id, mailbox)
+        if not ok:
+            return f"[Warning]: Draft created (ID: {draft_id}) but {note}"
+        att_note = f", attachments: {note}"
+    return f"[Success]: Draft created{bcc_note} (ID: {draft_id}{att_note})"
 
 
 @tool
@@ -1087,6 +1236,7 @@ def outlook_edit_draft(
     bcc: str = "",
     is_html: bool = False,
     account_id: Optional[str] = None,
+    attachments: str = "",
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
@@ -1106,6 +1256,9 @@ def outlook_edit_draft(
         bcc: New BCC recipients, comma-separated. Leave empty to keep current.
         is_html: Set to True if body contains HTML (default False)
         account_id: Microsoft account ID (optional)
+        attachments: Comma-separated changes to the draft's attachments: a file path
+                     adds it ("quotes/Q-1234.pdf"); a leading minus removes an existing
+                     attachment by name ("-old-quote.pdf"). Files up to 25 MB.
         mailbox: Address of a SHARED mailbox the draft lives in, when not the
                  signed-in account's own mailbox (default).
 
@@ -1113,6 +1266,12 @@ def outlook_edit_draft(
         Success message confirming the update.
     """
     user_id = get_user_id(config)
+    files, err = _resolve_attachments_or_error(attachments)
+    if err:
+        return f"[Error]: {err}"
+    from .outlook_attachments import split_attachment_spec
+
+    _, removals = split_attachment_spec(attachments)
 
     updates: dict = {}
     if body:
@@ -1129,21 +1288,35 @@ def outlook_edit_draft(
     if bcc:
         updates["bccRecipients"] = _parse_recipients(bcc)
 
-    if not updates:
-        return "[Error]: No fields to update. Provide at least one of: body, subject, to, cc, bcc."
+    if not updates and not files and not removals:
+        return "[Error]: No fields to update. Provide at least one of: body, subject, to, cc, bcc, attachments."
 
-    success, result = graph_request(user_id, "PATCH",
-        f"/me/messages/{draft_id}",
-        account_id=account_id,
-        json_data=updates,
-        mailbox=mailbox,
-    )
+    changed: list[str] = []
+    if updates:
+        success, result = graph_request(user_id, "PATCH",
+            f"/me/messages/{draft_id}",
+            account_id=account_id,
+            json_data=updates,
+            mailbox=mailbox,
+        )
+        if not success:
+            return f"[Error]: {result}"
+        changed.extend(updates.keys())
 
-    if not success:
-        return f"[Error]: {result}"
+    if removals:
+        from .outlook_attachments import remove_attachments_by_name
 
-    updated_fields = ", ".join(updates.keys())
-    return f"[Success]: Draft updated ({updated_fields}). ID: {draft_id}"
+        ok, note = remove_attachments_by_name(user_id, draft_id, removals, account_id, mailbox=mailbox)
+        if not ok:
+            return f"[Error]: {note}"
+        changed.append(f"attachments removed: {note}")
+    if files:
+        ok, note = _attach_files(user_id, draft_id, files, account_id, mailbox)
+        if not ok:
+            return f"[Error]: {note}"
+        changed.append(f"attachments added: {note}")
+
+    return f"[Success]: Draft updated ({', '.join(changed)}). ID: {draft_id}"
 
 
 @tool
@@ -1304,42 +1477,99 @@ def outlook_forward_email(
     to: str,
     comment: Optional[str] = None,
     account_id: Optional[str] = None,
+    is_html: bool = False,
+    attachments: str = "",
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
-    Forward an email to another recipient (sends immediately).
+    Forward an email to another recipient (sends immediately, original attachments included).
 
     Args:
         email_id: ID of the email to forward
         to: Recipient email address(es), comma-separated
-        comment: Optional message to include with the forward
+        comment: Optional message to include above the forwarded email
         account_id: Microsoft account ID (optional)
+        is_html: Set to True if comment contains HTML (default False, plain text)
+        attachments: Comma-separated server-side file paths to attach in addition to
+                     the original's attachments (workspace paths or absolute paths the
+                     file tools can read). Each file up to 25 MB.
         mailbox: Address of a SHARED mailbox the email lives in, when not the
                  signed-in account's own mailbox (default).
 
     Returns:
-        Success or error message.
+        Success (naming any added attachments) or error message.
     """
     user_id = get_user_id(config)
+    files, err = _resolve_attachments_or_error(attachments)
+    if err:
+        return f"[Error]: {err}"
 
-    data: dict[str, Any] = {
-        "toRecipients": _parse_recipients(to),
-    }
-    if comment:
-        data["comment"] = comment
+    if not files and not is_html:
+        data: dict[str, Any] = {"toRecipients": _parse_recipients(to)}
+        if comment:
+            data["comment"] = comment
+        success, result = graph_request(user_id, "POST",
+            f"/me/messages/{email_id}/forward",
+            account_id=account_id,
+            json_data=data,
+            mailbox=mailbox,
+        )
+        if not success:
+            return f"[Error]: {result}"
+        return f"[Success]: Email forwarded to {to}"
 
-    success, result = graph_request(user_id, "POST",
-        f"/me/messages/{email_id}/forward",
-        account_id=account_id,
-        json_data=data,
-        mailbox=mailbox,
+    ok, note, _ = _reply_or_forward_via_draft(
+        user_id, email_id, "createForward", comment or "", is_html, files or [], account_id, mailbox,
+        to=to, quote_original=True,
     )
+    if not ok:
+        return f"[Error]: {note}"
+    suffix = f" with attachments: {note}" if note else ""
+    return f"[Success]: Email forwarded to {to}{suffix}"
 
-    if not success:
+
+@tool
+def outlook_send_draft(
+    draft_id: str,
+    account_id: Optional[str] = None,
+    mailbox: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Send an existing draft (from outlook_create_draft, outlook_draft_reply, or one a person wrote).
+
+    The second half of the draft-first flow: draft, get it approved, then send
+    with this. Refuses anything that is not a draft (an already-sent message,
+    for example) and sends exactly what is in the draft now, including any
+    edits a person made in Outlook.
+
+    Args:
+        draft_id: ID of the draft to send
+        account_id: Microsoft account ID (optional)
+        mailbox: Address of a SHARED mailbox the draft lives in, when not the
+                 signed-in account's own mailbox (default).
+
+    Returns:
+        Subject and recipients of the sent message, or an error.
+    """
+    user_id = get_user_id(config)
+    if not draft_id.strip():
+        return "[Error]: draft_id is required."
+    ok, draft = graph_request(user_id, "GET", f"/me/messages/{draft_id.strip()}", account_id=account_id,
+                              params={"$select": "id,subject,isDraft,toRecipients,ccRecipients,hasAttachments"}, mailbox=mailbox)
+    if not ok or not isinstance(draft, dict):
+        return f"[Error]: {draft}"
+    if not draft.get("isDraft"):
+        return f"[Error]: Message '{draft.get('subject', '(no subject)')}' is not a draft (already sent or received); nothing sent."
+    to_list = [r.get("emailAddress", {}).get("address", "") for r in draft.get("toRecipients") or []]
+    if not to_list:
+        return "[Error]: The draft has no recipients; add them with outlook_edit_draft first."
+    ok, result = graph_request(user_id, "POST", f"/me/messages/{draft_id.strip()}/send", account_id=account_id, mailbox=mailbox)
+    if not ok:
         return f"[Error]: {result}"
-
-    return f"[Success]: Email forwarded to {to}"
+    att = " (with attachments)" if draft.get("hasAttachments") else ""
+    return f"[Success]: Sent '{draft.get('subject', '(no subject)')}' to {', '.join(to_list)}{att}."
 
 
 def _split_categories(category: str, categories: str) -> list[str]:
@@ -1731,6 +1961,7 @@ EMAIL_TOOLS = [
     outlook_draft_reply,
     outlook_create_draft,
     outlook_edit_draft,
+    outlook_send_draft,
     outlook_delete_email,
     outlook_mark_email,
     outlook_move_email,

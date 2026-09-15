@@ -13,7 +13,7 @@ def patch_graph(monkeypatch):
     from nymeria.tools import outlook_email as oe
 
     def _install(payload):
-        def fake_graph_request(user_id, method, path, account_id=None, params=None):
+        def fake_graph_request(user_id, method, path, account_id=None, params=None, **kwargs):
             return True, payload
 
         monkeypatch.setattr(oe, "graph_request", fake_graph_request)
