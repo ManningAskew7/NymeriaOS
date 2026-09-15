@@ -2962,40 +2962,62 @@ origin allowlist) are designed but deliberately not built yet.
 
 ---
 
-### Outlook Tools (18)
+### Outlook Tools (28)
 
-Used internally by OutlookAgent. Also available as **optional tools** for per-thread enabling. Defined in `tools/outlook_email.py` (13 email) and `tools/outlook_attachments.py` (1 attachment).
+Available as **optional tools** for per-thread enabling; the tool group `outlook_organize` carries the organising half. Defined in `tools/outlook_email.py` (16 mail tools), `tools/outlook_attachments.py` (1 inbound tool plus the outbound attachment helpers) and `tools/outlook_organize.py` (11 organising tools), all over the shared Graph layer `tools/outlook_graph.py` (token acquisition and refresh, mailbox rewriting, `$batch`, folder resolution, multi-target resolution).
 Microsoft tokens land in the credential vault as `kind=oauth_token` via the unified `request_credential(provider="outlook", kind="oauth")` flow; legacy file caches at `data/auth_tokens/<user_id>/microsoft.json` are still consulted as a read-only fallback for backwards compatibility.
 
 **Authentication:**
 
 The agent connects Outlook by calling `request_credential(provider="outlook", kind="oauth")`. Outlook supports both `auth_code` (browser redirect, default when `NYMERIA_PUBLIC_URL` is set) and `device_code` (RFC 8628 short code, used automatically when `NYMERIA_PUBLIC_URL` is unset). To disconnect an Outlook account the user removes the credential from Settings → Connections or the agent calls `auth_cleanup(operation="disable", credential_id=...)`.
 
+Token refresh requests the scopes stored on the credential (`metadata.scopes`), so a refreshed token keeps the consent it was granted rather than narrowing to a fixed list. The scope set (`OUTLOOK_SCOPES` in `config/oauth_providers.py`) now includes `MailboxSettings.ReadWrite` (categories, rules, auto-reply, Focused overrides), `Mail.ReadWrite.Shared` and `Mail.Send.Shared` (shared mailboxes). An account connected before those scopes were added has to be re-consented (run `request_credential` again for it) before the tools that need them work; each such tool checks the credential's scopes first and returns a `[Error]` naming the missing scope and the re-consent step instead of a raw Graph 403. A credential with no recorded scope list is treated as unrestricted (legacy rows).
+
 **Account selection:** every tool takes an optional `account_id`. Omitted, the account bound to the calling thread is used (`auth_bindings(operation="bind", target_type="thread", target_id=<thread id>)` on the vault row), else the only connected account; with several connected and none bound, the call fails and lists them rather than guessing. `OUTLOOK_DEFAULT_ACCOUNT_ID` still selects among unbound accounts. Mechanics: [`credentials.md`](credentials.md), "Which account a call uses".
 
-**Email tools:**
+**Shared mailboxes:** every tool also takes `mailbox`, a UPN or address such as `sales@example.com`. Omitted, calls run against the signed-in account's own mailbox (`/me`); given, they run against `/users/{mailbox}` with the account's delegated access (the account must have been granted access to that mailbox in Exchange, and the credential needs the `.Shared` scopes above). `account_id` picks WHOSE token is used; `mailbox` picks WHICH mailbox it is used on. `mailbox` must be a plain address (it becomes a URL path segment); anything else is refused before a token is touched. Sending from a shared mailbox is additionally gated on `Mail.Send.Shared`.
+
+**Multi-target writes:** `outlook_delete_email`, `outlook_mark_email`, `outlook_move_email`, `outlook_set_category` and `outlook_flag_email` accept one `email_id`, a comma-separated `email_ids` list, or a `conversation_id` (every message of that conversation in the mailbox, up to 50). Batched through Graph `$batch`; the result line is `[Success]: N messages <verb>.`, `[Partial]: ...` with the failed ids and reasons, or `[Error]` when nothing succeeded.
+
+**Mail tools:**
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
-| `outlook_list_emails` | `(account_id?, limit=10, folder="inbox", unread_only=False)` | List recent emails with preview and thread ID. Limit max 50. |
-| `outlook_get_email` | `(email_id?, email_ids?, account_id?)` | Get full email details including body and attachment metadata. Batch via comma-separated IDs. |
-| `outlook_search_emails` | `(query?, queries?, sender?, to?, subject?, folder?, category?, days_back=0, has_attachments=False, thread_id?, kql?, account_id?, limit=10)` | Search emails with filters. Results include body preview (120 chars) and thread ID. Without `days_back`, results ranked by relevance not date. Use `thread_id` to pull full conversation chain. Use `kql` for raw KQL queries (OR logic, etc). Use `category` to find tagged emails. |
-| `outlook_send_email` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False)` | Send a new email. |
-| `outlook_reply_email` | `(email_id, body, account_id?, reply_all=False)` | Reply to an email (sends immediately). |
-| `outlook_draft_reply` | `(email_id, body, reply_all=False, is_html=False, account_id?)` | Create an unsent reply draft that preserves the email thread. You review and send it manually. |
-| `outlook_create_draft` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False)` | Create a standalone draft without sending. |
-| `outlook_edit_draft` | `(draft_id, body?, subject?, to?, cc?, bcc?, is_html=False, account_id?)` | Edit an existing draft. Only provided fields are updated. Works on drafts from create_draft or draft_reply. |
-| `outlook_delete_email` | `(email_id, account_id?, permanent=False)` | Move to trash or permanently delete. |
-| `outlook_mark_email` | `(email_id, is_read, account_id?)` | Mark email as read or unread. |
-| `outlook_move_email` | `(email_id, folder, account_id?)` | Move email to a folder. |
-| `outlook_forward_email` | `(email_id, to, comment?, account_id?)` | Forward an email. |
-| `outlook_set_category` | `(email_id, category, action="add", account_id?)` | Add or remove a category tag on an email. Use to tag emails for processing ("Nymeria") and clear after done. |
-| `outlook_get_attachments` | `(email_id, skip?, account_id?)` | Download and extract text from all email attachments. CSV/TXT decoded directly, Excel via openpyxl, PDF/DOCX/images via Gemini AI. Optional `skip` to ignore irrelevant attachments by name. |
+| `outlook_list_emails` | `(account_id?, limit=10, folder="inbox", unread_only=False, sender?, days_back=0, categories?, flagged?, importance?, focused="any", has_attachments=False, page=1, mailbox?)` | List emails newest first with state tags (`[unread]`, `[flagged]`, `[high]`, `[other]`, `[draft]`), categories and conversation id. Server-side filters: sender (address or partial name), age, categories (any of), flagged, importance, Focused/Other, attachments. `page` walks older mail; "More may follow" marks a full page. Limit max 50. |
+| `outlook_get_email` | `(email_id?, email_ids?, account_id?, include_headers=False, mailbox?)` | Full email: recipients, state, categories, flag, body, attachment metadata. Batch via comma-separated IDs. `include_headers` adds the triage-relevant internet headers (List-Unsubscribe, Precedence, Auto-Submitted, In-Reply-To, References, Return-Path, Authentication-Results). |
+| `outlook_get_conversation` | `(conversation_id, include_bodies=False, limit=25, account_id?, mailbox?)` | Every message in a conversation across all folders, oldest first, with a `(you)` marker on the owner's messages and a verdict line: "you replied last, awaiting their reply" or "they spoke last, awaiting your reply". |
+| `outlook_sync_changes` | `(folder="inbox", cursor?, max_changes=100, since_days=7, account_id?, mailbox?)` | Delta sync for a folder: the first call returns the last `since_days` of mail and a cursor; later calls with that cursor return only what arrived, changed (read state, flag, categories, folder) or was removed since, split into new / changed / removed lists, plus the next cursor. Cursors are per folder and per mailbox, and `since_days` scopes a cursor for its whole life (mail older than the first call's cutoff is never reported as changed; use `since_days=0` to track edits to older mail). A cursor is replayed with the user's token, so only a Graph folder-delta link with Graph's own continuation tokens is accepted. |
+| `outlook_search_emails` | `(query?, queries?, sender?, to?, subject?, folder?, category?, days_back=0, has_attachments=False, thread_id?, kql?, account_id?, limit=10, mailbox?)` | Search emails with filters. Results include body preview (120 chars) and conversation id. Without `days_back`, results ranked by relevance not date. `folder` accepts well-known names, a custom folder name or path, or an id. Use `kql` for raw KQL queries. |
+| `outlook_send_email` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False, attachments?, reply_to?, importance?, mailbox?)` | Send a new email. `attachments`: comma-separated file paths (workspace-confined, secrets denylist, 25 MB per file; files over 3 MB go through a Graph upload session). `reply_to` sets the Reply-To header, `importance` low/normal/high. |
+| `outlook_reply_email` | `(email_id, body, account_id?, reply_all=False, is_html=False, attachments?, quote_original=True, mailbox?)` | Reply and send immediately. Keeps the quoted original under the reply unless `quote_original=False`. |
+| `outlook_draft_reply` | `(email_id, body, reply_all=False, is_html=False, account_id?, attachments?, quote_original=True, mailbox?)` | Unsent reply draft that preserves the conversation and quoted original; send later with `outlook_send_draft`. |
+| `outlook_create_draft` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False, attachments?, mailbox?)` | Standalone draft without sending. |
+| `outlook_edit_draft` | `(draft_id, body?, subject?, to?, cc?, bcc?, is_html=False, account_id?, attachments?, mailbox?)` | Edit an existing draft; only provided fields change. `attachments` adds files; a `-name` entry removes an attachment by filename. |
+| `outlook_send_draft` | `(draft_id, account_id?, mailbox?)` | Send an existing draft as-is. Refuses non-drafts and drafts with no recipients. |
+| `outlook_delete_email` | `(email_id?, account_id?, permanent=False, email_ids?, conversation_id?, mailbox?)` | Move to Deleted Items or permanently delete. Multi-target. |
+| `outlook_mark_email` | `(email_id?, is_read=True, account_id?, email_ids?, conversation_id?, mailbox?)` | Mark read or unread. Multi-target. |
+| `outlook_move_email` | `(email_id?, folder, account_id?, email_ids?, conversation_id?, as_copy=False, mailbox?)` | Move (or copy with `as_copy`) to a folder: well-known name, custom folder name, `Parent/Child` path, or id. An unknown name is refused with a pointer to `outlook_manage_folder`; an ambiguous name lists the candidate ids. Multi-target. |
+| `outlook_forward_email` | `(email_id, to, comment?, account_id?, is_html=False, attachments?, mailbox?)` | Forward an email, optionally with extra attachments. |
+| `outlook_set_category` | `(email_id?, category?, action="add", account_id?, categories?, email_ids?, conversation_id?, mailbox?)` | Add, remove or `replace` category tags on messages (`categories` takes a comma-separated list). Warns when a name is not in the mailbox's master list (it would render without colour); create it first with `outlook_manage_categories`. Multi-target. |
+| `outlook_get_attachments` | `(email_id, skip?, account_id?, save_to?, mailbox?)` | Download and extract text from all attachments: CSV/TXT decoded directly, Excel via openpyxl, DOCX via the platform's document extractor, PDF and images via Gemini; legacy `.doc` is reported as skipped. `save_to` also writes the raw files into a workspace directory. |
 
-**Folder names** (case-insensitive):
-- `outlook_list_emails` accepts: `inbox`, `sent`/`sentitems`, `drafts`, `deleted`/`deleteditems`, `junk`/`junkemail`, `archive`
-- `outlook_search_emails` accepts same folders, or omit for all mail
-- `outlook_move_email` additionally accepts: `trash` (→ deleteditems), `spam` (→ junkemail)
+**Organising tools** (`tools/outlook_organize.py`):
+
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `outlook_list_folders` | `(parent?, depth=2, account_id?, mailbox?)` | Folder tree with ids, unread and total counts; `parent` scopes to a subtree. |
+| `outlook_manage_folder` | `(action, name?, parent?, folder?, account_id?, mailbox?)` | `create` (optionally under `parent`), `rename`, `delete` a folder. Delete removes the folder and its contents; the folder does not reappear under Deleted Items (verified live), so move mail out first. |
+| `outlook_list_categories` | `(account_id?, mailbox?)` | The mailbox's master category list with colours. |
+| `outlook_manage_categories` | `(action, name, color?, account_id?, mailbox?)` | `create` (colour by name, e.g. `red`, or preset id), `recolor`, `delete` a master category. Display names are immutable in Graph: rename is delete plus create. Needs `MailboxSettings.ReadWrite`. |
+| `outlook_flag_email` | `(email_id?, email_ids?, conversation_id?, status="flagged", due?, start?, account_id?, mailbox?)` | Set the follow-up flag to `flagged`, `complete` or `clear` (Graph's `notFlagged` is accepted as an alias), optionally with `due`/`start` dates (Graph requires `start` when `due` is set; the tool fills it). Multi-target. |
+| `outlook_list_rules` | `(account_id?, mailbox?)` | Inbox message rules in evaluation order with conditions, actions, exceptions and enabled state. |
+| `outlook_manage_rule` | `(action, name?, rule_id?, conditions_json?, actions_json?, exceptions_json?, sequence=0, enabled=True, new_name?, allow_forwarding=False, account_id?, mailbox?)` | `create`, `update`, `enable`, `disable`, `delete` server-side Inbox rules. Conditions, actions and exceptions are Graph `messageRulePredicates` / `messageRuleActions` JSON; folder names in `moveToFolder`/`copyToFolder` are resolved to ids. `forwardTo`/`redirectTo`/`forwardAsAttachmentTo` are refused unless `allow_forwarding=True` (a forwarding rule is the classic mailbox-compromise foothold). Needs `MailboxSettings.ReadWrite`. |
+| `outlook_get_mailbox_settings` | `(account_id?, mailbox?)` | Time zone, language, working hours, auto-reply state, delegate-forwarding and archive folder settings. |
+| `outlook_set_auto_reply` | `(status, internal_message?, external_message?, start?, end?, external_audience?, account_id?, mailbox?)` | Automatic replies: `disabled`, `alwaysEnabled`, or `scheduled` with `start`/`end`; `external_audience` none/contactsOnly/all. Needs `MailboxSettings.ReadWrite`. |
+| `outlook_focused_overrides` | `(action="list", sender?, classify?, account_id?, mailbox?)` | `list`, `set` (`classify` focused/other) or `remove` per-sender Focused Inbox overrides. |
+| `outlook_unsubscribe` | `(email_id, method="auto", account_id?, mailbox?)` | Unsubscribe via the message's List-Unsubscribe header: RFC 8058 one-click POST when advertised (through the egress policy; only a 2xx counts, a redirect is reported as not honoured), else a mailto unsubscribe email, else reports the manual link. `method` forces `one_click` or `mailto`. |
+
+**Folder names** (case-insensitive) accepted by every `folder` argument: `inbox`, `sent`/`sentitems`/`sent items`, `drafts`, `deleted`/`deleteditems`/`trash`/`bin`, `junk`/`junkemail`/`spam`, `archive`, `outbox`, plus any custom folder by display name, `Parent/Child` path, or Graph id.
 
 ---
 
@@ -3108,7 +3130,7 @@ Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** an
 Optional tools are NOT loaded by default. They're available for per-thread enabling via the thread config UI.
 
 **Currently available (representative categories):**
-- Outlook tools: 4 auth + 13 email + 1 attachment = 18 total
+- Outlook tools: 16 mail + 1 attachment + 11 organising = 28 total (auth via the shared `request_credential` / `auth_*` flow)
 - Trigger tools: 2
 - Browser tools: 9
 - Calendar tools: 4 auth + 11 event = 15 total

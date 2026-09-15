@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1269 tools found.**
+**1283 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -850,20 +850,34 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `oura_get_daily_readiness` | `nymeria/tools/personal_device_service_integrations.py` | Get Oura daily readiness summaries. |
 | `oura_get_daily_sleep` | `nymeria/tools/personal_device_service_integrations.py` | Get Oura daily sleep summaries. |
 | `oura_get_profile` | `nymeria/tools/personal_device_service_integrations.py` | Get the authenticated Oura personal profile. |
-| `outlook_create_draft` | `nymeria/tools/outlook_email.py` | Create an email draft without sending it. |
-| `outlook_delete_email` | `nymeria/tools/outlook_email.py` | Delete an email (moves to Deleted Items, or permanently deletes). |
+| `outlook_create_draft` | `nymeria/tools/outlook_email.py` | Create an email draft without sending it (outlook_send_draft sends it later). |
+| `outlook_delete_email` | `nymeria/tools/outlook_email.py` | Delete email(s): move to Deleted Items, or permanently delete. |
 | `outlook_draft_reply` | `nymeria/tools/outlook_email.py` | Create a draft reply to an email (does NOT send it). |
 | `outlook_edit_draft` | `nymeria/tools/outlook_email.py` | Edit an existing email draft. Only provided fields are updated. |
-| `outlook_forward_email` | `nymeria/tools/outlook_email.py` | Forward an email to another recipient. |
+| `outlook_flag_email` | `nymeria/tools/outlook_organize.py` | Flag email(s) for follow-up (optionally with dates), mark the flag complete, or clear it. |
+| `outlook_focused_overrides` | `nymeria/tools/outlook_organize.py` | List, set, or remove per-sender Focused Inbox overrides. |
+| `outlook_forward_email` | `nymeria/tools/outlook_email.py` | Forward an email to another recipient (sends immediately, original attachments included). |
 | `outlook_get_attachments` | `nymeria/tools/outlook_attachments.py` | Download and extract text content from all attachments on an email. |
-| `outlook_get_email` | `nymeria/tools/outlook_email.py` | Get full details of email(s) by ID. |
-| `outlook_list_emails` | `nymeria/tools/outlook_email.py` | List recent emails from Outlook. |
-| `outlook_mark_email` | `nymeria/tools/outlook_email.py` | Mark an email as read or unread. |
-| `outlook_move_email` | `nymeria/tools/outlook_email.py` | Move an email to a different folder. |
-| `outlook_reply_email` | `nymeria/tools/outlook_email.py` | Reply to an email. |
+| `outlook_get_conversation` | `nymeria/tools/outlook_email.py` | Get every message in a conversation (email thread), oldest first. |
+| `outlook_get_email` | `nymeria/tools/outlook_email.py` | Get full details of email(s) by ID: headers, body, state, attachment list. |
+| `outlook_get_mailbox_settings` | `nymeria/tools/outlook_organize.py` | Read the mailbox's settings: time zone, language, formats, working hours, |
+| `outlook_list_categories` | `nymeria/tools/outlook_organize.py` | List the mailbox's master category list: every defined category with its colour. |
+| `outlook_list_emails` | `nymeria/tools/outlook_email.py` | List recent emails from Outlook (the signed-in account's own mailbox by default). |
+| `outlook_list_folders` | `nymeria/tools/outlook_organize.py` | Show the mail folder tree with ids, unread and total counts, and well-known names. |
+| `outlook_list_rules` | `nymeria/tools/outlook_organize.py` | List the server-side inbox rules: conditions, exceptions, actions, order, and state. |
+| `outlook_manage_categories` | `nymeria/tools/outlook_organize.py` | Create, recolour, or delete a category in the mailbox's master list. |
+| `outlook_manage_folder` | `nymeria/tools/outlook_organize.py` | Create, rename, or delete a mail folder. |
+| `outlook_manage_rule` | `nymeria/tools/outlook_organize.py` | Create, update, enable, disable, or delete a server-side inbox rule. |
+| `outlook_mark_email` | `nymeria/tools/outlook_email.py` | Mark email(s) as read or unread. |
+| `outlook_move_email` | `nymeria/tools/outlook_email.py` | Move (or copy) email(s) to a folder. |
+| `outlook_reply_email` | `nymeria/tools/outlook_email.py` | Reply to an email (SENDS immediately; use outlook_draft_reply to leave a draft instead). |
 | `outlook_search_emails` | `nymeria/tools/outlook_email.py` | Search emails in Outlook with optional filters. |
-| `outlook_send_email` | `nymeria/tools/outlook_email.py` | Send a new email. |
-| `outlook_set_category` | `nymeria/tools/outlook_email.py` | Add or remove a category tag on an email. |
+| `outlook_send_draft` | `nymeria/tools/outlook_email.py` | Send an existing draft (from outlook_create_draft, outlook_draft_reply, or one a person wrote). |
+| `outlook_send_email` | `nymeria/tools/outlook_email.py` | Send a new email from the signed-in account (or from a shared mailbox). |
+| `outlook_set_auto_reply` | `nymeria/tools/outlook_organize.py` | Turn the mailbox's automatic (out-of-office) reply on, off, or on for a window. |
+| `outlook_set_category` | `nymeria/tools/outlook_email.py` | Add, remove, or replace category tags on email(s). |
+| `outlook_sync_changes` | `nymeria/tools/outlook_email.py` | Report what changed in a folder since the last sync: new, changed, and removed mail. |
+| `outlook_unsubscribe` | `nymeria/tools/outlook_organize.py` | Unsubscribe from a mailing list using the message's List-Unsubscribe headers. |
 | `paddle_create_coupon` | `nymeria/tools/commerce_billing_service_integrations.py` | Create Paddle coupon codes. |
 | `paddle_get_order` | `nymeria/tools/commerce_billing_service_integrations.py` | Get a Paddle order by checkout ID. |
 | `paddle_list_coupons` | `nymeria/tools/commerce_billing_service_integrations.py` | List Paddle coupons for a product. |

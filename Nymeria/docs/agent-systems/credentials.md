@@ -325,6 +325,17 @@ relevant `provider` (e.g. `google_calendar`). The provider registry lives in
 `nymeria/config/oauth_providers.py` and pins the authorize URI, token URI,
 scope set, client-config source, and which flows the provider supports.
 
+The scope set is what a NEW connection asks for. Refresh requests the scopes
+recorded on the credential (`metadata.scopes`, from the token response), so
+a refreshed token keeps exactly the consent it was granted; widening a
+provider's scope list therefore takes effect for an existing account only
+after it is re-consented (`request_credential` again). Tools that need a
+newer scope check the recorded list first and say which scope is missing
+(Outlook: `outlook_graph.require_scopes`). `auth_test` on an Outlook
+credential exercises the refresh token first and then `GET /me`, so a
+credential that will die with its access token reports `no_refresh_token`
+or `refresh_rejected` rather than "active".
+
 Two flows are wired in:
 
 - **Authorization code** (`mode="oauth"` in the SSE event). Default for
