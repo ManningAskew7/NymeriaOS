@@ -191,72 +191,212 @@ LIST_SELECT = (
 )
 
 
+def _days_back_cutoff(days_back: int) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
+
+
+def _list_filter_clauses(
+    *,
+    unread_only: bool,
+    sender: str,
+    days_back: int,
+    categories: str,
+    flagged: Optional[bool],
+    importance: str,
+    focused: str,
+    has_attachments: bool,
+) -> tuple[Optional[str], list[str]]:
+    """Assemble the OData ``$filter`` for a list call.
+
+    Returns ``(clauses, errors)``. Date first: Graph wants the property it sorts
+    on to lead the filter when both are present.
+    """
+    clauses: list[str] = []
+    errors: list[str] = []
+    if days_back > 0:
+        clauses.append(f"receivedDateTime ge {_days_back_cutoff(days_back)}")
+    if unread_only:
+        clauses.append("isRead eq false")
+    if sender.strip():
+        s = odata_quote(sender.strip())
+        if "@" in s:
+            clauses.append(f"from/emailAddress/address eq '{s}'")
+        else:
+            clauses.append(
+                f"(startswith(from/emailAddress/address,'{s}') or startswith(from/emailAddress/name,'{s}'))"
+            )
+    for cat in _split_categories("", categories):
+        clauses.append(f"categories/any(c:c eq '{odata_quote(cat)}')")
+    if flagged is True:
+        clauses.append("flag/flagStatus eq 'flagged'")
+    elif flagged is False:
+        clauses.append("flag/flagStatus eq 'notFlagged'")
+    imp = importance.strip().lower()
+    if imp:
+        if imp not in ("low", "normal", "high"):
+            errors.append("importance must be low, normal, or high")
+        else:
+            clauses.append(f"importance eq '{imp}'")
+    foc = focused.strip().lower()
+    if foc and foc != "any":
+        if foc not in ("focused", "other"):
+            errors.append("focused must be focused, other, or any")
+        else:
+            clauses.append(f"inferenceClassification eq '{foc}'")
+    if has_attachments:
+        clauses.append("hasAttachments eq true")
+    return (" and ".join(clauses) if clauses else None), errors
+
+
 @tool
 def outlook_list_emails(
     account_id: Optional[str] = None,
     limit: int = 10,
     folder: str = "inbox",
     unread_only: bool = False,
+    sender: str = "",
+    days_back: int = 0,
+    categories: str = "",
+    flagged: Optional[bool] = None,
+    importance: str = "",
+    focused: str = "any",
+    has_attachments: bool = False,
+    page: int = 1,
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
     List recent emails from Outlook (the signed-in account's own mailbox by default).
 
+    Newest first. Every filter given is combined with AND. For keyword search or
+    recipient (to:) filtering use outlook_search_emails instead; for the whole
+    of a conversation use outlook_get_conversation.
+
     Args:
         account_id: Microsoft account ID (optional; defaults to the thread's bound or only connected account)
-        limit: Maximum number of emails to return (default 10, max 50)
+        limit: Maximum number of emails to return per page (default 10, max 50)
         folder: Mail folder to list from (default "inbox"). A well-known name (inbox,
                 sent, drafts, deleted, junk, archive), a custom folder's display name
                 ("Clients"), a slash path from the root ("Clients/Acme"), or a folder ID.
         unread_only: If True, only show unread emails
+        sender: Only mail from this sender. A full address matches exactly; a partial
+                value ("acme") matches the start of the address or display name.
+        days_back: Only mail received in the last N days (0 = no date limit)
+        categories: Comma-separated category names; only mail carrying ALL of them
+        flagged: True for flagged mail only, False for unflagged only, omit for both
+        importance: "high", "normal", or "low"
+        focused: "focused" or "other" (Outlook's Focused Inbox split), or "any" (default)
+        has_attachments: If True, only mail with attachments
+        page: Page number, 1-based. Page 2 skips the first `limit` results, and so on.
         mailbox: Address (UPN) of a SHARED mailbox to act on instead of the signed-in
                  account's own mailbox (default). Needs Full Access plus the
                  Mail.ReadWrite.Shared permission on the connected account.
 
     Returns:
-        List of emails with sender, subject, date, state tags (flagged, high, other,
-        draft), categories, and IDs for each.
+        List of emails with sender, subject, date, state tags (flagged with due date,
+        high/low importance, other, draft), categories, preview, message ID and
+        conversation (thread) ID for each.
     """
     user_id = get_user_id(config)
     limit = min(max(1, limit), 50)
+    page = max(1, page)
 
-    filters = []
-    if unread_only:
-        filters.append("isRead eq false")
+    filter_expr, errors = _list_filter_clauses(
+        unread_only=unread_only, sender=sender, days_back=days_back, categories=categories,
+        flagged=flagged, importance=importance, focused=focused, has_attachments=has_attachments,
+    )
+    if errors:
+        return f"[Error]: {'; '.join(errors)}."
 
-    params = {
+    params: dict[str, Any] = {
         "$top": limit,
         "$select": LIST_SELECT,
         "$orderby": "receivedDateTime desc",
     }
-    if filters:
-        params["$filter"] = " and ".join(filters)
+    if page > 1:
+        params["$skip"] = (page - 1) * limit
+    if filter_expr:
+        params["$filter"] = filter_expr
 
     valid_folder, folder_name = resolve_folder(user_id, folder, account_id, mailbox=mailbox)
     if not valid_folder:
         return f"[Error]: {folder_name}"
 
-    success, result = graph_request(user_id, "GET",
-        f"/me/mailFolders/{folder_name}/messages",
-        account_id=account_id,
-        params=params,
-        mailbox=mailbox,
-    )
+    endpoint = f"/me/mailFolders/{folder_name}/messages"
+    success, result = graph_request(user_id, "GET", endpoint, account_id=account_id, params=params, mailbox=mailbox)
+
+    sorted_client_side = False
+    if not success and filter_expr and "$orderby" in params:
+        # Graph refuses some filter + sort combinations ("too complex"); drop
+        # the server sort, keep the filter, and order the page client-side.
+        retry = {k: v for k, v in params.items() if k != "$orderby"}
+        success, result = graph_request(user_id, "GET", endpoint, account_id=account_id, params=retry, mailbox=mailbox)
+        sorted_client_side = success
 
     if not success:
         return f"[Error]: {result}"
 
-    messages = result.get("value", [])
+    messages = list(result.get("value", []))
+    if sorted_client_side:
+        messages.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
     if not messages:
-        return f"[Info]: No emails found in {folder}."
+        where = f"{folder} (page {page})" if page > 1 else folder
+        return f"[Info]: No emails found in {where}."
 
-    return _render_message_list(
-        f"[Success]: Found {len(messages)} email(s) in {folder}:\n", messages
-    )
+    header = f"[Success]: Found {len(messages)} email(s) in {folder}"
+    if page > 1:
+        header += f" (page {page})"
+    header += ":\n"
+    out = _render_message_list(header, messages)
+    if len(messages) == limit:
+        out += f"\n(More may follow: pass page={page + 1} for the next {limit}.)"
+    return out
 
 
-def _format_single_email(result: dict) -> str:
+def _state_lines(result: dict) -> list[str]:
+    """Metadata lines for the single-email view: categories, flag, importance, thread."""
+    lines: list[str] = []
+    categories = result.get("categories") or []
+    if categories:
+        lines.append(f"**Categories:** {', '.join(categories)}")
+    flag = result.get("flag") or {}
+    status = flag.get("flagStatus")
+    if status and status != "notFlagged":
+        due = (flag.get("dueDateTime") or {}).get("dateTime", "")
+        lines.append(f"**Flag:** {status}" + (f" (due {due[:10]})" if due else ""))
+    importance = result.get("importance")
+    if importance in ("high", "low"):
+        lines.append(f"**Importance:** {importance}")
+    if result.get("inferenceClassification") == "other":
+        lines.append("**Focused Inbox:** other")
+    reply_to = [r.get("emailAddress", {}).get("address", "") for r in result.get("replyTo") or []]
+    sender_addr = (result.get("from") or {}).get("emailAddress", {}).get("address", "")
+    if reply_to and reply_to != [sender_addr]:
+        lines.append(f"**Reply-To:** {', '.join(a for a in reply_to if a)}")
+    if result.get("conversationId"):
+        lines.append(f"**Thread:** {result['conversationId']}")
+    if result.get("webLink"):
+        lines.append(f"**Link:** {result['webLink']}")
+    return lines
+
+
+def _header_lines(result: dict) -> list[str]:
+    """The curated internet headers, when the message carries any of them."""
+    headers = result.get("internetMessageHeaders") or []
+    wanted = {h.lower(): h for h in INTERESTING_HEADERS}
+    found: list[str] = []
+    for h in headers:
+        name = str(h.get("name", ""))
+        if name.lower() in wanted:
+            found.append(f"  {wanted[name.lower()]}: {str(h.get('value', '')).strip()}")
+    if not found:
+        return ["", "**Headers:** none of the tracked headers present (List-Unsubscribe, List-Id, Auto-Submitted, Precedence, ...)"]
+    return ["", "**Headers:**", *found]
+
+
+def _format_single_email(result: dict, *, include_headers: bool = False) -> str:
     """Format a single email result dict into readable text."""
     subject = result.get("subject", "(no subject)")
     sender = result.get("from", {}).get("emailAddress", {})
@@ -283,6 +423,13 @@ def _format_single_email(result: dict) -> str:
     lines.extend([
         f"**Date:** {date}",
         f"**Subject:** {subject}",
+    ])
+    lines.extend(_state_lines(result))
+    if result.get("id"):
+        lines.append(f"**ID:** {result['id']}")
+    if include_headers:
+        lines.extend(_header_lines(result))
+    lines.extend([
         "",
         "**Body:**",
         body_content,
@@ -324,27 +471,46 @@ def _format_single_email(result: dict) -> str:
     return "\n".join(lines)
 
 
+# Fields the single-email view selects. Headers are opt-in: they are large and
+# rarely needed, so ``include_headers`` adds ``internetMessageHeaders``.
+_GET_SELECT = (
+    "id,subject,from,replyTo,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,isRead,"
+    "categories,flag,importance,inferenceClassification,conversationId,webLink,isDraft"
+)
+# Expand attachments to get metadata (name, size, contentType, isInline) without content bytes
+_GET_EXPAND = "attachments($select=id,name,contentType,size,isInline)"
+
+
 @tool
 def outlook_get_email(
     email_id: str = "",
     email_ids: str = "",
     account_id: Optional[str] = None,
+    include_headers: bool = False,
     mailbox: Optional[str] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
-    Get full details of email(s) by ID.
+    Get full details of email(s) by ID: headers, body, state, attachment list.
 
     Args:
         email_id: Single email ID (from outlook_list_emails or outlook_search_emails)
         email_ids: Comma-separated email IDs for batch retrieval. Takes precedence
-                   over email_id. Max 10 emails per call.
+                   over email_id. Max 10 emails per call (fetched in one request).
         account_id: Microsoft account ID (optional)
+        include_headers: If True, also show the tracked internet headers
+                         (List-Unsubscribe, List-Unsubscribe-Post, List-Id,
+                         Auto-Submitted, Precedence, Return-Path, Reply-To,
+                         Message-ID, In-Reply-To, References, X-Priority). Use this to
+                         recognise newsletters, automated notifications, and
+                         unsubscribe options.
         mailbox: Address of a SHARED mailbox to read from instead of the signed-in
                  account's own mailbox (default).
 
     Returns:
-        Full email details including body content.
+        Full email details: from/to/cc, date, subject, categories, flag, importance,
+        Focused Inbox split, thread ID, web link, optional headers, body (capped at
+        8000 characters with a marker), and the attachment list.
         In batch mode, results are grouped per email with === delimiters.
     """
     user_id = get_user_id(config)
@@ -357,42 +523,41 @@ def outlook_get_email(
     else:
         return "[Error]: Provide an email_id or comma-separated email_ids."
 
-    _SELECT = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,isRead"
-    # Expand attachments to get metadata (name, size, contentType, isInline) without content bytes
-    _EXPAND = "attachments($select=id,name,contentType,size,isInline)"
+    select = _GET_SELECT + (",internetMessageHeaders" if include_headers else "")
+    params = {"$select": select, "$expand": _GET_EXPAND}
 
     # Single email: return directly
     if len(ids) == 1:
         success, result = graph_request(user_id, "GET",
             f"/me/messages/{ids[0]}",
             account_id=account_id,
-            params={"$select": _SELECT, "$expand": _EXPAND},
+            params=params,
             mailbox=mailbox,
         )
         if not success or not isinstance(result, dict):
             return f"[Error]: {result}"
-        return f"[Success]: Email details\n\n{_format_single_email(result)}"
+        return f"[Success]: Email details\n\n{_format_single_email(result, include_headers=include_headers)}"
 
-    # Batch mode
+    # Batch mode: one $batch round trip for all ids.
+    from urllib.parse import urlencode
+
+    query = urlencode(params)
+    requests = [
+        {"id": str(i), "method": "GET", "url": f"/me/messages/{eid}?{query}"}
+        for i, eid in enumerate(ids)
+    ]
+    results = graph_batch(user_id, requests, account_id=account_id, mailbox=mailbox)
+
     total = len(ids)
     sections = []
-    for i, eid in enumerate(ids, 1):
-        success, result = graph_request(user_id, "GET",
-            f"/me/messages/{eid}",
-            account_id=account_id,
-            params={"$select": _SELECT, "$expand": _EXPAND},
-            mailbox=mailbox,
-        )
-        subject_hint = (
-            result.get("subject", eid[:20])
-            if success and isinstance(result, dict)
-            else eid[:20]
-        )
+    for i, (eid, res) in enumerate(zip(ids, results), 1):
+        body = res.get("body") if res.get("ok") else None
+        subject_hint = body.get("subject", eid[:20]) if isinstance(body, dict) else eid[:20]
         header = f"=== Email {i}/{total}: {subject_hint} ==="
-        if not success or not isinstance(result, dict):
-            sections.append(f"{header}\n[Error]: {result}")
+        if not isinstance(body, dict):
+            sections.append(f"{header}\n[Error]: {res.get('error') or 'no data returned'}")
         else:
-            sections.append(f"{header}\n{_format_single_email(result)}")
+            sections.append(f"{header}\n{_format_single_email(body, include_headers=include_headers)}")
 
     return "\n\n".join(sections)
 
@@ -1314,10 +1479,252 @@ def _master_list_warning(user_id: str, names: list[str], account_id: Optional[st
     )
 
 
+_CONVERSATION_BODY_CHARS = 4000
+
+
+def _owner_address(user_id: str, account_id: Optional[str], mailbox: Optional[str]) -> str:
+    """The address whose replies count as "you": the shared mailbox, else the account."""
+    if mailbox and mailbox.strip():
+        return mailbox.strip().lower()
+    try:
+        account = get_account(user_id, account_id)
+    except OAuthAccountSelectionError:
+        return ""
+    return str((account or {}).get("email") or "").lower()
+
+
+@tool
+def outlook_get_conversation(
+    conversation_id: str,
+    include_bodies: bool = False,
+    limit: int = 25,
+    account_id: Optional[str] = None,
+    mailbox: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Get every message in a conversation (email thread), oldest first.
+
+    Shows who spoke last and whether that was you, so "awaiting my reply" versus
+    "awaiting their reply" is answerable from one call. Pass a conversation
+    (thread) ID from outlook_list_emails, outlook_search_emails, or
+    outlook_get_email.
+
+    Args:
+        conversation_id: The conversation ID shared by all messages in the thread
+        include_bodies: If True, include each message's body (each capped at 4000
+                        characters); default False returns previews only
+        limit: Maximum messages to return (default 25, max 50)
+        account_id: Microsoft account ID (optional)
+        mailbox: Address of a SHARED mailbox the thread lives in, when not the
+                 signed-in account's own mailbox (default).
+
+    Returns:
+        Chronological list of the thread's messages with state tags and IDs, a
+        summary line naming the last sender, and bodies when requested.
+    """
+    user_id = get_user_id(config)
+    conv = conversation_id.strip()
+    if not conv:
+        return "[Error]: conversation_id is required."
+    limit = min(max(1, limit), 50)
+
+    select = LIST_SELECT + ",toRecipients,parentFolderId"
+    if include_bodies:
+        select += ",body"
+    success, result = graph_request(user_id, "GET",
+        "/me/messages",
+        account_id=account_id,
+        params={"$filter": f"conversationId eq '{odata_quote(conv)}'", "$select": select, "$top": limit},
+        mailbox=mailbox,
+    )
+    if not success:
+        return f"[Error]: {result}"
+    messages = list(result.get("value", []))
+    if not messages:
+        return f"[Info]: No messages found for conversation '{conv[:20]}...'."
+    messages.sort(key=lambda m: m.get("receivedDateTime", ""))
+
+    owner = _owner_address(user_id, account_id, mailbox)
+    last = messages[-1]
+    last_addr = ((last.get("from") or {}).get("emailAddress") or {}).get("address", "")
+    last_name = _clean_sender((last.get("from") or {}).get("emailAddress") or {})
+    you_last = bool(owner) and last_addr.lower() == owner
+    if you_last:
+        verdict = "you replied last, awaiting their reply"
+    elif owner:
+        verdict = "they spoke last, awaiting your reply"
+    else:
+        verdict = "last message shown below"
+
+    lines = [
+        f"[Success]: {len(messages)} message(s) in conversation (chronological). "
+        f"Last from {last_name} on {last.get('receivedDateTime', '')[:16].replace('T', ' ')}: {verdict}.",
+        "",
+    ]
+    for msg in messages:
+        addr = ((msg.get("from") or {}).get("emailAddress") or {}).get("address", "")
+        marker = " (you)" if owner and addr.lower() == owner else ""
+        summary = format_email_summary(msg)
+        first, _, rest = summary.partition("\n")
+        lines.append(first + marker)
+        if rest:
+            lines.append(rest)
+        if include_bodies:
+            body = msg.get("body") or {}
+            content = body.get("content", "")
+            if body.get("contentType") == "html":
+                content = _html_to_text(content)
+            if len(content) > _CONVERSATION_BODY_CHARS:
+                content = content[:_CONVERSATION_BODY_CHARS] + f"\n...[truncated {len(content) - _CONVERSATION_BODY_CHARS} chars]"
+            lines.append("   Body:")
+            lines.extend("   " + ln for ln in content.splitlines())
+        lines.append("")
+    return "\n".join(lines)
+
+
+_SYNC_PAGE = 50
+_SYNC_CURSOR_SEP = "|"
+
+
+def _split_sync_cursor(cursor: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """``(synced_at_iso, endpoint_under_graph_base, error)`` from an opaque cursor."""
+    raw = cursor.strip()
+    if not raw:
+        return None, None, None
+    stamp, sep, link = raw.partition(_SYNC_CURSOR_SEP)
+    if not sep:
+        stamp, link = "", raw
+    if not link.startswith(GRAPH_BASE + "/"):
+        return None, None, (
+            "cursor not recognised: pass the exact cursor string a previous outlook_sync_changes "
+            "call returned, or omit it to start a fresh sync"
+        )
+    return (stamp or None), link[len(GRAPH_BASE):], None
+
+
+@tool
+def outlook_sync_changes(
+    folder: str = "inbox",
+    cursor: str = "",
+    max_changes: int = 100,
+    since_days: int = 7,
+    account_id: Optional[str] = None,
+    mailbox: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Report what changed in a folder since the last sync: new, changed, and removed mail.
+
+    The first call (no cursor) lists the folder's recent mail (bounded by since_days)
+    and returns a cursor. Store that cursor (memory, notepad, a file) and pass it back
+    next time: the call then returns only what happened since, including changes a
+    PERSON made in Outlook, such as moving a message out (reported as removed),
+    reading it, flagging it, or changing its categories. That makes this the way to
+    notice corrections to labels you applied earlier. Delta tracking is per folder:
+    run one cursor per folder you watch. Cursors expire after a long idle period;
+    when Graph rejects one, start again without it.
+
+    Args:
+        folder: Folder to track (default "inbox"): well-known name, display name,
+                slash path, or folder ID
+        cursor: The cursor string returned by the previous call for this folder;
+                omit to start fresh
+        max_changes: Stop after this many items (default 100, max 500). When more
+                     remain, the returned cursor continues where this call stopped.
+        since_days: On a fresh sync, only include mail received in the last N days
+                    (default 7, 0 = everything in the folder). Ignored with a cursor.
+        account_id: Microsoft account ID (optional)
+        mailbox: Address of a SHARED mailbox to track instead of the signed-in
+                 account's own mailbox (default).
+
+    Returns:
+        Counts of new, changed, and removed messages; each new or changed message
+        as a list row (state tags, categories, IDs); removed message IDs; and the
+        cursor to pass next time.
+    """
+    from datetime import datetime, timezone
+
+    user_id = get_user_id(config)
+    max_changes = min(max(1, max_changes), 500)
+
+    synced_at, endpoint, err = _split_sync_cursor(cursor)
+    if err:
+        return f"[Error]: {err}"
+
+    params: Optional[dict] = None
+    if endpoint is None:
+        valid, segment = resolve_folder(user_id, folder, account_id, mailbox=mailbox)
+        if not valid:
+            return f"[Error]: {segment}"
+        endpoint = f"/me/mailFolders/{segment}/messages/delta"
+        params = {"$select": LIST_SELECT + ",lastModifiedDateTime"}
+        if since_days > 0:
+            params["$filter"] = f"receivedDateTime ge {_days_back_cutoff(since_days)}"
+
+    started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    headers = {"Prefer": f"odata.maxpagesize={min(_SYNC_PAGE, max_changes)}"}
+
+    items: list[dict] = []
+    next_cursor: Optional[str] = None
+    more_pending = False
+    while True:
+        success, result = graph_request(
+            user_id, "GET", endpoint, account_id=account_id, params=params, headers=headers, mailbox=mailbox,
+        )
+        if not success:
+            return f"[Error]: {result}"
+        params = None  # the tokens carry the query from here on
+        items.extend(result.get("value") or [])
+        next_link = result.get("@odata.nextLink")
+        delta_link = result.get("@odata.deltaLink")
+        if delta_link:
+            next_cursor = delta_link
+            break
+        if not next_link:
+            return "[Error]: Graph returned neither a continuation nor a delta link; retry."
+        if len(items) >= max_changes:
+            next_cursor = next_link
+            more_pending = True
+            break
+        if not next_link.startswith(GRAPH_BASE + "/"):
+            return "[Error]: Graph returned a continuation link on an unexpected host; stopping."
+        endpoint = next_link[len(GRAPH_BASE):]
+
+    removed = [it for it in items if "@removed" in it]
+    live = [it for it in items if "@removed" not in it]
+    if synced_at:
+        new = [m for m in live if m.get("receivedDateTime", "") >= synced_at]
+        changed = [m for m in live if m.get("receivedDateTime", "") < synced_at]
+    else:
+        new, changed = live, []
+
+    stamp = started if not more_pending else (synced_at or started)
+    cursor_out = f"{stamp}{_SYNC_CURSOR_SEP}{next_cursor}"
+
+    since_text = f"since {synced_at.replace('T', ' ')}" if synced_at else (
+        f"initial sync, last {since_days} day(s)" if since_days > 0 else "initial sync, whole folder"
+    )
+    lines = [f"[Success]: {folder}: {len(new)} new, {len(changed)} changed, {len(removed)} removed ({since_text})."]
+    if more_pending:
+        lines.append(f"[Note]: stopped at {max_changes} items; more changes are pending. Call again with the cursor below to continue.")
+    if new:
+        lines += ["", "New:"] + [format_email_summary(m) + "\n" for m in new]
+    if changed:
+        lines += ["", "Changed (read state, flag, categories, or other properties):"] + [format_email_summary(m) + "\n" for m in changed]
+    if removed:
+        lines += ["", "Removed from this folder (deleted or moved elsewhere):"]
+        lines += [f"  - {r.get('id', '')}" for r in removed]
+    lines += ["", f"Cursor (pass as cursor= next time): {cursor_out}"]
+    return "\n".join(lines)
+
+
 # Export tools
 EMAIL_TOOLS = [
     outlook_list_emails,
     outlook_get_email,
+    outlook_get_conversation,
+    outlook_sync_changes,
     outlook_search_emails,
     outlook_send_email,
     outlook_reply_email,
