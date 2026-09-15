@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from nymeria.tools import outlook_email as oe
+from nymeria.tools import outlook_graph as og
 from nymeria.tools.auth_cache_utils import OAuthAccountSelectionError
 
 
@@ -145,13 +146,15 @@ def _bind_graph(monkeypatch, responses, calls):
     """Replace graph_request with a recorder yielding ``responses`` in order."""
     seq = iter(responses)
 
-    def _fake(user_id, method, endpoint, account_id=None, params=None):
+    def _fake(user_id, method, endpoint, account_id=None, json_data=None, params=None, **kwargs):
         calls.append({
             "user_id": user_id,
             "method": method,
             "endpoint": endpoint,
             "account_id": account_id,
             "params": dict(params or {}),
+            "json_data": json_data,
+            "mailbox": kwargs.get("mailbox"),
         })
         return next(seq)
 
@@ -389,7 +392,7 @@ def _bind_cache(monkeypatch, accounts):
         persist=lambda c: None,
         thread_bound=False,
     )
-    monkeypatch.setattr(oe.auth_utils, "resolve_oauth_cache", lambda *a, **k: source)
+    monkeypatch.setattr(og.auth_utils, "resolve_oauth_cache", lambda *a, **k: source)
     return source
 
 
@@ -439,7 +442,7 @@ def test_get_access_token_refreshes_and_persists_under_selected_key(monkeypatch)
 
     _stub_policy_client(
         monkeypatch,
-        oe,
+        og,
         post=lambda url, **kw: SimpleNamespace(
             status_code=200,
             json=lambda: {
@@ -461,7 +464,7 @@ def test_try_complete_pending_auth_posts_to_bare_token_url(monkeypatch):
     # Step 3 removed a no-op TOKEN_URL.replace("/token", "/token"); lock that the
     # device-code exchange still posts to the bare TOKEN_URL.
     monkeypatch.setattr(
-        oe.auth_utils,
+        og.auth_utils,
         "load_token_cache",
         lambda *a, **k: {
             "pending_auth": {"device_code": "dc-1", "expires_at": time.time() + 100}
@@ -473,7 +476,7 @@ def test_try_complete_pending_auth_posts_to_bare_token_url(monkeypatch):
         posted["url"] = url
         return SimpleNamespace(status_code=400)  # non-200 short-circuits to False
 
-    _stub_policy_client(monkeypatch, oe, post=_fake_post)
+    _stub_policy_client(monkeypatch, og, post=_fake_post)
 
     assert oe.try_complete_pending_auth("u1") is False
     assert posted["url"] == oe.TOKEN_URL

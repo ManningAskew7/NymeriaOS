@@ -136,6 +136,15 @@ OUTLOOK_SCOPES: tuple[str, ...] = (
     "User.Read",
     "Mail.ReadWrite",
     "Mail.Send",
+    # Shared-mailbox access for the ``mailbox`` argument on every outlook_* tool
+    # (Graph ``/users/{upn}/...`` needs the .Shared pair plus Full Access).
+    "Mail.ReadWrite.Shared",
+    "Mail.Send.Shared",
+    # Master categories, inbox message rules, automatic replies, Focused
+    # overrides (outlook_organize tools). Accounts connected before this scope
+    # was added keep working for mail read/write and get a reconnect
+    # instruction from those tools (``outlook_graph.require_scopes``).
+    "MailboxSettings.ReadWrite",
     "Calendars.ReadWrite",
     "Contacts.Read",
     "ChannelMessage.Send",

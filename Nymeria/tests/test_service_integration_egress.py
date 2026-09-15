@@ -76,10 +76,13 @@ _DIRECT_CLIENT_CALLS = {
         "one level up in _get_searxng_base_url because only that function can tell a "
         "vault-supplied address from the operator's sidecar setting"
     ),
-    "outlook_email.py": (
+    "outlook_graph.py": (
         "two module-constant Microsoft hosts (MICROSOFT_TOKEN_URI, GRAPH_BASE). The "
         "Graph request builds its URL from a module constant plus a tool-chosen "
-        "path segment, so the HOST is never caller-supplied"
+        "path segment, so the HOST is never caller-supplied; the one absolute URL "
+        "it accepts (graph_request_raw's upload-session address) is issued by Graph "
+        "itself in a response body, the same vendor-controlled provenance as the "
+        "BFL poll target above"
     ),
     "auth_cache_utils.py": (
         "one hard-coded Google userinfo host, plus the OAuth token endpoint, which "
