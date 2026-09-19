@@ -2,7 +2,8 @@
 """Twitch OAuth helper — generates auth URLs and exchanges codes for tokens.
 
 Usage:
-    python tools/twitch_auth.py url                    # Print both OAuth URLs
+    python tools/twitch_auth.py url                    # Print both OAuth URLs (moderator bot)
+    python tools/twitch_auth.py url --role chatter     # One URL, chat scopes only (viewer bot)
     python tools/twitch_auth.py exchange CODE          # Exchange auth code for tokens
     python tools/twitch_auth.py validate TOKEN         # Check if a token is valid
 
@@ -48,6 +49,17 @@ BOT_SCOPES = [
     "clips:edit",
 ]
 
+# Scopes for a CHATTER bot: a plain viewer account in any channel. Reading
+# chat over EventSub needs user:read:chat, sending needs user:write:chat,
+# user:bot lets the account be treated as a bot, clips:edit serves !clip.
+# Nothing here needs the streamer's cooperation.
+CHATTER_SCOPES = [
+    "user:read:chat",
+    "user:write:chat",
+    "user:bot",
+    "clips:edit",
+]
+
 # Scopes needed for the broadcaster (channel owner)
 BROADCASTER_SCOPES = [
     "channel:bot",
@@ -86,6 +98,31 @@ def load_env(key: str) -> str:
                     return v.strip().strip('"').strip("'")
 
     return ""
+
+
+def _authorize_url(client_id: str, scopes: list[str]) -> str:
+    return (
+        f"https://id.twitch.tv/oauth2/authorize?response_type=code"
+        f"&client_id={client_id}&redirect_uri={REDIRECT_URI}"
+        f"&scope={'+'.join(scopes)}"
+    )
+
+
+def cmd_url_chatter(client_id: str) -> None:
+    """Print the single OAuth URL a chatter (viewer) bot needs."""
+    print("=" * 60)
+    print("CHATTER BOT TOKEN: log in as the bot account (a plain Twitch account)")
+    print("=" * 60)
+    print(f"\nScopes ({len(CHATTER_SCOPES)}):")
+    for s in CHATTER_SCOPES:
+        print(f"  - {s}")
+    print(f"\nURL:\n{_authorize_url(client_id, CHATTER_SCOPES)}\n")
+    print("-" * 60)
+    print("No broadcaster token is needed: a chatter bot works in any channel")
+    print("without anything from the streamer. Set TWITCH_BOT_ROLE=chatter.")
+    print("After visiting the URL, the page won't load (nothing on localhost:3000).")
+    print("Copy the 'code' parameter from the browser URL bar, then run:")
+    print("  python tools/twitch_auth.py exchange THE_CODE")
 
 
 def cmd_url(client_id: str) -> None:
@@ -176,7 +213,13 @@ def main():
     parser = argparse.ArgumentParser(description="Twitch OAuth helper for Nymeria")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("url", help="Print OAuth URLs for bot and broadcaster")
+    url = sub.add_parser("url", help="Print OAuth URLs for bot and broadcaster")
+    url.add_argument(
+        "--role",
+        choices=["moderator", "chatter"],
+        default="moderator",
+        help="moderator: bot + broadcaster URLs (default); chatter: one chat-only URL",
+    )
 
     ex = sub.add_parser("exchange", help="Exchange auth code for tokens")
     ex.add_argument("code", help="Authorization code from redirect URL")
@@ -196,7 +239,10 @@ def main():
         sys.exit(1)
 
     if args.command == "url":
-        cmd_url(client_id)
+        if args.role == "chatter":
+            cmd_url_chatter(client_id)
+        else:
+            cmd_url(client_id)
     elif args.command == "exchange":
         client_secret = load_env("TWITCH_CLIENT_SECRET")
         cmd_exchange(client_id, client_secret, args.code)

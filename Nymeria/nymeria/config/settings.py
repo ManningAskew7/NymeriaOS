@@ -600,6 +600,49 @@ class Settings(BaseSettings):
     twitch_chatlog_retention_days: int = Field(
         default=14, ge=1, le=365, description="Days of per-chatter Twitch chat log kept by the API"
     )
+    twitch_bot_role: Literal["moderator", "chatter"] = Field(
+        default="moderator",
+        description=(
+            "Bot role in the channel: moderator (mod EventSub subscriptions, "
+            "!ask for subs/VIPs/mods) or chatter (a plain viewer account in any "
+            "channel: chat-only subscriptions, !ask open to everyone)"
+        ),
+    )
+    twitch_operator_logins: Optional[str] = Field(
+        default=None,
+        description=(
+            "Comma-separated Twitch logins allowed the control commands "
+            "(!stop, !start, !pulse, !clear, !context) without a mod badge; "
+            "the operator's own account when the bot sits in someone else's channel"
+        ),
+    )
+    twitch_listen_enabled: bool = Field(
+        default=False,
+        description=(
+            "Transcribe the live broadcast audio (STT_* provider) into the chat "
+            "buffer as [STREAM] lines so the agent hears the streamer; needs "
+            "nymeriaos[twitch] (streamlink + av)"
+        ),
+    )
+    twitch_listen_window_seconds: int = Field(
+        default=12, ge=5, le=30, description="Seconds of stream audio per STT window"
+    )
+    twitch_listen_wake_words: Optional[str] = Field(
+        default=None,
+        description=(
+            "Comma-separated extra words that wake the bot when heard on stream "
+            "(the bot's own login and display name always do)"
+        ),
+    )
+    twitch_reaction_check_seconds: int = Field(
+        default=75,
+        ge=0,
+        le=600,
+        description=(
+            "Seconds after a chat send before the bot re-reads chat and stream "
+            "for the reaction to its message; 0 disables"
+        ),
+    )
 
     # Messaging Platform Credentials - Slack
     slack_webhook_url: Optional[str] = Field(

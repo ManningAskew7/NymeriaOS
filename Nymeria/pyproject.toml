@@ -151,6 +151,10 @@ slack = [
 ]
 twitch = [
   "twitchio>=3.3.2,<4",
+  # Stream listener (TWITCH_LISTEN_ENABLED): Twitch audio_only HLS via
+  # streamlink, decoded by PyAV (pip wheel bundles ffmpeg; no system package).
+  "streamlink>=8.6,<9",
+  "av>=14,<19",
 ]
 bots = [
   "discord.py>=2.3.0",
@@ -158,6 +162,8 @@ bots = [
   "slack-bolt>=1.22.0",
   "slack-sdk>=3.35.0",
   "twitchio>=3.3.2,<4",
+  "streamlink>=8.6,<9",
+  "av>=14,<19",
 ]
 dev = [
   "pytest>=8.0.0",
@@ -185,6 +191,8 @@ all = [
   "slack-bolt>=1.22.0",
   "slack-sdk>=3.35.0",
   "twitchio>=3.3.2,<4",
+  "streamlink>=8.6,<9",
+  "av>=14,<19",
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
   "pytest-asyncio>=0.26.0",
@@ -269,6 +277,11 @@ replace-imports-with-any = [
     "telegram.*",
     "twitchio",
     "twitchio.*",
+    # Stream listener deps (twitch extra; lazy-imported in triggers/twitch_listener.py).
+    "streamlink",
+    "streamlink.*",
+    "av",
+    "av.*",
     # Web page fetch + content extraction libs (lazy-imported in tools/web_fetch.py).
     "trafilatura",
     "trafilatura.*",

@@ -610,6 +610,22 @@ services:
       TWITCH_PULSE_INTERVAL: ${TWITCH_PULSE_INTERVAL:-300}
       TWITCH_PULSE_MIN_MESSAGES: ${TWITCH_PULSE_MIN_MESSAGES:-10}
       TWITCH_COMMAND_CONTEXT_COUNT: ${TWITCH_COMMAND_CONTEXT_COUNT:-50}
+      TWITCH_BOT_ROLE: ${TWITCH_BOT_ROLE:-moderator}
+      TWITCH_OPERATOR_LOGINS: ${TWITCH_OPERATOR_LOGINS:-}
+      # Stream listener: broadcast audio transcribed into the chat buffer via
+      # the platform STT_* provider (the same variables the api gets).
+      TWITCH_LISTEN_ENABLED: ${TWITCH_LISTEN_ENABLED:-false}
+      TWITCH_LISTEN_WINDOW_SECONDS: ${TWITCH_LISTEN_WINDOW_SECONDS:-12}
+      TWITCH_LISTEN_WAKE_WORDS: ${TWITCH_LISTEN_WAKE_WORDS:-}
+      TWITCH_REACTION_CHECK_SECONDS: ${TWITCH_REACTION_CHECK_SECONDS:-75}
+      STT_PROVIDER: ${STT_PROVIDER:-none}
+      STT_BASE_URL: ${STT_BASE_URL:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      STT_MODEL: ${STT_MODEL:-}
+      STT_LANGUAGE: ${STT_LANGUAGE:-}
+      # STT_API_KEY falls back to these per provider (core/voice.py).
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro

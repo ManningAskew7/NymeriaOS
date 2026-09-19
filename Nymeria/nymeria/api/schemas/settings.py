@@ -279,6 +279,7 @@ class ServerSettingsUpdate(BaseModel):
     telegram_default_chat_id: Optional[str] = None
     twitch_bot_access_token: Optional[str] = None
     twitch_bot_refresh_token: Optional[str] = None
+    twitch_bot_role: Optional[str] = None
     twitch_bot_user_id: Optional[str] = None
     twitch_broadcaster_refresh_token: Optional[str] = None
     twitch_broadcaster_token: Optional[str] = None
@@ -288,9 +289,14 @@ class ServerSettingsUpdate(BaseModel):
     twitch_client_id: Optional[str] = None
     twitch_client_secret: Optional[str] = None
     twitch_command_context_count: Optional[int] = Field(default=None, ge=5, le=200)
+    twitch_listen_enabled: Optional[bool] = None
+    twitch_listen_wake_words: Optional[str] = None
+    twitch_listen_window_seconds: Optional[int] = Field(default=None, ge=5, le=30)
+    twitch_operator_logins: Optional[str] = None
     twitch_pulse_enabled: Optional[bool] = None
     twitch_pulse_interval: Optional[int] = Field(default=None, ge=60, le=3600)
     twitch_pulse_min_messages: Optional[int] = Field(default=None, ge=1, le=100)
+    twitch_reaction_check_seconds: Optional[int] = Field(default=None, ge=0, le=600)
     twitch_respond_mode: Optional[str] = None
     twitch_system_prompt: Optional[str] = Field(default=None, max_length=50000)
 

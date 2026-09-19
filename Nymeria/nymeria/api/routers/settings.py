@@ -307,6 +307,12 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "twitch_pulse_min_messages",
         "twitch_command_context_count",
         "twitch_chatlog_retention_days",
+        "twitch_bot_role",
+        "twitch_operator_logins",
+        "twitch_listen_enabled",
+        "twitch_listen_window_seconds",
+        "twitch_listen_wake_words",
+        "twitch_reaction_check_seconds",
     ),
 }
 

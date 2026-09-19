@@ -22,3 +22,7 @@ slack-sdk>=3.35.0
 
 # Twitch bot (EventSub websocket chat)
 twitchio>=3.3.2,<4
+# Twitch stream listener (TWITCH_LISTEN_ENABLED): audio_only HLS via
+# streamlink, decoded by PyAV (the wheel bundles ffmpeg's libraries).
+streamlink>=8.6,<9
+av>=14,<19

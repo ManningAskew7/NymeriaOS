@@ -1222,15 +1222,35 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         print("  Twitch access tokens expire after roughly 4 hours; without refresh")
         print("  credentials the bot will lose its connection and need a restart.")
 
+    if settings.twitch_listen_enabled and settings.stt_provider == "none":
+        print("\n[Warning] TWITCH_LISTEN_ENABLED is on but STT_PROVIDER is 'none'.")
+        print("  The bot will run without hearing the stream until an STT provider is set.")
+
     api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Twitch bot")
 
     print("Starting Nymeria Twitch Bot (thin client)...")
     print(f"  - Channel: #{settings.twitch_channel}")
+    print(f"  - Role: {settings.twitch_bot_role}")
     print(f"  - API: {api_url}")
     print(f"  - Buffer size: {settings.twitch_buffer_size}")
     print(f"  - Pulse: {'enabled' if settings.twitch_pulse_enabled else 'disabled'}")
+    print(
+        "  - Listening: "
+        + (
+            f"enabled ({settings.twitch_listen_window_seconds}s windows, STT {settings.stt_provider})"
+            if settings.twitch_listen_enabled
+            else "disabled"
+        )
+    )
     print("  - Auth: service token")
+
+    def _stt_factory():
+        # Built on the first live stream, not at boot: a misconfigured STT
+        # provider must not stop the bot from serving chat.
+        from nymeria.core.voice import get_stt_service
+
+        return get_stt_service(settings)
 
     api = _service_api_client(api_url, api_key, settings)
     # The preflight above guarantees these; the `or ""` narrows Optional[str]
@@ -1253,6 +1273,13 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         # !stop marker: honored on the next boot so a container restart
         # cannot silently re-arm a bot a mod switched off.
         stop_flag_path=settings.data_dir / "flags" / f"twitch-{settings.twitch_channel}-stopped",
+        bot_role=settings.twitch_bot_role,
+        operator_logins=settings.twitch_operator_logins,
+        listen_enabled=settings.twitch_listen_enabled,
+        listen_window_seconds=settings.twitch_listen_window_seconds,
+        wake_words=settings.twitch_listen_wake_words,
+        reaction_check_seconds=settings.twitch_reaction_check_seconds,
+        stt_factory=_stt_factory,
     )
 
     _install_exit_handlers("\nShutdown signal received, stopping Twitch bot...")
