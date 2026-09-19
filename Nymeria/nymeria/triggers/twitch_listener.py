@@ -254,6 +254,7 @@ class StreamListener:
         if self.running:
             return
         self.error = None
+        self.state = "starting"  # before the task's first step, so status reads true at once
         self._task = asyncio.create_task(self._run(), name="twitch-stream-listener")
 
     async def stop(self) -> None:

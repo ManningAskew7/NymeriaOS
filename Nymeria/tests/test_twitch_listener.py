@@ -336,6 +336,7 @@ async def test_stop_ends_the_loop_and_no_callback_fires_afterwards():
     transcriber = _Transcriber()
     listener, delivered = _listener(_SpeechForever(), transcriber)
     listener.start()
+    assert listener.running and listener.state == "starting"  # honest before the first step
     for _ in range(200):
         await asyncio.sleep(0)
         if len(delivered) >= 2:
