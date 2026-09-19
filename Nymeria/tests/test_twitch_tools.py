@@ -1657,3 +1657,23 @@ def test_unreadable_binding_is_the_tool_error_not_the_env_channel(monkeypatch):
 
     assert result.startswith("[Error]") and "config store unavailable" in result
     assert sends == []
+
+
+def test_every_twitch_tool_receives_the_run_config():
+    """LangChain injects ``config`` only when the type hint IS ``RunnableConfig``;
+    the ``Optional[RunnableConfig]`` spelling is never injected and the tool sees
+    None, which silently turns every per-user vault lookup and the per-thread
+    channel binding into the deployment defaults (a bound test thread posted into
+    the moderation channel live, 2026-09-19). Pin the whole family."""
+    from langchain_core.tools.base import _get_runnable_config_param
+
+    from nymeria.tools import twitch as tools
+
+    checked = 0
+    for name in dir(tools):
+        obj = getattr(tools, name)
+        func = getattr(obj, "func", None)
+        if name.startswith("twitch_") and callable(func):
+            assert _get_runnable_config_param(func) == "config", name
+            checked += 1
+    assert checked >= 25
