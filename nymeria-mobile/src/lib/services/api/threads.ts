@@ -43,6 +43,7 @@ export class ThreadsApi extends ChatApi {
       title_source: string;
       recovered?: boolean;
       recovery_sources?: string[];
+      shared?: boolean;
     }>;
     total: number;
   }> {

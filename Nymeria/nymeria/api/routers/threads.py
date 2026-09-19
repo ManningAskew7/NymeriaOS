@@ -207,7 +207,48 @@ def _thread_list_payload(
         payload["title_source"] = "callable"
     payload["recovered"] = recovered
     payload["recovery_sources"] = sorted(recovery_sources or [])
+    # Platform threads (Discord channels, Telegram groups, Twitch chats): the
+    # chat bots drive them through act-as, admins may read them all, and an
+    # owner row (the relay's acting account, or a legacy claim) is incidental.
+    payload["shared"] = _is_shared_channel_thread(thread_id)
     return payload
+
+
+def _platform_thread_rows(
+    agent: Any,
+    settings: Any,
+    store: Any,
+    *,
+    exclude: set[str],
+) -> list[dict[str, Any]]:
+    """Shared-channel threads for an admin's list, beyond the ones they own.
+
+    Sources: the caller's metadata store (titles and pins the admin set), the
+    checkpoint table (threads that have run turns but were never titled; the
+    bot relay creates those), and the ownership index (a relay acting as a
+    non-admin account claims the thread for that account on first touch, and
+    older deployments claimed them for the owner). Admins read every shared
+    thread whoever the row names (`_can_list_recovered_thread`), so ownership
+    never hides one here. Without a metadata row the title is the thread id
+    itself: "New Chat" would hide which channel it is.
+    """
+    candidates = {tid for tid in store.threads if _is_shared_channel_thread(tid)}
+    candidates.update(
+        tid for tid in enumerate_checkpoint_thread_ids(settings) if _is_shared_channel_thread(tid)
+    )
+    candidates.update(
+        tid for tid in agent.accounts_repo.list_thread_ids() if _is_shared_channel_thread(tid)
+    )
+    rows: list[dict[str, Any]] = []
+    for tid in sorted(candidates - exclude):
+        meta = store.threads.get(tid)
+        payload = _thread_list_payload(agent, tid, meta)
+        if meta is None:
+            payload["title"] = tid
+            payload["title_source"] = "platform"
+        rows.append(payload)
+    rows.sort(key=lambda r: (not r.get("pinned"), r.get("updated_at") is None, r["thread_id"]))
+    return rows
 
 
 def create_threads_router(
@@ -415,6 +456,14 @@ def create_threads_router(
                 "orphaned cross-user checkpoints would be surprising or unsafe."
             ),
         ),
+        include_platform: bool = Query(
+            False,
+            description=(
+                "With owned_only=true: admins also get the ownerless platform "
+                "threads (Discord channels, Telegram groups, Twitch chats) that "
+                "the chat bots drive, flagged shared=true. Non-admins get none."
+            ),
+        ),
         user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
@@ -442,6 +491,10 @@ def create_threads_router(
                 _thread_list_payload(agent, tid, store.threads.get(tid))
                 for tid in sorted(owned_ids)
             ]
+            if include_platform and user.role == "admin":
+                threads.extend(
+                    _platform_thread_rows(agent, settings, store, exclude=owned_ids)
+                )
             return {"threads": threads, "total": len(threads)}
 
         all_checkpoint_ids = enumerate_checkpoint_thread_ids(settings)

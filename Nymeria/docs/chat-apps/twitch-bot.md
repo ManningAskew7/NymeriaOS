@@ -90,10 +90,14 @@ authoritative. Its one thread-config READ is the boot check of the
   `twitch`) or the tools refuse with a message naming both channels; a
   vault token always posts as its own account; `TWITCH_BOT_USER_ID` only
   ever names the env token's. Consequence for operating a roaming thread:
-  drive it AS its account (the desktop logged in as that account, or the
-  MCP `nymeria_chat` with its `user_id`); a turn as the owner account on
-  that thread has no vault record there and gets the refusal, never a post
-  under the moderator account.
+  the desktop logged in as an ADMIN lists every `twitch_*` thread (platform
+  rows, `GET /threads?owned_only=true&include_platform=true`), so you read
+  it, edit its prompt and tools, and pin or title it there; a turn typed as
+  the owner account on that thread has no vault record there and gets the
+  refusal, never a post under the moderator account. To make it SPEAK from
+  a typed prompt, act as its account (MCP `nymeria_chat` with its
+  `user_id`); a non-admin desktop login cannot see `twitch_*` threads at
+  all (shared-channel ids are admin or act-as only).
 
 ## Roles: moderator and chatter
 
@@ -159,7 +163,8 @@ prompt and tools) and pause it with `docker compose stop twitch-chatter`.
 6. `docker compose --profile twitch-chatter --env-file .env.docker up -d`.
    Its heartbeat is a separate `twitch-bot` service record keyed by
    container; the ready banner prints the thread, Nymeria user, and
-   `Commands: disabled`.
+   `Commands: disabled`. The thread appears in an admin's desktop list
+   (title it and pin it there; untitled platform threads list by id).
 
 Moving to another streamer: change `TWITCH_CHANNEL` in
 `.env.twitch-chatter`, update the thread's `twitch_channel` binding, `up -d

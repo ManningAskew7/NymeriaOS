@@ -381,3 +381,71 @@ def test_list_threads_owned_only_for_regular_user_returns_owned_only(
     assert owned_response.status_code == 200
     ids = {row["thread_id"] for row in owned_response.json()["threads"]}
     assert ids == {"owned"}
+
+
+def _insert_checkpoint_thread(api_client_builder, tmp_path: Path, thread_id: str) -> None:
+    import sqlite3
+
+    settings = api_client_builder.settings(tmp_path)
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.execute("INSERT INTO checkpoints (thread_id) VALUES (?)", (thread_id,))
+        conn.commit()
+
+
+def test_owned_only_listing_adds_platform_threads_for_admins_on_request(
+    tmp_path: Path, api_client_builder
+):
+    """The desktop lists owned_only=true, which by construction never shows the
+    platform threads the chat bots drive (Twitch chats, Discord channels)
+    unless the caller happens to own them. include_platform=true appends the
+    rest for admins, whoever the owner row names (the relay's acting account
+    claims them), flagged shared, titled by id when nobody titled them;
+    non-admins never see other people's."""
+    client, agent = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.create_user("owner", "owner@example.com", "Owner", role="admin")
+    agent.accounts_repo.create_user("viewer", "viewer@example.com", "Viewer")
+    admin = agent.accounts_repo.issue_token("owner")
+    viewer = agent.accounts_repo.issue_token("viewer")
+
+    agent.accounts_repo.claim_thread("personal", "owner")
+    agent.thread_metadata_manager.upsert_thread("owner", "personal", title="Mine")
+    # Titled + pinned by the admin; claimed by the relay's acting account.
+    agent.thread_metadata_manager.upsert_thread(
+        "owner", "twitch_chatter", title="Twitch chatter", pinned=True
+    )
+    agent.accounts_repo.claim_thread("twitch_chatter", "viewer")
+    # Ran turns through the bot relay, never titled by anyone, no owner row.
+    _insert_checkpoint_thread(api_client_builder, tmp_path, "twitch_silk")
+    # Known only to the ownership index (claimed, no checkpoint yet, untitled).
+    agent.accounts_repo.claim_thread("twitch_owned", "viewer")
+
+    plain = client.get(
+        "/threads?owned_only=true", headers={"Authorization": f"Bearer {admin}"}
+    ).json()
+    assert [r["thread_id"] for r in plain["threads"]] == ["personal"]
+    assert plain["threads"][0]["shared"] is False
+
+    with_platform = client.get(
+        "/threads?owned_only=true&include_platform=true",
+        headers={"Authorization": f"Bearer {admin}"},
+    ).json()
+    rows = {r["thread_id"]: r for r in with_platform["threads"]}
+    # Own threads first, then platform rows: pinned, then by id.
+    assert list(rows) == ["personal", "twitch_chatter", "twitch_owned", "twitch_silk"]
+    assert rows["twitch_owned"]["shared"] is True and rows["twitch_owned"]["title"] == "twitch_owned"
+    assert rows["twitch_chatter"]["shared"] is True
+    assert rows["twitch_chatter"]["title"] == "Twitch chatter"
+    assert rows["twitch_chatter"]["pinned"] is True
+    assert rows["twitch_silk"]["shared"] is True
+    assert rows["twitch_silk"]["title"] == "twitch_silk"  # never "New Chat" for a channel
+    assert rows["twitch_silk"]["title_source"] == "platform"
+    assert rows["twitch_silk"]["platform"] == "twitch"
+    assert with_platform["total"] == 4
+
+    as_viewer = client.get(
+        "/threads?owned_only=true&include_platform=true",
+        headers={"Authorization": f"Bearer {viewer}"},
+    ).json()
+    assert [r["thread_id"] for r in as_viewer["threads"]] == ["twitch_chatter", "twitch_owned"]
+    assert all(r["shared"] is True for r in as_viewer["threads"])  # their own, flagged
+    assert "twitch_silk" not in {r["thread_id"] for r in as_viewer["threads"]}

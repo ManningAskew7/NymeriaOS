@@ -623,6 +623,7 @@ function createThreadsStore() {
       title_source: string;
       recovered?: boolean;
       recovery_sources?: string[];
+      shared?: boolean;
     }>) {
       // Build a map of local threads for preserving UI-only state
       const localMap = new Map(threads.map((t) => [t.id, t]));
@@ -647,6 +648,7 @@ function createThreadsStore() {
           hasCustomConfig: local?.hasCustomConfig,
           recovered: bt.recovered ?? local?.recovered ?? false,
           recoverySources: bt.recovery_sources ?? local?.recoverySources ?? [],
+          shared: bt.shared ?? local?.shared ?? false,
         };
       });
 

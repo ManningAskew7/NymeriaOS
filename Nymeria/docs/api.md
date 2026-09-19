@@ -808,6 +808,25 @@ calling bot should post no reply text.
 
 ---
 
+### List Threads
+
+```
+GET /threads?owned_only=true&include_platform=true
+Authorization: Bearer <token>
+```
+
+Lists the caller's threads with metadata (title, pin, platform, timestamps,
+`title_source`, `callable`, `recovered` + `recovery_sources`, `shared`).
+Without `owned_only` the response also merges recovered rows (checkpoints,
+metadata, bound resources) so old partially-deleted threads can be found and
+deleted. `owned_only=true` returns only threads in `thread_owners` for the
+caller (the desktop's mode). `include_platform=true` with it makes ADMINS
+also receive the ownerless shared-channel threads the chat bots drive
+(`twitch_*`, Discord channels, Telegram groups): `shared: true`, pinned
+first, the thread id as `title` with `title_source: platform` until someone
+titles it; non-admins get nothing extra. An owned thread is never a platform
+row whatever its id looks like.
+
 ### Get Thread Status
 
 ```http

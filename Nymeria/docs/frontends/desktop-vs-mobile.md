@@ -300,6 +300,8 @@ Desktop: 1258 lines. Mobile: 145 lines. **Most divergent file.**
 
 **When changing**: Adding new thread list features requires independent implementation on each platform. The underlying `threadsStore` is shared, so data-layer changes sync automatically.
 
+**Platform threads**: the desktop lists `GET /threads?owned_only=true&include_platform=true`, so an admin also sees the ownerless chat-bot threads (Twitch chats, Discord channels, Telegram groups; `shared: true`, platform icon, id as the title until someone titles them). Mobile lists `GET /threads` unfiltered, where the same rows arrive as recovered checkpoint threads for admins.
+
 #### `components/threads/ThreadItem.svelte`
 
 Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for multi-select), callable/config badges, and an accent-glowing Agent settings shortcut that remains visible for callable threads while staying hover/focus-only for other threads. Mobile version is simplified with just select + delete callbacks.

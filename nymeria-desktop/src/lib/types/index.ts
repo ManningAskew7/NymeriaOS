@@ -296,6 +296,9 @@ export interface Thread {
   pinned?: boolean;
   recovered?: boolean;
   recoverySources?: string[];
+  // Ownerless platform thread (a Twitch chat, Discord channel, Telegram
+  // group) that a chat bot drives; listed for admins only.
+  shared?: boolean;
   unread?: boolean;
 }
 
