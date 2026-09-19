@@ -998,6 +998,9 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TWITCH_LISTEN_WINDOW_SECONDS` | `12` | Seconds of stream audio per STT request (5 to 30); silent windows are never sent |
 | `TWITCH_LISTEN_WAKE_WORDS` | - | Comma-separated extra words that wake the bot when heard on stream; its own login and display name always do |
 | `TWITCH_REACTION_CHECK_SECONDS` | `75` | Delay after a successful chat send before the bot re-reads chat and stream for the reaction (0 disables) |
+| `TWITCH_NYMERIA_USER_ID` | `default` | Nymeria account the bot relays as (thread, credential vault, memories, chat log); the service token must be an admin's |
+| `TWITCH_THREAD_ID` | `twitch_<channel>` | Thread the bot drives. Set it (keep the `twitch_` prefix: shared-channel thread semantics) for one ROAMING thread that follows the bot between channels (prompt headers then name the channel). The API-side tools act in the thread's `twitch_channel` binding, else `TWITCH_CHANNEL`; a thread bound elsewhere refuses the env credentials and needs the account's own vault record |
+| `TWITCH_CHAT_COMMANDS` | `true` | Serve the `!` commands and the `@mention` ask. `false`: a silent reader that acts only through the pulse, the reaction check, and the wake |
 | `TEAMS_BOT_APP_ID` | - | Bot Framework app ID for Teams webhook replies |
 | `TEAMS_BOT_APP_PASSWORD` | - | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | - | Optional Azure tenant ID used during setup |
@@ -1647,7 +1650,7 @@ The watchdog is a supervisory sub-loop of the ticker (`core/watchdog_sweep.py`):
 | `TTS_SPEED` | `1.0` | Playback speed 0.25-4.0; Cartesia clamps to 0.6-1.5, ElevenLabs to 0.7-1.2, Edge to 0.5-2.0; not applicable for Gemini, and OpenAI's `gpt-4o-mini-tts` accepts but ignores it |
 | `STT_PROVIDER` | `none` | STT provider: `none`, `openai`, `groq`, `faster-whisper` (local) |
 | `STT_BASE_URL` | (per provider) | STT API base URL. `faster-whisper` unset runs in-process (`nymeriaos[voice-local]` extra), set it to use the speaches sidecar |
-| `STT_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for hosted STT. Groq also reads `GROQ_API_KEY`. Local faster-whisper needs no key |
+| `STT_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for hosted STT. Groq also reads `GROQ_API_KEY`. Local faster-whisper needs no key. The bot containers (Twitch listener) receive `STT_API_KEY` and `GROQ_API_KEY` but never `OPENAI_API_KEY`: set `STT_API_KEY` explicitly for the openai provider there |
 | `GROQ_API_KEY` | - | Groq key (STT at roughly $0.04 per audio hour; shared with the Groq LLM provider) |
 | `STT_MODEL` | (per provider) | Defaults when unset: OpenAI `gpt-4o-mini-transcribe`; Groq `whisper-large-v3-turbo`; in-process faster-whisper `small` (CPU-sized); via speaches `Systran/faster-whisper-small` |
 | `STT_LANGUAGE` | - | Language hint (ISO 639-1, e.g., `en`) |

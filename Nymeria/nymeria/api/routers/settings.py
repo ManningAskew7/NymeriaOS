@@ -313,6 +313,9 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "twitch_listen_window_seconds",
         "twitch_listen_wake_words",
         "twitch_reaction_check_seconds",
+        "twitch_nymeria_user_id",
+        "twitch_thread_id",
+        "twitch_chat_commands",
     ),
 }
 

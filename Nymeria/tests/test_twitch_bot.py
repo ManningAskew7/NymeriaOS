@@ -9,6 +9,7 @@ touched by the methods under test).
 """
 
 import asyncio
+import logging
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -80,6 +81,15 @@ class _FakeAPI:
         self.chatlog_posts = []
         self.chatlog_fail = False
         self.chatlog_fail_after = None  # fail the Nth post (1-based) once
+        self.thread_configs = {}  # thread_id -> config dict (None: no config yet)
+        self.config_reads = []
+        self.config_fail = False
+
+    async def get_thread_config(self, thread_id, user_id=None):
+        if self.config_fail:
+            raise RuntimeError("api down")
+        self.config_reads.append((thread_id, user_id))
+        return self.thread_configs.get(thread_id)
 
     async def post_twitch_chat_log(self, channel, messages, *, user_id):
         if self.chatlog_fail:
@@ -165,6 +175,10 @@ def make_bot(**overrides):
     bot._reaction_chain = 0
     bot._process_sent = deque(maxlen=64)
     bot._last_live_check_at = float("-inf")
+    # Roaming thread, relay identity, commands switch (2026-09-19).
+    bot._roaming = False
+    bot._chat_commands = True
+    bot._thread_channel_mismatch = None
     _fake_helix(bot, {}, [])  # Twitch lists nothing unless a test says otherwise
     for key, value in overrides.items():
         setattr(bot, f"_{key}", value)
@@ -3083,3 +3097,233 @@ async def test_heartbeat_liveness_recheck_heals_a_missed_online_or_offline():
     bot._last_live_check_at = float("-inf")
     bot._stopped = True
     assert await bot._recheck_stream_liveness() is False
+
+
+# ---------------------------------------------------------------------------
+# Roaming thread, relay identity, commands switch (2026-09-19,
+# tmp/twitch-chatter-deploy-plan.md R1-R5, K1-K2)
+# ---------------------------------------------------------------------------
+
+
+def test_relay_thread_and_stop_flag_follow_the_configured_thread_id():
+    from nymeria.triggers.twitch_bot import relay_thread_id, stop_flag_name
+
+    assert relay_thread_id("silk") == "twitch_silk"
+    assert relay_thread_id("silk", "") == "twitch_silk"
+    assert relay_thread_id("silk", "  ") == "twitch_silk"
+    assert relay_thread_id("foo", "twitch_chatter") == "twitch_chatter"
+    assert stop_flag_name("silk") == "twitch-silk-stopped"
+    assert stop_flag_name("foo", "twitch_chatter") == "twitch-twitch_chatter-stopped"
+
+
+def test_constructor_defaults_to_the_per_channel_thread_and_marks_roaming():
+    pytest.importorskip("twitchio")
+    common = dict(
+        api=_FakeAPI(), client_id="cid", client_secret="cs", bot_user_id="1",
+        access_token="t", refresh_token="r",
+    )
+    default = NymeriaTwitchBot(channel="silk", **common)
+    assert (default._thread_id, default._roaming, default._user_id, default._chat_commands) == (
+        "twitch_silk", False, "default", True
+    )
+    roaming = NymeriaTwitchBot(
+        channel="foo", thread_id="twitch_chatter", user_id="twitch-chatter",
+        chat_commands=False, **common,
+    )
+    assert (roaming._thread_id, roaming._roaming, roaming._user_id, roaming._chat_commands) == (
+        "twitch_chatter", True, "twitch-chatter", False
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_calls_carry_the_configured_nymeria_user(monkeypatch):
+    bot = make_bot(user_id="twitch-chatter", thread_id="twitch_chatter", roaming=True,
+                   channel_name="foo")
+    calls = _capture_consume(monkeypatch)
+    for i in range(10):
+        bot._buffer.append(_msg(f"m{i}"))
+
+    assert await bot._pulse_tick() == "fired"
+    assert (calls[0]["thread_id"], calls[0]["user_id"]) == ("twitch_chatter", "twitch-chatter")
+    assert calls[0]["chat_kwargs"]["platform_origin"]["channel_id"] == "foo"
+
+    await bot._check_thread_channel()
+    assert bot.api.config_reads == [("twitch_chatter", "twitch-chatter")]
+
+
+@pytest.mark.asyncio
+async def test_boot_check_flags_a_thread_bound_to_another_channel(caplog):
+    """The bot never WRITES thread config (operator-owned); it reads the binding
+    and shouts when its twitch_* tools would post somewhere else."""
+    bot = make_bot(channel_name="Foo", thread_id="twitch_chatter", roaming=True)
+    bot.api.thread_configs["twitch_chatter"] = {"twitch_channel": "#bar"}
+    with caplog.at_level(logging.WARNING):
+        await bot._check_thread_channel()
+
+    assert bot._thread_channel_mismatch == "bar"
+    assert any("bound to #bar but this bot watches #Foo" in r.getMessage() for r in caplog.records)
+    _status, details = bot._heartbeat_status({CHAT_SUBSCRIPTION_TYPE}, True)
+    assert details["thread_channel_mismatch"] == "bar"
+
+    matching = make_bot(channel_name="foo", thread_id="twitch_chatter", roaming=True)
+    matching.api.thread_configs["twitch_chatter"] = {"twitch_channel": "FOO"}
+    await matching._check_thread_channel()
+    assert matching._thread_channel_mismatch is None
+
+
+@pytest.mark.asyncio
+async def test_boot_check_warns_an_unbound_roaming_thread_and_tolerates_api_failure(caplog):
+    unbound = make_bot(channel_name="foo", thread_id="twitch_chatter", roaming=True)
+    with caplog.at_level(logging.WARNING):
+        await unbound._check_thread_channel()
+    assert any("no twitch_channel binding" in r.getMessage() for r in caplog.records)
+    assert unbound._thread_channel_mismatch is None
+
+    caplog.clear()
+    fixed = make_bot()  # the per-channel default thread: silence when unbound
+    with caplog.at_level(logging.WARNING):
+        await fixed._check_thread_channel()
+    assert caplog.records == []
+
+    down = make_bot(channel_name="foo")
+    down.api.config_fail = True
+    with caplog.at_level(logging.WARNING):
+        await down._check_thread_channel()  # must not raise: boot continues
+    assert any("Could not read thread" in r.getMessage() for r in caplog.records)
+
+
+def test_prompt_headers_name_the_channel_only_for_a_roaming_thread():
+    from nymeria.triggers.twitch_bot import (
+        compose_ask_prompt, compose_pulse_prompt, compose_reaction_prompt, compose_wake_prompt,
+    )
+
+    msgs = [_msg("a"), _msg("b")]
+    sent = datetime(2026, 9, 19, 10, 0, 0, tzinfo=timezone.utc)
+
+    assert "Chat pulse: 2 new messages since last check" in compose_pulse_prompt(msgs)
+    assert "Chat pulse: 2 new messages in #foo since last check" in compose_pulse_prompt(
+        msgs, channel="foo"
+    )
+    assert "2 new lines since your last look" in compose_reaction_prompt(msgs, sent)
+    assert "2 new lines in #foo since your last look" in compose_reaction_prompt(
+        msgs, sent, channel="foo"
+    )
+    assert 'the broadcast audio just mentioned "silk"' in compose_wake_prompt(msgs, "silk")
+    assert 'the broadcast audio in #foo just mentioned "silk"' in compose_wake_prompt(
+        msgs, "silk", channel="foo"
+    )
+    assert "Question from bob: q" in compose_ask_prompt(msgs, [], "bob", "q")
+    assert "Question from bob in #foo: q" in compose_ask_prompt(msgs, [], "bob", "q", channel="foo")
+
+
+@pytest.mark.asyncio
+async def test_roaming_bot_pulse_names_its_channel_and_default_bot_does_not(monkeypatch):
+    calls = _capture_consume(monkeypatch)
+    roaming = make_bot(roaming=True, channel_name="foo", thread_id="twitch_chatter")
+    fixed = make_bot()
+    for bot in (roaming, fixed):
+        for i in range(10):
+            bot._buffer.append(_msg(f"m{i}"))
+        assert await bot._pulse_tick() == "fired"
+
+    assert "10 new messages in #foo since" in calls[0]["message"]
+    assert "10 new messages since last check" in calls[1]["message"]
+    assert "#silk" not in calls[1]["message"]
+
+
+def test_heartbeat_details_name_thread_user_and_commands():
+    bot = make_bot(thread_id="twitch_chatter", user_id="twitch-chatter", chat_commands=False,
+                   broadcaster_id="999")
+    _status, details = bot._heartbeat_status({CHAT_SUBSCRIPTION_TYPE}, True)
+    assert details["thread"] == "twitch_chatter"
+    assert details["nymeria_user"] == "twitch-chatter"
+    assert details["chat_commands"] is False
+
+
+@pytest.mark.asyncio
+async def test_commands_off_buffers_commands_and_mentions_as_plain_chat():
+    bot = make_bot(bot_user_id="111", chat_commands=False, bot_login="silkgpt")
+    processed = _count_commands(bot)
+    mention = _chat_payload("m2", "@silkgpt what game is this")
+
+    await bot.event_message(_chat_payload("m1", "!ask what"))
+    await bot.event_message(mention)
+    await bot.event_message(_chat_payload("m3", "!stop"))
+
+    assert [m.message for m in bot._buffer.get_since(0)] == [
+        "!ask what", "@silkgpt what game is this", "!stop"
+    ]
+    assert processed == []  # never reached the command framework
+    assert mention.text == "@silkgpt what game is this"  # no !ask rewrite either
+    assert len(bot._chatlog_queue) == 3  # still logged per chatter
+
+
+@pytest.mark.asyncio
+async def test_commands_on_is_the_default_and_still_dispatches():
+    bot = make_bot(bot_user_id="111", bot_login="silkgpt")
+    processed = _count_commands(bot)
+    mention = _chat_payload("m2", "@silkgpt what game is this")
+
+    await bot.event_message(_chat_payload("m1", "!ask what"))
+    await bot.event_message(mention)
+
+    assert len(processed) == 2
+    assert mention.text == "!ask what game is this"
+
+
+def test_run_py_wires_identity_thread_and_commands_into_the_bot(monkeypatch, tmp_path):
+    """run.py twitch-bot passes the relay settings through and keys the stop
+    flag by the thread (the channel when no thread id is set)."""
+    from types import SimpleNamespace
+
+    import run as run_mod
+    import nymeria.config as config_mod
+    import nymeria.triggers.twitch_bot as bot_mod
+
+    built = []
+
+    class _Recorder:
+        def __init__(self, api, **kwargs):
+            built.append(kwargs)
+
+        def run(self):
+            pass
+
+    def settings(**over):
+        base = dict(
+            twitch_client_id="cid", twitch_client_secret="cs", twitch_channel="foo",
+            twitch_bot_access_token="t", twitch_bot_refresh_token="r", twitch_bot_user_id="1",
+            twitch_broadcaster_token=None, twitch_broadcaster_refresh_token=None,
+            twitch_buffer_size=500, twitch_pulse_enabled=True, twitch_pulse_interval=300,
+            twitch_pulse_min_messages=10, twitch_command_context_count=50,
+            twitch_bot_role="chatter", twitch_operator_logins=None, twitch_listen_enabled=False,
+            twitch_listen_window_seconds=12, twitch_listen_wake_words=None,
+            twitch_reaction_check_seconds=75, stt_provider="none", data_dir=tmp_path,
+            twitch_nymeria_user_id=None, twitch_thread_id=None, twitch_chat_commands=True,
+        )
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    monkeypatch.setattr(bot_mod, "NymeriaTwitchBot", _Recorder)
+    monkeypatch.setattr(run_mod, "_resolve_api_url", lambda args: "http://api")
+    monkeypatch.setattr(run_mod, "_require_service_token", lambda s, role: "tok")
+    monkeypatch.setattr(run_mod, "_service_api_client", lambda *a, **k: object())
+    monkeypatch.setattr(run_mod, "_install_exit_handlers", lambda *a, **k: None)
+    args = SimpleNamespace(api_url="http://api")
+
+    monkeypatch.setattr(config_mod, "get_settings", lambda: settings())
+    run_mod.run_twitch_bot(args)
+    monkeypatch.setattr(config_mod, "get_settings", lambda: settings(
+        twitch_nymeria_user_id="twitch-chatter", twitch_thread_id="twitch_chatter",
+        twitch_chat_commands=False,
+    ))
+    run_mod.run_twitch_bot(args)
+
+    default, roaming = built
+    assert (default["user_id"], default["thread_id"], default["chat_commands"]) == ("default", None, True)
+    assert default["stop_flag_path"].name == "twitch-foo-stopped"
+    assert (roaming["user_id"], roaming["thread_id"], roaming["chat_commands"]) == (
+        "twitch-chatter", "twitch_chatter", False
+    )
+    assert roaming["stop_flag_path"].name == "twitch-twitch_chatter-stopped"
+    assert roaming["bot_role"] == "chatter"

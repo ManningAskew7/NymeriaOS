@@ -340,6 +340,13 @@ class ThreadConfig(BaseModel):
     # a label: labels are display names and may be renamed without moving
     # the target.
     browser_target: Optional[str] = Field(default=None, max_length=200)
+    # Which Twitch channel this thread's twitch_* tools act in (a channel
+    # login), set by the operator (the bot process only reads it), so several
+    # threads on one account can each face a different streamer; None inherits
+    # the deployment's TWITCH_CHANNEL. A thread bound to another channel than
+    # the deployment's must authenticate from its owner's vault record
+    # (tools/twitch.py refuses the env credentials there).
+    twitch_channel: Optional[str] = Field(default=None, max_length=64)
     # Optional per-thread notepad character limit. None inherits the global
     # MEMORY_CHAR_LIMIT setting.
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
@@ -454,6 +461,8 @@ class ThreadConfig(BaseModel):
         if self.memory_char_limit is not None:
             return True
         if self.image_window_size is not None:
+            return True
+        if self.twitch_channel:
             return True
         if self.sequential_tool_execution is not None:
             return True

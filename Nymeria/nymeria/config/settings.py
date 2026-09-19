@@ -643,6 +643,28 @@ class Settings(BaseSettings):
             "for the reaction to its message; 0 disables"
         ),
     )
+    twitch_nymeria_user_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nymeria account the Twitch bot relays as (thread, credential vault, "
+            "memories, chat log); default: the owner account"
+        ),
+    )
+    twitch_thread_id: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Thread the Twitch bot drives; default twitch_<channel>. Set it to keep one "
+            "thread while the bot moves between channels"
+        ),
+    )
+    twitch_chat_commands: bool = Field(
+        default=True,
+        description=(
+            "Serve the ! chat commands and the @mention ask; off makes the bot a silent "
+            "reader that acts only through the pulse, the reaction check, and the wake"
+        ),
+    )
 
     # Messaging Platform Credentials - Slack
     slack_webhook_url: Optional[str] = Field(

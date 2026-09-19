@@ -5,6 +5,7 @@
 .env.*
 !.env.example
 !.env.docker.example
+!.env.twitch-chatter.example
 firebase-service-account.json
 google_credentials.json
 **/google_credentials.json.*

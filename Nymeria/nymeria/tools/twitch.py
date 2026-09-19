@@ -11,11 +11,14 @@ sites). Short-lived user access tokens are minted from the refresh token via
 ``_TWITCH_TOKEN_URL`` and cached process-locally with an expiry margin; a
 Helix 401 invalidates the cache and re-mints exactly once.
 
-Scope note: SECRETS are vault-first, but the target channel
-(``twitch_channel``) and the optional bot-user-id override are deployment
-configuration read from settings only. A vault-only per-user setup therefore
-still needs ``TWITCH_CHANNEL`` in the environment; widening those to the
-credential record is deferred (backlog: vault-first polish).
+Scope note: SECRETS are vault-first. The target channel is PER THREAD:
+``ThreadConfig.twitch_channel`` (set by the operator; the bot process only
+reads it) wins over ``TWITCH_CHANNEL``, so several threads on one account can
+each face a different streamer. Two identity rules keep that from steering
+the deployment account: the ENV credential pair only ever acts in the env
+channel (a thread bound elsewhere must authenticate from the caller's own
+vault record, else the tools refuse), and the ``TWITCH_BOT_USER_ID`` override
+applies only to the env token (a vault token resolves its own user id).
 
 The chat-reading half of the old family lives in the Twitch bot thin client
 (`triggers/twitch_bot.py`), which pushes unseen chat context into each prompt;
@@ -52,7 +55,7 @@ from .credential_registry import (
     register_provider_spec,
 )
 from .image_generation import finalize_captured_image
-from .utils import get_user_id
+from .utils import get_thread_id_or_none, get_user_id
 from .service_integration_base import (
     credential_value as _credential_value,
     filtered as _filtered,
@@ -232,6 +235,10 @@ class _HelixAuth(NamedTuple):
     # Present only when refresh credentials exist: invalidates the cache and
     # mints a fresh token (the Helix-401 retry path).
     remint: Optional[Callable[[], str]]
+    # True when the token (or the refresh token it was minted from) came from
+    # the caller's credential vault rather than the TWITCH_* env. Decides
+    # whether the env TWITCH_BOT_USER_ID override may name the sender.
+    from_vault: bool = False
 
 
 def _twitch_auth(
@@ -272,40 +279,52 @@ def _twitch_auth(
     ) or _settings_value("twitch_client_secret")
 
     if broadcaster:
-        refresh = _credential_value(
+        vault_refresh = _credential_value(
             provider=_TWITCH.provider,
             provider_aliases=_TWITCH.aliases,
             field_names=_TWITCH.group("broadcaster_refresh_token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("twitch_broadcaster_refresh_token")
-        static = _credential_value(
+        )
+        vault_static = _credential_value(
             provider=_TWITCH.provider,
             provider_aliases=_TWITCH.aliases,
             field_names=_TWITCH.group("broadcaster_token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("twitch_broadcaster_token")
+        )
+        refresh, static, from_vault = _token_pair(
+            vault_refresh,
+            vault_static,
+            _settings_value("twitch_broadcaster_refresh_token"),
+            _settings_value("twitch_broadcaster_token"),
+        )
         missing_msg = (
             "Broadcaster token not configured. Set TWITCH_BROADCASTER_TOKEN (and "
             "TWITCH_BROADCASTER_REFRESH_TOKEN for auto-refresh), or add "
             "broadcaster_token to the Twitch credential record."
         )
     else:
-        refresh = _credential_value(
+        vault_refresh = _credential_value(
             provider=_TWITCH.provider,
             provider_aliases=_TWITCH.aliases,
             field_names=_TWITCH.group("refresh_token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("twitch_bot_refresh_token")
-        static = _credential_value(
+        )
+        vault_static = _credential_value(
             provider=_TWITCH.provider,
             provider_aliases=_TWITCH.aliases,
             field_names=_TWITCH.group("token"),
             tool_name=tool_name,
             config=config,
-        ) or _settings_value("twitch_bot_access_token")
+        )
+        refresh, static, from_vault = _token_pair(
+            vault_refresh,
+            vault_static,
+            _settings_value("twitch_bot_refresh_token"),
+            _settings_value("twitch_bot_access_token"),
+        )
         missing_msg = _setup_hint(
             provider=_TWITCH.provider,
             field_names=_TWITCH.hint_fields,
@@ -313,6 +332,22 @@ def _twitch_auth(
             env_var=_TWITCH.env_var,
             display_name=_TWITCH.label,
         )
+
+    if not from_vault and (refresh or static):
+        # The deployment's credentials belong to the deployment's channel. A
+        # thread bound elsewhere (any thread owner can bind their own) must
+        # bring its own vault record, else the env account would be steered
+        # into a foreign channel, or a desktop turn on the roaming thread
+        # would post there as the deployment account.
+        bound = _thread_channel(config)
+        env_channel = _clean_login(_settings_value("twitch_channel"))
+        if bound and bound != env_channel:
+            return (
+                f"This thread is bound to #{bound}, but the only Twitch credentials "
+                f"available to this account are the deployment's (for #{env_channel or '?'}). "
+                "Add a Twitch credential record (provider twitch) to this account so the "
+                "tools act as it."
+            )
 
     if refresh and client_secret:
         # Refresh capability wins over any static token: user access tokens
@@ -326,11 +361,29 @@ def _twitch_auth(
 
         cached = _TWITCH_TOKEN_CACHE.get(cache_key)
         if cached and cached[1] > time.time():
-            return _HelixAuth(cached[0], client_id, _remint)
-        return _HelixAuth(_mint_token(client_id, client_secret, refresh), client_id, _remint)
+            return _HelixAuth(cached[0], client_id, _remint, from_vault)
+        return _HelixAuth(
+            _mint_token(client_id, client_secret, refresh), client_id, _remint, from_vault
+        )
     if static:
-        return _HelixAuth(static, client_id, None)
+        return _HelixAuth(static, client_id, None, from_vault)
     return missing_msg
+
+
+def _token_pair(
+    vault_refresh: Optional[str],
+    vault_static: Optional[str],
+    env_refresh: Optional[str],
+    env_static: Optional[str],
+) -> tuple[Optional[str], Optional[str], bool]:
+    """``(refresh, static, from_vault)``: the vault's token pair when it holds
+    EITHER token, else the env pair. Field-by-field fallback would let the
+    deployment's refresh token outrank a user's own access token (refresh
+    capability wins within a pair), silently posting as the deployment
+    account from a per-user record."""
+    if vault_refresh or vault_static:
+        return vault_refresh, vault_static, True
+    return env_refresh, env_static, False
 
 
 def _helix(
@@ -397,32 +450,70 @@ def _resolve_user_id(
     return uid
 
 
+def _clean_login(value: Any) -> Optional[str]:
+    """A channel login as Twitch spells it: lower-case, no ``#``; None when blank."""
+    if not value:
+        return None
+    login = str(value).strip().lstrip("#").lower()
+    return login or None
+
+
+def _thread_channel(config: Optional[RunnableConfig]) -> Optional[str]:
+    """The thread's ``twitch_channel`` binding, if any (None outside an agent host)."""
+    thread_id = get_thread_id_or_none(config)
+    if not thread_id:
+        return None
+    from ..core.agent import get_current_agent
+
+    agent = get_current_agent()
+    if agent is None:
+        return None  # outside an agent host (tests, scripts): env only
+    # A read failure propagates as the tool's error rather than falling back
+    # to the env channel: an unreadable binding must never post elsewhere.
+    thread_config = agent.thread_config_manager.get_config(thread_id)
+    bound = getattr(thread_config, "twitch_channel", None) if thread_config else None
+    return _clean_login(bound)
+
+
+def _channel(config: Optional[RunnableConfig]) -> Optional[str]:
+    """The channel this turn's tools act in: the thread binding, else ``TWITCH_CHANNEL``."""
+    bound = _thread_channel(config)
+    if bound:
+        return bound
+    return _clean_login(_settings_value("twitch_channel"))
+
+
 def _broadcaster_id(tool_name: str, config: Optional[RunnableConfig]) -> str:
-    channel = _settings_value("twitch_channel")
+    channel = _channel(config)
     if not channel:
         raise RuntimeError(
-            "TWITCH_CHANNEL is not configured; set it to the channel these tools operate on."
+            "No Twitch channel for this thread: set twitch_channel on the thread "
+            "config, or TWITCH_CHANNEL for the deployment."
         )
-    uid = _resolve_user_id(str(channel), tool_name=tool_name, config=config)
+    uid = _resolve_user_id(channel, tool_name=tool_name, config=config)
     if not uid:
         raise RuntimeError(f"Could not resolve Twitch channel '{channel}' to a user ID.")
     return uid
 
 
 def _bot_user_id(tool_name: str, config: Optional[RunnableConfig]) -> str:
-    """The bot account's numeric ID: configured, else resolved from its token.
+    """The sending account's numeric ID: the env override for the env token,
+    else resolved from the token in use.
 
     ``GET /helix/users`` with no params returns the authenticated user, so
     TWITCH_BOT_USER_ID is an optional override for the TOOLS (the bot process
-    still requires it: TwitchIO needs a bot_id at construction). The cache is
+    still requires it: TwitchIO needs a bot_id at construction). The override
+    describes the DEPLOYMENT account, so it applies only when the deployment
+    token is in use: a vault token belongs to some other Twitch account and
+    Helix rejects a sender_id that does not match the bearer. The cache is
     keyed by the bearer TOKEN, never by client_id: several users' vault
     records routinely share one Twitch application, and a client_id key would
     hand the second user the first user's sender identity.
     """
     configured = _settings_value("twitch_bot_user_id")
-    if configured:
-        return str(configured)
     auth = _twitch_auth(tool_name, config)
+    if configured and not (isinstance(auth, _HelixAuth) and auth.from_vault):
+        return str(configured)
     cache_key = auth.token if isinstance(auth, _HelixAuth) else ""
     if cache_key and cache_key in _TWITCH_SELF_ID_CACHE:
         return _TWITCH_SELF_ID_CACHE[cache_key]
@@ -477,13 +568,13 @@ def _stream_row(tool_name: str, config: Optional[RunnableConfig]) -> Optional[di
     return data[0] if data else None
 
 
-def _preview_login(stream: dict[str, Any]) -> str:
-    """The channel login for the preview path: Helix's, else the configured channel.
+def _preview_login(stream: dict[str, Any], config: Optional[RunnableConfig] = None) -> str:
+    """The channel login for the preview path: Helix's, else the thread's channel.
 
     Reduced to letters, digits, and underscores (a Twitch login's alphabet), so
     the response value can only ever select a path segment on the CDN host.
     """
-    raw = str(stream.get("user_login") or _settings_value("twitch_channel") or "")
+    raw = str(stream.get("user_login") or _channel(config) or "")
     return re.sub(r"[^a-z0-9_]", "", raw.strip().lower())
 
 
@@ -539,7 +630,7 @@ def twitch_send(
         parts = parts[:3]
         broadcaster = _broadcaster_id("twitch_send", config)
         sender = _bot_user_id("twitch_send", config)
-        channel = _settings_value("twitch_channel")
+        channel = _channel(config)
         for index, part in enumerate(parts):
             if index:
                 time.sleep(1.05)  # Twitch enforces 1 message/second per channel.
@@ -869,7 +960,7 @@ def twitch_get_stream(
             f"LIVE: {s['title']} | Game: {s.get('game_name', 'N/A')} | "
             f"Viewers: {s['viewer_count']} | Started: {s.get('started_at', 'unknown')}"
         )
-        login = _preview_login(s)
+        login = _preview_login(s, config)
         if login:
             line += f" | Preview: {_preview_url(login, _PREVIEW_BASE_WIDTH, _PREVIEW_BASE_HEIGHT)}"
         return line
@@ -902,7 +993,7 @@ def twitch_get_stream_frame(
         s = _stream_row(tool_name, config)
         if s is None:
             return "Stream is offline; there is no frame to capture.", {}
-        login = _preview_login(s)
+        login = _preview_login(s, config)
         if not login:
             raise RuntimeError("Could not determine the channel login for the preview image.")
         width, height = _preview_size(time.time())
@@ -1048,9 +1139,12 @@ def twitch_get_chatter_log(
         hours: How far back to look (1 to 8760, default 24).
     """
     try:
-        channel = _settings_value("twitch_channel")
+        channel = _channel(config)
         if not channel:
-            return "[Error]: TWITCH_CHANNEL is not configured; the chat log is kept per channel."
+            return (
+                "[Error]: no Twitch channel for this thread (twitch_channel on the thread "
+                "config, or TWITCH_CHANNEL); the chat log is kept per channel."
+            )
         from ..config import get_settings
 
         settings = get_settings()
@@ -1062,7 +1156,7 @@ def twitch_get_chatter_log(
             retention_days=settings.twitch_chatlog_retention_days,
         )
         window = max(1, min(MAX_QUERY_HOURS, int(hours)))
-        entries = store.query(str(channel), login=username, limit=limit, hours=window)
+        entries = store.query(channel, login=username, limit=limit, hours=window)
         return render_chatter_log(username.strip().lstrip("@").lower(), entries, hours=window)
     except Exception as e:
         return _error(e)

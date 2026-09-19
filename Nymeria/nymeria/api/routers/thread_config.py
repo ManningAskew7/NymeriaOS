@@ -358,6 +358,10 @@ def create_thread_config_router(
             tc.image_window_size = None
         elif request.image_window_size is not None:
             tc.image_window_size = request.image_window_size
+        if request.clear_twitch_channel:
+            tc.twitch_channel = None
+        elif request.twitch_channel is not None:
+            tc.twitch_channel = request.twitch_channel.strip().lstrip("#").lower() or None
         if request.clear_sequential_tool_execution:
             tc.sequential_tool_execution = None
         elif request.sequential_tool_execution is not None:

@@ -1192,7 +1192,7 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
     from nymeria.config import get_settings
     from nymeria.triggers import twitch_bot as _twitch_bot
     _require_bot_sdk(_twitch_bot, "Twitch", "twitch")
-    from nymeria.triggers.twitch_bot import NymeriaTwitchBot
+    from nymeria.triggers.twitch_bot import NymeriaTwitchBot, relay_thread_id, stop_flag_name
 
     settings = get_settings()
 
@@ -1232,6 +1232,9 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
     print("Starting Nymeria Twitch Bot (thin client)...")
     print(f"  - Channel: #{settings.twitch_channel}")
     print(f"  - Role: {settings.twitch_bot_role}")
+    print(f"  - Thread: {relay_thread_id(settings.twitch_channel or '', settings.twitch_thread_id)}")
+    print(f"  - Nymeria user: {settings.twitch_nymeria_user_id or 'default'}")
+    print(f"  - Commands: {'enabled' if settings.twitch_chat_commands else 'disabled'}")
     print(f"  - API: {api_url}")
     print(f"  - Buffer size: {settings.twitch_buffer_size}")
     print(f"  - Pulse: {'enabled' if settings.twitch_pulse_enabled else 'disabled'}")
@@ -1272,7 +1275,9 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         command_context_count=settings.twitch_command_context_count,
         # !stop marker: honored on the next boot so a container restart
         # cannot silently re-arm a bot a mod switched off.
-        stop_flag_path=settings.data_dir / "flags" / f"twitch-{settings.twitch_channel}-stopped",
+        stop_flag_path=settings.data_dir
+        / "flags"
+        / stop_flag_name(settings.twitch_channel or "", settings.twitch_thread_id),
         bot_role=settings.twitch_bot_role,
         operator_logins=settings.twitch_operator_logins,
         listen_enabled=settings.twitch_listen_enabled,
@@ -1280,6 +1285,9 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         wake_words=settings.twitch_listen_wake_words,
         reaction_check_seconds=settings.twitch_reaction_check_seconds,
         stt_factory=_stt_factory,
+        user_id=settings.twitch_nymeria_user_id or "default",
+        thread_id=settings.twitch_thread_id,
+        chat_commands=settings.twitch_chat_commands,
     )
 
     _install_exit_handlers("\nShutdown signal received, stopping Twitch bot...")

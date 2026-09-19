@@ -297,6 +297,9 @@ class ServerSettingsUpdate(BaseModel):
     twitch_pulse_interval: Optional[int] = Field(default=None, ge=60, le=3600)
     twitch_pulse_min_messages: Optional[int] = Field(default=None, ge=1, le=100)
     twitch_reaction_check_seconds: Optional[int] = Field(default=None, ge=0, le=600)
+    twitch_nymeria_user_id: Optional[str] = None
+    twitch_thread_id: Optional[str] = Field(default=None, max_length=200)
+    twitch_chat_commands: Optional[bool] = None
     twitch_respond_mode: Optional[str] = None
     twitch_system_prompt: Optional[str] = Field(default=None, max_length=50000)
 

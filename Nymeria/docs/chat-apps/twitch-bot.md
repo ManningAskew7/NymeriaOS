@@ -27,13 +27,16 @@ Docker: nymeria-twitch-bot (profile: twitch, thin client)
   ├─ Stream listener (optional): audio_only HLS → PyAV → STT → [STREAM] lines
   ├─ ChatBuffer (ring buffer + monotonic unseen-cursor; chat, [MOD], [CLIP],
   │    [STREAM], [YOU] echo of the bot's own posts, [STATUS] live/offline)
-  ├─ !commands (ask/clip/status/pulse/context/clear/stop/start/help)
+  ├─ !commands (ask/clip/status/pulse/context/clear/stop/start/help;
+  │    TWITCH_CHAT_COMMANDS=false turns them all off)
   ├─ Pulse loop, reaction check (after a send), name wake (from [STREAM])
   └─────┐
         │  POST /chat (SSE, dropped-turn recovery)
         ▼
-nymeria-api ── agent turn on thread twitch_{channel}
-  └─ twitch_send / moderation / info tools → Helix API (direct)
+nymeria-api ── agent turn on thread twitch_{channel} (or TWITCH_THREAD_ID)
+  └─ twitch_send / moderation / info tools → Helix API (direct), in the
+       channel the THREAD is bound to (ThreadConfig.twitch_channel, else
+       TWITCH_CHANNEL)
 ```
 
 The agent communicates exclusively through the `twitch_send` tool; its final
@@ -57,16 +60,40 @@ is machine transcription of whatever was audible, so it proves nothing about
 who spoke); a delivery of plain chat reads exactly as it did before the
 listener existed.
 
-The bot never writes thread config or metadata. The `twitch_{channel}` thread
-is created implicitly on the first prompt and configured by the operator (see
-Thread Configuration below); your edits in the desktop app are always
-authoritative.
+The bot never writes thread config or metadata. The thread is created
+implicitly on the first prompt and configured by the operator (see Thread
+Configuration below); your edits in the desktop app are always
+authoritative. Its one thread-config READ is the boot check of the
+`twitch_channel` binding (Thread & User ID Scheme below).
 
 ## Thread & User ID Scheme
 
-- Thread: `twitch_{channel}` (one shared thread per channel).
-- User: the owner account (`default`). Twitch chatters are not resolved to
-  Nymeria accounts; the channel thread acts on behalf of the operator.
+- Thread: `twitch_{channel}` (one shared thread per channel) by default.
+  `TWITCH_THREAD_ID` names a ROAMING thread instead: one thread that keeps
+  its prompt, tools, and memory while the bot is re-pointed at other
+  channels; its pulse, ask, reaction, and wake headers then name the
+  channel (`... in #foo`). Default-thread prompts are unchanged.
+- User: the owner account (`default`) by default; `TWITCH_NYMERIA_USER_ID`
+  makes the relay act as another Nymeria account (its thread, credential
+  vault, memories, and chat log). Twitch chatters are never resolved to
+  Nymeria accounts; the thread acts on behalf of its operator.
+- Channel binding: the API-side `twitch_*` tools act in the thread's
+  `twitch_channel` (thread config, set by the operator with `PATCH
+  /threads/{id}/config`; no desktop control yet), else in the api's
+  `TWITCH_CHANNEL`. Several threads on one account can therefore each face
+  a different streamer. The bot reads the binding at boot and logs an error
+  (heartbeat `thread_channel_mismatch`) when the thread is bound to a
+  channel other than the one it watches: the agent would read one chat and
+  post into another. Identity rules: the deployment's env credentials only
+  ever act in `TWITCH_CHANNEL`, so a thread bound elsewhere must
+  authenticate from the calling account's own vault record (provider
+  `twitch`) or the tools refuse with a message naming both channels; a
+  vault token always posts as its own account; `TWITCH_BOT_USER_ID` only
+  ever names the env token's. Consequence for operating a roaming thread:
+  drive it AS its account (the desktop logged in as that account, or the
+  MCP `nymeria_chat` with its `user_id`); a turn as the owner account on
+  that thread has no vault record there and gets the refusal, never a post
+  under the moderator account.
 
 ## Roles: moderator and chatter
 
@@ -97,6 +124,52 @@ sections of the recommended prompt below and keep the personality, the
 The tool list is what a viewer can do: `twitch_send, twitch_get_stream,
 twitch_get_stream_frame, twitch_get_channel, twitch_get_schedule,
 twitch_clip` plus a web search tool; no moderation or broadcaster tools.
+
+## A second bot: viewer account, roaming thread, no commands
+
+The `twitch-chatter` compose service runs a second bot process beside the
+moderator one: a plain viewer account in any channel, one roaming thread
+owned by its own Nymeria account, and `TWITCH_CHAT_COMMANDS=false` (no `!`
+commands, no `@mention` ask, no cooldown or help replies). It reads chat and
+the stream, and acts only through the pulse, the reaction check, and the
+name wake; you drive it from the desktop app (talk to the thread, edit its
+prompt and tools) and pause it with `docker compose stop twitch-chatter`.
+
+1. Create the viewer account on Twitch, then `python3 tools/twitch_auth.py
+   url --role chatter`, log in AS that account, `exchange CODE`; `validate`
+   prints its numeric user id.
+2. Create the Nymeria account: `docker exec nymeria-api python run.py users
+   add twitch-chatter@localhost --id twitch-chatter` (non-admin is fine; the
+   bot relays with the admin service token and acts as this user). Keep the
+   `twitch_` prefix on `TWITCH_THREAD_ID`: prefixed ids are shared-channel
+   threads (no single owner, admins and act-as callers may drive them),
+   which is what lets the relay drive it as a non-admin account.
+3. Put the same tokens in that account's credential vault (`POST
+   /credentials`, provider `twitch`, secret fields `access_token`,
+   `refresh_token`, `client_id`, `client_secret`) so the `twitch_*` tools
+   post as the viewer account. A vault token posts as its own account, so
+   the api's `TWITCH_BOT_USER_ID` (the moderator bot's) never leaks in.
+4. Copy `.env.twitch-chatter.example` to `.env.twitch-chatter`: channel,
+   tokens, `TWITCH_THREAD_ID=twitch_chatter`,
+   `TWITCH_NYMERIA_USER_ID=twitch-chatter`, listener and wake words. The
+   Twitch app, `STT_*`, and the service token come from `.env.docker`.
+5. Bind the thread: `PATCH /threads/twitch_chatter/config` as that user with
+   `{"twitch_channel": "<streamer>"}`, set the viewer tool list and
+   `image_window_size`, write the system prompt.
+6. `docker compose --profile twitch-chatter --env-file .env.docker up -d`.
+   Its heartbeat is a separate `twitch-bot` service record keyed by
+   container; the ready banner prints the thread, Nymeria user, and
+   `Commands: disabled`.
+
+Moving to another streamer: change `TWITCH_CHANNEL` in
+`.env.twitch-chatter`, update the thread's `twitch_channel` binding, `up -d
+twitch-chatter`. The thread, prompt, and memory carry over; the boot check
+shouts if the two disagree. A second streamer AT THE SAME TIME is another
+copy of the service block with its own env file and thread: Twitch allows
+3 EventSub WebSocket connections per (application, Twitch account) with
+enabled subscriptions, and each bot process holds one, so one viewer
+account can sit in at most three streams this way (backlog #379 has the
+multi-channel-per-process shape for more).
 
 ## Setup
 
@@ -387,8 +460,9 @@ and needs no sidecar:
    OpenAI `gpt-4o-mini-transcribe`, Groq `whisper-large-v3-turbo`, or a
    faster-whisper speaches sidecar; in-process faster-whisper needs the
    `voice-local` extra, which the bot image does not carry). The compose
-   file passes `STT_*` plus the `OPENAI_API_KEY`/`GROQ_API_KEY` fallbacks
-   to the twitch-bot service. Subscriber-only streams cannot be opened
+   file passes `STT_*` and `GROQ_API_KEY` to the bot services but never
+   `OPENAI_API_KEY` (thin clients carry no vendor keys), so the openai
+   provider needs `STT_API_KEY` set explicitly. Subscriber-only streams cannot be opened
    (the bot's app token is not a web session), so they read as offline. Whisper's silence hallucinations ("Thank you
    for watching", "[Music]") are dropped.
 4. **Lines**: the transcript is buffered as `[HH:MM:SS] [STREAM] text`,
@@ -483,7 +557,9 @@ and its verdict as `[MOD] AutoMod hold [msg:<id>] from <user>: approved by
 
 All tools are catalog tools, enabled per-thread via thread config. They call
 Helix directly and work without the bot process. Tools resolve credentials
-vault-first (provider `twitch`) with the `TWITCH_*` settings as fallback.
+vault-first (provider `twitch`; a record holding either token wins as a
+pair over the env pair) with the `TWITCH_*` settings as fallback, and act
+in the thread's `twitch_channel` binding, else `TWITCH_CHANNEL`.
 
 ### Chat (bot token)
 
@@ -593,8 +669,10 @@ already-seen tail), so the agent never needs to pull it.
   the live `channel.chat.message` EventSub subscription specifically (not
   just "some subscriptions"), a reachable API, and the kill switch off.
   Heartbeat details name any tracked subscription that is missing, the
-  role, and the listener state (`listener`, `listener_error`,
-  `stream_live`); the listener never flips health.
+  role, `thread`, `nymeria_user`, `chat_commands`,
+  `thread_channel_mismatch` (a thread bound to some other channel), and the
+  listener state (`listener`, `listener_error`, `stream_live`); the
+  listener never flips health.
 - Kill switch persistence: `!stop` writes
   `{data_dir}/flags/twitch-<channel>-stopped` (`/data/flags/...` in
   Docker; the file names the mod and time) and `!start` removes it. A bot
@@ -658,7 +736,8 @@ See the Messaging Platforms table in `docs/configuration.md` for every
 | `nymeria/core/twitch_clips.py` | Clip window facts and helpers shared by the tool and the bot's `!clip` (bounds, clamp, `!clip` arg parser); dependency-free on purpose |
 | `nymeria/config/settings.py` | `TWITCH_*` settings fields |
 | `run.py` | `twitch-bot` subcommand |
-| `docker-compose.yml` | `twitch-bot` service (profile: twitch) |
+| `docker-compose.yml` | `twitch-bot` service (profile: twitch) and `twitch-chatter` (profile: twitch-chatter; role and commands pinned, per-bot values from the optional `.env.twitch-chatter`) |
+| `.env.twitch-chatter.example` | Per-bot env file template for the second bot |
 | `tools/twitch_auth.py` | OAuth helper: URL generation (`--role chatter` for the 4-scope viewer token), code exchange, token validation |
 
 ## Debugging

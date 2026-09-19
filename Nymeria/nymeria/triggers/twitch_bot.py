@@ -293,6 +293,26 @@ def parse_csv_words(value: Optional[str]) -> frozenset[str]:
     return frozenset(w.strip().lower() for w in (value or "").split(",") if w.strip())
 
 
+def relay_thread_id(channel: str, thread_id: Optional[str] = None) -> str:
+    """The thread the relay drives: a configured (roaming) id, else ``twitch_<channel>``."""
+    return (thread_id or "").strip() or f"twitch_{channel}"
+
+
+def stop_flag_name(channel: str, thread_id: Optional[str] = None) -> str:
+    """The !stop marker file name: keyed by the thread, which is the channel by default."""
+    key = (thread_id or "").strip() or channel
+    return f"twitch-{key}-stopped"
+
+
+def _where(channel: Optional[str]) -> str:
+    """`` in #channel`` for a roaming thread, nothing for the per-channel default.
+
+    A thread that follows the bot between channels must be told where each
+    batch came from; a ``twitch_<channel>`` thread already knows, and its
+    prompts stay byte-identical."""
+    return f" in #{channel}" if channel else ""
+
+
 def compose_ask_prompt(
     new_messages: List[ChatMessage],
     seen_tail: List[ChatMessage],
@@ -300,6 +320,8 @@ def compose_ask_prompt(
     question: str,
     asker_tags: str = "",
     now: Optional[datetime] = None,
+    *,
+    channel: Optional[str] = None,
 ) -> str:
     """The !ask prompt: optional seen-tail, unseen block, then the question.
 
@@ -324,7 +346,7 @@ def compose_ask_prompt(
             f"{fence_chat(format_chat_context(new_messages))}"
         )
     who = f"{chatter_name} ({asker_tags})" if asker_tags else chatter_name
-    sections.append(f"Question from {who}: {question}")
+    sections.append(f"Question from {who}{_where(channel)}: {question}")
     return "\n\n".join(sections)
 
 
@@ -334,7 +356,11 @@ def _now_stamp(now: Optional[datetime] = None) -> str:
 
 
 def compose_pulse_prompt(
-    messages: List[ChatMessage], now: Optional[datetime] = None, *, role: str = ROLE_MODERATOR
+    messages: List[ChatMessage],
+    now: Optional[datetime] = None,
+    *,
+    role: str = ROLE_MODERATOR,
+    channel: Optional[str] = None,
 ) -> str:
     """The pulse prompt: unseen messages only, closed by the action menu.
 
@@ -350,7 +376,7 @@ def compose_pulse_prompt(
         "act on disruption with your moderation tools, " if role == ROLE_MODERATOR else ""
     )
     return (
-        f"[Chat pulse: {len(messages)} new messages since last check, "
+        f"[Chat pulse: {len(messages)} new messages{_where(channel)} since last check, "
         f"now {_now_stamp(now)}. "
         f"{delivery_notes(messages)}]\n"
         f"{fence_chat(format_chat_context(messages))}\n\n"
@@ -361,13 +387,17 @@ def compose_pulse_prompt(
 
 
 def compose_reaction_prompt(
-    messages: List[ChatMessage], sent_at: datetime, now: Optional[datetime] = None
+    messages: List[ChatMessage],
+    sent_at: datetime,
+    now: Optional[datetime] = None,
+    *,
+    channel: Optional[str] = None,
 ) -> str:
     """The post-send reaction check: what chat and the stream did after the
     bot's own message. Delivered once, a set delay after a successful send,
     so the agent can follow up, learn, or drop it."""
     return (
-        f"[Reaction check: {len(messages)} new lines since your last look; your chat "
+        f"[Reaction check: {len(messages)} new lines{_where(channel)} since your last look; your chat "
         f"message went out at {_now_stamp(sent_at)}, now {_now_stamp(now)}. "
         f"{delivery_notes(messages)}]\n"
         f"{fence_chat(format_chat_context(messages))}\n\n"
@@ -377,11 +407,15 @@ def compose_reaction_prompt(
 
 
 def compose_wake_prompt(
-    messages: List[ChatMessage], heard: str, now: Optional[datetime] = None
+    messages: List[ChatMessage],
+    heard: str,
+    now: Optional[datetime] = None,
+    *,
+    channel: Optional[str] = None,
 ) -> str:
     """The name wake: the broadcast audio mentioned the bot."""
     return (
-        f"[Wake: the broadcast audio just mentioned \"{heard}\". "
+        f"[Wake: the broadcast audio{_where(channel)} just mentioned \"{heard}\". "
         f"{len(messages)} new lines, now {_now_stamp(now)}. "
         f"{delivery_notes(messages)}]\n"
         f"{fence_chat(format_chat_context(messages))}\n\n"
@@ -538,6 +572,8 @@ class NymeriaTwitchBot(_BotBase):
         wake_words: Optional[str] = None,
         reaction_check_seconds: int = 75,
         stt_factory: Optional[Callable[[], Any]] = None,
+        thread_id: Optional[str] = None,
+        chat_commands: bool = True,
     ):
         super().__init__(
             client_id=client_id,
@@ -571,9 +607,18 @@ class NymeriaTwitchBot(_BotBase):
         self._pulse_min_messages = pulse_min_messages
         self._command_context_count = command_context_count
 
-        # Thread/user IDs for the backend relay
-        self._thread_id = f"twitch_{channel}"
+        # Thread/user IDs for the backend relay. A configured thread id is a
+        # ROAMING thread: it keeps its identity while the bot is re-pointed at
+        # other channels, so every prompt header names the channel.
+        self._thread_id = relay_thread_id(channel, thread_id)
+        self._roaming = bool((thread_id or "").strip())
         self._user_id = user_id
+        # Off: the bot never serves ! commands or the @mention ask; it reads,
+        # and acts only through the pulse, the reaction check, and the wake.
+        self._chat_commands = chat_commands
+        # A thread bound (twitch_channel) to some other channel than this bot
+        # watches; None when the binding matches or is absent.
+        self._thread_channel_mismatch: Optional[str] = None
 
         # State
         self._start_time = time.time()
@@ -724,6 +769,7 @@ class NymeriaTwitchBot(_BotBase):
 
         await self._resolve_broadcaster_id()
         await self._resolve_bot_login()
+        await self._check_thread_channel()
 
         if self._broadcaster_id:
             await self._subscribe_channel_events()
@@ -739,8 +785,9 @@ class NymeriaTwitchBot(_BotBase):
             )
 
         print(f"\nTwitch bot ready! Watching #{self._channel_name} as a {self._role}")
-        print(f"  Thread: {self._thread_id}")
+        print(f"  Thread: {self._thread_id} (Nymeria user {self._user_id})")
         print(f"  Pulse: {'enabled' if self._pulse_enabled else 'disabled'}")
+        print(f"  Commands: {'enabled' if self._chat_commands else 'disabled'}")
         if self._listen_enabled:
             live = (
                 "unknown" if self._stream_live is None
@@ -748,8 +795,49 @@ class NymeriaTwitchBot(_BotBase):
             )
             print(f"  Listening: {self._listener_state()} (stream {live})")
         if self._stopped:
-            print(f"  STOPPED: !stop marker {self._stop_flag_path} is present; a mod must !start")
+            resume = "a mod must !start" if self._chat_commands else "remove it to resume"
+            print(f"  STOPPED: stop marker {self._stop_flag_path} is present; {resume}")
         self._start_health_heartbeat()
+
+    async def _check_thread_channel(self) -> None:
+        """Read-only boot check of the thread's ``twitch_channel`` binding.
+
+        The API-side twitch_* tools act in the channel the THREAD is bound to
+        (else TWITCH_CHANNEL), and the bot never writes thread config (the
+        operator's), so the one failure worth shouting about is a thread
+        bound to a different channel than this bot watches: the agent would
+        read one chat and post into another. Recorded for the heartbeat;
+        the deployment keeps running so the operator can fix the binding.
+        """
+        try:
+            config = await self.api.get_thread_config(self._thread_id, user_id=self._user_id)
+        except Exception as e:
+            logger.warning("Could not read thread %s config: %s", self._thread_id, e)
+            return
+        bound = str((config or {}).get("twitch_channel") or "").strip().lstrip("#").lower()
+        if not bound:
+            if self._roaming:
+                logger.warning(
+                    "Thread %s has no twitch_channel binding; its twitch_* tools follow the "
+                    "api's TWITCH_CHANNEL, not #%s. Set twitch_channel on the thread config.",
+                    self._thread_id,
+                    self._channel_name,
+                )
+            return
+        if bound != self._channel_name.lower():
+            self._thread_channel_mismatch = bound
+            logger.error(
+                "Thread %s is bound to #%s but this bot watches #%s: twitch_send would post "
+                "into #%s. Fix twitch_channel on the thread config.",
+                self._thread_id,
+                bound,
+                self._channel_name,
+                bound,
+            )
+
+    def _prompt_channel(self) -> Optional[str]:
+        """The channel named in prompt headers: only a roaming thread needs it."""
+        return self._channel_name if self._roaming else None
 
     async def _subscribe_channel_events(self) -> None:
         """The EventSub set for this role, then the listener when enabled.
@@ -828,6 +916,10 @@ class NymeriaTwitchBot(_BotBase):
                 "stopped": self._stopped,
                 "stop_flag": str(self._stop_flag_path) if self._stop_flag_path else None,
                 "role": self._role,
+                "thread": self._thread_id,
+                "nymeria_user": self._user_id,
+                "chat_commands": self._chat_commands,
+                "thread_channel_mismatch": self._thread_channel_mismatch,
                 "listener": self._listener_state(),
                 "listener_error": self._listener_error or (
                     self._listener.error if self._listener is not None else None
@@ -1143,6 +1235,9 @@ class NymeriaTwitchBot(_BotBase):
         )
         self._buffer.append(msg)
         self._queue_chatlog_line(msg)
+
+        if not self._chat_commands:
+            return  # a silent reader: no ! commands, no mention ask, no replies
 
         # A typed "@<bot> <question>" is !ask by another spelling. A reply
         # thread on a bot message carries the same auto-inserted mention but
@@ -1599,7 +1694,12 @@ class NymeriaTwitchBot(_BotBase):
             if chatter and getattr(chatter, flag, False)
         )
         prompt = compose_ask_prompt(
-            new_messages, seen_tail, chatter_name, question, asker_tags
+            new_messages,
+            seen_tail,
+            chatter_name,
+            question,
+            asker_tags,
+            channel=self._prompt_channel(),
         )
         origin_id = str(getattr(ctx.message, "id", "") or "") if ctx.message else ""
 
@@ -2217,7 +2317,7 @@ class NymeriaTwitchBot(_BotBase):
         if not any(not (m.is_system and m.system_tag == ECHO_TAG) for m in unseen):
             return "nothing"
         messages = self._collect_pulse_delivery()
-        prompt = compose_reaction_prompt(messages, sent_at)
+        prompt = compose_reaction_prompt(messages, sent_at, channel=self._prompt_channel())
         origin_id = next((m.message_id for m in reversed(messages) if m.message_id), "")
         error, _handler = await self._run_agent_turn(
             prompt, label="reaction", origin_message_id=origin_id, kind="reaction"
@@ -2269,7 +2369,7 @@ class NymeriaTwitchBot(_BotBase):
         self._last_wake_at = now
         self._cancel_reaction_check()  # the wake delivers the same unseen lines
         messages = self._collect_pulse_delivery()
-        prompt = compose_wake_prompt(messages, match.group(0))
+        prompt = compose_wake_prompt(messages, match.group(0), channel=self._prompt_channel())
         logger.info("Heard %r on stream; waking", match.group(0))
 
         async def _run() -> None:
@@ -2297,7 +2397,7 @@ class NymeriaTwitchBot(_BotBase):
             return "skipped"
         self._cancel_reaction_check()  # the pulse delivers the same unseen lines
         messages = self._collect_pulse_delivery()
-        prompt = compose_pulse_prompt(messages, role=self._role)
+        prompt = compose_pulse_prompt(messages, role=self._role, channel=self._prompt_channel())
         origin_id = next(
             (m.message_id for m in reversed(messages) if m.message_id), ""
         )

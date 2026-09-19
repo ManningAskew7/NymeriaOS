@@ -1001,3 +1001,41 @@ def test_ensured_row_is_auto_titled_by_the_next_good_turn(tmp_path: Path):
     titled = manager.get_store("owner").threads["cfg-first"]
     assert titled.title_source == "auto" and titled.title != "New Chat"
     assert titled.created_at == row.created_at
+
+
+def test_thread_config_twitch_channel_round_trip(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The per-thread Twitch channel binding (tools/twitch.py reads it): stored
+    as a clean login, flagged as a customization, clearable."""
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "twitch-chatter-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    default = client.get(f"/threads/{thread_id}/config", headers=headers)
+    assert default.status_code == 200
+    assert default.json()["twitch_channel"] is None
+
+    set_resp = client.patch(
+        f"/threads/{thread_id}/config", headers=headers, json={"twitch_channel": " #Foo_Bar "},
+    )
+    assert set_resp.status_code == 200
+    assert set_resp.json()["twitch_channel"] == "foo_bar"
+    assert set_resp.json()["has_customizations"] is True
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None and saved.twitch_channel == "foo_bar"
+
+    too_long = client.patch(
+        f"/threads/{thread_id}/config", headers=headers, json={"twitch_channel": "x" * 65},
+    )
+    assert too_long.status_code == 422
+
+    clear_resp = client.patch(
+        f"/threads/{thread_id}/config", headers=headers, json={"clear_twitch_channel": True},
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["twitch_channel"] is None
+    cleared = agent.thread_config_manager.get_config(thread_id)
+    assert cleared is not None and cleared.twitch_channel is None

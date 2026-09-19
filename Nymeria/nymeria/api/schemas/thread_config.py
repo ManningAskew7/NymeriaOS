@@ -88,6 +88,8 @@ class ThreadConfigUpdateRequest(BaseModel):
     notification_profile: str | None = Field(default=None, max_length=120)
     memory_char_limit: int | None = Field(default=None, ge=1, le=2_000_000)
     image_window_size: int | None = Field(default=None, ge=1, le=3000)
+    # Channel login the thread's twitch_* tools act in (None inherits TWITCH_CHANNEL).
+    twitch_channel: str | None = Field(default=None, max_length=64)
     sequential_tool_execution: bool | None = None
     hooks_enabled: bool | None = None
     hook_overrides: dict[str, bool] | None = None
@@ -110,6 +112,7 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_notification_profile: bool = False
     clear_memory_char_limit: bool = False
     clear_image_window_size: bool = False
+    clear_twitch_channel: bool = False
     clear_sequential_tool_execution: bool = False
     clear_hooks_enabled: bool = False
     clear_hook_overrides: bool = False

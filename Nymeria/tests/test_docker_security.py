@@ -105,7 +105,7 @@ def test_nymeria_services_use_expected_runtime_images() -> None:
     services = _load_compose("docker-compose.yml")["services"]
 
     full_services = {"api", "worker"}
-    slim_services = {"discord-bot", "telegram-bot", "twitch-bot", "mcp"}
+    slim_services = {"discord-bot", "telegram-bot", "twitch-bot", "twitch-chatter", "mcp"}
 
     for service_name in full_services:
         service = services[service_name]
@@ -136,6 +136,7 @@ def test_non_api_services_use_runtime_health_checks() -> None:
         "discord-bot",
         "telegram-bot",
         "twitch-bot",
+        "twitch-chatter",
         "mcp",
     ):
         healthcheck = services[service_name]["healthcheck"]["test"]
@@ -160,6 +161,7 @@ THIN_CLIENT_SERVICES = {
     "telegram-bot",
     "slack-bot",
     "twitch-bot",
+    "twitch-chatter",
 }
 INFRA_SERVICES = {"postgres", "redis"}
 # Services not subject to the standard hardening contract (operator-installed
@@ -508,3 +510,27 @@ def test_full_image_local_rag_opt_in_is_a_build_arg() -> None:
     assert "download.pytorch.org/whl/cpu" in install
     # The slim (thin-client) image never carries the extra.
     assert "sentence-transformers" not in (ROOT / "Dockerfile.slim").read_text(encoding="utf-8")
+
+
+def test_twitch_chatter_service_is_a_pinned_silent_viewer_on_its_own_env_file() -> None:
+    """The second Twitch bot (tmp/twitch-chatter-deploy-plan.md C1): its own
+    profile, role and commands pinned in compose (env_file cannot override
+    them), no broadcaster token, per-bot values from an OPTIONAL env file so a
+    stack without the bot still validates, and the original service untouched."""
+    services = _load_compose("docker-compose.yml")["services"]
+    chatter = services["twitch-chatter"]
+    env = chatter["environment"]
+
+    assert chatter["profiles"] == ["twitch-chatter"]
+    assert env["TWITCH_BOT_ROLE"] == "chatter"
+    assert env["TWITCH_CHAT_COMMANDS"] == "false"
+    assert "TWITCH_BROADCASTER_TOKEN" not in env
+    assert "TWITCH_CHANNEL" not in env  # per bot: comes from the env file
+    assert chatter["env_file"] == [{"path": ".env.twitch-chatter", "required": False}]
+    assert chatter["command"] == services["twitch-bot"]["command"]
+    assert chatter["container_name"] != services["twitch-bot"]["container_name"]
+
+    original = services["twitch-bot"]["environment"]
+    assert original["TWITCH_BOT_ROLE"] == "${TWITCH_BOT_ROLE:-moderator}"
+    assert "TWITCH_CHAT_COMMANDS" not in original  # default (on) for the mod bot
+    assert services["twitch-bot"]["profiles"] == ["twitch"]

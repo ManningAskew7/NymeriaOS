@@ -1414,7 +1414,10 @@ def test_chatter_log_without_a_channel_is_a_clear_error(monkeypatch, tmp_path):
 
     out = tools.twitch_get_chatter_log.func(username="kid", config=None)
 
-    assert out == "[Error]: TWITCH_CHANNEL is not configured; the chat log is kept per channel."
+    assert out == (
+        "[Error]: no Twitch channel for this thread (twitch_channel on the thread config, "
+        "or TWITCH_CHANNEL); the chat log is kept per channel."
+    )
     assert not (tmp_path / "users").exists()
 
 
@@ -1439,3 +1442,218 @@ def test_tools_execute_without_any_bot_process(monkeypatch):
     _configure_env(monkeypatch)
     _fake_transport(monkeypatch, _standard_handler)
     assert "LIVE" in tools.twitch_get_stream.func(config=None)
+
+
+# ---------------------------------------------------------------------------
+# Per-thread channel binding + vault sender identity (2026-09-19,
+# tmp/twitch-chatter-deploy-plan.md T1-T4)
+# ---------------------------------------------------------------------------
+
+
+def _bind_threads(monkeypatch, bindings):
+    """Fake the live agent so ``ThreadConfig.twitch_channel`` lookups resolve
+    from ``bindings`` (thread_id -> channel); threads not listed have no config."""
+    import nymeria.core.agent as agent_mod
+
+    class _Manager:
+        def get_config(self, thread_id):
+            if thread_id not in bindings:
+                return None
+            return type("TC", (), {"twitch_channel": bindings[thread_id]})()
+
+    agent = type("Agent", (), {"thread_config_manager": _Manager()})()
+    monkeypatch.setattr(agent_mod, "get_current_agent", lambda: agent)
+
+
+def _thread_cfg(thread_id, user_id="default"):
+    return {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+
+
+def _channel_aware_handler(sends):
+    """Users lookups by login (silk 999, foo 777), self lookup 222, sends recorded."""
+    def handler(call):
+        if call["url"] == TOKEN_URL:
+            return FakeResponse(200, {"access_token": "minted", "expires_in": 3600})
+        if call["url"] == f"{HELIX}/users":
+            login = (call["params"] or {}).get("login")
+            if login is None:
+                return FakeResponse(200, {"data": [{"id": "222", "login": "viewer"}]})
+            return FakeResponse(200, {"data": [{"id": {"silk": "999", "foo": "777"}[login]}]})
+        if call["url"] == f"{HELIX}/chat/messages":
+            sends.append(call["json_body"])
+            return FakeResponse(200, {"data": [{"message_id": "x", "is_sent": True}]})
+        raise AssertionError(call["url"])
+    return handler
+
+
+def test_send_targets_the_thread_bound_channel_over_the_env_channel(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _configure_env(monkeypatch)  # TWITCH_CHANNEL=silk
+
+    def vault(**kwargs):
+        user = ((kwargs.get("config") or {}).get("configurable") or {}).get("user_id")
+        if user == "twitch-chatter" and "access_token" in kwargs["field_names"]:
+            return "viewer-tok"
+        return None
+
+    monkeypatch.setattr(tools, "_credential_value", vault)
+    _bind_threads(monkeypatch, {"twitch_chatter": "#Foo"})  # stored loosely, resolved cleanly
+    sends = []
+    _fake_transport(monkeypatch, _channel_aware_handler(sends))
+
+    bound = tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_chatter", "twitch-chatter"))
+    unbound = tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_silk"))
+
+    assert bound.startswith("Sent to #foo")
+    assert unbound.startswith("Sent to #silk")
+    assert [(s["broadcaster_id"], s["sender_id"]) for s in sends] == [("777", "222"), ("999", "111")]
+
+
+def test_vault_token_sends_as_its_own_account_despite_the_env_bot_user_id(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _configure_env(monkeypatch, TWITCH_BOT_USER_ID="111")  # silkgpt, the deployment account
+
+    def vault(**kwargs):
+        user = ((kwargs.get("config") or {}).get("configurable") or {}).get("user_id")
+        if user != "twitch-chatter":
+            return None
+        if "access_token" in kwargs["field_names"]:
+            return "viewer-tok"
+        return None
+
+    monkeypatch.setattr(tools, "_credential_value", vault)
+    sends = []
+    calls = _fake_transport(monkeypatch, _channel_aware_handler(sends))
+
+    tools.twitch_send.func(message="hi", config=_thread_cfg("t1", "twitch-chatter"))
+    tools.twitch_send.func(message="hi", config=_thread_cfg("t2", "default"))
+
+    assert [s["sender_id"] for s in sends] == ["222", "111"]
+    viewer_send = [c for c in calls if c["url"] == f"{HELIX}/chat/messages"][0]
+    assert viewer_send["headers"]["Authorization"] == "Bearer viewer-tok"
+
+
+def test_env_token_keeps_the_env_bot_user_id_without_a_self_lookup(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch, TWITCH_BOT_USER_ID="111")
+    sends = []
+    calls = _fake_transport(monkeypatch, _channel_aware_handler(sends))
+
+    tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_silk"))
+
+    assert sends[0]["sender_id"] == "111"
+    self_lookups = [
+        c for c in calls
+        if c["url"] == f"{HELIX}/users" and not (c["params"] or {}).get("login")
+    ]
+    assert self_lookups == []
+
+
+def test_chatter_log_and_preview_login_use_the_bound_channel(monkeypatch, tmp_path):
+    from nymeria.tools import twitch as tools
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch)
+    _bind_threads(monkeypatch, {"twitch_chatter": "foo"})
+    queried = []
+
+    class _Store:
+        def query(self, channel, *, login, limit, hours):
+            queried.append(channel)
+            return []
+
+    monkeypatch.setattr(tools, "get_chat_log_store", lambda *a, **k: _Store())
+
+    tools.twitch_get_chatter_log.func(username="bob", config=_thread_cfg("twitch_chatter"))
+    tools.twitch_get_chatter_log.func(username="bob", config=_thread_cfg("twitch_silk"))
+
+    assert queried == ["foo", "silk"]
+    assert tools._preview_login({}, _thread_cfg("twitch_chatter")) == "foo"
+    assert tools._preview_login({}, _thread_cfg("twitch_silk")) == "silk"
+    assert tools._preview_login({"user_login": "Live_One"}, _thread_cfg("twitch_chatter")) == "live_one"
+
+
+def test_missing_channel_error_names_the_thread_binding(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch, TWITCH_CHANNEL=None)
+    _fake_transport(monkeypatch, _channel_aware_handler([]))
+
+    result = tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_chatter"))
+
+    assert "twitch_channel on the thread config" in result
+    assert "TWITCH_CHANNEL" in result
+
+
+def test_env_credentials_refuse_a_thread_bound_to_another_channel(monkeypatch):
+    """The deployment's credentials act only in TWITCH_CHANNEL: a thread bound
+    elsewhere (a desktop turn as the owner on the roaming thread, or any thread
+    owner steering the mod account) gets a refusal, never a post as the mod
+    account into the foreign channel."""
+    from nymeria.tools import twitch as tools
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch)  # TWITCH_CHANNEL=silk, env refresh token
+    _bind_threads(monkeypatch, {"twitch_chatter": "foo", "twitch_silk": "Silk"})
+    sends = []
+    calls = _fake_transport(monkeypatch, _channel_aware_handler(sends))
+
+    refused = tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_chatter"))
+    same = tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_silk"))
+
+    assert refused.startswith("[Error]")
+    assert same.startswith("Sent to #silk")  # bound to its own channel: env pair allowed
+    assert "#foo" in refused and "#silk" in refused and "credential record" in refused
+    assert sends == [{"broadcaster_id": "999", "sender_id": "111", "message": "hi"}]
+    assert not any(c["url"] == f"{HELIX}/users" and (c["params"] or {}).get("login") == "foo"
+                   for c in calls)  # refused before any Helix traffic for the foreign channel
+    assert tools.twitch_get_stream.func(config=_thread_cfg("twitch_chatter")).startswith("[Error]")
+
+
+def test_vault_credentials_act_in_the_thread_bound_channel(monkeypatch):
+    from nymeria.tools import twitch as tools
+
+    _configure_env(monkeypatch)
+
+    def vault(**kwargs):
+        user = ((kwargs.get("config") or {}).get("configurable") or {}).get("user_id")
+        if user == "twitch-chatter" and "access_token" in kwargs["field_names"]:
+            return "viewer-tok"
+        return None
+
+    monkeypatch.setattr(tools, "_credential_value", vault)
+    _bind_threads(monkeypatch, {"twitch_chatter": "foo"})
+    sends = []
+    _fake_transport(monkeypatch, _channel_aware_handler(sends))
+
+    result = tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_chatter", "twitch-chatter"))
+
+    assert result.startswith("Sent to #foo")
+    assert sends == [{"broadcaster_id": "777", "sender_id": "222", "message": "hi"}]
+
+
+def test_unreadable_binding_is_the_tool_error_not_the_env_channel(monkeypatch):
+    from nymeria.tools import twitch as tools
+    import nymeria.core.agent as agent_mod
+
+    _no_vault(monkeypatch)
+    _configure_env(monkeypatch)
+
+    class _Manager:
+        def get_config(self, thread_id):
+            raise RuntimeError("config store unavailable")
+
+    agent = type("Agent", (), {"thread_config_manager": _Manager()})()
+    monkeypatch.setattr(agent_mod, "get_current_agent", lambda: agent)
+    sends = []
+    _fake_transport(monkeypatch, _channel_aware_handler(sends))
+
+    result = tools.twitch_send.func(message="hi", config=_thread_cfg("twitch_chatter"))
+
+    assert result.startswith("[Error]") and "config store unavailable" in result
+    assert sends == []
