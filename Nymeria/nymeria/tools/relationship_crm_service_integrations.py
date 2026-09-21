@@ -570,7 +570,7 @@ def copper_list_records(
     resource: str,
     filter_json: str = "",
     limit: int = 50,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Copper CRM records for companies, people, leads, opportunities, projects, tasks, users, or customer sources."""
     base, auth = _copper_config("copper_list_records", config)
@@ -590,7 +590,7 @@ def copper_list_records(
 def copper_get_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get one Copper CRM record by ID."""
     base, auth = _copper_config("copper_get_record", config)
@@ -604,7 +604,7 @@ def copper_get_record(
 def copper_create_record(
     resource: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Copper CRM record from a JSON object."""
     base, auth = _copper_config("copper_create_record", config)
@@ -619,7 +619,7 @@ def copper_update_record(
     resource: str,
     record_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Copper CRM record from a JSON object."""
     base, auth = _copper_config("copper_update_record", config)
@@ -635,7 +635,7 @@ def copper_update_record(
 def copper_delete_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Copper CRM record by ID."""
     base, auth = _copper_config("copper_delete_record", config)
@@ -650,7 +650,7 @@ def agilecrm_list_records(
     resource: str,
     filter_json: str = "",
     limit: int = 50,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Agile CRM contacts, companies, or deals."""
     base, auth = _agile_config("agilecrm_list_records", config)
@@ -671,7 +671,7 @@ def agilecrm_list_records(
 def agilecrm_get_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get one Agile CRM contact, company, or deal by ID."""
     base, auth = _agile_config("agilecrm_get_record", config)
@@ -686,7 +686,7 @@ def agilecrm_get_record(
 def agilecrm_create_record(
     resource: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Agile CRM contact, company, or deal from a JSON object."""
     base, auth = _agile_config("agilecrm_create_record", config)
@@ -707,7 +707,7 @@ def agilecrm_update_record(
     resource: str,
     record_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update an Agile CRM contact, company, or deal from a JSON object."""
     base, auth = _agile_config("agilecrm_update_record", config)
@@ -728,7 +728,7 @@ def agilecrm_update_record(
 def agilecrm_delete_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete an Agile CRM contact, company, or deal by ID."""
     base, auth = _agile_config("agilecrm_delete_record", config)
@@ -744,7 +744,7 @@ def monica_list_records(
     resource: str,
     limit: int = 50,
     page: int = 1,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Monica CRM records such as contacts, activities, calls, notes, reminders, tags, or tasks."""
     base, auth = _monica_config("monica_list_records", config)
@@ -759,7 +759,7 @@ def monica_list_records(
 def monica_get_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get one Monica CRM record by ID."""
     base, auth = _monica_config("monica_get_record", config)
@@ -773,7 +773,7 @@ def monica_get_record(
 def monica_create_record(
     resource: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Monica CRM record from a JSON object."""
     base, auth = _monica_config("monica_create_record", config)
@@ -788,7 +788,7 @@ def monica_update_record(
     resource: str,
     record_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Monica CRM record from a JSON object."""
     base, auth = _monica_config("monica_update_record", config)
@@ -804,7 +804,7 @@ def monica_update_record(
 def monica_delete_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Monica CRM record by ID."""
     base, auth = _monica_config("monica_delete_record", config)
@@ -821,7 +821,7 @@ def affinity_list_records(
     limit: int = 50,
     page_token: str = "",
     with_interaction_dates: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Affinity lists, people, or organizations."""
     base, auth = _affinity_config("affinity_list_records", config)
@@ -845,7 +845,7 @@ def affinity_get_record(
     resource: str,
     record_id: str,
     with_interaction_dates: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get one Affinity list, person, or organization by ID."""
     base, auth = _affinity_config("affinity_get_record", config)
@@ -863,7 +863,7 @@ def affinity_create_person(
     emails_csv: str,
     organization_ids_csv: str = "",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Affinity person with one or more email addresses."""
     base, auth = _affinity_config("affinity_create_person", config)
@@ -885,7 +885,7 @@ def affinity_create_organization(
     domain: str = "",
     person_ids_csv: str = "",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Affinity organization."""
     base, auth = _affinity_config("affinity_create_organization", config)
@@ -905,7 +905,7 @@ def affinity_update_record(
     resource: str,
     record_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update an Affinity person or organization from a JSON object."""
     base, auth = _affinity_config("affinity_update_record", config)
@@ -921,7 +921,7 @@ def affinity_update_record(
 def affinity_delete_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete an Affinity person or organization by ID."""
     base, auth = _affinity_config("affinity_delete_record", config)
@@ -936,7 +936,7 @@ def affinity_list_entries(
     list_id: str,
     limit: int = 50,
     page_token: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List entries in an Affinity list."""
     base, auth = _affinity_config("affinity_list_entries", config)
@@ -953,7 +953,7 @@ def affinity_create_list_entry(
     list_id: str,
     entity_id: int,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Affinity list entry for a person, organization, or opportunity entity."""
     base, auth = _affinity_config("affinity_create_list_entry", config)
@@ -968,7 +968,7 @@ def affinity_create_list_entry(
 def affinity_delete_list_entry(
     list_id: str,
     list_entry_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete an Affinity list entry by ID."""
     base, auth = _affinity_config("affinity_delete_list_entry", config)
@@ -982,7 +982,7 @@ def keap_list_records(
     resource: str,
     filters_json: str = "",
     limit: int = 50,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Keap records such as companies, contacts, notes, orders, products, emails, files, tags, or users."""
     base, auth = _keap_config("keap_list_records", config)
@@ -999,7 +999,7 @@ def keap_get_record(
     resource: str,
     record_id: str,
     fields_csv: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get one Keap record by ID."""
     base, auth = _keap_config("keap_get_record", config)
@@ -1014,7 +1014,7 @@ def keap_get_record(
 def keap_create_record(
     resource: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Keap record from an API-shaped JSON object; contacts are upserted."""
     base, auth = _keap_config("keap_create_record", config)
@@ -1030,7 +1030,7 @@ def keap_create_record(
 def keap_update_note(
     note_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Keap contact note from a JSON object."""
     base, auth = _keap_config("keap_update_note", config)
@@ -1044,7 +1044,7 @@ def keap_update_note(
 def keap_delete_record(
     resource: str,
     record_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Keap record by ID."""
     base, auth = _keap_config("keap_delete_record", config)
@@ -1058,7 +1058,7 @@ def keap_delete_record(
 def keap_list_contact_tags(
     contact_id: str,
     limit: int = 50,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List tags applied to a Keap contact."""
     base, auth = _keap_config("keap_list_contact_tags", config)
@@ -1071,7 +1071,7 @@ def keap_list_contact_tags(
 def keap_apply_tags(
     contact_id: str,
     tag_ids_csv: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Apply one or more Keap tags to a contact."""
     base, auth = _keap_config("keap_apply_tags", config)
@@ -1091,7 +1091,7 @@ def keap_apply_tags(
 def keap_remove_tags(
     contact_id: str,
     tag_ids_csv: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Remove one or more Keap tags from a contact."""
     base, auth = _keap_config("keap_remove_tags", config)
@@ -1113,7 +1113,7 @@ def keap_send_email(
     contact_ids_csv: str,
     subject: str,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Queue an email through Keap for one or more contacts."""
     base, auth = _keap_config("keap_send_email", config)

@@ -1183,7 +1183,7 @@ def _segment_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 @tool
 def customerio_list_campaigns(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Customer.io campaigns."""
     try:
@@ -1199,7 +1199,7 @@ def customerio_list_campaigns(
 @tool
 def customerio_get_campaign(
     campaign_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Customer.io campaign by ID."""
     try:
@@ -1220,7 +1220,7 @@ def customerio_upsert_customer(
     fields_json: str = "",
     email: str = "",
     created_at: int = 0,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create or update a Customer.io customer profile."""
     if not customer_id.strip():
@@ -1253,7 +1253,7 @@ def customerio_track_event(
     event_name: str,
     data_json: str = "",
     event_type: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Track a Customer.io event for a known customer."""
     if not customer_id.strip() or not event_name.strip():
@@ -1282,7 +1282,7 @@ def customerio_track_event(
 def customerio_track_anonymous_event(
     event_name: str,
     data_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Track a Customer.io event without a known customer ID."""
     if not event_name.strip():
@@ -1303,7 +1303,7 @@ def customerio_update_segment(
     segment_id: str,
     customer_ids: str,
     action: str = "add",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add or remove customers from a Customer.io manual segment."""
     ids = _csv_to_list(customer_ids)
@@ -1335,7 +1335,7 @@ def customerio_update_segment(
 def iterable_get_user(
     identifier: str,
     value: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get an Iterable user by email or user ID."""
     if not value.strip():
@@ -1359,7 +1359,7 @@ def iterable_upsert_user(
     data_fields_json: str = "",
     prefer_user_id: bool = False,
     merge_nested_objects: bool = True,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create or update an Iterable user."""
     if not value.strip():
@@ -1393,7 +1393,7 @@ def iterable_track_event(
     created_at: str = "",
     campaign_id: int = 0,
     template_id: int = 0,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Track an Iterable event."""
     if not event_name.strip() or not (email.strip() or user_id.strip()):
@@ -1424,7 +1424,7 @@ def iterable_track_event(
 
 @tool
 def iterable_list_lists(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Iterable static lists."""
     try:
@@ -1445,7 +1445,7 @@ def iterable_update_list_subscribers(
     action: str = "add",
     campaign_id: int = 0,
     channel_unsubscribe: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Subscribe or unsubscribe Iterable users by email or user ID."""
     subscribers = _csv_to_list(values)
@@ -1477,7 +1477,7 @@ def posthog_capture_event(
     distinct_id: str,
     properties_json: str = "",
     timestamp: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Capture one PostHog event."""
     if not event_name.strip() or not distinct_id.strip():
@@ -1503,7 +1503,7 @@ def posthog_identify(
     properties_json: str = "",
     context_json: str = "",
     timestamp: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Identify a PostHog user and set properties."""
     if not distinct_id.strip():
@@ -1534,7 +1534,7 @@ def posthog_create_alias(
     alias: str,
     context_json: str = "",
     timestamp: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a PostHog alias for a distinct ID."""
     if not distinct_id.strip() or not alias.strip():
@@ -1566,7 +1566,7 @@ def posthog_track_page_or_screen(
     properties_json: str = "",
     context_json: str = "",
     timestamp: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Track a PostHog page or screen view."""
     kind_key = kind.strip().lower()
@@ -1603,7 +1603,7 @@ def segment_identify(
     anonymous_id: str = "",
     context_json: str = "",
     integrations_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Send a Segment identify call."""
     if not (user_id.strip() or anonymous_id.strip()):
@@ -1635,7 +1635,7 @@ def segment_track(
     properties_json: str = "",
     context_json: str = "",
     integrations_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Send a Segment track event."""
     if not event.strip() or not (user_id.strip() or anonymous_id.strip()):
@@ -1668,7 +1668,7 @@ def segment_group(
     traits_json: str = "",
     context_json: str = "",
     integrations_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Send a Segment group call."""
     if not group_id.strip() or not (user_id.strip() or anonymous_id.strip()):
@@ -1849,7 +1849,7 @@ def activecampaign_list_contacts(
     list_id: str = "",
     tag_id: str = "",
     limit: int = 20,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List ActiveCampaign contacts with optional search, email, list, or tag filters."""
     try:
@@ -1872,7 +1872,7 @@ def activecampaign_list_contacts(
 @tool
 def activecampaign_get_contact(
     contact_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get one ActiveCampaign contact by ID."""
     try:
@@ -1892,7 +1892,7 @@ def activecampaign_sync_contact(
     last_name: str = "",
     phone: str = "",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create or update an ActiveCampaign contact using contact sync."""
     try:
@@ -1912,7 +1912,7 @@ def activecampaign_sync_contact(
 def activecampaign_update_contact(
     contact_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update an ActiveCampaign contact by ID with a JSON object of contact fields."""
     try:
@@ -1931,7 +1931,7 @@ def activecampaign_update_contact(
 @tool
 def activecampaign_list_lists(
     limit: int = 50,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List ActiveCampaign contact lists."""
     try:
@@ -1950,7 +1950,7 @@ def activecampaign_list_lists(
 def activecampaign_list_tags(
     search: str = "",
     limit: int = 50,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List ActiveCampaign tags."""
     try:
@@ -1975,7 +1975,7 @@ def activecampaign_add_contact_to_list(
     contact_id: str,
     list_id: str,
     status: int = 1,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Subscribe or unsubscribe an ActiveCampaign contact to a list. Use status 1 to subscribe, 2 to unsubscribe."""
     try:
@@ -1993,7 +1993,7 @@ def activecampaign_add_contact_to_list(
 def activecampaign_add_contact_tag(
     contact_id: str,
     tag_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add an ActiveCampaign tag to a contact."""
     try:
@@ -2008,7 +2008,7 @@ def activecampaign_add_contact_tag(
 
 
 @tool
-def convertkit_get_account(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+def convertkit_get_account(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """Get ConvertKit account details."""
     try:
         base, secret = _convertkit_config("convertkit_get_account", config)
@@ -2021,7 +2021,7 @@ def convertkit_get_account(config: Annotated[Optional[RunnableConfig], InjectedT
 
 
 @tool
-def convertkit_list_forms(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+def convertkit_list_forms(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """List ConvertKit forms."""
     try:
         base, secret = _convertkit_config("convertkit_list_forms", config)
@@ -2034,7 +2034,7 @@ def convertkit_list_forms(config: Annotated[Optional[RunnableConfig], InjectedTo
 
 
 @tool
-def convertkit_list_tags(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+def convertkit_list_tags(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """List ConvertKit tags."""
     try:
         base, secret = _convertkit_config("convertkit_list_tags", config)
@@ -2051,7 +2051,7 @@ def convertkit_list_subscribers(
     email: str = "",
     limit: int = 50,
     page: int = 1,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List ConvertKit subscribers, optionally filtered by email."""
     try:
@@ -2071,7 +2071,7 @@ def convertkit_add_subscriber_to_form(
     email: str,
     first_name: str = "",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Subscribe an email address to a ConvertKit form."""
     try:
@@ -2093,7 +2093,7 @@ def convertkit_add_subscriber_to_tag(
     email: str,
     first_name: str = "",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Subscribe an email address to a ConvertKit tag."""
     try:
@@ -2108,7 +2108,7 @@ def convertkit_add_subscriber_to_tag(
 
 
 @tool
-def getresponse_list_campaigns(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+def getresponse_list_campaigns(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """List GetResponse campaigns."""
     try:
         base, auth = _getresponse_config("getresponse_list_campaigns", config)
@@ -2125,7 +2125,7 @@ def getresponse_list_contacts(
     email: str = "",
     campaign_id: str = "",
     limit: int = 20,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List GetResponse contacts with optional email and campaign filters."""
     try:
@@ -2146,7 +2146,7 @@ def getresponse_list_contacts(
 @tool
 def getresponse_get_contact(
     contact_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a GetResponse contact by ID."""
     try:
@@ -2166,7 +2166,7 @@ def getresponse_create_contact(
     name: str = "",
     day_of_cycle: Optional[int] = None,
     custom_fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a GetResponse contact."""
     try:
@@ -2192,7 +2192,7 @@ def getresponse_update_contact(
     name: str = "",
     campaign_id: str = "",
     custom_fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a GetResponse contact."""
     try:
@@ -2215,7 +2215,7 @@ def getresponse_update_contact(
 @tool
 def getresponse_delete_contact(
     contact_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a GetResponse contact."""
     try:
@@ -2232,7 +2232,7 @@ def getresponse_delete_contact(
 def mailerlite_list_subscribers(
     status: str = "",
     limit: int = 20,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List MailerLite subscribers."""
     try:
@@ -2249,7 +2249,7 @@ def mailerlite_list_subscribers(
 @tool
 def mailerlite_get_subscriber(
     subscriber_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get one MailerLite subscriber by ID or email."""
     try:
@@ -2268,7 +2268,7 @@ def mailerlite_create_subscriber(
     name: str = "",
     fields_json: str = "",
     groups: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a MailerLite subscriber."""
     try:
@@ -2290,7 +2290,7 @@ def mailerlite_update_subscriber(
     subscriber_id: str,
     fields_json: str,
     status: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a MailerLite subscriber with a JSON object of fields."""
     try:
@@ -2311,7 +2311,7 @@ def mailerlite_update_subscriber(
 @tool
 def mailerlite_list_groups(
     limit: int = 20,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List MailerLite groups."""
     try:
@@ -2329,7 +2329,7 @@ def actionnetwork_list_records(
     resource: str,
     parent_id: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Action Network records.
 
@@ -2364,7 +2364,7 @@ def actionnetwork_get_record(
     resource: str,
     record_id: str,
     parent_id: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get an Action Network record by ID.
 
@@ -2392,7 +2392,7 @@ def actionnetwork_create_person(
     given_name: str = "",
     family_name: str = "",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Action Network person.
 
@@ -2424,7 +2424,7 @@ def actionnetwork_create_person(
 def actionnetwork_update_person(
     person_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update an Action Network person with a JSON object of fields."""
     if not person_id.strip():
@@ -2449,7 +2449,7 @@ def actionnetwork_create_event(
     title: str,
     origin_system: str = "nymeria",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Action Network event."""
     if not title.strip():
@@ -2471,7 +2471,7 @@ def actionnetwork_create_petition(
     title: str,
     origin_system: str = "nymeria",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Action Network petition."""
     if not title.strip():
@@ -2492,7 +2492,7 @@ def actionnetwork_create_petition(
 def actionnetwork_create_attendance(
     event_id: str,
     person_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Action Network attendance for an event and person."""
     if not event_id.strip() or not person_id.strip():
@@ -2519,7 +2519,7 @@ def actionnetwork_create_signature(
     petition_id: str,
     person_id: str,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Action Network petition signature for a person."""
     if not petition_id.strip() or not person_id.strip():
@@ -2547,7 +2547,7 @@ def actionnetwork_create_signature(
 def actionnetwork_add_person_tag(
     tag_id: str,
     person_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Tag an Action Network person."""
     if not tag_id.strip() or not person_id.strip():
@@ -2573,7 +2573,7 @@ def actionnetwork_add_person_tag(
 def actionnetwork_remove_person_tag(
     tag_id: str,
     tagging_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Remove an Action Network person tag by tagging ID."""
     if not tag_id.strip() or not tagging_id.strip():
@@ -2598,7 +2598,7 @@ def actionnetwork_remove_person_tag(
 def autopilot_list_contacts(
     list_id: str = "",
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Autopilot contacts, optionally scoped to a list."""
     try:
@@ -2619,7 +2619,7 @@ def autopilot_list_contacts(
 @tool
 def autopilot_get_contact(
     contact_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get an Autopilot contact by ID."""
     if not contact_id.strip():
@@ -2641,7 +2641,7 @@ def autopilot_upsert_contact(
     list_id: str = "",
     session_id: str = "",
     new_email: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create or update an Autopilot contact."""
     if not email.strip():
@@ -2666,7 +2666,7 @@ def autopilot_upsert_contact(
 @tool
 def autopilot_delete_contact(
     contact_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete an Autopilot contact."""
     if not contact_id.strip():
@@ -2685,7 +2685,7 @@ def autopilot_delete_contact(
 @tool
 def autopilot_list_lists(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Autopilot lists."""
     try:
@@ -2705,7 +2705,7 @@ def autopilot_list_lists(
 @tool
 def autopilot_create_list(
     name: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Autopilot list."""
     if not name.strip():
@@ -2725,7 +2725,7 @@ def autopilot_update_contact_list_membership(
     list_id: str,
     contact_id: str,
     action: str = "add",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add, remove, or check an Autopilot contact's list membership."""
     normalized = action.strip().lower()
@@ -2757,7 +2757,7 @@ def autopilot_update_contact_list_membership(
 def autopilot_add_contact_to_journey(
     trigger_id: str,
     contact_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add an Autopilot contact to a journey trigger."""
     if not trigger_id.strip() or not contact_id.strip():
@@ -2780,7 +2780,7 @@ def autopilot_add_contact_to_journey(
 @tool
 def egoi_list_lists(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List E-goi lists."""
     try:
@@ -2798,7 +2798,7 @@ def egoi_list_lists(
 def egoi_list_contacts(
     list_id: str,
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List contacts in an E-goi list."""
     if not list_id.strip():
@@ -2824,7 +2824,7 @@ def egoi_get_contact(
     list_id: str,
     contact_id: str = "",
     email: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get an E-goi contact by contact ID or email."""
     if not list_id.strip() or not (contact_id.strip() or email.strip()):
@@ -2870,7 +2870,7 @@ def egoi_create_contact(
     fields_json: str = "",
     tag_ids: str = "",
     resolve: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an E-goi contact."""
     if not list_id.strip() or not email.strip():
@@ -2903,7 +2903,7 @@ def egoi_update_contact(
     fields_json: str,
     tag_ids: str = "",
     resolve: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update an E-goi contact."""
     if not list_id.strip() or not contact_id.strip():
@@ -2933,7 +2933,7 @@ def vero_identify_user(
     user_id: str,
     email: str = "",
     data_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create or update a Vero user profile."""
     if not user_id.strip():
@@ -2951,7 +2951,7 @@ def vero_identify_user(
 def vero_alias_user(
     user_id: str,
     new_user_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Alias a Vero user ID to a new user ID."""
     if not user_id.strip() or not new_user_id.strip():
@@ -2968,7 +2968,7 @@ def vero_alias_user(
 def vero_update_user_subscription(
     user_id: str,
     action: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Unsubscribe, resubscribe, or delete a Vero user."""
     normalized = action.strip().lower()
@@ -2989,7 +2989,7 @@ def vero_update_user_tags(
     user_id: str,
     add_tags: str = "",
     remove_tags: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add or remove Vero user tags."""
     if not user_id.strip():
@@ -3016,7 +3016,7 @@ def vero_track_event(
     event_name: str,
     data_json: str = "",
     extras_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Track a Vero event for a user."""
     if not user_id.strip() or not email.strip() or not event_name.strip():
@@ -3040,7 +3040,7 @@ def vero_track_event(
 def lemlist_list_campaigns(
     filters_json: str = "",
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Lemlist campaigns."""
     try:
@@ -3061,7 +3061,7 @@ def lemlist_get_campaign_stats(
     start_date: str = "",
     end_date: str = "",
     timezone: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get Lemlist campaign stats."""
     if not campaign_id.strip():
@@ -3086,7 +3086,7 @@ def lemlist_get_campaign_stats(
 def lemlist_list_activities(
     filters_json: str = "",
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Lemlist activities."""
     try:
@@ -3104,7 +3104,7 @@ def lemlist_list_activities(
 @tool
 def lemlist_get_lead(
     email: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Lemlist lead by email."""
     if "@" not in email:
@@ -3126,7 +3126,7 @@ def lemlist_create_lead(
     email: str,
     fields_json: str = "",
     deduplicate: bool = True,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create or update a Lemlist campaign lead."""
     if not campaign_id.strip() or "@" not in email:
@@ -3153,7 +3153,7 @@ def lemlist_remove_lead(
     campaign_id: str,
     email: str,
     unsubscribe: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Remove or unsubscribe a Lemlist lead from a campaign."""
     if not campaign_id.strip() or "@" not in email:
@@ -3176,7 +3176,7 @@ def lemlist_remove_lead(
 
 
 @tool
-def lemlist_get_team(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+def lemlist_get_team(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """Get Lemlist team metadata."""
     try:
         base, auth = _lemlist_config("lemlist_get_team", config)
@@ -3189,7 +3189,7 @@ def lemlist_get_team(config: Annotated[Optional[RunnableConfig], InjectedToolArg
 
 
 @tool
-def lemlist_get_team_credits(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+def lemlist_get_team_credits(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """Get Lemlist team credit balances."""
     try:
         base, auth = _lemlist_config("lemlist_get_team_credits", config)
@@ -3204,7 +3204,7 @@ def lemlist_get_team_credits(config: Annotated[Optional[RunnableConfig], Injecte
 @tool
 def lemlist_list_unsubscribes(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Lemlist global unsubscribes."""
     try:
@@ -3222,7 +3222,7 @@ def lemlist_list_unsubscribes(
 def lemlist_update_unsubscribe(
     email: str,
     action: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add or remove a Lemlist global unsubscribe."""
     normalized = action.strip().lower()
@@ -3253,7 +3253,7 @@ def sendy_create_campaign(
     send_campaign: bool = False,
     brand_id: str = "",
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Sendy campaign."""
     required = [from_name, from_email, reply_to, title, subject, html_text]
@@ -3284,7 +3284,7 @@ def sendy_add_subscriber(
     email: str,
     list_id: str,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add a Sendy subscriber to a list."""
     if "@" not in email or not list_id.strip():
@@ -3306,7 +3306,7 @@ def sendy_add_subscriber(
 def sendy_get_subscriber_status(
     email: str,
     list_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Sendy subscriber status."""
     if "@" not in email or not list_id.strip():
@@ -3327,7 +3327,7 @@ def sendy_get_subscriber_status(
 @tool
 def sendy_count_active_subscribers(
     list_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Count active Sendy subscribers in a list."""
     if not list_id.strip():
@@ -3350,7 +3350,7 @@ def sendy_update_subscriber_subscription(
     email: str,
     list_id: str,
     action: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Unsubscribe, remove, or delete a Sendy subscriber."""
     normalized = action.strip().lower()
@@ -3376,7 +3376,7 @@ def sendy_update_subscriber_subscription(
 @tool
 def emelia_list_campaigns(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Emelia campaigns."""
     try:
@@ -3417,7 +3417,7 @@ def emelia_list_campaigns(
 @tool
 def emelia_get_campaign(
     campaign_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get an Emelia campaign."""
     if not campaign_id.strip():
@@ -3452,7 +3452,7 @@ def emelia_get_campaign(
 @tool
 def emelia_create_campaign(
     name: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create an Emelia campaign."""
     if not name.strip():
@@ -3487,7 +3487,7 @@ def emelia_create_campaign(
 def emelia_update_campaign_status(
     campaign_id: str,
     action: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Start or pause an Emelia campaign."""
     normalized = action.strip().lower()
@@ -3515,7 +3515,7 @@ def emelia_duplicate_campaign(
     campaign_id: str,
     name: str,
     options_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Duplicate an Emelia campaign."""
     if not campaign_id.strip() or not name.strip():
@@ -3567,7 +3567,7 @@ def emelia_add_contact_to_campaign(
     campaign_id: str,
     email: str,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add a contact to an Emelia campaign."""
     if not campaign_id.strip() or "@" not in email:
@@ -3595,7 +3595,7 @@ def emelia_add_contact_to_campaign(
 @tool
 def emelia_list_contact_lists(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Emelia contact lists."""
     try:
@@ -3629,7 +3629,7 @@ def emelia_add_contact_to_list(
     contact_list_id: str,
     email: str,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add a contact to an Emelia contact list."""
     if not contact_list_id.strip() or "@" not in email:
@@ -3662,7 +3662,7 @@ def mautic_list_contacts(
     start: int = 0,
     limit: int = 30,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Mautic contacts.
 
@@ -3704,7 +3704,7 @@ def mautic_list_contacts(
 def mautic_get_contact(
     contact_id: str,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Mautic contact by ID."""
     contact_id = contact_id.strip()
@@ -3728,7 +3728,7 @@ def mautic_create_contact(
     title: str = "",
     fields_json: str = "",
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Mautic contact.
 
@@ -3770,7 +3770,7 @@ def mautic_update_contact(
     contact_id: str,
     fields_json: str,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Mautic contact with a JSON object of Mautic field aliases."""
     contact_id = contact_id.strip()
@@ -3797,7 +3797,7 @@ def mautic_update_contact(
 def mautic_delete_contact(
     contact_id: str,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Mautic contact by ID."""
     contact_id = contact_id.strip()
@@ -3824,7 +3824,7 @@ def mautic_list_companies(
     start: int = 0,
     limit: int = 30,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Mautic companies."""
     try:
@@ -3857,7 +3857,7 @@ def mautic_list_companies(
 def mautic_get_company(
     company_id: str,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Mautic company by ID."""
     company_id = company_id.strip()
@@ -3876,7 +3876,7 @@ def mautic_create_company(
     name: str,
     fields_json: str = "",
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Mautic company."""
     if not name.strip():
@@ -3895,7 +3895,7 @@ def mautic_update_company(
     company_id: str,
     fields_json: str,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Mautic company with a JSON object of Mautic field aliases."""
     company_id = company_id.strip()
@@ -3922,7 +3922,7 @@ def mautic_update_company(
 def mautic_delete_company(
     company_id: str,
     raw_data: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Mautic company by ID."""
     company_id = company_id.strip()
@@ -3945,7 +3945,7 @@ def mautic_delete_company(
 def mautic_add_contact_to_segment(
     contact_id: str,
     segment_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add a Mautic contact to a segment."""
     if not contact_id.strip() or not segment_id.strip():
@@ -3967,7 +3967,7 @@ def mautic_add_contact_to_segment(
 def mautic_remove_contact_from_segment(
     contact_id: str,
     segment_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Remove a Mautic contact from a segment."""
     if not contact_id.strip() or not segment_id.strip():
@@ -3989,7 +3989,7 @@ def mautic_remove_contact_from_segment(
 def mautic_add_contact_to_campaign(
     contact_id: str,
     campaign_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add a Mautic contact to a campaign."""
     if not contact_id.strip() or not campaign_id.strip():
@@ -4011,7 +4011,7 @@ def mautic_add_contact_to_campaign(
 def mautic_remove_contact_from_campaign(
     contact_id: str,
     campaign_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Remove a Mautic contact from a campaign."""
     if not contact_id.strip() or not campaign_id.strip():
@@ -4033,7 +4033,7 @@ def mautic_remove_contact_from_campaign(
 def mautic_add_contact_to_company(
     contact_id: str,
     company_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Add a Mautic contact to a company."""
     if not contact_id.strip() or not company_id.strip():
@@ -4055,7 +4055,7 @@ def mautic_add_contact_to_company(
 def mautic_remove_contact_from_company(
     contact_id: str,
     company_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Remove a Mautic contact from a company."""
     if not contact_id.strip() or not company_id.strip():
@@ -4077,7 +4077,7 @@ def mautic_remove_contact_from_company(
 def mautic_send_email_to_contact(
     contact_id: str,
     email_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Send a Mautic campaign/template email to a contact."""
     if not contact_id.strip() or not email_id.strip():
@@ -4098,7 +4098,7 @@ def mautic_send_email_to_contact(
 @tool
 def mautic_send_segment_email(
     email_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Send a Mautic segment/list email."""
     if not email_id.strip():

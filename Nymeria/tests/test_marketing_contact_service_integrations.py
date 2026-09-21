@@ -35,6 +35,49 @@ def test_activecampaign_list_contacts_uses_env_auth(monkeypatch):
     assert captured["headers"]["Api-Token"] == "active-key"
 
 
+def test_convertkit_subscribe_reaches_the_callers_vault_through_tool_invoke(tmp_path, monkeypatch):
+    """The direct `.func(config=...)` calls above bypass LangChain's injection,
+    so they pass whether or not the run config ever reaches the tool. Backlog
+    #380: with the `Optional[RunnableConfig]` spelling langchain-core never
+    injects `config`, the tool sees None, `get_user_id` returns "default", and
+    alice's vault record is invisible. Drive the real invocation path."""
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="ConvertKit",
+        provider="convertkit",
+        kind="api_key",
+        allowed_targets=["native_tool:convertkit_add_subscriber_to_form"],
+        secret_fields={"apiSecret": "alice-secret", "baseUrl": "https://kit.example/v3"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"subscription": {"subscriber": {"email_address": kwargs["json_body"]["email"]}}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    message = tools.convertkit_add_subscriber_to_form.invoke(
+        {
+            "name": "convertkit_add_subscriber_to_form",
+            "args": {"form_id": "form-1", "email": "ada@example.com"},
+            "id": "call-1",
+            "type": "tool_call",
+        },
+        config={"configurable": {"user_id": "alice", "thread_id": "t-1"}},
+    )
+
+    result = json.loads(message.content)
+    assert result["subscription"]["subscriber"]["email_address"] == "ada@example.com"
+    assert captured["json_body"]["api_secret"] == "alice-secret"
+
+
 def test_convertkit_subscribe_uses_vault_secret(tmp_path, monkeypatch):
     from nymeria.tools import marketing_contact_service_integrations as tools
 

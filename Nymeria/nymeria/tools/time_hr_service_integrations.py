@@ -428,7 +428,7 @@ def _beeminder_request(
 
 @tool
 def bamboohr_list_employees(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List employees from the BambooHR company directory."""
     resolved = _require_headers(_bamboohr_config("bamboohr_list_employees", config))
@@ -442,7 +442,7 @@ def bamboohr_list_employees(
 def bamboohr_get_employee(
     employee_id: str,
     fields: str = "displayName,firstName,lastName,jobTitle,workEmail,department,location,supervisor",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a BambooHR employee by ID with selected field names."""
     resolved = _require_headers(_bamboohr_config("bamboohr_get_employee", config))
@@ -464,7 +464,7 @@ def bamboohr_create_employee(
     first_name: str,
     last_name: str,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a BambooHR employee with optional extra fields as a JSON object."""
     resolved = _require_headers(_bamboohr_config("bamboohr_create_employee", config))
@@ -479,7 +479,7 @@ def bamboohr_create_employee(
 def bamboohr_update_employee(
     employee_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update BambooHR employee fields from a JSON object."""
     body = _json_object(fields_json)
@@ -504,7 +504,7 @@ def bamboohr_get_company_report(
     report_id: str,
     only_current: bool = True,
     format: str = "json",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Run a BambooHR company report."""
     resolved = _require_headers(_bamboohr_config("bamboohr_get_company_report", config))
@@ -526,7 +526,7 @@ def bamboohr_get_company_report(
 
 @tool
 def beeminder_get_user(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get the authenticated Beeminder user."""
     return _beeminder_request("beeminder_get_user", config, "GET", "/users/me.json")
@@ -534,7 +534,7 @@ def beeminder_get_user(
 
 @tool
 def beeminder_list_goals(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Beeminder goals for the authenticated user."""
     return _beeminder_request("beeminder_list_goals", config, "GET", "/users/me/goals.json")
@@ -543,7 +543,7 @@ def beeminder_list_goals(
 @tool
 def beeminder_get_goal(
     goal_slug: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Beeminder goal by slug."""
     return _beeminder_request(
@@ -559,7 +559,7 @@ def beeminder_list_datapoints(
     goal_slug: str,
     page: int = 1,
     per_page: int = 50,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List datapoints for a Beeminder goal."""
     return _beeminder_request(
@@ -578,7 +578,7 @@ def beeminder_create_datapoint(
     comment: str = "",
     timestamp: Optional[int] = None,
     request_id: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Beeminder datapoint."""
     body = _filtered(
@@ -603,7 +603,7 @@ def beeminder_update_datapoint(
     goal_slug: str,
     datapoint_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Beeminder datapoint from a JSON object."""
     body = _json_object(fields_json)
@@ -622,7 +622,7 @@ def beeminder_update_datapoint(
 def beeminder_delete_datapoint(
     goal_slug: str,
     datapoint_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Beeminder datapoint."""
     return _beeminder_request(
@@ -635,7 +635,7 @@ def beeminder_delete_datapoint(
 
 @tool
 def clockify_list_workspaces(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Clockify workspaces."""
     resolved = _require_headers(_clockify_config("clockify_list_workspaces", config))
@@ -650,7 +650,7 @@ def clockify_list_users(
     workspace_id: str,
     status: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Clockify users in a workspace."""
     resolved = _require_headers(_clockify_config("clockify_list_users", config))
@@ -673,7 +673,7 @@ def clockify_list_projects(
     name: str = "",
     archived: Optional[bool] = None,
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Clockify projects in a workspace."""
     resolved = _require_headers(_clockify_config("clockify_list_projects", config))
@@ -698,7 +698,7 @@ def clockify_create_project(
     is_public: bool = False,
     billable: bool = True,
     color: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Clockify project."""
     resolved = _require_headers(_clockify_config("clockify_create_project", config))
@@ -732,7 +732,7 @@ def clockify_list_time_entries(
     end: str = "",
     project_id: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Clockify time entries for a workspace user."""
     resolved = _require_headers(_clockify_config("clockify_list_time_entries", config))
@@ -764,7 +764,7 @@ def clockify_create_time_entry(
     task_id: str = "",
     tag_ids: str = "",
     billable: Optional[bool] = None,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Clockify time entry using ISO 8601 start/end timestamps."""
     resolved = _require_headers(_clockify_config("clockify_create_time_entry", config))
@@ -797,7 +797,7 @@ def clockify_update_time_entry(
     workspace_id: str,
     time_entry_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Clockify time entry from a JSON object."""
     body = _json_object(fields_json)
@@ -821,7 +821,7 @@ def clockify_update_time_entry(
 def clockify_delete_time_entry(
     workspace_id: str,
     time_entry_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Clockify time entry."""
     resolved = _require_headers(_clockify_config("clockify_delete_time_entry", config))
@@ -839,7 +839,7 @@ def clockify_delete_time_entry(
 
 @tool
 def harvest_get_me(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get the authenticated Harvest user."""
     resolved = _require_headers(_harvest_config("harvest_get_me", config))
@@ -851,7 +851,7 @@ def harvest_get_me(
 
 @tool
 def harvest_get_company(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get the Harvest account company profile."""
     resolved = _require_headers(_harvest_config("harvest_get_company", config))
@@ -866,7 +866,7 @@ def harvest_list_clients(
     active: Optional[bool] = None,
     updated_since: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Harvest clients."""
     resolved = _require_headers(_harvest_config("harvest_list_clients", config))
@@ -889,7 +889,7 @@ def harvest_list_projects(
     active: Optional[bool] = None,
     updated_since: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Harvest projects."""
     resolved = _require_headers(_harvest_config("harvest_list_projects", config))
@@ -916,7 +916,7 @@ def harvest_list_tasks(
     active: Optional[bool] = None,
     updated_since: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Harvest tasks."""
     resolved = _require_headers(_harvest_config("harvest_list_tasks", config))
@@ -941,7 +941,7 @@ def harvest_list_time_entries(
     from_date: str = "",
     to_date: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Harvest time entries."""
     resolved = _require_headers(_harvest_config("harvest_list_time_entries", config))
@@ -973,7 +973,7 @@ def harvest_create_time_entry(
     hours: float,
     notes: str = "",
     external_reference_id: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a Harvest time entry by duration."""
     resolved = _require_headers(_harvest_config("harvest_create_time_entry", config))
@@ -997,7 +997,7 @@ def harvest_create_time_entry(
 def harvest_update_time_entry(
     time_entry_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Harvest time entry from a JSON object."""
     body = _json_object(fields_json)
@@ -1020,7 +1020,7 @@ def harvest_update_time_entry(
 @tool
 def harvest_stop_time_entry(
     time_entry_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Stop a running Harvest time entry."""
     resolved = _require_headers(_harvest_config("harvest_stop_time_entry", config))
@@ -1035,7 +1035,7 @@ def harvest_stop_time_entry(
 @tool
 def harvest_delete_time_entry(
     time_entry_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Harvest time entry."""
     resolved = _require_headers(_harvest_config("harvest_delete_time_entry", config))

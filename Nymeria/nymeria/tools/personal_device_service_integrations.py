@@ -403,7 +403,7 @@ def _require_headers(config_result: tuple[str, dict[str, str] | str]) -> tuple[s
 
 @tool
 def oura_get_profile(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get the authenticated Oura personal profile."""
     resolved = _require_headers(_oura_config("oura_get_profile", config))
@@ -418,7 +418,7 @@ def oura_get_daily_activity(
     start_date: str = "",
     end_date: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get Oura daily activity summaries."""
     resolved = _require_headers(_oura_config("oura_get_daily_activity", config))
@@ -441,7 +441,7 @@ def oura_get_daily_readiness(
     start_date: str = "",
     end_date: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get Oura daily readiness summaries."""
     resolved = _require_headers(_oura_config("oura_get_daily_readiness", config))
@@ -464,7 +464,7 @@ def oura_get_daily_sleep(
     start_date: str = "",
     end_date: str = "",
     limit: int = 25,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get Oura daily sleep summaries."""
     resolved = _require_headers(_oura_config("oura_get_daily_sleep", config))
@@ -487,7 +487,7 @@ def strava_list_activities(
     before: Optional[int] = None,
     after: Optional[int] = None,
     limit: int = 30,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Strava activities for the authenticated athlete."""
     resolved = _require_headers(_strava_config("strava_list_activities", config))
@@ -508,7 +508,7 @@ def strava_list_activities(
 def strava_get_activity(
     activity_id: str,
     include_all_efforts: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Strava activity by ID."""
     resolved = _require_headers(_strava_config("strava_get_activity", config))
@@ -535,7 +535,7 @@ def strava_create_activity(
     distance_meters: Optional[float] = None,
     trainer: bool = False,
     commute: bool = False,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create a manual Strava activity."""
     resolved = _require_headers(_strava_config("strava_create_activity", config))
@@ -561,7 +561,7 @@ def strava_create_activity(
 def strava_update_activity(
     activity_id: str,
     fields_json: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Strava activity from a JSON object."""
     body = _json_object(fields_json)
@@ -580,7 +580,7 @@ def strava_update_activity(
 def strava_list_activity_comments(
     activity_id: str,
     limit: int = 30,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List comments on a Strava activity."""
     resolved = _require_headers(_strava_config("strava_list_activity_comments", config))
@@ -602,7 +602,7 @@ def strava_get_activity_streams(
     activity_id: str,
     keys: str = "time,distance,latlng,altitude,heartrate,cadence,watts,temp,moving,grade_smooth,velocity_smooth",
     key_by_type: bool = True,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get Strava activity streams for selected stream keys."""
     resolved = _require_headers(_strava_config("strava_get_activity_streams", config))
@@ -621,7 +621,7 @@ def strava_get_activity_streams(
 
 @tool
 def homeassistant_get_config(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get Home Assistant configuration metadata."""
     resolved = _require_headers(_homeassistant_config("homeassistant_get_config", config))
@@ -633,7 +633,7 @@ def homeassistant_get_config(
 
 @tool
 def homeassistant_check_config(
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Run Home Assistant core configuration checks."""
     resolved = _require_headers(_homeassistant_config("homeassistant_check_config", config))
@@ -646,7 +646,7 @@ def homeassistant_check_config(
 @tool
 def homeassistant_list_states(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Home Assistant entity states."""
     resolved = _require_headers(_homeassistant_config("homeassistant_list_states", config))
@@ -662,7 +662,7 @@ def homeassistant_list_states(
 @tool
 def homeassistant_get_state(
     entity_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Home Assistant entity state."""
     resolved = _require_headers(_homeassistant_config("homeassistant_get_state", config))
@@ -677,7 +677,7 @@ def homeassistant_set_state(
     entity_id: str,
     state: str,
     attributes_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Create or update a Home Assistant entity state."""
     resolved = _require_headers(_homeassistant_config("homeassistant_set_state", config))
@@ -693,7 +693,7 @@ def homeassistant_set_state(
 @tool
 def homeassistant_list_services(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Home Assistant service domains."""
     resolved = _require_headers(_homeassistant_config("homeassistant_list_services", config))
@@ -711,7 +711,7 @@ def homeassistant_call_service(
     domain: str,
     service: str,
     data_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Call a Home Assistant service."""
     resolved = _require_headers(_homeassistant_config("homeassistant_call_service", config))
@@ -731,7 +731,7 @@ def homeassistant_call_service(
 @tool
 def homeassistant_list_events(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Home Assistant event types."""
     resolved = _require_headers(_homeassistant_config("homeassistant_list_events", config))
@@ -748,7 +748,7 @@ def homeassistant_list_events(
 def homeassistant_fire_event(
     event_type: str,
     data_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Fire a Home Assistant event."""
     resolved = _require_headers(_homeassistant_config("homeassistant_fire_event", config))
@@ -768,7 +768,7 @@ def homeassistant_fire_event(
 @tool
 def homeassistant_render_template(
     template: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Render a Home Assistant template."""
     resolved = _require_headers(_homeassistant_config("homeassistant_render_template", config))
@@ -786,7 +786,7 @@ def homeassistant_get_logbook(
     end_time: str = "",
     entity_id: str = "",
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get Home Assistant logbook entries."""
     resolved = _require_headers(_homeassistant_config("homeassistant_get_logbook", config))
@@ -808,7 +808,7 @@ def homeassistant_get_logbook(
 @tool
 def philips_hue_list_lights(
     limit: int = 100,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """List Philips Hue lights."""
     resolved = _philips_hue_config("philips_hue_list_lights", config)
@@ -824,7 +824,7 @@ def philips_hue_list_lights(
 @tool
 def philips_hue_get_light(
     light_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Get a Philips Hue light."""
     resolved = _philips_hue_config("philips_hue_get_light", config)
@@ -844,7 +844,7 @@ def philips_hue_update_light_state(
     hue: Optional[int] = None,
     saturation: Optional[int] = None,
     fields_json: str = "",
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Update a Philips Hue light state."""
     resolved = _philips_hue_config("philips_hue_update_light_state", config)
@@ -875,7 +875,7 @@ def philips_hue_update_light_state(
 @tool
 def philips_hue_delete_light(
     light_id: str,
-    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Delete a Philips Hue light from the bridge."""
     resolved = _philips_hue_config("philips_hue_delete_light", config)
