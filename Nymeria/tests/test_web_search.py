@@ -6,6 +6,7 @@ web search tool groups.
 """
 
 import httpx
+import pytest
 
 
 def test_key_prefers_vault_over_settings(monkeypatch):
@@ -57,20 +58,263 @@ def test_requires_a_query():
     )
 
 
-def test_single_query_appends_sources(monkeypatch):
-    from nymeria.tools import web
+class _FakeAgentResponse:
+    """A canned Agent API body, with the HTTP error hook the tool relies on."""
 
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
+    def __init__(self, body, status_code=200):
+        self._body = body
+        self.status_code = status_code
 
-        def json(self):
-            return {
-                "choices": [{"message": {"content": "Answer text"}}],
-                "citations": ["https://a.example", "https://b.example"],
-            }
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("nope", request=None, response=self)
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("not json")
+        return self._body
+
+
+def _install_fake_client(monkeypatch, body, status_code=200):
+    """Route the tool's httpx.Client at a canned body; return the capture dict."""
+    captured = {}
 
     class FakeClient:
+        def __init__(self, *args, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return _FakeAgentResponse(body, status_code)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    return captured
+
+
+def _agent_body(text, results_by_item, status="completed", error=None):
+    output = [
+        {"type": "search_results", "queries": ["q"], "results": results}
+        for results in results_by_item
+    ]
+    output.append(
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
+        }
+    )
+    return {
+        "object": "response",
+        "status": status,
+        "error": error,
+        "model": "openai/gpt-5.6-luna",
+        "output": output,
+        "usage": {"cost": {"total_cost": 0.004, "currency": "USD"}},
+    }
+
+
+def test_preset_request_targets_the_agent_api(monkeypatch):
+    """A preset rides the Agent API's own fields and NOTHING that would override
+    the preset's tuning: no `instructions` (it replaces the preset's system
+    prompt and cost the [N] citations live), no `tools` (it replaces the
+    preset's tool set), and none of the retired Sonar chat-completions shape,
+    since the Agent API 400s on any unknown field."""
+    from nymeria.tools import web
+
+    captured = _install_fake_client(monkeypatch, _agent_body("Answer.", [[]]))
+
+    web._search_single("what is new", "medium", 4, 60.0, 2000, "key")
+
+    assert captured["url"] == "https://api.perplexity.ai/v1/agent"
+    assert captured["headers"]["Authorization"] == "Bearer key"
+    assert captured["client_kwargs"]["timeout"] == 60.0
+    body = captured["json"]
+    assert body == {"preset": "medium", "input": "what is new", "max_output_tokens": 2000, "store": False}
+
+
+def test_provider_model_id_gets_instructions_and_an_explicit_search_tool(monkeypatch):
+    """A bare provider/model id has no preset prompt and does not search on its
+    own, so it is the one branch that sends `instructions` and `tools`."""
+    from nymeria.tools import web
+
+    captured = _install_fake_client(monkeypatch, _agent_body("Answer.", [[]]))
+
+    web._search_single("q", "openai/gpt-5.6-luna", 5, 60.0, 2000, "key")
+
+    body = captured["json"]
+    assert body["model"] == "openai/gpt-5.6-luna"
+    assert "preset" not in body
+    assert body["instructions"] == web._SEARCH_INSTRUCTIONS
+    assert body["tools"] == [{"type": "web_search", "max_results": 5}]
+
+
+def test_batch_kill_timeout_grows_with_query_count_and_depth():
+    """Queries run one after another, so the tool node's kill timeout must cover
+    the whole batch: two `high` queries need 2 x 180s plus the margin; a single
+    fast query returns less than the node default, which the node then keeps."""
+    from nymeria.tools import web
+
+    derive = web.web_search_perplexity.metadata["inline_wait_timeout"]
+
+    assert derive({"queries": "a | b", "search_depth": "high"}) == 2 * 180.0 + 30.0
+    assert derive({"query": "a", "search_depth": "xhigh"}) == 300.0 + 30.0
+    assert derive({"query": "a", "search_depth": "fast"}) == 60.0 + 30.0
+    assert derive({"query": "a", "search_depth": "bogus"}) is None
+    assert derive({}) is None
+
+
+def test_fetched_pages_continue_the_citation_ids(monkeypatch):
+    """Shape of a real `high` run: two search_results items (ids 1-3, 4-5), then
+    a fetch_url_results item whose contents carry no id, and an answer citing
+    the fetched page as [web:6]. The fetched page must be listed as 6."""
+    from nymeria.tools import web
+
+    body = _agent_body(
+        "Release 1.6.3 shipped.[web:1][web:6]",
+        [
+            [{"id": i, "url": f"https://s{i}.example", "title": f"S{i}"} for i in (1, 2, 3)],
+            [{"id": i, "url": f"https://s{i}.example", "title": f"S{i}"} for i in (4, 5)],
+        ],
+    )
+    body["output"].insert(
+        2,
+        {
+            "type": "fetch_url_results",
+            "contents": [{"snippet": "...", "title": "Release notes", "url": "https://github.example/release"}],
+        },
+    )
+    _install_fake_client(monkeypatch, body)
+
+    out = web._search_single("q", "high", 10, 180.0, 4000, "key")
+
+    assert "Release 1.6.3 shipped.[1][6]" in out
+    assert "6. Release notes: https://github.example/release" in out
+
+
+def test_idless_results_take_the_next_id_without_colliding(monkeypatch):
+    from nymeria.tools import web
+
+    body = _agent_body(
+        "Text.",
+        [[{"id": 1, "url": "https://a.example", "title": "A"}, {"url": "https://b.example", "title": "B"}, {"id": 7, "url": "https://c.example", "title": "C"}, {"url": "https://d.example", "title": "D"}]],
+    )
+    _install_fake_client(monkeypatch, body)
+
+    out = web._search_single("q", "fast", 10, 60.0, 2000, "key")
+
+    sources = out.partition("**Sources** (numbered as cited):")[2].strip().splitlines()
+    assert sources == [
+        "1. A: https://a.example",
+        "2. B: https://b.example",
+        "7. C: https://c.example",
+        "8. D: https://d.example",
+    ]
+
+
+def test_max_sources_trims_the_list_but_never_a_cited_source(monkeypatch):
+    from nymeria.tools import web
+
+    body = _agent_body(
+        "Cites the ninth.[9]",
+        [[{"id": i, "url": f"https://s{i}.example", "title": f"S{i}"} for i in range(1, 11)]],
+    )
+    _install_fake_client(monkeypatch, body)
+
+    out = web._search_single("q", "fast", 3, 60.0, 2000, "key")
+
+    sources = out.partition("**Sources** (numbered as cited):")[2].strip().splitlines()
+    assert sources == ["1. S1: https://s1.example", "2. S2: https://s2.example", "9. S9: https://s9.example"]
+
+
+def test_message_parts_are_joined_and_empty_output_is_named(monkeypatch):
+    from nymeria.tools import web
+
+    body = _agent_body("first", [[]])
+    body["output"][-1]["content"].append({"type": "refusal", "refusal": "no"})
+    body["output"][-1]["content"].append({"type": "output_text", "text": "second", "annotations": []})
+    body["output"].insert(0, "not-a-dict")
+    _install_fake_client(monkeypatch, body)
+    assert web._search_single("q", "fast", 5, 60.0, 2000, "key") == "first\n\nsecond"
+
+    _install_fake_client(monkeypatch, {"status": "completed", "output": []})
+    assert web._search_single("q", "fast", 5, 60.0, 2000, "key") == "[No answer text returned]"
+
+
+def test_sources_keep_the_api_ids_across_search_items(monkeypatch):
+    """A multi-step preset emits several search_results items whose ids
+    increase globally and the answer cites those ids ([5], or [web:5]); the
+    Sources list keeps the ids and de-duplicates so the citations line up."""
+    from nymeria.tools import web
+
+    body = _agent_body(
+        "Canberra is the capital.[web:5] Population 28M.[1]",
+        [
+            [
+                {"id": 1, "url": "https://a.example", "title": "A"},
+                {"id": 2, "url": "https://b.example", "title": "B"},
+                {"id": 3, "url": "https://c.example", "title": ""},
+            ],
+            [
+                {"id": 5, "url": "https://e.example", "title": "E"},
+                {"id": 6, "url": "https://f.example", "title": "F"},
+                {"id": 5, "url": "https://dup.example", "title": "dup"},
+            ],
+        ],
+    )
+    _install_fake_client(monkeypatch, body)
+
+    out = web._search_single("q", "high", 5, 180.0, 4000, "key")
+
+    text, _, sources = out.partition("**Sources** (numbered as cited):")
+    assert "Canberra is the capital.[5] Population 28M.[1]" in text
+    assert "[web:" not in out
+    assert sources.strip().splitlines() == [
+        "1. A: https://a.example",
+        "2. B: https://b.example",
+        "3. https://c.example",
+        "5. E: https://e.example",
+        "6. F: https://f.example",
+    ]
+
+
+def test_failed_status_is_an_error_even_on_http_200(monkeypatch):
+    from nymeria.tools import web
+
+    body = _agent_body("", [[]], status="failed", error={"message": "model overloaded"})
+    _install_fake_client(monkeypatch, body)
+
+    out = web._search_single("q", "fast", 5, 60.0, 2000, "key")
+
+    assert out == "[Error]: Perplexity search failed: model overloaded"
+
+
+def test_incomplete_status_returns_text_with_a_truncation_note(monkeypatch):
+    from nymeria.tools import web
+
+    body = _agent_body("Partial answer", [[{"id": 1, "url": "https://a.example", "title": "A"}]], status="incomplete")
+    body["incomplete_details"] = {"reason": "max_output_tokens"}
+    _install_fake_client(monkeypatch, body)
+
+    out = web._search_single("q", "fast", 5, 60.0, 2000, "key")
+
+    assert out.startswith("Partial answer")
+    assert "1. A: https://a.example" in out
+    assert out.endswith("[Note]: response truncated (max_output_tokens)")
+
+
+def test_network_failure_and_non_json_success_are_error_strings(monkeypatch):
+    from nymeria.tools import web
+
+    class BoomClient:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -81,46 +325,164 @@ def test_single_query_appends_sources(monkeypatch):
             return False
 
         def post(self, *args, **kwargs):
-            return FakeResponse()
+            raise httpx.ConnectError("dns failed")
 
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    monkeypatch.setattr(httpx, "Client", BoomClient)
+    assert web._search_single("q", "fast", 5, 60.0, 2000, "key") == "[Error]: Web search failed: dns failed"
 
-    out = web._search_single("q", "sonar", 5, 60.0, 2000, "key")
+    _install_fake_client(monkeypatch, None, status_code=200)
+    assert web._search_single("q", "fast", 5, 60.0, 2000, "key").startswith("[Error]: Web search failed: not json")
 
-    assert "Answer text" in out
-    assert "**Sources:**" in out
-    assert "1. https://a.example" in out
+    _install_fake_client(monkeypatch, ["not", "a", "dict"], status_code=200)
+    assert web._search_single("q", "fast", 5, 60.0, 2000, "key") == "[Error]: Perplexity search failed: unexpected response shape"
 
 
 def test_api_error_is_returned_as_error_string(monkeypatch):
     from nymeria.tools import web
 
-    class FakeResponse:
-        status_code = 401
+    _install_fake_client(monkeypatch, None, status_code=401)
 
-    def raise_status(self):
-        raise httpx.HTTPStatusError("nope", request=None, response=FakeResponse())
+    out = web._search_single("q", "fast", 5, 60.0, 2000, "key")
 
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
+    assert out == "[Error]: Perplexity API error: 401"
 
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *args):
-            return False
+def test_api_error_carries_the_json_message(monkeypatch):
+    from nymeria.tools import web
 
-        def post(self, *args, **kwargs):
-            resp = FakeResponse()
-            resp.raise_for_status = raise_status.__get__(resp)
-            return resp
+    body = {"error": {"message": 'validation failed: model "sonar-pro" is not supported', "type": "invalid_request"}}
+    _install_fake_client(monkeypatch, body, status_code=400)
 
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    out = web._search_single("q", "fast", 5, 60.0, 2000, "key")
 
-    out = web._search_single("q", "sonar", 5, 60.0, 2000, "key")
+    assert out == '[Error]: Perplexity API error: 400: validation failed: model "sonar-pro" is not supported'
 
-    assert out.startswith("[Error]: Perplexity API error: 401")
+
+def _capture_search_single(monkeypatch):
+    """Stub the wire call so tool-level tests can read what depth resolved to."""
+    from nymeria.tools import web
+
+    calls = []
+
+    def fake_single(query, model, max_sources, timeout, max_tokens, api_key):
+        calls.append(
+            {"query": query, "model": model, "max_sources": max_sources, "timeout": timeout, "max_tokens": max_tokens}
+        )
+        return f"result for {query}"
+
+    monkeypatch.setattr(web, "_get_perplexity_api_key", lambda config=None: "key")
+    monkeypatch.setattr(web, "_search_single", fake_single)
+    return calls
+
+
+def _fake_settings(monkeypatch, value):
+    import nymeria.config as config
+
+    class FakeSettings:
+        perplexity_search_model = value
+
+    monkeypatch.setattr(config, "get_settings", lambda: FakeSettings())
+
+
+@pytest.mark.parametrize(
+    "depth, preset, timeout, max_tokens",
+    [
+        ("fast", "fast", 60.0, 2000),
+        ("Medium", "medium", 60.0, 2000),
+        ("xhigh", "xhigh", 300.0, 4000),
+        ("quick", "fast", 60.0, 2000),
+        ("standard", "low", 60.0, 2000),
+        ("DEEP", "high", 180.0, 4000),
+    ],
+)
+def test_search_depth_names_and_legacy_aliases_resolve_to_presets(monkeypatch, depth, preset, timeout, max_tokens):
+    from nymeria.tools import web
+
+    calls = _capture_search_single(monkeypatch)
+
+    assert web.web_search_perplexity.func(query="q", search_depth=depth) == "result for q"
+    assert calls[0]["model"] == preset
+    assert calls[0]["timeout"] == timeout
+    assert calls[0]["max_tokens"] == max_tokens
+
+
+def test_unknown_search_depth_is_refused_without_a_request(monkeypatch):
+    from nymeria.tools import web
+
+    calls = _capture_search_single(monkeypatch)
+
+    out = web.web_search_perplexity.func(query="q", search_depth="thorough")
+
+    assert out.startswith("[Error]: Unknown search_depth 'thorough'")
+    assert "fast, low, medium, high, xhigh" in out
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "configured, expected",
+    [
+        ("low", "low"),
+        ("sonar-pro", "low"),
+        ("sonar", "fast"),
+        ("sonar-reasoning", "medium"),
+        ("sonar-reasoning-pro", "medium"),
+        ("sonar-deep-research", "high"),
+        ("openai/gpt-5.6-luna", "openai/gpt-5.6-luna"),
+        ("", "low"),
+        ("   ", "low"),
+        (None, "low"),
+    ],
+)
+def test_settings_default_accepts_presets_legacy_ids_and_model_ids(monkeypatch, configured, expected):
+    from nymeria.tools import web
+
+    calls = _capture_search_single(monkeypatch)
+    _fake_settings(monkeypatch, configured)
+
+    web.web_search_perplexity.func(query="q")
+
+    assert calls[0]["model"] == expected
+
+
+def test_settings_default_that_is_neither_preset_nor_model_id_is_refused(monkeypatch):
+    from nymeria.tools import web
+
+    calls = _capture_search_single(monkeypatch)
+    _fake_settings(monkeypatch, "sonar-medium-online")
+
+    out = web.web_search_perplexity.func(query="q")
+
+    assert out.startswith("[Error]: PERPLEXITY_SEARCH_MODEL='sonar-medium-online'")
+    assert calls == []
+
+
+def test_max_sources_is_clamped_and_forwarded(monkeypatch):
+    from nymeria.tools import web
+
+    calls = _capture_search_single(monkeypatch)
+
+    web.web_search_perplexity.func(query="q", search_depth="fast", max_sources=40)
+    web.web_search_perplexity.func(query="q", search_depth="fast")
+
+    assert [c["max_sources"] for c in calls] == [10, 5]
+
+
+def test_batch_mode_runs_one_request_per_query(monkeypatch):
+    from nymeria.tools import web
+
+    calls = _capture_search_single(monkeypatch)
+
+    out = web.web_search_perplexity.func(queries="alpha | beta", search_depth="fast")
+
+    assert [c["query"] for c in calls] == ["alpha", "beta"]
+    assert "=== Query 1/2: alpha ===" in out
+    assert "=== Query 2/2: beta ===" in out
+
+
+def test_settings_default_preset_is_low():
+    from nymeria.config.settings import Settings
+
+    assert Settings.model_fields["perplexity_search_model"].default == "low"
 
 
 def test_registered_under_new_name_in_optional_group():

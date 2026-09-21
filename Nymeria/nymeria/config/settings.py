@@ -1006,7 +1006,14 @@ class Settings(BaseSettings):
     anthropic_direct_api_key: Optional[str] = Field(default=None, description="Direct Anthropic API key (pay-per-token), used when base_url is empty")
     openrouter_api_key: Optional[str] = Field(default=None)
     perplexity_api_key: Optional[str] = Field(default=None)
-    perplexity_search_model: str = Field(default="sonar-pro", description="Default Perplexity model for web search")
+    perplexity_search_model: str = Field(
+        default="low",
+        description=(
+            "Default Perplexity Agent API preset for web_search_perplexity "
+            "(fast, low, medium, high, xhigh); legacy sonar model ids map to their "
+            "preset, and a provider/model id from GET /v1/models is sent as the model"
+        ),
+    )
     tavily_api_key: Optional[str] = Field(default=None, description="Tavily API key for web_search_tavily")
     exa_api_key: Optional[str] = Field(default=None, description="Exa API key for web_search_exa_ai")
     firecrawl_api_key: Optional[str] = Field(default=None, description="Firecrawl API key for web_search_firecrawl")

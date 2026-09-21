@@ -702,7 +702,7 @@ or tool explicitly requires them.
 | `OKTA_DOMAIN` | - | Okta org domain fallback |
 | `ONFLEET_API_KEY` | - | Onfleet API key fallback |
 | `ONFLEET_BASE_URL` | `https://onfleet.com/api/v2` | Onfleet API base URL |
-| `PERPLEXITY_SEARCH_MODEL` | `sonar-pro` | Default Perplexity model for web search |
+| `PERPLEXITY_SEARCH_MODEL` | `low` | Default Agent API preset for `web_search_perplexity` (`fast`, `low`, `medium`, `high`, `xhigh`); legacy `sonar-*` ids map to their preset, a `provider/model` id is sent as the model |
 | `PHANTOMBUSTER_API_KEY` | - | Phantombuster API key fallback |
 | `PHANTOMBUSTER_BASE_URL` | `https://api.phantombuster.com/api/v2` | Phantombuster API base URL |
 | `QUICKBOOKS_ACCESS_TOKEN` | - | QuickBooks Online OAuth access token fallback |

@@ -1215,7 +1215,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `web_search_ddgs` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using keyless in-process metasearch. |
 | `web_search_exa_ai` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Exa (neural/semantic retrieval). |
 | `web_search_firecrawl` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Firecrawl. |
-| `web_search_perplexity` | `nymeria/tools/web.py` | Search the web for current information using Perplexity (Sonar). |
+| `web_search_perplexity` | `nymeria/tools/web.py` | Search the web for current information using Perplexity's Agent API. |
 | `web_search_searxng` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using a self-hosted SearXNG instance. |
 | `web_search_tavily` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Tavily (agent-optimized retrieval). |
 | `webflow_create_collection_item` | `nymeria/tools/content_management_service_integrations.py` | Create a Webflow CMS collection item. |

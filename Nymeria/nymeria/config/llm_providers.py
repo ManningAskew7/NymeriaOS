@@ -442,14 +442,6 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         notes_for_user="When reasoning is enabled, reasoning_content round-trips over Chat Completions via reasoning_history=preserved (Qwen3, GPT-OSS, Kimi, MiniMax reasoning models).",
     ),
     _spec(
-        "perplexity",
-        "Perplexity",
-        base_url="https://api.perplexity.ai",
-        env=("PERPLEXITY_API_KEY",),
-        default_model="sonar-pro",
-        docs_url="https://docs.perplexity.ai/guides/chat-completions-sdk",
-    ),
-    _spec(
         "cerebras",
         "Cerebras",
         base_url="https://api.cerebras.ai/v1",
@@ -1012,7 +1004,6 @@ _LONG_TAIL_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec("neuralwatt", "Neuralwatt", base_url="https://api.neuralwatt.com/v1", env=("NEURALWATT_API_KEY",)),
     _spec("nova", "Amazon Nova", base_url="https://api.nova.amazon.com/v1", env=("NOVA_API_KEY",)),
     _spec("ovhcloud", "OVHcloud AI Endpoints", base_url="https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", env=("OVHCLOUD_API_KEY",)),
-    _spec("perplexity-agent", "Perplexity Agent", base_url="https://api.perplexity.ai/v1", env=("PERPLEXITY_API_KEY",)),
     _spec("privatemode-ai", "Privatemode AI", base_url="http://localhost:8080/v1", env=("PRIVATEMODE_API_KEY",), base_url_env=("PRIVATEMODE_ENDPOINT",)),
     _spec("qihang-ai", "QiHang", base_url="https://api.qhaigc.net/v1", env=("QIHANG_API_KEY",)),
     _spec("qiniu-ai", "Qiniu", base_url="https://api.qnaigc.com/v1", env=("QINIU_API_KEY",)),

@@ -301,11 +301,12 @@ _test_brave = _make_get_tester(
 # /models at its root; the model list lives under /v1. GET /v1/models is
 # auth-gated (measured 2026-08-24: 401 in ~0.3s for a missing OR bogus key,
 # despite upstream docs suggesting no auth is needed), which makes it a free, fast,
-# model-agnostic key check. Deliberately not a chat probe: a /v1/agent or
-# sonar completion bills the key a per-request search fee on every Test
-# click and a slow search can time the 10s budget out, marking a VALID key
-# invalid. If Perplexity ever drops the auth gate on /v1/models this probe
-# false-positives: re-verify during the #243 Agent API migration.
+# model-agnostic key check. Deliberately not a chat probe: a /v1/agent
+# call bills the key a per-request search fee on every Test click and a
+# slow search can time the 10s budget out, marking a VALID key invalid.
+# Re-verified 2026-09-20 at the #243 Agent API migration: still 401 without
+# auth, so the probe is sound. If Perplexity ever drops the auth gate on
+# /v1/models this probe false-positives: re-check when the docs change.
 _test_perplexity = _make_get_tester(
     name="_test_perplexity",
     secret_names=("api_key", "token", "value"),

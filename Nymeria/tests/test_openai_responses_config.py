@@ -2801,6 +2801,21 @@ def test_nvidia_and_vercel_advertise_responses_support():
     assert aihubmix.supports_responses is False
 
 
+def test_perplexity_is_not_an_llm_provider():
+    """Perplexity's Sonar chat completions retired 2026-09-27 (backlog #243) and
+    its Agent API is a search product, not a chat wire: `/v1/chat/completions`
+    is 404 under it, the sonar-* ids are rejected as models, and the dispatch
+    factory cannot refuse the chat-completions mode per provider. The developer
+    kept Perplexity tool-only (`web_search_perplexity`), so the registry must
+    carry neither the old `perplexity` entry nor the `perplexity-agent` stub;
+    a thread pinned to either follows the unknown-provider path."""
+    from nymeria.config.llm_providers import ALL_LLM_PROVIDERS, get_llm_provider_spec
+
+    for name in ("perplexity", "perplexity-agent", "pplx"):
+        assert get_llm_provider_spec(name) is None, name
+    assert not [pid for pid in ALL_LLM_PROVIDERS if "perplexity" in pid]
+
+
 def test_notes_for_user_flows_through_catalog_response():
     """The catalog response surfaces tier and notes_for_user for unverified providers.
 

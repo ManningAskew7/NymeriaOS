@@ -140,7 +140,6 @@ export const HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'cohere', label: 'Cohere' },
   { value: 'togetherai', label: 'Together AI' },
   { value: 'fireworks-ai', label: 'Fireworks AI' },
-  { value: 'perplexity', label: 'Perplexity' },
   { value: 'cerebras', label: 'Cerebras' },
   { value: 'sambanova', label: 'SambaNova' },
   { value: 'nvidia', label: 'NVIDIA NIM' },

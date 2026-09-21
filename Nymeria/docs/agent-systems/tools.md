@@ -12,7 +12,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 2 | `file_read` | Core | SAFE | On | Read file or image contents |
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
 | 3b | `file_edit` | Core | MODERATE | On | Exact, all-or-nothing edits to existing text files |
-| 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity (Sonar); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
+| 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity's Agent API (synthesized, cited answer); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
 | 4b | `web_search_tavily` | Web Search | SAFE | Opt-in | Ranked-source web retrieval via Tavily; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4c | `web_search_exa_ai` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4d | `web_search_firecrawl` | Web Search | SAFE | Opt-in | Ranked-source web search via Firecrawl (snippet-only); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
@@ -360,8 +360,11 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 
 ### web_search_perplexity
 
-Search the web using the Perplexity API. Opt-in tool in the
-`WEB_SEARCH_SERVICE_TOOLS` group (enable per thread), not a core tool.
+Search the web using Perplexity's Agent API (`POST /v1/agent`). Opt-in tool
+in the `WEB_SEARCH_SERVICE_TOOLS` group (enable per thread), not a core tool.
+The answer-first search backend: a synthesized, cited answer rather than a
+link list (Sonar chat completions retired 2026-09-27; backlog #243 moved the
+tool, and retired the `perplexity` LLM-provider entry: Perplexity is tool-only).
 
 ```python
 web_search_perplexity(query: str = "", queries: str = "", search_depth: Optional[str] = None, max_sources: Optional[int] = None)
@@ -369,15 +372,17 @@ web_search_perplexity(query: str = "", queries: str = "", search_depth: Optional
 
 **Parameters:**
 - `query` (`str`): Single search query
-- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call
-- `search_depth` (`Optional[str]`): `"quick"` (sonar), `"standard"` (sonar-pro), or `"deep"` (sonar-deep-research). Defaults to `settings.perplexity_search_model`.
-- `max_sources` (`Optional[int]`): Maximum sources to cite (1-10, default 5)
+- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call, run one after another
+- `search_depth` (`Optional[str]`): Agent API preset `"fast"`, `"low"`, `"medium"`, `"high"` or `"xhigh"`, each run exactly as Perplexity tuned it (its own system prompt, search and page-fetch profile); the older `"quick"`/`"standard"`/`"deep"` names are aliases for fast/low/high. Defaults to `settings.perplexity_search_model` (`low`). An unknown name is refused with an `[Error]` naming the valid values, no request made.
+- `max_sources` (`Optional[int]`): Cap on the rendered `Sources:` list (1-10, default 5). A source the answer cites is always listed, even past the cap.
 
-**Returns:** Search results with a numbered `**Sources:**` list (batch mode adds `=== Query N/M: ... ===` headers); errors as `[Error]: ...`.
+**Returns:** the answer text citing sources as `[N]`, then a `**Sources** (numbered as cited):` list (`N. title: url`) whose numbers are the API's own result ids (they run across every search a research preset performs, and a fetched page takes the next id), so citations match even when the list is trimmed (batch mode adds `=== Query N/M: ... ===` headers). A response with `status: "failed"` (the API returns it as HTTP 200) is `[Error]: Perplexity search failed: <message>`; an `incomplete` one carries a trailing `[Note]: response truncated (<reason>)`; HTTP errors are `[Error]: Perplexity API error: <status>[: <message>]`.
 
 **Requires:** a Perplexity credential, resolved credential vault -> `PERPLEXITY_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="perplexity", bind_target="native_tool:web_search_perplexity")`.
 
-**Timeouts:** 60s for quick/standard, 180s for deep research. Max tokens: 2000 for quick/standard, 4000 for deep.
+**Request shape:** a preset call sends only `preset`, `input`, `max_output_tokens`, `store: false`: `instructions` would REPLACE the preset's system prompt (measured: the `[N]` citations vanish) and `tools` would replace its tool set, so neither is sent. When `PERPLEXITY_SEARCH_MODEL` holds a `provider/model` id from `GET /v1/models` the call sends `model` plus the search instructions and an explicit `web_search` tool (a bare model does not search on its own). The Agent API rejects any unknown field with 400, so nothing of the retired chat-completions shape is sent.
+
+**Timeouts:** 60s per query for fast/low/medium, 180s for high, 300s for xhigh; the tool declares its batch-aware kill timeout to the tool node (`metadata["inline_wait_timeout"]`: queries x per-query timeout + 30s), so a research batch is not killed at the node's default 300s. Max output tokens: 2000 for fast/low/medium, 4000 for high/xhigh. Cost per call is logged at debug from `usage.cost.total_cost` (a `web_search` invocation bills a flat fee plus tokens; `high`/`xhigh` route to a larger model and run several searches plus page fetches, roughly ten times a `fast` call).
 
 ---
 
