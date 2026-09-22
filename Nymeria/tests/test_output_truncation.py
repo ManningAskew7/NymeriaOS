@@ -23,7 +23,12 @@ pinning rather than inferring from the sync path.
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    ToolMessage,
+)
 
 from nymeria.vendor.react_agent import nodes as nodes_module
 from nymeria.vendor.react_agent.config import LLMConfig, LLMFallbackConfig
@@ -1170,3 +1175,111 @@ def test_visible_text_accepts_both_spellings_of_a_text_block():
         )
         == ""
     )
+
+
+def _tool_round_state() -> list:
+    """A turn that already did tool work: the shape of a tool-only-voice
+    thread (Twitch: "communicate ONLY by calling twitch_send") after the
+    model has made its calls and has nothing left to say."""
+    return [
+        HumanMessage(content="pulse"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "twitch_send", "args": {"text": "hi"}, "id": "c1"}],
+        ),
+        ToolMessage(content="sent", tool_call_id="c1"),
+    ]
+
+
+class TestQuietCompletion:
+    """A silent stop AFTER completed tool work in the same turn is a
+    legitimate ending, not the Gemini leaked-call fault (incident
+    2026-09-13, thread twitch_silk on gpt-6-astra: every tool-only pulse
+    was retried twice and stamped with the first-person "no output or tool
+    call from me" note, which was false: the turn had tool calls)."""
+
+    def test_silent_stop_after_tool_work_ends_the_turn_quietly(self, events, caplog):
+        llm = _SequencedLLM([_silent_empty_response(), AIMessage(content="never")])
+        node = create_agent_node(llm, "system prompt")
+        with caplog.at_level("WARNING", logger="nymeria"):
+            result = node.invoke({"messages": _tool_round_state()}, {"configurable": {}})
+        out = result["messages"][0]
+        assert llm.calls == 1
+        assert _visible_text_of(out.content) == ""
+        assert nodes_module._EMPTY_ROUND_NOTICE not in str(out.content)
+        assert [n for n, _ in events if n in ("empty_turn", "empty_turn_retry")] == []
+        assert "EMPTY ROUND" not in caplog.text
+        assert "EMPTY TURN" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_silent_stop_after_tool_work_quiet_on_the_streaming_path(self, events):
+        llm = _SequencedStreamLLM([_silent_empty_response(), AIMessage(content="never")])
+        node = create_agent_node(llm, "system prompt")
+        result = await node.ainvoke({"messages": _tool_round_state()}, {"configurable": {}})
+        assert llm.calls == 1
+        assert _visible_text_of(result["messages"][0].content) == ""
+        assert [n for n, _ in events if n in ("empty_turn", "empty_turn_retry")] == []
+
+    def test_seeded_memory_readback_is_not_tool_work(self, events):
+        # The post-compaction resume tail is a HARNESS-seeded memory_read
+        # exchange with no human message after it, and the graph re-drives
+        # from it with {"messages": []}. The first model round after a
+        # compaction is the guard's own incident window (a Gemini leaked
+        # call there is what bricked threads), so the seeded read-back must
+        # not count as tool work: a silent stop there still retries and
+        # attaches the notice.
+        from nymeria.core.agent_memory_seed import (
+            MEMORY_SEED_MARKER_TYPE,
+            build_memory_exchange,
+        )
+
+        state = build_memory_exchange(
+            opener_internal_type=MEMORY_SEED_MARKER_TYPE,
+            opener_text="resume",
+            global_text="g",
+            thread_text="t",
+            trailing_text=None,
+        )
+        assert isinstance(state[-1], ToolMessage)
+        llm = _SequencedLLM([_silent_empty_response()])
+        node = create_agent_node(llm, "system prompt")
+        result = node.invoke({"messages": state}, {"configurable": {}})
+        assert llm.calls == 1 + nodes_module._EMPTY_ROUND_RETRY_LIMIT
+        assert nodes_module._EMPTY_ROUND_NOTICE in _visible_text_of(
+            result["messages"][0].content
+        )
+        assert [n for n, _ in events if n == "empty_turn"] == ["empty_turn"]
+
+    def test_models_own_memory_read_is_tool_work(self, events):
+        # Same tool NAME, model-minted call id: real tool work.
+        state = [
+            HumanMessage(content="pulse"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "memory_read", "args": {"scope": "thread"}, "id": "call_1"}],
+            ),
+            ToolMessage(content="[empty]", tool_call_id="call_1"),
+        ]
+        llm = _SequencedLLM([_silent_empty_response()])
+        node = create_agent_node(llm, "system prompt")
+        node.invoke({"messages": state}, {"configurable": {}})
+        assert llm.calls == 1
+        assert [n for n, _ in events if n in ("empty_turn", "empty_turn_retry")] == []
+
+    def test_previous_turns_tool_work_does_not_count(self, events):
+        # Tool work belongs to the turn it happened in: after a NEW human
+        # message the first round is a first round, and a silent stop there
+        # is still the fault shape the retry exists for.
+        state = [
+            *_tool_round_state(),
+            AIMessage(content="done"),
+            HumanMessage(content="and now?"),
+        ]
+        llm = _SequencedLLM([_silent_empty_response()])
+        node = create_agent_node(llm, "system prompt")
+        result = node.invoke({"messages": state}, {"configurable": {}})
+        assert llm.calls == 1 + nodes_module._EMPTY_ROUND_RETRY_LIMIT
+        assert nodes_module._EMPTY_ROUND_NOTICE in _visible_text_of(
+            result["messages"][0].content
+        )
+        assert [n for n, _ in events if n == "empty_turn"] == ["empty_turn"]

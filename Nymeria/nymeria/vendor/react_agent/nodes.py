@@ -1305,6 +1305,58 @@ def _is_silent_stop_response(response: Any) -> bool:
     return not bool(getattr(response, "tool_calls", None))
 
 
+# Tool-call id prefix minted ONLY by core/agent_memory_seed.py
+# (``mem_read_global_``/``mem_read_thread_``/``mem_read_team_``): the
+# harness-seeded memory read-back, never a model-authored call.
+_SEEDED_MEMORY_CALL_ID_PREFIX = "mem_read_"
+
+
+def _is_seeded_memory_readback(message: Any) -> bool:
+    """True for the harness-seeded ``memory_read`` AIMessage (every call id
+    carries the seed prefix); a model's own ``memory_read`` call does not."""
+    calls = getattr(message, "tool_calls", None) or []
+    return bool(calls) and all(
+        str(c.get("id") or "").startswith(_SEEDED_MEMORY_CALL_ID_PREFIX) for c in calls
+    )
+
+
+def _turn_did_tool_work(state_messages: Any) -> bool:
+    """True when this turn (since its last HumanMessage) already ran tools.
+
+    The silent-stop guard's blind spot (incident 2026-09-13, thread
+    twitch_silk on gpt-6-astra): a "tool-only voice" prompt ("communicate
+    ONLY by calling twitch_send; your final text is never shown") is obeyed
+    literally by Codex-family models, which end the round with a genuinely
+    empty message once their calls are done. That is a legitimate
+    completion, not the Gemini leaked-call fault: retrying re-asks the same
+    question (same empty answer, twice) and the first-person "no output or
+    tool call from me" notice is false, the turn had tool calls. So the
+    retry-then-notice policy applies only to a turn's FIRST round; after
+    completed tool work a silent stop simply ends the turn (replay safety
+    of the empty checkpointed message is the provider funnels' job: the
+    OpenAI wires pad it, langchain-anthropic and the google sanitizer drop
+    it, see ``providers.py``).
+
+    Only MODEL tool work counts. The post-compaction resume tail is a
+    harness-seeded ``memory_read`` exchange with no human message after it
+    (``build_resume_compaction_tail``), so the first model round after a
+    compaction, the very window the guard was built for, would otherwise
+    read as "after tool work". Scanning stops at the latest HumanMessage:
+    tool work belongs to the turn it happened in, which also means a
+    ``/resume`` re-drive keeps the model's earlier tool work in scope and a
+    mid-turn harness HumanMessage (tool reload, tool expiry) opens a fresh
+    first round.
+    """
+    for message in _current_turn_messages(list(state_messages or [])):
+        if (
+            isinstance(message, AIMessage)
+            and getattr(message, "tool_calls", None)
+            and not _is_seeded_memory_readback(message)
+        ):
+            return True
+    return False
+
+
 def _llm_refusal_payload(
     llm_config: Optional[LLMConfig],
     from_index: int,
@@ -1417,10 +1469,11 @@ _REFUSAL_NOTICE = (
 )
 
 # The third empty-turn cause (alongside truncation and refusal above): a
-# NORMAL stop that emitted neither text nor a tool call. Both agent nodes
-# retry this shape in place before it can reach _finish_response, so by the
-# time this notice is attached the retries have already come back empty too;
-# the text says so honestly. First person for the same reason the truncation
+# NORMAL stop that emitted neither text nor a tool call on a turn's FIRST
+# round (after completed tool work the same shape is a quiet completion, see
+# _turn_did_tool_work). Both agent nodes retry this shape in place before it
+# can reach _finish_response, so by the time this notice is attached the
+# retries have already come back empty too; the text says so honestly. First person for the same reason the truncation
 # notice is: the model reads its prior turns as its own words.
 _EMPTY_ROUND_RETRY_LIMIT = 2
 _EMPTY_ROUND_NOTICE = (
@@ -2517,7 +2570,9 @@ def create_agent_node(
     # _streaming_max_tokens_kwargs.
     streaming_ceiling_cache: dict[int, int] = {}
 
-    def _finish_response(response: AIMessage, config: Any = None) -> dict:
+    def _finish_response(
+        response: AIMessage, config: Any = None, *, quiet_completion_ok: bool = False
+    ) -> dict:
         # Sanitize tool call names — some models emit leading/trailing whitespace
         # (e.g. ' CalendarAgent' instead of 'CalendarAgent') which breaks routing.
         if hasattr(response, 'tool_calls') and response.tool_calls:
@@ -2675,7 +2730,16 @@ def create_agent_node(
         # model turn 400s Gemini via CLIProxy, wedging the thread). The
         # predicate is the SAME one the nodes retry on, so the two sites
         # cannot drift.
-        if _is_silent_stop_response(response):
+        if _is_silent_stop_response(response) and quiet_completion_ok:
+            # Quiet completion: tool work done, nothing left to say. Not a
+            # fault, so no retry happened, no event fires and no notice is
+            # attached; the empty message persists and the provider funnels
+            # keep it replay-safe (see _turn_did_tool_work).
+            logger.info(
+                "[LLM] Quiet completion: normal stop with no text after tool "
+                "work this turn; ending the turn without a notice."
+            )
+        elif _is_silent_stop_response(response):
             output_tokens = (getattr(response, "usage_metadata", None) or {}).get(
                 "output_tokens"
             )
@@ -2718,6 +2782,10 @@ def create_agent_node(
         refusal_swap_attempted = False
         empty_round_retries = 0
         state_messages = state.get("messages") or []
+        # Decided once per node call from the state at entry: the tool work
+        # that makes a later silent stop a quiet completion is already in
+        # state when this round starts (see _turn_did_tool_work).
+        turn_did_tool_work = _turn_did_tool_work(state_messages)
         note_sink: List[Any] = []
         _consume_pending_fallback_note(
             llm_config, messages_with_system, state_messages, note_sink
@@ -2799,7 +2867,8 @@ def create_agent_node(
                 # and refusals are excluded by the predicate: each has its
                 # own handling. Mirrors the async block in async_agent_node.
                 if (
-                    empty_round_retries < _EMPTY_ROUND_RETRY_LIMIT
+                    not turn_did_tool_work
+                    and empty_round_retries < _EMPTY_ROUND_RETRY_LIMIT
                     and _is_silent_stop_response(response)
                 ):
                     empty_round_retries += 1
@@ -2845,7 +2914,10 @@ def create_agent_node(
                 raise
         _accumulate_llm_seconds(config, time.monotonic() - call_started_at)
         return _result_with_fallback_notes(
-            _finish_response(response, config), note_sink
+            _finish_response(
+                response, config, quiet_completion_ok=turn_did_tool_work
+            ),
+            note_sink,
         )
 
     async def async_agent_node(state: AgentState, config: Any = None) -> dict:
@@ -2876,6 +2948,10 @@ def create_agent_node(
         refusal_swap_attempted = False
         empty_round_retries = 0
         state_messages = state.get("messages") or []
+        # Decided once per node call from the state at entry: the tool work
+        # that makes a later silent stop a quiet completion is already in
+        # state when this round starts (see _turn_did_tool_work).
+        turn_did_tool_work = _turn_did_tool_work(state_messages)
         note_sink: List[Any] = []
         _consume_pending_fallback_note(
             llm_config, messages_with_system, state_messages, note_sink
@@ -3050,7 +3126,8 @@ def create_agent_node(
                 # can duplicate a reasoning trace on screen but never
                 # duplicates output. Mirrors the sync block in agent_node.
                 if (
-                    empty_round_retries < _EMPTY_ROUND_RETRY_LIMIT
+                    not turn_did_tool_work
+                    and empty_round_retries < _EMPTY_ROUND_RETRY_LIMIT
                     and _is_silent_stop_response(response)
                 ):
                     empty_round_retries += 1
@@ -3193,7 +3270,10 @@ def create_agent_node(
             int((time.monotonic() - stream_started_at) * 1000),
         )
         return _result_with_fallback_notes(
-            _finish_response(response, config), note_sink
+            _finish_response(
+                response, config, quiet_completion_ok=turn_did_tool_work
+            ),
+            note_sink,
         )
 
     return RunnableLambda(agent_node, afunc=async_agent_node, name="agent")

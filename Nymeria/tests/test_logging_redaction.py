@@ -112,3 +112,21 @@ def test_formatter_includes_active_request_id():
         reset_request_id(token)
 
     assert "request_id=req-test-123" in formatted
+
+
+def test_token_counters_are_not_secrets():
+    """`output_tokens=4` is a usage counter on the EMPTY TURN warning line,
+    not a credential; the assignment pattern must not eat it while still
+    redacting a real `*_TOKEN=` assignment."""
+    line = (
+        "EMPTY TURN survived retries (output_tokens=4, input_tokens=19855); "
+        "LLM_MAX_TOKENS=8192; API_TOKEN=abcdefghijklmnop; ACCESS_TOKENS=qrstuvwxyz0123"
+    )
+    redacted = _redact_text(line)
+    assert "output_tokens=4" in redacted
+    assert "input_tokens=19855" in redacted
+    assert "LLM_MAX_TOKENS=8192" in redacted
+    assert "abcdefghijklmnop" not in redacted
+    assert "API_TOKEN=<redacted>" in redacted
+    # A plural key whose value is not a number is still a secret.
+    assert "qrstuvwxyz0123" not in redacted

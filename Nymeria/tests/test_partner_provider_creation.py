@@ -1113,3 +1113,25 @@ def test_no_catalog_tool_ships_an_untyped_array_schema():
         "Untyped array schemas in the tool catalog (Gemini rejects these; "
         f"type the parameter at source): {offenders}"
     )
+
+
+def test_google_strip_drops_empty_tool_call_free_assistant_messages():
+    """A quiet completion is checkpointed as an EMPTY assistant message (no
+    text, no tool calls). The google builder would ship it as
+    Content(role="model", parts=[]), the empty-parts 400 of 2026-08-06, so the
+    sanitizer drops it from the REQUEST whatever its content spelling; a
+    tool-call turn with empty content keeps its function-call parts."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    quiet_str = AIMessage(content="")
+    quiet_list = AIMessage(content=[])
+    quiet_parts = AIMessage(content=[{"type": "text", "text": ""}])
+    tool_turn = AIMessage(
+        content="",
+        tool_calls=[{"name": "t", "args": {}, "id": "c1"}],
+    )
+    human = HumanMessage(content="hi")
+    sanitized = _strip_foreign_reasoning_for_google(
+        [human, quiet_str, quiet_list, quiet_parts, tool_turn]
+    )
+    assert sanitized == [human, tool_turn]

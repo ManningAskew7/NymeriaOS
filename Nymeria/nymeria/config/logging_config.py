@@ -90,7 +90,11 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], Callable[[re.Match[str]], str]], 
     ),
     (
         re.compile(
-            r"\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS|"
+            # TOKEN(?!S\s*=\s*\d) : a `*_tokens=<number>` is a usage COUNTER
+            # (the EMPTY TURN warning's `output_tokens=4`, `LLM_MAX_TOKENS=8192`),
+            # never a credential; a plural key with a non-numeric value
+            # (`ACCESS_TOKENS=abc`) still redacts.
+            r"\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN(?!S\s*=\s*\d)|SECRET|PASSWORD|CREDENTIALS|"
             r"PRIVATE[_-]?KEY|ACCESS[_-]?KEY)[A-Z0-9_]*\s*=\s*)([^\s,;%]+)",
             re.IGNORECASE,
         ),

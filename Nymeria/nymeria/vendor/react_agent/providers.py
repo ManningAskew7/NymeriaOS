@@ -3361,6 +3361,13 @@ def _anthropic_chat_model_class_for_config(
 
         _nymeria_uses_instance_async_client = True
 
+        # No empty-assistant padding here, unlike the OpenAI funnel: a quiet
+        # completion (nodes._turn_did_tool_work) checkpoints an EMPTY
+        # assistant message, and langchain-anthropic's _format_messages
+        # already drops a non-final assistant message with no content before
+        # it reaches the wire (pinned by
+        # tests/test_provider_max_tokens.py::test_anthropic_wire_drops_empty_assistant_turns).
+
         @property
         def _async_client(self) -> Any:
             import anthropic
@@ -3747,6 +3754,15 @@ def _strip_foreign_reasoning_for_google(messages: List[Any]) -> List[Any]:
     sanitized: List[Any] = []
     for message in messages:
         content = getattr(message, "content", None)
+        if (
+            isinstance(message, AIMessage)
+            and not getattr(message, "tool_calls", None)
+            and _assistant_wire_content_is_empty(content)
+        ):
+            # A quiet completion (nodes._turn_did_tool_work) is checkpointed
+            # empty; the builder would ship it as the empty-parts model
+            # turn described above. Same drop as the emptied-by-strip case.
+            continue
         if isinstance(message, AIMessage) and isinstance(content, list):
             foreign = _google_foreign_provenance(message)
 

@@ -639,3 +639,38 @@ def test_a_claude_gateway_route_without_a_base_url_does_not_fall_back_to_anthrop
 
     config = _anthropic_config(provider="openai", api_key="sk-gateway", base_url=None)
     assert anthropic_probe_base_url(config) is None
+
+
+# ---------------------------------------------------------------------------
+# Empty assistant turns on the Anthropic wire (quiet completions, 2026-09-13)
+
+
+def test_anthropic_wire_drops_empty_assistant_turns():
+    """A quiet completion (a tool-only round the model ended without text,
+    nodes._turn_did_tool_work) is checkpointed as an EMPTY assistant message.
+    Anthropic rejects an empty assistant message anywhere but the final
+    position. Nymeria does not pad it (the OpenAI funnel does) because
+    langchain-anthropic's formatter drops a non-final empty assistant message
+    itself; this pins that vendor behavior, so a library upgrade that stops
+    dropping it fails here rather than 400-ing every replay."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    llm = providers._create_anthropic_llm(_anthropic_config())
+    # The real shape: the quiet completion follows the tool RESULT (a user-role
+    # message on the Anthropic wire), so it is its own assistant message
+    # rather than merged into the tool-call one.
+    history = [
+        HumanMessage(content="pulse"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "twitch_send", "args": {"text": "hi"}, "id": "c1"}],
+        ),
+        ToolMessage(content="sent", tool_call_id="c1"),
+        AIMessage(content=""),
+        HumanMessage(content="next"),
+    ]
+    wire = llm._get_request_payload(history)["messages"]
+    assistant = [m for m in wire if m.get("role") == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0]["content"][0]["type"] == "tool_use"
+    assert all(not providers._assistant_wire_content_is_empty(m["content"]) for m in wire)
