@@ -295,6 +295,8 @@ def _iso(epoch: float) -> str:
 
 _requests: Dict[str, ThreadRequest] = {}
 _lock = threading.Lock()
+# Live delivery workers (``_start_delivery``), for the test-time drain (#373).
+_workers: set[threading.Thread] = set()
 _loaded = False
 _durable = True
 
@@ -436,12 +438,49 @@ def open_requests() -> List[ThreadRequest]:
         return [r for r in _requests.values() if r.state == STATE_OPEN]
 
 
-def reset_for_tests(*, durable: bool = False) -> None:
+def reset_for_tests(*, durable: bool = False, drain_timeout: float = 5.0) -> list[threading.Thread]:
+    """Clear the registry for a test, AFTER the live delivery workers finish.
+
+    A delivery runs on its own daemon thread (``_start_delivery``); without
+    this boundary a worker from one test fires into the next test's
+    monkeypatched delivery capture (#373). Returns the workers still alive
+    past ``drain_timeout`` (empty in the healthy case).
+    """
     global _loaded, _durable
+    leftover = drain_deliveries(drain_timeout)
+    if leftover:
+        logger.warning(
+            "[REQUEST] reset_for_tests: %d delivery worker(s) still running after %.1fs: %s",
+            len(leftover),
+            drain_timeout,
+            ", ".join(t.name for t in leftover),
+        )
     with _lock:
         _requests.clear()
         _loaded = True
         _durable = durable
+    return leftover
+
+
+def drain_deliveries(timeout: float) -> list[threading.Thread]:
+    """Wait up to ``timeout`` seconds (in total) for the live delivery
+    workers, including any a draining worker starts meanwhile (a wake-up
+    turn can reply, nudge or expire); the ones still alive at the deadline
+    are returned, not killed."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    joined: set[threading.Thread] = set()
+    while True:
+        with _lock:
+            pending = [w for w in _workers if w not in joined]
+        if not pending:
+            return []
+        for worker in pending:
+            if worker.is_alive():
+                worker.join(max(0.0, deadline - time.monotonic()))
+            joined.add(worker)
+        if time.monotonic() >= deadline:
+            with _lock:
+                return [w for w in _workers if w.is_alive()]
 
 
 # --- text: previews and elapsed -------------------------------------------------
@@ -1085,14 +1124,27 @@ def _start_delivery(agent: Any, req: ThreadRequest, *, kind: str) -> None:
             logger.exception("[REQUEST] %s delivery (%s) failed", req.id, kind)
         finally:
             req.delivering = False
+            with _lock:
+                _workers.discard(threading.current_thread())
 
     req.delivering = True
-    threading.Thread(
+    worker = threading.Thread(
         target=contextvars.copy_context().run,
         args=(_run,),
         name=f"NymeriaRequest-{kind}-{req.id[-8:]}",
         daemon=True,
-    ).start()
+    )
+    with _lock:
+        _workers.add(worker)
+    try:
+        worker.start()
+    except BaseException:
+        # A worker that never ran: not "delivering" (the stale sweep's
+        # re-delivery net keys on that flag), and not in the drain set.
+        req.delivering = False
+        with _lock:
+            _workers.discard(worker)
+        raise
 
 
 # --- safety net --------------------------------------------------------------------
@@ -1309,6 +1361,7 @@ __all__ = [
     "requests_awaited_by",
     "open_requests",
     "reset_for_tests",
+    "drain_deliveries",
     "format_elapsed",
     "task_preview",
     "format_request_prompt",

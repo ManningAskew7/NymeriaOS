@@ -90,6 +90,88 @@ def _fresh_state(monkeypatch):
     set_current_agent(None)
 
 
+def test_reset_waits_for_a_live_delivery_worker_to_land_in_its_own_capture(monkeypatch):
+    """#373: a delivery runs on its own worker; the test boundary must not
+    let it fire into the NEXT test's capture. reset_for_tests returns only
+    once the worker finished, and the delivery is in the capture that was
+    live when it started."""
+    agent = _Agent()
+    gate = threading.Event()
+    seen: list = []
+
+    def slow_fire(agent_arg, delivery):
+        gate.wait(5)
+        seen.append(delivery)
+
+    monkeypatch.setattr(cd, "fire_autonomous_turn", slow_fire)
+    req = _open()
+    tr.reply(request_id=req.id, content="done", final=True, replier_thread_id=CALLEE, agent=agent)
+
+    returned = threading.Event()
+    threading.Thread(target=lambda: (tr.reset_for_tests(), returned.set()), daemon=True).start()
+    time.sleep(0.3)
+    assert not returned.is_set(), "the reset must wait for the worker"
+    assert seen == []
+    gate.set()
+    assert returned.wait(5)
+    assert len(seen) == 1 and seen[0].source_id == req.id
+    assert tr.drain_deliveries(0) == []
+
+
+def test_a_delivery_started_by_a_draining_worker_is_drained_too(monkeypatch):
+    """A wake-up turn can itself reply or nudge: the drain must follow the
+    chain, not only the workers alive when it began."""
+    agent = _Agent()
+    seen: list = []
+    first = _open()
+    second = _open(task="second")
+
+    def chained_fire(agent_arg, delivery):
+        if delivery.source_id == first.id:
+            tr.reply(request_id=second.id, content="chained", final=True,
+                     replier_thread_id=CALLEE, agent=agent)
+        else:
+            time.sleep(0.4)  # the chained delivery outlives its parent worker
+        seen.append(delivery)
+
+    monkeypatch.setattr(cd, "fire_autonomous_turn", chained_fire)
+    tr.reply(request_id=first.id, content="done", final=True, replier_thread_id=CALLEE, agent=agent)
+    assert tr.reset_for_tests() == []
+    assert [d.source_id for d in seen] == [first.id, second.id]
+    assert tr.drain_deliveries(0) == []
+
+
+def test_a_worker_that_never_starts_is_not_delivering_and_not_drained(monkeypatch):
+    agent = _Agent()
+    monkeypatch.setattr(cd, "fire_autonomous_turn", lambda a, d: None)
+
+    def boom(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", boom)
+    req = _open()
+    with pytest.raises(RuntimeError):
+        tr.reply(request_id=req.id, content="done", final=True, replier_thread_id=CALLEE, agent=agent)
+    assert req.delivering is False
+    monkeypatch.undo()
+    assert tr.drain_deliveries(0) == []  # a never-started thread would raise on join
+
+
+def test_reset_is_bounded_by_its_drain_timeout(monkeypatch):
+    agent = _Agent()
+    gate = threading.Event()
+    monkeypatch.setattr(cd, "fire_autonomous_turn", lambda a, d: gate.wait(5))
+    req = _open()
+    tr.reply(request_id=req.id, content="done", final=True, replier_thread_id=CALLEE, agent=agent)
+    started = time.monotonic()
+    leftover = tr.reset_for_tests(drain_timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert [w.is_alive() for w in leftover] == [True]
+    assert leftover[0].name.startswith("NymeriaRequest-reply-")
+    gate.set()
+    assert tr.reset_for_tests() == []
+
+
 def _capture_deliveries(monkeypatch) -> list[cd.CompletionDelivery]:
     seen: list[cd.CompletionDelivery] = []
     monkeypatch.setattr(cd, "fire_autonomous_turn", lambda agent, d: seen.append(d))
