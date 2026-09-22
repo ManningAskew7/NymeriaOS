@@ -789,6 +789,43 @@ def test_hook_approve_scopes_to_owner_for_non_admin(
     assert "No pending approval" in result.markdown
 
 
+def test_hook_approve_ignores_forged_user_id_on_disk(
+    manager: HookManager, approvals_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#346 on the command surface: alice (non-admin) owns the hold; a disk
+    edit that hands it to bob does not hide it from alice or block her
+    resolve (bob's side, the 404, is pinned on the REST route, which shares
+    ``list_pending``)."""
+    import asyncio
+    import json
+
+    import nymeria.core.hook_approvals as ha
+
+    class _UserRepo:
+        def get_user_by_id(self, user_id: str):
+            return SimpleNamespace(
+                id=user_id, email="x@example.test", display_name=user_id, role="user"
+            )
+
+    monkeypatch.setattr(
+        agent_module,
+        "get_current_agent",
+        lambda: SimpleNamespace(accounts_repo=_UserRepo()),
+    )
+    record, future = _mint(approvals_store, user_id="alice")
+    path = ha._record_path(record["record_id"])
+    data = json.loads(path.read_text())
+    data["user_id"] = "bob"
+    path.write_text(json.dumps(data))
+
+    listing = _run("/hook approvals")
+    assert record["record_id"] in listing.markdown
+    result = _run(f"/hook approve {record['record_id']}")
+    assert result.success is True, result.markdown
+    resolved = approvals_store.run_until_complete(asyncio.wait_for(future, 2))
+    assert resolved["resolved_by"] == "alice"
+
+
 # --- Definition-level fire gate (--fire-cond / --once) -------------------------
 
 def test_create_with_fire_cond_and_once(manager):

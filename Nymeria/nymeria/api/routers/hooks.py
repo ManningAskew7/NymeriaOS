@@ -425,11 +425,18 @@ def create_hook_router(
         from ...core.hook_approvals import (
             delete_record,
             get_hook_approval_coordinator,
+            live_record,
             load_record,
             publish_resolved_event,
         )
 
-        record = await run_in_threadpool(load_record, record_id)
+        # #346: authorize on the live waiter's copy of the record, never on
+        # the agent-writable file. Only a hold with no waiter (crash orphan)
+        # falls back to the disk row, and all that path can do is the
+        # stale cleanup below.
+        record = live_record(record_id)
+        if record is None:
+            record = await run_in_threadpool(load_record, record_id)
         if record is None or (
             user.role != "admin" and record.get("user_id") != user.id
         ):

@@ -71,7 +71,7 @@ awaitable future keyed by a durable pending record (`core/hook_approvals.py`, re
 resolution (any outcome, any surface) publishes `hook_approval_resolved` so all surfaces
 retract their prompt. Resolve surfaces: desktop/mobile **Approve/Deny buttons on the
 tool-call card** itself, `GET /hooks/approvals` + `POST /hooks/approvals/{record_id}/resolve`
-(owner-or-admin; 404 for a record the caller may not resolve, 409 when no longer pending),
+(owner-or-admin, decided from the live in-process hold rather than the record file, which only ever serves crash orphans; 404 for a record the caller may not resolve, 409 when no longer pending),
 the `/hook approvals` / `/hook approve <id> [note]` / `/hook deny <id> [note]` commands
 (`agent_allowed=False`: the agent can never approve its own calls), Telegram/Discord inline
 buttons, and a Rich-CLI decision form. The chat-platform buttons carry **opaque, short-TTL

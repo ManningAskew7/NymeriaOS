@@ -110,8 +110,38 @@ def delete_record(record_id: str) -> None:
 
 
 def list_pending(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Pending records, newest first; ``user_id`` filters to one owner."""
-    return _STORE.list(user_id)
+    """Pending records, newest first; ``user_id`` filters to one owner.
+
+    #346: the record FILE is agent-writable (``hooks/approvals/`` is an
+    operational dir: no denylist, no trust hash), so the live holds are
+    enumerated from the coordinator's in-process copies of the minted
+    records (owner filter included) and the disk rows contribute only ids
+    with no waiter: crash orphans awaiting the stale-cleanup path, listed as
+    they are on disk. The only thing a forged field can reach is that
+    cleanup, and a deleted or corrupted file cannot hide a live hold.
+    """
+    live = [dict(p.record) for p in get_hook_approval_coordinator().snapshot()]
+    live_ids = {str(r.get("record_id") or "") for r in live}
+    rows = live + [
+        record
+        for record in _STORE.list()
+        if str(record.get("record_id") or "") not in live_ids
+    ]
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    if user_id is not None:
+        rows = [r for r in rows if r.get("user_id") == user_id]
+    return rows
+
+
+def live_record(record_id: str) -> Optional[Dict[str, Any]]:
+    """The live waiter's copy of the minted record, or None when no hold is
+    parked on ``record_id`` in this process (never resolved, timed out,
+    aborted, or a crash orphan). The authoritative source for who may
+    resolve a hold and what the approver is shown; see ``list_pending``."""
+    pending = get_hook_approval_coordinator().get(record_id)
+    if pending is None:
+        return None
+    return dict(pending.record)
 
 
 def public_entry(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -154,6 +184,10 @@ class PendingHookApproval:
     tool_name: str
     tool_call_id: str
     future: asyncio.Future
+    # The minted record, kept in process so the resolve surfaces authorize
+    # and display from an unforgeable copy (#346); the disk file serves
+    # crash orphans only.
+    record: Dict[str, Any]
     created_at: float = field(default_factory=time.monotonic)
 
 
@@ -167,26 +201,23 @@ class HookApprovalCoordinator(FutureRendezvous[PendingHookApproval]):
             log_label="hook_approval_coordinator",
         )
 
-    def register(
-        self,
-        *,
-        record_id: str,
-        user_id: str,
-        thread_id: str,
-        tool_name: str,
-        tool_call_id: str,
-    ) -> asyncio.Future:
+    def register(self, record: Dict[str, Any]) -> asyncio.Future:
+        """Park a waiter for the minted ``record`` (the dict
+        ``create_pending_approval`` wrote); the typed fields are derived from
+        it so the two can never disagree."""
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
+        record_id = str(record["record_id"])
         self._add(
             record_id,
             PendingHookApproval(
                 record_id=record_id,
-                user_id=user_id,
-                thread_id=thread_id,
-                tool_name=tool_name,
-                tool_call_id=tool_call_id,
+                user_id=str(record.get("user_id") or ""),
+                thread_id=str(record.get("thread_id") or ""),
+                tool_name=str(record.get("tool_name") or ""),
+                tool_call_id=str(record.get("tool_call_id") or ""),
                 future=future,
+                record=dict(record),
             ),
         )
         return future
@@ -326,13 +357,7 @@ def create_pending_approval(
         "expires_at": (now + timedelta(seconds=window_seconds)).isoformat(),
     }
     _write_record(record)
-    future = get_hook_approval_coordinator().register(
-        record_id=record["record_id"],
-        user_id=user_id,
-        thread_id=thread_id,
-        tool_name=tool_name,
-        tool_call_id=tool_call_id,
-    )
+    future = get_hook_approval_coordinator().register(record)
     return record, future
 
 

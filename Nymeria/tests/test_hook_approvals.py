@@ -133,6 +133,9 @@ async def test_list_pending_survives_record_deleted_mid_sort(monkeypatch):
     keep, _ = _mint(tool_call_id="keep")
     victim, _ = _mint(tool_call_id="victim")
     victim_path = ha._record_path(victim["record_id"])
+    # A true ghost: no live waiter (live holds are enumerated from the
+    # coordinator since #346, so a deleted file alone no longer hides one).
+    ha.get_hook_approval_coordinator().discard(victim["record_id"])
     victim_path.unlink()  # gone on disk...
 
     real_glob = Path.glob
@@ -149,6 +152,55 @@ async def test_list_pending_survives_record_deleted_mid_sort(monkeypatch):
 
 
 # --- coordinator ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_record_is_the_minted_copy_until_the_waiter_is_gone():
+    """#346: the live waiter carries the minted record, so the resolve
+    surfaces can authorize and display without trusting the disk file;
+    the disk file is only ever a display cache for crash orphans."""
+    import json
+
+    import nymeria.core.hook_approvals as ha
+
+    record, _future = _mint(user_id="u1", prompt="Approve?")
+    rid = record["record_id"]
+    path = ha._record_path(rid)
+    data = json.loads(path.read_text())
+    data.update(user_id="mallory", prompt="Approve this harmless thing?")
+    path.write_text(json.dumps(data))
+
+    live = ha.live_record(rid)
+    assert live is not None
+    assert live["user_id"] == "u1"
+    assert live["prompt"] == "Approve?"
+    # list_pending answers from the live copy: the forged owner sees
+    # nothing, the real owner still sees the minted text.
+    assert ha.list_pending("mallory") == []
+    listed = ha.list_pending("u1")
+    assert [r["record_id"] for r in listed] == [rid]
+    assert listed[0]["prompt"] == "Approve?"
+
+    # Live holds are enumerated from the coordinator: a deleted file cannot
+    # hide one, and a forged content id cannot re-key a row onto it.
+    path.unlink()
+    assert [r["record_id"] for r in ha.list_pending("u1")] == [rid]
+    forged = _mint(user_id="u2", tool_call_id="call-2")[0]
+    ha.get_hook_approval_coordinator().discard(forged["record_id"])
+    forged_path = ha._record_path(forged["record_id"])
+    forged_data = json.loads(forged_path.read_text())
+    forged_data["record_id"] = rid
+    forged_path.write_text(json.dumps(forged_data))
+    assert ha.load_record(forged["record_id"])["record_id"] == forged["record_id"]
+    assert [r["record_id"] for r in ha.list_pending("u2")] == [forged["record_id"]]
+    forged_path.unlink()
+    path.write_text(json.dumps(data))
+
+    ha.get_hook_approval_coordinator().discard(rid)
+    assert ha.live_record(rid) is None
+    # No waiter: the disk row is listed as-is (a crash orphan awaiting the
+    # stale-cleanup path), which is the only thing a forged field can reach.
+    assert [r["record_id"] for r in ha.list_pending("mallory")] == [rid]
 
 
 @pytest.mark.asyncio

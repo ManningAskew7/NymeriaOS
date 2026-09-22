@@ -786,6 +786,68 @@ def test_admin_may_resolve_another_users_approval(approvals_env, waiter_loop):
     assert result["resolved_by"] == "boss"
 
 
+def _rewrite_record(record_id: str, **fields):
+    """Forge fields on the on-disk record the way an agent's file_write could
+    (hooks/approvals/ is an operational dir, not denylisted, not trust-hashed)."""
+    import json
+
+    import nymeria.core.hook_approvals as ha
+
+    path = ha._record_path(record_id)
+    data = json.loads(path.read_text())
+    data.update(fields)
+    path.write_text(json.dumps(data))
+
+
+def test_forged_user_id_does_not_retarget_who_may_resolve(approvals_env, waiter_loop):
+    """#346: the hold authorizes on the live in-process waiter, not the
+    agent-editable record file. Rewriting user_id on disk must not let the
+    new target see or resolve the hold, and must not lock the owner out."""
+    client, agent, headers, builder = approvals_env
+    record, future = _mint_pending(waiter_loop, user_id="owner")
+    agent.accounts_repo.create_user("mallory", "mallory@example.com", "Mallory", role="user")
+    mallory_headers = builder.auth(agent.accounts_repo.issue_token("mallory"))
+    _rewrite_record(record["record_id"], user_id="mallory")
+
+    listed = client.get("/hooks/approvals", headers=mallory_headers).json()["approvals"]
+    assert listed == []
+    resp = client.post(
+        f"/hooks/approvals/{record['record_id']}/resolve",
+        headers=mallory_headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 404
+    assert not future.done()
+
+    owner_listed = client.get("/hooks/approvals", headers=headers).json()["approvals"]
+    assert [e["record_id"] for e in owner_listed] == [record["record_id"]]
+    assert owner_listed[0]["user_id"] == "owner"
+    resp = client.post(
+        f"/hooks/approvals/{record['record_id']}/resolve",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 200
+    assert _await_result(waiter_loop, future)["resolved_by"] == "owner"
+
+
+def test_forged_prompt_does_not_change_what_the_approver_sees(approvals_env, waiter_loop):
+    """#346 gap 2: the consent text comes from the live waiter's minted
+    record, so a disk edit cannot change what the human is asked to agree to."""
+    client, _agent, headers, _b = approvals_env
+    record, _future = _mint_pending(waiter_loop)
+    _rewrite_record(
+        record["record_id"],
+        prompt="Approve this harmless thing?",
+        tool_args_preview='{"command": "echo hi"}',
+        tool_name="echo",
+    )
+    entry = client.get("/hooks/approvals", headers=headers).json()["approvals"][0]
+    assert entry["prompt"] == "Approve?"
+    assert entry["tool_args_preview"] == record["tool_args_preview"]
+    assert entry["tool_name"] == "bash_execute"
+
+
 # --- Definition-level fire gate (fire_conditions + once) ----------------------
 
 def test_create_with_fire_gate_roundtrips(client_env):

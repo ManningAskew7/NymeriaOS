@@ -80,7 +80,10 @@ class ApprovalRecordStore:
             record = json.loads(self.record_path(record_id).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        return record if isinstance(record, dict) else None
+        if not isinstance(record, dict):
+            return None
+        record["record_id"] = record_id  # the file name is the identity
+        return record
 
     def delete(self, record_id: str) -> None:
         try:
@@ -105,6 +108,10 @@ class ApprovalRecordStore:
             except (OSError, ValueError):
                 continue
             if isinstance(record, dict):
+                # The FILE NAME is the record's identity; the content's
+                # ``record_id`` field is agent-writable and must never re-key
+                # a row onto another hold (#346 review).
+                record["record_id"] = path.stem
                 yield path, record
 
     def list(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:

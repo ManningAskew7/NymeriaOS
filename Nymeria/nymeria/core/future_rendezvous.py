@@ -95,6 +95,11 @@ class FutureRendezvous(Generic[TRecord]):
         with self._lock:
             return len(self._items)
 
+    def snapshot(self) -> list[TRecord]:
+        """Every live record, insertion order (a copy taken under the lock)."""
+        with self._lock:
+            return list(self._items.values())
+
     def _resolve(
         self,
         key: str,
