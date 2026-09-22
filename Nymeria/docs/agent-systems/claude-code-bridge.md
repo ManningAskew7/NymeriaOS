@@ -81,9 +81,14 @@ grows the API process by its transcript), and the watcher
 (`claude_code_background.py`) turns each end-turn into a REPORT delivered to
 the thread as its own completion prompt:
 
-- **Tagged.** Every report opens with
-  `[Claude Code job <id> | session <id> | INTERIM end-turn k ...]` or
-  `[... | FINAL: run finished after Ns with N end-turn(s) ...]`, and every
+- **Tagged.** Every report opens with a bracketed line rendered by
+  `claude_code_background.report_header`:
+  `[Claude Code job <id> | session <id> | INTERIM end-turn <k>: the run is
+  still going (...); mode=<mode>, cwd=<path>]` or `[Claude Code job <id> |
+  session <id> | FINAL: run <finished|failed|cancelled> after <N>s with <N>
+  end-turn(s); mode=<mode>, cwd=<path>]` (on a legacy runner the count
+  reads "only the terminal end-turn captured (legacy runner, see note)"),
+  and every
   tool return, `[Queued]` receipt and peek carries the same job + session tag,
   so the agent always knows which run is talking and how to address it
   (`resume="<session id>"`, `peek="<job id>"`).
@@ -397,6 +402,8 @@ fix Nymeria on the host.
 
 ```text
 /code [--new] [--resume] [--mode <mode>] [--dir <path>] [prompt]
+      options FIRST: the prompt is the raw rest of the line, so
+      "/code fix it --mode plan" runs in bypass with "--mode plan" as prompt text
 ```
 
 - **Independent of the agent.** Slash commands are routed through
@@ -415,7 +422,10 @@ fix Nymeria on the host.
   Precedence mirrors the tool: an explicit `--mode`, then the thread's
   `claude_code_mode` override, then this default (the global
   `NYMERIA_CLAUDE_CODE_DEFAULT_MODE` is the tool's default, not this
-  command's). `--mode plan` makes Claude Code write a plan and stop.
+  command's). `--mode plan` makes Claude Code write a plan and stop. Options
+  MUST precede the prompt: `prompt` is a rest parameter bound to the raw
+  tail of the line, so a `--mode` after the first prompt word is prompt
+  text and the run silently keeps the default mode.
 - **Session continuity per thread.** By default each `/code` resumes the
   thread's last Claude Code session, so when Claude Code stops to ask a
   question or present a plan, `/code <reply>` answers it in the same session.
@@ -425,8 +435,10 @@ fix Nymeria on the host.
 - **Reply, then follow-up.** The command waits up to 20 seconds for the
   run's FIRST report. A quick run answers inline (the command reply IS Claude
   Code's message plus the run summary; an INTERIM first report is returned
-  as an info reply and the rest follow). A longer run gets an immediate
-  acknowledgement carrying the job id, and every report (each interim
+  as an info reply and the rest follow). A longer run gets an
+  acknowledgement carrying the job id once that 20-second wait lapses (the
+  same wait decides the run is not quick, so the reply is never earlier),
+  and every report (each interim
   end-turn, then the final) arrives in the same chat as its own model-free
   holder turn, tagged with the job and session. One run per thread at a
   time, counting the agent's own tool runs: a second `/code` is refused
