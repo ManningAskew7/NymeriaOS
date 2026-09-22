@@ -612,7 +612,7 @@ async def test_enforcement_a_workflow_cannot_read_the_environment():
 @requires_landlock
 @requires_sandbox_on
 @pytest.mark.asyncio
-async def test_enforcement_a_workflow_cannot_read_the_credential_store():
+async def test_enforcement_a_workflow_cannot_read_the_credential_store(monkeypatch):
     """The runner's narrowed creation roots, driven end to end.
 
     The workflow child works only in its ephemeral run dir, so ``executor.py``
@@ -620,36 +620,50 @@ async def test_enforcement_a_workflow_cannot_read_the_credential_store():
     default roots would drop.
 
     Where this bites is the SOURCE-CHECKOUT layout (data dir under the project
-    root, so the slim shape): there the override is the only thing denying the
-    vault to workflow code, and deleting it from ``executor.py`` fails this
-    test. On a layout with the data dir outside the tree the stores are denied
-    either way, so this still passes but proves less. Worth having in both.
+    root, so the slim shape): there the override is the only thing denying
+    the vault to workflow code, and deleting it from ``executor.py`` fails
+    this test. The fixture lays the stores out that way on purpose.
+
+    A bounded fixture under ``/var/tmp`` rather than the ambient checkout's
+    vault or ``tmp_path`` (#372): the carve budget counts every entry of every
+    ancestor of a denied store, and a checkout or a pytest dir under a
+    crowded ``/tmp`` (thousands of entries) trips the guard's documented
+    fallback, which drops the denial and made this proof read ``READ`` for an
+    environmental reason. The fallback has its own test
+    (``test_a_store_too_expensive_to_carve_is_left_reachable``); this one
+    must prove the denial wherever the checkout lives.
     """
-    from nymeria.config import get_settings
     from nymeria.core.workflows.budget import WorkflowBudget
     from nymeria.core.workflows.executor import execute_workflow
 
-    vault = Path(get_settings().data_dir) / "accounts.db"
-    if not vault.exists():
-        pytest.skip(f"no account vault at {vault} to probe on this deployment")
+    base = Path(tempfile.mkdtemp(dir="/var/tmp", prefix="nymeria-sandbox-wf-"))
+    try:
+        project = base / "app"
+        data = project / "data"  # INSIDE the project root: the slim layout
+        project.mkdir()
+        _seed_data_dir(data)
+        _settings(monkeypatch, project_root=project, data_dir=data)
+        vault = data / "accounts.db"
 
-    source = (
-        "def run():\n"
-        "    try:\n"
-        f"        open({str(vault)!r}, 'rb').read(16)\n"
-        "        return 'READ'\n"
-        "    except OSError as exc:\n"
-        "        return 'DENIED:' + type(exc).__name__\n"
-    )
-    result = await execute_workflow(
-        source=source,
-        entrypoint="run",
-        params={},
-        user_id="tester",
-        thread_id="sandbox-store-probe-thread",
-        budget=WorkflowBudget(wall_clock_seconds=60),
-        persist_record=False,
-    )
+        source = (
+            "def run():\n"
+            "    try:\n"
+            f"        open({str(vault)!r}, 'rb').read(16)\n"
+            "        return 'READ'\n"
+            "    except OSError as exc:\n"
+            "        return 'DENIED:' + type(exc).__name__\n"
+        )
+        result = await execute_workflow(
+            source=source,
+            entrypoint="run",
+            params={},
+            user_id="tester",
+            thread_id="sandbox-store-probe-thread",
+            budget=WorkflowBudget(wall_clock_seconds=60),
+            persist_record=False,
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
     envelope = result.envelope
     assert envelope.ok, envelope.to_dict()
