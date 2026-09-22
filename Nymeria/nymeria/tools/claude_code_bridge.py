@@ -1403,9 +1403,21 @@ class SessionStore:
     key includes the resolved cwd.
     """
 
+    # One lock per PATH, shared by every instance on it: the tool builds a
+    # new store per call (a request thread reading for ``resume=True``, the
+    # watcher thread writing from ``on_session``), so a per-instance lock
+    # serialized nothing (#388, the #364 root-cause candidate).
+    _locks: dict[str, threading.Lock] = {}
+    _locks_guard = threading.Lock()
+
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._lock = threading.Lock()
+        key = str(path)
+        with SessionStore._locks_guard:
+            lock = SessionStore._locks.get(key)
+            if lock is None:
+                lock = SessionStore._locks[key] = threading.Lock()
+        self._lock = lock
 
     @staticmethod
     def _key(thread_id: str, cwd: str) -> str:
@@ -1435,10 +1447,21 @@ class SessionStore:
             data = self._load()
             data[self._key(thread_id, cwd)] = session_id
             try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                self._write_atomic(json.dumps(data, indent=2))
             except Exception as exc:  # noqa: BLE001 - persistence is best-effort.
                 logger.warning("Failed to persist Claude Code session store: %s", exc)
+
+    def _write_atomic(self, text: str) -> None:
+        """Temp file in the same directory, then rename: a reader never sees
+        a half-written store (which ``_load`` would "reset", losing every
+        thread's session), and a write that dies leaves the old file."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_name(f".{self._path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, self._path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- #

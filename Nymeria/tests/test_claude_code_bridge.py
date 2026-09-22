@@ -235,6 +235,53 @@ def test_session_store_set_empty_is_noop(tmp_path):
     assert store.get("t1", "/repo") is None
 
 
+def test_session_store_instances_on_one_path_serialize_their_writes(tmp_path, monkeypatch):
+    """#388: the tool builds a NEW store per call, so the lock must be per
+    PATH, or the watcher's on_session write and a request thread's write
+    read-modify-write over each other and entries vanish."""
+    import threading
+
+    path = tmp_path / "sessions.json"
+    real_load = b.SessionStore._load
+
+    def slow_load(self):
+        data = real_load(self)
+        time.sleep(0.01)  # widen the read-modify-write window
+        return data
+
+    monkeypatch.setattr(b.SessionStore, "_load", slow_load)
+    threads = [
+        threading.Thread(target=lambda i=i: b.SessionStore(path).set(f"t{i}", "/repo", f"s{i}"))
+        for i in range(12)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == {f"t{i}::/repo": f"s{i}" for i in range(12)}
+
+
+def test_session_store_write_failure_leaves_the_previous_file_intact(tmp_path, monkeypatch, caplog):
+    """#388: a truncating write that dies midway used to leave a half file
+    that every later reader "reset" (the thread's session silently lost)."""
+    path = tmp_path / "sessions.json"
+    b.SessionStore(path).set("t1", "/repo", "sess-1")
+    before = path.read_text(encoding="utf-8")
+
+    # The swap is the last step of an atomic write; failing it is the
+    # "died mid-write" case. An in-place writer never reaches it and has
+    # already replaced the file by then, which is the regression this pins.
+    monkeypatch.setattr(b.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    b.SessionStore(path).set("t2", "/repo", "sess-2")
+    monkeypatch.undo()
+    assert path.read_text(encoding="utf-8") == before
+    with caplog.at_level("WARNING"):
+        assert b.SessionStore(path).get("t1", "/repo") == "sess-1"
+    assert "unreadable" not in caplog.text
+    assert [p.name for p in tmp_path.iterdir()] == ["sessions.json"], "no temp file left behind"
+
+
 # --- git summary -------------------------------------------------------------
 
 
