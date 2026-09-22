@@ -64,6 +64,7 @@ def test_idle_instance_reports_zero_everything(tmp_path: Path, api_client_builde
         "active_turns": 0,
         "interactive_active": 0,
         "background_jobs": 0,
+        "claude_code_jobs": 0,
         "busy_threads": [],
     }
 
@@ -137,6 +138,53 @@ def test_running_background_bash_jobs_are_counted(
     ).json()
     assert payload["background_jobs"] == 2
     assert payload["active_turns"] == 0
+
+
+def test_claude_code_runs_are_counted_across_both_registries(
+    tmp_path: Path, api_client_builder
+):
+    """#339: a detached Claude Code / /code run holds no thread lock and is
+    not a bash job, so it needs its own counter: running jobs in the tool's
+    registry plus finished-but-delivering jobs in the delivery registry,
+    counted once each."""
+    import time
+
+    from nymeria.core import claude_code_delivery as delivery
+    from nymeria.tools import claude_code_background as bg
+
+    def _job(job_id, thread_id):
+        return bg.ClaudeCodeJob(
+            id=job_id, thread_id=thread_id, user_id="u1", prompt="p", cwd="/r",
+            mode="dontAsk", started_at=time.time(), detached_message="bg",
+        )
+
+    running = _job("j-run", "t1")
+    tool_only = _job("j-tool", "t4")   # an agent-dispatched claude_code run:
+    finished_gone = _job("j-done", "t2")  # never enters the delivery registry
+    finished_gone.done.set()
+    delivering = _job("j-deliver", "t3")
+    delivering.done.set()
+    with bg._JOBS_LOCK:
+        for job in (running, tool_only, finished_gone, delivering):
+            bg._JOBS[job.id] = job
+    with delivery._REGISTRY_LOCK:
+        delivery._ACTIVE["t1"] = running       # same job in both registries
+        delivery._ACTIVE["t3"] = delivering    # finished, still delivering
+    try:
+        client, _, token = _client(tmp_path, api_client_builder)
+        payload = client.get(
+            "/status/turns", headers=api_client_builder.auth(token)
+        ).json()
+        assert payload["claude_code_jobs"] == 3
+        assert payload["background_jobs"] == 0
+        assert payload["active_turns"] == 0
+    finally:
+        with bg._JOBS_LOCK:
+            for job in (running, tool_only, finished_gone, delivering):
+                bg._JOBS.pop(job.id, None)
+        with delivery._REGISTRY_LOCK:
+            delivery._ACTIVE.pop("t1", None)
+            delivery._ACTIVE.pop("t3", None)
 
 
 def test_agent_without_lock_manager_answers_503(tmp_path: Path, api_client_builder):

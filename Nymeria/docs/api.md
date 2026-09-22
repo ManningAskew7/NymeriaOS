@@ -132,8 +132,10 @@ happens before the thread lock is taken, so this covers that gap).
 `background_jobs` counts detached bash jobs, runner tasks and pending embedding
 jobs. Runner tasks can overlap `active_turns`; the aggregate also covers work
 before lock acquisition and indexing after release. Detached bash jobs hold
-no thread lock by design. All-zero means no tracked work needs finishing or
-cancellation. Detached Claude Code jobs are not included in these counts.
+no thread lock by design. `claude_code_jobs` counts detached Claude Code and
+`/code` runs still running, which hold no thread lock and are not bash jobs
+(a remote run itself survives a restart; its watcher and delivery do not).
+All-zero means no tracked work needs finishing or cancellation.
 During graceful shutdown, runner tasks are cancelled and their cleanup is
 awaited, embedding jobs are drained, and owned child processes (including
 detached bash jobs) are terminated.
@@ -148,6 +150,7 @@ for admin callers; other callers receive an empty list.
   "active_turns": 1,
   "interactive_active": 1,
   "background_jobs": 0,
+  "claude_code_jobs": 0,
   "busy_threads": [
     {"thread_id": "cli-a1b2", "holder": "astream", "held_seconds": 12.3}
   ]

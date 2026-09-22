@@ -500,6 +500,31 @@ def test_background_jobs_defer(world):
     assert summary["targets"]["slim"]["action"] == "deferred"
 
 
+def test_claude_code_jobs_defer(world):
+    """#339: a detached Claude Code run counts as busy; an older API without
+    the key still gates on the three counters."""
+    world.head = SHA_LOCAL
+    world.merge_base = SHA_OLD
+    world.http.routes["http://slim/status/turns"] = (
+        200,
+        {"active_turns": 0, "interactive_active": 0, "background_jobs": 0,
+         "claude_code_jobs": 1},
+    )
+    summary = run_sync(world)
+    assert summary["targets"]["slim"]["action"] == "deferred"
+    assert "claude_code=1" in summary["targets"]["slim"]["detail"]
+    assert ("restart-slim",) not in world.runner.commands()
+
+    world.http.routes["http://slim/status/turns"] = (
+        200,
+        {"active_turns": 0, "interactive_active": 0, "background_jobs": 0,
+         "claude_code_jobs": "one"},
+    )
+    summary = run_sync(world)
+    assert summary["targets"]["slim"]["action"] == "deferred"
+    assert "malformed" in summary["targets"]["slim"]["detail"]
+
+
 def test_malformed_activity_payload_fails_safe(world):
     world.head = SHA_LOCAL
     world.merge_base = SHA_OLD

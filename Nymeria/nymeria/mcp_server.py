@@ -197,7 +197,8 @@ async def nymeria_turn_status(
     is the precise answer and it works for any identity.
 
     Without ``thread_id``: reads the whole-instance aggregate
-    (``active_turns``, ``interactive_active``, ``background_jobs``). Its
+    (``active_turns``, ``interactive_active``, ``background_jobs``,
+    ``claude_code_jobs``). Its
     ``busy_threads`` detail is cross-user metadata and arrives populated only
     for an admin identity, so an empty list from a non-admin means "not visible
     to you" rather than "nothing running".

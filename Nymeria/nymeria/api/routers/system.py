@@ -477,8 +477,11 @@ def create_system_router(
         ``interactive_active`` covers the admission-to-lock gap;
         ``background_jobs`` covers detached bash jobs, runner tasks and
         embedding tails, including work outside a thread lock. Counts can
-        overlap held turns. All-zero means no tracked work remains; detached
-        Claude Code jobs remain the documented gap (backlog #339). Read "severs" literally: a restart
+        overlap held turns; ``claude_code_jobs`` covers detached Claude Code
+        and ``/code`` runs still running, which hold no lock and are not
+        bash jobs (#339; a remote run survives on the runner, its watcher
+        and delivery do not). All-zero means no tracked work remains. Read
+        "severs" literally: a restart
         TERMINATES the background jobs this counts, on the self-restart
         path as well as under a supervisor, so a non-zero count is work
         that will be killed rather than work that will be waited for
@@ -495,6 +498,7 @@ def create_system_router(
                 status_code=503, detail="Agent runtime is not ready."
             )
         from ...tools.bash_background import get_registry as get_bash_registry
+        from ...core.claude_code_delivery import active_work_count
         from ...core.embedding_jobs import pending_embedding_job_count
         from ...core.turn_runner import active_turn_task_count
 
@@ -509,6 +513,7 @@ def create_system_router(
             active_turns=len(busy),
             interactive_active=get_interactive_turn_gate().active,
             background_jobs=background + pending_embedding_job_count() + active_turn_task_count(),
+            claude_code_jobs=active_work_count(),
             busy_threads=[BusyThread(**entry) for entry in detail],
         )
 

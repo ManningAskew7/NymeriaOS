@@ -28,8 +28,9 @@ each gate here exists for one concrete hazard:
                     that ack every later commit inherits the escalating
                     range and auto-sync stays off.
   idle gate         GET /status/turns on each target; any nonzero activity
-                    count (held turn locks, interactive admission slots, or
-                    background bash jobs) defers that target to the next
+                    count (held turn locks, interactive admission slots,
+                    background bash jobs, or detached Claude Code / /code
+                    runs) defers that target to the next
                     tick, so in-flight work is never severed. When a PULL is
                     pending, every target sharing the checkout must be idle
                     first: imports are lazy in this codebase, so swapping
@@ -326,15 +327,22 @@ def idle_verdict(
     active = payload.get("active_turns")
     interactive = payload.get("interactive_active")
     background = payload.get("background_jobs", 0)
-    if not all(isinstance(v, int) for v in (active, interactive, background)):
+    # Absent on an API predating #339: an older backend still gates on the
+    # three counters it does report.
+    claude_code = payload.get("claude_code_jobs", 0)
+    if not all(
+        isinstance(v, int) for v in (active, interactive, background, claude_code)
+    ):
         return False, "activity payload malformed"
     # interactive_active covers the admission-to-lock gap (a turn admitted
     # but not yet holding its thread lock); background_jobs covers detached
-    # bash jobs, which hold no lock by design.
-    if active or interactive or background:
+    # bash jobs, which hold no lock by design; claude_code_jobs covers
+    # detached Claude Code / /code runs, which a restart would kill
+    # mid-repair (#339).
+    if active or interactive or background or claude_code:
         return False, (
             f"busy (turns={active} interactive={interactive} "
-            f"background={background})"
+            f"background={background} claude_code={claude_code})"
         )
     return True, "idle"
 

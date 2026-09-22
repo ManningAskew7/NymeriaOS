@@ -85,6 +85,23 @@ def active_job(thread_id: str) -> Optional["ClaudeCodeJob"]:
         return _ACTIVE.get(thread_id)
 
 
+def active_work_count() -> int:
+    """Claude Code runs a restart would kill, for ``GET /status/turns`` (#339).
+
+    The union of the tool registry's RUNNING jobs and this registry's
+    entries, counted once per job. The detached FINAL delivery is not in
+    here: ``deliver_code_result`` settles this registry before its delivery
+    wait (open #340), and that wait holds or awaits the thread lock, which
+    ``active_turns`` counts.
+    """
+    from ..tools.claude_code_background import running_jobs
+
+    ids = {job.id for job in running_jobs()}
+    with _REGISTRY_LOCK:
+        ids.update(job.id for job in _ACTIVE.values())
+    return len(ids)
+
+
 def last_outcome(thread_id: str) -> Optional[tuple[str, str]]:
     with _REGISTRY_LOCK:
         return _LAST.get(thread_id)

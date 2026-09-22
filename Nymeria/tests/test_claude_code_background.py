@@ -566,6 +566,24 @@ def test_format_peek_without_tail_has_no_fence():
     assert bg.UNTRUSTED_OPEN not in text and bg.UNTRUSTED_CLOSE not in text
 
 
+def test_a_watcher_that_never_starts_does_not_stay_running(monkeypatch):
+    """#339 review: register() runs before Thread.start(); if start raises
+    (thread limit, memory), the job must not linger as running, or it
+    would hold the dispatch slot and keep /status/turns non-zero forever."""
+    import threading
+
+    def boom(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", boom)
+    job = _make_job("never-started")
+    with pytest.raises(RuntimeError):
+        bg.start_job(job, lambda: None, None)
+    assert job.running is False
+    assert job.id not in bg._JOBS
+    assert bg.running_jobs() == []
+
+
 # --- completion-delivery guards ----------------------------------------------
 
 

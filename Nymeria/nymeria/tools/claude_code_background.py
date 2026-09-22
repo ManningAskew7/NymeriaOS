@@ -264,6 +264,12 @@ def jobs_for_thread(thread_id: str) -> list[ClaudeCodeJob]:
         return [j for j in _JOBS.values() if j.thread_id == thread_id]
 
 
+def running_jobs() -> list[ClaudeCodeJob]:
+    """Every registered job whose run has not finished (any thread)."""
+    with _JOBS_LOCK:
+        return [j for j in _JOBS.values() if j.running]
+
+
 def cancel_jobs_for_thread(thread_id: str) -> list[ClaudeCodeJob]:
     """Signal every RUNNING job on ``thread_id`` to cancel; the jobs signalled.
 
@@ -311,7 +317,17 @@ def start_job(
         name=f"NymeriaClaudeCode-{job.id}",
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except BaseException:
+        # A job whose watcher never started would otherwise stay "running"
+        # forever: it would hold the thread's dispatch slot AND keep
+        # `GET /status/turns` non-zero, so deploy-sync would defer the
+        # target for the life of the process (#339 review).
+        job.done.set()
+        with _JOBS_LOCK:
+            _JOBS.pop(job.id, None)
+        raise
 
 
 def _run_producer(
