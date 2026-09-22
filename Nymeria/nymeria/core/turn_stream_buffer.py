@@ -30,11 +30,12 @@ Design notes:
 - In-process only, safe because the API process is the sole agent runtime in
   both deployment shapes. Readers run on the API event loop; writers are
   either the chat route (same loop) or sync autonomous workers on plain
-  threads. Off-loop writers marshal reader wakeups onto the loop registered
-  via ``TurnStreamRegistry.set_reader_loop`` (``call_soon_threadsafe``); the
-  capture-event-then-check wakeup pattern in ``stream_payloads`` needs no
-  locks for the async side. Scalar state shared across threads is guarded by
-  a plain mutex.
+  threads. Reader wakeups go through a per-buffer ``LoopPulse``
+  (``core/loop_pulse.py``: capture-before-check, replace-not-clear, off-loop
+  rings marshalled with ``call_soon_threadsafe`` onto the loop registered via
+  ``set_reader_loop``), so the async side needs no locking of its own (the
+  doorbell owns it). Scalar state shared across threads is guarded by a
+  plain mutex.
 - An API restart loses the registry with the in-flight turn itself; clients
   detect this via ``GET /threads/{id}/status`` and reconcile from history.
 """
@@ -50,6 +51,8 @@ import time
 import uuid
 from collections import deque
 from typing import Any, AsyncGenerator, Deque, Dict, Optional, Tuple
+
+from .loop_pulse import LoopPulse
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +135,9 @@ class TurnStreamBuffer:
         self._entries: Deque[Tuple[int, str, str]] = deque()  # (seq, event_type, payload_json)
         self._next_seq = 1
         self._bytes = 0
-        # Pulsed (set + replaced) on every append/finish so any number of
-        # concurrent readers wake without clear() races.
-        self._pulse_event: asyncio.Event = asyncio.Event()
+        # Rung on every append/finish; the shared doorbell gives any number of
+        # concurrent readers one wake each without clear() races.
+        self._doorbell = LoopPulse()
         # Guards the scalar snapshot for off-loop REST reads.
         self._meta_lock = threading.Lock()
 
@@ -195,29 +198,16 @@ class TurnStreamBuffer:
     def _pulse(self) -> None:
         """Wake readers, marshaling onto the reader loop when off-loop.
 
-        The chat route writes from the API event loop, where a plain
-        ``Event.set()`` is correct. Autonomous turns write from sync worker
-        threads (the ``stream_and_collect`` tee); ``asyncio.Event.set`` is
-        not thread-safe, so those writers hand the set to the registered
-        reader loop via ``call_soon_threadsafe``. With no registered loop
-        (unit tests, single-loop harnesses) fall back to a direct set.
+        The chat route writes from the API event loop; autonomous turns write
+        from sync worker threads (the ``stream_and_collect`` tee), where the
+        pulse marshals the wake with ``call_soon_threadsafe``. The reader loop
+        is a module-global registered at API startup, so each ring names it
+        rather than binding it: a buffer minted before registration still
+        wakes its readers, and concurrent rings never share a write. With no
+        registered loop (unit tests, single-loop harnesses) the pulse falls
+        back to a direct set, bounded by the reader's poll ceiling.
         """
-        with self._meta_lock:
-            event = self._pulse_event
-            self._pulse_event = asyncio.Event()
-        loop = _get_reader_loop()
-        if loop is not None and loop.is_running():
-            try:
-                running = asyncio.get_running_loop()
-            except RuntimeError:
-                running = None
-            if running is not loop:
-                try:
-                    loop.call_soon_threadsafe(event.set)
-                    return
-                except RuntimeError:
-                    pass  # loop closed between the check and the call
-        event.set()
+        self._doorbell.ring(_get_reader_loop())
 
     # -- reader side (re-attach route, API event loop) ----------------------
 
@@ -279,10 +269,10 @@ class TurnStreamBuffer:
         """
         cursor = from_seq
         while True:
-            # Capture the pulse event BEFORE checking for data so an append
-            # racing this check cannot be missed (it pulses the captured
-            # event; we re-check on wake).
-            pulse = self._pulse_event
+            # Capture the pulse BEFORE checking for data so an append racing
+            # this check cannot be missed (it rings the captured event; we
+            # re-check on wake).
+            pulse = self._doorbell.listen()
             batch = self._entries_after(cursor)
             if not batch and self.has_replay_gap(cursor):
                 raise TurnReplayGapError(f"events after {cursor} evicted for turn {self.turn_id}")

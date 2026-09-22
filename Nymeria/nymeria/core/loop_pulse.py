@@ -1,8 +1,9 @@
 """A wakeup doorbell: any thread rings it, listeners on one loop wake.
 
-The third appearance of this shape in the codebase (``turn_stream_buffer``
-and ``browser_login_sessions`` grew it independently), extracted so the
-next consumer does not write a fourth copy. The discipline it encodes:
+Extracted from the third appearance of this shape in the codebase
+(``turn_stream_buffer`` and ``browser_login_sessions`` grew it independently;
+both, plus the EventBus doorbells, now use this class) so the next consumer
+does not write another copy. The discipline it encodes:
 
 * The listening side must CAPTURE the current event via :meth:`listen`
   BEFORE checking for data, then await the captured event only if the
@@ -18,9 +19,10 @@ next consumer does not write a fourth copy. The discipline it encodes:
   exists instead of a bare Event.
 
 A pulse with no bound loop still rings (a plain ``set()``): that is only
-correct when nothing awaits it from another thread, which holds for the
-sync consumers that poll their queue directly and never call
-:meth:`listen`.
+correct when nothing awaits it from another thread (the sync consumers that
+poll their queue directly and never call :meth:`listen`), or when the
+listener's own poll ceiling bounds the miss, which is how the turn-stream
+buffer stays correct in a process that never registered its reader loop.
 """
 
 from __future__ import annotations
@@ -55,12 +57,19 @@ class LoopPulse:
         with self._lock:
             return self._event
 
-    def ring(self) -> None:
-        """Wake every captured listener, from any thread."""
+    def ring(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+        """Wake every captured listener, from any thread.
+
+        ``loop`` names the listeners' loop for this ring only, for consumers
+        whose reader loop lives outside the pulse (a module global that can
+        change under concurrent rings, so binding it would be a shared,
+        unlocked write); when omitted the bound loop is used.
+        """
         with self._lock:
             event = self._event
             self._event = asyncio.Event()
-        loop = self._loop
+        if loop is None:
+            loop = self._loop
         if loop is not None and loop.is_running():
             try:
                 running: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()

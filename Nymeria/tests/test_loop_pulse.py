@@ -111,6 +111,41 @@ def test_off_thread_ring_is_marshalled_onto_the_bound_loop():
     assert elapsed < 2.0, f"wake took {elapsed:.3f}s: ring was not marshalled"
 
 
+def test_ring_with_an_explicit_loop_marshals_onto_it_without_binding():
+    # Consumers whose reader loop lives in a module global (the turn-stream
+    # buffer) name it per ring instead of binding it. The pulse stays
+    # unbound, and an off-thread ring naming the loop still wakes a parked
+    # listener promptly rather than falling to its poll ceiling.
+    async def drive() -> tuple[bool, float]:
+        pulse = LoopPulse()
+        loop = asyncio.get_running_loop()
+        captured = pulse.listen()
+        parked = threading.Event()
+        loop.call_soon(parked.set)
+
+        def ring_later() -> None:
+            parked.wait(timeout=2.0)
+            time.sleep(0.05)
+            pulse.ring(loop)
+
+        thread = threading.Thread(target=ring_later)
+        thread.start()
+        start = time.monotonic()
+        woke = True
+        try:
+            await asyncio.wait_for(captured.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            woke = False
+        elapsed = time.monotonic() - start
+        thread.join()
+        assert pulse._loop is None, "a per-ring loop must not bind the pulse"
+        return woke, elapsed
+
+    woke, elapsed = asyncio.run(drive())
+    assert woke, "ring(loop) never woke the listener on that loop"
+    assert elapsed < 2.0, f"wake took {elapsed:.3f}s: ring(loop) was not marshalled"
+
+
 def test_unbound_pulse_still_rings_without_error():
     # A pulse that never bound a loop (sync-context subscriber) must not
     # raise on ring, and a same-thread captured event still gets set.

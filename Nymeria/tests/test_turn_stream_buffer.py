@@ -183,6 +183,35 @@ def test_off_loop_append_wakes_reader_on_registered_loop():
     assert elapsed < 5.0
 
 
+@pytest.mark.asyncio
+async def test_append_racing_the_empty_check_wakes_the_reader_immediately():
+    """The reader captures the doorbell BEFORE looking for data. An append that
+    lands between that look and the await rings the captured event, so the
+    reader wakes at once; capturing after the look would leave it blocked
+    until the 15s poll ceiling with the payload already sitting in the
+    buffer."""
+    buf = TurnStreamBuffer("t-race", "alice")
+    original = buf._entries_after
+    calls = 0
+
+    def append_during_first_check(cursor):
+        nonlocal calls
+        calls += 1
+        batch = original(cursor)
+        if calls == 1:
+            assert batch == []
+            buf.append({"type": "response", "content": "raced"})
+        return batch
+
+    buf._entries_after = append_during_first_check  # type: ignore[method-assign]
+    stream = buf.stream_payloads()
+    try:
+        payload = await asyncio.wait_for(stream.__anext__(), timeout=3.0)
+    finally:
+        await stream.aclose()
+    assert json.loads(payload)["content"] == "raced"
+
+
 def test_registry_begin_turn_replaces_and_aborts_live_predecessor():
     registry = TurnStreamRegistry()
     first = registry.begin_turn("t1", "alice")
