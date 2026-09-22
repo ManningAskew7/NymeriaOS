@@ -1,6 +1,6 @@
 <script lang="ts">
   import '../app.css';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { AppShell, Sidebar, MainPanel, RightPanel } from '$lib/components/layout';
   import OnboardingSurface from '$lib/components/onboarding/OnboardingSurface.svelte';
   import { onboardingStore } from '$lib/stores/onboarding.svelte';
@@ -64,12 +64,23 @@
   if (typeof window !== 'undefined' && !configStore.setupCompleted) {
     void configStore.probeServedOrigin();
   }
+  // The desktop app's twin (#323): ask the stored backend URL whether it is
+  // already set up; a no-op outside Tauri. An effect, not a boot-time call:
+  // a sign-out flips setupCompleted back and must re-ask, and a managed
+  // local backend may not be listening yet at first ask, so the probe is
+  // retried once the process store reports it ready.
+  $effect(() => {
+    if (configStore.setupCompleted) return;
+    const backendReady = backendProcessStore.isReady;
+    untrack(() => void configStore.probeServerConfigured({ retry: backendReady }));
+  });
 
   const firstRun = $derived(
     firstRunSurface({
       needsSetup: configStore.needsSetup,
       setupActive: onboardingStore.active,
       probe: configStore.originProbe,
+      serverProbe: configStore.serverProbe,
     })
   );
 

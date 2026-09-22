@@ -44,9 +44,13 @@ full setup hub. Paste an account token (the bootstrap token from
 `<data_dir>/BOOTSTRAP_TOKEN.txt` on a first boot, or a token minted with
 `run.py users`), and you are in. "Open full setup" on that screen reaches the
 hub (backend URL field, provider, RAG and integration sections) for a fresh
-install or for pointing the app at a different server; the Tauri desktop app
-and a browser build not served by a backend open on the hub directly.
-Routing lives in `src/lib/utils/firstRun.ts`.
+install or for pointing the app at a different server. The Tauri desktop app
+has no serving origin, so on a first open (or after a sign-out) it asks its
+STORED backend URL instead: `GET /health` carries a coarse `configured`
+flag (the deployment has been claimed and its provider is set), and a backend that
+reports it opens the same sign-in view with that URL prefilled; a browser
+build not served by a backend opens on the hub directly. Routing lives in
+`src/lib/utils/firstRun.ts`.
 
 ## Sending while a turn is running
 

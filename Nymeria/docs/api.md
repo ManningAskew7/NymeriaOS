@@ -57,9 +57,22 @@ No authentication required.
 ```json
 {
   "status": "ok",
-  "version": "<nymeria.__version__>"
+  "version": "<nymeria.__version__>",
+  "configured": true
 }
 ```
+
+`configured` is true when the deployment is already set up: it has been
+claimed (the bootstrap token was used once, so `BOOTSTRAP_TOKEN.txt` is
+gone, or more than one account exists) and the LLM provider is set (a
+provider name, plus its key when the provider needs one). Clients pointed at
+such a backend open on the token-only sign-in instead of the install hub. It
+is a bare boolean on purpose: the endpoint is unauthenticated and never says
+which provider or account, and any failure to read the state reports
+`false`. Two consequences to know: a deployment whose provider is a keyless
+gateway (CLIProxy with the vendor key left empty) reads `false` even though
+it serves traffic; and `false` does tell an unauthenticated caller the
+deployment is unclaimed, accepted as no worse than the `version` field.
 
 ---
 

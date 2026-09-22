@@ -33,6 +33,7 @@
     initialSetupView({
       connected: configStore.isConfigured && !!configStore.identity,
       probe: configStore.originProbe,
+      serverProbe: configStore.serverProbe,
     })
   );
   let activeSection = $state<SectionId>('connect');
@@ -222,8 +223,13 @@
       <div class="welcome-inner signin-inner">
         <h1>Sign in to NymeriaOS</h1>
         <p class="welcome-sub">
-          This server is already set up. Paste the account token you were given and you are in;
-          nothing else is needed on this device.
+          {#if configStore.originProbe === 'served'}
+            This server is already set up.
+          {:else}
+            The server at <code>{configStore.apiUrl}</code> is already set up.
+          {/if}
+          Paste the account token you were given and you are in; nothing else is needed on this
+          device.
         </p>
         <div class="signin-form">
           <ConnectSection tokenOnly onConnected={finish} />

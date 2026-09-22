@@ -12,6 +12,12 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     version: str = __version__
+    # Whether this deployment is already set up (claimed by a human, its
+    # bootstrap token used or more than one account minted, and the LLM
+    # provider set), so a client pointed at it can open on the token-only
+    # sign-in instead of the install hub (#323). Coarse on purpose: /health
+    # is unauthenticated and must not say which provider or account.
+    configured: bool = False
 
 
 class DependencyReadiness(BaseModel):

@@ -1,7 +1,12 @@
 import type { AccountIdentity, AppConfig, ThemeName } from '$lib/types';
 import { applyTheme } from '$lib/themes';
 import { secureGet, secureSet, secureDelete } from '$lib/services/secureStorage';
-import { runOriginProbe, type OriginProbe } from '$lib/utils/firstRun';
+import {
+  readServerConfigured,
+  runOriginProbe,
+  shouldProbeStoredServer,
+  type OriginProbe
+} from '$lib/utils/firstRun';
 
 const STORAGE_KEY = 'nymeria-config';
 // H-7: the live bearer token is persisted in the OS keychain under this key,
@@ -294,6 +299,10 @@ function createConfigStore() {
     setupCompleted = false;
     identity = null;
     currentIdentityId = null;
+    // A sign-out (chosen, or an expired token) lands back on the setup
+    // surface; re-arm the stored-URL probe so it opens on sign-in again.
+    serverProbe = 'skipped';
+    serverProbePromise = null;
     saveCurrentConfig();
     notifyIdentityReloadHooks(label);
   }
@@ -399,6 +408,12 @@ function createConfigStore() {
   // meaningless and the full hub is the only path.
   let originProbe = $state<OriginProbe>('skipped');
   let originProbePromise: Promise<string | null> | null = null;
+  // The desktop app's counterpart (#323): the origin probe never runs under
+  // Tauri, so a first open there asks the STORED backend URL whether it is
+  // already set up (GET /health `configured`). 'served' means yes and the
+  // setup surface opens on the token-only sign-in; web builds skip it.
+  let serverProbe = $state<OriginProbe>('skipped');
+  let serverProbePromise: Promise<string | null> | null = null;
 
   // Read-only: the probe never writes config. Boot may run it before the
   // keychain has hydrated the token, and a page served by backend A can be
@@ -414,6 +429,36 @@ function createConfigStore() {
       originProbe = state;
     });
     return originProbePromise;
+  }
+
+  // `retry` re-asks after a settled answer (the managed local backend may
+  // not have been listening at the first ask; the root route retries when
+  // it becomes ready). Reachable-but-not-configured, unreachable, and
+  // too-old-to-say all settle as 'unserved' on purpose: the routing
+  // decision is the same, the hub, and the connect step reports the rest.
+  function probeServerConfigured(options: { retry?: boolean } = {}): Promise<string | null> {
+    if (serverProbePromise && !(options.retry && serverProbe !== 'pending')) {
+      return serverProbePromise;
+    }
+    const url = apiUrl.trim();
+    const applies = shouldProbeStoredServer({
+      hasWindow: typeof window !== 'undefined',
+      isTauri: isTauriRuntime(),
+      url,
+      setupCompleted,
+    });
+    if (!applies) {
+      serverProbe = 'skipped';
+      serverProbePromise = null;
+      return Promise.resolve(null);
+    }
+    serverProbePromise = runOriginProbe(
+      async () => ((await readServerConfigured(url)) === true ? url : null),
+      (state) => {
+        serverProbe = state;
+      }
+    );
+    return serverProbePromise;
   }
 
   async function autoDetectBackendOrigin(): Promise<string | null> {
@@ -522,6 +567,10 @@ function createConfigStore() {
       return originProbe;
     },
     probeServedOrigin,
+    get serverProbe(): OriginProbe {
+      return serverProbe;
+    },
+    probeServerConfigured,
     reset() {
       apiUrl = DEFAULT_API_URL;
       apiKey = DEFAULT_API_KEY;
@@ -535,6 +584,8 @@ function createConfigStore() {
       currentIdentityId = null;
       originProbe = 'skipped';
       originProbePromise = null;
+      serverProbe = 'skipped';
+      serverProbePromise = null;
       applyTheme('light');
       saveCurrentConfig();
     }

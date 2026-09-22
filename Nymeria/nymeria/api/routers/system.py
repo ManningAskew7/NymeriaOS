@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from pathlib import Path
 import os
 import sys
 import threading
@@ -126,6 +127,46 @@ def _check_redis_ready(settings: Any) -> DependencyReadiness:
     except Exception as exc:  # noqa: BLE001 - readiness should report all failures.
         return _dependency_error(type(exc).__name__)
     return _dependency_ok()
+
+
+def deployment_configured(get_agent: Callable[[], Any], get_settings: Callable[[], Any]) -> bool:
+    """Coarse "already set up" signal for ``GET /health`` (#323).
+
+    True when the deployment has been CLAIMED and the LLM provider is set.
+    Claimed means the bootstrap token file is gone (``AccountsRepo`` deletes
+    it the first time the bootstrap token authenticates) or more than one
+    account exists (a deployment provisioned with ``run.py users`` alone).
+    A user COUNT would not do: ``ensure_bootstrap_admin`` creates the
+    ``default`` admin before the API can answer anything, so "an owner
+    account exists" is always true. Provider set means a provider name plus
+    its key when the provider needs one. Every failure reads False (the
+    endpoint is a health check, never a stack trace), the callables are
+    resolved inside the guard so ``/health`` itself cannot 500, and the
+    answer is a bare boolean because the endpoint is unauthenticated.
+    """
+    from ...config.llm_providers import normalize_llm_provider, provider_requires_api_key
+
+    try:
+        agent = get_agent()
+        settings = get_settings()
+        repo = getattr(agent, "accounts_repo", None)
+        if repo is None:
+            return False
+        token_file = getattr(repo, "bootstrap_token_path", None)
+        claimed = token_file is not None and not Path(token_file).exists()
+        if not claimed and int(repo.count_users()) <= 1:
+            return False
+        provider = normalize_llm_provider(str(getattr(settings, "llm_provider", "") or ""))
+        if not provider:
+            return False
+        if provider_requires_api_key(provider):
+            key_for = getattr(settings, "get_api_key_for_provider", None)
+            if not callable(key_for) or not key_for():
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - a health check never surfaces internals.
+        logger.debug("deployment_configured: probe failed, reporting False", exc_info=True)
+        return False
 
 
 def _build_readiness(settings: Any) -> ReadinessResponse:
@@ -351,9 +392,14 @@ def create_system_router(
     readiness_cache: dict[str, Any] = {"expires_at": 0.0, "value": None}
 
     @router.get("/health", response_model=HealthResponse)
-    async def health_check():
-        """Health check endpoint."""
-        return HealthResponse()
+    def health_check():
+        """Health check endpoint.
+
+        Sync on purpose: the ``configured`` probe may touch ``accounts.db``
+        (a shared-volume SQLite file), and a cross-process write lock there
+        must stall a threadpool worker, not the event loop.
+        """
+        return HealthResponse(configured=deployment_configured(get_agent_fn, get_settings_fn))
 
     @router.get("/health/stream")
     async def health_stream():
