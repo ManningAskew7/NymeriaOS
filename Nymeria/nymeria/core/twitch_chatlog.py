@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+from .untrusted_fence import UntrustedFence
 
 from .storage_paths import safe_path_segment
 
@@ -42,18 +43,15 @@ MAX_QUERY_HOURS = 24 * 365
 #: being rejected whole forever.
 CHATLOG_BATCH_MAX = 500
 
-_UNTRUSTED_OPEN = "<untrusted_chat_messages>"
-_UNTRUSTED_CLOSE = "</untrusted_chat_messages>"
-_SEP = r"[\s\u200b-\u200f\u2060\ufeff]*"
-_CLOSE_TAG_RE = re.compile(
-    _SEP.join([r"<", r"/", *list("untrusted_chat_messages")]), re.IGNORECASE
-)
+_CHAT_FENCE = UntrustedFence("untrusted_chat_messages")
+_UNTRUSTED_OPEN = _CHAT_FENCE.open
+_UNTRUSTED_CLOSE = _CHAT_FENCE.close
 
 
 def fence_chat(text: str) -> str:
-    """Wrap chat-derived text so its provenance is unmistakable."""
-    body = _CLOSE_TAG_RE.sub("<\\\\/untrusted_chat_messages", text)
-    return f"{_UNTRUSTED_OPEN}\n{body}\n{_UNTRUSTED_CLOSE}"
+    """Wrap chat-derived text so its provenance is unmistakable (mechanics in
+    ``core/untrusted_fence.py``: a closing marker inside is neutralized)."""
+    return _CHAT_FENCE.wrap(text)
 
 
 def _parse_timestamp(value: Any) -> Optional[datetime]:

@@ -188,7 +188,12 @@ stopped (a stop drops the queue silently, as it silences the FINAL).
 session's live state: RUNNING or finished, elapsed time, its end-turns so
 far, and the last N transcript entries (assistant text, tool calls with a
 compact input preview, tool results, task notifications), each timestamped.
-Read-only: nothing is resumed and no Claude Code turn is spent. In local mode
+Everything the run wrote (the end-turn previews and the tail) sits inside one
+`<untrusted_claude_code_output>` fence behind a data-not-instructions note (it
+carries whatever the run read on the host: file contents, command output,
+fetched pages); a forged closing marker inside is neutralized and counted in
+the note, and only the header and follow-up hint stay outside as the bridge's
+own words. The model-facing report prompts fence the run's text the same way. Read-only: nothing is resumed and no Claude Code turn is spent. In local mode
 it reads the in-process `RunObserver`; in remote mode it calls the runner's
 `GET /job/{id}/peek?tail=N` (the runner also answers
 `GET /sessions/{session_id}/peek`). The runner keeps up to 200 entries per
