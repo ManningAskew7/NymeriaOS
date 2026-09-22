@@ -504,7 +504,10 @@ def test_prompt_for_a_running_session_is_queued_and_started_afterwards(tmp_path,
 
     def fake_run_local(request, config, timeout, env=None, observer=None, **kw):
         observer.feed_event({"type": "system", "subtype": "init", "session_id": "live-sess"})
-        release.wait(5)
+        # A budget, not a duration: the test releases it once its queue
+        # calls are in. 5s expired on cold first invocations under -n 2
+        # load and the run FINISHED before the calls were made (#364).
+        release.wait(30)
         return bridge.ClaudeCodeResult(ok=True, result_text="first done", session_id="live-sess")
 
     monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
@@ -571,7 +574,10 @@ def test_peek_shows_a_running_sessions_live_tail(tmp_path, monkeypatch):
             {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -q"}}]}})
         observer.feed_event({"type": "user", "message": {"content": [
             {"type": "tool_result", "content": "12 passed"}]}})
-        release.wait(5)
+        # A budget, not a duration: the test releases it once its queue
+        # calls are in. 5s expired on cold first invocations under -n 2
+        # load and the run FINISHED before the calls were made (#364).
+        release.wait(30)
         return bridge.ClaudeCodeResult(ok=True, result_text="done", session_id="peek-sess")
 
     monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
