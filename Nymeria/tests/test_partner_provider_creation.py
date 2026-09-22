@@ -411,6 +411,73 @@ def test_ollama_native_effort_off_disables_reasoning_for_toggle_models(monkeypat
     assert capture.captured[0].get("reasoning") is False
 
 
+def _quiet_completion_history() -> list:
+    """A tool-only round the model ended without text (nodes._turn_did_tool_work)
+    is checkpointed as an EMPTY assistant message after the tool result."""
+    return [
+        HumanMessage(content="pulse"),
+        AIMessage(content="", tool_calls=[{"name": "twitch_send", "args": {"text": "hi"}, "id": "c1"}]),
+        ToolMessage(content="sent", tool_call_id="c1"),
+        AIMessage(content=""),
+        HumanMessage(content="next"),
+    ]
+
+
+def test_bedrock_wire_pads_empty_assistant_turns():
+    """#384: the Converse builder in langchain-aws pads a tool-call-free empty
+    assistant message itself, so Nymeria adds no funnel there. Pin it: a
+    library upgrade that stops padding fails here rather than on replay."""
+    pytest.importorskip("langchain_aws")
+    from langchain_aws.chat_models.bedrock_converse import _messages_to_bedrock
+
+    wire, _system = _messages_to_bedrock(_quiet_completion_history())
+    assistant = [m for m in wire if m.get("role") == "assistant"]
+    assert len(assistant) == 2
+    for message in assistant:
+        assert message["content"], message
+        assert any(part.get("text") or part.get("toolUse") for part in message["content"]), message
+
+
+def test_ollama_native_drops_empty_assistant_turns_from_the_request():
+    """#384: langchain-ollama ships an empty assistant message as-is (pinned
+    below), so the native route drops a tool-call-free empty AIMessage from
+    the REQUEST, never the checkpoint, the way the google route does."""
+    pytest.importorskip("langchain_ollama")
+    llm = providers._create_ollama_native_llm(_ollama_native_config())
+    wire = llm._convert_messages_to_ollama_messages(_quiet_completion_history())
+    assistant = [m for m in wire if m["role"] == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0].get("tool_calls"), assistant[0]
+    assert [m["role"] for m in wire] == ["user", "assistant", "tool", "user"]
+    assert wire[-1]["content"] == "next"
+
+
+def test_ollama_native_keeps_an_empty_turn_that_carries_reasoning():
+    """Native Ollama replays reasoning every turn (reasoning_passback): a
+    quiet completion's thinking is context worth keeping, and the vendor
+    ships it as ``thinking`` beside the empty content, which Ollama takes."""
+    pytest.importorskip("langchain_ollama")
+    llm = providers._create_ollama_native_llm(_ollama_native_config())
+    history = _quiet_completion_history()
+    history[3] = AIMessage(content="", additional_kwargs={"reasoning_content": "deep thought"})
+    wire = llm._convert_messages_to_ollama_messages(history)
+    assert [m["role"] for m in wire] == ["user", "assistant", "tool", "assistant", "user"]
+    assert wire[3]["content"] == "" and wire[3].get("thinking") == "deep thought"
+
+
+def test_ollama_vendor_still_ships_an_empty_assistant_turn():
+    """The reason the wrapper exists; if the vendor starts dropping it, this
+    fails and the wrapper can go."""
+    pytest.importorskip("langchain_ollama")
+    from langchain_ollama import ChatOllama
+
+    wire = ChatOllama(model="qwen3")._convert_messages_to_ollama_messages(
+        _quiet_completion_history()
+    )
+    assert [m["role"] for m in wire] == ["user", "assistant", "tool", "assistant", "user"]
+    assert wire[3]["content"] == ""
+
+
 def test_ollama_route_toggle_switches_between_native_and_openai_compat(monkeypatch):
     """provider_route chooses Ollama native or OpenAI-compatible adapter.
 

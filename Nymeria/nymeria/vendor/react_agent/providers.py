@@ -4153,4 +4153,41 @@ def _create_ollama_native_llm(config: LLMConfig) -> BaseChatModel:
         else:
             kwargs["reasoning"] = True
 
-    return ChatOllama(**kwargs)
+    class _HistorySanitizingChatOllama(ChatOllama):
+        """ChatOllama that drops empty assistant turns from the REQUEST.
+
+        A quiet completion (``nodes._turn_did_tool_work``: a tool-only round
+        the model ended without text) is checkpointed as an EMPTY assistant
+        message. langchain-ollama 1.1.x ships it as ``{"role": "assistant",
+        "content": ""}`` (pinned by
+        ``test_ollama_vendor_still_ships_an_empty_assistant_turn``): Ollama
+        does not reject it, but every later call replays a junk model turn
+        into the chat template. Same treatment as the google route
+        (``_strip_foreign_reasoning_for_google``): a tool-call-free empty
+        AIMessage leaves the request, never the checkpoint; one WITH tool
+        calls stays (the builder emits its tool_calls), and so does one
+        carrying ``reasoning_content``: this route replays reasoning on
+        every turn by design (``reasoning_passback``), and the vendor ships
+        it as ``thinking`` beside the empty content, which Ollama accepts.
+        Only a message with nothing at all is dropped. #384.
+        ``_convert_messages_to_ollama_messages`` is the single seam:
+        ``_chat_params`` calls it for every generate and stream path, sync
+        and async. Defined per factory call, like the google subclass.
+        """
+
+        def _convert_messages_to_ollama_messages(self, messages: Any) -> Any:
+            kept = [
+                message
+                for message in messages
+                if not (
+                    isinstance(message, AIMessage)
+                    and not getattr(message, "tool_calls", None)
+                    and not (getattr(message, "additional_kwargs", None) or {}).get(
+                        "reasoning_content"
+                    )
+                    and _assistant_wire_content_is_empty(getattr(message, "content", None))
+                )
+            ]
+            return super()._convert_messages_to_ollama_messages(kept)
+
+    return _HistorySanitizingChatOllama(**kwargs)
