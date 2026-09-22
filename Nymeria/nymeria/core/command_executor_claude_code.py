@@ -268,14 +268,22 @@ class ClaudeCodeCommandsMixin:
         # registry.
         report = job.first_report
         assert report is not None  # wait_inline claims inline only once a report exists
-        text = render_result_markdown(job, report)
-        agent = get_current_agent()
-        if agent is not None:
-            record_inline(agent, job, text, report)
+        try:
+            text = render_result_markdown(job, report)
+            agent = get_current_agent()
+            if agent is not None:
+                record_inline(agent, job, text, report)
+        except BaseException:
+            # The inline caller owns a claimed report: nothing else settles
+            # the slot for a FINAL one (the watcher never delivers it). An
+            # INTERIM one leaves the slot to the watcher, whose FINAL settles
+            # it, since the run is still going (#340).
+            if report.final:
+                finish(job, outcome_of(job))
+            raise
         data["session_id"] = job.session_id
         if not report.final:
             return command_info(text, data={**data, "interim": True})
-        assert job.result is not None
         outcome = outcome_of(job)
         finish(job, outcome)
         if outcome != "completed":
@@ -285,9 +293,16 @@ class ClaudeCodeCommandsMixin:
     @staticmethod
     def _still_running(job: Any) -> CommandOutput:
         elapsed = max(0.0, time.time() - job.started_at)
-        state = "is delivering its result" if job.done.is_set() else "is still running"
         session = f" (session {job.session_id})" if job.session_id else ""
+        if job.done.is_set():
+            # A finished run is past cancelling: /stop leaves it alone and
+            # its delivery lands once the thread is free (#340).
+            return command_error(
+                f"Claude Code job {job.id}{session} is delivering its result on this "
+                f"thread ({elapsed:.0f}s). Wait for it to land; `/stop` cannot cancel "
+                "a finished run."
+            )
         return command_error(
-            f"Claude Code job {job.id}{session} {state} on this thread ({elapsed:.0f}s). "
-            "Wait for it to land, or `/stop` to cancel it."
+            f"Claude Code job {job.id}{session} is still running on this thread "
+            f"({elapsed:.0f}s). Wait for it to land, or `/stop` to cancel it."
         )

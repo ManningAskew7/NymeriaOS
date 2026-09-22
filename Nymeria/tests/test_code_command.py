@@ -442,7 +442,7 @@ def test_long_run_acks_then_delivers_as_a_holder_turn_without_a_model(env) -> No
     assert env.relays == []
     assert env.notifications == []
     assert env.activity and env.activity[0][0][0].value == "task_completed"
-    assert delivery.active_job(THREAD) is None
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
     assert delivery.last_outcome(THREAD) == (job_id, "completed")
 
 
@@ -481,7 +481,7 @@ def test_failed_long_run_delivers_the_failure_as_content(env) -> None:
     # the job outcome.
     assert "error" not in completed["data"]
     assert env.activity[0][0][0].value == "task_failed"
-    assert delivery.last_outcome(THREAD)[1] == "failed"
+    assert _wait_for(lambda: (delivery.last_outcome(THREAD) or ("", ""))[1] == "failed")
 
 
 def test_stop_cancels_the_run_and_the_result_stays_silent(env) -> None:
@@ -560,6 +560,127 @@ def test_unrepairable_tail_skips_the_history_write_but_still_delivers(env) -> No
         "response",
         "done",
     ]
+
+
+def test_the_slot_is_held_until_the_final_delivery_lands(env, monkeypatch) -> None:
+    """#340: the registry settles AFTER the delivery wait, not before it.
+    While a live turn holds the thread and the finished run waits to
+    deliver, the thread is NOT idle: bare /code says so, a second /code is
+    refused (it would fork the session), and /status/turns counts the run."""
+    monkeypatch.setattr(delivery, "IDLE_WAIT_SECONDS", 30.0)
+    lock = env.agent._thread_locks.get_lock(THREAD)
+    assert lock.acquire(blocking=False)
+    env.state.release.clear()
+    ack = _execute("/code fix it")
+    job_id = ack.data["job_id"]
+    job = delivery.active_job(THREAD)
+    env.state.release.set()
+    assert _wait_for(lambda: job.done.is_set())
+    time.sleep(0.3)  # the watcher is now inside the delivery wait
+    assert env.events == []
+
+    assert delivery.active_job(THREAD) is job
+    assert delivery.active_work_count() == 1
+    overview = _execute("/code")
+    assert f"job {job_id} is delivering its result" in overview.markdown
+    assert overview.data["active_job"]["done"] is True
+    refused = _execute("/code and this too")
+    assert refused.success is False
+    assert f"job {job_id}" in refused.markdown and "is delivering its result" in refused.markdown
+    assert "`/stop` cannot cancel" in refused.markdown
+    assert "/stop` to cancel it" not in refused.markdown
+    assert len(env.calls) == 1, "no second run started against the session"
+    # /stop leaves a finished run alone: nothing to cancel, its delivery lands.
+    stopped = _execute("/stop")
+    assert "idle" in stopped.markdown.lower()
+    assert not env.calls[0]["abort_event"].is_set()
+
+    lock.release()
+    assert _wait_for(lambda: _completed(env))
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
+    assert delivery.last_outcome(THREAD) == (job_id, "completed")
+    assert env.notifications == []
+
+
+def test_a_crashed_detached_delivery_still_releases_the_slot(env, monkeypatch) -> None:
+    """A report that cannot be rendered still reaches the dispatcher (a
+    notification naming the failure, with the raw result), and the slot
+    must not stay pinned behind it."""
+    env.state.release.clear()
+    ack = _execute("/code fix it")
+    job_id = ack.data["job_id"]
+
+    def boom(job, report=None):
+        raise RuntimeError("renderer broke")
+
+    monkeypatch.setattr(delivery, "render_result_markdown", boom)
+    env.state.release.set()
+    assert _wait_for(lambda: bool(env.notifications))
+    ((args, _),) = env.notifications
+    assert "renderer broke" in args[0] and f"job {job_id}" in args[0] and "PONG" in args[0]
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
+    assert delivery.last_outcome(THREAD) == (job_id, "completed")
+    assert not _completed(env), "no holder turn without a rendered report"
+
+
+def test_an_inline_render_failure_on_a_final_report_releases_the_slot(env, monkeypatch) -> None:
+    real_render = delivery.render_result_markdown
+
+    def boom(job, report=None):
+        raise RuntimeError("renderer broke")
+
+    monkeypatch.setattr(delivery, "render_result_markdown", boom)
+    failed = _execute("/code fix it")
+    assert failed.success is False
+    assert delivery.active_job(THREAD) is None
+    assert delivery.last_outcome(THREAD)[1] == "completed"
+    monkeypatch.setattr(delivery, "render_result_markdown", real_render)
+    admitted = _execute("/code fix it")
+    assert admitted.success is True, admitted.markdown
+
+
+def test_an_inline_render_failure_on_an_interim_report_keeps_the_slot(env, monkeypatch) -> None:
+    """The run is still going: the watcher's FINAL settles the slot, so a
+    second /code must stay refused until then."""
+    from nymeria.tools.claude_code_bridge import RunObserver
+
+    second = threading.Event()
+
+    def streaming_prepare_run(settings_arg, **kwargs):
+        env.calls.append(dict(kwargs))
+        observer = RunObserver()
+
+        def producer():
+            observer.feed_event({"type": "system", "subtype": "init", "session_id": "sess-i"})
+            observer.feed_event({"type": "result", "subtype": "success", "result": "step one"})
+            second.wait(5)
+            observer.feed_event({"type": "result", "subtype": "success", "result": "all done"})
+            return ClaudeCodeResult(ok=True, result_text="all done", session_id="sess-i",
+                                    end_turns=observer.turns_after(0))
+
+        return PreparedRun(producer=producer, persist=lambda r: None, run_cwd="/repo",
+                           resume_session_id=None, observer=observer)
+
+    monkeypatch.setattr(claude_module, "prepare_run", streaming_prepare_run)
+    monkeypatch.setattr(bg, "END_TURN_SETTLE_SECONDS", 0.05)
+    real_render = delivery.render_result_markdown
+
+    def boom(job, report=None):
+        raise RuntimeError("renderer broke")
+
+    monkeypatch.setattr(delivery, "render_result_markdown", boom)
+    first = _execute("/code fix it")
+    assert first.success is False
+    job = delivery.active_job(THREAD)
+    assert job is not None and job.running, "the run is still in flight"
+    refused = _execute("/code and more")
+    assert refused.success is False and f"job {job.id}" in refused.markdown
+    assert len(env.calls) == 1
+
+    monkeypatch.setattr(delivery, "render_result_markdown", real_render)
+    second.set()
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
+    assert delivery.last_outcome(THREAD) == (job.id, "completed")
 
 
 def test_second_dispatch_is_refused_while_a_run_is_in_flight(env) -> None:
@@ -663,7 +784,9 @@ def test_a_code_followup_takes_the_registry_slot_and_stop_reaches_it(env) -> Non
     assert _wait_for(lambda: bool(env.agent._default_graph.updates))
     (_, values) = env.agent._default_graph.updates[0]
     assert f"started as job {followup.id}" in values["messages"][1].content
-    assert delivery.last_outcome(THREAD) == (first_id, "completed")
+    # The first run's outcome is recorded once its delivery lands (#340), and
+    # settling it never evicts the follow-up from the slot it took.
+    assert _wait_for(lambda: delivery.last_outcome(THREAD) == (first_id, "completed"))
     assert delivery.active_job(THREAD) is followup
 
     refused = _execute("/code a third thing")
@@ -679,6 +802,43 @@ def test_a_code_followup_takes_the_registry_slot_and_stop_reaches_it(env) -> Non
     assert delivery.last_outcome(THREAD) == (followup.id, "cancelled")
 
 
+def test_a_delayed_first_delivery_does_not_overwrite_the_followups_outcome(env, monkeypatch) -> None:
+    """#340 review: outcomes are recorded when KNOWN, the slot released when
+    the delivery lands. The first run's delivery is held behind a live turn
+    while its follow-up finishes and delivers first (the follow-up holds the
+    slot); once the first run's delivery lands, the last-run record must
+    still name the follow-up, and the slot must be empty."""
+    monkeypatch.setattr(delivery, "IDLE_WAIT_SECONDS", 30.0)
+    env.state.release.clear()
+    first_release = env.state.release
+    ack = _execute("/code first task")
+    first_id = ack.data["job_id"]
+    first_job = delivery.active_job(THREAD)
+    first_job.observer.set_session_id("sess-live")
+    assert first_job.queue_followup("and then this") == 1
+    followup_release = threading.Event()
+    env.state.release = followup_release
+    lock = env.agent._thread_locks.get_lock(THREAD)
+    assert lock.acquire(blocking=False)
+    first_release.set()  # first run ends; its FINAL waits behind the lock
+    assert _wait_for(lambda: len(env.calls) == 2)
+    assert _wait_for(lambda: delivery.active_job(THREAD) is not None
+                     and delivery.active_job(THREAD).id != first_id)
+    followup = delivery.active_job(THREAD)
+    # The first run's outcome is on record as soon as it is known.
+    assert delivery.last_outcome(THREAD) == (first_id, "completed")
+    followup_release.set()
+    assert _wait_for(lambda: followup.done.is_set())
+    time.sleep(0.3)
+    assert env.events == [], "both FINALs wait behind the live turn"
+    # The follow-up's outcome supersedes the first run's, delivery or not.
+    assert delivery.last_outcome(THREAD) == (followup.id, "completed")
+    lock.release()
+    assert _wait_for(lambda: len([e for e in env.events if e["event_type"] == "task_completed"]) == 2)
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
+    assert delivery.last_outcome(THREAD) == (followup.id, "completed")
+
+
 def test_result_is_a_notification_when_no_agent_is_running(env, monkeypatch) -> None:
     """No agent means no holder turn; the notification path needs none, and
     the user asked for this output."""
@@ -690,7 +850,7 @@ def test_result_is_a_notification_when_no_agent_is_running(env, monkeypatch) -> 
     ((args, _),) = env.notifications
     assert "PONG" in args[0] and args[1] == "owner" and args[2] == THREAD
     assert any(e["event_type"] == "notification" for e in env.events)
-    assert delivery.active_job(THREAD) is None
+    assert _wait_for(lambda: delivery.active_job(THREAD) is None)
 
 
 def test_a_dropped_holder_turn_falls_back_to_a_notification(env) -> None:

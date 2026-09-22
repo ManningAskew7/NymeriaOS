@@ -133,8 +133,9 @@ happens before the thread lock is taken, so this covers that gap).
 jobs. Runner tasks can overlap `active_turns`; the aggregate also covers work
 before lock acquisition and indexing after release. Detached bash jobs hold
 no thread lock by design. `claude_code_jobs` counts detached Claude Code and
-`/code` runs still running, which hold no thread lock and are not bash jobs
-(a remote run itself survives a restart; its watcher and delivery do not).
+`/code` runs (running, or finished and still delivering their report), which
+hold no thread lock and are not bash jobs (a remote run itself survives a
+restart; its watcher and delivery do not).
 All-zero means no tracked work needs finishing or cancellation.
 During graceful shutdown, runner tasks are cancelled and their cleanup is
 awaited, embedding jobs are drained, and owned child processes (including

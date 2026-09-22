@@ -89,10 +89,8 @@ def active_work_count() -> int:
     """Claude Code runs a restart would kill, for ``GET /status/turns`` (#339).
 
     The union of the tool registry's RUNNING jobs and this registry's
-    entries, counted once per job. The detached FINAL delivery is not in
-    here: ``deliver_code_result`` settles this registry before its delivery
-    wait (open #340), and that wait holds or awaits the thread lock, which
-    ``active_turns`` counts.
+    entries (a ``/code`` run holds its slot while it runs and until its
+    final report is delivered, #340), counted once per job.
     """
     from ..tools.claude_code_background import running_jobs
 
@@ -108,10 +106,25 @@ def last_outcome(thread_id: str) -> Optional[tuple[str, str]]:
 
 
 def finish(job: "ClaudeCodeJob", outcome: str) -> None:
+    """Record ``job``'s outcome and release its slot (if it still holds one)."""
+    record_outcome(job, outcome)
+    release(job)
+
+
+def record_outcome(job: "ClaudeCodeJob", outcome: str) -> None:
+    """Record ``job`` as the thread's last run, in the order outcomes are
+    KNOWN: a run whose delivery is still pending must not overwrite the
+    record of a follow-up that finished after it (#340 review)."""
+    with _REGISTRY_LOCK:
+        _LAST[job.thread_id] = (job.id, outcome)
+
+
+def release(job: "ClaudeCodeJob") -> None:
+    """Free the thread's slot if ``job`` still holds it (a queued follow-up
+    may have taken it over, ``claim(replacing=...)``)."""
     with _REGISTRY_LOCK:
         if _ACTIVE.get(job.thread_id) is job:
             _ACTIVE.pop(job.thread_id, None)
-        _LAST[job.thread_id] = (job.id, outcome)
 
 
 def cancel_active_job(thread_id: str) -> Optional["ClaudeCodeJob"]:
@@ -335,19 +348,50 @@ def deliver_code_result(job: "ClaudeCodeJob", report: "Optional[TurnReport]" = N
     per report (interim end-turns while the run continues, then the final
     result, which also settles the registry). A run cancelled by ``/stop``
     stays silent, matching the tool.
+
+    The registry settles AFTER the final delivery, not before it (#340): the
+    holder-turn wait can last ``IDLE_WAIT_SECONDS``, and for that whole
+    window the run must still read as in flight (bare ``/code``, the
+    dispatch admission check, ``GET /status/turns``), or a second ``/code``
+    is admitted mid-delivery and forks the session. ``finish`` pops the slot
+    only while THIS job holds it, so a queued follow-up that already took
+    it (``claim(replacing=...)``) is untouched.
     """
+    if report is None:
+        report = _final_report(job)
+    if not report.final:
+        _deliver_report(job, report)
+        return
+    outcome = outcome_of(job)
+    record_outcome(job, outcome)
+    if outcome == OUTCOME_CANCELLED:
+        release(job)
+        logger.info("Claude Code job %s cancelled; dropping /code delivery", job.id)
+        return
+    try:
+        _deliver_report(job, report)
+    finally:
+        release(job)
+
+
+def _deliver_report(job: "ClaudeCodeJob", report: "TurnReport") -> None:
+    """One report to the thread: a holder turn, or a notification when no
+    turn can fire. Never silent: even a report that cannot be rendered
+    reaches the dispatcher as a notification naming the failure."""
     from .agent import get_current_agent
     from .completion_delivery import RESULT_BUSY, RESULT_FIRED, deliver_without_turn
 
-    if report is None:
-        report = _final_report(job)
-    if report.final:
-        outcome = outcome_of(job)
-        finish(job, outcome)
-        if outcome == OUTCOME_CANCELLED:
-            logger.info("Claude Code job %s cancelled; dropping /code delivery", job.id)
-            return
-    text = render_result_markdown(job, report)
+    try:
+        text = render_result_markdown(job, report)
+    except Exception as exc:  # noqa: BLE001 - the result must reach someone.
+        logger.exception("Claude Code job %s: report rendering failed", job.id)
+        raw = job.result.result_text if job.result is not None else ""
+        text = (
+            f"Claude Code job {job.id} finished ({outcome_of(job)}) but its report "
+            f"could not be rendered ({exc}).\n\n{raw}".rstrip()
+        )
+        _deliver_as_notification(job, text, "report rendering failed")
+        return
     agent = get_current_agent()
     if agent is None:
         # No holder turn without an agent, but the notification path needs

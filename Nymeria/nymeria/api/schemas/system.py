@@ -45,10 +45,10 @@ class TurnActivityResponse(BaseModel):
     # Bash jobs, runner tasks and embedding tails can outlive thread locks.
     # Runner tasks may also overlap active_turns while executing.
     background_jobs: int = 0
-    # Detached Claude Code / /code runs still running (or registered on
-    # their thread). They hold no thread lock and are not bash jobs, so
-    # they have their own counter (#339); a restart kills the local run,
-    # or the watcher and delivery of a remote one.
+    # Detached Claude Code / /code runs: running, or finished and still
+    # delivering their report (#340). They hold no thread lock and are not
+    # bash jobs, so they have their own counter (#339); a restart kills the
+    # local run, or the watcher and delivery of a remote one.
     claude_code_jobs: int = 0
     # Populated only for admin callers: thread ids and holder labels are
     # cross-user metadata; the counts alone carry the idle predicate.

@@ -478,9 +478,9 @@ def create_system_router(
         ``background_jobs`` covers detached bash jobs, runner tasks and
         embedding tails, including work outside a thread lock. Counts can
         overlap held turns; ``claude_code_jobs`` covers detached Claude Code
-        and ``/code`` runs still running, which hold no lock and are not
-        bash jobs (#339; a remote run survives on the runner, its watcher
-        and delivery do not). All-zero means no tracked work remains. Read
+        and ``/code`` runs (running, or finished and still delivering, #340),
+        which hold no lock and are not bash jobs (#339; a remote run survives
+        on the runner, its watcher and delivery do not). All-zero means no tracked work remains. Read
         "severs" literally: a restart
         TERMINATES the background jobs this counts, on the self-restart
         path as well as under a supervisor, so a non-zero count is work
