@@ -2,17 +2,18 @@
 
 Most runtime logging is centralized in `nymeria/config/logging_config.py`. For normal CLI, API, worker, bot, and foreground gateway runs, log level decisions flow through `configure_logging()`, called by `run.py`. Format: `HH:MM:SS LEVEL module: message`.
 
-**Log file:** `Nymeria/data/logs/service.log` (rotating; size and backup count come from settings). In normal `run.py` flows, logs go to both console and this file.
+**Log files:** one rotating file per PROCESS ROLE under `Nymeria/data/logs/` (size and backup count come from settings; `SERVICE_LOG_FILE` names the api's file and is the template for the rest). `run.py api` and `run.py slim` (one process) write `service.log`; every other subcommand writes its own: `worker.log`, `telegram.log`, `discord.log`, `slack.log`, `twitch.log` (bots drop the `-bot`), `cli.log`, `claude-code-runner.log`. A custom `SERVICE_LOG_FILE=nym.log` gives `nym.log` and `nym-worker.log`. One file per role because the Docker stack mounts one data volume into api, worker and every bot, and per-process rotating handlers on one shared path rotated each other's live file (#383). If the log directory is not writable (a bot container with a read-only data mount), the process logs to the console only and warns once instead of crashing. In normal `run.py` flows, logs go to both console and the role's file.
 
 ```bash
 # Read logs from a different terminal while API runs:
 tail -f Nymeria/data/logs/service.log
 tail -100 Nymeria/data/logs/service.log
+tail -f Nymeria/data/logs/worker.log        # the Docker worker
 
 # Filter by tag or thread:
 grep '\[CALLABLE\]' Nymeria/data/logs/service.log
 grep '\[LLM\]' Nymeria/data/logs/service.log
-grep 'thread=abc-123' Nymeria/data/logs/service.log
+grep 'thread=abc-123' Nymeria/data/logs/*.log*   # every role, rotated backups included
 ```
 
 ## Environment Variables
@@ -142,7 +143,7 @@ Autonomous tasks use `[ASTREAM]` with `holder=autonomous`, even when the caller 
 [WATCHDOG] thread=todo-thread nudge complete (response=True)
 [ASTREAM] === END === thread=todo-thread, elapsed=12.5s
 ```
-Note the nesting: the `[WATCHDOG]` nudging/complete pair brackets the high-level nudge (logged by the ticker's watchdog sweep), while `[ASTREAM]` frames the inner agent execution in the API process.
+Note the nesting: the `[WATCHDOG]` nudging/complete pair brackets the high-level nudge (logged by the ticker's watchdog sweep), while `[ASTREAM]` frames the inner agent execution in the API process. In the Docker stack those are two files (`worker.log` and `service.log`); slim writes both to `service.log`.
 
 If autonomous output looks batched, compare these diagnostics:
 - `[LLM STREAM] chunks=1` with a large `text_chars` value means the provider or LangChain model wrapper only delivered one coarse async chunk.

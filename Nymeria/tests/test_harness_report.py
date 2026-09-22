@@ -311,8 +311,13 @@ def test_missing_intake_dir_refuses_and_does_not_create_it(tmp_path, monkeypatch
     assert not missing.parent.exists()
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="chmod is inert for root")
 def test_unwritable_intake_dir_reports_honest_failure(intake):
+    # Body-level, not a skipif decorator: Windows has no geteuid, so the
+    # decorator errored the whole module at collection there.
+    if os.name != "posix":
+        pytest.skip("directory-mode semantics are POSIX")
+    if os.geteuid() == 0:
+        pytest.skip("chmod is inert for root")
     intake.chmod(0o555)
     try:
         result = _invoke()

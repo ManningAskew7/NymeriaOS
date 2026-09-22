@@ -2152,7 +2152,10 @@ class Settings(BaseSettings):
     # Log file rotation (used by all modes for the persistent file handler)
     service_log_file: str = Field(
         default="service.log",
-        description="Log filename for the rotating file handler"
+        description=(
+            "Rotating log filename for the api/slim process; other run.py "
+            "subcommands derive their own from it (worker.log, telegram.log, ...)"
+        ),
     )
     service_log_max_bytes: int = Field(
         default=10 * 1024 * 1024,  # 10MB

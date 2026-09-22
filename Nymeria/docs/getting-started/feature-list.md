@@ -494,7 +494,7 @@ CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`).
 | `data/skills/` | Installed skills (user/global scope) |
 | `data/triggers/` | Trigger definitions and execution logs |
 | `data/notifications/` | Notification storage |
-| `data/logs/` | Audit trail (JSONL) + rotating service log |
+| `data/logs/` | Audit trail (JSONL) + one rotating log per process role (`service.log` for api/slim, `worker.log`, the bots' files) |
 
 ---
 

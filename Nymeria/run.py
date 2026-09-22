@@ -341,7 +341,41 @@ def _require_launch_mode_service_token(args: argparse.Namespace, settings) -> No
     _require_service_token(settings, role, stream=stream)
 
 
-def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
+# Subcommands whose process IS the service: they keep the configured
+# ``service_log_file`` name. Every other subcommand writes its own file (#383).
+PRIMARY_LOG_COMMANDS = ("api", "slim")
+
+
+def log_file_for(settings, command: Optional[str]) -> Path:
+    """The log file a ``run.py <command>`` process writes.
+
+    One file per PROCESS ROLE, never one shared file: the Docker stack mounts
+    one data volume into api, worker and every bot, and a
+    ``RotatingFileHandler`` per process on the same path made each rotate the
+    others' live file (records interleaved, ``service.log`` a 1 KB fragment
+    while ``.3`` still grew, #383). ``api``/``slim`` (and the gateway
+    foreground) keep ``service_log_file``; the rest derive from it: with the
+    default stem ``worker.log``, ``telegram.log`` (bots drop ``-bot``),
+    ``cli.log``, ``claude-code-runner.log``; a custom stem stays as prefix
+    (``nym.log`` -> ``nym-worker.log``).
+    """
+    configured = Path(settings.service_log_file)
+    base = settings.logs_dir / configured  # a subdir or absolute value is honoured
+    role = (command or "").strip()
+    if not role or role in PRIMARY_LOG_COMMANDS:
+        return base
+    if role.endswith("-bot"):
+        role = role[: -len("-bot")]
+    if configured.stem == "service":
+        name = f"{role}{configured.suffix}"
+    else:
+        name = f"{configured.stem}-{role}{configured.suffix}"
+    return base.with_name(name)
+
+
+def setup_logging(
+    level: str = "INFO", file_mode: bool = False, command: Optional[str] = None
+) -> Optional[Path]:
     """
     Configure logging for the application.
 
@@ -354,7 +388,13 @@ def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
 
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        file_mode: If True, ONLY log to file (no console output)
+        file_mode: If True, no ANSI colour on the console handler (the
+            console handler is always attached; nothing is file-only)
+        command: The ``run.py`` subcommand, which picks the log FILE
+            (``log_file_for``); None means the service file.
+
+    Returns the log file being written, or None when it could not be opened
+    (console only).
     """
     from nymeria.config import get_settings
     from nymeria.config.logging_config import (
@@ -367,17 +407,22 @@ def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
 
     # Build a rotating file handler for persistent logs.
     # Always enabled so logs are readable from other terminals (e.g. Claude Code
-    # on WSL while the API runs in PowerShell on Windows).
-    log_dir = settings.logs_dir
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / settings.service_log_file
-
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=settings.service_log_max_bytes,
-        backupCount=settings.service_log_backup_count,
-        encoding="utf-8",
-    )
+    # on WSL while the API runs in PowerShell on Windows). An unwritable log
+    # dir (a bot container with a read-only data mount, #101 entry 16) must
+    # not be fatal: the process runs console-only and says so once.
+    log_file = log_file_for(settings, command)
+    file_handler: Optional[RotatingFileHandler] = None
+    file_error: Optional[OSError] = None
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=settings.service_log_max_bytes,
+            backupCount=settings.service_log_backup_count,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        file_error = exc
 
     configure_logging(
         base_level=level,
@@ -386,6 +431,14 @@ def setup_logging(level: str = "INFO", file_mode: bool = False) -> None:
         file_handler=file_handler,
         use_color=not file_mode,  # No ANSI in file-only mode
     )
+    if file_error is not None:
+        logging.getLogger("nymeria").warning(
+            "Log file %s is not writable (%s); logging to the console only",
+            log_file,
+            file_error,
+        )
+        return None
+    return log_file
 
 
 def build_cli_runtime_config(args: argparse.Namespace):
@@ -1350,12 +1403,12 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
 
     settings = get_settings()
 
-    # Use standard logging (console + file) — same as api/worker
-    setup_logging(settings.log_level)
+    # Use standard logging (console + file), the api's file: this IS the api.
+    log_file = setup_logging(settings.log_level, command="api")
 
     print("Starting Nymeria Gateway in foreground mode...")
     print(f"  REST API: http://{settings.api_host}:{settings.api_port}")
-    print(f"  Log file: {settings.logs_dir / settings.service_log_file}")
+    print(f"  Log file: {log_file if log_file is not None else 'none (console only)'}")
     print("  Press Ctrl+C to stop")
     print()
 
@@ -2048,9 +2101,10 @@ def main() -> None:
     # stdout reserved for JSON-RPC messages; the MCP server configures stderr
     # logging internally so client transports are not corrupted. doctor and
     # snapshot are skipped too: they print operator-facing check reports and
-    # must not interleave them with log lines.
-    if args.command not in ("service", "browser", "mcp", "init", "doctor", "snapshot"):
-        setup_logging(args.log_level)
+    # must not interleave them with log lines; completion prints a script the
+    # shell evals, where even the unwritable-log warning would be text.
+    if args.command not in ("service", "browser", "mcp", "init", "doctor", "snapshot", "completion"):
+        setup_logging(args.log_level, command=args.command)
 
     if service_token_required:
         from nymeria.config import get_settings

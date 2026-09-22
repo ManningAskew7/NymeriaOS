@@ -1474,7 +1474,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SERVICE_LOG_FILE` | `service.log` | Rotating log filename (all modes) |
+| `SERVICE_LOG_FILE` | `service.log` | Rotating log filename for `api`/`slim`; other subcommands derive their own (`worker.log`, `telegram.log`, ...; a custom stem prefixes the role) |
 | `SERVICE_LOG_MAX_BYTES` | `10485760` | Rotate log after this many bytes |
 | `SERVICE_LOG_BACKUP_COUNT` | `5` | Number of rotated log backups to keep |
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
