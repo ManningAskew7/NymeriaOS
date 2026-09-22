@@ -472,10 +472,13 @@ class CustomToolLoader:
         langchain inject the run config (the bash.py pattern), which carries
         ``user_id``/``thread_id``/``workflow_depth``.
 
-        Both entry points are bound (like every other custom-tool type): a
-        coroutine-only StructuredTool raises ``NotImplementedError`` from
-        ``tool.invoke()`` on the SYNC tool-node path, which is live via
-        ``POST /chat/sync`` and the in-process webhook bots. The sync wrapper
+        Both entry points are bound (like every other custom-tool type). A
+        coroutine-only StructuredTool used to raise ``NotImplementedError``
+        from ``tool.invoke()`` on the SYNC tool-node path (live via
+        ``POST /chat/sync`` and the in-process webhook bots); since #390 the
+        node bridges such tools onto the stream-bridge loop, but a bound sync
+        entry point stays the direct route and keeps this engine's own
+        ``asyncio.run`` shape. The sync wrapper
         runs the engine under ``asyncio.run`` on the calling worker thread
         (no running loop there); the trigger ``_fire_run_workflow`` path
         proves the engine's per-run RPC listener works under exactly this

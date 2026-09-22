@@ -3446,6 +3446,15 @@ def format_tool_duration_ms(duration_ms: int) -> str:
     return f"{round(seconds)}s"
 
 
+def _thread_has_running_loop() -> bool:
+    """True when the calling thread is inside a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 class SafeToolNode(ToolNode):
     """
     A ToolNode wrapper that catches exceptions and returns them as tool results,
@@ -3494,6 +3503,61 @@ class SafeToolNode(ToolNode):
     # hook is registered we delegate straight to ``super()``, so the hot path and
     # its error semantics are unchanged by default.
     # ------------------------------------------------------------------ #
+
+    def _execute_tool_sync(self, request, input_type, config):
+        """The parent's sync executor, plus a bridge for coroutine-only tools.
+
+        The sync graph drive (``POST /chat/sync``, the bots' sync fallback,
+        every in-process ``agent.chat`` caller) reaches ``StructuredTool._run``,
+        which refuses a tool that only has a coroutine ("does not support sync
+        invocation"). 28 catalog tools across eight modules are coroutine-only
+        (``tool_invoke``, ``tool_create``, ``react``, ``ui_prompt``,
+        ``request_credential``, the two ``cli_statusbar_*``, ``auth_test`` and
+        ``auth_write``, the 19 ``chrome_*``), so on that path the agent could
+        not invoke an unbound tool, author a tool, drive the browser or prompt
+        for a credential (#390). A tool with a sync ``func`` (dual-mode MCP,
+        custom and slash-command tools included) still takes it.
+
+        Such a tool runs the parent's ASYNC executor on the process's
+        persistent stream-bridge loop, under the caller's contextvars, NOT a
+        per-call ``asyncio.run``: that loop would die the moment the tool
+        returned, cancelling whatever the tool left behind (the credential
+        prompt's rendezvous future and device-code poller, the browser login
+        session's future, ``tool_invoke``'s inner observe-hook tasks), turning
+        today's loud refusal into a silent half-success. The coroutine is
+        bounded ON the loop by the call's own timeout, so a hung one is
+        cancelled (its ``CancelledError`` handlers run) instead of running
+        on unobserved after the timeout message went out.
+
+        Every sync dispatch path funnels through this method (concurrent
+        fan-out, the ordered loop, the hook sandwich, the hook-skip path).
+        Stopgap: the real fix moves the sync surfaces onto the turn runner
+        (#368).
+        """
+        tool = getattr(request, "tool", None)
+        coroutine_only = (
+            tool is not None
+            and getattr(tool, "func", None) is None
+            and getattr(tool, "coroutine", None) is not None
+        )
+        if not coroutine_only:
+            return super()._execute_tool_sync(request, input_type, config)
+        if _thread_has_running_loop():
+            # Never the case on the graph's sync drive (both dispatch paths run
+            # the call on a pool worker). Blocking a live loop on another loop
+            # would stall it, so fall through to the parent's honest refusal.
+            logger.warning(
+                "Coroutine-only tool %r called on the sync path from a thread with a "
+                "running loop; refusing rather than blocking that loop",
+                getattr(tool, "name", "?"),
+            )
+            return super()._execute_tool_sync(request, input_type, config)
+        from ...core.stream_bridge import _get_bridge_loop
+
+        return _get_bridge_loop().run_in_context(
+            super()._execute_tool_async(request, input_type, config),
+            timeout=self._call_timeout(request.tool_call),
+        )
 
     def _run_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
         from ...core import hooks, tool_execution

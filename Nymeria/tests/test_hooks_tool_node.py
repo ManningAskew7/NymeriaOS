@@ -12,6 +12,8 @@ import asyncio
 import importlib
 import inspect
 
+import pytest
+
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.runtime import DEFAULT_RUNTIME
@@ -365,3 +367,38 @@ def test_parent_tool_node_internals_present():
     params = inspect.signature(ToolCallRequest).parameters
     for field in ("tool_call", "tool", "state", "runtime"):
         assert field in params, f"ToolCallRequest.{field} missing after upgrade"
+
+
+@pytest.mark.asyncio
+async def test_adrain_observe_skips_tasks_that_belong_to_another_loop():
+    """Observe tasks are process-wide but loop-owned; a foreign loop's task
+    used to make the drain raise "attached to a different loop"."""
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+    holder: dict = {}
+
+    def _other_loop():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def _linger():
+            started.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+
+        holder["task"] = loop.create_task(_linger())
+        loop.run_until_complete(holder["task"])
+        loop.close()
+
+    worker = threading.Thread(target=_other_loop, daemon=True)
+    worker.start()
+    assert started.wait(2.0)
+    dmod._observe_tasks.add(holder["task"])
+    try:
+        await asyncio.wait_for(dmod.adrain_observe(), 2.0)
+    finally:
+        dmod._observe_tasks.discard(holder["task"])
+        release.set()
+        worker.join(2.0)

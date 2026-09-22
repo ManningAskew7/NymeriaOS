@@ -405,6 +405,53 @@ class _StreamBridgeLoop:
             raise
         return future.result()
 
+    def run_in_context(
+        self,
+        coro: Any,
+        *,
+        context: Optional[contextvars.Context] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """Run ``coro`` on this loop under ``context`` and block for its result.
+
+        ``run_coroutine_threadsafe`` starts the task in the loop thread's own
+        context, dropping the caller's contextvars (the hook re-entrancy
+        guard, the ambient runnable config); the task is created via
+        ``call_soon_threadsafe(..., context=...)`` instead so it inherits the
+        caller's. ``timeout`` (seconds) bounds the coroutine ON the loop
+        (``asyncio.wait_for``), so a hung coroutine is cancelled and its
+        ``CancelledError`` handlers run rather than being abandoned; the
+        caller then sees ``TimeoutError``. The loop outlives the call, so
+        futures, tasks and observe dispatches the coroutine leaves behind
+        keep running (the point of using this loop over ``asyncio.run``).
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise RuntimeError("Stream bridge loop is closed")
+        bounded = asyncio.wait_for(coro, timeout) if timeout is not None else coro
+        done: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _start() -> None:
+            task = loop.create_task(bounded)
+
+            def _settle(t: asyncio.Task) -> None:
+                if t.cancelled():
+                    done.cancel()
+                    return
+                exc = t.exception()
+                if exc is not None:
+                    done.set_exception(exc)
+                else:
+                    done.set_result(t.result())
+
+            task.add_done_callback(_settle)
+
+        loop.call_soon_threadsafe(_start, context=context or contextvars.copy_context())
+        return done.result()
+
     def stop(self) -> None:
         loop = self._loop
         if loop is None or loop.is_closed():

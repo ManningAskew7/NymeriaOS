@@ -883,8 +883,15 @@ def schedule_observe(
 
 
 async def adrain_observe() -> None:
-    """Await all loop-scheduled observe dispatches (test / shutdown barrier)."""
-    tasks = [t for t in list(_observe_tasks) if not t.done()]
+    """Await this loop's pending observe dispatches (test / shutdown barrier).
+
+    ``_observe_tasks`` is process-wide and tasks belong to the loop that
+    scheduled them (the API loop, the stream-bridge loop that runs sync
+    tool calls, a test's own): gathering a foreign loop's task raises
+    "attached to a different loop", so only the running loop's are awaited.
+    """
+    loop = asyncio.get_running_loop()
+    tasks = [t for t in list(_observe_tasks) if not t.done() and t.get_loop() is loop]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
