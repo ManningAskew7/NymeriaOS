@@ -27,6 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 import nymeria.config as config_module
 import nymeria.core.activity_log as activity_log_module
 import nymeria.core.agent as agent_module
+import nymeria.core.agent_memory_seed as memory_seed_module
 import nymeria.core.claude_code_overrides as overrides_module
 import nymeria.core.event_bus as event_bus_module
 import nymeria.core.notification_dispatch as notification_module
@@ -72,9 +73,20 @@ def _ctx(**overrides) -> CommandContext:
 class _Graph:
     def __init__(self) -> None:
         self.updates: list[tuple[dict, dict]] = []
+        self.existing: list[Any] = []  # messages already in the checkpoint
+        self.get_state_raises = False
 
     def update_state(self, config, values):
         self.updates.append((config, values))
+
+    def get_state(self, config):
+        if self.get_state_raises:
+            raise RuntimeError("state unavailable")
+        written = [m for _, values in self.updates for m in values.get("messages", [])]
+        return SimpleNamespace(values={"messages": [*self.existing, *written]})
+
+    def messages_written(self) -> list[list[Any]]:
+        return [list(values["messages"]) for _, values in self.updates]
 
 
 class _Agent:
@@ -90,6 +102,16 @@ class _Agent:
         self.patched: list[tuple[str, int]] = []  # (thread, updates-so-far)
         self.patch_raises = False
         self.aborted: list[str] = []
+        # The REAL fresh-thread seeder (#341), over this fake's graph and
+        # gates. The fixture marks THREAD seeded so the delivery tests see
+        # only their own exchange; the seed tests clear that.
+        self._memory_seeded_threads: set[str] = {THREAD}
+        self.skip_seed = False
+
+    _seed_memory_init_if_empty_sync = agent_module.NymeriaAgent._seed_memory_init_if_empty_sync
+
+    def _thread_skip_memory_seed(self, thread_id):
+        return self.skip_seed
 
     def _patch_dangling_tool_calls(self, graph, config):
         if self.patch_raises:
@@ -122,6 +144,14 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(config_module, "get_settings", lambda: settings)
     agent = _Agent()
     monkeypatch.setattr(agent_module, "get_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        memory_seed_module,
+        "build_init_seed_exchange",
+        lambda user_id, thread_id: [
+            HumanMessage(content=f"SEED {user_id} {thread_id}", id="seed-h"),
+            AIMessage(content="seeded", id="seed-a"),
+        ],
+    )
     reset_turn_stream_registry()
     reset_pending_queue_for_tests()
     delivery.reset_registry_for_tests()
@@ -683,6 +713,92 @@ def test_an_inline_render_failure_on_an_interim_report_keeps_the_slot(env, monke
     assert delivery.last_outcome(THREAD) == (job.id, "completed")
 
 
+# --------------------------------------------------------------------------- #
+# Fresh-thread memory seed (#341)
+# --------------------------------------------------------------------------- #
+
+
+def _seed_and_exchange(env) -> tuple[list[Any], list[Any]]:
+    written = env.agent._default_graph.messages_written()
+    assert len(written) == 2, written
+    return written[0], written[1]
+
+
+def test_a_detached_code_on_a_fresh_thread_seeds_memory_before_its_exchange(env) -> None:
+    """The delivery's history write is the thread's first: the memory-init
+    seed must land ahead of it, or the thread's first model turn finds a
+    non-empty checkpoint and the agent never loads its memory there."""
+    env.agent._memory_seeded_threads.clear()
+    env.state.release.clear()
+    _execute("/code fix it")
+    env.state.release.set()
+    assert _wait_for(lambda: _completed(env))
+    seed, exchange = _seed_and_exchange(env)
+    assert [m.id for m in seed] == ["seed-h", "seed-a"]
+    assert f"SEED owner {THREAD}" in seed[0].content
+    human, ai = exchange
+    assert human.additional_kwargs.get("internal_type") == "autonomous_wakeup"
+    assert "PONG" in ai.content
+    assert THREAD in env.agent._memory_seeded_threads
+
+
+def test_an_inline_code_on_a_fresh_thread_seeds_memory_before_its_exchange(env) -> None:
+    env.agent._memory_seeded_threads.clear()
+    reply = _execute("/code fix it")
+    assert reply.success is True and "PONG" in reply.markdown
+    seed, exchange = _seed_and_exchange(env)
+    assert [m.id for m in seed] == ["seed-h", "seed-a"]
+    assert "PONG" in exchange[1].content
+
+
+def test_a_thread_with_history_is_not_reseeded_by_a_code_write(env) -> None:
+    env.agent._memory_seeded_threads.clear()
+    env.agent._default_graph.existing = [HumanMessage(content="earlier chat", id="h0")]
+    reply = _execute("/code fix it")
+    assert "PONG" in reply.markdown, "the run must have replied inline"
+    written = env.agent._default_graph.messages_written()
+    assert len(written) == 1 and "PONG" in written[0][1].content
+    assert THREAD in env.agent._memory_seeded_threads
+
+
+def test_a_second_code_run_does_not_seed_again(env) -> None:
+    env.agent._memory_seeded_threads.clear()
+    assert "PONG" in _execute("/code fix it").markdown
+    assert "PONG" in _execute("/code and again").markdown
+    written = env.agent._default_graph.messages_written()
+    assert [m.id for m in written[0]] == ["seed-h", "seed-a"]
+    assert len(written) == 3, "seed, then one exchange per run"
+    assert all("PONG" in batch[1].content for batch in written[1:])
+
+
+def test_a_failed_seed_state_check_still_records_the_exchange(env) -> None:
+    env.agent._memory_seeded_threads.clear()
+    env.agent._default_graph.get_state_raises = True
+    reply = _execute("/code fix it")
+    assert "PONG" in reply.markdown, "the run must have replied inline"
+    written = env.agent._default_graph.messages_written()
+    assert len(written) == 1 and "PONG" in written[0][1].content
+    # A failed state read does NOT mark the thread seeded: the next write
+    # retries, exactly as the chat pre-flight does. (The retry then finds a
+    # non-empty checkpoint, so the seed is gone for good on this thread:
+    # that is the pre-existing chat behavior on a state-read failure.)
+    assert THREAD not in env.agent._memory_seeded_threads
+    env.agent._default_graph.get_state_raises = False
+    assert "PONG" in _execute("/code again").markdown
+    assert THREAD in env.agent._memory_seeded_threads, "the retry ran the gate"
+    assert len(env.agent._default_graph.messages_written()) == 2
+
+
+def test_a_shadow_thread_is_not_seeded_by_a_code_write(env) -> None:
+    env.agent._memory_seeded_threads.clear()
+    env.agent.skip_seed = True
+    reply = _execute("/code fix it")
+    assert "PONG" in reply.markdown, "the run must have replied inline"
+    written = env.agent._default_graph.messages_written()
+    assert len(written) == 1 and "PONG" in written[0][1].content
+    assert THREAD in env.agent._memory_seeded_threads, "the skip is recorded as seeded"
+
+
 def test_second_dispatch_is_refused_while_a_run_is_in_flight(env) -> None:
     env.state.release.clear()
     first = _execute("/code fix it")
@@ -825,8 +941,9 @@ def test_a_delayed_first_delivery_does_not_overwrite_the_followups_outcome(env, 
     assert _wait_for(lambda: delivery.active_job(THREAD) is not None
                      and delivery.active_job(THREAD).id != first_id)
     followup = delivery.active_job(THREAD)
-    # The first run's outcome is on record as soon as it is known.
-    assert delivery.last_outcome(THREAD) == (first_id, "completed")
+    # The first run's outcome is on record as soon as it is known (the
+    # watcher records it right after starting the follow-up, so wait).
+    assert _wait_for(lambda: delivery.last_outcome(THREAD) == (first_id, "completed"))
     followup_release.set()
     assert _wait_for(lambda: followup.done.is_set())
     time.sleep(0.3)

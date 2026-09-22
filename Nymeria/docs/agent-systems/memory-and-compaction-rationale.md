@@ -138,7 +138,9 @@ This is delivered in three pieces.
 ### 1. Fresh-thread seed
 
 When a brand-new thread takes its first turn, Nymeria seeds the memory-read
-exchange into the checkpoint before the first user message. The agent therefore
+exchange into the checkpoint before the first user message (a `/code` result
+delivered to a fresh thread seeds first too, since the seed is one-shot and
+gated on an empty checkpoint). The agent therefore
 starts every conversation already knowing its memory, deterministically, instead
 of relying on it to remember to call `memory_read` (which it did only
 sometimes). The seed is hidden from the user-facing transcript but is real context

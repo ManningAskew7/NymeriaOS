@@ -237,7 +237,11 @@ def persist_exchange(agent: Any, job: "ClaudeCodeJob", record_prompt: str, text:
     appending behind an unanswered ``tool_calls`` tail would bury it where
     the patcher, which inspects only the last message, never finds it, and
     every later model turn would fail on the orphaned tool use. If that
-    patch fails the write is skipped. Returns the wake-up message id (the
+    patch fails the write is skipped. Then the fresh-thread memory seed
+    runs, exactly as a chat turn's pre-flight does (#341): the seed is
+    one-shot and gated on an EMPTY checkpoint, so a thread whose first
+    action is ``/code`` would otherwise be populated by this write and
+    never load the agent's memory. Returns the wake-up message id (the
     live-attach anchor), or None when nothing was written.
     """
     graph = getattr(agent, "_default_graph", None)
@@ -255,6 +259,7 @@ def persist_exchange(agent: Any, job: "ClaudeCodeJob", record_prompt: str, text:
     except Exception:  # noqa: BLE001 - a tail we cannot repair must not be buried.
         logger.exception("Claude Code job %s: dangling-call patch failed; history not written", job.id)
         return None
+    agent._seed_memory_init_if_empty_sync(graph, config, job.thread_id, job.user_id)
     header = get_time_context(is_autonomous=True, source=SOURCE)
     human = _create_human_message(
         f"{header}\n\n{record_prompt}",

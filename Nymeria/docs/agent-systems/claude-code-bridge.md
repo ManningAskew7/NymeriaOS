@@ -421,7 +421,9 @@ fix Nymeria on the host.
   window), the exchange is written into thread history under that hold (a
   hidden wake-up carrying the output as data, then the relayed text as the
   assistant message, after patching any dangling tool calls a dead turn left
-  behind), a turn stream buffer is opened and fed the text, and the
+  behind and, on a fresh thread, after the same memory-init seed that a
+  chat turn's pre-flight writes, so a `/code`-first thread still loads the
+  agent's memory), a turn stream buffer is opened and fed the text, and the
   `task_started` / `task_completed` bookends go out. The buffer opens BEFORE
   `task_started` because the bots attach on that event to the thread's
   current buffer: publishing first would hand them the previous turn's
