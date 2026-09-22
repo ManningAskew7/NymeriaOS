@@ -105,6 +105,11 @@ def load_record(record_id: str) -> Optional[Dict[str, Any]]:
     return _STORE.load(record_id)
 
 
+def is_canonical_record_id(record_id: str) -> bool:
+    """False for an id the store would silently alias onto another file."""
+    return bool(record_id) and _STORE.canonical_id(record_id) == record_id
+
+
 def delete_record(record_id: str) -> None:
     _STORE.delete(record_id)
 

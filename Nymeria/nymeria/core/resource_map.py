@@ -461,12 +461,14 @@ _OPERATIONAL_DIRS: dict[str, bool] = {
     "cli_history/": False,
     "flags/": False,
     "hooks/approvals/": False,
+    "llm/fallback_approvals/": False,   # ApprovalRecordStore; path composed at runtime (#385)
     "logs/": False,
     "mcp_install_previews/": False,
     "mcp_runtimes/": False,
     "notifications/": False,
     "thread_metadata/": False,
     "thread_notes/": False,
+    "thread_requests/": False,          # ApprovalRecordStore; path composed at runtime (#385)
     "todos/": False,
     "tool_drafts/": False,
     "users/": False,            # other users' data, not credentials, see below

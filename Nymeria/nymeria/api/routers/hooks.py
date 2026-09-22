@@ -425,11 +425,17 @@ def create_hook_router(
         from ...core.hook_approvals import (
             delete_record,
             get_hook_approval_coordinator,
+            is_canonical_record_id,
             live_record,
             load_record,
             publish_resolved_event,
         )
 
+        # A non-canonical id would miss the coordinator key yet load (and
+        # delete) another record's FILE through the store's lossy path
+        # sanitizer; refuse it outright.
+        if not is_canonical_record_id(record_id):
+            raise HTTPException(status_code=404, detail="Approval not found")
         # #346: authorize on the live waiter's copy of the record, never on
         # the agent-writable file. Only a hold with no waiter (crash orphan)
         # falls back to the disk row, and all that path can do is the

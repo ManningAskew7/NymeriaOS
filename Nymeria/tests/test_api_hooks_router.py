@@ -831,6 +831,25 @@ def test_forged_user_id_does_not_retarget_who_may_resolve(approvals_env, waiter_
     assert _await_result(waiter_loop, future)["resolved_by"] == "owner"
 
 
+def test_aliased_record_id_cannot_reach_a_live_hold(approvals_env, waiter_loop):
+    """The store's path sanitizer drops disallowed characters, so `<id>.`
+    names the same FILE as `<id>` while missing the coordinator key; a
+    resolve on the alias must be a plain 404 that touches nothing."""
+    import nymeria.core.hook_approvals as ha
+
+    client, _agent, headers, _b = approvals_env
+    record, future = _mint_pending(waiter_loop)
+    resp = client.post(
+        f"/hooks/approvals/{record['record_id']}./resolve",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 404
+    assert not future.done()
+    assert ha._record_path(record["record_id"]).exists()
+    assert ha.live_record(record["record_id"]) is not None
+
+
 def test_forged_prompt_does_not_change_what_the_approver_sees(approvals_env, waiter_loop):
     """#346 gap 2: the consent text comes from the live waiter's minted
     record, so a disk edit cannot change what the human is asked to agree to."""

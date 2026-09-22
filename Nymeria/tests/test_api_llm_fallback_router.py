@@ -165,3 +165,74 @@ def test_resolve_409_cleans_stale_record(approvals_env, waiter_loop):
     )
     assert resp.status_code == 409
     assert load_record(record["record_id"]) is None
+
+
+def _rewrite_record(record_id: str, **fields):
+    """Forge fields on the on-disk record the way an agent's file_write could."""
+    import json
+
+    import nymeria.core.fallback_approvals as fa
+
+    path = fa._record_path(record_id)
+    data = json.loads(path.read_text())
+    data.update(fields)
+    path.write_text(json.dumps(data))
+
+
+def test_forged_user_id_does_not_retarget_who_may_resolve(approvals_env, waiter_loop):
+    """#385 (the #346 shape): the prompt authorizes on the live in-process
+    waiter, not the agent-writable record file."""
+    client, agent, headers, builder = approvals_env
+    record, future = _mint_pending(waiter_loop, user_id="owner")
+    agent.accounts_repo.create_user("mallory", "mallory@example.com", "Mallory", role="user")
+    mallory_headers = builder.auth(agent.accounts_repo.issue_token("mallory"))
+    _rewrite_record(record["record_id"], user_id="mallory")
+
+    assert client.get("/llm/fallback-approvals", headers=mallory_headers).json()["approvals"] == []
+    resp = client.post(
+        f"/llm/fallback-approvals/{record['record_id']}/resolve",
+        headers=mallory_headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 404
+    assert not future.done()
+
+    listed = client.get("/llm/fallback-approvals", headers=headers).json()["approvals"]
+    assert [e["record_id"] for e in listed] == [record["record_id"]]
+    assert listed[0]["user_id"] == "owner"
+    resp = client.post(
+        f"/llm/fallback-approvals/{record['record_id']}/resolve",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 200
+    assert _await_result(waiter_loop, future)["resolved_by"] == "owner"
+
+
+def test_forged_prompt_fields_do_not_change_what_the_approver_sees(approvals_env, waiter_loop):
+    client, _agent, headers, _b = approvals_env
+    record, _future = _mint_pending(waiter_loop)
+    _rewrite_record(record["record_id"], to_model="gpt-cheap", reason="harmless")
+    entry = client.get("/llm/fallback-approvals", headers=headers).json()["approvals"][0]
+    assert entry["to_model"] == "claude-opus-4-8"
+    assert entry["reason"] == "server_error"
+
+
+def test_aliased_record_id_cannot_reach_a_live_prompt(approvals_env, waiter_loop):
+    """`<id>.` names the same FILE as `<id>` through the store's lossy path
+    sanitizer while missing the coordinator key; the alias is a plain 404
+    that deletes nothing."""
+    import nymeria.core.fallback_approvals as fa
+
+    client, _agent, headers, _b = approvals_env
+    record, future = _mint_pending(waiter_loop)
+    resp = client.post(
+        f"/llm/fallback-approvals/{record['record_id']}./resolve",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 404
+    assert not future.done()
+    assert fa._record_path(record["record_id"]).exists()
+    assert fa.live_record(record["record_id"]) is not None
+

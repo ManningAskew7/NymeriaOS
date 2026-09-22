@@ -60,6 +60,18 @@ class ApprovalRecordStore:
         self._subdir = subdir
         self._noun = noun
 
+    @property
+    def subdir(self) -> str:
+        """The data-dir child this store writes under (a resource-map key)."""
+        return self._subdir
+
+    def canonical_id(self, record_id: str) -> str:
+        """The id as the FILE NAME spells it. ``record_path`` sanitizes its
+        argument lossily, so a caller-supplied id that is not already
+        canonical aliases another record's file (#385 review); route entries
+        refuse such ids rather than resolve the alias."""
+        return safe_path_segment(record_id, default="")
+
     def dir(self) -> Path:
         from ..config import get_settings
         return get_settings().data_dir / self._subdir
@@ -82,7 +94,8 @@ class ApprovalRecordStore:
             return None
         if not isinstance(record, dict):
             return None
-        record["record_id"] = record_id  # the file name is the identity
+        # The file name is the identity (the content field is agent-writable).
+        record["record_id"] = self.canonical_id(record_id)
         return record
 
     def delete(self, record_id: str) -> None:

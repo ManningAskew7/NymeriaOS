@@ -114,13 +114,46 @@ def load_record(record_id: str) -> Optional[Dict[str, Any]]:
     return _STORE.load(record_id)
 
 
+def is_canonical_record_id(record_id: str) -> bool:
+    """False for an id the store would silently alias onto another file."""
+    return bool(record_id) and _STORE.canonical_id(record_id) == record_id
+
+
 def delete_record(record_id: str) -> None:
     _STORE.delete(record_id)
 
 
 def list_pending(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Pending records, newest first; ``user_id`` filters to one owner."""
-    return _STORE.list(user_id)
+    """Pending records, newest first; ``user_id`` filters to one owner.
+
+    #385 (the #346 shape): the record FILE is agent-writable, so live prompts
+    are enumerated from the coordinator's in-process copies of the minted
+    records (owner filter included) and the disk rows contribute only ids
+    with no waiter: crash orphans awaiting the stale-cleanup path. A forged
+    field reaches nothing but that cleanup, and a deleted file cannot hide
+    a live prompt.
+    """
+    live = [dict(p.record) for p in get_fallback_approval_coordinator().snapshot()]
+    live_ids = {str(r.get("record_id") or "") for r in live}
+    rows = live + [
+        record
+        for record in _STORE.list()
+        if str(record.get("record_id") or "") not in live_ids
+    ]
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    if user_id is not None:
+        rows = [r for r in rows if r.get("user_id") == user_id]
+    return rows
+
+
+def live_record(record_id: str) -> Optional[Dict[str, Any]]:
+    """The live waiter's copy of the minted record, or None when no prompt
+    is parked on ``record_id`` in this process. The authoritative source for
+    who may resolve a prompt and what the approver is shown."""
+    pending = get_fallback_approval_coordinator().get(record_id)
+    if pending is None:
+        return None
+    return dict(pending.record)
 
 
 def public_entry(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -167,6 +200,10 @@ class PendingFallbackApproval:
     thread_id: str
     kind: str
     future: asyncio.Future
+    # The minted record, kept in process so the resolve surfaces authorize
+    # and display from an unforgeable copy (#385); the disk file serves
+    # crash orphans only.
+    record: Dict[str, Any]
     created_at: float = field(default_factory=time.monotonic)
 
 
@@ -180,24 +217,21 @@ class FallbackApprovalCoordinator(FutureRendezvous[PendingFallbackApproval]):
             log_label="fallback_approval_coordinator",
         )
 
-    def register(
-        self,
-        *,
-        record_id: str,
-        user_id: str,
-        thread_id: str,
-        kind: str,
-    ) -> asyncio.Future:
+    def register(self, record: Dict[str, Any]) -> asyncio.Future:
+        """Park a waiter for the minted ``record`` (``build_pending_record``'s
+        dict); the typed fields are derived from it so the two never disagree."""
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
+        record_id = str(record["record_id"])
         self._add(
             record_id,
             PendingFallbackApproval(
                 record_id=record_id,
-                user_id=user_id,
-                thread_id=thread_id,
-                kind=kind,
+                user_id=str(record.get("user_id") or ""),
+                thread_id=str(record.get("thread_id") or ""),
+                kind=str(record.get("kind") or ""),
                 future=future,
+                record=dict(record),
             ),
         )
         return future
@@ -320,7 +354,13 @@ def persist_pending_record(record: Dict[str, Any]) -> None:
     maps that to an auto-swap).
     """
     user_id = str(record.get("user_id") or "")
-    open_count = len(list_pending(user_id)) if user_id else len(list_pending())
+    own_id = str(record.get("record_id") or "")
+    # The waiter is registered BEFORE this write, and list_pending counts
+    # live waiters, so the record being persisted must not count itself.
+    open_count = len(
+        [r for r in (list_pending(user_id) if user_id else list_pending())
+         if str(r.get("record_id") or "") != own_id]
+    )
     if open_count >= MAX_PENDING_PER_USER:
         raise ValueError(
             f"user {user_id!r} already has {open_count} pending fallback prompts"
@@ -353,12 +393,7 @@ def create_pending_approval(
         default_hold_seconds=default_hold_seconds,
         is_autonomous=is_autonomous,
     )
-    future = get_fallback_approval_coordinator().register(
-        record_id=record["record_id"],
-        user_id=user_id,
-        thread_id=thread_id,
-        kind=record["kind"],
-    )
+    future = get_fallback_approval_coordinator().register(record)
     try:
         persist_pending_record(record)
     except BaseException:
@@ -482,12 +517,7 @@ async def _await_parked_decision(
     # Future first (a resolver can never see a record without a waiter), then
     # the cap check + record write off-loop: this coroutine runs on the API
     # event loop from the async consult sites.
-    future = get_fallback_approval_coordinator().register(
-        record_id=record_id,
-        user_id=user_id,
-        thread_id=thread_id,
-        kind=record["kind"],
-    )
+    future = get_fallback_approval_coordinator().register(record)
     try:
         await asyncio.to_thread(persist_pending_record, record)
     except BaseException:

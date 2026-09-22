@@ -2157,3 +2157,24 @@ def test_readme_posture_prose_matches_the_refusal_columns():
                 f"{row.path}: posture must state the admin-only write"
             )
             assert row.posture != "files-as-truth"
+
+
+def test_approval_record_stores_are_registered_operational_dirs():
+    """#385: every ApprovalRecordStore dir is registered by hand, because the
+    layout gate cannot discover them (paths composed at runtime). Derived
+    from the store INSTANCES so a renamed subdir or a new store fails here."""
+    from nymeria.core import fallback_approvals, hook_approvals, thread_requests
+    from nymeria.core.resource_map import _OPERATIONAL_DIRS
+    from nymeria.core.workflows import approvals as workflow_approvals
+
+    stores = [
+        hook_approvals._STORE,
+        fallback_approvals._STORE,
+        workflow_approvals._STORE,
+        thread_requests._store(),
+    ]
+    for store in stores:
+        key = f"{store.subdir}/"
+        assert key in _OPERATIONAL_DIRS, key
+        assert _OPERATIONAL_DIRS[key] is False, key
+

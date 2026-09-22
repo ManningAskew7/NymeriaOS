@@ -147,6 +147,37 @@ async def test_sweep_removes_only_stale_records():
 
 
 @pytest.mark.asyncio
+async def test_live_record_is_the_minted_copy_until_the_waiter_is_gone():
+    """#385: the live waiter carries the minted record; list_pending
+    enumerates live holds from the coordinator and adds only disk rows with
+    no waiter, so a forged or deleted file cannot re-key or hide a hold."""
+    import json
+
+    import nymeria.core.fallback_approvals as fa
+
+    record, _future = _mint(user_id="u1")
+    rid = record["record_id"]
+    path = fa._record_path(rid)
+    data = json.loads(path.read_text())
+    data.update(user_id="mallory", to_model="gpt-cheap")
+    path.write_text(json.dumps(data))
+
+    live = fa.live_record(rid)
+    assert live is not None and live["user_id"] == "u1" and live["to_model"] == "claude-opus-4-8"
+    assert fa.list_pending("mallory") == []
+    listed = fa.list_pending("u1")
+    assert [r["record_id"] for r in listed] == [rid]
+    assert listed[0]["to_model"] == "claude-opus-4-8"
+
+    path.unlink()
+    assert [r["record_id"] for r in fa.list_pending("u1")] == [rid]
+
+    fa.get_fallback_approval_coordinator().discard(rid)
+    assert fa.live_record(rid) is None
+    assert fa.list_pending("u1") == []
+
+
+@pytest.mark.asyncio
 async def test_resolve_carries_hold_and_wins_once():
     record, future = _mint()
     coordinator = get_fallback_approval_coordinator()
@@ -826,6 +857,37 @@ def test_fallback_approve_command_resolves_with_minutes(monkeypatch):
         resolved = _resolved(loop, future)
         assert resolved["hold_seconds"] == 600
         assert resolved["approved"] is True
+    finally:
+        loop.close()
+
+
+def test_fallback_approve_command_ignores_forged_user_id_on_disk(monkeypatch):
+    """#385 on the command surface: the real owner (non-admin) still sees
+    and resolves the prompt after a disk edit hands it to someone else."""
+    import json
+
+    import nymeria.core.fallback_approvals as fa
+    import nymeria.tools.utils as tools_utils
+    from cli_fixtures import run
+    from nymeria.core.command_service import CommandService
+    from test_command_service import FakeCommandApi
+
+    monkeypatch.setattr(tools_utils, "is_admin", lambda user_id, agent=None: False)
+    loop, record, future = _mint_on_loop()
+    try:
+        path = fa._record_path(record["record_id"])
+        data = json.loads(path.read_text())
+        data["user_id"] = "somebody-else"
+        path.write_text(json.dumps(data))
+        result = run(
+            CommandService().execute(
+                _command_ctx(),
+                f"/fallback approve {record['record_id']}",
+                api=FakeCommandApi(),
+            )
+        )
+        assert result.success is True, result.markdown
+        assert _resolved(loop, future)["approved"] is True
     finally:
         loop.close()
 

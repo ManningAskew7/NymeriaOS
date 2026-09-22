@@ -80,11 +80,24 @@ def create_llm_fallback_router(verify_api_key_fn) -> APIRouter:
         from ...core.fallback_approvals import (
             delete_record,
             get_fallback_approval_coordinator,
+            is_canonical_record_id,
+            live_record,
             load_record,
             publish_resolved_event,
         )
 
-        record = await run_in_threadpool(load_record, record_id)
+        # A non-canonical id would miss the coordinator key yet load (and
+        # delete) another record's FILE through the store's lossy path
+        # sanitizer; refuse it outright.
+        if not is_canonical_record_id(record_id):
+            raise HTTPException(status_code=404, detail="Fallback prompt not found")
+        # #385: authorize on the live waiter's copy of the record, never on
+        # the agent-writable file; only a prompt with no waiter (crash
+        # orphan) falls back to the disk row, and all that path can do is
+        # the stale cleanup below.
+        record = live_record(record_id)
+        if record is None:
+            record = await run_in_threadpool(load_record, record_id)
         if record is None or (
             user.role != "admin" and record.get("user_id") != user.id
         ):
