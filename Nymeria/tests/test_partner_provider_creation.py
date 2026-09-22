@@ -465,6 +465,82 @@ def test_ollama_native_keeps_an_empty_turn_that_carries_reasoning():
     assert wire[3]["content"] == "" and wire[3].get("thinking") == "deep thought"
 
 
+_THINKING = {"type": "thinking", "thinking": "let me see", "signature": "c2ln"}
+_REASONING_SUMMARY = {"type": "reasoning", "summary": [{"type": "summary_text", "text": "s"}]}
+
+
+def test_ollama_native_strips_content_parts_the_vendor_cannot_ship():
+    """#387: a mixed-provider history carries Anthropic thinking blocks and
+    responses-wire reasoning blocks; the vendor converter raises on either,
+    so every turn on this route failed. Only shippable parts reach it."""
+    pytest.importorskip("langchain_ollama")
+    llm = providers._create_ollama_native_llm(_ollama_native_config())
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+    history = [
+        HumanMessage(content="pulse"),
+        AIMessage(content=[_THINKING, {"type": "text", "text": "answer"}],
+                  response_metadata={"model_name": "claude-fable-5"}),
+        HumanMessage(content="more"),
+        AIMessage(content=[_REASONING_SUMMARY]),  # empties: dropped
+        HumanMessage(content="and"),
+        AIMessage(content=[_REASONING_SUMMARY],
+                  tool_calls=[{"name": "twitch_send", "args": {"text": "hi"}, "id": "c1"}]),
+        ToolMessage(content="sent", tool_call_id="c1"),
+        AIMessage(content=[{"type": "text", "text": "look"}, image]),
+        HumanMessage(content=[{"type": "text", "text": "kept as is"}]),
+    ]
+    wire = llm._convert_messages_to_ollama_messages(history)
+    assert [m["role"] for m in wire] == [
+        "user", "assistant", "user", "user", "assistant", "tool", "assistant", "user",
+    ]
+    assert wire[1]["content"].strip() == "answer"
+    assert wire[4]["content"] == "" and wire[4]["tool_calls"]
+    assert wire[6]["content"].strip() == "look" and wire[6]["images"] == ["QUJD"]
+    assert wire[7]["content"].strip() == "kept as is"
+    # Checkpointed state was copied, never mutated (pydantic copies the
+    # parts on construction, so compare by value).
+    assert history[1].content == [_THINKING, {"type": "text", "text": "answer"}]
+    assert history[3].content == [_REASONING_SUMMARY]
+
+
+def test_ollama_native_admits_only_the_data_blocks_the_vendor_can_ship():
+    """The vendor's ``is_data_content_block`` branch dispatches on five block
+    kinds but its image getter accepts only a base64 IMAGE; a file, audio or
+    URL-sourced image block, and a malformed image_url, still raise there
+    (#387 review). The allowlist must mirror acceptance, not dispatch."""
+    pytest.importorskip("langchain_ollama")
+    llm = providers._create_ollama_native_llm(_ollama_native_config())
+    history = [
+        HumanMessage(content="x"),
+        AIMessage(content=[
+            "bare string part",
+            {"type": "image", "base64": "QUJD", "mime_type": "image/png"},
+            {"type": "image", "source_type": "base64", "data": "REVG", "mime_type": "image/png"},
+            {"type": "image", "url": "https://example.com/a.png"},
+            {"type": "file", "base64": "Zm9v", "mime_type": "application/pdf"},
+            {"type": "audio", "base64": "Zm9v", "mime_type": "audio/wav"},
+            {"type": "image_url", "image_url": {"nope": 1}},
+            {"type": "image_url", "image_url": "data:image/png;base64,R0hJ"},
+            {"type": "text", "text": "tail"},
+        ]),
+    ]
+    wire = llm._convert_messages_to_ollama_messages(history)
+    assert wire[1]["images"] == ["QUJD", "REVG", "R0hJ"]
+    assert wire[1]["content"].strip().splitlines() == ["bare string part", "tail"]
+
+
+def test_ollama_vendor_still_rejects_a_foreign_thinking_block():
+    """The reason the strip exists; if the vendor learns to skip unknown
+    parts, this fails and the strip can narrow."""
+    pytest.importorskip("langchain_ollama")
+    from langchain_ollama import ChatOllama
+
+    with pytest.raises(ValueError, match="Unsupported message content type"):
+        ChatOllama(model="qwen3")._convert_messages_to_ollama_messages(
+            [HumanMessage(content="x"), AIMessage(content=[_THINKING, {"type": "text", "text": "a"}])]
+        )
+
+
 def test_ollama_vendor_still_ships_an_empty_assistant_turn():
     """The reason the wrapper exists; if the vendor starts dropping it, this
     fails and the wrapper can go."""

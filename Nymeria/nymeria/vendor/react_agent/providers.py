@@ -4081,6 +4081,70 @@ def _create_bedrock_llm(config: LLMConfig) -> BaseChatModel:
     return ChatBedrockConverse(**kwargs)
 
 
+def _ollama_part_is_shippable(part: Any) -> bool:
+    """What langchain-ollama 1.1.x's converter ACCEPTS, not what it dispatches
+    on: a string; ``text``; ``tool_use`` (skipped, the calls ride
+    ``tool_calls``); ``image_url`` with a string url or a ``{"url": str}``
+    dict (a malformed one raises); a data block ONLY when it is a base64
+    image (``_get_image_from_data_content_block`` raises on ``file``,
+    ``audio``, ``video``, ``text-plain`` and on a URL-sourced image, though
+    ``is_data_content_block`` is True for all of them). Anything else, a
+    non-dict part included, fails in the converter."""
+    if isinstance(part, str):
+        return True
+    if not isinstance(part, dict):
+        return False
+    kind = part.get("type")
+    if kind in ("text", "tool_use"):
+        return True
+    if kind == "image_url":
+        url = part.get("image_url")
+        return isinstance(url, str) or (isinstance(url, dict) and isinstance(url.get("url"), str))
+    if kind == "image":
+        if isinstance(part.get("base64"), str):
+            return True
+        return part.get("source_type") == "base64" and isinstance(part.get("data"), str)
+    return False
+
+
+def _strip_unshippable_parts_for_ollama(messages: List[Any]) -> List[Any]:
+    """Drop the AIMessage content parts langchain-ollama's converter rejects.
+
+    ``ChatOllama._convert_messages_to_ollama_messages`` (1.1.x) raises on
+    any part outside ``_ollama_part_is_shippable`` (``ValueError:
+    Unsupported message content type`` for an unknown type, a different
+    ``ValueError`` for a non-image data block or a malformed ``image_url``,
+    ``AttributeError`` for a non-dict part). Mixed-provider histories are
+    first-class here (per-thread model switches, mid-turn fallback swaps),
+    so Anthropic ``thinking`` blocks and the responses-wire ``{"type":
+    "reasoning", "summary": [...]}`` capture WILL reach this route, and one
+    such block failed every turn, including the compaction summary that
+    would have rescued the thread (#387; the same failure class as the
+    google route's 2026-08-09 incident). The strip runs BEFORE the vendor's
+    own v1 unpack (``_convert_from_v1_to_ollama``, which would turn a
+    ``non_standard`` block into text); that path needs ``output_version ==
+    "v1"``, which nothing here sets (the responses routes use
+    ``responses/v1``), so nothing is lost today.
+
+    No provenance rule, unlike ``_strip_foreign_reasoning_for_google``:
+    Ollama's own reasoning rides ``additional_kwargs["reasoning_content"]``
+    (shipped as ``thinking``), never a content part, and there is no
+    signature round-trip to protect, so a reasoning part here is always
+    unshippable whatever produced it. Messages are copied on change, never
+    mutated (they are checkpointed state). Scope is AIMessage, as on the
+    google route; a message that empties is the #384 subclass's business.
+    """
+    sanitized: List[Any] = []
+    for message in messages:
+        content = getattr(message, "content", None)
+        if isinstance(message, AIMessage) and isinstance(content, list):
+            kept = [part for part in content if _ollama_part_is_shippable(part)]
+            if len(kept) != len(content):
+                message = message.model_copy(update={"content": kept})
+        sanitized.append(message)
+    return sanitized
+
+
 def _create_ollama_native_llm(config: LLMConfig) -> BaseChatModel:
     """Create an Ollama chat model speaking the native /api/chat protocol.
 
@@ -4169,16 +4233,20 @@ def _create_ollama_native_llm(config: LLMConfig) -> BaseChatModel:
         carrying ``reasoning_content``: this route replays reasoning on
         every turn by design (``reasoning_passback``), and the vendor ships
         it as ``thinking`` beside the empty content, which Ollama accepts.
-        Only a message with nothing at all is dropped. #384.
+        Only a message with nothing at all is dropped. #384. Content parts
+        the vendor converter would raise on are stripped first
+        (``_strip_unshippable_parts_for_ollama``, #387).
         ``_convert_messages_to_ollama_messages`` is the single seam:
         ``_chat_params`` calls it for every generate and stream path, sync
         and async. Defined per factory call, like the google subclass.
         """
 
         def _convert_messages_to_ollama_messages(self, messages: Any) -> Any:
+            # Unshippable parts first (#387), then the empty-turn drop: a
+            # message the strip emptied is treated like any other empty one.
             kept = [
                 message
-                for message in messages
+                for message in _strip_unshippable_parts_for_ollama(list(messages))
                 if not (
                     isinstance(message, AIMessage)
                     and not getattr(message, "tool_calls", None)
