@@ -2545,6 +2545,16 @@ def test_provider_switch_thread_scope_writes_the_thread_override() -> None:
         for call in api.calls
         if call[0] == "update_settings" and "llm_provider" in call[2]
     ]
+    # #376: anthropic is also served by a CLIProxy target (claude), so the
+    # thread switch names the walkthrough that pins the whole route.
+    assert "/provider cliproxy claude" in result.markdown
+    assert "apply thread" in result.markdown
+    # The hint is gated on offerability: /provider cliproxy is admin-only,
+    # so a non-admin's thread switch is not pointed at a command that
+    # would refuse them.
+    demoted = _run_command(api, "/provider switch anthropic thread", is_admin=False)
+    assert demoted.success is True
+    assert "/provider cliproxy" not in demoted.markdown
 
 
 def test_provider_switch_hands_off_to_model_pick() -> None:
@@ -6781,6 +6791,11 @@ def test_http_client_cliproxy_facade_hits_the_admin_routes(
     run(client.cliproxy_oauth_status("st-1", "claude"))
     models = run(client.cliproxy_models())
     run(client.cliproxy_apply_route("claude", "claude-opus-4-7"))
+    run(
+        client.cliproxy_apply_route(
+            "claude", "claude-opus-4-7", scope="thread", thread_id="t-9"
+        )
+    )
     verdict = run(client.cliproxy_verify_credential("claude", model="opus"))
     run(client.close())
 
@@ -6798,6 +6813,16 @@ def test_http_client_cliproxy_facade_hits_the_admin_routes(
             "POST",
             "/cliproxy/apply-route",
             {"provider": "claude", "model": "claude-opus-4-7", "scope": "global"},
+        ),
+        (
+            "POST",
+            "/cliproxy/apply-route",
+            {
+                "provider": "claude",
+                "model": "claude-opus-4-7",
+                "scope": "thread",
+                "thread_id": "t-9",
+            },
         ),
         ("POST", "/cliproxy/verify", {"provider": "claude", "model": "opus"}),
     ]
@@ -6836,6 +6861,56 @@ def test_in_process_cliproxy_auth_files_filter_accepts_v7_spelling(
         "gemini-a.json",
         "gemini-b.json",
     ]
+
+
+def test_in_process_cliproxy_apply_thread_scope_honours_the_thread_access_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#376: a thread apply through the in-process facade reaches
+    perform_apply_route with scope/thread_id AND a require_thread_access_fn
+    that is the facade's own `_require_thread_access`, so whatever that gate
+    decides (here a double that refuses "foreign"; the real one admits an
+    admin and TOFU-claims an ownerless thread, as PATCH /threads/{id}/config
+    does) is applied before anything is written and its refusal propagates
+    as the wire error."""
+    from nymeria.api.routers import cliproxy as cliproxy_router
+
+    client = CommandBackendClient(
+        SimpleNamespace(),
+        user=_CommandBackendUser(id="alice", role="admin"),
+        settings_fn=lambda: SimpleNamespace(),
+    )
+    gated: list[str] = []
+
+    def fake_gate(thread_id: str, *, claim: bool = True) -> None:
+        gated.append(thread_id)
+        if thread_id == "foreign":
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="Thread not found")
+
+    monkeypatch.setattr(client, "_require_thread_access", fake_gate)
+    seen: dict[str, object] = {}
+
+    async def fake_perform(request, *, settings, agent, get_settings_fn, admin,
+                           require_thread_access_fn=None):
+        seen["scope"] = request.scope
+        seen["thread_id"] = request.thread_id
+        assert require_thread_access_fn is not None
+        require_thread_access_fn(admin, request.thread_id)
+        return SimpleNamespace(model_dump=lambda mode="json": {"scope": request.scope})
+
+    monkeypatch.setattr(cliproxy_router, "perform_apply_route", fake_perform)
+
+    out = run(client.cliproxy_apply_route("claude", "m", scope="thread", thread_id="t-9"))
+    assert out == {"scope": "thread"}
+    assert seen == {"scope": "thread", "thread_id": "t-9"}
+    assert gated == ["t-9"]
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(client.cliproxy_apply_route("claude", "m", scope="thread", thread_id="foreign"))
+    assert excinfo.value.response.status_code == 404
+    assert gated == ["t-9", "foreign"]
 
 
 def test_in_process_cliproxy_requires_admin() -> None:

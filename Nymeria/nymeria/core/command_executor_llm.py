@@ -1675,6 +1675,23 @@ class LLMCommandsMixin:
                 " Next: pick this thread's model: /model <name> thread"
                 " (/model to browse)."
             )
+            # #376: a switch is half a route on a CLIProxy subscription
+            # target (base URL, API mode and key stay global); name the
+            # walkthrough that pins all of it on this thread.
+            from ..cliproxy.catalog import list_cliproxy_providers
+
+            targets = [
+                s.id for s in list_cliproxy_providers() if s.nymeria_provider == provider
+            ]
+            # Gated on offerability so a caller the command would refuse
+            # (non-admin, agent actor, chat platform) is not sent at it.
+            if targets and self._command_offerable("provider cliproxy"):
+                spelled = targets[0] if len(targets) == 1 else "<" + "|".join(targets) + ">"
+                suffix += (
+                    f" On a CLIProxy subscription route, /provider cliproxy {spelled}"
+                    " then apply thread pins the base URL, API mode and key"
+                    " for this thread as well."
+                )
             form = await self._switch_model_handoff_form(
                 spec, scope="thread", current=model
             )

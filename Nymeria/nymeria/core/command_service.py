@@ -1228,13 +1228,18 @@ class CommandHttpClient:
         )
 
     async def cliproxy_apply_route(
-        self, provider: str, model: str, *, user_id: Optional[str] = None
+        self,
+        provider: str,
+        model: str,
+        *,
+        user_id: Optional[str] = None,
+        scope: str = "global",
+        thread_id: Optional[str] = None,
     ) -> dict:
-        return await self._post(
-            "/cliproxy/apply-route",
-            json={"provider": provider, "model": model, "scope": "global"},
-            act_as=user_id,
-        )
+        body: dict[str, Any] = {"provider": provider, "model": model, "scope": scope}
+        if scope == "thread":
+            body["thread_id"] = thread_id
+        return await self._post("/cliproxy/apply-route", json=body, act_as=user_id)
 
 
 @dataclass(frozen=True)
@@ -2341,24 +2346,41 @@ class CommandBackendClient:
         return {"verdict": verdict, "detail": detail}
 
     async def cliproxy_apply_route(
-        self, provider: str, model: str, *, user_id: Optional[str] = None
+        self,
+        provider: str,
+        model: str,
+        *,
+        user_id: Optional[str] = None,
+        scope: str = "global",
+        thread_id: Optional[str] = None,
     ) -> dict:
         self._require_admin()
         from fastapi import HTTPException
 
-        from ..api.routers.cliproxy import perform_apply_route
+        from ..api.routers import cliproxy as cliproxy_router
         from ..api.schemas.cliproxy import CLIProxyApplyRouteRequest
 
-        # Global scope only: the chain has no thread apply, and a thread
-        # apply through this facade would skip the thread-access gate.
-        request = CLIProxyApplyRouteRequest(provider=provider, model=model)
+        # #376: a thread apply carries the facade's own thread-access gate
+        # (the in-process twin of the REST dependency), so the route honours
+        # ownership exactly as PATCH /threads/{id}/config does.
+        request = CLIProxyApplyRouteRequest(
+            provider=provider,
+            model=model,
+            scope="thread" if scope == "thread" else "global",
+            thread_id=thread_id if scope == "thread" else None,
+        )
+        gate = None
+        if scope == "thread":
+            def gate(_admin: Any, tid: str) -> None:
+                self._require_thread_access(tid)
         try:
-            response = await perform_apply_route(
+            response = await cliproxy_router.perform_apply_route(
                 request,
                 settings=self._settings(),
                 agent=self.agent,
                 get_settings_fn=self.settings_fn,
                 admin=self.user,
+                require_thread_access_fn=gate,
             )
         except HTTPException as error:
             _raise_http_status(error.status_code, str(error.detail))

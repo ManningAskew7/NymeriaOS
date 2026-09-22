@@ -829,7 +829,7 @@ def register_default_commands(service: "CommandService") -> None:
         category="LLM",
         usage=(
             "/provider cliproxy [target|login|use|relogin|paste|check"
-            "|model|apply|cancel]"
+            "|model|apply [global|thread]|cancel]"
         ),
         aliases=("provider_cliproxy",),
         # A CLIProxy target id typed straight after /provider dispatches

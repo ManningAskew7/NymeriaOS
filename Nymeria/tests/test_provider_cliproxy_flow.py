@@ -171,20 +171,28 @@ class FakeCliproxyApi:
         model: str,
         *,
         scope: str = "global",
+        thread_id: str | None = None,
         user_id: str | None = None,
     ) -> dict[str, Any]:
-        self.calls.append(
-            ("apply_route", {"provider": provider, "model": model, "scope": scope})
-        )
+        payload: dict[str, Any] = {"provider": provider, "model": model, "scope": scope}
+        if thread_id is not None:
+            payload["thread_id"] = thread_id
+        self.calls.append(("apply_route", payload))
         return dict(self.apply_result)
 
 
-def _run(api: FakeCliproxyApi, command: str, *, is_admin: bool = True):
+def _run(
+    api: FakeCliproxyApi,
+    command: str,
+    *,
+    is_admin: bool = True,
+    thread_id: str | None = "thread-1",
+):
     return run(
         CommandService().execute(
             CommandContext(
                 user_id="alice",
-                thread_id="thread-1",
+                thread_id=thread_id,
                 actor="user",
                 surface="cli",
                 is_admin=is_admin,
@@ -1273,6 +1281,75 @@ def test_apply_review_degraded_list_has_no_warning() -> None:
 # ── apply + cancel + store ──────────────────────────────────────────────────
 
 
+def _logged_in_at_apply(api: FakeCliproxyApi, **run_kw):
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    api.models = [{"id": "claude-opus-4-7", "owned_by": "anthropic"}]
+    _run(api, "/provider cliproxy claude", **run_kw)
+    _run(api, "/provider cliproxy use", **run_kw)
+    return _run(api, "/provider cliproxy model claude-opus-4-7", **run_kw)
+
+
+def test_apply_thread_scope_routes_this_thread_only() -> None:
+    """#376: the chain's apply step takes the /model scope grammar; thread
+    scope carries the executor's thread id to the facade (which honours the
+    thread-access gate) and hands off to /model for later changes."""
+    api = FakeCliproxyApi()
+    picked = _logged_in_at_apply(api)
+    apply_tab = _active_tab(_form(picked))
+    assert [o["id"] for o in apply_tab["fields"][0]["options"]] == [
+        "global",
+        "thread",
+        "cancel",
+    ]
+    assert "global" in picked.markdown.lower() and "thread" in picked.markdown.lower()
+
+    applied = _run(api, "/provider cliproxy apply thread")
+    assert applied.success is True, applied.markdown
+    assert _calls(api, "apply_route") == [
+        {
+            "provider": "claude",
+            "model": "claude-opus-4-7",
+            "scope": "thread",
+            "thread_id": "thread-1",
+        }
+    ]
+    assert "thread-1" in applied.markdown
+    assert "/model <name> thread" in applied.markdown
+    assert provider_setup.get_cliproxy_login("alice") is None
+
+
+def test_apply_thread_scope_without_a_thread_refuses_and_keeps_the_login() -> None:
+    api = FakeCliproxyApi()
+    picked = _logged_in_at_apply(api, thread_id=None)
+    apply_tab = _active_tab(_form(picked))
+    assert [o["id"] for o in apply_tab["fields"][0]["options"]] == ["global", "cancel"]
+
+    refused = _run(api, "/provider cliproxy apply thread", thread_id=None)
+    assert refused.success is False
+    assert "requires an active thread" in refused.markdown
+    assert _calls(api, "apply_route") == []
+    assert provider_setup.get_cliproxy_login("alice") is not None
+
+
+def test_apply_scope_grammar_global_default_bogus_and_cancel() -> None:
+    api = FakeCliproxyApi()
+    _logged_in_at_apply(api)
+    bogus = _run(api, "/provider cliproxy apply bogus")
+    assert bogus.success is False
+    assert "global" in bogus.markdown and "thread" in bogus.markdown
+    assert _calls(api, "apply_route") == []
+
+    explicit = _run(api, "/provider cliproxy apply global")
+    assert explicit.success is True, explicit.markdown
+    assert _calls(api, "apply_route")[-1]["scope"] == "global"
+    assert "thread_id" not in _calls(api, "apply_route")[-1]
+
+    _logged_in_at_apply(api)
+    cancelled = _run(api, "/provider cliproxy apply cancel")
+    assert "cancelled" in cancelled.markdown.lower()
+    assert provider_setup.get_cliproxy_login("alice") is None
+
+
 def test_model_pick_then_apply_routes_globally_and_clears() -> None:
     api = FakeCliproxyApi()
     api.auth_files = [dict(LOGGED_IN_CLAUDE)]
@@ -1489,9 +1566,12 @@ def test_formless_target_and_apply_steps_list_action_rows() -> None:
 
     _run_formless(api, "/provider cliproxy use")
     apply_step = _run_formless(api, "/provider cliproxy model claude-opus-5")
-    assert "- apply" in apply_step.markdown
+    # #376: the apply step's rows are the scope grammar (global | thread |
+    # cancel) behind one submit template.
+    assert "- global" in apply_step.markdown
+    assert "- thread" in apply_step.markdown
     assert "- cancel" in apply_step.markdown
-    assert "Choose: /provider cliproxy <action>" in apply_step.markdown
+    assert "Choose: /provider cliproxy apply <action>" in apply_step.markdown
 
 
 def test_formless_degraded_list_names_spec_default_row() -> None:

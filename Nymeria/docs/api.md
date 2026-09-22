@@ -5252,7 +5252,8 @@ rejected).
 
 The `/provider cliproxy` slash command drives this whole surface as a chained
 in-REPL flow (overview with logged-in badges, OAuth login with paste/status
-steps, model pick from `/cliproxy/models`, route apply); it is excluded from
+steps, model pick from `/cliproxy/models`, route apply as `apply [global|thread]`,
+thread scope behind the same thread-access gate); it is excluded from
 chat-bot surfaces and agents because pasted authorization codes must not
 persist in platform chat history.
 

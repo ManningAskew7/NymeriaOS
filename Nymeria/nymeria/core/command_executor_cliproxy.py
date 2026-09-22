@@ -38,6 +38,7 @@ from .command_executor_llm import (
 from .command_forms import (
     CommandOutput,
     chain_form_output,
+    command_data,
     command_error,
     command_success,
     form_option,
@@ -53,12 +54,17 @@ logger = logging.getLogger(__name__)
 class CliproxyCommandsMixin:
     """CLIProxy command bodies mixed into ``_CommandExecutor``.
 
-    The host provides ``api`` and ``user_id``; the annotations below let
-    the static checker see them on the mixin in isolation.
+    The host provides ``api``, ``user_id``, ``thread_id`` and
+    ``_require_thread``; the declarations below let the static checker see
+    them on the mixin in isolation.
     """
 
     api: Any
     user_id: str
+    thread_id: str
+
+    if TYPE_CHECKING:
+        def _require_thread(self) -> CommandOutput | None: ...
 
     # ── CLIProxy subscription OAuth chain (backlog #110 phase 2) ──────────
     #
@@ -444,7 +450,18 @@ class CliproxyCommandsMixin:
                 return self._CLIPROXY_GONE
             return await self._cliproxy_model_chain(pending, spec)
         if token == "apply":
-            return await self._cliproxy_apply(pending, spec)
+            # The /model scope grammar: apply [global|thread], global by
+            # default. "apply cancel" is the Apply tab's cancel option
+            # (one submit template serves the whole radio).
+            scope = (args[0].strip().lower() if args else "") or "global"
+            if scope == "cancel":
+                return await self._cliproxy_step("cancel", [], "")
+            if scope not in ("global", "thread"):
+                return command_error(
+                    f"Unknown apply scope: {args[0]}. Use /provider cliproxy"
+                    " apply [global|thread]."
+                )
+            return await self._cliproxy_apply(pending, spec, scope=scope)
         return self._CLIPROXY_GONE
 
     async def _cliproxy_start_login(
@@ -1007,7 +1024,12 @@ class CliproxyCommandsMixin:
         if pending.account:
             rows.append(("Account", pending.account))
         width = max(len(label) for label, _value in rows)
-        lines = ["Review the CLIProxy route (applies globally)"]
+        lines = [
+            "Review the CLIProxy route (applies globally by default; choose"
+            " 'this thread' to route only the current thread)"
+            if self.thread_id
+            else "Review the CLIProxy route (applies globally)"
+        ]
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
         # A custom-typed id the proxy does not list will fail at turn time
@@ -1051,31 +1073,57 @@ class CliproxyCommandsMixin:
             )
         # Choose line derived centrally from the submit template (#158).
         options = [
-            form_option("apply", label="Apply the route", current=True),
-            form_option("cancel", label="Cancel"),
+            form_option("global", label="Apply the route globally", current=True),
         ]
+        if self.thread_id:
+            options.append(
+                form_option(
+                    "thread",
+                    label="Apply to this thread only",
+                    meta=f"thread {self.thread_id}",
+                )
+            )
+        options.append(form_option("cancel", label="Cancel"))
         tab = form_tab(
             "Apply",
             [radio_field("action", options)],
-            submit_command="provider cliproxy {action}",
+            submit_command="provider cliproxy apply {action}",
         )
         # Apply is never "decided": it terminates the chain, last and active.
         return tab, False, lines
 
     async def _cliproxy_apply(
-        self, pending: "PendingCliproxyLogin", spec: "CLIProxyProviderSpec"
+        self,
+        pending: "PendingCliproxyLogin",
+        spec: "CLIProxyProviderSpec",
+        *,
+        scope: str = "global",
     ) -> str | CommandOutput:
-        """Apply the route globally (gatekeeper resolved server-side)."""
+        """Apply the route (gatekeeper resolved server-side), globally or to
+        the current thread (#376: the facade honours the thread-access gate)."""
         from . import provider_setup as setup_store
 
         model = str(pending.model or "").strip()
         if not model:
             # Reached apply without a decided model (stale form): re-chain.
             return await self._cliproxy_model_chain(pending, spec)
+        if scope == "thread":
+            thread_error = self._require_thread()
+            if thread_error:
+                return thread_error
         try:
-            result = await self.api.cliproxy_apply_route(
-                spec.id, model, user_id=self.user_id
-            )
+            if scope == "thread":
+                result = await self.api.cliproxy_apply_route(
+                    spec.id,
+                    model,
+                    user_id=self.user_id,
+                    scope="thread",
+                    thread_id=self.thread_id,
+                )
+            else:
+                result = await self.api.cliproxy_apply_route(
+                    spec.id, model, user_id=self.user_id
+                )
         except httpx.HTTPError as error:
             return await self._cliproxy_model_chain(
                 pending,
@@ -1088,7 +1136,12 @@ class CliproxyCommandsMixin:
         provider = str(result.get("provider") or spec.nymeria_provider)
         base_url = str(result.get("base_url") or "")
         api_mode = str(result.get("api_mode") or "")
-        message = f"CLIProxy route applied: provider {provider}, model {model}"
+        where = (
+            f"CLIProxy route applied to this thread ({self.thread_id})"
+            if scope == "thread"
+            else "CLIProxy route applied"
+        )
+        message = f"{where}: provider {provider}, model {model}"
         if base_url:
             message += f", base URL {base_url}"
         if api_mode:
@@ -1096,7 +1149,21 @@ class CliproxyCommandsMixin:
         message += "."
         if result.get("restart_required"):
             message += " Restart required for some changes."
+        if scope == "thread":
+            message += (
+                " Change this thread's model later with /model <name> thread;"
+                " the base URL, API mode and key stay pinned on the thread."
+            )
         message += " Verify with /provider test."
+        if scope == "thread":
+            # The same client-state hint /model <name> thread returns, plus
+            # a header refresh: the thread's provider and base URL changed.
+            return command_success(
+                message,
+                data=command_data(
+                    state={"model": model, "thread_context_updated": True}
+                ),
+            )
         return command_success(message)
 
     @staticmethod
