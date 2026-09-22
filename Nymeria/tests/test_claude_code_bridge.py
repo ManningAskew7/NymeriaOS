@@ -571,6 +571,126 @@ def test_run_local_blocking_without_result_event_falls_back_to_raw_parse(monkeyp
     assert res.end_turns == []
 
 
+# --- #338: the raw output kept for the fallback parse is a bounded tail -----
+
+
+def test_bounded_tail_keeps_the_newest_whole_and_drops_from_the_front():
+    tail = b.BoundedTail(max_entries=3, max_bytes=10)
+    for piece in ("aa", "bb", "cc", "dd"):
+        tail.append(piece)
+    assert tail.text() == "bbccdd" and tail.dropped == 1  # entry cap
+    tail.append("eeeeee")  # 2+2+6 = 10 bytes: fits exactly
+    assert tail.text() == "ccddeeeeee"
+    tail.append("f")  # 11 bytes: the oldest goes
+    assert tail.text() == "ddeeeeeef" and tail.dropped == 3
+    tail.append("x" * 50)  # alone over the byte cap: kept whole, everything else goes
+    assert tail.text() == "x" * 50 and len(tail) == 1
+    empty = b.BoundedTail(max_entries=2, max_bytes=4)
+    empty.append("")
+    assert empty.text() == "" and len(empty) == 0
+    trimmed = b.BoundedTail(max_entries=3, max_bytes=4, trim_newest=True)
+    trimmed.append("abcdefgh")  # over the cap alone: its head goes
+    assert trimmed.text() == "efgh"
+    trimmed.append("ij")
+    assert trimmed.text() == "ghij"  # the END of the stream, always within the cap
+    trimmed.append("klmnop")
+    assert trimmed.text() == "mnop" and len(trimmed) == 1 and trimmed.dropped == 2
+
+
+def test_error_text_keeps_both_ends_of_a_long_stderr():
+    """A Node stack names its cause FIRST, a Python traceback LAST: the
+    window keeps the head and the tail and elides the middle."""
+    long_err = "Error: ENOENT no such file (the node cause)\n" + "N" * 6000 + "\nTraceback tail: the real reason"
+    res = b.parse_cli_result("", long_err, 1)
+    assert res.error.startswith("Error: ENOENT no such file (the node cause)")
+    assert res.error.endswith("the real reason")
+    assert "[... middle elided ...]" in res.error and len(res.error) == 4000
+    short = b.parse_cli_result("", "just this", 1)
+    assert short.error == "just this"
+    # A clean result event followed by an error exit (a hook, a kill) fails
+    # WITH a reason; before, the exit code was folded into ``ok`` and the
+    # reason branch never fired, so the run failed silently.
+    observer = b.RunObserver()
+    observer.feed_event({"type": "result", "subtype": "success", "result": ""})
+    res = b.result_from_stream(observer, "", long_err, 1)
+    assert res.ok is False and res.is_error is True
+    assert res.error.endswith("the real reason") and len(res.error) == 4000
+    bare = b.result_from_stream(observer, "", "", 3)
+    assert bare.ok is False and bare.error == "claude exited with code 3"
+    # A CLI failure whose message rides ``result`` keeps it: no generic
+    # exit-code text shadows the real reason for the agent.
+    failing = b.RunObserver()
+    failing.feed_event({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                        "result": "Tool use failed: the repo is read-only"})
+    res = b.result_from_stream(failing, "", "", 1)
+    assert res.ok is False and res.error is None
+    assert res.result_text == "Tool use failed: the repo is read-only"
+    assert "the repo is read-only" in res.format_for_agent()
+    assert "exited with code" not in res.format_for_agent()
+
+
+def _run(monkeypatch, tmp_path, proc, **kw):
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: ([], []))
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="x", cwd=str(tmp_path))
+    return b.run_local_blocking(req, cfg, timeout=5, env=b.build_subprocess_env(bare=False), **kw)
+
+
+def test_raw_fallback_sees_only_the_bounded_stdout_tail(monkeypatch, tmp_path):
+    """A clean exit with no ``result`` event and more lines than the cap:
+    the raw-text result is the LAST lines, the first are gone (they were
+    never kept)."""
+    monkeypatch.setattr(b, "RAW_STDOUT_TAIL_MAX_LINES", 5)
+    payload = "".join(f"line-{i:03d}\n" for i in range(50))
+    proc = _FakeProc(finish_after_polls=1, returncode=0, stdout=payload)
+    res = _run(monkeypatch, tmp_path, proc)
+    assert res.ok is True
+    assert res.result_text.splitlines() == [f"line-{i:03d}" for i in range(45, 50)]
+
+
+def test_a_stream_run_with_many_lines_still_parses_from_its_result_event(monkeypatch, tmp_path):
+    monkeypatch.setattr(b, "RAW_STDOUT_TAIL_MAX_LINES", 3)
+    lines = [json.dumps({"type": "assistant", "message": {"role": "assistant",
+                         "content": [{"type": "text", "text": f"step {i}"}]}})
+             for i in range(40)]
+    lines.append(json.dumps({"type": "result", "subtype": "success", "result": "all done",
+                             "session_id": "s-big", "num_turns": 40}))
+    proc = _FakeProc(finish_after_polls=1, returncode=0, stdout="\n".join(lines) + "\n")
+    res = _run(monkeypatch, tmp_path, proc)
+    assert res.ok is True and res.result_text == "all done" and res.session_id == "s-big"
+    assert res.num_turns == 40
+
+
+def test_a_legacy_json_result_larger_than_the_byte_cap_is_parsed_whole(monkeypatch, tmp_path):
+    monkeypatch.setattr(b, "RAW_STDOUT_TAIL_MAX_BYTES", 100)
+    big = "R" * 5000
+    payload = "warming up\nstill warming\n" + json.dumps(
+        {"type": "result", "subtype": "success", "result": big, "session_id": "s-legacy"}
+    ) + "\n"
+    proc = _FakeProc(finish_after_polls=1, returncode=0, stdout=payload)
+    observer = b.RunObserver()
+    # A result the observer did not register (a shape it does not fold): the
+    # raw fallback must still see the whole terminal line.
+    monkeypatch.setattr(observer, "last_result_event", lambda: None)
+    res = _run(monkeypatch, tmp_path, proc, observer=observer)
+    assert res.ok is True and res.result_text == big and res.session_id == "s-legacy"
+
+
+def test_stderr_keeps_its_tail_not_its_head(monkeypatch, tmp_path):
+    """The diagnostic is at the end of stderr; a chatty child must not push
+    it past the error's 4000-char window or grow the parent without limit."""
+    monkeypatch.setattr(b, "RAW_STDERR_TAIL_MAX_BYTES", 1000)
+    proc = _FakeProc(finish_after_polls=1, returncode=1, stdout="not json\n")
+    proc._stderr_w.write("N" * 5000 + "\nfinal boom: the real reason\n")  # 5x the cap, well inside the pipe
+    proc._stderr_w.flush()
+    res = _run(monkeypatch, tmp_path, proc)
+    assert res.ok is False
+    assert (res.error or "").endswith("final boom: the real reason")
+    assert len(res.error or "") <= 1000
+
+
 def test_cancelled_run_keeps_the_turns_seen_so_far(monkeypatch, tmp_path):
     proc = _FakeProc()
     proc._stdout_w.write(json.dumps({"type": "result", "subtype": "success",

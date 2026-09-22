@@ -540,6 +540,27 @@ def _as_float(value: Any) -> Optional[float]:
         return None
 
 
+ERROR_TEXT_MAX_CHARS = 4000
+
+
+def error_window(text: str) -> str:
+    """At most ``ERROR_TEXT_MAX_CHARS`` of an error text, keeping both ends.
+
+    A Node stack (the Claude Code CLI) names its cause FIRST and stacks
+    frames after it; a Python traceback names it LAST; a hook or a kill
+    reports at the end. Keeping the head and the tail serves all three.
+    """
+    text = (text or "").strip()
+    if len(text) <= ERROR_TEXT_MAX_CHARS:
+        return text
+    head = ERROR_TEXT_MAX_CHARS // 4
+    tail = ERROR_TEXT_MAX_CHARS - head - len(_ERROR_GAP)
+    return text[:head] + _ERROR_GAP + text[-tail:]
+
+
+_ERROR_GAP = "\n[... middle elided ...]\n"
+
+
 def parse_cli_result(
     stdout: str, stderr: str, returncode: int
 ) -> ClaudeCodeResult:
@@ -572,7 +593,7 @@ def parse_cli_result(
             return ClaudeCodeResult(ok=True, result_text=text, exit_code=returncode)
         err = (stderr or "").strip() or text or f"claude exited with code {returncode}"
         return ClaudeCodeResult(
-            ok=False, is_error=True, error=err[:4000], exit_code=returncode
+            ok=False, is_error=True, error=error_window(err), exit_code=returncode
         )
 
     is_error = bool(obj.get("is_error")) or obj.get("subtype") not in (None, "success")
@@ -602,6 +623,79 @@ def parse_cli_result(
 # the runner's memory without limit; a peek asks for the last N of these.
 TAIL_MAX_ENTRIES = 200
 _TAIL_TEXT_CHARS = 600
+
+# Raw child output kept for the legacy parse fallback (#338). The observer
+# folds the stream as it goes; the raw text is read ONLY when no ``result``
+# event arrived (a run that died early, or the ``json`` format, whose single
+# terminal object is the last line). So the parent keeps a bounded tail of
+# lines, never the whole transcript: with ``stream-json --verbose`` that is
+# every tool input and result, tens of MB on a long run, held in the API
+# process, which is the box's largest RSS and the OOM killer's pick.
+RAW_STDOUT_TAIL_MAX_LINES = 200
+RAW_STDOUT_TAIL_MAX_BYTES = 1 << 20
+RAW_STDERR_TAIL_MAX_BYTES = 64 << 10
+_STDERR_READ_CHUNK = 8192
+
+
+class BoundedTail:
+    """The newest pieces of a text stream, bounded by count and by size.
+
+    Older pieces drop from the front until both caps hold. By default the
+    newest piece is kept whole even when it alone exceeds the byte cap (a
+    legacy ``json`` result is one line, and must parse); with
+    ``trim_newest`` its head is cut instead, so the text is never longer
+    than the cap (stderr: the diagnostic is at the END). ``dropped`` counts
+    the pieces that fell off. Appended from one reader thread; read once
+    the reader has joined.
+    """
+
+    def __init__(
+        self, *, max_entries: Optional[int], max_bytes: int, trim_newest: bool = False
+    ) -> None:
+        # Sizes are in characters (what ``len`` of the decoded text gives),
+        # a bound on the same order as bytes; ``max_entries=None`` leaves the
+        # count unbounded (a text tail needs only the size cap). Peak
+        # retention in whole mode is the cap plus the newest piece.
+        self._entries: deque[str] = deque()
+        self._max_entries = max(1, max_entries) if max_entries is not None else None
+        self._max_bytes = max(0, max_bytes)
+        self._trim_newest = trim_newest
+        self._size = 0
+        self.dropped = 0
+
+    def append(self, piece: str) -> None:
+        if not piece:
+            return
+        self._entries.append(piece)
+        self._size += len(piece)
+        while self._max_entries is not None and len(self._entries) > self._max_entries:
+            self._size -= len(self._entries.popleft())
+            self.dropped += 1
+        if self._trim_newest:
+            # Text-tail semantics: cut from the oldest end, character by
+            # character, so the text is exactly the stream's last cap bytes.
+            excess = self._size - self._max_bytes
+            while excess > 0 and self._entries:
+                head = self._entries[0]
+                if len(head) <= excess:
+                    self._entries.popleft()
+                    self._size -= len(head)
+                    excess -= len(head)
+                    self.dropped += 1
+                else:
+                    self._entries[0] = head[excess:]
+                    self._size -= excess
+                    excess = 0
+            return
+        while len(self._entries) > 1 and self._size > self._max_bytes:
+            self._size -= len(self._entries.popleft())
+            self.dropped += 1
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def text(self) -> str:
+        return "".join(self._entries)
 
 
 def _preview(value: Any, limit: int = _TAIL_TEXT_CHARS) -> str:
@@ -811,11 +905,16 @@ def result_from_stream(
         result = parse_cli_result(stdout, stderr, returncode)
     else:
         result = _result_from_event(event, returncode)
-        # An error exit after a clean result (a hook, a kill) still fails.
-        if returncode != 0 and result.ok:
+        # An error exit after a clean result (a hook, a kill) still fails,
+        # and says why: the event builder already folds the exit code into
+        # ``ok``, so the check is on the MISSING reason, not on ``ok``. A
+        # CLI failure that carries its message in ``result`` (the
+        # ``error_during_execution`` shape) keeps that message: ``error``
+        # would shadow it for the agent.
+        if returncode != 0 and not result.error and not result.result_text.strip():
             result.ok = False
             result.is_error = True
-            result.error = (stderr or "").strip()[:4000] or f"claude exited with code {returncode}"
+            result.error = error_window(stderr or "") or f"claude exited with code {returncode}"
     with observer._lock:
         result.end_turns = list(observer.end_turns)
         if not result.session_id:
@@ -1189,8 +1288,12 @@ def run_local_blocking(
             error=f"Claude Code executable not found: {config.executable}",
         )
 
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
+    stdout_tail = BoundedTail(
+        max_entries=RAW_STDOUT_TAIL_MAX_LINES, max_bytes=RAW_STDOUT_TAIL_MAX_BYTES
+    )
+    stderr_tail = BoundedTail(
+        max_entries=None, max_bytes=RAW_STDERR_TAIL_MAX_BYTES, trim_newest=True
+    )
     # All three pipes were requested above; pin that for the type checker.
     assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
     child_stdin, child_stdout, child_stderr = proc.stdin, proc.stdout, proc.stderr
@@ -1202,7 +1305,7 @@ def run_local_blocking(
         # is logged and skipped; only the pipe itself ends the loop.
         try:
             for line in iter(child_stdout.readline, ""):
-                stdout_chunks.append(line)
+                stdout_tail.append(line)
                 try:
                     observer.feed_line(line)
                 except Exception:  # noqa: BLE001 - one bad event never stops the read.
@@ -1211,8 +1314,11 @@ def run_local_blocking(
             logger.warning("Claude Code stdout pump ended early", exc_info=True)
 
     def _pump_stderr() -> None:
+        # Chunked, into a tail: the diagnostic is at the END of stderr, and
+        # a chatty child must not grow the parent without limit.
         try:
-            stderr_chunks.append(child_stderr.read() or "")
+            for chunk in iter(lambda: child_stderr.read(_STDERR_READ_CHUNK), ""):
+                stderr_tail.append(chunk)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1267,9 +1373,16 @@ def run_local_blocking(
     _join_pumps()
     observer.mark_finished()
 
-    result = result_from_stream(
-        observer, "".join(stdout_chunks), "".join(stderr_chunks), proc.returncode
-    )
+    if stdout_tail.dropped and observer.last_result_event() is None:
+        logger.warning(
+            "Claude Code run ended without a result event after %d stdout line(s) "
+            "fell off the bounded raw tail (%d lines / %d chars); the fallback "
+            "parse sees the tail only",
+            stdout_tail.dropped,
+            RAW_STDOUT_TAIL_MAX_LINES,
+            RAW_STDOUT_TAIL_MAX_BYTES,
+        )
+    result = result_from_stream(observer, stdout_tail.text(), stderr_tail.text(), proc.returncode)
     files, commits = git_diff_summary(before, request.cwd)
     result.files_changed = files
     result.commits = commits

@@ -74,7 +74,10 @@ up" as an early end-turn delivered THAT as its completion and everything after
 had no path back (job 3c35ee19, 2026-09-04).
 
 Now `RunObserver` (`claude_code_bridge.py`) folds the stream into the session
-id, the list of end-turns and a bounded transcript tail, and the watcher
+id, the list of end-turns and a bounded transcript tail (the raw stdout and
+stderr the parent keeps for the no-`result`-event fallback parse are bounded
+tails too, `BoundedTail`: 200 lines / 1 MiB and 64 KiB, so a long run never
+grows the API process by its transcript), and the watcher
 (`claude_code_background.py`) turns each end-turn into a REPORT delivered to
 the thread as its own completion prompt:
 
