@@ -108,6 +108,8 @@ class FakeHttp:
     def __call__(self, url, headers):
         self.headers_seen.setdefault(url, []).append(dict(headers))
         entry = self.routes[url]
+        if callable(entry):
+            entry = entry()
         if isinstance(entry, Exception):
             raise entry
         return entry
@@ -523,6 +525,125 @@ def test_claude_code_jobs_defer(world):
     summary = run_sync(world)
     assert summary["targets"]["slim"]["action"] == "deferred"
     assert "malformed" in summary["targets"]["slim"]["detail"]
+
+
+def _add_runner_target(world):
+    """A turns-less target (the Claude Code runner unit, #335): idle-probed
+    on its unauthenticated /health, no token."""
+    world.config["targets"].append(
+        {
+            "name": "runner",
+            "health_url": "http://runner/health",
+            "restart": ["restart-runner"],
+        }
+    )
+    (world.state_dir / "runner.commit").write_text(SHA_OLD + "\n", encoding="utf-8")
+    world.http.routes["http://runner/health"] = (
+        200, {"status": "ok", "claude": True, "active_jobs": 0, "code_version": "abc"},
+    )
+    world.head = SHA_LOCAL
+    world.merge_base = SHA_OLD
+
+
+def test_runner_target_restarts_when_its_health_reports_no_jobs(world):
+    _add_runner_target(world)
+    summary = run_sync(world)
+    assert summary["targets"]["runner"]["action"] == "restarted"
+    assert ("restart-runner",) in world.runner.commands()
+    assert marker(world, "runner") == SHA_LOCAL
+    # No bearer token was sent to the unauthenticated health probe.
+    assert all("Authorization" not in h for h in world.http.headers_seen["http://runner/health"])
+
+
+def test_runner_target_defers_while_a_run_is_in_flight(world):
+    _add_runner_target(world)
+    world.http.routes["http://runner/health"] = (200, {"status": "ok", "active_jobs": 2})
+    summary = run_sync(world)
+    assert summary["targets"]["runner"]["action"] == "deferred"
+    assert "active_jobs=2" in summary["targets"]["runner"]["detail"]
+    assert ("restart-runner",) not in world.runner.commands()
+    assert marker(world, "runner") == SHA_OLD
+    # The other targets are unaffected by the runner's state.
+    assert summary["targets"]["slim"]["action"] == "restarted"
+
+
+def test_runner_without_a_job_count_is_never_restarted_blind(world):
+    _add_runner_target(world)
+    world.http.routes["http://runner/health"] = (200, {"status": "ok", "claude": True})
+    summary = run_sync(world)
+    assert summary["targets"]["runner"]["action"] == "deferred"
+    assert "active_jobs" in summary["targets"]["runner"]["detail"]
+    assert ("restart-runner",) not in world.runner.commands()
+
+
+def test_down_runner_is_restarted_anyway(world):
+    """Refused before the restart means down (restart brings it up
+    current); the verify then sees it healthy on the desired commit."""
+    _add_runner_target(world)
+
+    def health():
+        if ("restart-runner",) in world.runner.commands():
+            return (200, {"status": "ok", "active_jobs": 0, "code_version": SHA_LOCAL})
+        return refused()
+
+    world.http.routes["http://runner/health"] = health
+    summary = run_sync(world)
+    assert summary["targets"]["runner"]["action"] == "restarted"
+    assert ("restart-runner",) in world.runner.commands()
+    assert marker(world, "runner") == SHA_LOCAL
+
+
+def test_a_restart_that_comes_up_on_other_code_is_not_marked_deployed(world):
+    """The old process answers /health during its shutdown, and a restart
+    on the wrong checkout answers forever: neither is 'healthy' for a
+    target that reports code_version."""
+    _add_runner_target(world)
+    world.http.routes["http://runner/health"] = (
+        200, {"status": "ok", "active_jobs": 0, "code_version": SHA_OLD},
+    )
+    summary = run_sync(world)
+    assert summary["targets"]["runner"]["action"] == "failed"
+    assert "code_version" in summary["targets"]["runner"]["detail"]
+    assert marker(world, "runner") == SHA_OLD
+    # A target that reports no version (the API) is verified as before.
+    assert summary["targets"]["slim"]["action"] == "restarted"
+
+
+def test_a_new_runner_target_initializes_from_its_reported_version(world):
+    """A fresh marker is not 'presumed current' for a target that says
+    what it booted from: a stale runner is restarted on the same tick."""
+    _add_runner_target(world)
+    (world.state_dir / "runner.commit").unlink()
+    booted = "d" * 40
+
+    def health():
+        if ("restart-runner",) in world.runner.commands():
+            return (200, {"status": "ok", "active_jobs": 0, "code_version": SHA_LOCAL})
+        return (200, {"status": "ok", "active_jobs": 0, "code_version": booted})
+
+    world.http.routes["http://runner/health"] = health
+    summary = run_sync(world)
+    assert summary["targets"]["runner"]["action"] == "restarted"
+    assert ("restart-runner",) in world.runner.commands()
+    assert marker(world, "runner") == SHA_LOCAL
+    # A target reporting no version keeps the old presumption.
+    (world.state_dir / "slim.commit").unlink()
+    summary = run_sync(world)
+    assert summary["targets"]["slim"]["action"] == "initialized"
+
+
+def test_pull_waits_for_a_busy_runner_too(world):
+    _add_runner_target(world)
+    world.head = SHA_OLD
+    world.origin = SHA_NEW
+    world.merge_base = SHA_OLD
+    world.diff_names[(SHA_OLD, SHA_NEW)] = ["Nymeria/nymeria/tools/claude_code_bridge.py"]
+    world.http.routes["http://runner/health"] = (200, {"status": "ok", "active_jobs": 1})
+    summary = run_sync(world)
+    assert ("git", "-C", "/repo", "pull", "--ff-only") not in world.runner.commands()
+    assert summary["targets"]["runner"]["action"] == "deferred"
+    assert "active_jobs=1" in summary["targets"]["runner"]["detail"]
+    assert "runner" in summary["targets"]["slim"]["detail"]
 
 
 def test_malformed_activity_payload_fails_safe(world):

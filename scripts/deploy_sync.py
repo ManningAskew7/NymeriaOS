@@ -31,7 +31,9 @@ each gate here exists for one concrete hazard:
                     count (held turn locks, interactive admission slots,
                     background bash jobs, or detached Claude Code / /code
                     runs) defers that target to the next
-                    tick, so in-flight work is never severed. When a PULL is
+                    tick, so in-flight work is never severed. A target
+                    without a turns endpoint (the Claude Code runner) is
+                    gated on its /health "active_jobs" instead. When a PULL is
                     pending, every target sharing the checkout must be idle
                     first: imports are lazy in this codebase, so swapping
                     files under a live turn creates mixed-version state even
@@ -56,6 +58,12 @@ Config (JSON, see --config): {"repo": path, "clean_paths": [...],
 "escalation_globs": [...], "targets": [{"name", "health_url", "turns_url",
 "token" ({"file": path} or {"env_file": path, "key": VAR}), "restart" (argv),
 optional "restart_cwd", "restart_env", "extra_restart_containers"}]}.
+A target with no "turns_url" (the Claude Code runner unit) is idle-probed
+through its unauthenticated "health_url" instead, on the "active_jobs"
+count it reports (#335); it needs no "token". A target whose /health
+reports "code_version" (the runner) is held to it: its marker initializes
+to the reported commit (a stale one restarts at once) and a restart counts
+as healthy only once /health reports the desired commit.
 Tokens are read at call time and never logged. stdlib only: this runs from a
 system python3 on a host timer, not from the project venv.
 
@@ -308,6 +316,8 @@ def idle_verdict(
     target: dict[str, Any], http_get: Callable = http_get_json
 ) -> tuple[bool, str]:
     """(safe_to_restart, reason)."""
+    if not target.get("turns_url"):
+        return health_idle_verdict(target, http_get=http_get)
     token = read_token(target.get("token", {}))
     if token is None:
         return False, "token unavailable"
@@ -347,12 +357,70 @@ def idle_verdict(
     return True, "idle"
 
 
+def health_idle_verdict(
+    target: dict[str, Any], http_get: Callable = http_get_json
+) -> tuple[bool, str]:
+    """The idle probe for a target with no turn-activity endpoint: the Claude
+    Code runner (#335) reports its in-flight runs as ``active_jobs`` on its
+    unauthenticated ``/health``. Same fail-safe shape as ``idle_verdict``:
+    refused means down (restart brings it up current), any other failure
+    or a payload without the count means "cannot verify", no restart.
+    """
+    try:
+        status, payload = http_get(target["health_url"], {})
+    except OSError as exc:
+        if is_connection_refused(exc):
+            return True, "target down"
+        return False, f"probe failed: {type(exc).__name__}"
+    if status != 200 or not isinstance(payload, dict):
+        return False, f"health probe answered {status}"
+    active = payload.get("active_jobs")
+    if not isinstance(active, int) or isinstance(active, bool):
+        # A runner predating #335 reports no count: never restart blind.
+        return False, "health payload has no active_jobs count"
+    if active:
+        return False, f"busy (active_jobs={active})"
+    return True, "idle"
+
+
+def reported_code_version(payload: Any) -> Optional[str]:
+    """The commit a target says it booted from (the runner's /health
+    ``code_version``, #335), or None when the target does not report one."""
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("code_version")
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value):
+        return value
+    return None
+
+
+def probe_code_version(
+    target: dict[str, Any], http_get: Callable = http_get_json
+) -> Optional[str]:
+    """What the target reports as its code version right now, or None
+    (down, unreachable, or a target that does not report one)."""
+    try:
+        status, payload = http_get(target["health_url"], {})
+    except OSError:
+        return None
+    return reported_code_version(payload) if status == 200 else None
+
+
 def restart_target(
     target: dict[str, Any],
     runner: Callable = run_command,
     http_get: Callable = http_get_json,
     sleep: Callable = sleep_seconds,
+    expected_version: Optional[str] = None,
 ) -> tuple[bool, str]:
+    """Run the target's restart argv and wait for a healthy answer.
+
+    A target that reports ``code_version`` must report ``expected_version``
+    before it counts as healthy: the old process still answers during its
+    shutdown, and a restart that came up on other code (a different
+    checkout, a wrong unit on the port) must not advance the marker into
+    the silent-staleness #335 exists to end.
+    """
     rc, out = runner(
         list(target["restart"]),
         cwd=target.get("restart_cwd"),
@@ -372,15 +440,27 @@ def restart_target(
                 runner(["docker", "restart", container])
 
     waited = 0.0
+    seen_version: Optional[str] = None
     while waited <= HEALTH_DEADLINE_SECONDS:
         try:
             status, payload = http_get(target["health_url"], {})
             if status == 200 and isinstance(payload, dict):
-                return True, "healthy"
+                seen_version = reported_code_version(payload)
+                if (
+                    expected_version is None
+                    or seen_version is None
+                    or seen_version == expected_version
+                ):
+                    return True, "healthy"
         except OSError:
             pass
         sleep(HEALTH_POLL_SECONDS)
         waited += HEALTH_POLL_SECONDS
+    if seen_version is not None and expected_version is not None:
+        return False, (
+            f"health answered but code_version {seen_version[:12]} != "
+            f"desired {expected_version[:12]} after {HEALTH_DEADLINE_SECONDS}s"
+        )
     return False, f"health check did not pass within {HEALTH_DEADLINE_SECONDS}s"
 
 
@@ -545,15 +625,26 @@ def sync(
         marker = read_state_file(marker_file)
 
         if marker is None:
-            # Fresh install is presumed current: initialize without a restart.
+            # Fresh install is presumed current: initialize without a
+            # restart. A target that REPORTS its code version is not
+            # presumed anything: its marker starts at what it booted from,
+            # so a stale one is restarted on this same tick (#335).
+            reported = probe_code_version(target, http_get=http_get)
+            initial = reported or desired
             if not dry_run:
                 state_dir.mkdir(parents=True, exist_ok=True)
-                write_state_file(marker_file, desired)
+                write_state_file(marker_file, initial)
+            if initial == desired:
+                summary["targets"][name] = {
+                    "action": "initialized",
+                    "detail": f"marker set to {desired[:12]} without restart",
+                }
+                continue
+            marker = initial
             summary["targets"][name] = {
                 "action": "initialized",
-                "detail": f"marker set to {desired[:12]} without restart",
+                "detail": f"marker set to reported {initial[:12]}; stale, restarting",
             }
-            continue
 
         if marker == desired:
             summary["targets"][name] = {"action": "noop", "detail": "current"}
@@ -604,7 +695,11 @@ def sync(
             continue
 
         ok, detail = restart_target(
-            target, runner=runner, http_get=http_get, sleep=sleep
+            target,
+            runner=runner,
+            http_get=http_get,
+            sleep=sleep,
+            expected_version=desired,
         )
         state_dir.mkdir(parents=True, exist_ok=True)
         if ok:

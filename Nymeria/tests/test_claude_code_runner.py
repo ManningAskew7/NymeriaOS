@@ -68,6 +68,39 @@ def test_health_no_auth(tmp_path, monkeypatch):
     assert resp.json()["status"] == "ok"
 
 
+def test_health_reports_in_flight_jobs_and_the_checkout_head(tmp_path, monkeypatch):
+    """#335: deploy-sync gates the unit's restart on ``active_jobs``, and
+    ``code_version`` names the checkout this process booted from."""
+    monkeypatch.setattr(
+        runner_mod, "_checkout_head", lambda: "0123456789abcdef0123456789abcdef01234567"
+    )
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(runner_mod, "run_local_blocking", _streaming_run(started, release))
+    client, _ = _client(tmp_path, monkeypatch)
+    idle = client.get("/health").json()
+    assert idle["active_jobs"] == 0
+    assert idle["code_version"] == "0123456789abcdef0123456789abcdef01234567"
+
+    job_id = client.post("/run", json={"prompt": "x"}, headers=_AUTH).json()["job_id"]
+    assert started.wait(2.0)
+    assert client.get("/health").json()["active_jobs"] == 1
+    release.set()
+    _wait_completed(client, job_id)
+    assert client.get("/health").json()["active_jobs"] == 0
+
+
+def test_checkout_head_reads_this_checkout():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(runner_mod.__file__).resolve().parents[2]
+    probe = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("not running from a git checkout")
+    assert runner_mod._checkout_head() == probe.stdout.strip()
+
+
 def test_run_requires_token(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     resp = client.post("/run", json={"prompt": "hi"})

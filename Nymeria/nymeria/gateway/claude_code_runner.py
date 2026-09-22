@@ -34,7 +34,7 @@ Endpoints:
   -> the live transcript tail (``RunObserver.snapshot``), a read-only look
   at a running (or recently finished) session without resuming it.
 - ``POST /cancel/{id}`` -> ``{status}`` (group-kills the job's Claude Code process)
-- ``GET  /health`` -> ``{status, claude}`` (no auth)
+- ``GET  /health`` -> ``{status, claude, active_jobs, code_version}`` (no auth)
 
 Concurrent runs are capped (``NYMERIA_CLAUDE_CODE_MAX_CONCURRENCY``, default 2) so
 a burst of parallel runs cannot exhaust host memory.
@@ -48,6 +48,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
@@ -154,6 +155,12 @@ class _JobRegistry:
             for stale in completed[: max(0, overflow)]:
                 self._jobs.pop(stale, None)
 
+    def running_count(self) -> int:
+        """Jobs still executing: what a restart of this process would kill
+        (deploy-sync's idle gate reads it from ``/health``, #335)."""
+        with self._lock:
+            return sum(1 for job in self._jobs.values() if job.status == "running")
+
     def request_cancel(self, job_id: str) -> bool:
         """Signal a running job to cancel. Returns whether the job exists."""
         with self._lock:
@@ -255,6 +262,18 @@ def _execute(job: _RunnerJob, request: ClaudeCodeRequest, config: ClaudeCodeRunC
     registry.complete(job.id, result)
 
 
+def _checkout_head() -> Optional[str]:
+    """HEAD of the checkout this module runs from, or None (not a checkout,
+    git missing, packaged install)."""
+    from ..tools.claude_code_bridge import _git
+
+    try:
+        head = _git(["rev-parse", "HEAD"], str(Path(__file__).resolve().parents[2]))
+    except Exception:  # noqa: BLE001 - a version label never blocks startup.
+        return None
+    return (head or "").strip() or None
+
+
 def create_app(*, allow_insecure: bool = False):
     """Build the FastAPI runner app.
 
@@ -273,6 +292,10 @@ def create_app(*, allow_insecure: bool = False):
         )
 
     registry = _JobRegistry()
+    # The checkout this process loaded its code from, so an operator (or
+    # the tool side) can tell a stale runner from a current one (#335).
+    # Read once: the answer cannot change for the life of the process.
+    code_version = _checkout_head()
     max_concurrency = max(
         1, int(getattr(settings, "nymeria_claude_code_max_concurrency", 2) or 2)
     )
@@ -288,7 +311,18 @@ def create_app(*, allow_insecure: bool = False):
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "claude": bool(resolve_claude_executable())}
+        # No auth (the route predates this and the tool side never needed
+        # it): ``active_jobs`` lets deploy-sync defer a restart while a run
+        # is in flight (the unit's KillMode would take the run's ``claude
+        # -p`` children with it); ``code_version`` names the checkout HEAD
+        # this process booted from. Both are internal state, published only
+        # on the docker0 gateway the unit binds; nothing here is a secret.
+        return {
+            "status": "ok",
+            "claude": bool(resolve_claude_executable()),
+            "active_jobs": registry.running_count(),
+            "code_version": code_version,
+        }
 
     @app.post("/run")
     def run(body: RunRequest, _: None = Depends(_auth)) -> dict:

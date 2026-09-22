@@ -344,12 +344,30 @@ loginctl enable-linger "$USER"   # survive logout / reboot
 `git` (for the change summary). Bind `172.17.0.1` (the private docker0 gateway),
 not `0.0.0.0`. The runner needs no Nymeria DB or service token.
 
+The unit loads its code from the checkout at start, so a host that keeps
+deployments current with `scripts/deploy_sync.py` should list the runner as
+a target too (#335). It has no turn-activity endpoint; deploy-sync gates its
+restart on the `active_jobs` count in `GET /health` instead (a run in flight
+defers the restart, since the unit's KillMode would take the run's `claude -p`
+children with it), and no token is needed:
+
+```json
+{
+  "name": "runner",
+  "health_url": "http://172.17.0.1:8200/health",
+  "restart": ["systemctl", "--user", "restart", "nymeria-claude-code-runner"]
+}
+```
+
+`GET /health` also reports `code_version`, the checkout HEAD the process
+booted from, so a stale runner is visible at a glance.
+
 ### Verify
 
 ```bash
 curl -s http://172.17.0.1:8200/health                          # host
 docker exec nymeria-api curl -s http://host.docker.internal:8200/health  # container
-# both -> {"status":"ok","claude":true}
+# both -> {"status":"ok","claude":true,"active_jobs":0,"code_version":"<checkout HEAD>"}
 ```
 
 A `claude:true` health plus a real run (a "reply PONG" prompt) confirms the host
