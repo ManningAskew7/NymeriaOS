@@ -163,8 +163,18 @@ session" is the one in flight.
 `resume` is addressable:
 
 - `True` (default): the thread's stored session for that directory.
-- A **session id**, or a **bridge job id** from any report: that specific
-  session, whichever thread or run last used it. This is how a follow-up
+- A **session id**, or a **bridge job id** from a report on THIS thread:
+  that specific session, whichever run last used it. Addressing is
+  thread-scoped (#337, like the session store and the `/code` registry): a
+  job on another of the user's threads is never queued on, because its
+  follow-up would deliver there. An id naming another thread's RUNNING
+  job is refused with that thread named (peek it, or resume it from here
+  once it has finished); one naming a finished job on another thread
+  resolves to its session id and starts a run here that continues it,
+  after which the session is stored for BOTH threads (#389 wants a fork
+  instead). Whatever the ref, a run is never started on a session that
+  another of the user's threads has live: that is refused the same way.
+  This is how a follow-up
   reaches the run you mean when several are in flight (the 2026-09-04
   incidents: `resume=True` with a detached job running resumed the previous
   session instead). The value must look like an id
@@ -193,7 +203,8 @@ stopped (a stop drops the queue silently, as it silences the FINAL).
 ## Peek: look at a running session without resuming it
 
 `claude_code(peek="<job id> | <session id> | latest", tail=N)` returns the
-session's live state: RUNNING or finished, elapsed time, its end-turns so
+session's live state (read-only, so any of the user's jobs may be peeked,
+this thread's first; `latest` is this thread's newest run): RUNNING or finished, elapsed time, its end-turns so
 far, and the last N transcript entries (assistant text, tool calls with a
 compact input preview, tool results, task notifications), each timestamped.
 Everything the run wrote (the end-turn previews and the tail) sits inside one

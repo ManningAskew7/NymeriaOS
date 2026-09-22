@@ -551,6 +551,113 @@ def test_prompt_for_a_running_session_is_queued_and_started_afterwards(tmp_path,
     assert any("3 queued follow-up(s) started as job fu-1" in n for n in final.notes)
 
 
+THREAD_B_CFG = {"configurable": {"thread_id": "thread-B", "user_id": "owner"}}
+
+
+@pytest.mark.timeout(60)
+def test_a_follow_up_for_another_threads_live_run_is_refused_not_queued(tmp_path, monkeypatch):
+    """#337: thread A addressing thread B's running session (by job id or
+    session id) is refused with the thread named, never queued onto B's
+    run (whose follow-up would deliver to B while A's receipt said "this
+    thread"). Peek stays readable across threads, and once B's run has
+    finished the same job id resolves to its session for a run on A."""
+    _local(tmp_path, monkeypatch)
+    release = threading.Event()
+    spawned: list[tuple] = []
+    captured: dict = {}
+
+    def fake_run_local(request, config, timeout, env=None, observer=None, **kw):
+        if request.resume_session_id:
+            captured["resume"] = request.resume_session_id
+            captured["thread"] = request.prompt
+            return bridge.ClaudeCodeResult(ok=True, result_text="resumed", session_id="live-sess")
+        observer.feed_event({"type": "system", "subtype": "init", "session_id": "live-sess"})
+        observer.feed_event({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "working on B"}]}})
+        release.wait(30)
+        return bridge.ClaudeCodeResult(ok=True, result_text="B done", session_id="live-sess")
+
+    monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
+    reports: list = []
+    monkeypatch.setattr(bg, "_submit_completion_prompt", lambda job, report: reports.append(report))
+    monkeypatch.setattr(
+        claude_module, "start_followup_run",
+        lambda prev, sid, prompts: spawned.append((prev.id, sid, prompts)) or SimpleNamespace(id="fu-x"),
+    )
+
+    started = claude_module.claude_code.func("long task on B", detach=True, config=THREAD_B_CFG)
+    job_id = started.split("job ")[1].split(" ")[0]
+    # Budgets, not durations (cold first invocations under -n 2 load, #364).
+    # The session id lands before the assistant event is folded into the
+    # tail (the observer stores it, then calls on_session outside its lock),
+    # so wait for the tail the peek assertion reads.
+    assert _wait_for(
+        lambda: bg.find_job(job_id).session_id == "live-sess"
+        and bg.find_job(job_id).observer.snapshot(0)["tail_total"] >= 1,
+        timeout=10,
+    )
+
+    by_job = claude_module.claude_code.func("also do X", resume=job_id, config=THREAD_CFG)
+    assert by_job.startswith("[Error]") and "thread-B" in by_job and job_id in by_job
+    by_session = claude_module.claude_code.func("and Y", resume="live-sess", config=THREAD_CFG)
+    assert by_session.startswith("[Error]") and "thread-B" in by_session
+    assert "[Queued]" not in by_job + by_session
+    assert bg.find_job(job_id).followups == []
+    # Read-only: A may still watch B's run.
+    peek = claude_module.claude_code.func(peek=job_id, config=THREAD_CFG)
+    assert "working on B" in peek and not peek.startswith("[Error]")
+    assert "delivered to thread thread-B" in peek and "belongs to thread thread-B" in peek
+    # "latest" stays this thread's: A has no run yet.
+    assert claude_module.claude_code.func(peek="latest", config=THREAD_CFG).startswith("[Error]")
+    # Bare resume=True on A with B's session stored for A (a pasted id from
+    # an earlier resume) must not fork the live session either.
+    claude_module._session_store().set("thread-A", str(claude_module.get_settings().project_root), "live-sess")
+    bare = claude_module.claude_code.func("and Z", resume=True, config=THREAD_CFG)
+    assert bare.startswith("[Error]") and "thread-B" in bare
+    # An unknown ref that happens to be the live session id: same guard.
+    assert bg.find_job(job_id).followups == []
+
+    release.set()
+    assert _wait_for(lambda: any(r.final for r in reports), timeout=10)
+    assert spawned == []
+    assert not any("queued follow-up" in n for n in next(r for r in reports if r.final).notes)
+
+    # Finished: the foreign job id resolves to its session, run on A.
+    assert _wait_for(lambda: not bg.find_job(job_id).running, timeout=10)
+    out = claude_module.claude_code.func("pick up on A", resume=job_id, config=THREAD_CFG)
+    assert "resumed" in out and captured["resume"] == "live-sess"
+    assert "thread thread-A" in captured["thread"], "the run is dispatched from A"
+
+
+def test_an_in_thread_finished_job_does_not_shadow_the_same_session_live_elsewhere(tmp_path, monkeypatch):
+    """#337 fork guard: thread A once ran session S (finished, still in the
+    registry); B is now running S. A's resume=<A's old job id> must not start
+    a concurrent run on S."""
+    _local(tmp_path, monkeypatch)
+    finished = bg.ClaudeCodeJob(
+        id="a-old", thread_id="thread-A", user_id="owner", prompt="p", cwd="/repo",
+        mode="dontAsk", started_at=time.time(), detached_message="",
+    )
+    finished.observer.set_session_id("shared-sess")
+    finished.done.set()
+    live = bg.ClaudeCodeJob(
+        id="b-live", thread_id="thread-B", user_id="owner", prompt="p", cwd="/repo",
+        mode="dontAsk", started_at=time.time(), detached_message="",
+    )
+    live.observer.set_session_id("shared-sess")
+    bg.register(finished)
+    bg.register(live)
+    calls: list = []
+    monkeypatch.setattr(
+        claude_module, "run_local_blocking",
+        lambda request, config, timeout, env=None, **kw: calls.append(request) or bridge.ClaudeCodeResult(
+            ok=True, result_text="forked!", session_id="shared-sess"),
+    )
+    out = claude_module.claude_code.func("continue", resume="a-old", config=THREAD_CFG)
+    assert out.startswith("[Error]") and "thread-B" in out and "b-live" in out
+    assert calls == [] and live.followups == []
+
+
 def test_resume_of_an_unknown_reference_is_sent_as_a_session_id(tmp_path, monkeypatch):
     _local(tmp_path, monkeypatch)
     captured = {}

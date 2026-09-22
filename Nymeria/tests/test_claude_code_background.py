@@ -440,6 +440,23 @@ def test_find_job_by_id_session_and_latest():
     assert bg.live_job_for_session("sess-old") is None, "finished runs are not live"
 
 
+def test_explicit_refs_are_thread_scoped_when_a_thread_is_given():
+    """#337: a job or session id pasted from another thread does not resolve
+    there, so a follow-up can never be queued onto (and delivered to) a
+    thread other than the one asking."""
+    mine = _make_job("mine", thread_id="t1")
+    mine.observer.set_session_id("sess-mine")
+    bg.register(mine)
+
+    assert bg.find_job("mine", thread_id="t1", user_id="u1") is mine
+    assert bg.find_job("sess-mine", thread_id="t1", user_id="u1") is mine
+    assert bg.find_job("mine", thread_id="t2", user_id="u1") is None
+    assert bg.find_job("sess-mine", thread_id="t2", user_id="u1") is None
+    assert bg.find_job("mine", user_id="u1") is mine, "no thread given: the user's jobs"
+    assert bg.live_job_for_session("sess-mine", user_id="u1", thread_id="t1") is mine
+    assert bg.live_job_for_session("sess-mine", user_id="u1", thread_id="t2") is None
+
+
 def test_session_lookup_prefers_the_running_job_over_a_finished_one_on_the_same_session():
     finished = _make_job("first-run")
     finished.observer.set_session_id("s-shared")

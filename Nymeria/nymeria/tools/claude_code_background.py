@@ -225,19 +225,28 @@ def find_job(
     """Resolve a job id, a session id, or ``"latest"`` to a job.
 
     Scoped to ``user_id`` when given (a job is addressable only by the user
-    it runs for). ``"latest"`` is the newest job on ``thread_id`` (a running
-    one first). A session id matches the newest job on that session, running
-    first, so a follow-up lands on the run that is still going.
+    it runs for) and to ``thread_id`` when given: EVERY ref, not only
+    ``"latest"``, since the subsystem is thread-scoped everywhere else (the
+    session store, the ``/code`` registry) and a follow-up queued on a job
+    is delivered to that job's thread (#337: a session id pasted from
+    another thread must not resolve here). ``"latest"`` is the newest job
+    (a running one first). A session id matches the newest job on that
+    session, running first, so a follow-up lands on the run that is still
+    going.
     """
     ref = (ref or "").strip()
     if not ref:
         return None
     with _JOBS_LOCK:
-        jobs = [j for j in _JOBS.values() if user_id is None or j.user_id == user_id]
+        jobs = [
+            j
+            for j in _JOBS.values()
+            if (user_id is None or j.user_id == user_id)
+            and (thread_id is None or j.thread_id == thread_id)
+        ]
     if ref.lower() == "latest":
-        candidates = [j for j in jobs if thread_id is None or j.thread_id == thread_id]
-        running = [j for j in candidates if j.running]
-        pool = running or candidates
+        running = [j for j in jobs if j.running]
+        pool = running or jobs
         return pool[-1] if pool else None
     for job in reversed(jobs):
         if job.id == ref:
@@ -253,9 +262,11 @@ def find_job(
     return running_match or finished_match
 
 
-def live_job_for_session(session_id: str, *, user_id: Optional[str] = None) -> Optional[ClaudeCodeJob]:
-    """The RUNNING job on ``session_id``, or None."""
-    job = find_job(session_id, user_id=user_id)
+def live_job_for_session(
+    session_id: str, *, user_id: Optional[str] = None, thread_id: Optional[str] = None
+) -> Optional[ClaudeCodeJob]:
+    """The RUNNING job on ``session_id``, or None (scopes as ``find_job``)."""
+    job = find_job(session_id, user_id=user_id, thread_id=thread_id)
     return job if job is not None and job.running and job.session_id == session_id else None
 
 
@@ -556,9 +567,17 @@ def report_body(job: ClaudeCodeJob, report: TurnReport, *, fenced: bool = False)
     return "\n\n".join(parts)
 
 
-def followup_hint(job: ClaudeCodeJob) -> str:
+def followup_hint(job: ClaudeCodeJob, *, from_thread: Optional[str] = None) -> str:
     session = job.session_id
     target = f'resume="{session}"' if session else f'resume="{job.id}"'
+    if from_thread is not None and from_thread != job.thread_id:
+        # Peeked from another thread (#337): a follow-up cannot be queued on
+        # it from here, only resumed once it has finished.
+        return (
+            f"This run belongs to thread {job.thread_id}; once it has finished, "
+            f"claude_code(prompt, {target}) resumes the session from here. "
+            f'claude_code(peek="{job.id}") shows its live transcript.'
+        )
     return (
         f"Follow up on THIS session with claude_code(prompt, {target}) "
         "(queued and run afterwards if the session is still going); "
@@ -766,8 +785,15 @@ def fence_untrusted_output(body: str) -> str:
     return _OUTPUT_FENCE.wrap(safe, note=note)
 
 
-def format_peek(job: ClaudeCodeJob, snapshot: dict, tail: int) -> str:
-    """Render a live snapshot (``RunObserver.snapshot`` shape) for the agent."""
+def format_peek(
+    job: ClaudeCodeJob, snapshot: dict, tail: int, *, from_thread: Optional[str] = None
+) -> str:
+    """Render a live snapshot (``RunObserver.snapshot`` shape) for the agent.
+
+    ``from_thread`` is the peeking thread; a job on another thread says so
+    and where its end-turns go (#337).
+    """
+    foreign = from_thread is not None and from_thread != job.thread_id
     session = snapshot.get("session_id") or job.session_id or "unknown"
     running = bool(snapshot.get("running", job.running))
     elapsed = float(snapshot.get("elapsed") or _duration(job))
@@ -807,10 +833,11 @@ def format_peek(job: ClaudeCodeJob, snapshot: dict, tail: int) -> str:
     if fenced:
         lines.append(fence_untrusted_output("\n".join(fenced)))
     if running:
+        where = f"thread {job.thread_id}" if foreign else "this thread"
         lines.append(
             "This is a read-only look; the run continues and its end-turns are "
-            f"delivered to this thread as they happen. {followup_hint(job)}"
+            f"delivered to {where} as they happen. {followup_hint(job, from_thread=from_thread)}"
         )
     else:
-        lines.append(followup_hint(job))
+        lines.append(followup_hint(job, from_thread=from_thread))
     return "\n".join(lines)

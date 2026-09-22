@@ -247,9 +247,14 @@ def claude_code(
             recent Claude Code session in the same directory. A session id or
             a job id (from any report): that SPECIFIC session, so a follow-up
             reaches the run you mean even when another is in flight. False:
-            a fresh session. A prompt for a session that is still running is
-            queued and started as a resumed run when it ends; you get a
-            [Queued] receipt now and the answer as a later follow-up.
+            a fresh session. A prompt for a session that is still running on
+            THIS thread is queued and started as a resumed run when it ends;
+            you get a [Queued] receipt now and the answer as a later
+            follow-up. A session that is live on ANOTHER thread is refused
+            (its follow-ups deliver there, and a concurrent resume would fork
+            it): peek it, or resume it once it has finished. Resuming another
+            thread's finished session makes that session shared by both
+            threads from then on.
         detach: If True, return immediately with a job id instead of waiting;
             every report then arrives as a follow-up message. Use this when
             you want to keep talking to the user while it works.
@@ -401,23 +406,35 @@ def _resolve_live_target(
 
     A job id becomes its session id (or the job itself while it has none yet
     but is still running). Bare True checks whether the thread's stored
-    session is the one in flight. Raises ``ClaudeCodeError`` for an unknown
-    reference.
+    session is the one in flight. Addressing is THREAD-scoped (#337): a job
+    on another of the user's threads is never queued on (its follow-up would
+    deliver there, while this thread's receipt promises "here"). A ref that
+    names another thread's RUNNING job raises, since resuming a live
+    session concurrently would fork it; a finished one resolves to its
+    session id for a fresh run on this thread. Raises ``ClaudeCodeError``
+    for a job that finished without a session.
     """
     if resume_target is False:
         return None, False
     if resume_target is True:
         stored = stored_session_id(settings, thread_id, working_dir)
         if stored:
-            live = live_job_for_session(stored, user_id=user_id)
+            live = live_job_for_session(stored, user_id=user_id, thread_id=thread_id)
             if live is not None:
                 return live, True
+            _refuse_if_live_elsewhere(stored, thread_id=thread_id, user_id=user_id)
         return None, True
     ref = str(resume_target)
     job = find_job(ref, thread_id=thread_id, user_id=user_id)
     if job is None:
-        # Not a job we know: treat it as a session id the host may still have.
-        return None, ref
+        foreign = find_job(ref, user_id=user_id)
+        if foreign is None:
+            # Not a job we know: treat it as a session id the host may still have.
+            _refuse_if_live_elsewhere(ref, thread_id=thread_id, user_id=user_id)
+            return None, ref
+        if foreign.running:
+            raise ClaudeCodeError(_live_elsewhere_message(foreign))
+        job = foreign
     if job.running:
         return job, ref
     session = job.session_id
@@ -425,11 +442,35 @@ def _resolve_live_target(
         raise ClaudeCodeError(
             f"Claude Code job {job.id} finished without a session id; nothing to resume."
         )
+    _refuse_if_live_elsewhere(session, thread_id=thread_id, user_id=user_id)
     return None, session
 
 
+def _live_elsewhere_message(job: ClaudeCodeJob) -> str:
+    return (
+        f"Claude Code job {job.id} (session {job.session_id or 'pending'}) is running "
+        f"on thread {job.thread_id}, not this one, and its follow-ups are delivered "
+        "there. Wait for it to finish, then resume it from here with the same id. "
+        f"Meanwhile claude_code(peek=\"{job.id}\") shows what it is doing, and "
+        "resume=False starts an independent session."
+    )
+
+
+def _refuse_if_live_elsewhere(session: str, *, thread_id: str, user_id: str) -> None:
+    """The fork guard, user-wide: never START a run on a session another of
+    the user's threads has live (queueing stays thread-scoped, so the only
+    honest answers are refuse now or resume later)."""
+    other = live_job_for_session(session, user_id=user_id)
+    if other is not None and other.thread_id != thread_id:
+        raise ClaudeCodeError(_live_elsewhere_message(other))
+
+
 def _peek(ref: str, tail: int, *, thread_id: Optional[str], user_id: str) -> str:
+    # Read-only, so any of the user's jobs may be watched by id: this
+    # thread's first, then the rest; "latest" is this thread's alone (#337).
     job = find_job(ref, thread_id=thread_id, user_id=user_id)
+    if job is None and ref.strip().lower() != "latest":
+        job = find_job(ref, user_id=user_id)
     if job is None:
         return (
             f"[Error]: no Claude Code job or session '{ref}' is known to this process "
@@ -453,11 +494,11 @@ def _peek(ref: str, tail: int, *, thread_id: Optional[str], user_id: str) -> str
             snapshot = {**job.observer.snapshot(0), "tail": [], "tail_total": 0}
             remote_id = job.observer.remote_job_id or "not assigned"
             return (
-                f"{format_peek(job, snapshot, count)}\n"
+                f"{format_peek(job, snapshot, count, from_thread=thread_id)}\n"
                 f"(No transcript tail: {exc}. Bridge job {job.id} is runner job "
                 f"{remote_id}.)"
             )
-    return format_peek(job, snapshot, count)
+    return format_peek(job, snapshot, count, from_thread=thread_id)
 
 
 def start_followup_run(previous: ClaudeCodeJob, session_id: str, prompts: list[str]) -> ClaudeCodeJob:
