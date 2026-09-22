@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { fly } from 'svelte/transition';
   import { TAB_FADE } from '$lib/utils/transitions';
   import { countChangedFields } from '$lib/utils/settingsDirty';
@@ -613,6 +613,11 @@
   // idiom in the same actions row.
   let connectionSaving = $state(false);
   let loadingSettings = $state(false);
+  // Latched by a failed load so the mount effect below stops re-driving it
+  // (#381: with `serverSettings` null and `loadingSettings` flipping back
+  // to false, a failing fetch re-ran as fast as the backend answered).
+  // Cleared by the next explicit load (save, provider switch).
+  let settingsLoadFailed = $state(false);
   let savingSettings = $state(false);
   let showProviderSetupWizard = $state(false);
 
@@ -895,6 +900,7 @@
     if (!configStore.isConfigured) return;
 
     loadingSettings = true;
+    settingsLoadFailed = false;
     try {
       const [settings, catalog] = await Promise.all([
         api.getServerSettings(),
@@ -978,15 +984,16 @@
       snapshotServerBaselines();
     } catch (e) {
       console.error('Failed to load server settings:', e);
+      settingsLoadFailed = true;
     } finally {
       loadingSettings = false;
     }
   }
 
-  // Load settings on mount if configured
+  // Load settings on mount if configured: once per open, never a retry loop.
   $effect(() => {
-    if (configStore.isConfigured && !serverSettings && !loadingSettings) {
-      loadServerSettings();
+    if (configStore.isConfigured && !serverSettings && !loadingSettings && !settingsLoadFailed) {
+      untrack(() => loadServerSettings());
     }
   });
 

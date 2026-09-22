@@ -526,7 +526,10 @@
         if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
         if (!hooksStore.loaded && !hooksStore.loading) hooksStore.loadHooks();
         if (!modelsStore.loaded && !modelsStore.loading) modelsStore.loadModels();
-        if (!serverSettingsStore.loaded && !serverSettingsStore.loading) serverSettingsStore.load();
+        // Reopening the panel is the user's retry for a latched failure
+        // (mobile has no reconnect effect); a latched 403 stays put.
+        if (serverSettingsStore.error && !serverSettingsStore.loading) serverSettingsStore.refresh();
+        else if (!serverSettingsStore.settled && !serverSettingsStore.loading) serverSettingsStore.load();
         if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
         if (!mcpServersStore.loaded && !mcpServersStore.loading) mcpServersStore.load();
         if (!skillsStore.installedLoaded && !skillsStore.installedLoading) skillsStore.loadInstalled();

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
@@ -118,6 +119,8 @@
   // Server settings
   let serverSettings = $state<ServerSettings | null>(null);
   let loadingSettings = $state(false);
+  // Latched by a failed load so the open effect stops re-driving it (#381).
+  let settingsLoadFailed = $state(false);
   let savingSettings = $state(false);
 
   // LLM settings
@@ -243,6 +246,7 @@
   async function loadServerSettings() {
     if (!configStore.isConfigured) return;
     loadingSettings = true;
+    settingsLoadFailed = false;
     try {
       const [settings, catalog] = await Promise.all([
         api.getServerSettings(),
@@ -304,14 +308,15 @@
       }
     } catch (e) {
       console.error('Failed to load settings:', e);
+      settingsLoadFailed = true;
     } finally {
       loadingSettings = false;
     }
   }
 
   $effect(() => {
-    if (open && configStore.isConfigured && !serverSettings && !loadingSettings) {
-      loadServerSettings();
+    if (open && configStore.isConfigured && !serverSettings && !loadingSettings && !settingsLoadFailed) {
+      untrack(() => loadServerSettings());
     }
   });
 

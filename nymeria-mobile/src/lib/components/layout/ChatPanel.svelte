@@ -32,7 +32,7 @@
     if (configStore.isConfigured) {
       untrack(() => {
         if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
-        if (!serverSettingsStore.loaded && !serverSettingsStore.loading) serverSettingsStore.load();
+        if (!serverSettingsStore.settled && !serverSettingsStore.loading) serverSettingsStore.load();
         if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
         if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) skillsStore.loadGlobal();
       });

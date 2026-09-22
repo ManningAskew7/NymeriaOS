@@ -62,20 +62,20 @@
   // Tracked deps: the current thread (stats hydrate on thread open, not on
   // first settings-panel visit) and the loaded flags that reset on an
   // identity switch (defaultTools/triggers latch `loaded = true` even on a
-  // failed fetch, so their flips are bounded; serverSettings does NOT latch
-  // on error, but its `loading` flip is untracked here, so a failed load
-  // simply leaves `loaded` false until another tracked dep re-runs this
-  // effect — a bounded retry, not a loop). The load calls run untracked so
-  // a load's own `loading` flip can never re-trigger this effect.
+  // failed fetch; serverSettings latches `forbidden` or `error` instead,
+  // and `settled` covers all three, so a non-admin's 403 or a failing
+  // endpoint never re-drives this effect, #381). The load calls run
+  // untracked so a load's own `loading` flip can never re-trigger this
+  // effect.
   $effect(() => {
     if (!configStore.isConfigured) return;
     void threadsStore.currentThreadId;
     void defaultToolsStore.loaded;
     void triggersStore.loaded;
-    void serverSettingsStore.loaded;
+    void serverSettingsStore.settled;
     untrack(() => {
       if (!defaultToolsStore.loaded && !defaultToolsStore.loading) void defaultToolsStore.load();
-      if (!serverSettingsStore.loaded && !serverSettingsStore.loading) void serverSettingsStore.load();
+      if (!serverSettingsStore.settled && !serverSettingsStore.loading) void serverSettingsStore.load();
       if (!triggersStore.loaded && !triggersStore.loading) void triggersStore.loadTriggers();
     });
   });
@@ -89,7 +89,12 @@
     untrack(() => {
       if (defaultToolsStore.error && !defaultToolsStore.loading) void defaultToolsStore.reload();
       if (triggersStore.error && !triggersStore.loading) void triggersStore.loadTriggers();
-      if (!serverSettingsStore.loaded && !serverSettingsStore.loading) void serverSettingsStore.load();
+      // A latched failure retries on reconnect; a latched 403 does not (the
+      // role does not change with the link). refresh() un-settles the store,
+      // which re-runs the effect above, but it has already set `loading`
+      // synchronously by then, so that effect's guard holds. Keep refresh()
+      // synchronous up to its load() call.
+      if (serverSettingsStore.error && !serverSettingsStore.loading) void serverSettingsStore.refresh();
     });
   });
 

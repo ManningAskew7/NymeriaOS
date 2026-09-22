@@ -54,7 +54,11 @@ export class SystemApi extends MemoryApi {
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      // The status rides the error: the settings store treats a 403 as
+      // "not an admin" (silent, latched) rather than a failure (#381).
+      throw Object.assign(new Error(await this._extractError(response, 'Failed to load server settings')), {
+        status: response.status,
+      });
     }
 
     return response.json();
