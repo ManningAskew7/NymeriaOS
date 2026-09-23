@@ -593,7 +593,7 @@ def test_blocked_network_error_messages_match_the_denial_reason():
     dns = blocked_network_error(
         HTTPPolicyDecision(False, "dns_resolution_failed", "https://x.invalid/", "x.invalid", 443)
     )
-    assert dns["type"] == "blocked_network_target"
+    assert dns["type"] == "dns_resolution_failed"  # not a policy refusal (#256)
     assert dns["reason"] == "dns_resolution_failed"
     assert "resolve" in dns["message"].lower()
     assert "Private, loopback" not in dns["message"]
@@ -605,6 +605,7 @@ def test_blocked_network_error_messages_match_the_denial_reason():
     assert "Private, loopback" not in miss["message"]
 
     bad_url = blocked_network_error(HTTPPolicyDecision(False, "invalid_http_url", "ftp://x/"))
+    assert bad_url["type"] == "invalid_http_url"
     assert "url" in bad_url["message"].lower()
     assert "Private, loopback" not in bad_url["message"]
 
@@ -618,9 +619,79 @@ def test_blocked_network_error_messages_match_the_denial_reason():
         HTTPPolicyDecision(False, "private_network", "http://10.0.0.1/", "10.0.0.1", 80)
     )
     assert "Private, loopback" in private["message"]
+    assert private["type"] == "blocked_network_target"
+    assert miss["type"] == "blocked_network_target"
+    assert downgrade["type"] == "blocked_network_target"
 
     override = blocked_network_error(
         HTTPPolicyDecision(False, "dns_resolution_failed", "https://x.invalid/", "x.invalid", 443),
         message="custom",
     )
     assert override["message"] == "custom"
+
+
+def _policy_reasons_from_source() -> set[str]:
+    """Every reason string the policy module can put on a refused decision,
+    read from the source so a new reason cannot dodge the table below."""
+    import inspect
+    import re
+
+    from nymeria.core import http_policy
+
+    src = inspect.getsource(http_policy)
+    found = set(re.findall(r'HTTPPolicyDecision\(\s*False,\s*"([a-z_]+)"', src))
+    found |= set(re.findall(r'return True, "([a-z_]+)"', src))  # _is_blocked_ip
+    # `reason` variables carry `_is_blocked_ip`'s strings; nothing else builds one.
+    return found
+
+
+def test_every_policy_reason_has_a_deliberate_error_type():
+    """#256: the type is a category an LLM reads literally. Every refusal
+    reason the policy can emit maps to `blocked_network_target`; the two
+    reasons where the request was never sendable map to themselves, and a
+    reason unknown to this table is a build failure, not a silent bucket."""
+    from nymeria.core.http_policy import (
+        NON_REFUSAL_REASONS,
+        HTTPPolicyDecision,
+        blocked_network_error,
+        network_error_type,
+    )
+
+    assert NON_REFUSAL_REASONS == frozenset({"dns_resolution_failed", "invalid_http_url"})
+    refusals = {
+        "metadata_target", "loopback_network", "private_network", "link_local_network",
+        "reserved_network", "unspecified_network", "multicast_network",
+        "domain_allowlist_miss", "domain_blocklist", "https_to_http_redirect",
+        "redirect_scheme_unsupported",
+    }
+    assert _policy_reasons_from_source() == refusals | NON_REFUSAL_REASONS
+    for reason in refusals:
+        payload = blocked_network_error(HTTPPolicyDecision(False, reason, "http://x/", "x", 80))
+        assert payload["type"] == "blocked_network_target", reason
+        assert payload["reason"] == reason
+    for reason in NON_REFUSAL_REASONS:
+        payload = blocked_network_error(HTTPPolicyDecision(False, reason, "http://x/", "x", 80))
+        assert payload["type"] == reason
+        assert payload["reason"] == reason
+    with pytest.raises(ValueError):
+        network_error_type(HTTPPolicyDecision(True, "public_network", "http://x/", "x", 80))
+
+
+def test_policy_error_message_does_not_call_a_typo_a_block():
+    """The string surfaces (fetch_url_nymeria, browser_navigate, the service
+    integrations, MCP) share this line; #256 fixed the payload type and this
+    keeps the default fetch tool from reporting a security block for a typo."""
+    from nymeria.core.http_policy import HTTPPolicyDecision, policy_error_message
+
+    dns = policy_error_message(
+        HTTPPolicyDecision(False, "dns_resolution_failed", "https://exmaple.com/", "exmaple.com", 443)
+    )
+    assert dns.startswith("URL not sent (dns_resolution_failed): https://exmaple.com/")
+    assert "could not be resolved" in dns
+    assert "HTTP_INTERNAL_ALLOWLIST" in dns
+    assert "blocked" not in dns.lower()
+
+    private = policy_error_message(
+        HTTPPolicyDecision(False, "private_network", "http://10.0.0.5/", "10.0.0.5", 80)
+    )
+    assert private == "URL blocked by HTTP egress policy (private_network): http://10.0.0.5/"

@@ -906,3 +906,86 @@ def test_create_pydantic_schema_empty_enum_falls_back_to_plain_type():
 
     assert model(x="unconstrained").x == "unconstrained"
     assert "enum" not in model.model_json_schema()["properties"]["x"]
+
+
+# ---------------------------------------------------------------------------
+# #256: a request that could not be SENT is not a policy refusal
+# ---------------------------------------------------------------------------
+
+
+def _dns_failing_resolver(host, port):
+    import socket
+
+    raise socket.gaierror(-2, "Name or service not known")
+
+
+def test_dns_failure_is_not_labelled_a_blocked_target():
+    # No mock transport: the tool skips DNS for synthetic test hosts when one
+    # is given, and the policy refuses before any socket is opened anyway.
+    result = _http_request_impl(
+        method="GET",
+        url="https://nymeria-qa-nonexistent-subdomain-98765.com/",
+        policy_config=HTTPPolicyConfig(resolve_dns=True),
+        policy_resolver=_dns_failing_resolver,
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "dns_resolution_failed"
+    assert result["error"]["reason"] == "dns_resolution_failed"
+    assert "resolve" in result["error"]["message"].lower()
+    assert "Private, loopback" not in result["error"]["message"]
+    assert result["policy"]["reason"] == "dns_resolution_failed"
+
+
+def test_invalid_url_refused_by_policy_is_not_labelled_a_blocked_target():
+    # `http://user@/x` passes the tool's own URL normalizer (netloc is truthy,
+    # hostname is None) and is refused by the policy's URL check, so this is
+    # the end-to-end path for `invalid_http_url`, not the helper alone.
+    result = _http_request_impl(
+        method="GET",
+        url="http://user@/x",
+        policy_config=PUBLIC_TEST_POLICY,
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "invalid_http_url"
+    assert result["error"]["reason"] == "invalid_http_url"
+    assert result["policy"]["reason"] == "invalid_http_url"
+
+
+def test_redirect_to_a_non_http_scheme_is_a_refusal_not_a_malformed_request():
+    """The agent's own URL was fine; the server redirected to ftp://. Typing
+    that `invalid_http_url` would send the agent off to fix a URL that is
+    not broken (#256 review), so it is a refusal to follow."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "ftp://elsewhere.example/z"})
+
+    result = _http_request_impl(
+        method="GET",
+        url="https://ok.example/p",
+        follow_redirects=True,
+        transport=httpx.MockTransport(handler),
+        policy_config=PUBLIC_TEST_POLICY,
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "blocked_network_target"
+    assert result["error"]["reason"] == "redirect_scheme_unsupported"
+    assert "redirect" in result["error"]["message"].lower()
+    assert result["redirect_chain"][0]["redirect_url"] == "ftp://elsewhere.example/z"
+
+
+def test_sync_custom_tool_dns_failure_prefix_names_the_real_type(monkeypatch):
+    from nymeria.core import http_policy
+
+    from nymeria.tools import http_api
+
+    monkeypatch.setattr(http_policy, "_resolve_host", _dns_failing_resolver)
+    # `http_api` bound the loader at import, so patch the name it calls.
+    monkeypatch.setattr(http_api, "load_http_policy_config", lambda: HTTPPolicyConfig(resolve_dns=True))
+    config = HTTPToolConfig(method="GET", url="https://nymeria-qa-nonexistent-subdomain-98765.com/")
+
+    result = _sync_execute_http(config, {}, actor="user-1", target_type="custom_tool", target_id="t1")
+
+    assert result.startswith("[Error]: dns_resolution_failed")
+    assert "blocked_network_target" not in result

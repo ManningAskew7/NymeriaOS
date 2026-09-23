@@ -202,13 +202,14 @@ def _blocked_network_result(
     used_credentials: Optional[list[str]] = None,
     redact_values: Optional[list[str]] = None,
 ) -> dict[str, Any]:
+    error = blocked_network_error(decision)
     result = _request_error(
-        "blocked_network_target",
-        blocked_network_error(decision)["message"],
+        error["type"],
+        error["message"],
         request={"method": method, "url": url},
         elapsed_ms=elapsed_ms,
     )
-    result["error"].update(blocked_network_error(decision))
+    result["error"].update(error)
     result["policy"] = decision.to_dict()
     if redirect_chain:
         result["redirect_chain"] = redirect_chain

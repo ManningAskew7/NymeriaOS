@@ -385,10 +385,22 @@ def redirect_allowed(
         and not config.allow_https_to_http_redirect
     ):
         return HTTPPolicyDecision(False, "https_to_http_redirect", to_url, to_parsed.hostname)
+    if to_parsed.scheme not in {"http", "https"}:
+        # A refusal to follow, not a malformed request: `invalid_http_url`
+        # here would read as the caller's own URL being wrong (#256 review).
+        return HTTPPolicyDecision(False, "redirect_scheme_unsupported", to_url, to_parsed.hostname)
     return evaluate_http_url(to_url, config=config, resolver=resolver)
 
 
 def policy_error_message(decision: HTTPPolicyDecision, label: str = "URL") -> str:
+    """One-line copy for the string-returning surfaces (fetch, browser,
+    service integrations, MCP). A refusal says so; a request that could not
+    be sent says that instead, with the reason-specific sentence (#256)."""
+    if decision.reason in NON_REFUSAL_REASONS:
+        return (
+            f"{label} not sent ({decision.reason}): {decision.target}. "
+            f"{_DENIAL_MESSAGES[decision.reason]}"
+        )
     return f"{label} blocked by HTTP egress policy ({decision.reason}): {decision.target}"
 
 
@@ -641,16 +653,36 @@ def httpx_request_with_policy(
 # failure or allowlist miss must NOT get that sentence: describing a typo'd
 # public domain as a "blocked private target" misleads users and agents alike.
 _DENIAL_MESSAGES: dict[str, str] = {
-    "dns_resolution_failed": "The hostname could not be resolved (DNS lookup failed), so the request was not sent. Check the domain spelling.",
+    "dns_resolution_failed": (
+        "The hostname could not be resolved (DNS lookup failed), so the request was not sent. "
+        "Check the domain spelling; a self-hosted host the backend cannot resolve needs an "
+        "HTTP_INTERNAL_ALLOWLIST entry instead."
+    ),
     "domain_allowlist_miss": "This host is not on the configured domain allowlist, so the request was not sent.",
     "invalid_http_url": "The URL is not a valid http(s) URL.",
     "https_to_http_redirect": "A redirect from HTTPS down to plain HTTP was blocked.",
+    "redirect_scheme_unsupported": "A redirect to a non-http(s) URL was not followed.",
 }
 
 
+# Reasons where the request could not be SENT, as opposed to refused by
+# policy. `error.type` is a category an LLM reads literally (#256): bucketing
+# a typo'd domain under `blocked_network_target` made agents report a false
+# security block to the user, so these two carry their reason as the type.
+NON_REFUSAL_REASONS: frozenset[str] = frozenset({"dns_resolution_failed", "invalid_http_url"})
+
+
+def network_error_type(decision: HTTPPolicyDecision) -> str:
+    """`blocked_network_target` for a policy refusal, else the reason itself."""
+    if decision.allowed:
+        raise ValueError("network_error_type is for a decision that did not send")
+    return decision.reason if decision.reason in NON_REFUSAL_REASONS else "blocked_network_target"
+
+
 def blocked_network_error(decision: HTTPPolicyDecision, message: Optional[str] = None) -> dict[str, Any]:
+    """The `error` payload for a URL the policy layer did not send."""
     return {
-        "type": "blocked_network_target",
+        "type": network_error_type(decision),
         "message": message
         or _DENIAL_MESSAGES.get(decision.reason)
         or "Private, loopback, link-local, reserved, and metadata network targets are blocked unless explicitly allowlisted.",
