@@ -29,6 +29,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..config import get_settings
 from ..core.custom_tools import execute_http_tool, get_custom_tool_loader
+from ..core.custom_tool_retirements import (
+    clear_retirement,
+    get_custom_tool_retirements_repo,
+    record_retirement,
+    retirement_refusal,
+)
 from ..core.http_policy import SECRET_PATTERNS, SENSITIVE_HEADER_NAMES
 from ..core.python_custom_tools import (
     DEFAULT_VALIDATION_TIMEOUT_SECONDS,
@@ -371,6 +377,11 @@ def create_draft_definition(
 
     if _global_definition_exists(normalized_tool_id, agent):
         raise ValueError(f"tool_id {normalized_tool_id!r} already exists")
+    retirement = get_custom_tool_retirements_repo().get(normalized_tool_id)
+    if retirement is not None and retirement.retired_by != user_id:
+        # The earliest honest point: a draft under a foreign-retired id could
+        # never publish, so say so before the author invests in it (#391).
+        raise ValueError(retirement_refusal(retirement, normalized_tool_id))
 
     clean_name = (name or normalized_tool_id).strip()
     clean_description = (description or "").strip()
@@ -634,6 +645,14 @@ def _publish_draft(
             ok=False,
             error={"type": "duplicate_tool_id", "message": f"tool_id {draft.tool_id!r} already exists"},
         )
+    retirements = get_custom_tool_retirements_repo()
+    retirement = retirements.get(draft.tool_id)
+    if retirement is not None and retirement.retired_by != user_id:
+        # Defense for a draft made before the retire (#391).
+        return _json_result(
+            ok=False,
+            error={"type": "forbidden", "message": retirement_refusal(retirement, draft.tool_id)},
+        )
 
     if draft.implementation_type == "python":
         if draft.python_config is None:
@@ -743,6 +762,9 @@ def _publish_draft(
         except Exception:
             registry_before = 0
     path = loader.save_definition(definition)
+    if retirement is not None:
+        # Only the retiring user reaches here: re-publishing is their call.
+        clear_retirement(definition.id)
     if definition.implementation_type == "workflow" and definition.workflow_config:
         retain_source_revision(
             definition.id,
@@ -898,6 +920,19 @@ def _definition_path_on_disk(
     return None
 
 
+def _foreign_retirement(tool_id: str, user_id: str) -> Optional[str]:
+    """The refusal sentence when ``tool_id`` was retired by someone else, or
+    None. Tolerates an id the draft normalizer would reject (that error comes
+    next, from the normalizer itself)."""
+    candidate = (tool_id or "").strip().lower()
+    if not candidate:
+        return None
+    retirement = get_custom_tool_retirements_repo().get(candidate)
+    if retirement is None or retirement.retired_by == user_id:
+        return None
+    return retirement_refusal(retirement, candidate)
+
+
 def definition_creator(definition: CustomToolDefinition) -> Optional[str]:
     """The user who authored a published definition, or None when unknown.
 
@@ -1011,6 +1046,7 @@ def _retire_published_tool(*, tool_id: str, user_id: str, agent: Any) -> str:
             ok=False,
             error={"type": "not_found", "message": f"No published custom tool with id '{target}'."},
         )
+    recorded = record_retirement(target, retired_by=user_id)
     reloaded = True
     try:
         if agent is not None:
@@ -1026,7 +1062,15 @@ def _retire_published_tool(*, tool_id: str, user_id: str, agent: Any) -> str:
         "Removed from the global registry"
         + (" and unregistered." if reloaded else "; the live reload failed, so it stays bound until the next reload.")
         + " Threads that had it enabled skip the unknown name at their next "
-        "graph build, and the id is free to publish again. Drafts are untouched"
+        "graph build"
+        + (
+            "; the id stays reserved for you (only you, or an admin from the "
+            "dashboard with POST /tools/custom, can publish it again)."
+            if recorded
+            else "; the reservation of the id could NOT be recorded, so anyone "
+            "may publish under it (an admin can check the log)."
+        )
+        + " Drafts are untouched"
         + ("; its revision snapshots are kept as a record." if kept else ".")
     )
     return _json_result(
@@ -1159,6 +1203,8 @@ def install_workflow_template(
         created_by=user_id,
     )
     loader.save_definition(definition)
+    # Admin-only surface, so this is the human override (#391).
+    clear_retirement(definition.id)
     retain_source_revision(definition.id, config.revision_hash, config.source_code)
     if agent is not None:
         agent.reload_custom_tools()
@@ -1535,8 +1581,11 @@ async def tool_create(
                provenance and every built-in tool are refused, and the
                dashboard (DELETE /tools/custom/{id}, admin) is the human
                override. Other threads that bound the tool simply skip the
-               unknown name at their next graph build; drafts are untouched
-               and revision snapshots are kept as a record.
+               unknown name at their next graph build, and the id stays
+               reserved for you (a draft or publish of it by anyone else is
+               refused until you publish it again, an admin creates it from
+               the dashboard, or an admin releases the reservation); drafts
+               are untouched and revision snapshots are kept as a record.
       install_template: Install a bundled workflow recipe (see
                workflow_info action='templates') as a published workflow tool
                and enable it on this thread. Admin-only: it publishes an
@@ -1575,6 +1624,11 @@ async def tool_create(
             impl = (implementation_type or "http").strip().lower()
             if impl == "python" and not _user_is_admin(user_id):
                 return _python_admin_required_result()
+            reserved = _foreign_retirement(tool_id, user_id)
+            if reserved is not None:
+                # An authorization refusal, typed as one; create_draft_definition
+                # keeps its own ValueError for direct callers (#391).
+                return _json_result(ok=False, error={"type": "forbidden", "message": reserved})
 
             from ..core.agent import get_current_agent
 

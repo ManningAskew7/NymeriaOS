@@ -570,3 +570,32 @@ def test_unified_disable_of_a_contract_tool_warns_about_the_lost_capability(
     assert reply_on.status_code == 200 and "warning" not in reply_on.json()
     defaults = agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
     assert "reply_to_thread" in defaults and "wait_for_reply" not in defaults
+
+
+def test_unified_delete_records_the_retirement_and_unified_create_clears_it(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#391 on the unified router: the delete tombstones the id under the
+    acting admin, and the admin create clears it (the human override)."""
+    from nymeria.core.custom_tool_retirements import get_custom_tool_retirements_repo
+
+    client, agent, loader = _client(tmp_path, api_client_builder, monkeypatch)
+    admin_token = _create_user(agent, "admin", role="admin")
+    headers = api_client_builder.auth(admin_token)
+    body = {
+        "id": "price_lookup",
+        "name": "Price Lookup",
+        "description": "Look up a price",
+        "implementation_type": "http",
+        "parameters": {},
+        "http_config": {"method": "GET", "url": "https://api.example.com/p", "response_format": "json"},
+        "tags": [],
+    }
+    assert client.post("/tools/unified", headers=headers, json=body).status_code == 200
+
+    assert client.delete("/tools/unified/price_lookup", headers=headers).status_code == 200
+    rec = get_custom_tool_retirements_repo().get("price_lookup")
+    assert rec is not None and rec.retired_by == "admin"
+
+    assert client.post("/tools/unified", headers=headers, json=body).status_code == 200
+    assert get_custom_tool_retirements_repo().get("price_lookup") is None

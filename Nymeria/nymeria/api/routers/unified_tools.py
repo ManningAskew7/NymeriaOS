@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.accounts import AuthenticatedUser
 from ...core.custom_tools import get_custom_tool_loader
+from ...core.custom_tool_retirements import clear_retirement, record_retirement
 from ...core.time_utils import utc_now
 from ..schemas.custom_tools import (
     CustomToolCreateRequest,
@@ -410,6 +411,8 @@ def create_unified_tools_router(
         definition = build_custom_tool_definition(request, actor_user_id=user.id)
 
         loader.save_definition(definition)
+        # Admin create is the human override for a retired id (#391).
+        clear_retirement(definition.id)
         get_agent_fn().reload_custom_tools()
 
         return custom_tool_definition_to_unified(definition, True, "default", {})
@@ -466,6 +469,8 @@ def create_unified_tools_router(
             )
 
         loader.delete_definition(tool_id)
+        # Same tombstone the agent retire writes (#391).
+        record_retirement(tool_id, retired_by=user.id)
         # Agent-level narrow reload: unregisters the deleted tool and
         # rebuilds graphs (the module-level loader reload leaves the tool
         # bound until restart).

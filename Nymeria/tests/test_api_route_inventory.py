@@ -256,6 +256,7 @@ EXPECTED_ROUTES = [
     ('/tools/custom/{tool_id}', ('DELETE',)),
     ('/tools/custom/{tool_id}', ('GET',)),
     ('/tools/custom/{tool_id}', ('PUT',)),
+    ('/tools/custom/{tool_id}/retirement', ('DELETE',)),
     ('/tools/custom/{tool_id}/test', ('POST',)),
     ('/tools/defaults', ('DELETE',)),
     ('/tools/defaults', ('GET',)),

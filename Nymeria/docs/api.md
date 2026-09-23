@@ -3529,6 +3529,26 @@ route as the acting admin, and returned on every custom-tool response). A
 built-in name is a 404 here (no definition file) and an explicit refusal on
 the agent path. Workflow revision snapshots under `custom_tools/revisions/`
 are kept on either path (`agent-systems/tools.md`, "Retire semantics").
+Either delete records the id as retired by the acting user (#391): an agent
+draft or publish of that id by anyone else is then refused. A create or
+import through this router (admin) clears the record, and the release route
+below frees the id for anyone without creating anything.
+
+### Release a Retired Custom Tool Id
+
+```http
+DELETE /tools/custom/{tool_id}/retirement
+Authorization: Bearer <admin-token>
+```
+
+Clears the #391 retirement record so any user may draft and publish under
+the id again (the override the agent-side refusal names). `404` when no
+retirement is recorded for the id.
+
+**Response:**
+```json
+{"status": "ok", "released_id": "price_lookup"}
+```
 
 ---
 
@@ -4624,7 +4644,8 @@ Authorization: Bearer <admin-token>
 
 Deletes a custom tool definition and reloads custom tools. Built-in tools
 cannot be deleted. Creator-blind, like `DELETE /tools/custom/{tool_id}`;
-the creator-scoped agent path is `tool_create(action="retire")`.
+the creator-scoped agent path is `tool_create(action="retire")`. Records the
+id as retired by the acting admin (#391); `POST /tools/unified` clears it.
 
 **Delete Response:**
 ```json

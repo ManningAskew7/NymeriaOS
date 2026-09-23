@@ -8,6 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ...core.accounts import AuthenticatedUser
 from ...core.custom_tools import execute_http_tool, get_custom_tool_loader
+from ...core.custom_tool_retirements import (
+    clear_retirement,
+    get_custom_tool_retirements_repo,
+    record_retirement,
+)
 from ...tools.definitions.custom_tool_schema import CustomToolDefinition
 from ..schemas.custom_tools import (
     CustomToolCreateRequest,
@@ -67,6 +72,8 @@ def create_custom_tools_router(
                     definition.workflow_config.revision_hash,
                     definition.workflow_config.source_code,
                 )
+            # Admin create is the human override for a retired id (#391).
+            clear_retirement(definition.id)
             get_agent_fn().reload_custom_tools()
 
             return custom_tool_definition_to_response(definition)
@@ -136,6 +143,7 @@ def create_custom_tools_router(
                     # approver and the hash is recomputed from content anyway.
                     stamp_custom_tool_approval(definition, approved_by=user.id)
                 loader.save_definition(definition)
+                clear_retirement(definition.id)  # admin create path (#391)
                 imported += 1
             except Exception as e:
                 errors.append(f"{tool_data.get('id', 'unknown')}: {str(e)}")
@@ -205,15 +213,41 @@ def create_custom_tools_router(
         """Delete a custom tool."""
         loader = get_custom_tool_loader()
 
-        if not loader.delete_definition(tool_id):
+        # The record keys on the definition's OWN id, read from the file the
+        # delete will unlink: the path parameter is a filename, and the two
+        # can differ (a hand-named file, or a case-insensitive filesystem).
+        definition = loader.definition_on_disk(tool_id)
+        if definition is None or not loader.delete_definition(tool_id):
             raise HTTPException(
                 status_code=404,
                 detail=f"Tool '{tool_id}' not found",
             )
 
+        # Same tombstone the agent retire writes (#391): the id is reserved
+        # for this admin; a foreign agent publish under it is refused.
+        record_retirement(definition.id, retired_by=user.id)
         get_agent_fn().reload_custom_tools()
 
         return {"status": "ok", "deleted_id": tool_id}
+
+    @router.delete("/tools/custom/{tool_id}/retirement")
+    async def release_custom_tool_retirement(
+        tool_id: str,
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Release a retired id so anyone may publish under it again (#391).
+
+        The admin override the refusal sentence names. Without it a
+        reservation is permanent: the dashboard create clears the row but
+        makes the admin the owner, which never gets the id to the person
+        who asked.
+        """
+        if not get_custom_tool_retirements_repo().clear(tool_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No retirement recorded for '{tool_id}'",
+            )
+        return {"status": "ok", "released_id": tool_id}
 
     @router.post("/tools/custom/{tool_id}/test")
     async def test_custom_tool(

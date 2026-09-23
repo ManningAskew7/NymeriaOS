@@ -514,7 +514,8 @@ _NON_STORE_DATA_DIR_CHILDREN: dict[str, _NonStoreChild] = {
         secret_at_rest=False,
     ),
     "accounts.db": _NonStoreChild(
-        "credential store, denylisted; read-side, drives nothing",
+        "credential store plus the #391 custom-tool retirement tombstones; "
+        "denylisted, not agent-writable",
         secret_at_rest=True,  # accounts repo AND the credential vault
     ),
     # The token files. All read-side: possessing one is authority, but writing

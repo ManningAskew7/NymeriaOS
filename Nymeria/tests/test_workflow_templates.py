@@ -159,6 +159,19 @@ def test_install_admin_creates_approved_global_tool(wf_env):
     assert len(revisions) == 1
 
 
+def test_install_clears_a_retirement_of_the_template_id(wf_env):
+    """#391: install_template is admin-only, so it is the human override."""
+    from nymeria.core.custom_tool_retirements import get_custom_tool_retirements_repo
+
+    get_custom_tool_retirements_repo().record("url_watcher", retired_by="someone-else")
+    with patch("nymeria.core.agent.get_current_agent", return_value=None):
+        definition, created = install_workflow_template(
+            user_id="u1", template_id="url_watcher", agent=None, is_admin=True
+        )
+    assert created is True and definition is not None
+    assert get_custom_tool_retirements_repo().get("url_watcher") is None
+
+
 def test_install_is_idempotent_by_tool_id(wf_env):
     with patch("nymeria.core.agent.get_current_agent", return_value=None):
         _, created_first = install_workflow_template(

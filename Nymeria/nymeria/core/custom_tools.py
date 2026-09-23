@@ -573,6 +573,21 @@ class CustomToolLoader:
         logger.info(f"Saved tool definition: {definition.id}")
         return file_path
 
+    def definition_on_disk(self, tool_id: str) -> Optional[CustomToolDefinition]:
+        """Parse ``<tools_dir>/<tool_id>.json`` (the file ``delete_definition``
+        unlinks), disabled definitions included; None when absent or invalid.
+        Filename-keyed on purpose: it tells a deleting caller what id the file
+        it is about to remove actually declares.
+        """
+        file_path = self.tools_dir / f"{tool_id}.json"
+        if not file_path.is_file():
+            return None
+        try:
+            return CustomToolDefinition(**json.loads(file_path.read_text(encoding="utf-8")))
+        except Exception:
+            logger.debug("definition_on_disk: %s is not a valid definition", file_path)
+            return None
+
     def delete_definition(self, tool_id: str) -> bool:
         """Delete a tool definition.
 

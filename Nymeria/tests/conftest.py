@@ -295,6 +295,30 @@ def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_custom_tool_retirements(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Point the custom-tool retirement record (#391) at a per-test SQLite file.
+
+    The process singleton opens `<data_dir>/accounts.db`, and under the suite
+    `get_settings().data_dir` is the checkout's own `Nymeria/data/`, so an
+    unpatched REST delete or `tool_create` publish in a router or tool test
+    wrote a real retirement row into the developer's database (it happened
+    once, on the day the record shipped). Every test now resolves to its own
+    file, lazily: nothing is created unless the test touches the record (an
+    eager per-test SQLite file measured 11 ms each, two minutes over the
+    suite). Tests that assert on the record patch the getter or read the
+    module global.
+    """
+    from nymeria.core import custom_tool_retirements as retirements_module
+
+    monkeypatch.setattr(retirements_module, "_repo", None)
+    monkeypatch.setattr(
+        retirements_module, "_default_db_path", lambda: tmp_path / "retirements.db",
+    )
+
+
+@pytest.fixture(autouse=True)
 def _offline_server_browser_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the server-browser launcher off the network and off this host's rig.
 

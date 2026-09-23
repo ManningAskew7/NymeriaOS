@@ -701,6 +701,8 @@ def _retire_agent(role: str = "user", user_id: str = "u1"):
 
 
 def _retire_env(tmp_path, monkeypatch):
+    # The retirement record itself needs no patching: the conftest guard
+    # already points the process singleton at a per-test file.
     tools_dir = tmp_path / "custom_tools"
     loader = CustomToolLoader(tools_dir)
     tool_create_module = importlib.import_module("nymeria.tools.tool_create")
@@ -756,7 +758,7 @@ def test_creator_retires_its_own_published_tool(tmp_path, monkeypatch):
     assert loader.get_definition("my_price") is None
     assert agent.reloads == 1
     assert payload["reloaded"] is True
-    assert "free to publish again" in payload["note"]
+    assert "reserved for you" in payload["note"]
 
 
 def test_a_different_user_cannot_retire_it(tmp_path, monkeypatch):
@@ -989,3 +991,133 @@ def test_list_shows_the_creator_of_each_published_tool(tmp_path, monkeypatch):
         )
     published = json.loads(result)["published"]
     assert [(t["tool_id"], t["created_by"]) for t in published] == [("my_price", "u1")]
+
+
+# ---------------------------------------------------------------------------
+# #391: a retired id is reserved for the user who retired it
+# ---------------------------------------------------------------------------
+
+
+def _retirements():
+    from nymeria.core.custom_tool_retirements import get_custom_tool_retirements_repo
+
+    return get_custom_tool_retirements_repo()
+
+
+def _draft_http(user_id, tool_id="my_price"):
+    return create_draft_definition(
+        user_id=user_id, tool_id=tool_id, name="Mine", description="Fetch a price",
+        parameters={}, http_config=_http_config(),
+    )
+
+
+def test_retire_records_who_retired_the_id(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+
+    payload = _retire("my_price", agent=_retire_agent())
+
+    assert payload["ok"] is True
+    rec = _retirements().get("my_price")
+    assert rec is not None and rec.retired_by == "u1"
+    assert "reserved for you" in payload["note"]
+    assert "POST /tools/custom" in payload["note"]
+
+
+def test_a_refused_retire_records_nothing(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    assert _retire("my_price", agent=_retire_agent(user_id="u2"), user_id="u2")["ok"] is False
+    assert _retirements().get("my_price") is None
+
+
+def test_drafting_an_id_someone_else_retired_is_refused(tmp_path, monkeypatch):
+    _retire_env(tmp_path, monkeypatch)
+    _retirements().record("my_price", retired_by="u1")
+
+    with pytest.raises(ValueError) as excinfo:
+        _draft_http("u2")
+    message = str(excinfo.value)
+    assert "retired by 'u1'" in message
+    assert "still lists the name" in message
+    assert "DELETE /tools/custom/my_price/retirement" in message
+
+
+def test_the_draft_action_types_a_foreign_retirement_as_forbidden(tmp_path, monkeypatch):
+    _retire_env(tmp_path, monkeypatch)
+    _retirements().record("my_price", retired_by="u1")
+    store = ToolDraftStore(tmp_path / "drafts")
+    with patch("nymeria.tools.tool_create._draft_store", return_value=store), \
+         patch("nymeria.core.agent.get_current_agent", return_value=_retire_agent(user_id="u2")):
+        result = asyncio.run(
+            tool_create_tool.coroutine(
+                action="draft", implementation_type="http", tool_id="my_price",
+                name="Mine", description="Fetch a price", http_config=_http_config(),
+                tool_call_id="call-1",
+                config={"configurable": {"user_id": "u2", "thread_id": "t1"}},
+            )
+        )
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "forbidden"
+    assert "retired by 'u1'" in payload["error"]["message"]
+    assert store.list("u2") == []
+
+
+def test_a_failed_tombstone_write_does_not_lose_the_retire(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    repo = _retirements()
+
+    def _boom(tool_id, *, retired_by):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(repo, "record", _boom)
+    agent = _retire_agent()
+
+    payload = _retire("my_price", agent=agent)
+
+    assert payload["ok"] is True
+    assert not (tools_dir / "my_price.json").exists()
+    assert agent.reloads == 1
+    assert "could NOT be recorded" in payload["note"]
+    assert repo.get("my_price") is None
+
+
+def test_publishing_a_draft_made_before_the_retire_is_refused(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    monkeypatch.setattr("nymeria.core.agent.get_current_agent", lambda: None)
+    store = ToolDraftStore(tmp_path / "drafts")
+    draft = _draft_http("u2")
+    draft.last_test_ok = True
+    store.save("u2", draft)
+    _retirements().record("my_price", retired_by="u1")
+
+    payload = json.loads(_publish_draft(
+        store=store, user_id="u2", draft_id="my_price",
+        thread_id="t1", ttl="2h", tool_call_id="call-1",
+    ))
+
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "forbidden"
+    assert "retired by 'u1'" in payload["error"]["message"]
+    assert not (tools_dir / "my_price.json").exists()
+
+
+def test_the_retiring_user_may_republish_and_that_clears_the_record(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    monkeypatch.setattr("nymeria.core.agent.get_current_agent", lambda: None)
+    _retirements().record("my_price", retired_by="u1")
+    store = ToolDraftStore(tmp_path / "drafts")
+    draft = _draft_http("u1")
+    draft.last_test_ok = True
+    store.save("u1", draft)
+
+    payload = json.loads(_publish_draft(
+        store=store, user_id="u1", draft_id="my_price",
+        thread_id="t1", ttl="2h", tool_call_id="call-1",
+    ))
+
+    assert payload["ok"] is True, payload
+    assert (tools_dir / "my_price.json").exists()
+    assert _retirements().get("my_price") is None

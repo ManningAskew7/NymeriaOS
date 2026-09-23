@@ -28,6 +28,9 @@ class FakeCustomToolLoader:
         self.definitions[definition.id] = definition
         return Path(f"/tmp/{definition.id}.json")
 
+    def definition_on_disk(self, tool_id: str):
+        return self.definitions.get(tool_id)
+
     def delete_definition(self, tool_id: str) -> bool:
         return self.definitions.pop(tool_id, None) is not None
 
@@ -459,3 +462,96 @@ def test_custom_tool_test_route_refuses_an_unapproved_record(
         )
         assert response.status_code == 409, tool_id
         assert "approval_required" in response.json()["detail"], tool_id
+
+
+def test_rest_delete_records_the_retirement_and_rest_create_clears_it(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#391: the dashboard delete tombstones the id like the agent retire
+    does, and the dashboard create is the admin override that clears it."""
+    from nymeria.core.custom_tool_retirements import get_custom_tool_retirements_repo
+    from nymeria.core.custom_tools import CustomToolLoader
+
+    retirements = get_custom_tool_retirements_repo()  # the per-test file (conftest)
+
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    client, agent, token = _authenticated_client(
+        tmp_path, api_client_builder, monkeypatch, loader=loader, role="admin",
+    )
+    headers = api_client_builder.auth(token)
+    body = {
+        "id": "price_lookup",
+        "name": "Price Lookup",
+        "description": "Look up a price",
+        "implementation_type": "http",
+        "parameters": {},
+        "http_config": {"method": "GET", "url": "https://api.example.com/p", "response_format": "json"},
+        "enabled": True,
+        "tags": [],
+    }
+    assert client.post("/tools/custom", headers=headers, json=body).status_code == 200
+
+    assert client.delete("/tools/custom/price_lookup", headers=headers).status_code == 200
+    rec = retirements.get("price_lookup")
+    assert rec is not None and rec.retired_by == "caller"
+
+    assert client.post("/tools/custom", headers=headers, json=body).status_code == 200
+    assert retirements.get("price_lookup") is None
+
+
+def test_rest_delete_records_the_definitions_own_id_not_the_path_parameter(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """The path parameter is a filename. A hand-named file (or a case-insensitive
+    filesystem) can hold a different id; the reservation must be the id."""
+    from nymeria.core.custom_tool_retirements import get_custom_tool_retirements_repo
+    from nymeria.core.custom_tools import CustomToolLoader
+    from nymeria.tools.definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig
+
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    client, agent, token = _authenticated_client(
+        tmp_path, api_client_builder, monkeypatch, loader=loader, role="admin",
+    )
+    definition = CustomToolDefinition(
+        id="foo", name="Foo", description="x", implementation_type="http",
+        http_config=HTTPToolConfig(method="GET", url="https://example.com/", response_format="text"),
+    )
+    (tmp_path / "custom_tools" / "bar.json").write_text(definition.model_dump_json(), encoding="utf-8")
+
+    resp = client.delete("/tools/custom/bar", headers=api_client_builder.auth(token))
+
+    assert resp.status_code == 200
+    assert not (tmp_path / "custom_tools" / "bar.json").exists()
+    repo = get_custom_tool_retirements_repo()
+    assert repo.get("foo") is not None and repo.get("foo").retired_by == "caller"
+    assert repo.get("bar") is None
+
+
+def test_admin_release_route_frees_a_retired_id(tmp_path: Path, api_client_builder, monkeypatch):
+    from nymeria.core.custom_tool_retirements import get_custom_tool_retirements_repo
+    from nymeria.core.custom_tools import CustomToolLoader
+
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    client, agent, token = _authenticated_client(
+        tmp_path, api_client_builder, monkeypatch, loader=loader, role="admin",
+    )
+    headers = api_client_builder.auth(token)
+    get_custom_tool_retirements_repo().record("foo", retired_by="u1")
+
+    resp = client.delete("/tools/custom/foo/retirement", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "released_id": "foo"}
+    assert get_custom_tool_retirements_repo().get("foo") is None
+
+    assert client.delete("/tools/custom/foo/retirement", headers=headers).status_code == 404
+
+
+def test_release_route_is_admin_only(tmp_path: Path, api_client_builder, monkeypatch):
+    from nymeria.core.custom_tools import CustomToolLoader
+
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    client, agent, token = _authenticated_client(
+        tmp_path, api_client_builder, monkeypatch, loader=loader, role="user",
+    )
+    resp = client.delete("/tools/custom/foo/retirement", headers=api_client_builder.auth(token))
+    assert resp.status_code == 403
