@@ -380,7 +380,8 @@ def test_notice_truncates_when_many_kits_blow_the_cap():
 
 
 def test_expiry_clock_names_the_day_once_the_lapse_is_not_today():
-    recent = utc_now() - timedelta(minutes=1)
+    # Same instant as "today" (a minute ago straddles midnight once a day).
+    recent = utc_now()
     assert re.fullmatch(r"\d{2}:\d{2} [AP]M( \(.*\))?", expiry_clock(recent))
     old = utc_now() - timedelta(days=2)
     assert expiry_clock(old) == format_user_time(old)
@@ -707,7 +708,10 @@ def test_safe_tool_node_strict_refusal_reads_the_thread_record(no_agent):
 
     assert msg is not None and msg.status == "error"
     assert "Skill Kit 'tool-management' bound it" in msg.content
-    assert re.search(r"expired at \d{2}:\d{2} [AP]M", msg.content)
+    # The record was minted at import; a suite that crosses the day boundary
+    # (00:00 in the user's zone) reads it a day later, when expiry_clock names
+    # the day too. Either form carries the clock.
+    assert re.search(r"expired at (?:.+ at )?\d{2}:\d{2} [AP]M", msg.content)
 
 
 # --- history projection: humans see what the model saw ----------------------
