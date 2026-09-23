@@ -34,7 +34,19 @@ class ThreadTokenUsage:
     # compaction; rebuilt best-effort from checkpoint history after restart.
     total_input_tokens: int = 0
     total_output_tokens: int = 0
-    # Context occupancy: the final model call's prompt_tokens.
+    # Context occupancy: the final model call's prompt-side tokens, which
+    # INCLUDE the fixed overhead (system prompt, bound tool schemas,
+    # memories) on top of the messages. That is the field's one meaning
+    # (#260): ``record_turn`` writes the provider's measurement, and the
+    # estimator writers (``adjust_context_estimate`` after /prune,
+    # ``rebase_context_estimate`` after a model switch) ADJUST that figure
+    # rather than replace it with a messages-only estimate, so the overhead
+    # stays counted until the next measured turn. The one deliberate
+    # exception is ``reset_after_compact``: compaction REPLACES the history,
+    # so the retained tail's messages-only estimate is all there is until the
+    # next turn measures again (the overhead split of backlog #260 option (c)
+    # would close that too). ``set_context_estimate`` is a raw seed, today
+    # used by tests only.
     last_input_tokens: int = 0
     # The model whose call (or estimate) produced ``last_input_tokens``.
     # ``get_context_stats`` compares it against the thread's current
@@ -204,13 +216,90 @@ class TokenTracker:
         estimated_tokens: int,
         context_model: Optional[str] = None,
     ) -> None:
-        """Replace the context-occupancy estimate (e.g. after ``/prune`` or
-        a mid-thread model switch)."""
+        """Replace the context-occupancy figure outright (a raw seed).
+
+        No production caller since #260 (tests seed rows with it). A /prune
+        or a model switch on a measured thread goes through
+        :meth:`adjust_context_estimate` / :meth:`rebase_context_estimate`,
+        which keep the fixed prompt overhead the measurement carried; a
+        messages-only estimate written here under-reports occupancy by that
+        whole overhead until the next turn.
+        """
         with self._lock:
             usage = self._row(thread_id)
             usage.last_input_tokens = max(0, int(estimated_tokens))
             if context_model:
                 usage.context_model = context_model
+
+    def adjust_context_estimate(
+        self,
+        thread_id: str,
+        *,
+        removed_tokens: int,
+        remaining_estimate: int,
+        context_model: Optional[str] = None,
+    ) -> int:
+        """Subtract what a /prune removed from the tracked occupancy.
+
+        ``removed_tokens`` is the estimator's delta (messages before minus
+        messages after, in the prune model's tokens); ``remaining_estimate``
+        is the messages-only estimate of what is left, the floor the figure
+        can never go under. With no prior figure the floor is all there is.
+        When a prior figure is adjusted, an existing stamp from another
+        model is kept, so the model-switch rebase still runs on the adjusted
+        figure later (a missing stamp takes ``context_model``); when the
+        floor is all there is, the figure is entirely in ``context_model``'s
+        units, so that stamp is written. Returns the new occupancy.
+        """
+        floor = max(0, int(remaining_estimate))
+        with self._lock:
+            usage = self._row(thread_id)
+            current = int(usage.last_input_tokens)
+            if current > 0:
+                value = max(floor, current - max(0, int(removed_tokens)))
+                if context_model and not usage.context_model:
+                    usage.context_model = context_model
+            else:
+                value = floor
+                if context_model:
+                    usage.context_model = context_model
+            usage.last_input_tokens = value
+            return value
+
+    def rebase_context_estimate(
+        self,
+        thread_id: str,
+        *,
+        old_estimate: int,
+        new_estimate: int,
+        context_model: Optional[str] = None,
+    ) -> int:
+        """Re-stamp the tracked occupancy for another model, scaled by the
+        estimator's ratio on the same messages.
+
+        Keeps the measured figure (and the overhead it carried) rather than
+        replacing it with a messages-only estimate, scaled by
+        ``new_estimate / old_estimate``. The chars-based estimator is
+        model-blind for text and differs only in image sizing, so for a
+        text-only thread the ratio is 1 and this is a re-stamp of the
+        measurement; no real tokenizer is consulted. Without a usable ratio
+        (no prior figure, or ``old_estimate`` <= 0) the messages-only
+        ``new_estimate`` is all there is. Stamps ``context_model``. Returns
+        the new occupancy.
+        """
+        new_value = max(0, int(new_estimate))
+        old_value = int(old_estimate)
+        with self._lock:
+            usage = self._row(thread_id)
+            current = int(usage.last_input_tokens)
+            if current > 0 and old_value > 0:
+                value = max(0, round(current * new_value / old_value))
+            else:
+                value = new_value
+            usage.last_input_tokens = value
+            if context_model:
+                usage.context_model = context_model
+            return value
 
     def get_usage(self, thread_id: str) -> ThreadTokenUsage:
         """

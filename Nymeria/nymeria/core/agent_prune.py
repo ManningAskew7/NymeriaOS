@@ -208,19 +208,31 @@ class PruneManager:
             )
             return {"success": False, "reason": f"Failed to update state: {e}"}
 
-        # Refresh the context-occupancy estimate so the context bar drops
-        # immediately instead of showing the pre-prune percentage until the
-        # next turn. Best-effort: the estimate is the same chars-based one
-        # compaction uses, replaced by real usage on the next turn.
+        # Drop the context-occupancy figure immediately instead of showing
+        # the pre-prune percentage until the next turn. The tracked figure is
+        # the provider's measurement (system prompt, tool schemas and memories
+        # included), so it is ADJUSTED by what the prune removed, never
+        # replaced with a messages-only estimate (#260: that under-reported
+        # by the whole fixed overhead, and compaction then fired late on
+        # exactly the turn a user near the limit was about to send).
+        # Best-effort: the estimator is the same chars-based one compaction
+        # uses, and real usage replaces the figure on the next turn.
         try:
-            post_state = await graph.aget_state(config)
-            post_messages = post_state.values.get("messages", [])
+            # The post-prune list is the pre-prune snapshot with exactly the
+            # replacements just applied (the reducer replaces by id), so the
+            # delta is what THIS prune removed; a fresh state read could see a
+            # concurrent turn's appends and cancel the drop.
+            by_id = {m.id: m for m in replacements}
+            post_messages = [by_id.get(getattr(m, "id", None), m) for m in messages]
             prune_model = agent._compaction._model_for(thread_id)
-            estimate = agent._compaction._estimate_messages_tokens(
-                post_messages, prune_model
-            )
-            agent._token_tracker.set_context_estimate(
-                thread_id, estimate, context_model=prune_model
+            estimate = agent._compaction._estimate_messages_tokens
+            before = estimate(messages, prune_model)
+            after = estimate(post_messages, prune_model)
+            agent._token_tracker.adjust_context_estimate(
+                thread_id,
+                removed_tokens=max(0, before - after),
+                remaining_estimate=after,
+                context_model=prune_model,
             )
         except Exception as e:
             logger.debug(

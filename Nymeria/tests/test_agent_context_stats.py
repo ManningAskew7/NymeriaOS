@@ -467,30 +467,53 @@ def _wire_reestimate(
     usage: Any,
     *,
     estimate: int,
+    old_estimate: int | None = None,
     raises: bool = False,
 ) -> list[tuple]:
-    """Attach a recording set_context_estimate + estimator to a fake agent.
+    """Attach a recording rebase_context_estimate + estimator to a fake agent.
 
-    ``set_context_estimate`` mutates the shared usage namespace exactly like
-    the real tracker so the follow-up ``get_usage`` read sees fresh values.
+    The estimator answers ``estimate`` for the thread's effective model and
+    ``old_estimate`` (default: the same number) for the stamped model, so a
+    test can drive the ratio. The fake rebase records its call and mutates
+    the shared usage namespace like the real tracker (scaled, #260) so the
+    follow-up ``get_usage`` read sees fresh values; the arithmetic itself is
+    pinned by the tracker's own tests.
     """
-    set_calls: list[tuple] = []
+    from nymeria.core.token_tracker import TokenTracker
 
-    def _set_estimate(tid, tokens, context_model=None):
-        set_calls.append((tid, tokens, context_model))
-        usage.last_input_tokens = tokens
-        usage.context_tokens = tokens
-        usage.context_model = context_model
+    rebase_calls: list[tuple] = []
+    # The arithmetic is the SHIPPED tracker's, run on a real row seeded from
+    # the fake usage, so the scaled figure a test asserts is produced by
+    # production code, not by this helper.
+    real_tracker = TokenTracker()
+    real_tracker.set_context_estimate(
+        "t1", usage.last_input_tokens, context_model=usage.context_model
+    )
 
-    agent._token_tracker.set_context_estimate = _set_estimate
+    def _rebase(tid, *, old_estimate, new_estimate, context_model=None):
+        rebase_calls.append((tid, old_estimate, new_estimate, context_model))
+        scaled = real_tracker.rebase_context_estimate(
+            tid,
+            old_estimate=old_estimate,
+            new_estimate=new_estimate,
+            context_model=context_model,
+        )
+        usage.last_input_tokens = scaled
+        usage.context_tokens = scaled
+        usage.context_model = real_tracker.get_usage(tid).context_model
+        return scaled
 
-    def _estimate(_messages, _model):
+    agent._token_tracker.rebase_context_estimate = _rebase
+
+    def _estimate(_messages, model):
         if raises:
             raise RuntimeError("estimator boom")
+        if model == usage.context_model and old_estimate is not None:
+            return old_estimate
         return estimate
 
     agent._compaction._estimate_messages_tokens = _estimate
-    return set_calls
+    return rebase_calls
 
 
 def test_get_stats_reestimates_occupancy_after_model_switch(
@@ -500,15 +523,27 @@ def test_get_stats_reestimates_occupancy_after_model_switch(
 
     monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
 
+    # 150k measured under claude-old, whose tokenizer counts the same
+    # messages at 100k where gpt-new counts 40k: the measured figure is
+    # scaled by that ratio (#260), not replaced by the 40k messages-only
+    # estimate, so the fixed overhead the measurement carried survives.
     usage = _fake_usage(last_input=150_000, context_model="claude-old")
     agent = _fake_agent(usage=usage, model="gpt-new")
-    set_calls = _wire_reestimate(agent, usage, estimate=40_000)
+    rebase_calls = _wire_reestimate(
+        agent, usage, estimate=40_000, old_estimate=100_000
+    )
 
     stats = get_context_stats(cast(Any, agent), "t1")
 
-    assert set_calls == [("t1", 40_000, "gpt-new")]
-    assert stats["total_tokens"] == 40_000
-    assert stats["usage_percentage"] == 40.0
+    assert rebase_calls == [("t1", 100_000, 40_000, "gpt-new")]
+    assert stats["total_tokens"] == 60_000
+    assert stats["usage_percentage"] == 60.0
+
+    # The stamp now names the effective model, so a second poll must not
+    # re-scale the already re-based figure (the guard the design leans on).
+    again = get_context_stats(cast(Any, agent), "t1")
+    assert len(rebase_calls) == 1
+    assert again["total_tokens"] == 60_000
 
 
 def test_get_stats_skips_reestimate_when_model_matches(

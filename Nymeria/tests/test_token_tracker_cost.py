@@ -235,3 +235,94 @@ def test_compaction_timestamp_is_aware_utc_not_a_naive_local_clock():
     assert stamped.utcoffset() == timezone.utc.utcoffset(None)
     # Serializes with an explicit offset, so a client cannot misread it.
     assert stamped.isoformat().endswith("+00:00")
+
+
+class TestOccupancyEstimates:
+    """#260: ``last_input_tokens`` has ONE meaning, the last model call's
+    prompt-side tokens including the fixed overhead (system prompt, tool
+    schemas, memories). The estimator writers adjust that figure; they never
+    replace it with a messages-only estimate."""
+
+    def test_adjust_subtracts_the_prune_delta_and_keeps_the_overhead(self):
+        t = TokenTracker()
+        t.record_turn("t", turn_input_tokens=1, turn_output_tokens=1,
+                      context_tokens=77_136, context_model="m")
+        # The prune removed an estimated 57,000 message tokens; 3,000 remain.
+        got = t.adjust_context_estimate(
+            "t", removed_tokens=57_000, remaining_estimate=3_000, context_model="m"
+        )
+        assert got == 20_136
+        u = t.get_usage("t")
+        assert u.context_tokens == 20_136
+        assert u.context_model == "m"
+
+    def test_adjust_never_drops_below_the_remaining_messages(self):
+        t = TokenTracker()
+        t.set_context_estimate("t", 10_000, context_model="m")
+        got = t.adjust_context_estimate(
+            "t", removed_tokens=9_500, remaining_estimate=3_000, context_model="m"
+        )
+        assert got == 3_000
+        assert t.get_usage("t").context_tokens == 3_000
+
+    def test_adjust_with_no_prior_figure_uses_the_remaining_estimate(self):
+        t = TokenTracker()
+        got = t.adjust_context_estimate(
+            "t", removed_tokens=500, remaining_estimate=3_000, context_model="m"
+        )
+        assert got == 3_000
+        u = t.get_usage("t")
+        assert u.context_tokens == 3_000
+        assert u.context_model == "m"  # stamped when nothing was stamped
+        # A zeroed row with a foreign stamp: the figure written is entirely
+        # in the new model's units, so the stamp follows it (a kept stamp
+        # would make the next poll re-scale a number already in those units).
+        t.reset_after_compact("t2", 0, context_model="claude-old")
+        t.adjust_context_estimate(
+            "t2", removed_tokens=500, remaining_estimate=3_000, context_model="gpt-new"
+        )
+        assert t.get_usage("t2").context_model == "gpt-new"
+
+    def test_adjust_keeps_a_different_existing_stamp(self):
+        # The measured figure was taken under another model; the delta is an
+        # approximation in the prune model's tokens, and the stamp must stay
+        # so the model-switch rebase still runs later.
+        t = TokenTracker()
+        t.record_turn("t", turn_input_tokens=1, turn_output_tokens=1,
+                      context_tokens=50_000, context_model="claude-old")
+        t.adjust_context_estimate(
+            "t", removed_tokens=10_000, remaining_estimate=1_000, context_model="gpt-new"
+        )
+        u = t.get_usage("t")
+        assert u.context_tokens == 40_000
+        assert u.context_model == "claude-old"
+
+    def test_rebase_scales_by_the_estimator_ratio(self):
+        t = TokenTracker()
+        t.record_turn("t", turn_input_tokens=1, turn_output_tokens=1,
+                      context_tokens=150_000, context_model="claude-old")
+        got = t.rebase_context_estimate(
+            "t", old_estimate=100_000, new_estimate=40_000, context_model="gpt-new"
+        )
+        assert got == 60_000
+        u = t.get_usage("t")
+        assert u.context_tokens == 60_000
+        assert u.context_model == "gpt-new"
+
+    def test_rebase_falls_back_to_the_new_estimate_without_a_usable_ratio(self):
+        t = TokenTracker()
+        # No prior figure at all.
+        assert t.rebase_context_estimate(
+            "t", old_estimate=100, new_estimate=40_000, context_model="gpt-new"
+        ) == 40_000
+        # A zero old estimate cannot scale anything, and neither can one that
+        # truncates to zero (the guard and the division must agree).
+        t.set_context_estimate("t2", 150_000, context_model="claude-old")
+        assert t.rebase_context_estimate(
+            "t2", old_estimate=0, new_estimate=40_000, context_model="gpt-new"
+        ) == 40_000
+        assert t.get_usage("t2").context_model == "gpt-new"
+        t.set_context_estimate("t3", 150_000, context_model="claude-old")
+        assert t.rebase_context_estimate(
+            "t3", old_estimate=0.5, new_estimate=40_000, context_model="gpt-new"  # type: ignore[arg-type]
+        ) == 40_000

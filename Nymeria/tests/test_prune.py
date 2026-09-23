@@ -212,21 +212,58 @@ class TestPruneNow:
         assert len(graph.updates) == 1
 
     @pytest.mark.asyncio
-    async def test_refreshes_context_occupancy_estimate(self):
-        """A successful prune re-estimates context occupancy so the context
-        bar drops immediately (repair-pass defect #7)."""
+    async def test_refreshes_context_occupancy_by_the_pruned_delta(self):
+        """A successful prune drops the context bar immediately (repair-pass
+        defect #7) by SUBTRACTING what it removed from the tracked figure,
+        so the fixed prompt overhead the measurement carried stays counted
+        (#260: replacing it with a messages-only estimate under-reported by
+        the whole overhead until the next turn, and compaction fired late)."""
         messages = [
             ToolMessage(content=_big_content(8000), tool_call_id="tc1", id="t1"),
         ]
         mgr, graph = _make_manager(messages)
         tracker = mgr._agent._token_tracker
-        tracker.set_context_estimate("t", 9_999)
+        estimate = mgr._agent._compaction._estimate_messages_tokens
+        before = estimate(messages)  # 2,000 message tokens by the fake estimator
+        tracker.set_context_estimate("t", 9_999, context_model="test-model")
 
         result = await mgr.prune_now("t")
 
         assert result["success"] is True
+        after = estimate(graph._messages)
+        assert 0 < after < before
         occupancy = tracker.get_usage("t").context_tokens
-        assert 0 < occupancy < 9_999  # re-estimated from the pruned state
+        assert occupancy == 9_999 - (before - after)
+        assert occupancy > 9_999 - before  # the overhead (9,999 - 2,000) survived
+
+    @pytest.mark.asyncio
+    async def test_prune_occupancy_never_drops_below_the_remaining_messages(self):
+        messages = [
+            ToolMessage(content=_big_content(8000), tool_call_id="tc1", id="t1"),
+        ]
+        mgr, graph = _make_manager(messages)
+        tracker = mgr._agent._token_tracker
+        tracker.set_context_estimate("t", 100, context_model="test-model")
+
+        await mgr.prune_now("t")
+
+        after = mgr._agent._compaction._estimate_messages_tokens(graph._messages)
+        assert tracker.get_usage("t").context_tokens == after
+
+    @pytest.mark.asyncio
+    async def test_prune_without_a_prior_figure_estimates_the_remaining_messages(self):
+        messages = [
+            ToolMessage(content=_big_content(8000), tool_call_id="tc1", id="t1"),
+        ]
+        mgr, graph = _make_manager(messages)
+        tracker = mgr._agent._token_tracker
+
+        await mgr.prune_now("t")
+
+        after = mgr._agent._compaction._estimate_messages_tokens(graph._messages)
+        usage = tracker.get_usage("t")
+        assert usage.context_tokens == after
+        assert usage.context_model == "test-model"
 
     @pytest.mark.asyncio
     async def test_noop_prune_keeps_existing_occupancy(self):

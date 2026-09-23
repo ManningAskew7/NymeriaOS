@@ -266,11 +266,14 @@ def get_context_stats(host: ContextStatsHost, thread_id: str) -> Dict[str, Any]:
 
     # Token-audit defect #11: after a mid-thread model switch the stored
     # occupancy was measured under the prior model, so dividing it by the
-    # new model's limit mixes the two. Re-estimate occupancy once from the
-    # checkpoint (the same chars-based estimator /prune and compaction use)
-    # and re-stamp; the next real turn replaces the estimate with measured
-    # usage. Best-effort: on failure the stale value keeps rendering and the
-    # stamp is left unchanged so a later poll retries.
+    # new model's limit mixes the two. Re-stamp the figure once for the new
+    # model, scaled by the chars-based estimator's ratio on the same
+    # messages (#260: the measured figure and its overhead are kept, not
+    # replaced by a messages-only estimate; the estimator is model-blind for
+    # text, so the ratio departs from 1 only through image sizing). The next
+    # real turn replaces it with measured usage. Best-effort: on failure the
+    # stale value keeps rendering and the stamp is left unchanged so a later
+    # poll retries; the stamp is what stops a second poll from re-scaling.
     if (
         usage.context_tokens > 0
         and usage.context_model
@@ -283,8 +286,17 @@ def get_context_stats(host: ContextStatsHost, thread_id: str) -> Dict[str, Any]:
                 messages, effective_model
             )
             if estimate > 0:
-                host._token_tracker.set_context_estimate(
-                    thread_id, estimate, context_model=effective_model
+                # Scale the measured figure by the estimator's ratio on the
+                # same messages (#260): a plain replacement would drop the
+                # fixed prompt overhead the measurement carried.
+                old_estimate = host._compaction._estimate_messages_tokens(
+                    messages, usage.context_model
+                )
+                host._token_tracker.rebase_context_estimate(
+                    thread_id,
+                    old_estimate=old_estimate,
+                    new_estimate=estimate,
+                    context_model=effective_model,
                 )
                 usage = host._token_tracker.get_usage(thread_id)
         except Exception as exc:  # noqa: BLE001 - display-only refinement.

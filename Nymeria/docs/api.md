@@ -1106,7 +1106,13 @@ Get context window usage statistics for a thread.
 Token-field semantics (2026-07-04 repair pass):
 
 - `total_tokens` is context occupancy: the final model call's prompt tokens,
-  i.e. how full the window is. Compaction resets it; it is NOT a sum.
+  i.e. how full the window is, fixed overhead (system prompt, tool schemas,
+  memories) included. Compaction resets it to the retained tail's estimate;
+  it is NOT a sum. A `/prune` subtracts the estimated tokens it removed from
+  that figure, and a mid-thread model switch keeps the measured figure
+  (re-scaled only where the chars-based estimator's image sizing differs
+  between the two models); neither replaces it with a messages-only
+  estimate, so the overhead stays counted until the next measured turn.
 - `input_tokens` / `output_tokens` are the LAST TURN's consumption, summed
   across all of that turn's model calls (a multi-step tool turn counts every
   step). `turn_recorded: false` means usage extraction found nothing for the
@@ -1357,7 +1363,9 @@ without an LLM call. It preserves message IDs and tool-call IDs so existing
 assistant/tool linkage remains valid. The `mode` query param (default `full`)
 selects the rewrite: `full` replaces each result body with a short placeholder;
 `soft` keeps the first 500 characters and tags the truncation. The CLI exposes
-both as `/prune [soft|full]`.
+both as `/prune [soft|full]`. The thread's context occupancy drops at once by
+the estimated tokens the prune removed (the fixed prompt overhead stays
+counted); the next turn's measured usage replaces the estimate.
 
 ---
 
