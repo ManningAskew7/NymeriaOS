@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1283 tools found.**
+**1284 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -349,6 +349,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `facebook_page_list_accounts` | `nymeria/tools/community_publishing_service_integrations.py` | List Facebook pages/accounts available to the authenticated user. |
 | `fetch_url_nymeria` | `nymeria/tools/web_fetch.py` | Fetch a web page, PDF, RSS/Atom feed, or text document by URL. |
 | `file_edit` | `nymeria/tools/file_edit.py` | Precisely edit an existing text file with exact, all-or-nothing operations. |
+| `file_list` | `nymeria/tools/filesystem.py` | List a directory, read-only; with no path, your own workspace. |
 | `file_read` | `nymeria/tools/filesystem.py` | Read the contents of a file, including images. |
 | `file_write` | `nymeria/tools/filesystem.py` | Write content to a file. |
 | `freshdesk_create_contact` | `nymeria/tools/support_service_integrations.py` | Create a Freshdesk contact. |

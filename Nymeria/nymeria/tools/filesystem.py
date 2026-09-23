@@ -1,9 +1,11 @@
 """Filesystem tools for Nymeria."""
 
 import errno
+import fnmatch
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path, PurePath
 from typing import Annotated, Optional
 
@@ -13,7 +15,12 @@ from langchain_core.tools import InjectedToolArg, tool
 from ..config import get_settings
 from ..core.exec_policy import PROC_READABLE_FILES
 from ..core.storage_paths import write_text_atomic
-from .execution_environment import detect_execution_environment, resolve_tool_path
+from ..core.time_utils import get_user_tz
+from .execution_environment import (
+    detect_execution_environment,
+    get_workspace_dir,
+    resolve_tool_path,
+)
 from .image_read import (
     prepare_image_for_native_context,
     read_image_dimensions,
@@ -176,7 +183,8 @@ def secrets_path_error(path: Path) -> Optional[str]:
     else ``None``.
 
     Shared by ``file_read`` (which has no other denylist), ``file_write``,
-    and ``file_edit``. The message is returned without an ``[Error]:``
+    ``file_edit``, and ``file_list`` (root refused; entries marked, never
+    entered). The message is returned without an ``[Error]:``
     prefix; callers format it for their own contract.
     """
     process_error = _process_state_error(path)
@@ -293,9 +301,8 @@ def admin_only_write_error(path: Path, user_id: Optional[str]) -> Optional[str]:
     )
 
 
-def get_workspace_dir() -> Path:
-    """Return the only filesystem root where mutating file tools may write."""
-    return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
+# ``get_workspace_dir`` lives in execution_environment (the description
+# injector names the workspace); importers of this module still find it here.
 
 
 def _attach_result_suffix(path: Path) -> tuple[str, str]:
@@ -833,6 +840,231 @@ def file_read(
         error_msg = f"Failed to read file: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return f"[Error]: {error_msg}", {}
+
+
+_FILE_LIST_MAX_ENTRIES = 2000
+# Entries VISITED (matching or not) before a walk gives up: with a glob the
+# output cap alone would not bound the work, and a recursive walk from "/"
+# is millions of inodes across every mount.
+_FILE_LIST_SCAN_BUDGET = 20000
+_FILE_LIST_MAX_DEPTH = 32
+_EXCLUDED_MARK = "(excluded from the file tools)"
+
+
+@tool
+def file_list(
+    path: str = "",
+    glob: str = "",
+    recursive: bool = False,
+    max_entries: int = 200,
+) -> str:
+    """
+    List a directory, read-only; with no path, your own workspace.
+
+    The workspace is where your files land (file_write, generated images and
+    reports, attachments you were sent), so use this to rediscover what you
+    wrote earlier, after a compaction, or in a later turn, without needing a
+    shell. On a deployment with no workspace directory, an empty path lists
+    the default tool cwd instead and says so.
+
+    One entry per line, sorted: directories end in "/", symlinks in "@"
+    (never followed), files show their size and last-modified time. A
+    credential store (or /proc) is shown with an "(excluded ...)" mark and
+    never entered; file_read refuses it the same way. With recursive=True
+    every entry is a path relative to the listed directory, walked
+    depth-first. The listing ends with "[N entries]" or a truncation note
+    once max_entries is reached. glob only filters the OUTPUT: a recursive
+    walk under a glob still visits every subdirectory, so narrow a huge tree
+    with a subdirectory, not with a pattern; a walk that visits 20000
+    entries stops and says so. A filename that is not valid UTF-8 is shown
+    with backslash escapes and may not round-trip to file_read.
+
+    Args:
+        path: Directory to list. Empty (the default) means your workspace.
+            Relative paths resolve from Nymeria's detected default tool cwd.
+        glob: Optional shell-style pattern (fnmatch: "*.pdf", "report_*",
+            "images/*.png"). Matched against the entry name, or against the
+            relative path when recursive=True, where "*" also crosses "/"
+            (so "*.png" matches "images/chart.png"). Case-sensitive.
+        recursive: Also list subdirectories, depth-first (default False).
+        max_entries: Stop after this many listed entries (default 200, max
+            2000).
+
+    Returns:
+        "Listing of <dir>" then one line per entry, then "[N entries]",
+        "[Empty directory]", "[No entries match '<glob>']", or
+        "[Truncated at N entries; more exist. ...]". Subdirectories that
+        could not be read are counted in a trailing note, as is a walk cut
+        short by the scan budget.
+        Errors: "[Error]: <reason>" (directory not found, not a directory,
+        credential store, permission denied, max_entries out of range).
+    """
+    logger.info(f"Listing directory: {path or '<workspace>'}")
+    if max_entries < 1 or max_entries > _FILE_LIST_MAX_ENTRIES:
+        return (
+            f"[Error]: max_entries must be between 1 and {_FILE_LIST_MAX_ENTRIES} "
+            f"(got {max_entries})."
+        )
+    raw = path.strip()
+    pattern = glob.strip()
+    root: Path = Path(raw)
+    notes: list[str] = []
+    try:
+        if raw:
+            root = resolve_tool_path(raw)
+        else:
+            root = get_workspace_dir()
+            if not root.is_dir():
+                fallback = resolve_tool_path(".")
+                notes.append(
+                    f"[Note]: No workspace directory exists at {root} "
+                    "(NYMERIA_WORKSPACE_DIR is unset on this deployment), so "
+                    f"this lists the default tool cwd {fallback} instead. Pass "
+                    "a path to list somewhere else."
+                )
+                root = fallback
+        secrets_error = secrets_path_error(root)
+        if secrets_error:
+            return f"[Error]: {secrets_error}"
+        if not root.exists():
+            return (
+                f"[Error]: Directory not found: {root}."
+                f"{runtime_visibility_note(root, raw or str(root))}"
+            )
+        if not root.is_dir():
+            return (
+                f"[Error]: Not a directory: {root} (use file_read for a file)."
+            )
+        walk = _walk_listing(
+            root, glob=pattern, recursive=recursive, max_entries=max_entries,
+        )
+    except PermissionError as exc:
+        return f"[Error]: Permission denied: {exc.filename or root}"
+    except OSError as exc:
+        return f"[Error]: Cannot list {root}: {exc}"
+    except Exception as exc:
+        logger.warning("file_list failed for %s", root, exc_info=True)
+        return f"[Error]: Cannot list {root}: {exc}"
+
+    header = f"Listing of {root}"
+    if recursive:
+        header += " (recursive)"
+    if pattern:
+        header += f" matching '{pattern}'"
+    out = [*notes, header, *walk.lines]
+    if walk.truncated:
+        out.append(
+            f"[Truncated at {walk.shown} entries; more exist. List a "
+            "subdirectory, or raise max_entries.]"
+        )
+    elif walk.shown == 0:
+        out.append(f"[No entries match '{pattern}']" if pattern else "[Empty directory]")
+    else:
+        out.append(f"[{walk.shown} {'entry' if walk.shown == 1 else 'entries'}]")
+    if walk.scan_exhausted:
+        out.append(
+            f"[Scan stopped after visiting {_FILE_LIST_SCAN_BUDGET} entries; "
+            "the tree is larger than that. List a subdirectory.]"
+        )
+    if walk.unreadable:
+        out.append(
+            f"[{walk.unreadable} {'directory' if walk.unreadable == 1 else 'directories'} "
+            "could not be read]"
+        )
+    return "\n".join(out)
+
+
+class _Listing:
+    """Result of ``_walk_listing``."""
+
+    __slots__ = ("lines", "shown", "truncated", "unreadable", "scan_exhausted")
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.shown = 0
+        self.truncated = False
+        self.unreadable = 0
+        self.scan_exhausted = False
+
+
+def _walk_listing(
+    root: Path, *, glob: str, recursive: bool, max_entries: int,
+) -> _Listing:
+    """Collect listing lines for ``file_list``.
+
+    An explicit stack rather than recursion, so a pathological tree depth
+    cannot raise RecursionError out of the tool; depth is capped at
+    ``_FILE_LIST_MAX_DEPTH`` and the total entries visited at
+    ``_FILE_LIST_SCAN_BUDGET``. Symlinks are reported and never followed
+    (``is_dir(follow_symlinks=False)``), so a link loop or a link out of the
+    workspace cannot pull in its target. An entry the credential denylist
+    refuses is listed with a mark and, for a directory, not entered: its
+    NAME is public knowledge (the generated ``data/README.md`` indexes every
+    store), its contents are not. A subdirectory that fails to read for any
+    OS reason (permissions, removed mid-walk, a stale mount) is counted and
+    skipped; only the root's own failure is an error.
+    """
+    result = _Listing()
+    visited = 0
+    # Stack frames: (directory, prefix, depth, pending entries). The root's
+    # scandir runs eagerly so its failure surfaces to the caller.
+    stack: list[tuple[str, int, list[os.DirEntry]]] = [
+        ("", 0, sorted(os.scandir(root), key=lambda e: e.name)),
+    ]
+    while stack and not result.truncated:
+        prefix, depth, entries = stack[-1]
+        if not entries:
+            stack.pop()
+            continue
+        entry = entries.pop(0)
+        visited += 1
+        if visited > _FILE_LIST_SCAN_BUDGET:
+            result.scan_exhausted = True
+            break
+        rel = _display_name(f"{prefix}{entry.name}")
+        is_link = entry.is_symlink()
+        is_dir = (not is_link) and entry.is_dir(follow_symlinks=False)
+        excluded = (not is_link) and secrets_path_error(Path(entry.path)) is not None
+        if not glob or fnmatch.fnmatchcase(rel, glob):
+            if result.shown >= max_entries:
+                result.truncated = True
+                break
+            if is_link:
+                result.lines.append(f"{rel}@")
+            elif is_dir:
+                result.lines.append(f"{rel}/  {_EXCLUDED_MARK}" if excluded else f"{rel}/")
+            elif excluded:
+                result.lines.append(f"{rel}  {_EXCLUDED_MARK}")
+            else:
+                result.lines.append(f"{rel}  {_file_stat_suffix(entry)}")
+            result.shown += 1
+        if recursive and is_dir and not excluded and depth < _FILE_LIST_MAX_DEPTH:
+            try:
+                children = sorted(os.scandir(entry.path), key=lambda e: e.name)
+            except OSError:
+                result.unreadable += 1
+                continue
+            stack.append((rel + "/", depth + 1, children))
+    return result
+
+
+def _display_name(name: str) -> str:
+    """Make a scandir name safe to ship as UTF-8.
+
+    ``os.scandir`` decodes with ``surrogateescape``; a lone surrogate passes
+    ``json.dumps`` but breaks ``.encode("utf-8")``, which is what the SSE
+    stream and the provider request both do.
+    """
+    return name.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+
+
+def _file_stat_suffix(entry: os.DirEntry) -> str:
+    try:
+        st = entry.stat(follow_symlinks=False)
+    except OSError:
+        return "(unreadable)"
+    stamp = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).astimezone(get_user_tz())
+    return f"{st.st_size} bytes  {stamp.strftime('%Y-%m-%d %H:%M %Z')}"
 
 
 @tool

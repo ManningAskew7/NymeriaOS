@@ -20,7 +20,7 @@ from ..config import get_settings
 # reloads, so this module re-executing mid-storm must not drop the bases.
 _DESCRIPTION_BASES: dict[str, str] = globals().get("_DESCRIPTION_BASES", {})
 _SHELL_TOOL_NAMES = {"bash_execute"}
-_FILE_TOOL_NAMES = {"file_read", "file_write", "file_edit"}
+_FILE_TOOL_NAMES = {"file_read", "file_write", "file_edit", "file_list"}
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,7 @@ class ExecutionEnvironment:
     in_container: bool
     path_separator: str
     resource_root: str = ""
+    workspace_dir: str = ""
 
 
 def default_tool_cwd() -> Path:
@@ -43,6 +44,20 @@ def default_tool_cwd() -> Path:
         return get_settings().project_root.resolve()
     except Exception:
         return Path.cwd().resolve()
+
+
+def get_workspace_dir() -> Path:
+    """The agent workspace: where ``file_list`` looks by default, the only
+    root chat attachments deliver from, and (with confinement on) the only
+    root the mutating file tools may write. Several call sites mirror the
+    expression rather than import it (``core/agent_results.py``,
+    ``core/generated_image_context.py``, ``tools/image_generation.py``,
+    ``api/routers/workspace.py``); ``core/snapshot.py``'s copy is the
+    deliberate one (it must not import the tools package). The directory is
+    created by the Docker shapes only; slim has none unless the env var is
+    set, and the description injector says so.
+    """
+    return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
 
 
 def resource_root(user_id: str | None = None) -> Path:
@@ -101,6 +116,7 @@ def detect_execution_environment() -> ExecutionEnvironment:
         in_container=_detect_container(),
         path_separator=os.sep,
         resource_root=str(resource_root()),
+        workspace_dir=str(get_workspace_dir()),
     )
 
 
@@ -179,10 +195,29 @@ def _file_description(base: str, env: ExecutionEnvironment) -> str:
     return (
         f"{base}\n\n"
         "Runtime path context:\n"
-        f"- Relative file_path values resolve from: {env.default_cwd}.\n"
+        f"- Relative path arguments (file_path, path) resolve from: {env.default_cwd}.\n"
         "- Absolute paths are accepted, subject to each tool's safety checks.\n"
+        f"{_workspace_line(env)}"
         f"{_resource_root_line(env)}"
         "- Shell cd commands do not change file tool paths; cwd is not stateful."
+    )
+
+
+def _workspace_line(env: ExecutionEnvironment) -> str:
+    """One-line pointer to the agent workspace, if one is known (#257: the
+    model was never told where its own files live)."""
+    if not env.workspace_dir:
+        return ""
+    if not Path(env.workspace_dir).is_dir():
+        return (
+            f"- Agent workspace: none on this deployment ({env.workspace_dir} "
+            "does not exist and NYMERIA_WORKSPACE_DIR is unset), so file_list "
+            "with no path lists the default cwd and chat attachments cannot "
+            "be delivered from disk.\n"
+        )
+    return (
+        f"- Agent workspace (your own files; file_list's default root, and the "
+        f"only root attachments deliver from): {env.workspace_dir}.\n"
     )
 
 

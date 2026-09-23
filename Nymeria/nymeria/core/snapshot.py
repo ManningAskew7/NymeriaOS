@@ -128,7 +128,7 @@ def _nymeria_version() -> str:
 
 
 def _workspace_dir() -> Path:
-    # Mirrors tools/filesystem.get_workspace_dir without importing the tools
+    # Mirrors tools/execution_environment.get_workspace_dir without importing the tools
     # package (which pulls the agent runtime into what must stay a standalone
     # maintenance path).
     return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()

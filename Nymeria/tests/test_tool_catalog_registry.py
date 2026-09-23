@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1297
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1298
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -115,7 +115,7 @@ def test_seed_tool_names_match_baseline():
 
 
 def test_seed_tools_count_matches_baseline():
-    assert len(T.SEED_TOOLS) == len(BASELINE_SEED_NAMES) == 18
+    assert len(T.SEED_TOOLS) == len(BASELINE_SEED_NAMES) == 19
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +315,7 @@ BASELINE_SEED_NAMES = [
     "file_read",
     "file_write",
     "file_edit",
+    "file_list",
     "memory_add",
     "memory_edit",
     "memory_read",
@@ -1985,6 +1986,7 @@ BASELINE_STATIC_NAMES = [
     "facebook_page_list_accounts",
     "fetch_url_nymeria",
     "file_edit",
+    "file_list",
     "file_read",
     "file_write",
     "freshdesk_create_contact",

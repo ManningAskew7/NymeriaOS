@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **seed tools** (the code-level default for new threads), **dynamic callable thread tools** (one per callable thread), and a large **catalog** of optional tools available for per-thread enabling. The code-owned registry has 18 seed tools in `SEED_TOOLS` (`spawn_thread` joined 2026-08-30; the thread request/reply pair `reply_to_thread` + `wait_for_reply` joined 2026-09-08) and roughly 1,260 catalog tools in `CATALOG_TOOLS` (the count drifts as integrations land; regenerate `tools-index.md` for the live total). What a thread actually loads is its user's editable `default_thread_tools` (seeded on first run from `fresh_default_thread_tool_names()`: `SEED_TOOLS` minus the capability-expansion overlay, plus the keyless web defaults `web_search_ddgs` + `fetch_url_nymeria`, so a no-wizard install matches a wizard install that accepted the defaults) plus per-thread `enabled_tools`/`temporary_tools`, minus `disabled_tools`. So a seed tool is on by default but can be demoted out of the defaults or disabled per thread, and a catalog tool can be promoted into the defaults; `SEED_TOOLS` is the seed, not a runtime guarantee. `default_thread_tools` is written by `PUT /tools/defaults`, the unified per-tool endpoint the GUIs use, and `/tools enable|disable <name> global` wherever a slash command is typed as text (the CLI, MCP `nymeria_command`, Telegram; Discord's typed `/tools enable` menu passes only the name, so its scope stays this-channel). A per-thread `disable` still overrides an account default, since `disabled_tools` filters the default-bound set too. Every one of those writers replaces the WHOLE list, so validation (unknown names, the admin-only and developer-only gates) applies to what a write ADDS, not to entries the profile already carried: otherwise one tool uninstalled between releases would refuse every later write with an error naming a tool the user never touched, and refuse the removal that would clear it. A retained entry is a record of intent, not a grant, because `select_tools_for_graph` re-applies the role gates on every build. `/tools disable <name> global` accepts a name that no longer resolves when it is already in the defaults, byte-exact, which is the way to clear one.
+Nymeria has a three-tier tool system: **seed tools** (the code-level default for new threads), **dynamic callable thread tools** (one per callable thread), and a large **catalog** of optional tools available for per-thread enabling. The code-owned registry has 19 seed tools in `SEED_TOOLS` (`spawn_thread` joined 2026-08-30; the thread request/reply pair `reply_to_thread` + `wait_for_reply` joined 2026-09-08) and roughly 1,260 catalog tools in `CATALOG_TOOLS` (the count drifts as integrations land; regenerate `tools-index.md` for the live total). What a thread actually loads is its user's editable `default_thread_tools` (seeded on first run from `fresh_default_thread_tool_names()`: `SEED_TOOLS` minus the capability-expansion overlay, plus the keyless web defaults `web_search_ddgs` + `fetch_url_nymeria`, so a no-wizard install matches a wizard install that accepted the defaults) plus per-thread `enabled_tools`/`temporary_tools`, minus `disabled_tools`. So a seed tool is on by default but can be demoted out of the defaults or disabled per thread, and a catalog tool can be promoted into the defaults; `SEED_TOOLS` is the seed, not a runtime guarantee. `default_thread_tools` is written by `PUT /tools/defaults`, the unified per-tool endpoint the GUIs use, and `/tools enable|disable <name> global` wherever a slash command is typed as text (the CLI, MCP `nymeria_command`, Telegram; Discord's typed `/tools enable` menu passes only the name, so its scope stays this-channel). A per-thread `disable` still overrides an account default, since `disabled_tools` filters the default-bound set too. Every one of those writers replaces the WHOLE list, so validation (unknown names, the admin-only and developer-only gates) applies to what a write ADDS, not to entries the profile already carried: otherwise one tool uninstalled between releases would refuse every later write with an error naming a tool the user never touched, and refuse the removal that would clear it. A retained entry is a record of intent, not a grant, because `select_tools_for_graph` re-applies the role gates on every build. `/tools disable <name> global` accepts a name that no longer resolves when it is already in the defaults, byte-exact, which is the way to clear one.
 
 ## Summary Table
 
@@ -12,6 +12,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 2 | `file_read` | Core | SAFE | On | Read file or image contents |
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
 | 3b | `file_edit` | Core | MODERATE | On | Exact, all-or-nothing edits to existing text files |
+| 3c | `file_list` | Core | SAFE | On | Read-only directory listing; no path means the agent workspace |
 | 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity's Agent API (synthesized, cited answer); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
 | 4b | `web_search_tavily` | Web Search | SAFE | Opt-in | Ranked-source web retrieval via Tavily; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4c | `web_search_exa_ai` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
@@ -352,9 +353,34 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 
 ---
 
-### ~~file_list~~ (removed)
+### file_list
 
-**Deprecated.** Removed from `SEED_TOOLS` and `TOOL_METADATA`. For trusted maintenance threads, an admin may enable `bash_execute` and use shell listing commands instead.
+List a directory, read-only; with no path, the agent's own workspace.
+
+```python
+file_list(path: str = "", glob: str = "", recursive: bool = False, max_entries: int = 200)
+```
+
+The fourth file tool (#257, re-added 2026-09-23; an earlier `file_list` was
+removed in the 2026-02 simplification with "use `bash_execute`" as the
+substitute, which made the workspace write-only for any thread that has the
+file tools but no shell). Same reach as `file_read` (any readable directory)
+under the same denylist: a credential store or `/proc` as the root is
+refused, and a walk shows such an entry (`auth_tokens/`, `accounts.db`,
+`proc/`) with an `(excluded from the file tools)` mark and never enters it.
+Filenames that are not valid UTF-8 are shown with backslash escapes.
+
+**Parameters:**
+- `path` (`str`, default `""`): Directory to list. Empty means the workspace (`NYMERIA_WORKSPACE_DIR`); relative paths resolve from the detected default tool cwd like every file tool.
+- `glob` (`str`, default `""`): Shell-style `fnmatch` pattern (`*.pdf`, `report_*`, `images/*.png`), matched against the entry name, or against the relative path when `recursive=True` (where `*` also crosses `/`). Case-sensitive. Filters the OUTPUT only: a recursive walk under a glob still visits every subdirectory.
+- `recursive` (`bool`, default `False`): Walk subdirectories depth-first; entries become paths relative to the listed directory.
+- `max_entries` (`int`, default `200`, max `2000`): Stop after this many listed entries with a truncation note. Independently, a walk that visits 20,000 entries (matching or not) stops with a scan note, and depth is capped at 32: narrow a huge tree with a subdirectory.
+
+**Returns:** `Listing of <dir>` then one sorted line per entry (directories end in `/`, symlinks in `@` and are never followed, files show `<size> bytes  <mtime>`), then `[N entries]`, `[Empty directory]`, `[No entries match '<glob>']`, or `[Truncated at N entries; more exist. ...]`. Subdirectories that could not be read (permissions, removed mid-walk, a stale mount) are counted in a trailing note, never fatal. With no path on a deployment that has no workspace directory (slim without `NYMERIA_WORKSPACE_DIR`), the listing is the default tool cwd, preceded by a `[Note]:` saying so. Errors: `[Error]: Directory not found` (with the container-visibility hint `file_read` uses), `Not a directory` (pointing at `file_read`), the credential-store refusal, `Permission denied`, `max_entries must be between 1 and 2000`, `Cannot list <dir>: <reason>`.
+
+The file tools' injected runtime context now also names the workspace path
+("Agent workspace ..."), or says that none exists on this deployment, so
+the model knows where its files live before it lists anything.
 
 ---
 

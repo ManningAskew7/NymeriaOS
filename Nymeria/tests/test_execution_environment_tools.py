@@ -92,7 +92,7 @@ def test_dynamic_descriptions_include_execution_context():
         bash_execute.description or ""
     )
     assert "Available shells: bash, sh" in (bash_execute.description or "")
-    assert "Relative file_path values resolve from: /repo/root" in (
+    assert "Relative path arguments (file_path, path) resolve from: /repo/root" in (
         file_read.description or ""
     )
     assert "Shell cd commands do not change file tool paths" in (

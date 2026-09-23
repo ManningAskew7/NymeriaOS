@@ -533,7 +533,7 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 
 | Category | Tools |
 |----------|-------|
-| Core System | bash_execute, file_read, file_write, file_edit, notify, slash_command |
+| Core System | bash_execute, file_read, file_write, file_edit, file_list, notify, slash_command |
 | Profile & RAG | memory_add, memory_edit, memory_read, rag_search |
 | TODO | nym_todo, nym_todo_delete, nym_todo_list |
 

@@ -8,7 +8,7 @@ Callable thread tools are added per-graph in _build_graph_with_prompt(), not glo
 
 Tool classification (read this before reasoning about "core" vs "optional"):
 
-- ``SEED_TOOLS`` (~16) is the code-level set that SEEDS each user's editable
+- ``SEED_TOOLS`` (19) is the code-level set that SEEDS each user's editable
   ``default_thread_tools`` on first run (``NymeriaAgent._migrate_tool_preferences``).
   It is NOT "all tools" and NOT a runtime guarantee: a user can demote a seed
   tool out of their defaults, and any thread can disable it.
@@ -41,7 +41,7 @@ always be on.
 
 from .bash import bash_execute
 from .bash_job import bash_job, BASH_JOB_TOOLS
-from .filesystem import file_read, file_write
+from .filesystem import file_list, file_read, file_write
 from .file_edit import file_edit, FILE_EDIT_TOOLS
 from .web import web_search_perplexity, WEB_SEARCH_SERVICE_TOOLS
 from .web_search_integrations import (
@@ -1592,6 +1592,9 @@ SEED_TOOLS = [
     file_read,
     file_write,
     file_edit,
+    # Read-only listing beside the three file tools (#257): without it the
+    # workspace is write-only to a thread that has no shell.
+    file_list,
     # Memory tools (unified profile + thread-notepad CRUD)
     memory_add,
     memory_edit,
@@ -2136,6 +2139,7 @@ __all__ = [
     "facebook_page_list_accounts",
     "fetch_url_nymeria",
     "file_edit",
+    "file_list",
     "file_read",
     "file_write",
     "filter_admin_only_tools",

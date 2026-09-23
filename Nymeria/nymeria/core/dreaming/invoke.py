@@ -50,6 +50,7 @@ DEFAULT_DREAM_DISABLED_CORE_TOOLS: tuple[str, ...] = (
     "file_read",
     "file_write",
     "file_edit",
+    "file_list",
     "web_search_perplexity",
     "notify",
     "request_credential",
