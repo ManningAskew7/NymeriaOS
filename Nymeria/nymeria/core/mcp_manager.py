@@ -39,6 +39,7 @@ from ..tools.definitions.mcp_schema import MCPToolConfig
 from .http_policy import (
     HTTPPolicyRedirectLimit,
     HTTPPolicyViolation,
+    egress_failure_verb,
     httpx_request_with_policy,
     validate_http_egress_url,
 )
@@ -748,7 +749,7 @@ class MCPServerManager:
                 follow_redirects=False,
             )
         except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-            raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
+            raise RuntimeError(f"HTTP request {egress_failure_verb(e)}: {e}") from e
         except Exception as e:
             raise RuntimeError(f"HTTP request failed: {e}") from e
 

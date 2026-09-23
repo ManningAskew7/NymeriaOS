@@ -147,6 +147,7 @@ def request_with_policy(
     from ..core.http_policy import (
         HTTPPolicyRedirectLimit,
         HTTPPolicyViolation,
+        egress_failure_verb,
         httpx_request_with_policy,
     )
 
@@ -161,6 +162,10 @@ def request_with_policy(
     except HTTPPolicyRedirectLimit as exc:
         raise RuntimeError(f"HTTP request blocked by egress policy: {exc}") from exc
     except HTTPPolicyViolation as exc:
+        if egress_failure_verb(exc) == "not sent":
+            # A DNS failure or malformed URL is not a block (#256); its own
+            # sentence already names the self-hosted remedy where it applies.
+            raise RuntimeError(f"HTTP request not sent: {exc}") from exc
         # Names the remedy, because the commonest way to meet this message is not
         # an attack: it is a self-hosted instance (Home Assistant, GitLab, Jira
         # Server, Jenkins, Nextcloud, Grafana), including several that ship an

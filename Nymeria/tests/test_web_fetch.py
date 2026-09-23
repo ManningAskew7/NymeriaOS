@@ -657,6 +657,21 @@ def test_ssrf_blocked_returns_error(monkeypatch):
     assert out.startswith("[Error]: Blocked by egress policy")
 
 
+def test_dns_failure_is_not_reported_as_a_block(monkeypatch):
+    """#256: fetch_url_nymeria is a fresh-thread default, so this is the
+    string most agents see for a typo'd domain. It must not say "blocked"."""
+    def boom(*a, **k):
+        raise HTTPPolicyViolation(
+            HTTPPolicyDecision(False, "dns_resolution_failed", "https://exmaple.com/", "exmaple.com", 443)
+        )
+
+    monkeypatch.setattr(web_fetch, "requests_get_with_policy", boom)
+    out = web_fetch.fetch_url_nymeria.func(url="https://exmaple.com/")
+    assert out.startswith("[Error]: Not sent: URL not sent (dns_resolution_failed): https://exmaple.com/")
+    assert "could not be resolved" in out
+    assert "blocked" not in out.lower()
+
+
 def test_http_error_returns_error(monkeypatch):
     _patch_fetch(monkeypatch, FakeResponse(status=404))
     out = web_fetch.fetch_url_nymeria.func(url="https://example.com/missing")

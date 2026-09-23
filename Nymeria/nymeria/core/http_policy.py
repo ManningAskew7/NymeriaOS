@@ -679,6 +679,17 @@ def network_error_type(decision: HTTPPolicyDecision) -> str:
     return decision.reason if decision.reason in NON_REFUSAL_REASONS else "blocked_network_target"
 
 
+def egress_failure_verb(exc: BaseException) -> str:
+    """The verb a wrapper puts before a policy exception's message: "blocked
+    by egress policy" for a refusal (or a redirect-limit hit, which carries
+    no decision), "not sent" for the two non-refusal reasons (#256). Callers
+    that prefix their own copy must not call a typo a block."""
+    decision = getattr(exc, "decision", None)
+    if decision is not None and getattr(decision, "reason", None) in NON_REFUSAL_REASONS:
+        return "not sent"
+    return "blocked by egress policy"
+
+
 def blocked_network_error(decision: HTTPPolicyDecision, message: Optional[str] = None) -> dict[str, Any]:
     """The `error` payload for a URL the policy layer did not send."""
     return {

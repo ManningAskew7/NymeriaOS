@@ -695,3 +695,22 @@ def test_policy_error_message_does_not_call_a_typo_a_block():
         HTTPPolicyDecision(False, "private_network", "http://10.0.0.5/", "10.0.0.5", 80)
     )
     assert private == "URL blocked by HTTP egress policy (private_network): http://10.0.0.5/"
+
+
+def test_egress_failure_verb_splits_refusals_from_non_arrivals():
+    from nymeria.core.http_policy import (
+        HTTPPolicyDecision,
+        HTTPPolicyRedirectLimit,
+        HTTPPolicyViolation,
+        egress_failure_verb,
+    )
+
+    dns = HTTPPolicyViolation(
+        HTTPPolicyDecision(False, "dns_resolution_failed", "https://x.invalid/", "x.invalid", 443)
+    )
+    assert egress_failure_verb(dns) == "not sent"
+    loopback = HTTPPolicyViolation(
+        HTTPPolicyDecision(False, "loopback_network", "http://127.0.0.1/", "127.0.0.1", 80)
+    )
+    assert egress_failure_verb(loopback) == "blocked by egress policy"
+    assert egress_failure_verb(HTTPPolicyRedirectLimit("too many")) == "blocked by egress policy"

@@ -15,6 +15,7 @@ from ..core.feed_fields import feed_entry_published
 from ..core.http_policy import (
     HTTPPolicyRedirectLimit,
     HTTPPolicyViolation,
+    egress_failure_verb,
     httpx_request_with_policy,
     policy_http_client as _http_client,
     validate_http_egress_url,
@@ -127,7 +128,7 @@ def _get_json(url: str, params: Optional[dict[str, Any]] = None, headers: Option
             response.raise_for_status()
             return response.json()
     except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-        raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
+        raise RuntimeError(f"HTTP request {egress_failure_verb(e)}: {e}") from e
     except httpx.HTTPStatusError as e:
         detail = ""
         try:
@@ -159,7 +160,7 @@ def _get_text(url: str, *, verify: bool = True) -> str:
             response.raise_for_status()
             return response.text
     except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-        raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
+        raise RuntimeError(f"HTTP request {egress_failure_verb(e)}: {e}") from e
     except httpx.HTTPStatusError as e:
         raise RuntimeError(f"HTTP {e.response.status_code}: {e.response.text[:300]}") from e
 

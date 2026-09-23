@@ -183,7 +183,10 @@ def _fetch_one(url: str, *, timeout: float = 25.0):
         )
         return fetched, None, final_url
     except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-        return None, f"[Error]: Blocked by egress policy: {e}", url
+        from ..core.http_policy import egress_failure_verb
+
+        verb = egress_failure_verb(e)
+        return None, f"[Error]: {verb[0].upper()}{verb[1:]}: {e}", url
     except requests.exceptions.Timeout:
         return None, f"[Error]: Timed out fetching {_redact_url(url)}", url
     except Exception as e:  # noqa: BLE001

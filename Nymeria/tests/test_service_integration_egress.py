@@ -553,6 +553,22 @@ def test_the_error_names_what_was_refused():
     assert "http://127.0.0.1/x" in message
 
 
+def test_a_dns_failure_is_not_sent_rather_than_blocked(monkeypatch):
+    """#256: the shared wrapper used to prefix every policy exception with
+    "blocked by egress policy" and append the allowlist remedy, so a typo'd
+    host read as a security block across all 33 integration modules."""
+    def unresolvable(host, port):
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(http_policy, "_resolve_host", unresolvable)
+    with pytest.raises(RuntimeError) as excinfo:
+        base.request_with_policy(_RecordingClient(), "GET", "https://exmaple.com/x")
+    message = str(excinfo.value)
+    assert message.startswith("HTTP request not sent: URL not sent (dns_resolution_failed): https://exmaple.com/x")
+    assert "blocked" not in message.lower()
+    assert message.count("HTTP_INTERNAL_ALLOWLIST") == 1  # the DNS sentence's own remedy, not appended twice
+
+
 # --- the proxy the policy cannot see through -------------------------------
 
 
