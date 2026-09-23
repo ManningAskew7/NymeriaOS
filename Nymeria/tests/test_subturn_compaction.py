@@ -35,6 +35,24 @@ def _manager(monkeypatch, *, mode_pct=0.8, limit=100_000, context_management="au
 
 # --- CompactionManager.should_subturn_compact ------------------------------
 
+def test_should_subturn_compact_token_mode_reserves_the_output_cap(monkeypatch):
+    """#115 at the sub-turn site: an oversized token setting with a 50k cap
+    on a 1.05M window fires at 1,000,000, not at the window edge."""
+    agent = SimpleNamespace(
+        settings=SimpleNamespace(context_management="auto_compact"),
+        _get_llm_config_for_thread=lambda tid: SimpleNamespace(model="x", max_tokens=50_000),
+    )
+    mgr = object.__new__(CompactionManager)
+    mgr._agent = agent
+    monkeypatch.setattr(ac, "get_context_limit", lambda m: 1_050_000)
+    monkeypatch.setattr(
+        mgr, "_resolve_threshold_config", lambda tid: ("tokens", 0.8, 2_000_000)
+    )
+
+    assert mgr.should_subturn_compact("t1", [_ai_with_input_tokens(999_999)]) is False
+    assert mgr.should_subturn_compact("t1", [_ai_with_input_tokens(1_000_000)]) is True
+
+
 def test_should_subturn_compact_true_over_threshold(monkeypatch):
     mgr = _manager(monkeypatch)  # trigger = 0.8 * 100k = 80k
     msgs = [_ai_with_input_tokens(90_000), ToolMessage(content="r", tool_call_id="a")]

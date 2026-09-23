@@ -1847,8 +1847,8 @@ def test_context_limit_family_rule_ignores_non_anthropic(monkeypatch):
 
 def test_unknown_context_limit_warns_once(monkeypatch, caplog):
     # A silently wrong context window is not cosmetic: compact_trigger_tokens
-    # takes min(setting, limit), so the guess also caps the operator's
-    # configured compaction threshold. Mirror the "[LLM] No output ceiling
+    # clamps to usable_context_ceiling(limit), so the guess moves the
+    # operator's configured compaction threshold. Mirror the "[LLM] No output ceiling
     # known" precedent and say so, once, not on every turn.
     _offline(monkeypatch)
     _set_catalog(monkeypatch, {})

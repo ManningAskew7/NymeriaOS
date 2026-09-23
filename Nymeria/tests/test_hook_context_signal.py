@@ -43,10 +43,12 @@ def _fake_agent(*, context_tokens=0, mode="auto_compact", limit=400_000, trigger
         _get_llm_config_for_thread=lambda tid: SimpleNamespace(model="m"),
         settings=SimpleNamespace(context_management=mode),
         _compaction=SimpleNamespace(
-            _resolve_threshold_config=lambda tid: ("tokens", 0.8, trigger)
+            _resolve_threshold_config=lambda tid: ("tokens", 0.8, trigger),
         ),
         _compact_trigger_tokens=(
-            lambda model_limit, pct, mode="tokens", tokens=200_000: min(tokens, model_limit)
+            lambda model_limit, pct, mode="tokens", tokens=200_000, output_reserve=None: min(
+                tokens, model_limit
+            )
         ),
         _limit=limit,
     )

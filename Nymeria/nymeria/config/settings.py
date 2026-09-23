@@ -1840,7 +1840,7 @@ class Settings(BaseSettings):
         default=200_000,
         ge=1_000,
         le=2_000_000,
-        description="Trigger auto-compact when input tokens reach this absolute count (used when compact_threshold_mode='tokens'); clamped to model context limit at runtime"
+        description="Trigger auto-compact when input tokens reach this absolute count (used when compact_threshold_mode='tokens'); clamped at runtime to the model's usable window (context limit minus the configured or discovered output cap, else 20% of it)"
     )
     compact_keep_messages: int = Field(
         default=4,

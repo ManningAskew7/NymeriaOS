@@ -2172,9 +2172,9 @@ def _warn_unknown_context_limit(model_id: str) -> None:
 
     Mirrors the ``[LLM] No output ceiling known ...`` warning in
     ``providers.py``: a silently wrong context window is not cosmetic, because
-    ``agent_compaction.compact_trigger_tokens`` takes ``min(setting, limit)``,
-    so the guess also caps the operator's configured compaction threshold and
-    misreports occupancy in the status bar. Warn-once because this sits on the
+    ``agent_compaction.compact_trigger_tokens`` clamps the operator's
+    configured compaction threshold to ``usable_context_ceiling(limit)``, so
+    the guess moves the trigger and misreports occupancy in the status bar. Warn-once because this sits on the
     per-turn compaction path.
     """
     key = (model_id or "").strip().lower()
@@ -2305,6 +2305,57 @@ def get_max_output_tokens(model_id: str) -> Optional[int]:
         return safety_cap
 
     return raw_max_output
+
+
+# Token-mode compaction clamp (#115). An absolute threshold at or above the
+# usable window would put the trigger on the window edge, leaving no room for
+# the reply, so it is clamped to the window minus an output reserve: the cap
+# the request will carry (configured, else the discovered per-model ceiling,
+# see ``compaction_output_reserve``), else this fraction of the window, which
+# is the percentage-mode default read the other way round (an oversized
+# setting then degrades to the trigger percentage mode would pick). The
+# reserve never takes more than half the window, so a cap sized near a small
+# model's window cannot force a compaction every turn. Lives here rather than
+# in ``core/agent_compaction.py`` so the CLI status bar can share it.
+COMPACT_CLAMP_DEFAULT_RESERVE_FRACTION = 0.2
+COMPACT_CLAMP_MIN_USABLE_FRACTION = 0.5
+
+
+def usable_context_ceiling(model_limit: int, output_reserve: Optional[int] = None) -> int:
+    """Largest prompt size that still leaves the reply its room.
+
+    ``output_reserve`` is the output cap the request will carry; ``None`` or
+    a non-positive value means unknown and applies the default fraction.
+    """
+    limit = max(1, int(model_limit))
+    reserve = int(output_reserve) if output_reserve else 0
+    if reserve <= 0:
+        reserve = int(limit * COMPACT_CLAMP_DEFAULT_RESERVE_FRACTION)
+    floor = int(limit * COMPACT_CLAMP_MIN_USABLE_FRACTION)
+    return max(1, limit - reserve, floor)
+
+
+def compaction_output_reserve(model_id: str, configured_cap: Optional[int] = None) -> Optional[int]:
+    """The output reserve the compaction clamp subtracts, or None when unknown.
+
+    The configured cap (thread ``max_tokens``, else ``LLM_MAX_TOKENS``,
+    already merged into the thread's ``LLMConfig``) wins; otherwise the
+    per-model ceiling the provider factory would send anyway
+    (``get_max_output_tokens``: offline tiers only, no probe, so a
+    probe-only model resolves to None and gets the default fraction).
+    """
+    try:
+        cap = int(configured_cap) if configured_cap else 0
+    except (TypeError, ValueError):
+        cap = 0
+    if cap > 0:
+        return cap
+    try:
+        discovered = get_max_output_tokens(model_id)
+    except Exception:  # noqa: BLE001 - a capability miss must not touch a turn
+        logger.debug("compaction_output_reserve: lookup failed for %s", model_id, exc_info=True)
+        return None
+    return int(discovered) if discovered and discovered > 0 else None
 
 
 # ============================================================================

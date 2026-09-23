@@ -20,7 +20,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
-from ..config.model_capabilities import estimate_image_tokens, get_context_limit
+from ..config.model_capabilities import (
+    COMPACT_CLAMP_DEFAULT_RESERVE_FRACTION,
+    compaction_output_reserve,
+    estimate_image_tokens,
+    get_context_limit,
+    usable_context_ceiling,
+)
 from .checkpoint_cleanup import prune_checkpoints_before
 from .embedding_jobs import run_embedding_job, run_embedding_job_sync
 from .time_utils import utc_now
@@ -35,6 +41,35 @@ logger = logging.getLogger(__name__)
 # misconfiguration until #115's arithmetic fix lands. See
 # CompactionManager.compact_trigger_tokens.
 _CLAMP_WARNED_PAIRS: set[tuple[int, int]] = set()
+
+
+def _reserve_note(limit: int, ceiling: int, output_reserve: Optional[int]) -> str:
+    """Phrase for the clamp warning: what was actually reserved, and why."""
+    applied = limit - ceiling
+    cap = int(output_reserve) if output_reserve and int(output_reserve) > 0 else 0
+    if cap <= 0:
+        return (
+            f"minus a default {int(COMPACT_CLAMP_DEFAULT_RESERVE_FRACTION * 100)}% reserve of"
+            f" {applied} tokens for the reply, no output cap being known"
+        )
+    if applied < cap:
+        return (
+            f"minus {applied} tokens for the reply: the {cap}-token output cap,"
+            " held at half the window"
+        )
+    return f"minus the {cap}-token output cap reserved for the reply"
+
+
+def output_reserve_for(llm_config: Any) -> Optional[int]:
+    """The compaction clamp's output reserve for a thread's resolved LLMConfig.
+
+    The config already carries the thread-over-global ``max_tokens`` merge, so
+    every trigger site passes the object it holds rather than re-reading the
+    thread config (a JSON load under a lock, on the per-turn path).
+    """
+    return compaction_output_reserve(
+        getattr(llm_config, "model", "") or "", getattr(llm_config, "max_tokens", None)
+    )
 
 
 def hook_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Optional[int]]:
@@ -62,7 +97,11 @@ def hook_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Optio
         if model_limit and agent.settings.context_management == "auto_compact":
             mode, pct, abs_tokens = agent._compaction._resolve_threshold_config(thread_id)
             trigger = agent._compact_trigger_tokens(
-                model_limit, pct, mode=mode, tokens=abs_tokens
+                model_limit,
+                pct,
+                mode=mode,
+                tokens=abs_tokens,
+                output_reserve=output_reserve_for(llm_config),
             )
         return {
             "context_tokens": tokens,
@@ -432,7 +471,11 @@ class CompactionManager:
         model_limit = get_context_limit(llm_config.model)
         mode, pct, tokens = self._resolve_threshold_config(thread_id)
         trigger_tokens = self.compact_trigger_tokens(
-            model_limit, pct, mode=mode, tokens=tokens
+            model_limit,
+            pct,
+            mode=mode,
+            tokens=tokens,
+            output_reserve=output_reserve_for(llm_config),
         )
 
         usage = agent._token_tracker.get_usage(thread_id)
@@ -467,36 +510,40 @@ class CompactionManager:
         *,
         mode: str = "tokens",
         tokens: int = 200_000,
+        output_reserve: Optional[int] = None,
     ) -> int:
         """Return the input-token count that should trigger auto-compaction.
 
         ``mode="percentage"`` returns ``int(model_limit * threshold)``.
-        ``mode="tokens"`` returns ``tokens`` clamped to ``model_limit`` so an
-        oversized absolute setting never disables compaction. A setting at or
-        above the window WARNS once per (setting, window) pair: the clamped
-        trigger sits on the window edge and leaves no room for the response,
-        so the thread can overflow before compaction fires. Interim
-        visibility only; the arithmetic fix (an output reserve) is the open
-        half of backlog #115.
+        ``mode="tokens"`` returns ``tokens`` clamped to the usable window
+        (``usable_context_ceiling``: the model window minus the output
+        reserve), so an oversized absolute setting never disables
+        compaction and never lands where the reply cannot fit. A clamped
+        setting WARNS once per (setting, ceiling) pair, naming the effective
+        trigger and the reserve behind it, since the operator's number
+        silently became another one (#115).
         """
         if mode == "tokens":
             requested = int(tokens)
             limit = int(model_limit)
-            if requested >= limit:
-                pair = (requested, limit)
+            ceiling = usable_context_ceiling(limit, output_reserve)
+            if requested > ceiling:
+                pair = (requested, ceiling)
                 if pair not in _CLAMP_WARNED_PAIRS:
                     _CLAMP_WARNED_PAIRS.add(pair)
                     logger.warning(
-                        "[COMPACTION] compact_threshold_tokens=%d is at or"
-                        " above the model window (%d). The trigger is clamped"
-                        " to the window edge, leaving no room for the"
-                        " response, so the thread may OVERFLOW before"
-                        " compaction fires. Lower the threshold or use"
-                        " percentage mode (backlog #115).",
+                        "[COMPACTION] compact_threshold_tokens=%d exceeds the"
+                        " usable window of %d (the model's %d %s), so the"
+                        " trigger is clamped to %d. Set the threshold at or"
+                        " below that, or use percentage mode, to make the"
+                        " setting and the trigger agree.",
                         requested,
+                        ceiling,
                         limit,
+                        _reserve_note(limit, ceiling, output_reserve),
+                        ceiling,
                     )
-            return max(1, min(requested, limit))
+            return max(1, min(requested, ceiling))
         return max(1, int(model_limit * threshold))
 
     # ------------------------------------------------------------------
@@ -707,7 +754,13 @@ class CompactionManager:
         llm_config = agent._get_llm_config_for_thread(thread_id)
         model_limit = get_context_limit(llm_config.model)
         mode, pct, tokens = self._resolve_threshold_config(thread_id)
-        trigger = self.compact_trigger_tokens(model_limit, pct, mode=mode, tokens=tokens)
+        trigger = self.compact_trigger_tokens(
+            model_limit,
+            pct,
+            mode=mode,
+            tokens=tokens,
+            output_reserve=output_reserve_for(llm_config),
+        )
         return input_tokens >= trigger
 
     # ------------------------------------------------------------------
@@ -988,7 +1041,11 @@ class CompactionManager:
         model_limit = get_context_limit(llm_config.model)
         mode, pct, tokens = self._resolve_threshold_config(thread_id)
         trigger_tokens = self.compact_trigger_tokens(
-            model_limit, pct, mode=mode, tokens=tokens
+            model_limit,
+            pct,
+            mode=mode,
+            tokens=tokens,
+            output_reserve=output_reserve_for(llm_config),
         )
         usage = agent._token_tracker.get_usage(thread_id)
 

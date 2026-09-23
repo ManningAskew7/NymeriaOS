@@ -704,12 +704,17 @@ def compact_trigger_display_tokens(
 ) -> int | None:
     """Resolve the auto-compact trigger (in tokens) for display surfaces.
 
-    Mirrors ``core/agent_compaction.py::compact_trigger_tokens`` semantics:
-    ``compact_threshold_mode="percentage"`` multiplies the context limit by
-    ``compact_threshold``; ``"tokens"`` clamps ``compact_threshold_tokens``
-    to the context limit. Accepts a live Settings object or a settings
-    mapping snapshot. Returns ``None`` when the trigger cannot be resolved
-    (missing settings, unusable values, or an unknown context limit).
+    Mirrors ``core/agent_compaction.py::compact_trigger_tokens`` semantics
+    (a parity test pins the two): ``compact_threshold_mode="percentage"``
+    multiplies the context limit by ``compact_threshold``; ``"tokens"``
+    clamps ``compact_threshold_tokens`` to the shared
+    ``usable_context_ceiling`` with ``llm_max_tokens`` as the reserve. This
+    is a settings-only approximation: the backend also reserves a model's
+    discovered output ceiling, which the bar cannot see, so the backend's
+    ``compact_trigger_tokens`` in ``context_stats`` wins whenever present.
+    Accepts a live Settings object or a settings mapping snapshot. Returns
+    ``None`` when the trigger cannot be resolved (missing settings, unusable
+    values, or an unknown context limit).
     """
 
     if settings is None or not context_limit or context_limit <= 0:
@@ -729,7 +734,13 @@ def compact_trigger_display_tokens(
         return None
     if tokens <= 0:
         return None
-    return max(1, min(tokens, int(context_limit)))
+    try:
+        reserve = int(_setting_value(settings, "llm_max_tokens", None) or 0)
+    except (TypeError, ValueError):
+        reserve = 0
+    from ....config.model_capabilities import usable_context_ceiling
+
+    return max(1, min(tokens, usable_context_ceiling(int(context_limit), reserve)))
 
 
 def _trigger_fraction(trigger: int | None, limit: float | None) -> float | None:

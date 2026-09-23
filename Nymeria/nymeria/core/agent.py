@@ -1550,10 +1550,11 @@ class NymeriaAgent:
         *,
         mode: str = "tokens",
         tokens: int = 200_000,
+        output_reserve: Optional[int] = None,
     ) -> int:
         """Return the input-token count that should trigger auto-compaction."""
         return CompactionManager.compact_trigger_tokens(
-            model_limit, threshold, mode=mode, tokens=tokens
+            model_limit, threshold, mode=mode, tokens=tokens, output_reserve=output_reserve
         )
 
     async def _check_and_compact(

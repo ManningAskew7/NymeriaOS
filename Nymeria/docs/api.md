@@ -1119,8 +1119,9 @@ Token-field semantics (2026-07-04 repair pass):
   it survives compaction.
 
 `compact_trigger_tokens` is the resolved auto-compact trigger with per-thread
-threshold overrides applied; it is `null` when `context_management` is not
-`auto_compact`.
+threshold overrides applied and, in tokens mode, clamped to the usable window
+(the context window minus the thread's output cap, see the compaction doc);
+it is `null` when `context_management` is not `auto_compact`.
 
 ---
 

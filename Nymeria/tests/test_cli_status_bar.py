@@ -398,8 +398,19 @@ def test_context_usage_label_caps_bar_at_compact_trigger_by_mode() -> None:
         compact_threshold_tokens=5_000,
         compact_threshold=0.8,
     )
+    # #115: an oversized setting clamps to the usable window (80% without a
+    # known output cap), never to the window edge.
     clamped_label = context_usage_label(state, compact_settings=oversized_settings)
-    assert clamped_label.startswith("ctx 100/1.0k [")
+    assert clamped_label.startswith("ctx 100/800 [")
+
+    capped_settings = SimpleNamespace(
+        compact_threshold_mode="tokens",
+        compact_threshold_tokens=5_000,
+        compact_threshold=0.8,
+        llm_max_tokens=300,
+    )
+    capped_label = context_usage_label(state, compact_settings=capped_settings)
+    assert capped_label.startswith("ctx 100/700 [")
 
     percent_settings = SimpleNamespace(
         compact_threshold_mode="percentage",
@@ -411,6 +422,34 @@ def test_context_usage_label_caps_bar_at_compact_trigger_by_mode() -> None:
 
     no_settings_label = context_usage_label(state)
     assert no_settings_label.startswith("ctx 100/1.0k [")
+
+
+def test_compact_trigger_display_tokens_mirrors_the_backend_clamp() -> None:
+    """The bar's local fallback and the backend trigger math must agree, or a
+    client without a backend-resolved trigger draws the marker elsewhere."""
+    from nymeria.core.agent_compaction import CompactionManager
+    from nymeria.triggers.cli.rendering.status_bar import compact_trigger_display_tokens
+
+    cases = [
+        (128_000, 500_000, None),
+        (64_000, 64_000, None),
+        (200_000, 190_000, 32_000),
+        (200_000, 500_000, 150_000),
+        (200_000, 100_000, 32_000),
+        (200_000, 500_000, 0),
+    ]
+    for limit, tokens, reserve in cases:
+        snapshot = {
+            "compact_threshold_mode": "tokens",
+            "compact_threshold_tokens": tokens,
+            "compact_threshold": 0.8,
+            "llm_max_tokens": reserve,
+        }
+        assert compact_trigger_display_tokens(snapshot, limit) == (
+            CompactionManager.compact_trigger_tokens(
+                limit, mode="tokens", tokens=tokens, output_reserve=reserve
+            )
+        ), (limit, tokens, reserve)
 
 
 def test_context_usage_label_prefers_backend_resolved_trigger() -> None:

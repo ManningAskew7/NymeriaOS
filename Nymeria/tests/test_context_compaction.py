@@ -31,6 +31,7 @@ def _agent_with_compaction(
     mode: str = "percentage",
     pct: float = 0.8,
     tokens: int = 100_000,
+    llm_max_tokens: Optional[int] = None,
 ) -> Any:
     # A deliberately partial NymeriaAgent: real instance (so the real
     # threshold methods run) with only the attributes those methods touch
@@ -42,9 +43,15 @@ def _agent_with_compaction(
         compact_threshold=pct,
         compact_threshold_mode=mode,
         compact_threshold_tokens=tokens,
+        llm_max_tokens=llm_max_tokens,
     )
     agent._token_tracker = TokenTracker()
-    agent._get_llm_config_for_thread = lambda thread_id: SimpleNamespace(model="gpt-5.5")
+    # ``get_llm_config_for_thread`` merges the thread's max_tokens over the
+    # global LLM_MAX_TOKENS; the stub hands the trigger sites that merged
+    # value the way the real config layer does.
+    agent._get_llm_config_for_thread = lambda thread_id: SimpleNamespace(
+        model="gpt-5.5", max_tokens=llm_max_tokens
+    )
     agent.thread_config_manager = _StubThreadConfigManager()
     agent._compaction = CompactionManager(agent)
     return agent
@@ -71,14 +78,80 @@ def test_compact_trigger_tokens_token_mode_returns_absolute_value():
     )
 
 
-def test_compact_trigger_tokens_token_mode_clamped_to_model_limit():
-    """Oversized absolute token settings clamp to model_limit so compaction still fires."""
+def test_compact_trigger_tokens_token_mode_clamps_below_the_window():
+    """#115: an oversized absolute setting clamps to the USABLE window, not the
+    window edge. Without a known output cap the reserve is 20% of the window,
+    so the trigger lands where percentage mode's default would (80%) and a
+    reply still fits."""
     assert (
         CompactionManager.compact_trigger_tokens(
             128_000, mode="tokens", tokens=500_000
         )
-        == 128_000
+        == 102_400
     )
+    # A setting exactly on the window edge is oversized too.
+    assert (
+        CompactionManager.compact_trigger_tokens(64_000, mode="tokens", tokens=64_000)
+        == 51_200
+    )
+
+
+def test_compact_trigger_tokens_reserves_the_configured_output_cap():
+    """With an output cap known, the ceiling is window minus cap: a prompt
+    above that cannot be sent with that cap at all. It binds even when the
+    setting is below the window."""
+    assert (
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=500_000, output_reserve=32_000
+        )
+        == 168_000
+    )
+    assert (
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=190_000, output_reserve=32_000
+        )
+        == 168_000
+    )
+    # Below the ceiling the setting is taken as-is.
+    assert (
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=100_000, output_reserve=32_000
+        )
+        == 100_000
+    )
+
+
+def test_compact_trigger_tokens_reserve_never_takes_more_than_half_the_window():
+    """A cap sized near a small window (or an unusable reserve) must not turn
+    every turn into a compaction: the usable window floors at 50%."""
+    assert (
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=500_000, output_reserve=150_000
+        )
+        == 100_000
+    )
+    assert (
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=500_000, output_reserve=250_000
+        )
+        == 100_000
+    )
+    # A zero or negative reserve means "unknown": the default fraction applies.
+    assert (
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=500_000, output_reserve=0
+        )
+        == 160_000
+    )
+
+
+def test_usable_context_ceiling_matches_the_trigger_clamp():
+    from nymeria.config.model_capabilities import usable_context_ceiling
+
+    assert usable_context_ceiling(128_000) == 102_400
+    assert usable_context_ceiling(200_000, 32_000) == 168_000
+    assert usable_context_ceiling(200_000, 150_000) == 100_000
+    assert usable_context_ceiling(1) == 1
 
 
 def test_compact_trigger_clamp_warns_once_per_pair(monkeypatch, caplog):
@@ -95,13 +168,67 @@ def test_compact_trigger_clamp_warns_once_per_pair(monkeypatch, caplog):
         CompactionManager.compact_trigger_tokens(128_000, mode="tokens", tokens=500_000)
         CompactionManager.compact_trigger_tokens(64_000, mode="tokens", tokens=64_000)
 
-    overflow_warnings = [
-        r.getMessage() for r in caplog.records if "OVERFLOW" in r.getMessage()
+    clamp_warnings = [
+        r.getMessage() for r in caplog.records if "clamped" in r.getMessage()
     ]
-    assert len(overflow_warnings) == 2  # one per distinct pair, repeat silent
-    assert "compact_threshold_tokens=500000" in overflow_warnings[0]
-    assert "128000" in overflow_warnings[0]
-    assert "#115" in overflow_warnings[0]
+    assert len(clamp_warnings) == 2  # one per distinct pair, repeat silent
+    assert "compact_threshold_tokens=500000" in clamp_warnings[0]
+    assert "128000" in clamp_warnings[0]
+    # The warning says what the trigger became, not just that it moved.
+    assert "102400" in clamp_warnings[0]
+    assert "no output cap being known" in clamp_warnings[0]
+    assert "51200" in clamp_warnings[1]
+
+
+def test_compact_trigger_clamp_warns_in_the_band_below_the_window(
+    monkeypatch, caplog
+):
+    """A setting under the window but over the usable ceiling used to be
+    silently honoured (and could overflow); it now clamps and says so."""
+    import logging
+
+    from nymeria.core import agent_compaction
+
+    monkeypatch.setattr(agent_compaction, "_CLAMP_WARNED_PAIRS", set())
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_compaction"):
+        trigger = CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=190_000, output_reserve=32_000
+        )
+
+    assert trigger == 168_000
+    messages = [r.getMessage() for r in caplog.records if "clamped" in r.getMessage()]
+    assert len(messages) == 1
+    assert "190000" in messages[0] and "168000" in messages[0]
+    assert "32000-token output cap" in messages[0]  # names the reserve it subtracted
+
+
+def test_compact_trigger_clamp_warning_is_honest_when_the_floor_binds(
+    monkeypatch, caplog
+):
+    """With a 150k cap on a 200k window the arithmetic says 50k, the floor
+    says 100k; the warning must name the 100k it actually reserved and say
+    the cap was held at half the window, not print a subtraction that does
+    not add up. The dedupe key includes the ceiling, so a second thread on
+    the same model with a different cap warns again."""
+    import logging
+
+    from nymeria.core import agent_compaction
+
+    monkeypatch.setattr(agent_compaction, "_CLAMP_WARNED_PAIRS", set())
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.agent_compaction"):
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=500_000, output_reserve=150_000
+        )
+        CompactionManager.compact_trigger_tokens(
+            200_000, mode="tokens", tokens=500_000, output_reserve=32_000
+        )
+
+    messages = [r.getMessage() for r in caplog.records if "clamped" in r.getMessage()]
+    assert len(messages) == 2
+    assert "minus 100000 tokens" in messages[0]
+    assert "150000-token output cap, held at half the window" in messages[0]
+    assert "clamped to 100000" in messages[0]
+    assert "clamped to 168000" in messages[1]
 
 
 def test_compact_trigger_no_clamp_warning_below_window_or_percentage(
@@ -118,7 +245,98 @@ def test_compact_trigger_no_clamp_warning_below_window_or_percentage(
         )
         CompactionManager.compact_trigger_tokens(128_000, 0.95, mode="percentage")
 
-    assert not [r for r in caplog.records if "OVERFLOW" in r.getMessage()]
+    assert not [r for r in caplog.records if "clamped" in r.getMessage()]
+
+
+def test_auto_compact_token_mode_reserves_the_global_output_cap():
+    """An oversized token setting with LLM_MAX_TOKENS set fires at window
+    minus the cap (gpt-5.5 resolves to a 1,050,000 window)."""
+    agent = _agent_with_compaction(mode="tokens", tokens=2_000_000, llm_max_tokens=50_000)
+
+    agent._token_tracker.record_turn(
+        "thread-a", turn_input_tokens=999_999, turn_output_tokens=10, context_tokens=999_999
+    )
+    assert agent._should_auto_compact_now("thread-a", "user-a") is False
+
+    agent._token_tracker.record_turn(
+        "thread-b", turn_input_tokens=1_000_000, turn_output_tokens=10, context_tokens=1_000_000
+    )
+    assert agent._should_auto_compact_now("thread-b", "user-a") is True
+
+
+def test_auto_compact_token_mode_thread_max_tokens_overrides_the_reserve():
+    """A per-thread max_tokens is that thread's output cap, so it is that
+    thread's reserve; other threads keep the global one."""
+    agent = _agent_with_compaction(mode="tokens", tokens=2_000_000, llm_max_tokens=50_000)
+    agent._get_llm_config_for_thread = lambda thread_id: SimpleNamespace(
+        model="gpt-5.5", max_tokens=100_000 if thread_id == "thread-t" else 50_000
+    )
+
+    agent._token_tracker.record_turn(
+        "thread-t", turn_input_tokens=960_000, turn_output_tokens=10, context_tokens=960_000
+    )
+    assert agent._should_auto_compact_now("thread-t", "user-a") is True
+    agent._token_tracker.record_turn(
+        "thread-other", turn_input_tokens=960_000, turn_output_tokens=10, context_tokens=960_000
+    )
+    assert agent._should_auto_compact_now("thread-other", "user-a") is False
+
+
+def test_auto_compact_reserves_the_discovered_output_ceiling_without_a_cap(monkeypatch):
+    """No LLM_MAX_TOKENS anywhere: the provider factory still sends the
+    model's discovered output ceiling, so the clamp reserves that, not the
+    20% guess (Anthropic refuses input + max_tokens over the window)."""
+    from nymeria.config import model_capabilities
+
+    monkeypatch.setattr(model_capabilities, "get_max_output_tokens", lambda model: 64_000)
+    agent = _agent_with_compaction(mode="tokens", tokens=2_000_000, llm_max_tokens=None)
+
+    agent._token_tracker.record_turn(
+        "thread-a", turn_input_tokens=985_999, turn_output_tokens=10, context_tokens=985_999
+    )
+    assert agent._should_auto_compact_now("thread-a", "user-a") is False
+    agent._token_tracker.record_turn(
+        "thread-b", turn_input_tokens=986_000, turn_output_tokens=10, context_tokens=986_000
+    )
+    assert agent._should_auto_compact_now("thread-b", "user-a") is True
+
+
+def test_check_and_compact_sync_reserves_the_output_cap():
+    """The sync path clamps with the same reserve as the async one."""
+    agent = _agent_with_compaction(mode="tokens", tokens=2_000_000, llm_max_tokens=50_000)
+    triggered: list[str] = []
+
+    def fake_do_compact_sync(tid: str, _uid: str, **_kwargs: Any) -> dict[str, Any]:
+        triggered.append(tid)
+        return {"success": True, "thread_id": tid}
+
+    agent._compaction._do_compact_sync = fake_do_compact_sync  # type: ignore[method-assign]
+    agent._token_tracker.record_turn(
+        "thread-under", turn_input_tokens=999_999, turn_output_tokens=10, context_tokens=999_999
+    )
+    assert agent._compaction.check_and_compact_sync("thread-under", "user-a") is None
+    agent._token_tracker.record_turn(
+        "thread-over", turn_input_tokens=1_000_000, turn_output_tokens=10, context_tokens=1_000_000
+    )
+    assert agent._compaction.check_and_compact_sync("thread-over", "user-a") == {
+        "success": True,
+        "thread_id": "thread-over",
+    }
+    assert triggered == ["thread-over"]
+
+
+def test_hook_context_stats_reports_the_reserve_clamped_trigger():
+    from nymeria.core.agent_compaction import hook_context_stats
+
+    agent = _agent_with_compaction(mode="tokens", tokens=2_000_000, llm_max_tokens=50_000)
+    agent._token_tracker.record_turn(
+        "thread-a", turn_input_tokens=10, turn_output_tokens=10, context_tokens=10
+    )
+
+    stats = hook_context_stats(agent, "thread-a")
+
+    assert stats["context_limit"] == 1_050_000
+    assert stats["compact_trigger_tokens"] == 1_000_000
 
 
 def test_auto_compact_token_mode_global_setting():

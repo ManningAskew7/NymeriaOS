@@ -71,6 +71,7 @@ def _fake_agent(
     model: str = "gpt-4o",
     context_management: str = "auto_compact",
     threshold_config: tuple[str, float, int] = ("tokens", 0.8, 200_000),
+    output_reserve: int | None = None,
 ) -> Any:
     """Build a minimal agent stub for the context-stats functions."""
     state = SimpleNamespace(values={"messages": messages or []})
@@ -89,7 +90,7 @@ def _fake_agent(
         seed_rehydrated=lambda tid, **kw: seed_calls.append((tid, kw)),
     )
 
-    llm_config = SimpleNamespace(model=model)
+    llm_config = SimpleNamespace(model=model, max_tokens=output_reserve)
     settings = SimpleNamespace(context_management=context_management)
     compaction = SimpleNamespace(
         _resolve_threshold_config=lambda _tid: threshold_config,
@@ -367,6 +368,7 @@ def test_get_stats_returns_dict_with_expected_keys(monkeypatch: pytest.MonkeyPat
     import nymeria.core.agent_context_stats as acs
 
     monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+    monkeypatch.setattr(acs, "compaction_output_reserve", lambda _model, cap: cap)
 
     compaction_at = datetime(2026, 5, 19, 12, 0, 0, tzinfo=timezone.utc)
     usage = _fake_usage(
@@ -400,7 +402,8 @@ def test_get_stats_returns_dict_with_expected_keys(monkeypatch: pytest.MonkeyPat
         "usage_percentage": 1.5,
         "compaction_count": 2,
         # tokens-mode 200k trigger clamped to the 100k model limit.
-        "compact_trigger_tokens": 100_000,
+        # #115: the 200k default clamps to the usable 80% of the patched 100k window.
+        "compact_trigger_tokens": 80_000,
         "last_compaction": compaction_at.isoformat(),
         "context_management": "auto_compact",
         "cost_usd_last": None,
@@ -643,6 +646,27 @@ def test_get_stats_compact_trigger_honors_thread_threshold_override(
     assert stats["compact_trigger_tokens"] == 50_000
 
 
+def test_get_stats_compact_trigger_reserves_the_output_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """#115: the trigger clients render is the reserve-clamped one, so an
+    "until compact" marker never sits past the point a reply still fits."""
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=1)
+    # The reserve rides on the resolved LLMConfig's max_tokens (a configured
+    # cap wins over discovery, so no capability lookup is involved here).
+    agent = _fake_agent(
+        usage=usage, threshold_config=("tokens", 0.8, 95_000), output_reserve=16_000
+    )
+
+    stats = get_context_stats(cast(Any, agent), "t1")
+
+    assert stats["compact_trigger_tokens"] == 84_000
+
+
 def test_get_stats_last_compaction_none_when_unset(monkeypatch: pytest.MonkeyPatch):
     import nymeria.core.agent_context_stats as acs
 
@@ -752,9 +776,10 @@ class _ProtocolHost:
         *,
         mode: str = "tokens",
         tokens: int = 200_000,
+        output_reserve: int | None = None,
     ) -> int:
         return CompactionManager.compact_trigger_tokens(
-            model_limit, threshold, mode=mode, tokens=tokens
+            model_limit, threshold, mode=mode, tokens=tokens, output_reserve=output_reserve
         )
 
 

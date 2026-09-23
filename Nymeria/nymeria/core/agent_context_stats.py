@@ -21,11 +21,11 @@ trimming + RAG indexing.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Protocol, runtime_checkable
+from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage
 
-from ..config.model_capabilities import get_context_limit
+from ..config.model_capabilities import compaction_output_reserve, get_context_limit
 from .token_usage import extract_from_message, extract_last_from_messages
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,7 @@ class ContextStatsHost(Protocol):
         *,
         mode: str = "tokens",
         tokens: int = 200_000,
+        output_reserve: Optional[int] = None,
     ) -> int: ...
 
 
@@ -302,7 +303,13 @@ def get_context_stats(host: ContextStatsHost, thread_id: str) -> Dict[str, Any]:
     if model_limit and host.settings.context_management == "auto_compact":
         mode, pct, tokens = host._compaction._resolve_threshold_config(thread_id)
         compact_trigger = host._compact_trigger_tokens(
-            model_limit, pct, mode=mode, tokens=tokens
+            model_limit,
+            pct,
+            mode=mode,
+            tokens=tokens,
+            output_reserve=compaction_output_reserve(
+                effective_model, getattr(llm_config, "max_tokens", None)
+            ),
         )
 
     return {
