@@ -3327,6 +3327,35 @@ For stdio servers, Nymeria launches the command from the backend process. In Doc
 }
 ```
 
+**Example: HTTP-transport MCP Tool** (`transport: "http"` swaps the
+command for a `url` plus optional `headers`; the REST create/update model
+carries it since #124, as the export/import route always did; `tool_create`
+does not author MCP tools at all):
+```json
+{
+  "id": "gateway_read",
+  "name": "Gateway Read",
+  "description": "Read a file through the MCP gateway",
+  "implementation_type": "mcp",
+  "parameters": {"path": {"type": "string", "description": "File path", "required": true}},
+  "mcp_config": {
+    "transport": "http",
+    "url": "http://localhost:8811/mcp",
+    "headers": {"Authorization": "${env:GATEWAY_TOKEN}"},
+    "tool_name": "read_file",
+    "server_id": "gateway",
+    "call_timeout_seconds": 120
+  }
+}
+```
+
+A REST `PUT` merges `mcp_config` field by field over an APPROVED record,
+so an older client that sends only the stdio fields leaves the transport,
+url and headers as they were; over an unapproved record (one planted or
+hand-edited on disk) the request stands alone, since the save re-stamps
+the approval and must not bless fields the client never showed. The
+desktop form still offers the stdio fields only (backlog #393).
+
 **MCP Server Lifecycle:**
 - Servers start on-demand when the tool is first called
 - Servers stay alive for the configured idle timeout

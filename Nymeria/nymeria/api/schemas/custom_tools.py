@@ -13,7 +13,7 @@ from ...tools.definitions.custom_tool_schema import (
     ToolParameter,
     WorkflowToolConfig,
 )
-from ...tools.definitions.mcp_schema import MCPToolConfig
+from ...tools.definitions.mcp_schema import MCPToolConfig, MCPTransport
 
 
 ParameterType = Literal["string", "integer", "number", "boolean", "array", "object"]
@@ -79,15 +79,30 @@ class HTTPToolConfigModel(BaseModel):
 
 
 class MCPToolConfigModel(BaseModel):
-    """API model for MCP tool configuration."""
+    """API model for MCP tool configuration (both transports, #124).
 
-    server_command: str
+    Mirrors the core ``MCPToolConfig`` minus ``encrypted_env_vars``
+    (``MCP_CLIENT_FIELDS`` is the pin): on the create, update and response
+    models the ciphertext is server-owned, never accepted from a client and
+    never echoed (the admin export/import routes move the raw definition and
+    are the exception). On update, a field the request did not set keeps the
+    stored value (``mcp_config_to_core`` reads ``model_fields_set``), so an
+    older stdio-shaped client cannot convert an http-transport tool by
+    omission; ``apply_custom_tool_update`` decides when that merge is safe.
+    """
+
+    transport: MCPTransport = "stdio"
+    server_command: str = ""
     server_args: list[str] = []
+    url: str = ""
+    headers: dict[str, str] = {}
     tool_name: str
+    server_id: str = ""
     env_vars: dict[str, str] = {}
     working_directory: str | None = None
     idle_timeout_seconds: int = 300
     startup_timeout_seconds: int = 30
+    call_timeout_seconds: int = 60
 
 
 class PythonToolConfigModel(BaseModel):
@@ -220,17 +235,49 @@ def http_config_to_core(config: HTTPToolConfigModel) -> HTTPToolConfig:
     )
 
 
-def mcp_config_to_core(config: MCPToolConfigModel) -> MCPToolConfig:
-    """Convert an API MCP config model to the core config model."""
-    return MCPToolConfig(
-        server_command=config.server_command,
-        server_args=config.server_args,
-        tool_name=config.tool_name,
-        env_vars=config.env_vars,
-        working_directory=config.working_directory,
-        idle_timeout_seconds=config.idle_timeout_seconds,
-        startup_timeout_seconds=config.startup_timeout_seconds,
-    )
+# Every core field a client may set. The three timeouts are the only ones the
+# approval hash (`custom_tool_gate._mcp_surface`) does not cover.
+MCP_CLIENT_FIELDS = (
+    "transport",
+    "server_command",
+    "server_args",
+    "url",
+    "headers",
+    "tool_name",
+    "server_id",
+    "env_vars",
+    "working_directory",
+    "idle_timeout_seconds",
+    "startup_timeout_seconds",
+    "call_timeout_seconds",
+)
+
+
+def mcp_config_to_core(
+    config: MCPToolConfigModel,
+    *,
+    existing: MCPToolConfig | None = None,
+) -> MCPToolConfig:
+    """Convert an API MCP config model to the core config model.
+
+    With ``existing`` (an update), only the fields the client actually sent
+    replace the stored ones; everything else, ``encrypted_env_vars``
+    included, carries over. Without it, the request stands alone and
+    ``encrypted_env_vars`` starts empty. The core validator's transport
+    rules (stdio needs ``server_command``, http needs ``url``) surface as a
+    400 rather than a 500.
+    """
+    values: dict[str, Any] = {}
+    if existing is not None:
+        values.update(existing.model_dump())
+    for name in MCP_CLIENT_FIELDS:
+        if existing is None or name in config.model_fields_set:
+            values[name] = getattr(config, name)
+    values["encrypted_env_vars"] = dict(existing.encrypted_env_vars) if existing else {}
+    try:
+        return MCPToolConfig(**values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid mcp_config: {exc}") from exc
 
 
 def python_config_to_core(config: PythonToolConfigModel) -> PythonToolConfig:
@@ -286,10 +333,11 @@ def build_custom_tool_definition(
 
     Shared by the ``/tools/custom`` and ``/tools/unified`` create handlers.
     Raises ``HTTPException(400)`` when the implementation-specific config block
-    is missing, so both routers return the same 400. ``ValueError`` from the
-    ``*_to_core`` converters or model construction is intentionally left to
-    propagate: the ``/tools/custom`` handler maps it to a 400, the unified
-    handler does not, and that difference is preserved.
+    is missing, so both routers return the same 400; the mcp converter raises
+    its own 400 for a transport missing its required field. Any other
+    ``ValueError`` from the ``*_to_core`` converters or model construction is
+    left to propagate: the ``/tools/custom`` handler maps it to a 400, the
+    unified handler does not, and that difference is preserved.
 
     ``request.parameters`` is always a dict (the schema defaults it to ``{}``),
     so this matches the prior ``parameters or {}`` and bare ``parameters`` call
@@ -381,8 +429,18 @@ def apply_custom_tool_update(
 
     Shared by the ``/tools/custom`` and ``/tools/unified`` update handlers. Only
     the config block matching the definition's ``implementation_type`` is
-    replaced. Field assignments are independent, so the order here is immaterial
-    to the resulting definition.
+    replaced. Every conversion that can refuse (a 400) runs BEFORE the first
+    assignment: ``loader.get_definition`` hands out the cached live object, so
+    a half-applied update would leave a running tool renamed or re-parametered
+    in memory, failing its own gate, with nothing on disk to explain it.
+
+    An ``mcp_config`` is merged field by field over the stored config, but
+    only when the stored record is currently approved: the re-stamp below
+    blesses the merged whole, and carrying an unapproved record's launch
+    surface (url, headers, command) under a save from a client that cannot
+    render those fields would approve what nobody reviewed (the hazard the
+    gate module's docstring names). Over an unapproved record the request
+    stands alone, as every update did before #124.
 
     Workflow updates replace the whole workflow_config (re-validated,
     re-derived parameters, re-approved by the admin actor while preserving the
@@ -393,54 +451,80 @@ def apply_custom_tool_update(
     treatment for the same reason. Name/enabled/tags edits never touch the
     revision hash for ANY type, so they cannot reset an approval.
     """
-    if request.name is not None:
-        definition.name = request.name
-    if request.description is not None:
-        definition.description = request.description
-    if request.parameters is not None:
-        if definition.implementation_type == "workflow":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "workflow parameters are derived from the entrypoint "
-                    "signature; do not pass parameters"
-                ),
-            )
-        definition.parameters = tool_parameters_to_core(request.parameters)
-    if request.http_config is not None and definition.implementation_type == "http":
-        definition.http_config = http_config_to_core(request.http_config)
-    if request.mcp_config is not None and definition.implementation_type == "mcp":
-        definition.mcp_config = mcp_config_to_core(request.mcp_config)
-    if definition.implementation_type == "python" and (
-        request.python_config is not None or request.parameters is not None
-    ):
+    impl = definition.implementation_type
+    if request.parameters is not None and impl == "workflow":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "workflow parameters are derived from the entrypoint "
+                "signature; do not pass parameters"
+            ),
+        )
+    new_parameters = (
+        tool_parameters_to_core(request.parameters) if request.parameters is not None else None
+    )
+    new_http = (
+        http_config_to_core(request.http_config)
+        if request.http_config is not None and impl == "http"
+        else None
+    )
+    new_mcp = (
+        _merged_mcp_config(definition, request.mcp_config)
+        if request.mcp_config is not None and impl == "mcp"
+        else None
+    )
+    new_python = None
+    if impl == "python" and (request.python_config is not None or new_parameters is not None):
         from ...core.python_custom_tools import approve_python_revision
 
-        if request.python_config is not None:
-            definition.python_config = python_config_to_core(request.python_config)
-        if definition.python_config is not None:
-            # Re-stamp against the FINAL parameters (applied above) so a
-            # params-only edit does not silently fail the execution gate; the
-            # admin actor's update re-approves the edited revision.
-            definition.python_config = approve_python_revision(
-                definition.python_config, definition.parameters, approved_by=actor_user_id
+        base_python = (
+            python_config_to_core(request.python_config)
+            if request.python_config is not None
+            else definition.python_config
+        )
+        if base_python is not None:
+            # Re-stamp against the FINAL parameters so a params-only edit does
+            # not silently fail the execution gate; the admin actor's update
+            # re-approves the edited revision.
+            final_parameters = (
+                new_parameters if new_parameters is not None else definition.parameters
             )
-    if request.workflow_config is not None and definition.implementation_type == "workflow":
+            new_python = approve_python_revision(
+                base_python, final_parameters, approved_by=actor_user_id
+            )
+    new_workflow = None
+    if request.workflow_config is not None and impl == "workflow":
         created_by = (
             definition.workflow_config.created_by if definition.workflow_config else ""
         )
-        definition.workflow_config, definition.parameters = workflow_config_to_core(
+        new_workflow = workflow_config_to_core(
             request.workflow_config,
             actor_user_id=actor_user_id,
             created_by=created_by,
         )
+
+    # Nothing below can refuse: every assignment lands or none did.
+    if request.name is not None:
+        definition.name = request.name
+    if request.description is not None:
+        definition.description = request.description
+    if new_parameters is not None:
+        definition.parameters = new_parameters
+    if new_http is not None:
+        definition.http_config = new_http
+    if new_mcp is not None:
+        definition.mcp_config = new_mcp
+    if new_python is not None:
+        definition.python_config = new_python
+    if new_workflow is not None:
+        definition.workflow_config, definition.parameters = new_workflow
     if request.enabled is not None:
         definition.enabled = request.enabled
     if request.tags is not None:
         definition.tags = request.tags
     # LAST, and unlike its neighbours this one is order-dependent: it hashes the
     # definition as finally assembled.
-    if definition.implementation_type in ("http", "mcp") and (
+    if impl in ("http", "mcp") and (
         request.http_config is not None
         or request.mcp_config is not None
         or request.parameters is not None
@@ -455,6 +539,36 @@ def apply_custom_tool_update(
         # admin renaming a record that was planted on disk does not thereby
         # approve its launch command.
         stamp_custom_tool_approval(definition, approved_by=actor_user_id)
+
+
+def _merged_mcp_config(
+    definition: CustomToolDefinition, config: MCPToolConfigModel
+) -> MCPToolConfig:
+    """The mcp config an update produces (see ``apply_custom_tool_update``).
+
+    Over an approved record: a field-by-field merge. Over an unapproved one:
+    the request stands alone, unsent fields take their defaults and the
+    ciphertext is dropped, so the stamp that follows covers only what the
+    client sent. A stdio-shaped save on an unapproved http record therefore
+    fails the transport rule (no command) rather than silently approving the
+    stored url and headers; the 400 says why.
+    """
+    from ...core.custom_tool_gate import custom_tool_execution_gate
+
+    existing = definition.mcp_config
+    if existing is not None and custom_tool_execution_gate(definition) is None:
+        return mcp_config_to_core(config, existing=existing)
+    try:
+        return mcp_config_to_core(config)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{exc.detail}. The stored config is not approved, so fields the "
+                "request did not send were not carried over (saving would have "
+                "approved them unseen): send the full mcp_config."
+            ),
+        ) from exc
 
 
 def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomToolResponse:
@@ -485,13 +599,7 @@ def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomTool
             response_format=defn.http_config.response_format,
         ) if defn.http_config else None,
         mcp_config=MCPToolConfigModel(
-            server_command=defn.mcp_config.server_command,
-            server_args=defn.mcp_config.server_args,
-            tool_name=defn.mcp_config.tool_name,
-            env_vars=defn.mcp_config.env_vars,
-            working_directory=defn.mcp_config.working_directory,
-            idle_timeout_seconds=defn.mcp_config.idle_timeout_seconds,
-            startup_timeout_seconds=defn.mcp_config.startup_timeout_seconds,
+            **{name: getattr(defn.mcp_config, name) for name in MCP_CLIENT_FIELDS}
         ) if defn.mcp_config else None,
         python_config=PythonToolConfigModel(
             source_code=defn.python_config.source_code,

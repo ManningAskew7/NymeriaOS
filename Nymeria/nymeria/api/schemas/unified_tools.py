@@ -162,18 +162,10 @@ def custom_tool_definition_to_unified(
             "response_format": defn.http_config.response_format,
         }
     elif impl_type == "mcp" and defn.mcp_config is not None:
-        mcp_config = {
-            "transport": defn.mcp_config.transport,
-            "server_command": defn.mcp_config.server_command,
-            "server_args": defn.mcp_config.server_args,
-            "url": defn.mcp_config.url,
-            "headers": defn.mcp_config.headers,
-            "tool_name": defn.mcp_config.tool_name,
-            "env_vars": defn.mcp_config.env_vars,
-            "working_directory": defn.mcp_config.working_directory,
-            "idle_timeout_seconds": defn.mcp_config.idle_timeout_seconds,
-            "startup_timeout_seconds": defn.mcp_config.startup_timeout_seconds,
-        }
+        from .custom_tools import MCP_CLIENT_FIELDS
+
+        # Same client surface as `/tools/custom` (#124): never the ciphertext.
+        mcp_config = {name: getattr(defn.mcp_config, name) for name in MCP_CLIENT_FIELDS}
     elif impl_type == "python" and defn.python_config is not None:
         python_config = {
             "source_code": defn.python_config.source_code,

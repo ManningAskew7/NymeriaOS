@@ -3479,6 +3479,27 @@ Authorization: Bearer <token>
 }
 ```
 
+`mcp_config` takes both transports (#124). `transport` defaults to `stdio`
+(needs `server_command`); `"transport": "http"` needs `url` and takes
+`headers` (values may use `${env:VAR}`), for example:
+
+```json
+"mcp_config": {
+  "transport": "http",
+  "url": "http://localhost:8811/mcp",
+  "headers": {"Authorization": "${env:GATEWAY_TOKEN}"},
+  "tool_name": "read_file",
+  "server_id": "gateway",
+  "call_timeout_seconds": 120
+}
+```
+
+`server_id` ties the tool to a managed MCP server for credential-vault
+target checks. `encrypted_env_vars` is server-owned: the create, update
+and get routes neither accept nor return it (the admin export/import
+routes move the raw definition and are the exception). A transport
+missing its required field is a `400`.
+
 **Response:** The created tool object
 
 ---
@@ -3503,6 +3524,17 @@ Authorization: Bearer <token>
 ```
 
 **Request Body:** Same as create (all fields optional except those being updated)
+
+An `mcp_config` in the body is merged, not replaced, when the stored
+record is currently approved: a field the request omits keeps its stored
+value (transport, url, headers, server_id, the encrypted env vars), so a
+client that only knows the stdio fields cannot convert an http-transport
+tool by leaving them out. When the stored record is NOT approved (planted
+or hand-edited on disk), the request stands alone and unsent fields take
+their defaults, because the save re-stamps the approval and must not
+bless what the client never sent; the `400` says so. To switch
+transports, send `transport` together with the field the new transport
+needs. A refused `mcp_config` leaves the record untouched.
 
 **Response:** Updated tool object
 

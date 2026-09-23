@@ -8,6 +8,7 @@ from typing import Any
 from nymeria.api.routers import custom_tools as custom_tools_router
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.chat_bindings import ChatBindingsRepo
+from nymeria.core.custom_tool_gate import custom_tool_execution_gate, stamp_custom_tool_approval
 from nymeria.core.time_utils import utc_now
 
 
@@ -287,6 +288,83 @@ def test_custom_tool_import_export_round_trip_for_mcp_config(
     assert tool["implementation_type"] == "mcp"
     assert tool["mcp_config"]["server_command"] == "npx"
     assert tool["mcp_config"]["tool_name"] == "read_file"
+
+
+def test_rest_http_transport_mcp_tool_survives_a_stdio_shaped_put(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """#124: the REST model expresses http transport, and a PUT from an
+    older stdio-only client (the desktop form) keeps it."""
+    loader = FakeCustomToolLoader()
+    client, agent, token = _authenticated_client(
+        tmp_path, api_client_builder, monkeypatch, loader=loader,
+    )
+    headers = api_client_builder.auth(token)
+
+    create_response = client.post(
+        "/tools/custom",
+        headers=headers,
+        json={
+            "id": "gateway_read",
+            "name": "Gateway Read",
+            "description": "Read through the MCP gateway",
+            "implementation_type": "mcp",
+            "mcp_config": {
+                "transport": "http",
+                "url": "http://localhost:8811/mcp",
+                "headers": {"Authorization": "${env:GATEWAY_TOKEN}"},
+                "tool_name": "read_file",
+                "server_id": "gateway",
+                "call_timeout_seconds": 120,
+            },
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+    created = create_response.json()["mcp_config"]
+    assert created["transport"] == "http"
+    assert created["url"] == "http://localhost:8811/mcp"
+    assert created["server_id"] == "gateway"
+    assert created["call_timeout_seconds"] == 120
+    assert "encrypted_env_vars" not in created
+    stored = loader.definitions["gateway_read"]
+    stored.mcp_config.encrypted_env_vars = {"T": "gAAAA-cipher"}
+    stamp_custom_tool_approval(stored, approved_by="admin")
+
+    update_response = client.put(
+        "/tools/custom/gateway_read",
+        headers=headers,
+        json={"mcp_config": {
+            "server_command": "",
+            "server_args": [],
+            "tool_name": "read_file",
+            "env_vars": {"MODE": "test"},
+            "idle_timeout_seconds": 600,
+            "startup_timeout_seconds": 30,
+        }},
+    )
+    assert update_response.status_code == 200, update_response.text
+    updated = update_response.json()["mcp_config"]
+    assert updated["transport"] == "http"
+    assert updated["url"] == "http://localhost:8811/mcp"
+    assert updated["headers"] == {"Authorization": "${env:GATEWAY_TOKEN}"}
+    assert updated["server_id"] == "gateway"
+    assert updated["env_vars"] == {"MODE": "test"}
+    assert updated["idle_timeout_seconds"] == 600
+    stored = loader.definitions["gateway_read"]
+    assert stored.mcp_config.transport == "http"
+    assert stored.mcp_config.encrypted_env_vars == {"T": "gAAAA-cipher"}
+    assert custom_tool_execution_gate(stored) is None
+
+    bad_update = client.put(
+        "/tools/custom/gateway_read",
+        headers=headers,
+        json={"mcp_config": {"transport": "stdio", "tool_name": "read_file"}},
+    )
+    assert bad_update.status_code == 400
+    assert "server_command is required" in bad_update.json()["detail"]
+    assert loader.definitions["gateway_read"].mcp_config.transport == "http"
 
 
 def test_custom_tool_import_stamps_python_approval(
