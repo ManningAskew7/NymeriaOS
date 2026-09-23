@@ -572,6 +572,16 @@ ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION = (4, 6)
 # these into one constant would silently couple two independent wire rules.
 ANTHROPIC_NO_SAMPLING_PARAMS_MIN_VERSION = (4, 7)
 
+# First family-first generation whose thinking cannot be disabled:
+# ``thinking: {type: "disabled"}`` 400s at every effort level (claude-opus-5-5,
+# measured live through CLIProxy 2026-09-23). fable/mythos predate this ordinal
+# and are always-on too. Ordinal rather than a name list so the next bump lands
+# on the safe side: wrongly treating a model as always-on costs its "off" tier
+# (it degrades to "low") and forces thinking on for threads that never asked
+# for it (every turn pays for adaptive reasoning); wrongly treating one as
+# disableable breaks structured output and any path that relies on it.
+ANTHROPIC_THINKING_ALWAYS_ON_MIN_VERSION = (5, 5)
+
 
 def anthropic_generation_at_least(model_text: str, minimum: tuple) -> bool:
     """True when a Claude id is at or above ``minimum`` (major, minor).
@@ -594,6 +604,17 @@ def anthropic_generation_at_least(model_text: str, minimum: tuple) -> bool:
     return version is not None and version >= minimum
 
 
+def anthropic_thinking_always_on(model_text: str) -> bool:
+    """True when a Claude model rejects disabled thinking (no "off" effort tier).
+
+    Named so the effort ladder below, the wire shape in ``providers.py`` and the
+    CLI header / thread overview labels all ask the same question: fable and
+    mythos, plus every family-first id at or above
+    ``ANTHROPIC_THINKING_ALWAYS_ON_MIN_VERSION``.
+    """
+    return anthropic_generation_at_least(model_text, ANTHROPIC_THINKING_ALWAYS_ON_MIN_VERSION)
+
+
 def _anthropic_reasoning_efforts(model_text: str) -> tuple:
     """Effort ladder for Claude models (direct Anthropic API shapes).
 
@@ -601,7 +622,7 @@ def _anthropic_reasoning_efforts(model_text: str) -> tuple:
     without a table edit; exact ladders come from the live /v1/models
     capabilities tree when available (see _live_reasoning_efforts).
     """
-    if "fable" in model_text or "mythos" in model_text:
+    if anthropic_thinking_always_on(model_text):
         # Thinking cannot be disabled on these models; no "off" tier.
         return ("low", "medium", "high", "xhigh", "max")
     version = anthropic_model_version(model_text)

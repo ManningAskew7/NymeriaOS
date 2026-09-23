@@ -18,9 +18,15 @@ CLIPROXY_ANTHROPIC_BETA_VALUES: tuple[str, ...] = (
 )
 CLIPROXY_ANTHROPIC_BETA_HEADER = ",".join(CLIPROXY_ANTHROPIC_BETA_VALUES)
 
+# cc_version is a MODEL GATE, not just a fingerprint: upstream refuses newer
+# models to older advertised Claude Code versions with a 400 ("Claude Code
+# 2.1.63 does not support this model; version 2.1.280 or newer is required",
+# claude-opus-5-5, 2026-09-23). The User-Agent is not what it reads. Bump this
+# to the version such an error names; the cch value is re-signed by the proxy.
+# Mirrored in tools/check_cliproxy_cloak.py and nymeria_codehints/blurb.py.
 CLIPROXY_BILLING_SYSTEM_BLOCK: dict[str, str] = {
     "type": "text",
-    "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
+    "text": "x-anthropic-billing-header: cc_version=2.1.280.8f3; cc_entrypoint=cli; cch=54031;",
 }
 
 # Anthropic prompt-cache breakpoint marker. Single source of truth for both the

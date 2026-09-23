@@ -864,3 +864,25 @@ def test_cli_app_startup_seeds_generated_thread_metadata() -> None:
     assert client.calls == [
         {"user_id": "alice", "thread_id": generated_thread_id, "title": None}
     ]
+
+
+@pytest.mark.parametrize(
+    ("model", "extended", "effort", "expected"),
+    [
+        # Always-on models think on every request (providers.py sends
+        # adaptive even with no effort), so the label never says "off".
+        ("claude-opus-5-5", False, None, "adaptive"),
+        ("claude-opus-5-5", False, "off", "adaptive (low)"),
+        ("claude-fable-5", False, None, "adaptive"),
+        # Opus 5 can still disable thinking: unchanged.
+        ("claude-opus-5", False, None, "off"),
+        ("claude-opus-5", True, "off", "off"),
+    ],
+)
+def test_thinking_mode_never_reports_off_for_always_on_models(
+    model: str, extended: bool, effort: str | None, expected: str
+) -> None:
+    assert (
+        thinking_mode(provider="anthropic", model=model, extended=extended, effort=effort)
+        == expected
+    )

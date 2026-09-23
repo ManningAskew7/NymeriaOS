@@ -3508,6 +3508,7 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
         ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
         ANTHROPIC_NO_SAMPLING_PARAMS_MIN_VERSION,
         anthropic_generation_at_least,
+        anthropic_thinking_always_on,
     )
 
     # Two INDEPENDENT wire rules, each named where the CLI header and thread
@@ -3525,8 +3526,9 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
     uses_adaptive = anthropic_generation_at_least(
         model_name, ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
     )
-    # fable/mythos cannot disable thinking; effort "off" degrades to "low".
-    thinking_not_disableable = "fable" in model_name or "mythos" in model_name
+    # fable/mythos and opus-5-5+ cannot disable thinking; effort "off"
+    # degrades to "low".
+    thinking_not_disableable = anthropic_thinking_always_on(model_name)
 
     # Sampling parameters — 4.7+ returns 400 for non-default values
     if not is_47_plus and config.temperature is not None:
@@ -3567,7 +3569,17 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
         # Explicit off wins over extended_thinking: omit the thinking /
         # adaptive block entirely (4.6 and legacy disable the same way).
         pass
-    elif config.extended_thinking or config.reasoning_effort is not None:
+    elif (
+        config.extended_thinking
+        or config.reasoning_effort is not None
+        or thinking_not_disableable
+    ):
+        # Always-on models take this branch even with no effort configured:
+        # the API thinks regardless, so sending adaptive costs nothing, keeps
+        # the summarized display (visible reasoning) and, load-bearing, makes
+        # langchain's structured output drop the forced tool_choice these
+        # models reject with a 400 (it only does so when `thinking` is set).
+        #
         # Thinking tokens bill against max_tokens, and thinking blocks are
         # emitted FIRST, so a cap that cannot fit the reasoning does not
         # truncate the answer: it starves it entirely. The response arrives as
@@ -3602,7 +3614,8 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
             kwargs["thinking"] = thinking_config
             effort_value = effort_text or None
             if effort_value == "off":
-                # fable/mythos cannot disable thinking: lowest tier instead.
+                # Only always-on models reach here with "off" (the branch
+                # above omits thinking for the rest): lowest tier instead.
                 effort_value = "low"
             elif effort_value == "xhigh" and not is_47_plus:
                 # 4.6 has no xhigh tier; max is the next tier above.

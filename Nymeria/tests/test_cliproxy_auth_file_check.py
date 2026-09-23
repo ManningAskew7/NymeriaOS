@@ -161,3 +161,61 @@ def test_cloak_state_report_fails_auth_file_forced_cloak(tmp_path: Path):
         f"{auth_path} declares cloak_mode=always; if a future binary honors "
         "that for file-backed OAuth, it would force Claude Code identity"
     ]
+
+
+# ---------------------------------------------------------------------------
+# Probe shapes for models whose thinking cannot be disabled (claude-opus-5-5)
+# ---------------------------------------------------------------------------
+
+
+def test_response_text_skips_leading_thinking_blocks():
+    response = {
+        "content": [
+            {"type": "thinking", "thinking": "", "signature": "sig"},
+            {"type": "text", "text": "I am NYMERIA-CLOAK-PROBE-AGENT."},
+        ]
+    }
+
+    assert check_cliproxy_cloak._response_text(response) == "I am NYMERIA-CLOAK-PROBE-AGENT."
+    # A refusal arrives as HTTP 200 with an EMPTY content list; indexing [0]
+    # used to crash the whole smoke test.
+    assert check_cliproxy_cloak._response_text({"content": []}) == ""
+
+
+def test_thinking_probe_body_matches_the_production_wire_on_opus_5_5():
+    body = check_cliproxy_cloak._thinking_probe_body("claude-opus-5-5")
+
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert "temperature" not in body
+    # Asking for "visible thinking" is refused as reasoning_extraction.
+    assert "thinking" not in body["messages"][0]["content"].lower()
+
+
+def test_identity_probe_refusal_is_reported_inconclusive_not_a_cloak_failure(
+    monkeypatch, capsys
+):
+    refusal = {
+        "content": [],
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": "cyber"},
+        "usage": {"input_tokens": 69, "service_tier": "standard"},
+    }
+    monkeypatch.setattr(check_cliproxy_cloak, "probe", lambda *a, **k: refusal)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_cliproxy_cloak.py",
+            "--model",
+            "claude-opus-5-5",
+            "--api-key",
+            "test-key",
+            "--skip-auth-file-check",
+            "--skip-cloak-state-report",
+        ],
+    )
+
+    assert check_cliproxy_cloak.main() == 2
+    out = capsys.readouterr().out
+    assert "INCONCLUSIVE" in out
+    assert "cyber" in out
+    assert "not echoed" not in out

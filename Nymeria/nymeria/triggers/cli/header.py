@@ -788,14 +788,27 @@ def thinking_mode(
             effort_text = clamp_reasoning_effort(provider, model, effort_text)
         except Exception:  # noqa: BLE001
             pass
+    always_on = _thinking_always_on(model=model)
     if effort_text == "off":
-        return "off"
-    enabled = bool(extended) or bool(effort_text)
+        if not always_on:
+            return "off"
+        # The clamp above normally lifts this already; kept for the path
+        # where it raised.
+        effort_text = "low"
+    # Models that cannot disable thinking always think: providers.py sends
+    # adaptive for them even with no effort configured.
+    enabled = bool(extended) or bool(effort_text) or always_on
     if not enabled:
         return "off"
     if _uses_adaptive_thinking(model=model):
         return f"adaptive ({effort_text})" if effort_text else "adaptive"
     return effort_text or "medium"
+
+
+def _thinking_always_on(*, model: str) -> bool:
+    from ...config.model_capabilities import anthropic_thinking_always_on
+
+    return anthropic_thinking_always_on(model.casefold())
 
 
 def _uses_adaptive_thinking(*, model: str) -> bool:

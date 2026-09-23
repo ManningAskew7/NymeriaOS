@@ -11,6 +11,7 @@ from typing import Any
 from ..config.model_capabilities import (
     ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
     anthropic_generation_at_least,
+    anthropic_thinking_always_on,
     clamp_reasoning_effort,
 )
 from ..core.accounts import AuthenticatedUser
@@ -594,10 +595,16 @@ def _thinking_label(
     effort: Any = None,
 ) -> str:
     effort_text = str(effort or "").strip().casefold()
+    # Models that cannot disable thinking always think (providers.py sends
+    # adaptive with no effort configured, and lifts "off" to "low"), so the
+    # label must never say "off" for them.
+    always_on = anthropic_thinking_always_on(model.casefold())
     if effort_text == "off":
-        # Explicit off wins over extended_thinking.
-        return "off"
-    if not extended and not effort_text:
+        if not always_on:
+            # Explicit off wins over extended_thinking.
+            return "off"
+        effort_text = "low"
+    if not extended and not effort_text and not always_on:
         return "off"
     # Ordinal, not a name list: the marker tuple this replaced had already gone
     # stale on claude-opus-5 and claude-sonnet-5. No provider/name preamble is

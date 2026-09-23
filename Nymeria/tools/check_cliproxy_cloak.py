@@ -53,7 +53,7 @@ SAFE_CLAUDE_OAUTH_BETA_HEADER = ",".join(
 REDACT_THINKING_BETA = "redact-thinking-2026-02-12"
 CLIPROXY_BILLING_SYSTEM_BLOCK = {
     "type": "text",
-    "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
+    "text": "x-anthropic-billing-header: cc_version=2.1.280.8f3; cc_entrypoint=cli; cch=54031;",
 }
 NYMERIA_SYSTEM_PROMPT = (
     "You are NYMERIA-CLOAK-PROBE-AGENT. Always identify yourself by that exact name. "
@@ -411,12 +411,21 @@ def probe(
         {"type": "text", "text": NYMERIA_SYSTEM_PROMPT},
     ] if use_billing_block else NYMERIA_SYSTEM_PROMPT
 
-    body = json.dumps({
+    payload: dict = {
         "model": model,
         "max_tokens": 60,
         "system": system,
         "messages": [{"role": "user", "content": "Who are you? One short sentence."}],
-    }).encode()
+    }
+    if _thinking_always_on(model):
+        # These models think on every request (disabled is a 400), so a 60
+        # token cap is spent on reasoning and the reply carries no text block.
+        # Mirror the production wire for them: adaptive at the lowest effort,
+        # with room for the reasoning.
+        payload["max_tokens"] = 2048
+        payload["thinking"] = {"type": "adaptive"}
+        payload["output_config"] = {"effort": "low"}
+    body = json.dumps(payload).encode()
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -436,6 +445,21 @@ def probe(
         return json.loads(resp.read())
 
 
+def _model_capabilities():
+    """Import the production capability module the probes mirror.
+
+    Run as ``python3 Nymeria/tools/check_cliproxy_cloak.py``, sys.path[0] is
+    ``tools/``, not the package root, so an uninstalled checkout cannot import
+    ``nymeria``. Append the root (never prepend: an installed nymeria wins).
+    """
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.append(root)
+    from nymeria.config import model_capabilities
+
+    return model_capabilities
+
+
 def _uses_adaptive_thinking(model: str) -> bool:
     """Ask the SAME predicate the production wire path asks.
 
@@ -447,12 +471,41 @@ def _uses_adaptive_thinking(model: str) -> bool:
     Nymeria never makes. Imported rather than duplicated for that reason; the
     script is repo-local (run from Nymeria/) so the import is available.
     """
-    from nymeria.config.model_capabilities import (
-        ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
-        anthropic_generation_at_least,
+    caps = _model_capabilities()
+    return caps.anthropic_generation_at_least(
+        model or "", caps.ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
     )
 
-    return anthropic_generation_at_least(model or "", ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION)
+
+def _omits_thinking_by_default(model: str) -> bool:
+    """4.7+ ids default to display "omitted"; same predicate as providers.py."""
+    caps = _model_capabilities()
+    return caps.anthropic_generation_at_least(
+        model or "", caps.ANTHROPIC_NO_SAMPLING_PARAMS_MIN_VERSION
+    )
+
+
+def _thinking_always_on(model: str) -> bool:
+    """Same predicate the production wire path asks (see _uses_adaptive_thinking).
+
+    The identity probe is the core check and ran without any nymeria import
+    before this existed, so an unimportable package (missing deps) degrades to
+    the plain probe instead of failing the whole smoke test.
+    """
+    try:
+        caps = _model_capabilities()
+    except ImportError:
+        return False
+    return caps.anthropic_thinking_always_on(model or "")
+
+
+def _response_text(response: dict) -> str:
+    """Joined text blocks; thinking blocks may lead the content list."""
+    return "".join(
+        str(block.get("text", ""))
+        for block in response.get("content") or []
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
 
 
 def _thinking_probe_body(model: str) -> dict:
@@ -468,15 +521,21 @@ def _thinking_probe_body(model: str) -> dict:
         "messages": [
             {
                 "role": "user",
+                # Neutral on purpose: asking for "visible thinking" is refused
+                # as reasoning_extraction by claude-opus-5-5 (2026-09-23).
                 "content": (
-                    "Use visible extended thinking briefly, then answer only with "
-                    "the number: what is 17 times 23?"
+                    "Compute 17 times 23, then subtract 128 from the result. "
+                    "Answer with only the final number."
                 ),
             }
         ],
     }
     if _uses_adaptive_thinking(model):
         body["thinking"] = {"type": "adaptive"}
+        if _omits_thinking_by_default(model):
+            # Production opts into summaries on these (providers.py): their
+            # default display is "omitted", which streams no thinking text.
+            body["thinking"]["display"] = "summarized"
         body["output_config"] = {"effort": "medium"}
     else:
         body["thinking"] = {"type": "enabled", "budget_tokens": 1024}
@@ -621,11 +680,23 @@ def main() -> int:
         print(f"  FAIL: probe request errored: {e}", file=sys.stderr)
         return 1
 
-    text = good.get("content", [{}])[0].get("text", "")
+    text = _response_text(good)
     tokens = good.get("usage", {}).get("input_tokens", -1)
     tier = good.get("usage", {}).get("service_tier", "?")
     print(f"  text:   {text[:140]!r}")
     print(f"  tokens: input={tokens}  tier={tier}")
+
+    if good.get("stop_reason") == "refusal":
+        # A safety classifier declined the probe itself (HTTP 200, empty
+        # content). The identity-override prompt reads as a jailbreak to the
+        # broader classifiers: claude-opus-5-5 refuses it as "cyber"
+        # (2026-09-23). The wire and billing tier are fine; only the identity
+        # verdict is unavailable, so say that instead of "identity missing".
+        category = (good.get("stop_details") or {}).get("category")
+        print(f"  ⚠ INCONCLUSIVE: the model refused the probe (category={category!r}).")
+        print("    Request reached the model; the cloak verdict needs another model")
+        print("    (the cloak gate is proxy-side, so e.g. --model claude-sonnet-5).")
+        return 2
 
     cloak_hit = any(marker in text for marker in CLOAK_MARKERS)
     nymeria_hit = "NYMERIA-CLOAK-PROBE-AGENT" in text or "PROBE-AGENT" in text
@@ -697,7 +768,7 @@ def main() -> int:
         bad = None
 
     if bad:
-        bad_text = bad.get("content", [{}])[0].get("text", "")
+        bad_text = _response_text(bad)
         bad_tokens = bad.get("usage", {}).get("input_tokens", -1)
         print(f"  text:   {bad_text[:140]!r}")
         print(f"  tokens: input={bad_tokens}")

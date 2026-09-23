@@ -99,6 +99,11 @@ def test_effort_levels_rank_order():
         ("anthropic", "claude-opus-4-8", EFFORT_LEVELS),
         ("anthropic", "claude-fable-5", ("low", "medium", "high", "xhigh", "max")),
         ("anthropic", "claude-mythos-1", ("low", "medium", "high", "xhigh", "max")),
+        # Opus 5.5 is the first ordinal id that cannot disable thinking (400 at
+        # every effort); Opus 5 still can, so it keeps "off".
+        ("anthropic", "claude-opus-5-5", ("low", "medium", "high", "xhigh", "max")),
+        ("anthropic", "claude-opus-5", EFFORT_LEVELS),
+        ("anthropic", "claude-sonnet-5", EFFORT_LEVELS),
         ("anthropic", "claude-sonnet-4-5", EFFORT_LEVELS),
         # Gemini 3.x+: thinking cannot be disabled (min budget 128, so no
         # "off"; the clamp lifts it to low) and the serving registries
@@ -303,6 +308,7 @@ def test_max_reasoning_effort(provider, model, expected):
         ("anthropic", "claude-sonnet-4-6", "xhigh", "max"),
         # Models that cannot disable thinking clamp off to the floor tier.
         ("anthropic", "claude-fable-5", "off", "low"),
+        ("anthropic", "claude-opus-5-5", "off", "low"),
         ("groq", "openai/gpt-oss-120b", "off", "low"),
         ("openai", "o3-mini", "off", "low"),
         ("openai", "o3", "off", "low"),
@@ -879,6 +885,51 @@ def test_anthropic_fable_off_degrades_to_low_and_keeps_thinking():
 
     assert llm.thinking == {"type": "adaptive", "display": "summarized"}
     assert getattr(llm, "output_config", None) == {"effort": "low"}
+
+
+def test_anthropic_opus_5_5_off_degrades_to_low_and_keeps_thinking():
+    # claude-opus-5-5 cannot disable thinking (400 on "disabled"), so omitting
+    # the block, as off does on opus-5 and 4.7+, would NOT disable it: the
+    # model would think at its default effort with the reasoning hidden. Off
+    # must pin the lowest tier instead.
+    llm = _create_anthropic(
+        model="claude-opus-5-5",
+        extended_thinking=True,
+        reasoning_effort="off",
+    )
+
+    assert llm.thinking == {"type": "adaptive", "display": "summarized"}
+    assert getattr(llm, "output_config", None) == {"effort": "low"}
+
+
+def test_anthropic_opus_5_off_still_omits_thinking():
+    llm = _create_anthropic(
+        model="claude-opus-5",
+        extended_thinking=True,
+        reasoning_effort="off",
+    )
+
+    assert llm.thinking is None
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5"])
+def test_anthropic_always_on_model_sends_adaptive_without_any_effort_config(model):
+    # With no effort and no extended_thinking the factory used to send no
+    # thinking block. The API thinks anyway on these models, but langchain
+    # only drops the forced tool_choice of with_structured_output (a 400 on
+    # opus-5-5 / fable-5-1) when `thinking` is set, so it must always be set.
+    llm = _create_anthropic(model=model, extended_thinking=False, reasoning_effort=None)
+
+    assert llm.thinking == {"type": "adaptive", "display": "summarized"}
+    assert getattr(llm, "output_config", None) is None
+
+
+def test_anthropic_opus_5_without_effort_config_sends_no_thinking():
+    llm = _create_anthropic(
+        model="claude-opus-5", extended_thinking=False, reasoning_effort=None
+    )
+
+    assert llm.thinking is None
 
 
 # ---------------------------------------------------------------------------

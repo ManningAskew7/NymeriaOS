@@ -214,6 +214,33 @@ class TestBillingBlock:
         assert CLIPROXY_BILLING_SYSTEM_BLOCK["type"] == "text"
         assert "x-anthropic-billing-header:" in CLIPROXY_BILLING_SYSTEM_BLOCK["text"]
 
+    def test_advertised_claude_code_version_clears_the_opus_5_5_gate(self):
+        # Upstream reads cc_version as a model gate: claude-opus-5-5 400s with
+        # "Claude Code 2.1.63 does not support this model; version 2.1.280 or
+        # newer is required" (measured live 2026-09-23). A downgrade of the
+        # constant silently breaks every CLIProxy Opus 5.5 turn.
+        import re
+
+        match = re.search(
+            r"cc_version=(\d+)\.(\d+)\.(\d+)\.", CLIPROXY_BILLING_SYSTEM_BLOCK["text"]
+        )
+        assert match is not None
+        assert tuple(int(p) for p in match.groups()) >= (2, 1, 280)
+
+    def test_cloak_smoke_tool_sends_the_same_billing_block(self):
+        # tools/check_cliproxy_cloak.py keeps its own literal (it runs without
+        # the package); a stale copy would pass the smoke test on a
+        # fingerprint production no longer sends.
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "tools" / "check_cliproxy_cloak.py"
+        spec = importlib.util.spec_from_file_location("_cloak_tool_parity", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module.CLIPROXY_BILLING_SYSTEM_BLOCK == CLIPROXY_BILLING_SYSTEM_BLOCK
+
     def test_ports_frozen(self):
         assert isinstance(CLIPROXY_PORTS, frozenset)
         assert CLIPROXY_PORTS == {8317, 8318}

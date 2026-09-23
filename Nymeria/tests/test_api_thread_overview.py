@@ -735,3 +735,21 @@ def test_live_temporary_tool_names_logs_unparseable_expiry(caplog):
 
     assert result == set()
     assert "Skipping temporary tool badtool" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("model", "extended", "effort", "expected"),
+    [
+        ("claude-opus-5-5", False, None, "adaptive"),
+        ("claude-opus-5-5", True, "off", "adaptive (low)"),
+        ("claude-fable-5", False, "off", "adaptive (low)"),
+        ("claude-opus-5", False, None, "off"),
+        ("claude-opus-5", True, "off", "off"),
+    ],
+)
+def test_thinking_label_matches_the_wire_for_always_on_models(
+    model: str, extended: bool, effort: str | None, expected: str
+) -> None:
+    from nymeria.api.thread_overview import _thinking_label
+
+    assert _thinking_label(model=model, extended=extended, effort=effort) == expected
