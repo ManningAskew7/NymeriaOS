@@ -55,8 +55,9 @@ def test_refusal_sentence_names_who_when_why_and_the_way_out(tmp_path: Path):
     assert len(day) == 10 and day.count("-") == 2
 
     assert retirement_refusal(rec, "foo") == (
-        f"tool_id 'foo' was retired by 'u1' on {day}. Publishing under a retired "
-        "id is refused because every thread that still lists the name would bind "
-        "the new tool silently. Choose another id, or ask an admin to release the "
-        "reservation (DELETE /tools/custom/foo/retirement)."
+        f"tool_id 'foo' was retired by 'u1' on {day}. Drafting or publishing under "
+        "a retired id is refused because every thread that still lists the name "
+        "would bind the new tool silently (a draft under it could never publish). "
+        "Choose another id, or ask an admin to release the reservation "
+        "(DELETE /tools/custom/foo/retirement)."
     )

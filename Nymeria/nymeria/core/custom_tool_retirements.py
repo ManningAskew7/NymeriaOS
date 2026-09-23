@@ -104,8 +104,9 @@ def retirement_refusal(retirement: CustomToolRetirement, tool_id: str) -> str:
     day = retirement.retired_at[:10]
     return (
         f"tool_id '{tool_id}' was retired by '{retirement.retired_by}' on {day}. "
-        "Publishing under a retired id is refused because every thread that "
-        "still lists the name would bind the new tool silently. Choose another "
+        "Drafting or publishing under a retired id is refused because every "
+        "thread that still lists the name would bind the new tool silently "
+        "(a draft under it could never publish). Choose another "
         "id, or ask an admin to release the reservation "
         f"(DELETE /tools/custom/{tool_id}/retirement)."
     )
