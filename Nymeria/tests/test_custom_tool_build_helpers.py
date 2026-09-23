@@ -124,3 +124,12 @@ def test_apply_update_noop_request_leaves_definition_unchanged():
     apply_custom_tool_update(defn, CustomToolUpdateRequest())
     # Only None fields in the update request -> nothing changes.
     assert defn.model_dump() == before
+
+
+def test_build_definition_stamps_the_actor_as_creator():
+    definition = build_custom_tool_definition(_http_create(), actor_user_id="admin-1")
+    assert definition.created_by == "admin-1"
+
+
+def test_build_definition_without_an_actor_leaves_provenance_unknown():
+    assert build_custom_tool_definition(_http_create()).created_by is None

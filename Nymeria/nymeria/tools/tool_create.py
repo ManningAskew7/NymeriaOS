@@ -539,6 +539,7 @@ def _published_summary(definition: CustomToolDefinition) -> dict[str, Any]:
         "implementation_type": definition.implementation_type,
         "tags": definition.tags,
         "enabled": definition.enabled,
+        "created_by": definition_creator(definition),
         "parameter_names": sorted(definition.parameters.keys()),
         "created_at": definition.created_at.isoformat(),
         "updated_at": definition.updated_at.isoformat(),
@@ -695,6 +696,7 @@ def _publish_draft(
             http_config=draft.http_config,
             enabled=True,
             tags=["agent-created", f"user:{user_id}"],
+            created_by=user_id,
         )
         # The publishing user self-approves the revision, so the execution gate
         # admits it (mirrors the python branch above). Unlike python this is
@@ -714,6 +716,7 @@ def _publish_draft(
             python_config=draft.python_config,
             enabled=True,
             tags=["agent-created", "python", f"user:{user_id}"],
+            created_by=user_id,
         )
     elif draft.implementation_type == "workflow":
         definition = CustomToolDefinition(
@@ -725,6 +728,7 @@ def _publish_draft(
             workflow_config=draft.workflow_config,
             enabled=True,
             tags=["agent-created", "workflow", f"user:{user_id}"],
+            created_by=user_id,
         )
     else:
         return _json_result(
@@ -857,6 +861,17 @@ def _announce_workflow_approval_request(draft: HTTPToolDraft, author_user_id: st
 
 def _definition_on_disk(tool_id: str) -> Optional[CustomToolDefinition]:
     """One global tool definition read straight from disk, INCLUDING disabled.
+    See ``_definition_path_on_disk`` for the file it came from.
+    """
+    found = _definition_path_on_disk(tool_id)
+    return found[1] if found is not None else None
+
+
+def _definition_path_on_disk(
+    tool_id: str,
+) -> Optional[tuple[Path, CustomToolDefinition]]:
+    """``(path, definition)`` for one global tool read straight from disk,
+    INCLUDING disabled.
 
     The loader cache deliberately drops disabled definitions
     (``CustomToolLoader._load_tool_file`` returns before caching them), so a
@@ -879,8 +894,149 @@ def _definition_on_disk(tool_id: str) -> Optional[CustomToolDefinition]:
         except Exception:  # noqa: BLE001 - skip invalid/corrupt definitions
             continue
         if definition.id == tool_id:
-            return definition
+            return path, definition
     return None
+
+
+def definition_creator(definition: CustomToolDefinition) -> Optional[str]:
+    """The user who authored a published definition, or None when unknown.
+
+    ``created_by`` is the explicit stamp (#270). Older agent publishes carried
+    only the ``user:<id>`` tag, and workflows carry an author on their config;
+    both are honoured so a tool published before the stamp can still be
+    retired by the user who made it. A hand-written or pre-stamp REST record
+    resolves to None, which the agent surface treats as "not yours".
+    """
+    if definition.created_by:
+        return definition.created_by
+    if definition.workflow_config is not None and definition.workflow_config.created_by:
+        return definition.workflow_config.created_by
+    tags = definition.tags or []
+    if "agent-created" in tags:
+        # Only an agent publish writes this pair of tags; a categorisation tag
+        # an admin typed into the dashboard must not confer retire rights.
+        for tag in tags:
+            if tag.startswith("user:") and len(tag) > 5:
+                return tag[5:]
+    return None
+
+
+def _retire_published_tool(*, tool_id: str, user_id: str, agent: Any) -> str:
+    """``tool_create(action="retire")``: creator-scoped removal of a published
+    custom tool (backlog #270, dev decision recorded there).
+
+    Built-in tools are never deletable from an agent surface, whatever the
+    caller's role. The check runs BEFORE the disk lookup so the refusal names
+    the real reason rather than "not found". Provenance, not role, decides
+    the rest: the user who published or created the definition may retire it
+    (a non-admin can only have published http tools; python and workflow
+    authoring is admin-gated upstream), anyone else is pointed at the admin
+    dashboard, which keeps its role-only human override. Revision snapshots
+    are kept (``CustomToolLoader.delete_definition``).
+
+    Residual, shared with the execution gates on this store: ``created_by``
+    lives in the agent-writable JSON it protects, so a thread holding a
+    file-write primitive can rewrite it (or the whole file) and retire a
+    tool it did not create. The creator check governs the ordinary agent
+    surfaces; SECURITY.md 2.2 is the boundary. The record is read and
+    deleted by ONE path (its own ``<id>.json``): a definition stored under
+    another file name is refused rather than ownership-checked on one file
+    and unlinked on another.
+    """
+    from . import static_tool_catalog
+
+    # Exact id, not the draft normalizer: a REST-created definition may carry
+    # hyphens or capitals the draft pattern refuses, and it is still retirable.
+    target = (tool_id or "").strip()
+    if not target:
+        return _json_result(
+            ok=False,
+            error={"type": "validation_error", "message": "retire requires tool_id."},
+        )
+    if target in static_tool_catalog():
+        return _json_result(
+            ok=False,
+            error={
+                "type": "forbidden",
+                "message": (
+                    f"'{target}' is a built-in tool. Built-in tools are never "
+                    "deletable from an agent surface; disable it on this thread "
+                    "with tool_manage instead."
+                ),
+            },
+        )
+    found = _definition_path_on_disk(target)
+    if found is None:
+        return _json_result(
+            ok=False,
+            error={
+                "type": "not_found",
+                "message": (
+                    f"No published custom tool with id '{target}'. action='list' "
+                    "shows the published registry; drafts are removed with "
+                    "action='delete'."
+                ),
+            },
+        )
+    path, definition = found
+    if path.name != f"{target}.json":
+        return _json_result(
+            ok=False,
+            error={
+                "type": "forbidden",
+                "message": (
+                    f"'{target}' is stored under '{path.name}', not '{target}.json', "
+                    "so it cannot be retired from the agent surface; an admin can "
+                    "remove the file from the dashboard or by hand."
+                ),
+            },
+        )
+    creator = definition_creator(definition)
+    if creator != user_id:
+        who = f"was published by '{creator}'" if creator else "has unknown provenance"
+        return _json_result(
+            ok=False,
+            error={
+                "type": "forbidden",
+                "message": (
+                    f"'{target}' {who}; only its creator can retire it from the "
+                    "agent surface. An admin can delete any custom tool from the "
+                    f"dashboard (DELETE /tools/custom/{target})."
+                ),
+            },
+        )
+    loader = get_custom_tool_loader()
+    if not loader.delete_definition(target):
+        return _json_result(
+            ok=False,
+            error={"type": "not_found", "message": f"No published custom tool with id '{target}'."},
+        )
+    reloaded = True
+    try:
+        if agent is not None:
+            agent.reload_custom_tools()
+        else:
+            loader.load_all()
+    except Exception:
+        reloaded = False
+        logger.warning("retire: custom tool reload failed after removing %s", target, exc_info=True)
+    snapshots = path.parent / "revisions" / target
+    kept = snapshots.is_dir() and any(snapshots.iterdir())
+    note = (
+        "Removed from the global registry"
+        + (" and unregistered." if reloaded else "; the live reload failed, so it stays bound until the next reload.")
+        + " Threads that had it enabled skip the unknown name at their next "
+        "graph build, and the id is free to publish again. Drafts are untouched"
+        + ("; its revision snapshots are kept as a record." if kept else ".")
+    )
+    return _json_result(
+        ok=True,
+        action="retire",
+        tool_id=target,
+        retired=True,
+        reloaded=reloaded,
+        note=note,
+    )
 
 
 def install_workflow_template(
@@ -1000,6 +1156,7 @@ def install_workflow_template(
         workflow_config=config,
         enabled=True,
         tags=["bundled", "workflow", f"template:{template.id}"],
+        created_by=user_id,
     )
     loader.save_definition(definition)
     retain_source_revision(definition.id, config.revision_hash, config.source_code)
@@ -1317,7 +1474,7 @@ async def tool_create(
     tool_call_id: Annotated[str, InjectedToolCallId],
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> Union[str, Command]:
-    """Draft, test, publish, list, or delete agent-created custom tools.
+    """Draft, test, publish, list, delete, or retire agent-created custom tools.
 
     Supports HTTP tools, subprocess-backed Python tools, and nym-SDK workflow
     tools. HTTP tools are best after discovering a stable API request with
@@ -1372,6 +1529,14 @@ async def tool_create(
                without exposing request headers or bodies.
       delete:  Delete this user's draft only. It does not delete a globally
                published tool.
+      retire:  Remove a PUBLISHED custom tool from the global registry (pass
+               tool_id). Only the user who published or created it may
+               retire it, whatever their role; a tool with unknown
+               provenance and every built-in tool are refused, and the
+               dashboard (DELETE /tools/custom/{id}, admin) is the human
+               override. Other threads that bound the tool simply skip the
+               unknown name at their next graph build; drafts are untouched
+               and revision snapshots are kept as a record.
       install_template: Install a bundled workflow recipe (see
                workflow_info action='templates') as a published workflow tool
                and enable it on this thread. Admin-only: it publishes an
@@ -1515,7 +1680,20 @@ async def tool_create(
                 action="delete",
                 deleted=deleted,
                 draft_id=target_draft_id,
-                error=None if deleted else {"type": "not_found", "message": f"Draft not found: {target_draft_id}"},
+                error=None if deleted else {
+                    "type": "not_found",
+                    "message": (
+                        f"Draft not found: {target_draft_id}. delete removes one of "
+                        "your drafts; to remove a published tool use action='retire'."
+                    ),
+                },
+            )
+
+        if action_key == "retire":
+            from ..core.agent import get_current_agent
+
+            return _retire_published_tool(
+                tool_id=tool_id, user_id=user_id, agent=get_current_agent(),
             )
 
         if action_key == "install_template":
@@ -1576,7 +1754,7 @@ async def tool_create(
             ok=False,
             error={
                 "type": "validation_error",
-                "message": "action must be one of: draft, test, publish, list, delete, install_template",
+                "message": "action must be one of: draft, test, publish, list, delete, retire, install_template",
             },
         )
     except WorkflowApprovalRequired as exc:

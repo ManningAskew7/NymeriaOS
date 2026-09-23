@@ -680,3 +680,312 @@ def test_draft_test_resolves_credentials_under_the_published_target(tmp_path, mo
         assert call["actor"] == "user-1"
         assert call["target_type"] == "custom_tool"
         assert call["target_id"] == "priced"
+
+
+# ---------------------------------------------------------------------------
+# #270: retire a published custom tool from the agent surface (creator-scoped)
+# ---------------------------------------------------------------------------
+
+
+def _retire_agent(role: str = "user", user_id: str = "u1"):
+    user = SimpleNamespace(id=user_id, role=role, disabled=False)
+    repo = SimpleNamespace(get_user_by_id=lambda uid: user if uid == user_id else None)
+    agent = SimpleNamespace(accounts_repo=repo, reloads=0)
+
+    def _reload():
+        agent.reloads += 1
+        return []
+
+    agent.reload_custom_tools = _reload
+    return agent
+
+
+def _retire_env(tmp_path, monkeypatch):
+    tools_dir = tmp_path / "custom_tools"
+    loader = CustomToolLoader(tools_dir)
+    tool_create_module = importlib.import_module("nymeria.tools.tool_create")
+    monkeypatch.setattr(tool_create_module, "get_custom_tool_loader", lambda: loader)
+    monkeypatch.setattr(
+        tool_create_module, "get_settings",
+        lambda: SimpleNamespace(custom_tools_dir=tools_dir, data_dir=tmp_path),
+    )
+    return loader, tools_dir
+
+
+def _published_http(loader, tool_id="my_price", **overrides):
+    fields = dict(
+        id=tool_id,
+        name="My Price",
+        description="Fetch a price",
+        implementation_type="http",
+        http_config=HTTPToolConfig(**_http_config()),
+        enabled=True,
+        tags=["agent-created", "user:u1"],
+        created_by="u1",
+    )
+    fields.update(overrides)
+    definition = CustomToolDefinition(**fields)
+    loader.save_definition(definition)
+    return definition
+
+
+def _retire(tool_id, *, agent, user_id="u1"):
+    with patch("nymeria.core.agent.get_current_agent", return_value=agent):
+        result = asyncio.run(
+            tool_create_tool.coroutine(
+                action="retire",
+                tool_id=tool_id,
+                tool_call_id="call-1",
+                config={"configurable": {"user_id": user_id, "thread_id": "t1"}},
+            )
+        )
+    return json.loads(result)
+
+
+def test_creator_retires_its_own_published_tool(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    agent = _retire_agent()
+
+    payload = _retire("my_price", agent=agent)
+
+    assert payload["ok"] is True, payload
+    assert payload["action"] == "retire"
+    assert payload["tool_id"] == "my_price"
+    assert not (tools_dir / "my_price.json").exists()
+    assert loader.get_definition("my_price") is None
+    assert agent.reloads == 1
+    assert payload["reloaded"] is True
+    assert "free to publish again" in payload["note"]
+
+
+def test_a_different_user_cannot_retire_it(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    agent = _retire_agent(role="admin", user_id="u2")
+
+    payload = _retire("my_price", agent=agent, user_id="u2")
+
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "forbidden"
+    assert "u1" in payload["error"]["message"]
+    assert "DELETE /tools/custom/my_price" in payload["error"]["message"]
+    assert (tools_dir / "my_price.json").exists()
+    assert agent.reloads == 0
+
+
+def test_built_in_tools_are_never_retirable_from_the_agent_surface(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    agent = _retire_agent(role="admin")
+
+    payload = _retire("bash_execute", agent=agent)
+
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "forbidden"
+    assert "built-in" in payload["error"]["message"]
+    assert agent.reloads == 0
+
+
+def test_retiring_an_unknown_id_is_not_found(tmp_path, monkeypatch):
+    _retire_env(tmp_path, monkeypatch)
+    payload = _retire("nope_tool", agent=_retire_agent())
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "not_found"
+    assert "action='list'" in payload["error"]["message"]
+
+
+def test_retire_requires_a_tool_id(tmp_path, monkeypatch):
+    _retire_env(tmp_path, monkeypatch)
+    payload = _retire("", agent=_retire_agent())
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "validation_error"
+    assert payload["error"]["message"] == "retire requires tool_id."
+
+
+def test_legacy_record_resolves_its_creator_from_the_user_tag(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader, created_by=None, tags=["agent-created", "user:u1"])
+
+    assert _retire("my_price", agent=_retire_agent(user_id="u2"), user_id="u2")["ok"] is False
+    assert (tools_dir / "my_price.json").exists()
+    assert _retire("my_price", agent=_retire_agent())["ok"] is True
+    assert not (tools_dir / "my_price.json").exists()
+
+
+def test_unknown_provenance_is_forbidden_even_for_an_admin(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader, created_by=None, tags=["hand-written"])
+
+    payload = _retire("my_price", agent=_retire_agent(role="admin"))
+
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "forbidden"
+    assert "unknown" in payload["error"]["message"].lower()
+    assert (tools_dir / "my_price.json").exists()
+
+
+def test_a_disabled_definition_is_still_retirable_by_its_creator(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader, enabled=False)
+    assert loader.get_definition("my_price") is None  # the cache drops disabled records
+
+    payload = _retire("my_price", agent=_retire_agent())
+
+    assert payload["ok"] is True, payload
+    assert not (tools_dir / "my_price.json").exists()
+
+
+def test_retire_keeps_the_revision_snapshots(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    revisions = tools_dir / "revisions" / "my_price"
+    revisions.mkdir(parents=True)
+    (revisions / "abc123.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+
+    payload = _retire("my_price", agent=_retire_agent())
+
+    assert payload["ok"] is True
+    assert (revisions / "abc123.py").exists()
+    assert "revision snapshots are kept" in payload["note"]
+
+
+def test_publish_stamps_created_by(tmp_path, monkeypatch):
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    tool_create_module = importlib.import_module("nymeria.tools.tool_create")
+    monkeypatch.setattr(tool_create_module, "get_custom_tool_loader", lambda: loader)
+    monkeypatch.setattr("nymeria.core.agent.get_current_agent", lambda: None)
+    store = ToolDraftStore(tmp_path / "drafts")
+    draft = create_draft_definition(
+        user_id="user-9",
+        tool_id="stamped_price",
+        name="Stamped",
+        description="Fetch a price",
+        parameters={"symbol": {"type": "string", "description": "Ticker", "required": True}},
+        http_config=_http_config(),
+    )
+    draft.last_test_ok = True
+    store.save("user-9", draft)
+
+    result = _publish_draft(
+        store=store, user_id="user-9", draft_id="stamped_price",
+        thread_id="thread-1", ttl="2h", tool_call_id="call-1",
+    )
+
+    assert json.loads(result)["ok"] is True
+    assert loader.get_definition("stamped_price").created_by == "user-9"
+
+
+def test_created_by_is_outside_the_execution_approval_hash(tmp_path, monkeypatch):
+    """The load-bearing claim behind adding the field: a definition approved
+    before the stamp existed must keep executing, and stamping must not
+    change the hash the gate recomputes."""
+    from nymeria.core.custom_tool_gate import (
+        compute_custom_tool_revision_hash,
+        custom_tool_execution_gate,
+        stamp_custom_tool_approval,
+    )
+
+    unstamped = CustomToolDefinition(
+        id="pre_stamp", name="Pre", description="Fetch", implementation_type="http",
+        http_config=HTTPToolConfig(**_http_config()),
+        parameters={"symbol": ToolParameter(type="string", description="Ticker", required=True)},
+    )
+    stamp_custom_tool_approval(unstamped, approved_by="admin-1")
+    on_disk = json.loads(unstamped.model_dump_json())
+    assert "created_by" in on_disk and on_disk["created_by"] is None
+    on_disk.pop("created_by")  # a record written before the field existed
+
+    reloaded = CustomToolDefinition(**on_disk)
+    assert custom_tool_execution_gate(reloaded) is None
+    stamped = reloaded.model_copy(update={"created_by": "u1"})
+    assert compute_custom_tool_revision_hash(stamped) == compute_custom_tool_revision_hash(reloaded)
+    assert custom_tool_execution_gate(stamped) is None
+
+
+def test_created_by_outranks_a_user_tag(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader, created_by="u1", tags=["agent-created", "user:u2"])
+
+    payload = _retire("my_price", agent=_retire_agent(user_id="u2"), user_id="u2")
+
+    assert payload["ok"] is False
+    assert "published by 'u1'" in payload["error"]["message"]
+    assert (tools_dir / "my_price.json").exists()
+
+
+def test_a_user_tag_without_the_agent_created_tag_confers_nothing(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader, created_by=None, tags=["finance", "user:u1"])
+
+    payload = _retire("my_price", agent=_retire_agent())
+
+    assert payload["ok"] is False
+    assert "unknown provenance" in payload["error"]["message"]
+    assert (tools_dir / "my_price.json").exists()
+
+
+def test_a_decoy_file_cannot_pass_the_ownership_check_for_another_record(tmp_path, monkeypatch):
+    """Ownership is read from, and the unlink applied to, the same file.
+    A record declaring the victim's id under an earlier-sorting file name
+    must not get the victim's <id>.json deleted."""
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader, created_by="victim")
+    decoy = CustomToolDefinition(
+        id="my_price", name="Decoy", description="x", implementation_type="http",
+        http_config=HTTPToolConfig(**_http_config()), created_by="u1",
+    )
+    (tools_dir / "aaa_decoy.json").write_text(decoy.model_dump_json(), encoding="utf-8")
+
+    payload = _retire("my_price", agent=_retire_agent())
+
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "forbidden"
+    assert "aaa_decoy.json" in payload["error"]["message"]
+    assert (tools_dir / "my_price.json").exists()
+    assert (tools_dir / "aaa_decoy.json").exists()
+
+
+def test_retire_without_a_live_agent_still_refreshes_the_loader(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    loader.load_all()
+    assert "my_price" in {d.id for d in loader.get_all_definitions()}
+
+    payload = _retire("my_price", agent=None)
+
+    assert payload["ok"] is True and payload["reloaded"] is True
+    assert "my_price" not in {d.id for d in loader.get_all_definitions()}
+    assert "snapshots" not in payload["note"]  # an http tool has none to keep
+
+
+def test_a_failed_reload_is_reported_honestly(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    agent = _retire_agent()
+
+    def _boom():
+        raise RuntimeError("graph rebuild failed")
+
+    agent.reload_custom_tools = _boom
+
+    payload = _retire("my_price", agent=agent)
+
+    assert payload["ok"] is True
+    assert payload["reloaded"] is False
+    assert "reload failed" in payload["note"]
+    assert not (tools_dir / "my_price.json").exists()
+
+
+def test_list_shows_the_creator_of_each_published_tool(tmp_path, monkeypatch):
+    loader, tools_dir = _retire_env(tmp_path, monkeypatch)
+    _published_http(loader)
+    with patch("nymeria.tools.tool_create._draft_store", return_value=ToolDraftStore(tmp_path / "drafts")), \
+         patch("nymeria.core.agent.get_current_agent", return_value=_retire_agent()):
+        result = asyncio.run(
+            tool_create_tool.coroutine(
+                action="list", tool_call_id="call-1",
+                config={"configurable": {"user_id": "u1", "thread_id": "t1"}},
+            )
+        )
+    published = json.loads(result)["published"]
+    assert [(t["tool_id"], t["created_by"]) for t in published] == [("my_price", "u1")]

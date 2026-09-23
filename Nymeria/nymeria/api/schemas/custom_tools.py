@@ -144,6 +144,7 @@ class CustomToolResponse(BaseModel):
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
+    created_by: str | None = None
 
 
 class CustomToolCreateRequest(BaseModel):
@@ -359,6 +360,7 @@ def build_custom_tool_definition(
         workflow_config=workflow_config,
         enabled=request.enabled,
         tags=request.tags,
+        created_by=actor_user_id or None,
     )
     # http/mcp: the (admin) actor's save self-approves the execution revision so
     # the gate admits it, mirroring the python and workflow branches above. The
@@ -501,6 +503,7 @@ def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomTool
         tags=defn.tags,
         created_at=defn.created_at,
         updated_at=defn.updated_at,
+        created_by=defn.created_by,
     )
 
 

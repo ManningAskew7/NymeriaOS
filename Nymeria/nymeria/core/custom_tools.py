@@ -576,6 +576,12 @@ class CustomToolLoader:
     def delete_definition(self, tool_id: str) -> bool:
         """Delete a tool definition.
 
+        Deliberately leaves ``custom_tools/revisions/<tool_id>/`` in place
+        (#270): those are the approved-revision source snapshots that
+        workflow run envelopes reference by hash, a forensic record of what
+        executed, not part of the live definition. Cap and pruning:
+        ``core/workflows/authoring.py::retain_source_revision``.
+
         Args:
             tool_id: The tool identifier.
 

@@ -162,6 +162,7 @@ def test_custom_tool_crud_reloads_agent_and_preserves_response_shape(
     assert created["parameters"]["symbol"]["required"] is True
     assert created["http_config"]["url"] == "https://api.example.com/prices/${symbol}"
     assert created["mcp_config"] is None
+    assert created["created_by"] == "caller"
     assert agent.reload_count == 1
 
     update_response = client.put(

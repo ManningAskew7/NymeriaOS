@@ -180,7 +180,9 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
             "decision. Residual, shared with the other three: the hash lives in "
             "the file it protects, so a writer who replicates the canonical "
             "form can forge it. The control is against a file-write primitive, "
-            "not against a shell."
+            "not against a shell. #270: the store also has an agent-reachable "
+            "DELETE, tool_create(action='retire'), gated on the record's own "
+            "created_by stamp (same residual: the stamp lives in the file)."
         ),
     ),
     _StoreRow(

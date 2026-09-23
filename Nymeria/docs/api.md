@@ -3522,6 +3522,14 @@ Authorization: Bearer <token>
 }
 ```
 
+Admin-only and creator-blind: the human override. The agent surface has a
+narrower path, `tool_create(action="retire")`, which only the definition's
+creator may use (`created_by`, stamped at publish and by this router's create
+route as the acting admin, and returned on every custom-tool response). A
+built-in name is a 404 here (no definition file) and an explicit refusal on
+the agent path. Workflow revision snapshots under `custom_tools/revisions/`
+are kept on either path (`agent-systems/tools.md`, "Retire semantics").
+
 ---
 
 ### Test Custom Tool
@@ -4615,7 +4623,8 @@ Authorization: Bearer <admin-token>
 ```
 
 Deletes a custom tool definition and reloads custom tools. Built-in tools
-cannot be deleted.
+cannot be deleted. Creator-blind, like `DELETE /tools/custom/{tool_id}`;
+the creator-scoped agent path is `tool_create(action="retire")`.
 
 **Delete Response:**
 ```json

@@ -306,6 +306,16 @@ class CustomToolDefinition(BaseModel):
         default_factory=utc_now,
         description="Last update timestamp",
     )
+    # Authoring provenance (#270): the user whose publish or REST create wrote
+    # this record. Outside the execution-approval hash below (which covers
+    # only the execution surface), so stamping it never invalidates an
+    # approval. None on hand-written and pre-stamp records; the agent-surface
+    # retire action then falls back to the legacy ``user:<id>`` tag and
+    # otherwise refuses (unknown provenance is an admin's call).
+    created_by: Optional[str] = Field(
+        default=None,
+        description="User id that published or created this definition",
+    )
 
     # Execution-trust stamp for the ``http`` and ``mcp`` types ONLY. It lives at
     # definition scope, not on the two configs, for two reasons. The hash covers
