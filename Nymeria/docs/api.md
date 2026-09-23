@@ -1422,7 +1422,7 @@ GET /tools
 Authorization: Bearer <token>
 ```
 
-**Response:** current thread-available tool list.
+**Response:** current thread-available tool list. An entry backed by a published custom tool definition carries `custom_definition: true` (its `name` is the definition's stored id, the name `/tools enable` and a thread's `enabled_tools` bind it by).
 
 ### List Optional Tools
 
@@ -4498,7 +4498,9 @@ Authorization: Bearer <token>
 Enable or disable a built-in or live MCP server tool by mutating the user's
 `default_thread_tools`. Role-gated tools still require an admin caller. Custom
 tool execution is controlled through thread `enabled_tools` and custom-tool
-definition state, not this endpoint. Disabling `reply_to_thread` or
+definition state, not this endpoint: enabling a custom tool definition's id
+here is refused with 400 (a definition id in `default_thread_tools` binds
+nothing), while `enabled: false` still removes a stale entry. Disabling `reply_to_thread` or
 `wait_for_reply` succeeds and adds an advisory `warning` string to the
 response (see "Capability-loss warning" under `PATCH /threads/{thread_id}/config`).
 

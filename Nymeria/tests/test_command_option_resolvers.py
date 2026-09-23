@@ -312,6 +312,15 @@ class _ToolsApi:
     async def get_thread_config(self, thread_id: str) -> dict[str, Any]:
         return self.thread_config
 
+    async def get_custom_tool_definitions(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "weather_lookup",
+                "description": "Look up the forecast\nsecond line",
+                "custom_definition": True,
+            }
+        ]
+
 
 def test_resolve_tools_offers_categories_then_tools_with_thread_state() -> None:
     api = _ToolsApi()
@@ -327,6 +336,9 @@ def test_resolve_tools_offers_categories_then_tools_with_thread_state() -> None:
         "read_email",
         "send_email",
         "web_search",
+        # Published custom definitions last (#278): what /tools enable binds
+        # by id, so a generated form or autocomplete can offer them.
+        "weather_lookup",
     ]
     by_id = {o["id"]: o for o in options}
     assert by_id["email"]["meta"] == "category, 2 tools"
@@ -337,6 +349,8 @@ def test_resolve_tools_offers_categories_then_tools_with_thread_state() -> None:
     assert by_id["send_email"]["meta"] == "on"
     assert by_id["read_email"]["meta"] == "off"
     assert by_id["web_search"]["description"] == "Search the web"
+    assert by_id["weather_lookup"]["meta"] == "custom definition, off"
+    assert by_id["weather_lookup"]["description"] == "Look up the forecast"
     # The tool list is per-user, like the handlers' own read.
     assert api.default_tools_calls == ["alice"]
 
@@ -406,6 +420,7 @@ def test_resolve_tools_survives_a_malformed_category_payload() -> None:
         "read_email",
         "send_email",
         "web_search",
+        "weather_lookup",
     ]
 
 

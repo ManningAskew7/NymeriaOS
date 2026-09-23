@@ -237,13 +237,14 @@ async def resolve_fallback_models(
 
 
 async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
-    """Tool names AND category names, categories first.
+    """Category names, then tool names, then published custom definitions.
 
-    Both spellings are offered because that is what the ``/tools`` target
+    All three are offered because that is what the ``/tools`` target
     argument accepts (``tool_or_category``): ``_resolve_tool_names`` checks
-    the category map first and the available-tool list second, so a tool
-    shadowed by a category name is dropped here rather than offered as an
-    option that would resolve to the category.
+    the category map first, the available-tool list second and the custom
+    definitions third (#278), so a tool shadowed by a category name is
+    dropped here rather than offered as an option that would resolve to the
+    category, and a definition shadowed by either is dropped the same way.
 
     Per-thread enable state rides ``meta`` instead of ``current``: many
     tools are on at once, so marking them all would fill a picker with
@@ -309,6 +310,27 @@ async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
             form_option(
                 name,
                 meta=", ".join(meta_parts),
+                description=_first_line(entry.get("description")),
+            )
+        )
+    definitions: list[Mapping[str, Any]] = []
+    reader = getattr(executor.api, "get_custom_tool_definitions", None)
+    if reader is not None:
+        try:
+            definitions = [
+                entry for entry in (await reader() or []) if isinstance(entry, Mapping)
+            ]
+        except Exception:  # noqa: BLE001 - option sets degrade, never block.
+            logger.debug("options: custom definition listing failed", exc_info=True)
+    for entry in sorted(definitions, key=lambda tool: str(tool.get("name") or "")):
+        name = str(entry.get("name") or "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        options.append(
+            form_option(
+                name,
+                meta=f"custom definition, {'on' if name in active else 'off'}",
                 description=_first_line(entry.get("description")),
             )
         )

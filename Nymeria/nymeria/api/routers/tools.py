@@ -269,6 +269,8 @@ def create_tools_router(
         come from the caller's owned ThreadConfig rows instead of the global
         name-keyed registry, where same-name callables can collide.
         """
+        from ...tools.metadata import CUSTOM_TOOL_METADATA
+
         agent = get_agent_fn()
         registry_tools = agent.tool_registry.list_tools()
         callable_map = agent._callable_tool_thread_map or {}
@@ -278,6 +280,13 @@ def create_tools_router(
         result = [
             t for t in registry_tools if t["name"] not in callable_names_in_registry
         ]
+        # A registry entry backed by a published custom tool definition is
+        # typed as such (#278): the command surface resolves `/tools enable
+        # <id>` against this listing, and nothing else in the payload tells a
+        # definition apart from a seed or MCP tool.
+        for entry in result:
+            if entry["name"] in CUSTOM_TOOL_METADATA:
+                entry["custom_definition"] = True
 
         owned = set(agent.accounts_repo.list_threads_for_user(user.id))
         for tc in agent.thread_config_manager.list_callable_threads(

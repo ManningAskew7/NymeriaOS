@@ -53,6 +53,8 @@ class FakeCommandApi:
             {"status": "in_progress"},
         ]
         self.memories = [{"key": "a", "value": "12345"}]
+        # Published custom tool definitions (#278): {name: <stored id>, ...}.
+        self.custom_tool_definitions: list[dict[str, Any]] = []
         self.env_set_keys: set[str] = set()
         # Settable so a test can model an APPLIED CLIProxy route, which on
         # the wire is an ordinary provider plus a proxy base URL.
@@ -285,6 +287,10 @@ class FakeCommandApi:
     async def get_tool_categories(self) -> dict[str, Any]:
         self.calls.append(("get_tool_categories", (), {}))
         return {"categories": {"general": ["bash_execute"], "web": ["browser"]}}
+
+    async def get_custom_tool_definitions(self) -> list[dict[str, Any]]:
+        self.calls.append(("get_custom_tool_definitions", (), {}))
+        return list(self.custom_tool_definitions)
 
     async def list_todos(
         self,
@@ -7529,6 +7535,194 @@ def test_tools_enable_thread_scope_still_writes_only_the_thread() -> None:
     assert result.success is True, result.markdown
     assert [call for call in api.calls if call[0] == "update_thread_config"]
     assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def _weather_definition() -> dict[str, Any]:
+    return {
+        "name": "weather_lookup",
+        "description": "Look up the forecast for a city",
+        "custom_definition": True,
+    }
+
+
+def test_tools_enable_thread_scope_binds_a_custom_definition_by_id() -> None:
+    """#278: a published custom tool definition is bindable by its id on the
+    current thread, the way graph build already honours it; the typed form
+    normalises like every other name but the stored id is what gets written."""
+    api = FakeCommandApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    result = run(CommandService().execute(_ctx(), "/tools enable Weather-Lookup", api=api))
+
+    assert result.success is True, result.markdown
+    assert "weather_lookup" in result.markdown
+    writes = [call for call in api.calls if call[0] == "update_thread_config"]
+    assert len(writes) == 1
+    assert "weather_lookup" in writes[0][2]["enabled_tools"]
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_disable_thread_scope_accepts_a_custom_definition() -> None:
+    api = FakeCommandApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    api.thread_config["enabled_tools"] = ["weather_lookup"]
+    result = run(CommandService().execute(_ctx(), "/tools disable weather_lookup", api=api))
+
+    assert result.success is True, result.markdown
+    writes = [call for call in api.calls if call[0] == "update_thread_config"]
+    assert len(writes) == 1
+    assert "weather_lookup" in writes[0][2]["disabled_tools"]
+
+
+def test_tools_enable_global_refuses_a_custom_definition_with_the_per_thread_contract() -> None:
+    """Custom definitions bind through a thread's enabled_tools only: the
+    account-defaults path binds nothing for them, so the global scope is
+    refused with copy that says where the tool CAN be enabled, never written
+    into default_thread_tools as a silent no-op."""
+    api = FakeCommandApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    result = run(
+        CommandService().execute(_ctx(), "/tools enable weather_lookup global", api=api)
+    )
+
+    assert result.success is False
+    assert "weather_lookup" in result.markdown
+    assert "per thread" in result.markdown
+    assert "global" in result.markdown
+    assert "Unknown tool" not in result.markdown
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_unknown_name_stays_unknown_when_no_definition_matches() -> None:
+    api = FakeCommandApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    result = run(CommandService().execute(_ctx(), "/tools enable weather_report", api=api))
+
+    assert result.success is False
+    assert "Unknown tool or category 'weather_report'" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+class _CustomCategoryApi(FakeCommandApi):
+    async def get_tool_categories(self) -> dict[str, Any]:
+        self.calls.append(("get_tool_categories", (), {}))
+        return {
+            "categories": {
+                "general": ["bash_execute"],
+                "custom": ["tool_create", "skill_write", "skill_edit"],
+            }
+        }
+
+    async def get_default_tools(self, user_id: str = "default") -> dict[str, Any]:
+        data = await super().get_default_tools(user_id)
+        data["available_tools"] = list(data["available_tools"]) + [
+            {"name": "tool_create", "description": "Author a tool", "category": "custom"},
+            {"name": "skill_write", "description": "Write a skill", "category": "custom"},
+            {"name": "skill_edit", "description": "Edit a skill", "category": "custom"},
+        ]
+        return data
+
+
+def test_tools_enable_custom_category_says_which_custom_it_bound() -> None:
+    """The metadata category named "custom" is the tool-AUTHORING trio, not
+    the user's published definitions; the receipt has to say so, or a user
+    who wanted their definitions reads a success for the wrong thing."""
+    api = _CustomCategoryApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    result = run(CommandService().execute(_ctx(), "/tools enable custom", api=api))
+
+    assert result.success is True, result.markdown
+    assert "tool_create" in result.markdown
+    assert "weather_lookup" not in result.markdown
+    assert "authoring" in result.markdown
+    assert "by id" in result.markdown
+    writes = [call for call in api.calls if call[0] == "update_thread_config"]
+    assert set(writes[0][2]["enabled_tools"]) >= {"tool_create", "skill_write", "skill_edit"}
+    assert "weather_lookup" not in writes[0][2]["enabled_tools"]
+
+
+def test_tools_disable_custom_category_says_which_custom_at_both_scopes() -> None:
+    """A user who runs `/tools disable custom` to drop their definitions must
+    not read a success for the authoring trio as that."""
+    api = _CustomCategoryApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    thread = run(CommandService().execute(_ctx(), "/tools disable custom", api=api))
+    assert thread.success is True, thread.markdown
+    assert "authoring" in thread.markdown and "by id" in thread.markdown
+
+    api = _CustomCategoryApi()
+    api.default_tools = ["bash_execute", "tool_create"]
+    account = run(CommandService().execute(_ctx(), "/tools disable custom global", api=api))
+    assert account.success is True, account.markdown
+    assert "authoring" in account.markdown and "by id" in account.markdown
+
+
+def test_tools_disable_global_custom_definition_refusal_reads_for_disable_too() -> None:
+    api = FakeCommandApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    result = run(
+        CommandService().execute(_ctx(), "/tools disable weather_lookup global", api=api)
+    )
+
+    assert result.success is False
+    assert "per thread" in result.markdown
+    assert "without `global`" in result.markdown
+    # Enable-flavoured phrasing would misdirect a disable.
+    assert "should have it" not in result.markdown
+    assert not [call for call in api.calls if call[0] == "set_default_tools"]
+
+
+def test_tools_list_custom_marks_a_ttl_live_definition_on() -> None:
+    """tool_create(action="publish") auto-enables the publishing thread with a
+    2h TTL, which rides temporary_tools, not enabled_tools; the listing must
+    read that as on, the way `/tools list` and the option resolver do."""
+    api = _CustomCategoryApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    api.thread_config["temporary_tools"] = {
+        "weather_lookup": {"expires_at": "2999-01-01T00:00:00+00:00"}
+    }
+    result = run(CommandService().execute(_ctx(), "/tools list custom", api=api))
+
+    assert result.success is True, result.markdown
+    assert "[on]  weather_lookup" in result.markdown
+
+
+def test_http_client_reads_custom_definitions_from_get_tools(monkeypatch) -> None:
+    """The HTTP facade lists definitions off GET /tools (the one registry
+    listing every user can read), typed by the route's flag, sorted so both
+    transports list in the same order."""
+    client = CommandHttpClient("http://api.test", "token", use_act_as=True)
+    calls: list[tuple[Any, ...]] = []
+
+    async def fake_get(path, params=None, act_as=None):
+        calls.append(("GET", path, params, act_as))
+        return {
+            "tools": [
+                {"name": "bash_execute", "description": "shell", "enabled": True},
+                {"name": "zeta_tool", "description": "z", "enabled": True, "custom_definition": True},
+                {"name": "alpha_tool", "description": "a", "enabled": True, "custom_definition": True},
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    listed = run(client.get_custom_tool_definitions())
+
+    assert calls == [("GET", "/tools", None, None)]
+    assert listed == [
+        {"name": "alpha_tool", "description": "a", "custom_definition": True},
+        {"name": "zeta_tool", "description": "z", "custom_definition": True},
+    ]
+
+
+def test_tools_list_custom_category_lists_the_definitions_too() -> None:
+    api = _CustomCategoryApi()
+    api.custom_tool_definitions = [_weather_definition()]
+    result = run(CommandService().execute(_ctx(), "/tools list custom", api=api))
+
+    assert result.success is True, result.markdown
+    assert "tool_create" in result.markdown
+    assert "weather_lookup" in result.markdown
+    assert "Look up the forecast" in result.markdown
+    assert "by id" in result.markdown
 
 
 def test_tools_enable_global_unknown_name_never_reaches_the_writer() -> None:

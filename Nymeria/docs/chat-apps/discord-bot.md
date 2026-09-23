@@ -304,7 +304,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/tools enabled` | Show all tools active in this channel: core (with any disabled), optional enabled. |
 | `/tools category <name>` | List tools in a category with enabled/disabled status for this channel. |
 | `/tools search <query>` | Discord-local tool search with ranked suggestions and enable hints. |
-| `/tools enable <name>` | Enable a tool or entire category for this channel. Accepts a tool name (e.g., `bash_execute`) or category name (e.g., `email`). Autocomplete suggests both. |
+| `/tools enable <name>` | Enable a tool or entire category for this channel. Accepts a tool name (e.g., `bash_execute`), a category name (e.g., `email`), or a published custom tool definition's id. Autocomplete suggests tools and categories; a definition id is typed. |
 | `/tools disable <name>` | Disable a tool or entire category for this channel. Works for core tools (disabling a default) and optional tools. |
 | `/sequential-tools [mode] [scope]` | Run tool calls one at a time instead of in parallel. |
 

@@ -786,6 +786,29 @@ def _render_result_markdown(
     return True, "info", stripped
 
 
+def custom_definitions_from_tools_payload(payload: Any) -> list[dict]:
+    """The custom tool definitions in a ``GET /tools`` payload (#278).
+
+    Each entry is ``{name: <stored id>, description, custom_definition: True}``;
+    the in-process client builds the same shape from the metadata registry.
+    """
+    tools = payload.get("tools", []) if isinstance(payload, dict) else payload
+    out: list[dict] = []
+    for entry in tools or []:
+        if not isinstance(entry, dict) or not entry.get("custom_definition"):
+            continue
+        out.append(
+            {
+                "name": str(entry.get("name") or ""),
+                "description": str(entry.get("description") or ""),
+                "custom_definition": True,
+            }
+        )
+    # Sorted like the in-process client, so `/tools list custom` and the
+    # option pickers order the same on both transports.
+    return sorted(out, key=lambda entry: entry["name"])
+
+
 class CommandHttpClient:
     """Small REST compatibility client for out-of-process command callers.
 
@@ -1004,6 +1027,11 @@ class CommandHttpClient:
 
     async def get_tool_categories(self) -> dict:
         return await self._get("/tools/categories")
+
+    async def get_custom_tool_definitions(self) -> list[dict]:
+        # GET /tools is the one listing every user can read that carries the
+        # live registry, custom definitions included (typed by the route).
+        return custom_definitions_from_tools_payload(await self._get("/tools"))
 
     async def list_memories(self, user_id: str) -> list[dict]:
         data = await self._get(f"/users/{_path_param(user_id)}/memories", act_as=user_id)
@@ -1725,6 +1753,25 @@ class CommandBackendClient:
                 for category, names in categories.items()
             }
         }
+
+    async def get_custom_tool_definitions(self) -> list[dict]:
+        # Same shape and membership as the HTTP client derives from GET /tools
+        # (pinned by the tools-router test): registry AND metadata. An
+        # external edit re-registers metadata at once but only queues the
+        # registry re-sync, and in that window graph build could not bind the
+        # id, so it must not resolve here either.
+        from ..tools.metadata import CUSTOM_TOOL_METADATA
+
+        registry = getattr(self.agent, "tool_registry", None)
+        return [
+            {
+                "name": tool_id,
+                "description": meta.description or "",
+                "custom_definition": True,
+            }
+            for tool_id, meta in sorted(CUSTOM_TOOL_METADATA.items())
+            if registry is None or registry.get_tool(tool_id) is not None
+        ]
 
     async def list_memories(self, user_id: str) -> list[dict]:
         target_user_id = self._checked_user_id(user_id)
@@ -6722,7 +6769,9 @@ class _CommandExecutor(
 
     # ── Tools ─────────────────────────────────────────────────────────────
 
-    async def _resolve_tool_names(self, name: str, defaults: dict | None = None):
+    async def _resolve_tool_names(
+        self, name: str, defaults: dict | None = None, *, scope: str = "thread"
+    ):
         # ``defaults`` lets a caller that already read /tools/defaults hand the
         # payload in rather than pay for a second profile read.
         name_key = name.lower().strip().replace("-", "_")
@@ -6735,8 +6784,52 @@ class _CommandExecutor(
         all_names = {t["name"] for t in available}
         if name_key in all_names:
             return ([name_key], False, None, None)
+        # Published custom tool definitions (#278) are registered under their
+        # stored id and bind through a thread's enabled_tools at graph build,
+        # but never enter available_tools (seed + visible catalog + MCP). The
+        # stored id is what gets written, since the write is byte-exact.
+        stored_id = await self._match_custom_definition(name_key)
+        if stored_id is not None:
+            if scope == "global":
+                return (
+                    [],
+                    False,
+                    None,
+                    f"'{stored_id}' is a custom tool definition, which is bound per "
+                    "thread (in a thread's own tool set), never through the "
+                    "account defaults. Run this without `global` on that thread.",
+                )
+            return ([stored_id], False, None, None)
         cat_list = ", ".join(sorted(categories))
         return ([], False, None, f"Unknown tool or category '{name}'. Categories: {cat_list}")
+
+    async def _custom_tool_definitions(self) -> list[dict]:
+        """Published custom definitions, or [] on a client without the read."""
+        reader = getattr(self.api, "get_custom_tool_definitions", None)
+        if reader is None:
+            return []
+        try:
+            return list(await reader() or [])
+        except Exception:  # noqa: BLE001 - a listing miss degrades to "unknown"
+            # WARNING, not debug: the degraded answer is the exact "Unknown
+            # tool" this lookup exists to replace, so a broken read must show.
+            logger.warning("custom tool definition listing failed", exc_info=True)
+            return []
+
+    async def _match_custom_definition(self, name_key: str) -> str | None:
+        for entry in await self._custom_tool_definitions():
+            stored = str(entry.get("name") or "")
+            if stored and stored.lower().replace("-", "_") == name_key:
+                return stored
+        return None
+
+    @staticmethod
+    def _custom_category_note() -> str:
+        return (
+            " The 'custom' category is the tool-authoring trio (tool_create, "
+            "skill_write, skill_edit); a published custom tool definition is "
+            "enabled by id (`/tools list custom` names them)."
+        )
 
     async def _cmd_tools(self, bound: BoundArgs) -> str | CommandOutput:
         # Bare "/tools" is the enabled readout, the same view bare
@@ -6870,7 +6963,10 @@ class _CommandExecutor(
         tc = await self.api.get_thread_config(self.thread_id)
         thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
         thread_disabled = set(tc.get("disabled_tools", [])) if tc else set()
-        all_enabled = (default_names | thread_extras) - thread_disabled
+        # Live TTL'd tools count as on, the way `/tools list` and the option
+        # resolver compute it (a published definition's own thread carries it
+        # in temporary_tools for its first 2h, never in enabled_tools).
+        all_enabled = (default_names | thread_extras | live_temporary_tools(tc)) - thread_disabled
 
         cat_key = cat_name.lower().strip().replace("-", "_")
         cats: dict[str, list] = {}
@@ -6896,6 +6992,19 @@ class _CommandExecutor(
                 lines.append(f"  {mark} {tool_name}{tag}: {desc}")
             else:
                 lines.append(f"  {mark} {tool_name}{tag}")
+        if cat_key == "custom":
+            # The category is the authoring trio; the user's published
+            # definitions are the other thing "custom" means (#278), so list
+            # them here under the name that enables them.
+            definitions = await self._custom_tool_definitions()
+            lines.append(
+                f"Custom tool definitions (enable by id): {len(definitions)}"
+            )
+            for entry in definitions:
+                tool_id = str(entry.get("name") or "")
+                mark = "[on] " if tool_id in all_enabled else "[off]"
+                desc = (entry.get("description") or "").split("\n")[0][:60]
+                lines.append(f"  {mark} {tool_id}: {desc}" if desc else f"  {mark} {tool_id}")
         return "\n".join(lines)
 
     async def _set_default_tool_names(
@@ -6934,7 +7043,7 @@ class _CommandExecutor(
         if bound.get("scope") == "global":
             defaults = await self.api.get_default_tools(self.user_id)
             tool_names, is_category, cat_name, error = await self._resolve_tool_names(
-                name, defaults
+                name, defaults, scope="global"
             )
             if error:
                 return command_error(error)
@@ -6947,6 +7056,7 @@ class _CommandExecutor(
                 return command_success(
                     f"Enabled category '{cat_name}' ({len(tool_names)} tools) "
                     "on every thread of this account."
+                    + (self._custom_category_note() if cat_name == "custom" else "")
                 )
             return command_success(
                 f"Enabled tool '{tool_names[0]}' on every thread of this account."
@@ -6970,7 +7080,10 @@ class _CommandExecutor(
             disabled_tools=sorted(new_disabled),
         )
         if is_category:
-            return command_success(f"Enabled category '{cat_name}' ({len(tool_names)} tools).")
+            return command_success(
+                f"Enabled category '{cat_name}' ({len(tool_names)} tools)."
+                + (self._custom_category_note() if cat_name == "custom" else "")
+            )
         return command_success(f"Enabled tool '{tool_names[0]}'.")
 
     async def _cmd_tools_disable(self, bound: BoundArgs) -> str | CommandOutput:
@@ -6979,7 +7092,7 @@ class _CommandExecutor(
             defaults = await self.api.get_default_tools(self.user_id)
             current = set(defaults.get("default_tools", []))
             tool_names, is_category, cat_name, error = await self._resolve_tool_names(
-                name, defaults
+                name, defaults, scope="global"
             )
             if error:
                 # A name that no longer resolves but IS in the account's
@@ -7012,6 +7125,7 @@ class _CommandExecutor(
                 return command_success(
                     f"Removed category '{cat_name}' ({len(tool_names)} tools) "
                     f"from this account's defaults.{suffix}"
+                    + (self._custom_category_note() if cat_name == "custom" else "")
                 )
             return command_success(
                 f"Removed tool '{tool_names[0]}' from this account's defaults.{suffix}"
@@ -7041,6 +7155,7 @@ class _CommandExecutor(
         if is_category:
             return command_success(
                 f"Disabled category '{cat_name}' ({len(tool_names)} tools).{suffix}"
+                + (self._custom_category_note() if cat_name == "custom" else "")
             )
         return command_success(f"Disabled tool '{tool_names[0]}'.{suffix}")
 

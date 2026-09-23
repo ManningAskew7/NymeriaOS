@@ -155,6 +155,50 @@ def test_unified_tools_list_is_user_scoped_and_hides_custom_tools_from_non_admin
     assert admin_payload["custom_count"] == 1
 
 
+def test_unified_tool_enable_refuses_a_custom_definition_but_removes_one(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """#278: a definition id in default_thread_tools binds nothing (graph
+    build pulls only mcp__ names from the registry for the defaults), so the
+    per-user enable door must refuse it with the per-thread contract instead
+    of writing a dead entry; removal stays open so a stale entry can go."""
+    from nymeria.tools.metadata import (
+        register_custom_tool_metadata,
+        unregister_custom_tool_metadata,
+    )
+
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    token = _create_user(agent, "owner", role="admin")
+    register_custom_tool_metadata("weather_lookup", "Look up the forecast")
+    try:
+        with agent.profile_manager.atomic_update("owner") as profile:
+            profile.tool_preferences.default_thread_tools = [
+                SEED_TOOLS[0].name,
+                "weather_lookup",
+            ]
+        enable = client.put(
+            "/users/owner/tools/unified/weather_lookup/enable",
+            headers=api_client_builder.auth(token),
+            json={"enabled": True},
+        )
+        assert enable.status_code == 400
+        assert "per thread" in enable.json()["detail"]
+
+        disable = client.put(
+            "/users/owner/tools/unified/weather_lookup/enable",
+            headers=api_client_builder.auth(token),
+            json={"enabled": False},
+        )
+        assert disable.status_code == 200
+        defaults = agent.profile_manager.get_profile("owner").tool_preferences.default_thread_tools
+        assert "weather_lookup" not in defaults
+        assert SEED_TOOLS[0].name in defaults
+    finally:
+        unregister_custom_tool_metadata("weather_lookup")
+
+
 def test_unified_tool_enable_preserves_role_gates_and_rebuilds_defaults(
     tmp_path: Path,
     api_client_builder,

@@ -327,6 +327,64 @@ def test_default_tools_accepts_split_auth_manager_legacy_name(
     ]
 
 
+def test_list_tools_marks_custom_definitions_and_backend_lists_them(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """#278: GET /tools types the registry entries a custom tool definition
+    backs (``custom_definition: true``), and the in-process command client
+    lists exactly those, in the shape the HTTP client derives from the route,
+    so /tools enable can address a definition by id on either transport."""
+    from nymeria.core.command_service import (
+        CommandBackendClient,
+        _CommandBackendUser,
+        custom_definitions_from_tools_payload,
+    )
+    from nymeria.tools.metadata import (
+        register_custom_tool_metadata,
+        unregister_custom_tool_metadata,
+    )
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+
+    def weather_lookup(city: str) -> str:
+        return city
+
+    agent.tool_registry.register_function(
+        weather_lookup, name="weather_lookup", description="Look up the forecast"
+    )
+    register_custom_tool_metadata("weather_lookup", "Look up the forecast")
+    # Metadata re-registers immediately on an external edit while the
+    # registry re-sync is only queued; a definition in that window must not
+    # resolve on the in-process client, since graph build could not bind it.
+    register_custom_tool_metadata("ghost_definition", "Not in the registry yet")
+    try:
+        response = client.get("/tools", headers=api_client_builder.auth(token))
+        assert response.status_code == 200
+        by_name = {tool["name"]: tool for tool in response.json()["tools"]}
+        assert by_name["weather_lookup"]["custom_definition"] is True
+        assert "custom_definition" not in by_name[SEED_TOOLS[0].name]
+
+        derived = custom_definitions_from_tools_payload(response.json())
+        backend = CommandBackendClient(
+            agent,
+            user=_CommandBackendUser(id="owner", role="user"),
+            settings_fn=lambda: api_client_builder.settings(tmp_path),
+        )
+        listed = asyncio.run(backend.get_custom_tool_definitions())
+        assert derived == listed == [
+            {
+                "name": "weather_lookup",
+                "description": "Look up the forecast",
+                "custom_definition": True,
+            }
+        ]
+    finally:
+        unregister_custom_tool_metadata("weather_lookup")
+        unregister_custom_tool_metadata("ghost_definition")
+
+
 def test_command_backend_get_default_tools_matches_route_payload(
     tmp_path: Path,
     api_client_builder,

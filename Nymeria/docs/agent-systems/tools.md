@@ -2088,6 +2088,7 @@ slash_command(command: str)
 - `/memory save color "deep blue"`  -  save a user memory
 - `/tools enable browser`  -  turn on a category on this thread
 - `/tools enable harness_report global`  -  add it to `default_thread_tools`, so every thread of the account inherits it
+- `/tools enable <custom tool id>`  -  bind a published custom tool definition on this thread (definitions never take `global`)
 - `/skill <name> [prompt]`  -  activate a markdown-only skill for this turn
 - `/kit <name> [ttl] [prompt]`  -  activate a visible Skill Kit and bind tools
 - `/skills list`  -  show skill and Skill Kit activation status on the current thread
@@ -3323,6 +3324,8 @@ PUT /tools/custom/{tool_id}    # Update a tool
 DELETE /tools/custom/{tool_id} # Delete a tool
 POST /tools/custom/{tool_id}/test  # Test a tool
 ```
+
+**Via slash commands:** `/tools enable <tool id>` binds a published definition on the current thread and `/tools disable <tool id>` removes it (the id is the definition's stored `id`, typed case-insensitively with `-` or `_`; the stored form is what gets written). The `global` scope is refused for a definition: custom tools bind through a thread's `enabled_tools` at graph build, and an id in `default_thread_tools` binds nothing. `/tools enable custom` is a different thing: the metadata category named `custom` is the tool-authoring trio (`tool_create`, `skill_write`, `skill_edit`), and the receipt says so; `/tools list custom` shows that trio and then the published definitions under "enable by id". `GET /tools` marks a definition's registry entry with `custom_definition: true`, which is how the command surface tells one apart over HTTP (the in-process client derives the same list from the metadata registry); the per-user REST enable (`PUT /users/{id}/tools/unified/{tool_id}/enable`) refuses a definition for the same reason and only lets one be removed. Generated `/tools` forms and Discord autocomplete offer the definitions after the tools, marked "custom definition".
 
 **Storage:** Custom tools are stored as JSON files in `data/custom_tools/`, one `.json` per tool ID. HTTP and MCP tools are declarative definitions. Python tools store source code in the same JSON manifest and execute through the subprocess wrapper.
 

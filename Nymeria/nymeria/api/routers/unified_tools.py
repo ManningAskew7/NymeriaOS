@@ -207,8 +207,9 @@ def create_unified_tools_router(
         """
         Enable or disable a built-in or MCP server tool for a user.
 
-        This mutates default_thread_tools. Custom tools are managed per-thread
-        through enabled_tools.
+        This mutates default_thread_tools. Custom tool definitions are managed
+        per-thread through enabled_tools, so enabling one here is refused
+        (400) while disabling clears a stale entry.
         """
         require_same_user_or_admin_fn(user, user_id)
         from ...tools import (
@@ -216,7 +217,7 @@ def create_unified_tools_router(
             DEVELOPER_ONLY_TOOL_NAMES,
             resolve_default_tool_names,
         )
-        from ...tools.metadata import get_all_tool_metadata
+        from ...tools.metadata import CUSTOM_TOOL_METADATA, get_all_tool_metadata
 
         agent = get_agent_fn()
         tool_meta = get_all_tool_metadata(tool_id)
@@ -231,6 +232,18 @@ def create_unified_tools_router(
                     status_code=409,
                     detail=f"MCP tool '{tool_id}' is known but not currently available",
                 )
+        if request.enabled and tool_id in CUSTOM_TOOL_METADATA:
+            # A definition id in default_thread_tools binds nothing: graph
+            # build pulls only mcp__ names from the registry for the defaults
+            # (#278). Removal stays open so a stale entry can be cleared.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{tool_id}' is a custom tool definition, which is bound per "
+                    "thread (a thread's enabled_tools), never through the account "
+                    "defaults. Enable it on the thread that should have it."
+                ),
+            )
 
         if (
             request.enabled
