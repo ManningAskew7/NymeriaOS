@@ -130,6 +130,18 @@ still reaches every platform that had its env vars set.
 Auto-seed is idempotent; subsequent calls do nothing if all expected
 destinations already exist.
 
+Deleting a seeded default sticks. The repo records a tombstone per
+(user, destination name) when a destination is deleted or renamed away,
+and the auto-seed skips tombstoned names entirely: it neither re-creates
+them nor lists them in a freshly created `"default"` profile, so a
+`DELETE` on `telegram-default` stays deleted while the env token is still
+set (before #263 the next listing resurrected it). Creating a destination
+with that name again (or renaming another onto it) lifts the tombstone; a
+later delete tombstones it again. Tombstones are per user, so another
+account listing for the first time still gets its own defaults. The
+`"default"` profile itself is still re-created when it is missing and at
+least one seedable default is not tombstoned.
+
 ## REST API
 
 All routes are user-scoped via `Act-As`; admins can target other users
@@ -147,7 +159,7 @@ GET    /notifications/destinations                  list
 POST   /notifications/destinations                  create
 GET    /notifications/destinations/{id}             get one
 PATCH  /notifications/destinations/{id}             update
-DELETE /notifications/destinations/{id}             delete (+ cascade-remove from profiles)
+DELETE /notifications/destinations/{id}             delete (+ cascade-remove from profiles; a seeded default stays deleted, see Auto-seed)
 POST   /notifications/destinations/{id}/test        send a test message (no audit-log row)
 ```
 

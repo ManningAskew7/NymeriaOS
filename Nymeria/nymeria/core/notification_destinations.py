@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from . import secrets as nymeria_secrets
 
@@ -93,6 +93,12 @@ class DestinationAlreadyExists(ValueError):
     """A destination with this name already exists for this user."""
 
 
+class DestinationTombstoned(ValueError):
+    """A seed create found a tombstone for this name (the user deleted or
+    renamed the destination away, so the auto-seed must not re-create it).
+    """
+
+
 class ProfileNotFound(LookupError):
     """No profile with the given id or name for this user."""
 
@@ -153,6 +159,18 @@ CREATE TABLE IF NOT EXISTS notification_profiles (
 );
 CREATE INDEX IF NOT EXISTS idx_notification_profiles_user
     ON notification_profiles(user_id);
+
+-- #263: a deleted (or renamed-away) destination name leaves a tombstone so
+-- the read-path auto-seed (notification_channels.ensure_seeded_destinations)
+-- never resurrects a default the user removed. Invariant: a tombstone never
+-- coexists with a live destination of the same (user_id, name); creating or
+-- renaming onto the name clears it.
+CREATE TABLE IF NOT EXISTS notification_destination_tombstones (
+    user_id     TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    deleted_at  TEXT NOT NULL,
+    PRIMARY KEY (user_id, name)
+);
 """
 
 
@@ -205,14 +223,25 @@ class NotificationDestinationsRepo:
         config: Optional[Dict[str, Any]] = None,
         secret_fields: Optional[Dict[str, str]] = None,
         enabled: bool = True,
+        seed: bool = False,
     ) -> NotificationDestination:
         """Create a destination. Raises :class:`DestinationAlreadyExists` on
         duplicate (user_id, name).
+
+        An explicit create lifts any tombstone on the name. A ``seed`` create
+        (the read-path auto-seed) instead honours it: the tombstone is
+        re-checked inside this transaction and :class:`DestinationTombstoned`
+        is raised, so a delete that lands between the seed's own tombstone
+        read and this insert is never undone.
         """
         now = _now()
         dest_id = _new_id()
         config_json = json.dumps(config or {}, sort_keys=True)
         with self._lock, self._connect() as conn:
+            if seed and self._is_tombstoned_locked(conn, user_id, name):
+                raise DestinationTombstoned(
+                    f"Destination '{name}' was removed by user {user_id}"
+                )
             try:
                 conn.execute(
                     "INSERT INTO notification_destinations "
@@ -224,6 +253,8 @@ class NotificationDestinationsRepo:
                 raise DestinationAlreadyExists(
                     f"Destination '{name}' already exists for user {user_id}"
                 ) from exc
+            if not seed:
+                self._clear_tombstone_locked(conn, user_id, name)
             if secret_fields:
                 for field_name, plaintext in secret_fields.items():
                     conn.execute(
@@ -270,7 +301,8 @@ class NotificationDestinationsRepo:
             new_config = config if config is not None else json.loads(row["config_json"])
             new_enabled = enabled if enabled is not None else bool(row["enabled"])
 
-            if name is not None and name != row["name"]:
+            renamed = name is not None and name != row["name"]
+            if renamed:
                 # Rename: cascade to every profile that references the old name.
                 self._rename_destination_in_profiles_locked(
                     conn, user_id, row["name"], name,
@@ -293,6 +325,13 @@ class NotificationDestinationsRepo:
                 raise DestinationAlreadyExists(
                     f"Destination '{new_name}' already exists for user {user_id}"
                 ) from exc
+            if renamed:
+                # The old name is gone the same way a delete removes it: the
+                # auto-seed must not hand the user a fresh copy of a default
+                # they renamed. The new name is live, so any tombstone on it
+                # is stale.
+                self._tombstone_locked(conn, user_id, row["name"], now)
+                self._clear_tombstone_locked(conn, user_id, new_name)
 
             if secret_fields:
                 for field_name, plaintext in secret_fields.items():
@@ -336,8 +375,57 @@ class NotificationDestinationsRepo:
                 "DELETE FROM notification_destinations WHERE id = ? AND user_id = ?",
                 (dest_id, user_id),
             )
+            self._tombstone_locked(conn, user_id, row["name"], _now())
             conn.commit()
             return True
+
+    def tombstoned_destination_names(
+        self, *, user_id: str, names: Optional[Iterable[str]] = None,
+    ) -> Set[str]:
+        """Names this user deleted (or renamed away) that the auto-seed must
+        never re-create, optionally restricted to *names*. See the schema
+        comment for the invariant.
+        """
+        sql = "SELECT name FROM notification_destination_tombstones WHERE user_id = ?"
+        params: List[Any] = [user_id]
+        if names is not None:
+            wanted = sorted(set(names))
+            if not wanted:
+                return set()
+            sql += " AND name IN (%s)" % ",".join("?" * len(wanted))
+            params.extend(wanted)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return {row["name"] for row in rows}
+
+    @staticmethod
+    def _is_tombstoned_locked(
+        conn: sqlite3.Connection, user_id: str, name: str,
+    ) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM notification_destination_tombstones WHERE user_id = ? AND name = ?",
+            (user_id, name),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _tombstone_locked(
+        conn: sqlite3.Connection, user_id: str, name: str, deleted_at: str,
+    ) -> None:
+        conn.execute(
+            "INSERT OR REPLACE INTO notification_destination_tombstones "
+            "(user_id, name, deleted_at) VALUES (?, ?, ?)",
+            (user_id, name, deleted_at),
+        )
+
+    @staticmethod
+    def _clear_tombstone_locked(
+        conn: sqlite3.Connection, user_id: str, name: str,
+    ) -> None:
+        conn.execute(
+            "DELETE FROM notification_destination_tombstones WHERE user_id = ? AND name = ?",
+            (user_id, name),
+        )
 
     def get_destination(
         self, *, user_id: str, dest_id: str,

@@ -269,6 +269,166 @@ def test_auto_seed_creates_default_profile(repo):
     assert "telegram-default" in profile.destination_names
 
 
+def test_deleted_default_destination_is_not_reseeded(repo):
+    """#263: a DELETE of a seeded default must stick across later listings."""
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+        discord_webhook_url="https://discord.example.com/webhook/abc",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    seeded = repo.get_destination_by_name(user_id="alice", name="telegram-default")
+    assert seeded is not None
+    assert repo.delete_destination(user_id="alice", dest_id=seeded.id) is True
+
+    created = ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+
+    assert created == []
+    assert repo.get_destination_by_name(user_id="alice", name="telegram-default") is None
+    profile = repo.get_profile_by_name(user_id="alice", name="default")
+    assert profile is not None
+    assert profile.destination_names == ["discord-default"]
+
+
+def test_renamed_default_destination_is_not_reseeded(repo):
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    seeded = repo.get_destination_by_name(user_id="alice", name="telegram-default")
+    repo.update_destination(user_id="alice", dest_id=seeded.id, name="phone")
+
+    created = ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+
+    assert created == []
+    assert repo.get_destination_by_name(user_id="alice", name="telegram-default") is None
+    assert [d.name for d in repo.list_destinations(user_id="alice")] == ["phone"]
+    profile = repo.get_profile_by_name(user_id="alice", name="default")
+    assert profile.destination_names == ["phone"]
+
+
+def test_tombstoned_default_is_left_out_of_a_fresh_default_profile(repo):
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+        discord_webhook_url="https://discord.example.com/webhook/abc",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    seeded = repo.get_destination_by_name(user_id="alice", name="telegram-default")
+    repo.delete_destination(user_id="alice", dest_id=seeded.id)
+    profile = repo.get_profile_by_name(user_id="alice", name="default")
+    repo.delete_profile(user_id="alice", profile_id=profile.id)
+
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+
+    fresh = repo.get_profile_by_name(user_id="alice", name="default")
+    assert fresh is not None
+    assert fresh.destination_names == ["discord-default"]
+
+
+def test_no_default_profile_is_created_when_every_default_is_tombstoned(repo):
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    seeded = repo.get_destination_by_name(user_id="alice", name="telegram-default")
+    repo.delete_destination(user_id="alice", dest_id=seeded.id)
+    profile = repo.get_profile_by_name(user_id="alice", name="default")
+    repo.delete_profile(user_id="alice", profile_id=profile.id)
+
+    assert ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo) == []
+    assert repo.get_profile_by_name(user_id="alice", name="default") is None
+
+
+def test_tombstones_do_not_cross_users(repo):
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    seeded = repo.get_destination_by_name(user_id="alice", name="telegram-default")
+    repo.delete_destination(user_id="alice", dest_id=seeded.id)
+
+    assert ensure_seeded_destinations(user_id="bob", settings=settings, repo=repo) == [
+        "telegram-default"
+    ]
+    assert ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo) == []
+
+
+def test_explicit_recreate_is_honoured_and_a_second_delete_sticks(repo):
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    seeded = repo.get_destination_by_name(user_id="alice", name="telegram-default")
+    repo.delete_destination(user_id="alice", dest_id=seeded.id)
+    manual = repo.create_destination(
+        user_id="alice", name="telegram-default", type="telegram",
+        config={"chat_id": "42"},
+    )
+    assert ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo) == []
+    assert repo.get_destination_by_name(
+        user_id="alice", name="telegram-default",
+    ).config == {"chat_id": "42"}
+
+    repo.delete_destination(user_id="alice", dest_id=manual.id)
+    assert ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo) == []
+    assert repo.get_destination_by_name(user_id="alice", name="telegram-default") is None
+
+
+def test_a_delete_landing_after_the_seed_read_its_tombstones_still_wins(repo):
+    """Race pin (#263 review): the seed reads tombstones, then creates. If a
+    DELETE commits in between, the create must not resurrect the row nor
+    lift the fresh tombstone. Simulated by feeding the seed a stale read.
+    """
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    seeded = repo.get_destination_by_name(user_id="alice", name="telegram-default")
+    repo.delete_destination(user_id="alice", dest_id=seeded.id)
+
+    real_read = repo.tombstoned_destination_names
+    repo.tombstoned_destination_names = lambda **kw: set()  # type: ignore[method-assign]
+    try:
+        created = ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    finally:
+        repo.tombstoned_destination_names = real_read  # type: ignore[method-assign]
+
+    assert created == []
+    assert repo.get_destination_by_name(user_id="alice", name="telegram-default") is None
+    assert repo.tombstoned_destination_names(user_id="alice") == {"telegram-default"}
+
+
+def test_a_live_destination_outranks_a_stale_tombstone_in_a_fresh_profile(repo):
+    """Defensive: the invariant (no tombstone beside a live row) is kept by
+    code, not a constraint. If it is ever broken, the live destination is
+    authoritative and still lands in a freshly created default profile.
+    """
+    settings = _settings(
+        telegram_bot_token="123:abc",
+        telegram_default_chat_id="999",
+    )
+    ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo)
+    profile = repo.get_profile_by_name(user_id="alice", name="default")
+    repo.delete_profile(user_id="alice", profile_id=profile.id)
+    with repo._connect() as conn:
+        conn.execute(
+            "INSERT INTO notification_destination_tombstones (user_id, name, deleted_at) "
+            "VALUES ('alice', 'telegram-default', 'x')"
+        )
+        conn.commit()
+
+    assert ensure_seeded_destinations(user_id="alice", settings=settings, repo=repo) == []
+    fresh = repo.get_profile_by_name(user_id="alice", name="default")
+    assert fresh is not None
+    assert fresh.destination_names == ["telegram-default"]
+
+
 def test_send_result_helpers():
     assert SendResult.success("ok").ok is True
     assert SendResult.error("nope").ok is False

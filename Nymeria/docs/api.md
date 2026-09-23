@@ -3207,6 +3207,11 @@ GET    /notifications/preferences
 PATCH  /notifications/preferences
 ```
 
+Listings auto-seed default destinations (`telegram-default`, ...) from the
+global env config on first touch. A `DELETE` (or a rename away) of a seeded
+default is tombstoned per user and never re-seeded; re-creating the name
+lifts the tombstone (`agent-systems/notifications.md`, Auto-seed).
+
 ### Send an external notification
 
 ```http

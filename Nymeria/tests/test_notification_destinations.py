@@ -4,6 +4,7 @@ cascade, profile delete cascade.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from cryptography.fernet import Fernet
 from nymeria.core.notification_destinations import (
     DestinationAlreadyExists,
     DestinationNotFound,
+    DestinationTombstoned,
     NotificationDestinationsRepo,
     ProfileAlreadyExists,
     ProfileNotFound,
@@ -230,3 +232,106 @@ def test_destination_rename_only_affects_owner(repo):
     repo.update_destination(user_id="alice", dest_id=a.id, name="alice-phone")
     bob_profile = repo.get_profile_by_name(user_id="bob", name="default")
     assert bob_profile.destination_names == ["phone"]
+
+
+# -- tombstones (#263) --------------------------------------------------------
+#
+# A deleted or renamed-away name leaves a tombstone so the auto-seed in
+# notification_channels never resurrects a default the user removed. The
+# invariant is that a tombstone never coexists with a live destination of
+# that name: creating (or renaming onto) the name clears it.
+
+
+def _assert_no_tombstone_shadows_a_live_destination(repo, user_id):
+    live = {d.name for d in repo.list_destinations(user_id=user_id)}
+    assert repo.tombstoned_destination_names(user_id=user_id) & live == set()
+
+
+def test_delete_records_a_tombstone_and_recreate_clears_it(repo):
+    dest = repo.create_destination(user_id="alice", name="telegram-default", type="telegram")
+    assert repo.tombstoned_destination_names(user_id="alice") == set()
+
+    repo.delete_destination(user_id="alice", dest_id=dest.id)
+    assert repo.tombstoned_destination_names(user_id="alice") == {"telegram-default"}
+
+    repo.create_destination(user_id="alice", name="telegram-default", type="telegram")
+    assert repo.tombstoned_destination_names(user_id="alice") == set()
+    _assert_no_tombstone_shadows_a_live_destination(repo, "alice")
+
+
+def test_rename_tombstones_the_old_name_and_clears_the_new(repo):
+    gone = repo.create_destination(user_id="alice", name="phone", type="telegram")
+    repo.delete_destination(user_id="alice", dest_id=gone.id)
+    dest = repo.create_destination(user_id="alice", name="telegram-default", type="telegram")
+
+    repo.update_destination(user_id="alice", dest_id=dest.id, name="phone")
+
+    assert repo.tombstoned_destination_names(user_id="alice") == {"telegram-default"}
+    assert repo.get_destination_by_name(user_id="alice", name="phone") is not None
+    _assert_no_tombstone_shadows_a_live_destination(repo, "alice")
+
+
+def test_update_without_a_rename_leaves_tombstones_alone(repo):
+    gone = repo.create_destination(user_id="alice", name="old", type="telegram")
+    repo.delete_destination(user_id="alice", dest_id=gone.id)
+    dest = repo.create_destination(user_id="alice", name="keep", type="telegram")
+
+    repo.update_destination(user_id="alice", dest_id=dest.id, enabled=False)
+
+    assert repo.tombstoned_destination_names(user_id="alice") == {"old"}
+    _assert_no_tombstone_shadows_a_live_destination(repo, "alice")
+
+
+def test_seed_create_honours_a_tombstone_written_after_the_seed_looked(repo):
+    """The auto-seed reads tombstones, then creates. A delete that lands in
+    between must win: the seed-flavoured create re-checks in-transaction and
+    leaves the tombstone in place instead of lifting it.
+    """
+    dest = repo.create_destination(user_id="alice", name="telegram-default", type="telegram")
+    repo.delete_destination(user_id="alice", dest_id=dest.id)
+
+    with pytest.raises(DestinationTombstoned):
+        repo.create_destination(
+            user_id="alice", name="telegram-default", type="telegram", seed=True,
+        )
+
+    assert repo.tombstoned_destination_names(user_id="alice") == {"telegram-default"}
+    assert repo.get_destination_by_name(user_id="alice", name="telegram-default") is None
+    # Without a tombstone the seed create is an ordinary create.
+    repo.create_destination(user_id="alice", name="discord-default", type="discord", seed=True)
+    assert repo.get_destination_by_name(user_id="alice", name="discord-default") is not None
+
+
+def test_tombstoned_names_can_be_scoped_to_a_name_set(repo):
+    for name in ("a", "b", "c"):
+        d = repo.create_destination(user_id="alice", name=name, type="discord")
+        repo.delete_destination(user_id="alice", dest_id=d.id)
+
+    assert repo.tombstoned_destination_names(user_id="alice", names=["b", "zzz"]) == {"b"}
+    assert repo.tombstoned_destination_names(user_id="alice", names=[]) == set()
+    assert repo.tombstoned_destination_names(user_id="alice") == {"a", "b", "c"}
+
+
+def test_tombstones_are_per_user(repo):
+    a = repo.create_destination(user_id="alice", name="telegram-default", type="telegram")
+    repo.create_destination(user_id="bob", name="telegram-default", type="telegram")
+    repo.delete_destination(user_id="alice", dest_id=a.id)
+
+    assert repo.tombstoned_destination_names(user_id="alice") == {"telegram-default"}
+    assert repo.tombstoned_destination_names(user_id="bob") == set()
+    assert repo.get_destination_by_name(user_id="bob", name="telegram-default") is not None
+
+
+def test_pre_upgrade_database_gains_the_tombstone_table_on_init(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
+    db_path = tmp_path / "accounts.db"
+    first = NotificationDestinationsRepo(db_path)
+    dest = first.create_destination(user_id="alice", name="telegram-default", type="telegram")
+    # Simulate an accounts.db written before the tombstone table existed.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE notification_destination_tombstones")
+        conn.commit()
+
+    upgraded = NotificationDestinationsRepo(db_path)
+    assert upgraded.delete_destination(user_id="alice", dest_id=dest.id) is True
+    assert upgraded.tombstoned_destination_names(user_id="alice") == {"telegram-default"}

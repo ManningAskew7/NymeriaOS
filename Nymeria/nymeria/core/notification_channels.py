@@ -629,23 +629,43 @@ def ensure_seeded_destinations(
     destination list is the freshly-seeded set merged with whatever already
     exists with the default names.
 
+    A default name the user deleted or renamed away is tombstoned by the repo
+    (#263) and is skipped here entirely: not re-created, and not listed in a
+    freshly created default profile. This runs on every listing and notify,
+    so without the tombstone a delete could never stick while the env config
+    stayed set. An explicit re-create of the name lifts the tombstone.
+
     Returns the destination names that were created (empty if everything was
     already seeded). Safe to call on every startup or first notify call.
     """
-    from .notification_destinations import DestinationAlreadyExists
+    from .notification_destinations import (
+        DestinationAlreadyExists,
+        DestinationTombstoned,
+    )
 
     created: List[str] = []
     seeded_names: List[str] = []
+    candidates = []
     for channel in list_channel_types():
         seed = channel.auto_seed(settings)
-        if not seed:
-            continue
-        default_name = _AUTO_SEED_DEFAULT_NAMES.get(channel.name)
-        if not default_name:
-            continue
-        seeded_names.append(default_name)
+        default_name = _AUTO_SEED_DEFAULT_NAMES.get(channel.name) if seed else None
+        if default_name:
+            candidates.append((channel, seed, default_name))
+    if not candidates:
+        return created
+
+    tombstoned = repo.tombstoned_destination_names(
+        user_id=user_id, names=[name for _, _, name in candidates],
+    )
+    for channel, seed, default_name in candidates:
+        # A live destination is authoritative: it belongs in a fresh default
+        # profile even if a stale tombstone somehow shares its name. The
+        # tombstone only decides whether to CREATE.
         existing = repo.get_destination_by_name(user_id=user_id, name=default_name)
         if existing is not None:
+            seeded_names.append(default_name)
+            continue
+        if default_name in tombstoned:
             continue
         try:
             repo.create_destination(
@@ -655,13 +675,23 @@ def ensure_seeded_destinations(
                 config=seed.get("config") or {},
                 secret_fields=seed.get("secret_fields") or {},
                 enabled=True,
+                seed=True,
             )
-            created.append(default_name)
         except DestinationAlreadyExists:
             # Race: another caller (or a prior partial seed) created it
             # between get_destination_by_name and create_destination. Safe
             # to ignore; idempotency is the whole point of this function.
             logger.debug("ensure_seeded_destinations: race for %s", default_name)
+            seeded_names.append(default_name)
+            continue
+        except DestinationTombstoned:
+            # Race the other way: a delete landed after the tombstone read
+            # above. The repo re-checked inside its own transaction, so the
+            # user's delete stands and the seed steps aside.
+            logger.debug("ensure_seeded_destinations: tombstoned %s", default_name)
+            continue
+        seeded_names.append(default_name)
+        created.append(default_name)
 
     profile = repo.get_profile_by_name(user_id=user_id, name=default_profile_name)
     if profile is None and seeded_names:

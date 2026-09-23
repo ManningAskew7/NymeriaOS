@@ -1595,7 +1595,8 @@ Nymeria's notification system is driven by user-configured **destinations**
 `data/accounts.db`, not by environment variables. The env vars listed under
 the Telegram / Discord / Slack / Teams sections below are used ONLY for
 auto-seeding default destinations on first run so existing deployments keep
-working without reconfiguration.
+working without reconfiguration (a seeded default you delete stays deleted:
+`agent-systems/notifications.md`, Auto-seed).
 
 To configure destinations interactively, use **Settings → Notifications** in
 the desktop app, or have the agent do it via the
