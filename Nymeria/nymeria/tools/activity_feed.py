@@ -63,6 +63,13 @@ def _build_thread_summary(entries: List[ActivityEntry]) -> str:
         completed = [e for e in tasks if e.type == ActivityType.TASK_COMPLETED]
         failed = [e for e in tasks if e.type == ActivityType.TASK_FAILED]
         skipped = [e for e in tasks if e.type == ActivityType.TASK_SKIPPED]
+        # A run still going past its threshold (#395) rides the same row type
+        # but skipped nothing yet: count it apart so "skipped" stays honest.
+        still_running = [
+            e for e in skipped
+            if (e.metadata or {}).get("reason") == "run_still_running"
+        ]
+        skipped = [e for e in skipped if e not in still_running]
         invoked = [e for e in tasks if e.type == ActivityType.SELF_INVOKE]
         parts = []
         if invoked:
@@ -75,8 +82,10 @@ def _build_thread_summary(entries: List[ActivityEntry]) -> str:
             # A scheduled occurrence that never ran (#262); the message says
             # whether a late re-arm skipped it or a leftover marker blocked it.
             parts.append(f"{len(skipped)} skipped")
+        if still_running:
+            parts.append(f"{len(still_running)} still running long")
         lines.append(f"  Autonomous tasks: {', '.join(parts)}")
-        for e in completed + failed + skipped:
+        for e in completed + failed + skipped + still_running:
             lines.append(f"    - {e.message[:80]}")
 
     if todo_events:

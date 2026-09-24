@@ -58,3 +58,25 @@ def test_skipped_occurrences_count_and_list_under_autonomous_tasks():
     assert "Autonomous tasks: 1 completed, 1 skipped" in summary
     assert "    - Skipped 3 scheduled occurrences: Hourly check" in summary
     assert "task_skipped:" not in summary
+
+
+def test_a_long_run_row_is_counted_apart_from_skips():
+    # #395: a run still going past its threshold rides the task_skipped row
+    # type, but skipped nothing yet, so "skipped" must not count it.
+    entries = [
+        ActivityEntry(
+            type=ActivityType.TASK_SKIPPED,
+            message="Skipped 1 scheduled occurrence: Hourly check",
+            metadata={"reason": "occurrences_collapsed"},
+        ),
+        ActivityEntry(
+            type=ActivityType.TASK_SKIPPED,
+            message="Still running after 61 min: Morning meds",
+            metadata={"reason": "run_still_running"},
+        ),
+    ]
+
+    summary = _build_thread_summary(entries)
+
+    assert "Autonomous tasks: 1 skipped, 1 still running long" in summary
+    assert "    - Still running after 61 min: Morning meds" in summary

@@ -195,7 +195,8 @@ still guards the *live* in-flight path (`mark_execution_started` /
 still-running process: a release DELETE that keeps failing, or a marker from
 a second scheduler process on the same database. (A wedged run is a
 different mechanism: its future stays registered in the pool, so the poll
-never resubmits it.) A failed release is retried at the start of every poll,
+never resubmits it; it is reported instead, see "A run that never ends"
+below.) A failed release is retried at the start of every poll,
 and a due TODO blocked by a leftover marker is reported rather than silently
 held (see "Occurrences that never run" below).
 
@@ -306,7 +307,7 @@ before the bot has finished delivering.
 ### Occurrences that never run
 
 An occurrence that will not run is reported, not swallowed (#262; before
-it, five missed medication reminders produced zero signals). Two paths
+it, five missed medication reminders produced zero signals). Three paths
 leave a scheduled occurrence unrun:
 
 - **A late fire.** When a recurring occurrence runs after later slots of
@@ -352,6 +353,30 @@ leave a scheduled occurrence unrun:
   the split is exact; with a second scheduler process on the same database
   (a misconfiguration, backlog #397) a live run that re-armed its own TODO
   into a slot that comes due mid-run also reads as blocked.
+- **A run that never ends** (#395). Nothing times a scheduled run out: the
+  only cancellation is cooperative (`/stop` flags the turn between stream
+  events, so a single stalled network read never sees it), and the Docker
+  worker's relay to the API has no read timeout and receives a keepalive
+  every 25 s anyway. While a run's future is registered in the pool the
+  poll never starts that TODO again, one-shot or recurring; its row stays
+  due, so the skip repeats every poll, and it now logs one INFO line per
+  run (and drops out of the per-poll "Found N due" lines). A run that has
+  been RUNNING for `SCHEDULER_RUN_STUCK_ALERT_MINUTES` (default 60; 0 turns
+  it off) is reported once per run: a WARNING, a `task_skipped` row
+  (`reason: run_still_running`, ISO `run_started_at`, `running_minutes`,
+  `scheduled_runs_running`, `pool_size`) and a
+  `[SCHEDULED TASK STILL RUNNING]` alert that leads with the verdict and
+  the remedy (`/stop` in its thread may free it, else a restart, which
+  re-runs a due one-shot). The start is stamped when the pool actually
+  begins the run, on a monotonic clock, so a run still queued for a free
+  slot is never reported as running and host sleep does not inflate it;
+  the report is sent from the housekeeping pool, never the poll thread.
+  The pool (`MAX_CONCURRENT_AUTONOMOUS`, default 5) is shared with trigger
+  fires and watchdog nudges, so long runs slow those too. A reported run
+  that ends logs how long it took, and the next long run of the same TODO
+  is reported again. Nothing aborts a run automatically yet (backlog #407).
+  In the Docker shape the worker does not yet receive any `SCHEDULER_*`
+  setting from compose (backlog #408), so it runs on the defaults.
 
 Activity rows expire with `ACTIVITY_RETENTION_HOURS` (default 12); the
 alert is the durable signal.

@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, NamedTuple, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -85,6 +85,20 @@ def _format_slot(moment: "float | datetime") -> str:
         return f"{value.astimezone(zone).strftime('%Y-%m-%d %H:%M')} {zone.key}"
     except Exception:
         return f"{value.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC"
+
+
+class _RunStamp(NamedTuple):
+    """When a scheduled run actually STARTED in the pool (#395).
+
+    Stamped by the pool thread, so a run still queued for a free slot has
+    none and is never reported as running. The monotonic time measures how
+    long it has run (immune to wall-clock jumps and host sleep); the wall
+    time is only for display.
+    """
+
+    entry: "ScheduledTodoEntry"
+    started_mono: float
+    started_wall: float
 
 
 def _sanitize_unicode(text: str) -> str:
@@ -343,6 +357,16 @@ class Ticker:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._active_futures: Dict[str, Future] = {}  # todo_id -> running Future
+        # Long-run visibility (#395), guarded by _lock and popped with the
+        # future: the start stamp of every run that has STARTED in the pool,
+        # and the start of a run already reported or already logged as
+        # holding its TODO (once per run, not per poll; a queued run logs
+        # under -1.0). ``_monotonic`` is the clock seam tests drive.
+        self._active_runs: Dict[str, _RunStamp] = {}
+        self._reported_stuck_runs: Dict[str, float] = {}
+        self._logged_held_runs: Dict[str, float] = {}
+        self._monotonic: Callable[[], float] = time.monotonic
+        self._pool_size = 0
         # Execution-marker bookkeeping (#262), both guarded by _lock.
         # todo_id -> user_id whose marker release failed at run end; the
         # poll loop retries it so a failed DELETE cannot block the TODO for
@@ -438,6 +462,10 @@ class Ticker:
             0,
             int(getattr(settings, "scheduler_skip_alert_cooldown_minutes", 1440)),
         ) * 60
+        # A run still going this long is reported once (#395); 0 disables.
+        self._stuck_run_alert_seconds = max(
+            0, int(getattr(settings, "scheduler_run_stuck_alert_minutes", 60))
+        ) * 60
         self._scheduler_state = SchedulerStateManager(settings.data_dir)
         persisted_state = self._scheduler_state.load()
         self._pending_startup_missed_ids: set[str] = set(
@@ -525,6 +553,7 @@ class Ticker:
 
         # Initialize thread pool for parallel autonomous execution
         max_workers = self.settings.max_concurrent_autonomous or None  # 0 = None = unlimited
+        self._pool_size = max_workers or 0
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="NymeriaTicker"
         )
@@ -854,29 +883,68 @@ class Ticker:
             self._filter_held_missed(self.schedule_db.get_due(before=now)), now
         )
 
-        if due_entries:
-            logger.info(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - Found {len(due_entries)} due TODO(s)!")
-            for entry in due_entries:
+        # A TODO whose run is still going stays due (its row is re-armed or
+        # removed only at the run's end), so it is left out of these per-poll
+        # lines; the skip below logs it once per run instead (#395).
+        with self._lock:
+            startable = [e for e in due_entries if e.todo_id not in self._active_futures]
+        if startable:
+            logger.info(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - Found {len(startable)} due TODO(s)!")
+            for entry in startable:
                 logger.info(f"[TICKER POLL] Due: todo_id={entry.todo_id}, user={entry.user_id}, scheduled_for={entry.scheduled_for} ({datetime.fromtimestamp(entry.scheduled_for)})")
-        else:
+        elif not due_entries:
             # Steady-state heartbeat; debug-only so it does not flood the log.
             if int(now) % 30 < self.poll_interval:
                 logger.debug(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - No due TODOs")
 
         self._reap_finished_futures()
         self._retry_unreleased_markers()
+        self._report_stuck_runs()
 
         for entry in due_entries:
-            # Skip if already running in the pool
+            # Skip if already running in the pool. The row stays due while
+            # its run goes, so this branch repeats every poll: say so once
+            # per run (#395), and _report_stuck_runs escalates a run that
+            # never ends.
             with self._lock:
                 if entry.todo_id in self._active_futures:
+                    self._log_held_once(entry.todo_id)
                     continue
 
             # Submit to thread pool for parallel execution
             if self._executor:
-                future = self._executor.submit(self._execute_scheduled_todo, entry)
+                future = self._executor.submit(self._run_scheduled, entry)
                 with self._lock:
                     self._active_futures[entry.todo_id] = future
+
+    def _run_scheduled(self, entry: ScheduledTodoEntry) -> None:
+        """Pool entry point: stamp the run's real start (#395), then run it."""
+        with self._lock:
+            self._active_runs[entry.todo_id] = _RunStamp(
+                entry, self._monotonic(), time.time()
+            )
+        self._execute_scheduled_todo(entry)
+
+    def _log_held_once(self, todo_id: str) -> None:
+        """One INFO line per run for a due TODO its own run holds. Call under _lock."""
+        run = self._active_runs.get(todo_id)
+        key = run.started_mono if run is not None else -1.0
+        if self._logged_held_runs.get(todo_id) == key:
+            return
+        self._logged_held_runs[todo_id] = key
+        if run is None:
+            logger.info(
+                "[TICKER POLL] TODO %s is due but its run is still waiting "
+                "for a free pool slot",
+                todo_id,
+            )
+        else:
+            logger.info(
+                "[TICKER POLL] TODO %s is due but its run started %ds ago is "
+                "still going; it waits for that run",
+                todo_id,
+                int(self._monotonic() - run.started_mono),
+            )
 
     def _filter_held_missed(self, due_entries: list) -> list:
         """Drop startup-missed TODOs held pending an explicit release.
@@ -967,9 +1035,146 @@ class Ticker:
             done_ids = [tid for tid, f in self._active_futures.items() if f.done()]
             for tid in done_ids:
                 f = self._active_futures.pop(tid)
+                run = self._active_runs.pop(tid, None)
+                self._logged_held_runs.pop(tid, None)
+                reported = self._reported_stuck_runs.pop(tid, None)
+                if run is not None and reported == run.started_mono:
+                    logger.info(
+                        "Scheduled TODO %s: the run reported as still running "
+                        "finished after %d min",
+                        tid,
+                        int((self._monotonic() - run.started_mono) // 60),
+                    )
                 exc = f.exception()
                 if exc:
                     logger.error(f"Task {tid} failed in thread pool: {exc}")
+
+    # ------------------------------------------------------------------
+    # Long runs (#395): nothing times a scheduled run out (the only
+    # cancellation seam is cooperative, and the Docker relay gets a keepalive
+    # every 25 s, so no read timeout ever trips), and a run whose future is
+    # still registered holds its TODO: the poll never resubmits it. A wedged
+    # run therefore used to hold a one-shot reminder for the life of the
+    # process with no signal at all. It is now reported once per run.
+    # ------------------------------------------------------------------
+
+    def _report_stuck_runs(self) -> None:
+        """Report each STARTED run still going past the threshold, once.
+
+        Only the bookkeeping runs here, under the lock; each report (a
+        network send per notification destination) goes to the housekeeping
+        pool so a slow destination cannot delay the next TODO check. Never
+        raises.
+        """
+        if not self._stuck_run_alert_seconds:
+            return
+        try:
+            now_mono = self._monotonic()
+            with self._lock:
+                stuck: list[_RunStamp] = []
+                running = 0
+                for tid, run in self._active_runs.items():
+                    future = self._active_futures.get(tid)
+                    if future is None or future.done():
+                        continue
+                    running += 1
+                    if now_mono - run.started_mono < self._stuck_run_alert_seconds:
+                        continue
+                    if self._reported_stuck_runs.get(tid) == run.started_mono:
+                        continue
+                    self._reported_stuck_runs[tid] = run.started_mono
+                    stuck.append(run)
+        except Exception:  # noqa: BLE001 - visibility must never break a poll
+            logger.error("Long-run check failed", exc_info=True)
+            return
+        for run in stuck:
+            try:
+                if self._housekeeping_executor is not None:
+                    self._housekeeping_executor.submit(
+                        self._report_stuck_run, run, now_mono, running
+                    )
+                else:
+                    self._report_stuck_run(run, now_mono, running)
+            except Exception:  # noqa: BLE001 - one report must not drop the rest
+                logger.error(
+                    "Long-run report failed for TODO %s",
+                    run.entry.todo_id,
+                    exc_info=True,
+                )
+
+    def _report_stuck_run(self, run: _RunStamp, now_mono: float, running: int) -> None:
+        """One WARNING, one ``task_skipped`` row and one owner alert."""
+        entry = run.entry
+        minutes = int((now_mono - run.started_mono) // 60)
+        task = (entry.task_preview or "")[:80]
+        since = _format_slot(run.started_wall)
+        where = f"thread {entry.thread_id}" if entry.thread_id else "its thread"
+        pool = (
+            f"{running} scheduled run(s) running in a pool of {self._pool_size} "
+            f"shared with trigger fires and watchdog nudges"
+            if self._pool_size
+            else f"{running} scheduled run(s) running"
+        )
+        logger.warning(
+            "Scheduled TODO %s has been running for %d min (started %s) and "
+            "holds its TODO until it ends; %s",
+            entry.todo_id,
+            minutes,
+            since,
+            pool,
+        )
+        # Alert and row are isolated from each other, as in #262: a failing
+        # row write must not swallow the alert, which is the durable signal.
+        try:
+            send_owner_alert(
+                # Verdict and remedy first: the in-app row keeps only 200
+                # characters (#406), so the task text goes last. "May": a
+                # long run is not necessarily a stuck one, and a stop is
+                # cooperative (a single stalled read never sees it).
+                (
+                    f"[SCHEDULED TASK STILL RUNNING] TODO [{entry.todo_id}] has "
+                    f"been running {minutes} min and will not run again until "
+                    f"that run ends. If it is stuck, /stop in {where} may free "
+                    f"it; if not, restart Nymeria (a due one-shot then runs "
+                    f"again). Task: \"{task}\", started {since}."
+                ),
+                self.settings,
+                user_id=entry.user_id,
+                thread_id=entry.thread_id or "",
+                task_id=entry.todo_id,
+            )
+        except Exception:
+            logger.error(
+                "Long-run alert dispatch failed for TODO %s",
+                entry.todo_id,
+                exc_info=True,
+            )
+        try:
+            log_activity(
+                ActivityType.TASK_SKIPPED,
+                (
+                    f"Still running after {minutes} min: {task} (started "
+                    f"{since}); this TODO waits for that run"
+                ),
+                user_id=entry.user_id,
+                thread_id=entry.thread_id,
+                metadata={
+                    "todo_id": entry.todo_id,
+                    "reason": "run_still_running",
+                    "run_started_at": datetime.fromtimestamp(
+                        run.started_wall, timezone.utc
+                    ).isoformat(),
+                    "running_minutes": minutes,
+                    "scheduled_runs_running": running,
+                    "pool_size": self._pool_size or None,
+                },
+            )
+        except Exception:
+            logger.error(
+                "Failed to record long run for TODO %s",
+                entry.todo_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Execution markers (#262): claim, release, and make a blocked run

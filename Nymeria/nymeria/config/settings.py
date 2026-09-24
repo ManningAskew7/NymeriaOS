@@ -1807,6 +1807,17 @@ class Settings(BaseSettings):
             "0 alerts on every qualifying late run."
         ),
     )
+    scheduler_run_stuck_alert_minutes: int = Field(
+        default=60,
+        ge=0,
+        le=10080,
+        description=(
+            "Minutes a scheduled TODO's run may go on before it is reported "
+            "once as possibly stuck (a WARNING, a task_skipped activity row "
+            "and an owner alert): nothing times a run out, and while it "
+            "runs its TODO does not run again. 0 disables the report."
+        ),
+    )
     trigger_failure_alert_after: int = Field(
         default=2,
         ge=0,

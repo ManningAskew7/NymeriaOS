@@ -988,3 +988,341 @@ def test_blocked_by_its_own_failed_release_says_the_retry_is_pending(
     alert = _alerts(signals, "[SCHEDULED TASK BLOCKED]")[0]["message"]
     assert "retries every poll" in alert
     assert "restarting the scheduler" not in alert
+
+
+# ------------------------------------------------------------------
+# #395: a run that never returns holds its TODO, and is now reported
+# ------------------------------------------------------------------
+
+
+class _MonotonicClock:
+    """The ticker's monotonic clock seam, advanced by hand."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, minutes: float) -> None:
+        self.now += minutes * 60
+
+
+class _NeverEndingPool:
+    """A pool whose runs START (the stamp is taken) and never finish until
+    the test resolves them. ``start=False`` models a full pool: the run is
+    queued and never starts."""
+
+    def __init__(self, *, start: bool = True):
+        self.start = start
+        self.submitted: list[Future] = []
+
+    def submit(self, fn, *args):
+        future: Future = Future()
+        self.submitted.append(future)
+        if self.start:
+            fn(*args)
+        return future
+
+
+class _RecordingPool:
+    """Housekeeping pool that records submissions instead of running them."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def submit(self, fn, *args):
+        self.calls.append((fn, args))
+        future: Future = Future()
+        future.set_result(None)
+        return future
+
+
+def _stuck_ticker(tmp_path, *, alert_minutes: int = 60, start: bool = True):
+    ticker, agent = _make_ticker(tmp_path)
+    agent.settings.scheduler_run_stuck_alert_minutes = alert_minutes  # type: ignore[attr-defined]
+    ticker._stuck_run_alert_seconds = alert_minutes * 60
+    ticker._pool_size = 5
+    clock = _MonotonicClock()
+    ticker._monotonic = clock
+    # The run itself never returns: its body is a no-op and the pool never
+    # resolves its future.
+    ticker._execute_scheduled_todo = lambda entry: None  # type: ignore[method-assign]
+    pool = _NeverEndingPool(start=start)
+    ticker._executor = cast(Any, pool)
+    return ticker, agent, pool, clock
+
+
+def _one_shot(agent, task: str = "Hourly medication check"):
+    with agent.todo_manager.atomic_update(USER) as todo_list:
+        todo = todo_list.add_item(
+            task,
+            scheduled_for=_now() - timedelta(minutes=1),
+            thread_id="thread-1",
+            created_by="user",
+        )
+    assert todo is not None
+    agent.todo_manager.sync_schedule_to_db(USER, todo.id, agent._schedule_db)
+    return todo
+
+
+def _long_run_alerts(signals) -> list[dict]:
+    return _alerts(signals, "[SCHEDULED TASK STILL RUNNING]")
+
+
+@pytest.mark.parametrize("recurrence", [None, "1h"], ids=["one-shot", "recurring"])
+def test_a_run_that_never_ends_is_reported_once(tmp_path, signals, caplog, recurrence):
+    """B1 B3: one WARNING, one row, one alert, however many polls pass, and a
+    one-shot is reported like a recurring TODO (no next occurrence needed)."""
+    ticker, agent, pool, clock = _stuck_ticker(tmp_path)
+    todo = _add_todo(agent, slot=_now() - timedelta(minutes=1), recurrence=recurrence)
+
+    ticker._check_and_execute()
+    assert len(pool.submitted) == 1
+    clock.advance(59)
+    ticker._check_and_execute()  # B2: under the threshold, nothing
+    assert _long_run_alerts(signals) == []
+
+    clock.advance(2)
+    with caplog.at_level("WARNING", logger="nymeria.core.ticker"):
+        for _ in range(3):
+            ticker._check_and_execute()
+
+    assert len(pool.submitted) == 1  # it still holds its TODO
+    assert len(_long_run_alerts(signals)) == 1
+    rows = _skip_rows(signals, "run_still_running")
+    assert len(rows) == 1
+    meta = rows[0]["metadata"]
+    assert meta["todo_id"] == todo.id
+    assert meta["running_minutes"] == 61
+    assert meta["scheduled_runs_running"] == 1
+    assert meta["pool_size"] == 5
+    started = datetime.fromisoformat(meta["run_started_at"])
+    assert abs((_now() - started).total_seconds()) < 60  # wall time of the start
+    assert rows[0]["user_id"] == USER
+    assert rows[0]["thread_id"] == "thread-1"
+    warnings = [r for r in caplog.records if "has been running for" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_a_run_still_waiting_for_a_free_slot_is_never_reported_as_running(
+    tmp_path, signals, caplog
+):
+    """M1: a full pool queues the run; it has not started, so /stop in its
+    thread could not help and the alert would name the victim, not the cause."""
+    ticker, agent, pool, clock = _stuck_ticker(tmp_path, start=False)
+    _one_shot(agent)
+    ticker._check_and_execute()
+    clock.advance(600)
+
+    with caplog.at_level("INFO", logger="nymeria.core.ticker"):
+        ticker._check_and_execute()
+
+    assert len(pool.submitted) == 1
+    assert _long_run_alerts(signals) == []
+    assert _skip_rows(signals, "run_still_running") == []
+    assert any("waiting for a free pool slot" in r.getMessage() for r in caplog.records)
+
+
+def test_the_long_run_alert_leads_with_the_verdict_and_the_remedy(tmp_path, signals):
+    """B8, with a task long enough that a copy leading with it would push the
+    remedy past the in-app row's 200 characters (#406)."""
+    ticker, agent, _pool, clock = _stuck_ticker(tmp_path)
+    long_task = (
+        "Check the overnight medication log and message the carer if any "
+        "evening dose was missed or doubled"
+    )
+    todo = _one_shot(agent, long_task)
+    ticker._check_and_execute()
+    clock.advance(95)
+
+    ticker._check_and_execute()
+
+    alert = _long_run_alerts(signals)[0]
+    message = alert["message"]
+    headline = message[:200]
+    assert f"TODO [{todo.id}]" in headline
+    assert "has been running 95 min" in headline
+    assert "will not run again until that run ends" in headline
+    assert "/stop in thread thread-1 may free it" in headline
+    assert long_task[:80] in message
+    assert "a due one-shot then runs again" in message
+    assert alert["user_id"] == USER
+    assert alert["thread_id"] == "thread-1"
+    assert alert["task_id"] == todo.id
+
+
+def test_the_report_is_sent_from_the_housekeeping_pool_not_the_poll(tmp_path, signals):
+    """M2: a notification send can take a timeout per destination; the poll
+    thread only does the bookkeeping."""
+    ticker, agent, _pool, clock = _stuck_ticker(tmp_path)
+    housekeeping = _RecordingPool()
+    ticker._housekeeping_executor = cast(Any, housekeeping)
+    _one_shot(agent)
+    ticker._check_and_execute()
+    clock.advance(61)
+
+    ticker._check_and_execute()
+    ticker._check_and_execute()
+
+    assert _long_run_alerts(signals) == []  # nothing sent inline
+    reports = [c for c in housekeeping.calls if c[0] == ticker._report_stuck_run]
+    assert len(reports) == 1  # and handed over once
+    fn, args = reports[0]
+    fn(*args)
+    assert len(_long_run_alerts(signals)) == 1
+
+
+def test_a_new_run_that_sticks_is_reported_again(tmp_path, signals, caplog):
+    """B4 + B6: per run; a finished run's bookkeeping goes with its future,
+    its end is logged, and a later run of the same TODO re-arms the report."""
+    ticker, agent, pool, clock = _stuck_ticker(tmp_path)
+    todo = _one_shot(agent)
+    ticker._check_and_execute()
+    clock.advance(61)
+    ticker._check_and_execute()
+    assert len(_long_run_alerts(signals)) == 1
+
+    clock.advance(9)
+    pool.submitted[0].set_result(None)  # the long run finally ends
+    with caplog.at_level("INFO", logger="nymeria.core.ticker"):
+        ticker._check_and_execute()  # reaps it; the row is still due: a new run
+
+    assert any(
+        "finished after 70 min" in r.getMessage() for r in caplog.records
+    )
+    assert len(pool.submitted) == 2
+    assert todo.id not in ticker._reported_stuck_runs
+    clock.advance(61)
+    ticker._check_and_execute()
+    assert len(_long_run_alerts(signals)) == 2
+
+
+def test_several_long_runs_are_each_reported(tmp_path, signals):
+    ticker, agent, pool, clock = _stuck_ticker(tmp_path)
+    first = _one_shot(agent, "First reminder")
+    second = _one_shot(agent, "Second reminder")
+    ticker._check_and_execute()
+    clock.advance(61)
+
+    ticker._check_and_execute()
+
+    alerted = sorted(a["task_id"] for a in _long_run_alerts(signals))
+    assert alerted == sorted([first.id, second.id])
+    rows = _skip_rows(signals, "run_still_running")
+    assert all(r["metadata"]["scheduled_runs_running"] == 2 for r in rows)
+
+
+def test_a_run_that_ended_is_not_reported(tmp_path, signals):
+    """B6: the finished run is reaped before the check, however old it was."""
+    ticker, agent, pool, clock = _stuck_ticker(tmp_path)
+    _one_shot(agent)
+    ticker._check_and_execute()
+    clock.advance(300)
+    pool.submitted[0].set_result(None)
+
+    ticker._check_and_execute()
+
+    assert _long_run_alerts(signals) == []
+    assert _skip_rows(signals, "run_still_running") == []
+
+
+def test_threshold_zero_disables_the_report(tmp_path, signals):
+    """B5."""
+    ticker, agent, _pool, clock = _stuck_ticker(tmp_path, alert_minutes=0)
+    _one_shot(agent)
+    ticker._check_and_execute()
+    clock.advance(10_000)
+
+    ticker._check_and_execute()
+
+    assert _long_run_alerts(signals) == []
+    assert _skip_rows(signals, "run_still_running") == []
+
+
+def test_the_threshold_comes_from_settings(tmp_path):
+    agent = FakeAgent(tmp_path)
+    agent.settings.scheduler_run_stuck_alert_minutes = 7  # type: ignore[attr-defined]
+    fake: Any = agent
+    ticker = Ticker(
+        executor=LocalAgentExecutor(fake),
+        settings=cast(Any, agent.settings),
+        schedule_db=agent._schedule_db,
+        todo_manager=agent.todo_manager,
+        thread_config_manager=cast(Any, agent.thread_config_manager),
+        profile_manager=agent.profile_manager,
+        busy_agent=fake,
+        spawn_sweeper=None,
+    )
+    assert ticker._stuck_run_alert_seconds == 7 * 60
+
+
+def test_a_held_todo_logs_once_per_run_not_every_poll(tmp_path, signals, caplog):
+    """B7: the row stays due while its run goes, so this branch runs every
+    poll; it used to be silent (and "Found N due" repeated every 5 s)."""
+    ticker, agent, _pool, _clock = _stuck_ticker(tmp_path)
+    todo = _one_shot(agent)
+
+    with caplog.at_level("INFO", logger="nymeria.core.ticker"):
+        ticker._check_and_execute()  # starts the run: its Due line is right
+        caplog.clear()
+        for _ in range(4):
+            ticker._check_and_execute()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert sum("is due but its run started" in m for m in messages) == 1
+    assert not any(f"Due: todo_id={todo.id}" in m for m in messages)
+
+
+def test_a_failing_row_write_keeps_the_alert(tmp_path, signals, monkeypatch):
+    ticker, agent, _pool, clock = _stuck_ticker(tmp_path)
+    _one_shot(agent)
+    ticker._check_and_execute()
+    clock.advance(61)
+
+    def broken_row(*args, **kwargs):
+        raise RuntimeError("activity log down")
+
+    monkeypatch.setattr(ticker_module, "log_activity", broken_row)
+    ticker._check_and_execute()
+
+    assert len(_long_run_alerts(signals)) == 1
+
+
+def test_a_report_that_raises_does_not_drop_the_others(tmp_path, signals, monkeypatch):
+    ticker, agent, _pool, clock = _stuck_ticker(tmp_path)
+    first = _one_shot(agent, "First reminder")
+    second = _one_shot(agent, "Second reminder")
+    ticker._check_and_execute()
+    clock.advance(61)
+    real_report = ticker._report_stuck_run
+
+    def flaky_report(run, now_mono, running):
+        if run.entry.todo_id == first.id:
+            raise RuntimeError("report exploded")
+        real_report(run, now_mono, running)
+
+    monkeypatch.setattr(ticker, "_report_stuck_run", flaky_report)
+    ticker._check_and_execute()
+
+    assert [a["task_id"] for a in _long_run_alerts(signals)] == [second.id]
+
+
+def test_a_failing_report_never_breaks_the_poll(tmp_path, signals, monkeypatch):
+    """B9: every alert path fails; another due TODO still starts."""
+    ticker, agent, pool, clock = _stuck_ticker(tmp_path)
+    _one_shot(agent)
+    ticker._check_and_execute()
+    clock.advance(61)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("alert plane down")
+
+    monkeypatch.setattr(ticker_module, "send_owner_alert", boom)
+    monkeypatch.setattr(ticker_module, "log_activity", boom)
+    other = _one_shot(agent, "Another reminder")
+
+    ticker._check_and_execute()
+
+    assert len(pool.submitted) == 2
+    assert other.id in ticker._active_futures
