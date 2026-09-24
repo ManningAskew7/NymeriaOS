@@ -608,6 +608,13 @@ def _salvage_todo_list(data: object, user_id: str) -> "tuple[TodoList, int, bool
     return todo_list, dropped, True
 
 
+def _items_phrase(count: int, adjective: str = "") -> str:
+    """``1 item was`` / ``2 items were``, for the owner alert."""
+    if count == 1:
+        return f"1 {adjective}item was"
+    return f"{count} {adjective}items were"
+
+
 def _report_todo_repair(
     user_id: str,
     quarantine_name: str,
@@ -632,9 +639,9 @@ def _report_todo_repair(
         )
         alert = (
             f"[TODO LIST REPAIRED] Your TODO list file failed validation "
-            f"(edited by hand or by a tool?). {kept} item(s) were kept"
+            f"(edited by hand or by a tool?). {_items_phrase(kept)} kept"
             + (
-                f"; {dropped} that could not be read were dropped from the "
+                f"; {_items_phrase(dropped, 'unreadable ')} dropped from the "
                 f"live list"
                 if dropped
                 else ""

@@ -126,8 +126,8 @@ def test_one_invalid_item_keeps_the_rest_and_preserves_the_original(
     assert recorders.alerted.wait(5)
     assert len(recorders.alerts) == 1
     assert recorders.alerts[0].startswith("[TODO LIST REPAIRED]")
-    assert "2 item(s) were kept" in recorders.alerts[0]
-    assert "1 that could not be read" in recorders.alerts[0]
+    assert "2 items were kept" in recorders.alerts[0]
+    assert "1 unreadable item was dropped" in recorders.alerts[0]
     assert quarantined[0].name in recorders.alerts[0]
 
 
