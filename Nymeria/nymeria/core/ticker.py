@@ -53,6 +53,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A due TODO whose list file cannot be read or repaired right now is retried
+# this much later instead of being dropped from the schedule index (#394).
+UNREADABLE_LIST_RETRY_SECONDS = 300
+
 # Console for printing ticker output
 # safe_box=True uses ASCII box-drawing characters, avoiding UnicodeEncodeError
 # on Windows consoles that use cp1252/charmap encoding
@@ -347,6 +351,15 @@ class Ticker:
         # todo_id -> started_at of a leftover marker already reported as
         # blocking; one report per marker, reset by the next clean claim.
         self._reported_blocking_markers: Dict[str, float] = {}
+        # todo_id -> epoch before which a due TODO is not resubmitted because
+        # its list file could not be read or repaired (#394). In memory on
+        # purpose: the schedule row keeps the item's own slot, since the
+        # finalize path reads a row/item slot mismatch as a mid-run
+        # reschedule and would fire the TODO a second time.
+        self._list_unavailable_until: Dict[str, float] = {}
+        # user_ids already alerted for the current unreadable-list episode;
+        # cleared by that user's next authoritative load.
+        self._list_unavailable_alerted: set[str] = set()
         self._lock = threading.Lock()
         self._retry_counts: dict = {}  # Track retries per TODO
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -837,7 +850,9 @@ class Ticker:
 
         # Log ticker poll - less frequently when no due items
         # Get entries from DB (this will also log what's in the DB)
-        due_entries = self._filter_held_missed(self.schedule_db.get_due(before=now))
+        due_entries = self._filter_list_unavailable(
+            self._filter_held_missed(self.schedule_db.get_due(before=now)), now
+        )
 
         if due_entries:
             logger.info(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - Found {len(due_entries)} due TODO(s)!")
@@ -887,6 +902,64 @@ class Ticker:
             for entry in due_entries
             if entry.todo_id not in self._pending_startup_missed_ids
         ]
+
+    def _filter_list_unavailable(self, due_entries: list, now: float) -> list:
+        """Drop due TODOs deferred because their list could not be read."""
+        with self._lock:
+            if not self._list_unavailable_until:
+                return due_entries
+            for todo_id, until in list(self._list_unavailable_until.items()):
+                if until <= now:
+                    del self._list_unavailable_until[todo_id]
+            deferred = set(self._list_unavailable_until)
+        if not deferred:
+            return due_entries
+        return [entry for entry in due_entries if entry.todo_id not in deferred]
+
+    def _defer_unavailable_list(self, entry: ScheduledTodoEntry) -> None:
+        """A due TODO whose list is not authoritative: defer it, keep its row.
+
+        The list file exists but could not be read or repaired (#394): the
+        TODO may be absent from the stand-in list, or present but impossible
+        to mark in progress, and neither proves anything about the file.
+        Unscheduling it would lose the reminder until a restart; running it
+        would need a status write that ``atomic_update`` refuses. So the
+        poll loop skips it for ``UNREADABLE_LIST_RETRY_SECONDS`` and the row
+        keeps the item's own slot (a late fire is then reported by #262's
+        skip accounting as usual). The owner is alerted once per episode.
+        """
+        retry_at = time.time() + UNREADABLE_LIST_RETRY_SECONDS
+        with self._lock:
+            self._list_unavailable_until[entry.todo_id] = retry_at
+            first = entry.user_id not in self._list_unavailable_alerted
+            self._list_unavailable_alerted.add(entry.user_id)
+        logger.error(
+            "TODO list for %s could not be read or repaired; deferring due "
+            "TODO %s until %s",
+            entry.user_id,
+            entry.todo_id,
+            _format_slot(retry_at),
+        )
+        if not first:
+            return
+        task = (entry.task_preview or "").strip()[:80]
+        try:
+            send_owner_alert(
+                (
+                    f"[TODO LIST UNREADABLE] Your TODO list file exists but "
+                    f"could not be read or repaired (check its permissions and "
+                    f"the server log), so scheduled TODO [{entry.todo_id}] "
+                    f"\"{task}\" was postponed. It is retried every "
+                    f"{UNREADABLE_LIST_RETRY_SECONDS // 60} minutes until the "
+                    f"file can be read; nothing in it was changed."
+                ),
+                self.settings,
+                user_id=entry.user_id,
+                thread_id=entry.thread_id or "",
+                task_id=entry.todo_id,
+            )
+        except Exception:  # noqa: BLE001 - the deferral itself must stand
+            logger.warning("Unreadable-list alert failed", exc_info=True)
 
     def _reap_finished_futures(self) -> None:
         """Pop completed execution futures and log any that raised."""
@@ -1098,7 +1171,14 @@ class Ticker:
         if not self._claim_execution_marker(entry):
             return
 
-        todo = self.todo_manager.get_todo_by_id(entry.user_id, entry.todo_id)
+        todo_list, authoritative = self.todo_manager.load_todos(entry.user_id)
+        if not authoritative:
+            self._defer_unavailable_list(entry)
+            self._release_execution_marker(entry.todo_id, entry.user_id)
+            return
+        with self._lock:
+            self._list_unavailable_alerted.discard(entry.user_id)
+        todo = todo_list.get_item(entry.todo_id)
         if not todo:
             logger.warning(f"Scheduled TODO {entry.todo_id} not found, removing from schedule")
             self.schedule_db.remove_scheduled(entry.todo_id)

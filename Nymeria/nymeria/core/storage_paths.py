@@ -166,16 +166,87 @@ def quarantine_corrupt_file(path: Path) -> Optional[Path]:
     skip-or-replace behavior. Never raises.
     """
     try:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        target_dir = path.parent / "quarantine"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / (
-            f"{path.stem}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}{path.suffix}"
-        )
+        target = _quarantine_target(path)
         path.rename(target)
         return target
     except OSError:
         return None
+
+
+def quarantine_copy(path: Path, data: bytes) -> Optional[Path]:
+    """Preserve ``data``, the bytes just read from ``path``, under the same
+    quarantine name ``quarantine_corrupt_file`` uses, leaving ``path`` itself
+    in place.
+
+    For a store that REPAIRS rather than drops (the TODO list and the user
+    profile, #394/#400): the caller then atomically replaces ``path`` with
+    the repaired content, so the store file never goes absent (a lock-free
+    reader in a rename-then-write gap would read "no file" as an empty
+    store). Writing the bytes the caller parsed, rather than copying the
+    path, preserves exactly what was salvaged from even if another process
+    changed the file since. Exclusive create and fsync. Returns the path, or
+    ``None`` on any failure (a partial copy is removed). Never raises.
+    """
+    target: Optional[Path] = None
+    created = False
+    try:
+        target = _quarantine_target(path)
+        with open(target, "xb") as handle:
+            created = True
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return target
+    except OSError:
+        # Remove only a partial copy THIS call created: an exclusive-create
+        # collision names someone else's preserved original.
+        if created and target is not None:
+            try:
+                target.unlink()
+            except OSError:
+                pass  # best-effort: the caller already treats None as "not preserved"
+        return None
+
+
+class StoreUnavailableError(RuntimeError):
+    """A write was refused because the store file exists but could not be
+    read or repaired (#394, #400): saving would replace it with a stand-in.
+    The API answers it 503, since the condition is the server's, not the
+    request's."""
+
+
+def validation_summary(error: BaseException) -> str:
+    """A log-safe reason for a failed model validation: the field paths only.
+
+    pydantic's own message quotes each rejected INPUT value, which for a
+    profile is a memory's text and for a TODO list a task description;
+    those must not land in an ERROR log line.
+    """
+    errors = getattr(error, "errors", None)
+    if callable(errors):
+        try:
+            items: Iterable[Dict[str, object]] = errors(include_input=False)  # type: ignore[assignment]
+            paths = [
+                ".".join(str(part) for part in item.get("loc", ())) or "(root)"  # type: ignore[union-attr]
+                for item in items
+            ]
+        except Exception:  # noqa: BLE001
+            paths = []
+        if paths:
+            shown = ", ".join(paths[:5])
+            more = f" (+{len(paths) - 5} more)" if len(paths) > 5 else ""
+            return f"failed validation at {shown}{more}"
+    return f"failed validation ({type(error).__name__})"
+
+
+def _quarantine_target(path: Path) -> Path:
+    """A fresh ``<dir>/quarantine/<stem>.corrupt-<utc>-<nonce><suffix>``."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target_dir = path.parent / "quarantine"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / (
+        f"{path.stem}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}{path.suffix}"
+    )
 
 
 def write_text_atomic(

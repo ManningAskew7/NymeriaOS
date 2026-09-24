@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment, write_text_atomic
+from .storage_paths import (
+    StoreUnavailableError,
+    quarantine_copy,
+    safe_path_segment,
+    validation_summary,
+    write_text_atomic,
+)
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -519,6 +525,150 @@ class TodoList(BaseModel):
         return archived
 
 
+# Bounded wait for the per-user lock on the repair path (see
+# ``TodoManager._load`` for the lock-order reason it is not a plain acquire).
+_REPAIR_LOCK_TIMEOUT_SECONDS = 10.0
+
+# (requested user, embedded id) pairs already warned about, so a mismatched
+# list that is only ever read does not log a warning on every turn.
+_rebind_warned: set = set()
+
+# user_ids whose list is unreadable and already logged at ERROR this episode.
+_unavailable_logged: set = set()
+
+
+class TodoListUnavailableError(StoreUnavailableError):
+    """A write was refused because the user's list file exists but could not
+    be read or repaired (#394). Saving would replace it with a stand-in."""
+
+
+class _Unloadable:
+    """A list file that exists and reads but does not load."""
+
+    __slots__ = ("data", "reason", "raw")
+
+    def __init__(self, data: object, reason: str, raw: bytes) -> None:
+        self.data = data  # the parsed JSON, or None when the bytes did not parse
+        self.reason = reason
+        self.raw = raw  # the exact bytes read, preserved by the quarantine copy
+
+
+def _read_list(todos_path: Path) -> "TodoList | OSError | _Unloadable | None":
+    """One read of a list file: the list, ``None`` when absent, the read
+    error, or an ``_Unloadable`` carrying the reason, the bytes, and the
+    parsed data when the bytes were JSON."""
+    try:
+        raw = todos_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return e
+    try:
+        # json.loads on BYTES detects UTF-8 (with or without a BOM), UTF-16
+        # and UTF-32, so a Windows editor or PowerShell 5.1 redirect loads.
+        # Anything else (Set-Content's cp1252 with a non-ASCII byte) is
+        # corrupt: UnicodeDecodeError is a ValueError, so it lands here.
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as e:
+        return _Unloadable(None, f"not parseable as JSON ({type(e).__name__})", raw)
+    try:
+        return TodoList.model_validate(data)
+    except Exception as e:  # noqa: BLE001 - one bad field must not cost the list
+        return _Unloadable(data, validation_summary(e), raw)
+
+
+def _salvage_todo_list(data: object, user_id: str) -> "tuple[TodoList, int, bool]":
+    """Keep every item of a failed list that validates on its own.
+
+    Returns ``(list, dropped_count, had_items)``; ``had_items`` is False when
+    there was no ``items`` list to salvage from (undecodable bytes, a
+    non-object document, ``items`` missing or not a list), which the report
+    words as "could not be parsed" rather than "0 kept". The envelope
+    (created_at, a stored MAX_TODOS) is kept when it validates on its own,
+    else defaulted.
+    """
+    if not isinstance(data, dict):
+        return TodoList(user_id=user_id), 0, False
+    raw_items = data.get("items")
+    if not isinstance(raw_items, list):
+        return TodoList(user_id=user_id), 0, False
+    kept: List[TodoItem] = []
+    dropped = 0
+    for raw in raw_items:
+        try:
+            kept.append(TodoItem.model_validate(raw))
+        except Exception:  # noqa: BLE001 - drop only the bad item
+            dropped += 1
+    envelope = {key: value for key, value in data.items() if key != "items"}
+    try:
+        todo_list = TodoList.model_validate({**envelope, "items": []})
+    except Exception:  # noqa: BLE001 - a bad envelope must not cost the items
+        todo_list = TodoList(user_id=user_id)
+    todo_list.items = kept
+    return todo_list, dropped, True
+
+
+def _report_todo_repair(
+    user_id: str,
+    quarantine_name: str,
+    kept: int,
+    dropped: int,
+    had_items: bool,
+) -> None:
+    """Audit row now, owner alert off-thread. Never raises."""
+    where = f"todos/quarantine/{quarantine_name}"
+    if not had_items:
+        detail = "corrupt TODO list preserved; the list starts empty"
+        alert = (
+            f"[TODO LIST CORRUPT] Your TODO list file could not be parsed "
+            f"(edited by hand or by a tool?), so a new, empty list started. "
+            f"Nothing was deleted: the original is preserved at {where}, and "
+            f"an admin can restore items from it."
+        )
+    else:
+        detail = (
+            f"invalid TODO list repaired: kept {kept} item(s), dropped "
+            f"{dropped}"
+        )
+        alert = (
+            f"[TODO LIST REPAIRED] Your TODO list file failed validation "
+            f"(edited by hand or by a tool?). {kept} item(s) were kept"
+            + (
+                f"; {dropped} that could not be read were dropped from the "
+                f"live list"
+                if dropped
+                else ""
+            )
+            + f". The original file is preserved at {where}."
+        )
+    try:
+        from .activity_log import log_external_edit
+
+        log_external_edit(
+            "todos", f"{detail} (original at quarantine/{quarantine_name})",
+            user_id=user_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to record TODO quarantine audit", exc_info=True)
+
+    def _send() -> None:
+        try:
+            from ..config.settings import get_settings
+            from .notification_dispatch import send_owner_alert
+
+            send_owner_alert(alert, get_settings(), user_id=user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("TODO repair alert failed for %s", user_id, exc_info=True)
+
+    threading.Thread(target=_send, name="todo-repair-alert", daemon=True).start()
+
+
+def _list_json_object(raw: bytes) -> "dict | None":
+    """Parse a list file for the raw scanners; None when it is not a JSON object."""
+    data = json.loads(raw)
+    return data if isinstance(data, dict) else None
+
+
 class TodoManager:
     """Manages TODO lists on disk with thread-safe operations."""
 
@@ -557,7 +707,15 @@ class TodoManager:
         """
         lock = self._get_lock(user_id)
         with lock:
-            todo_list = self.get_todos(user_id)
+            todo_list, writable = self._load(user_id)
+            if not writable:
+                # The file exists but could not be read (permissions, I/O):
+                # saving would replace bytes that may well read fine later
+                # with whatever this block builds on an empty list (#394).
+                raise TodoListUnavailableError(
+                    f"TODO list for user {user_id} could not be read or "
+                    f"repaired; refusing to overwrite it"
+                )
             try:
                 yield todo_list
             finally:
@@ -574,28 +732,183 @@ class TodoManager:
         """
         Load a user's TODO list from disk, or create a new one if it doesn't exist.
 
+        A file that does not load is never answered with an empty list that
+        the next save would write over it (#394): see ``_load``.
+
         Args:
             user_id: User identifier (defaults to "default")
 
         Returns:
             TodoList instance
         """
-        todos_path = self._get_todos_path(user_id)
+        return self._load(user_id)[0]
 
-        if todos_path.exists():
-            try:
-                with open(todos_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                todo_list = TodoList.model_validate(data)
-                logger.debug(f"Loaded TODO list for user: {user_id}")
-                return todo_list
-            except Exception as e:
-                logger.error(f"Failed to load TODOs for {user_id}: {e}")
-                # Return new list on error
-                return TodoList(user_id=user_id)
+    def load_todos(self, user_id: str) -> "tuple[TodoList, bool]":
+        """``get_todos`` plus whether the list is AUTHORITATIVE.
+
+        ``False`` means the file exists but could not be read or repaired
+        right now (see ``_load``): the list is empty or a read-only salvaged
+        view, so an item's absence proves nothing about the file. Callers
+        that act on absence (the ticker dropping a schedule row) check it.
+        """
+        return self._load(user_id)
+
+    def _load(self, user_id: str) -> "tuple[TodoList, bool]":
+        """Load a user's list; returns ``(todo_list, writable)``.
+
+        Every save path builds on this load and ``atomic_update`` saves on
+        exit, so a load failure that answered "empty" used to destroy the
+        whole list on the next write, including unattended ones (the hourly
+        archive sweep, slim's startup migration). Now:
+
+        - A UTF-8 BOM (a Windows editor save) is tolerated.
+        - A file that does not load (not UTF-8, not JSON, or failing
+          validation) goes to ``_repair_unloadable``: what validates is kept,
+          the original bytes are preserved in quarantine.
+        - An unreadable file (``OSError``) is left in place and reported NOT
+          writable, so ``atomic_update`` refuses rather than overwrite it.
+
+        The happy path takes no lock, as before: ``rebuild_from_todos`` reads
+        lists while holding the schedule index lock, and ``atomic_update``
+        bodies take that index lock while holding the TODO lock, so a
+        blocking TODO-lock acquire here would be a lock-order inversion.
+        """
+        loaded = _read_list(self._get_todos_path(user_id))
+        if isinstance(loaded, _Unloadable):
+            return self._repair_unloadable(user_id)
+        return self._settled(loaded, user_id)
+
+    def _settled(self, loaded: "TodoList | OSError | None", user_id: str) -> "tuple[TodoList, bool]":
+        """The ``(list, writable)`` answer for a read that needs no repair."""
+        if isinstance(loaded, TodoList):
+            _unavailable_logged.discard(user_id)
+            return self._bind_to_requested_user(loaded, user_id), True
+        if loaded is None:
+            _unavailable_logged.discard(user_id)
+            return TodoList(user_id=user_id), True
+        if user_id in _unavailable_logged:
+            logger.debug("TODOs for %s still unreadable: %s", user_id, loaded)
         else:
-            logger.debug(f"Creating new TODO list for user: {user_id}")
-            return TodoList(user_id=user_id)
+            # Once per episode: every prompt build reads the list. The owner
+            # alert comes from the ticker when a due TODO is deferred.
+            _unavailable_logged.add(user_id)
+            logger.error(f"Could not read TODOs for {user_id}: {loaded}")
+        return TodoList(user_id=user_id), False
+
+    @staticmethod
+    def _bind_to_requested_user(todo_list: TodoList, user_id: str) -> TodoList:
+        """Keep a loaded list saving to the file it came from.
+
+        ``save_todos`` routes by the EMBEDDED ``user_id``, so a list whose id
+        names another user (a copied or hand-edited file) would write over
+        that user's file on its next save. Compared as path segments: the
+        sweeps pass a filename stem, which sanitizes the same as the real id.
+        """
+        if safe_path_segment(todo_list.user_id) != safe_path_segment(user_id):
+            key = (user_id, todo_list.user_id)
+            if key not in _rebind_warned:
+                _rebind_warned.add(key)
+                logger.warning(
+                    "TODO list loaded for %s claims user_id %r; rebinding it "
+                    "to the file it was loaded from",
+                    user_id,
+                    todo_list.user_id,
+                )
+            todo_list.user_id = user_id
+        return todo_list
+
+    def _repair_unloadable(self, user_id: str) -> "tuple[TodoList, bool]":
+        """Salvage what validates, preserve the original, replace the file.
+
+        Holds the per-user lock (re-entrant, so ``atomic_update``'s own hold
+        is fine) and RE-READS under it: a concurrent save may already have
+        replaced the bad file. The acquire is bounded because a plain reader
+        may hold the schedule index lock (see ``_load``); on timeout a
+        healthy re-read is served as usual (the holder usually repaired it),
+        a still-corrupt file as a read-only salvaged view.
+
+        The original bytes are COPIED to quarantine and the salvaged list then
+        atomically replaces the file, so the list file never goes absent (a
+        lock-free reader in a rename-then-write gap would take "no file" as an
+        authoritative empty list). Just before replacing, the file is checked
+        unchanged since the read: the lock is in-process only and a Docker api
+        and worker share the file, so this narrows (does not close) the
+        window in which the other process's write could be overwritten with
+        this stale salvage.
+        """
+        todos_path = self._get_todos_path(user_id)
+        lock = self._get_lock(user_id)
+        if not lock.acquire(timeout=_REPAIR_LOCK_TIMEOUT_SECONDS):
+            loaded = _read_list(todos_path)
+            if not isinstance(loaded, _Unloadable):
+                return self._settled(loaded, user_id)
+            logger.warning(
+                "TODO list for %s needs repair but its lock is busy; serving "
+                "a read-only salvaged view",
+                user_id,
+            )
+            view = _salvage_todo_list(loaded.data, user_id)[0]
+            return self._bind_to_requested_user(view, user_id), False
+        try:
+            loaded = _read_list(todos_path)
+            if not isinstance(loaded, _Unloadable):
+                return self._settled(loaded, user_id)
+            salvaged, dropped, had_items = _salvage_todo_list(loaded.data, user_id)
+            salvaged = self._bind_to_requested_user(salvaged, user_id)
+            quarantine = quarantine_copy(todos_path, loaded.raw)
+            if quarantine is None:
+                logger.error(
+                    "Failed to load TODOs for %s: %s; could not preserve the "
+                    "original, file left in place and writes refused",
+                    user_id,
+                    loaded.reason,
+                )
+                return salvaged, False
+            try:
+                unchanged = todos_path.read_bytes() == loaded.raw
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                # Another process replaced the file after the read. The
+                # quarantine copy still holds the bytes this load saw; the
+                # new file is theirs to keep.
+                logger.warning(
+                    "TODO list for %s changed during repair; keeping the new "
+                    "file (the bytes read are preserved at %s)",
+                    user_id,
+                    quarantine,
+                )
+                again = _read_list(todos_path)
+                if isinstance(again, _Unloadable):
+                    return salvaged, False
+                return self._settled(again, user_id)
+            if not self.save_todos(salvaged):
+                # The original is still the live file: drop this copy so a
+                # full disk does not grow a copy per load, and refuse writes.
+                try:
+                    quarantine.unlink()
+                except OSError:
+                    pass  # a leftover copy is harmless; the refusal below stands
+                logger.error(
+                    "Failed to write back salvaged TODOs for %s; original "
+                    "left in place and writes refused",
+                    user_id,
+                )
+                return salvaged, False
+            kept = len(salvaged.items)
+            logger.error(
+                "Failed to load TODOs for %s: %s; kept %d item(s), dropped %d, "
+                "original preserved at %s",
+                user_id,
+                loaded.reason,
+                kept,
+                dropped,
+                quarantine,
+            )
+        finally:
+            lock.release()
+        _report_todo_repair(user_id, quarantine.name, kept, dropped, had_items)
+        return salvaged, True
 
     def save_todos(self, todo_list: TodoList) -> bool:
         """
@@ -628,20 +941,29 @@ class TodoManager:
             return False
 
     def get_all_users_with_todos(self) -> List[str]:
-        """Get all user IDs that have at least one TODO item."""
+        """Get all user IDs that have at least one TODO item.
+
+        A file that cannot be read or parsed is LISTED (#394), not skipped:
+        the sweeps and the schedule rebuild then load it through ``_load``,
+        which repairs a corrupt file and reports an unreadable one as
+        non-authoritative, instead of the user silently dropping out of
+        every sweep (and, at the next restart, out of the schedule index).
+        """
         users = []
         if self.todos_dir.exists():
             for path in self.todos_dir.iterdir():
-                if path.is_file() and path.suffix == ".json":
-                    try:
-                        with open(path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception as e:
-                        logger.warning("Skipping unreadable TODO list %s: %s", path, e)
-                        continue
-
-                    if data.get("items"):
-                        users.append(path.stem)
+                if not (path.is_file() and path.suffix == ".json"):
+                    continue
+                try:
+                    data = _list_json_object(path.read_bytes())
+                except (OSError, ValueError, RecursionError) as e:
+                    logger.warning("TODO list %s does not load: %s", path, e)
+                    users.append(path.stem)
+                    continue
+                if data is None or not isinstance(data.get("items", []), list):
+                    users.append(path.stem)  # wrong shape: let a load repair it
+                elif data.get("items"):
+                    users.append(path.stem)
         return sorted(users)
 
     def find_owner(self, todo_id: str) -> Optional[str]:
@@ -660,12 +982,14 @@ class TodoManager:
             if not (path.is_file() and path.suffix == ".json"):
                 continue
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception as e:
+                data = _list_json_object(path.read_bytes())
+            except (OSError, ValueError, RecursionError) as e:
                 logger.warning("Skipping unreadable TODO list %s: %s", path, e)
                 continue
-            for item in data.get("items") or []:
+            items = data.get("items") if data is not None else None
+            if not isinstance(items, list):
+                continue
+            for item in items:
                 if isinstance(item, dict) and item.get("id") == todo_id:
                     return path.stem
         return None
@@ -701,7 +1025,12 @@ class TodoManager:
         """
         lock = self._get_lock(user_id)
         with lock:
-            todo_list = self.get_todos(user_id)
+            todo_list, writable = self._load(user_id)
+            if not writable:
+                raise TodoListUnavailableError(
+                    f"TODO list for user {user_id} could not be read or "
+                    f"repaired; its items for thread {thread_id} were not removed"
+                )
             deleted = todo_list.delete_items_for_thread(thread_id)
             if deleted:
                 if not self.save_todos(todo_list):
@@ -731,7 +1060,11 @@ class TodoManager:
             schedule_db: TodoScheduleDB instance
         """
 
-        todo_list = self.get_todos(user_id)
+        todo_list, authoritative = self._load(user_id)
+        if not authoritative:
+            # The item's absence from an unreadable list proves nothing, so
+            # leave its index row alone (#394).
+            return
         todo = todo_list.get_item(todo_id)
 
         if todo and todo.scheduled_for and todo.is_active():
@@ -795,7 +1128,7 @@ class TodoManager:
         """
         Migrate TODOs that have no thread_id to the given default.
 
-        This is idempotent — the model_validator already backfills 'legacy',
+        This is idempotent: the model_validator already backfills 'legacy',
         but calling this ensures the file on disk is updated too.
 
         Returns:

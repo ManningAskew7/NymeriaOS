@@ -4246,7 +4246,12 @@ class NymeriaAgent:
     def _migrate_unscoped_todos(self) -> None:
         """Migrate TODOs that lack a thread_id to 'legacy'. Idempotent."""
         for user_id in self.todo_manager.get_all_users_with_todos():
-            self.todo_manager.migrate_unscoped_todos(user_id)
+            # Per user, like the archive sweep: one unreadable list refuses
+            # its write (#394) and must not block the whole process's boot.
+            try:
+                self.todo_manager.migrate_unscoped_todos(user_id)
+            except Exception as e:  # noqa: BLE001
+                logger.error("TODO thread migration failed for %s: %s", user_id, e)
 
     def _migrate_tool_preferences(self) -> None:
         """Startup normalization sweep over every profile's default_thread_tools.

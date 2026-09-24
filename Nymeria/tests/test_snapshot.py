@@ -271,6 +271,32 @@ def test_verify_detects_tampered_member(snapshot_env, tmp_path):
     assert json_check.status == "fail"
 
 
+def test_verify_carries_quarantined_bytes_and_accepts_a_bom(snapshot_env, tmp_path):
+    """A store's quarantine dir holds unparseable bytes BY DESIGN (#394): it
+    must travel in the artifact without failing verification, or every
+    install that ever quarantined a file could neither snapshot nor restore
+    (#401). A BOM-prefixed store file loads, so it verifies too."""
+    todos = snapshot_env.data_dir / "todos"
+    quarantined_name = "alice.corrupt-20260924T000000Z-abcd1234.json"
+    (todos / "quarantine").mkdir()
+    (todos / "quarantine" / quarantined_name).write_text("{broken", "utf-8")
+    (todos / "bob.json").write_bytes(
+        b"\xef\xbb\xbf" + json.dumps({"user_id": "bob", "items": []}).encode()
+    )
+    result = create_snapshot(snapshot_env, encrypt=False)
+    workdir = tmp_path / "quarantinework"
+    extracted = extract_snapshot(result.artifact, None, workdir)
+
+    checks = verify_extracted(extracted)
+
+    assert not has_failures(checks)
+    json_check = next(c for c in checks if c.name == "JSON stores")
+    assert json_check.status == "pass"
+    assert "1 quarantined file(s) carried" in json_check.detail
+    carried = workdir / "data" / "todos" / "quarantine" / quarantined_name
+    assert carried.read_text("utf-8") == "{broken"
+
+
 def test_capture_with_live_writer_stays_consistent(snapshot_env):
     """The backup API must produce an integrity-clean copy under writes."""
     db = snapshot_env.data_dir / "todo_schedule.db"

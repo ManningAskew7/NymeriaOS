@@ -16,6 +16,7 @@ from typing import Any, Dict, List, TYPE_CHECKING
 from .checkpoint_cleanup import delete_thread_checkpoints
 from .embedding_jobs import cancel_thread_embedding_jobs
 from .storage_paths import safe_path_segment
+from .todo_manager import TodoListUnavailableError
 from .thread_lock_manager import (
     THREAD_DELETED_MESSAGE, begin_thread_deletion, end_thread_deletion,
     get_thread_epoch, thread_admission_guard, thread_epoch_is_current,
@@ -251,7 +252,14 @@ def _delete_rag_chunks(
 def _delete_todos(agent: "NymeriaAgent", thread_id: str, result: ThreadDeletionResult) -> None:
     deleted_todo_ids: List[str] = []
     for todo_user_id in agent.todo_manager.get_all_users_with_todos():
-        deleted = agent.todo_manager.delete_todos_for_thread(todo_user_id, thread_id)
+        try:
+            deleted = agent.todo_manager.delete_todos_for_thread(
+                todo_user_id, thread_id
+            )
+        except TodoListUnavailableError as e:
+            # One unreadable list must not abort the deletion halfway (#394).
+            result.warn(str(e))
+            continue
         deleted_todo_ids.extend(item.id for item in deleted)
         result.inc("todos_deleted", len(deleted))
 

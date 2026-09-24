@@ -319,3 +319,48 @@ class TestSegmentCollisions:
         assert segment_collisions(["Alice.Smith", "alicesmith"]) == [
             ("alicesmith", ["Alice.Smith", "alicesmith"])
         ]
+
+
+class TestQuarantineCopy:
+    def test_preserves_the_given_bytes_and_leaves_the_file(self, tmp_path):
+        from nymeria.core.storage_paths import quarantine_copy
+
+        live = tmp_path / "alice.json"
+        live.write_bytes(b"current")
+
+        copy = quarantine_copy(live, b"{corrupt")
+
+        assert copy is not None and copy.parent == tmp_path / "quarantine"
+        assert copy.read_bytes() == b"{corrupt"
+        assert live.read_bytes() == b"current"
+
+    def test_a_name_collision_never_deletes_the_existing_copy(
+        self, tmp_path, monkeypatch
+    ):
+        from nymeria.core import storage_paths
+
+        live = tmp_path / "alice.json"
+        live.write_bytes(b"current")
+        existing = tmp_path / "quarantine" / "alice.corrupt-X.json"
+        existing.parent.mkdir()
+        existing.write_bytes(b"an earlier preserved original")
+        monkeypatch.setattr(storage_paths, "_quarantine_target", lambda _path: existing)
+
+        assert storage_paths.quarantine_copy(live, b"{new corrupt") is None
+        assert existing.read_bytes() == b"an earlier preserved original"
+
+
+def test_validation_summary_names_paths_never_values():
+    from pydantic import BaseModel
+
+    from nymeria.core.storage_paths import validation_summary
+
+    class Item(BaseModel):
+        count: int
+
+    with pytest.raises(Exception) as caught:
+        Item.model_validate({"count": "SECRET-VALUE"})
+
+    summary = validation_summary(caught.value)
+    assert summary == "failed validation at count"
+    assert "SECRET" not in summary

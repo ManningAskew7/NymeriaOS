@@ -207,7 +207,12 @@ class WatchdogSweep:
     def _check_user(
         self, user_id: str, worker_pool: Optional[ThreadPoolExecutor]
     ) -> None:
-        items = self.todo_manager.get_todos(user_id).items
+        todo_list, authoritative = self.todo_manager.load_todos(user_id)
+        if not authoritative:
+            # An unreadable list reads as empty: pruning against it would
+            # forget every nudge and backoff for this user (#394).
+            return
+        items = todo_list.items
 
         stale_by_thread: Dict[str, List[TodoItem]] = {}
         with self._state_lock:

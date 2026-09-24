@@ -406,6 +406,48 @@ or `nym_todo_list(filter_status="done")`. After cleanup, only secondary history
 surfaces such as activity entries and indexed completed-TODO outcomes may retain
 context, depending on their own retention/indexing settings.
 
+### A list file that does not load
+
+Every write to a list loads it first and saves the whole file, so a load
+failure that answered "empty" used to erase the list on the next write,
+including unattended ones (this cleanup, slim's startup migration). Now
+(#394):
+
+- A list that parses but fails validation (a hand or agent edit left a
+  `"completed"` status, a bad date, an oversized note) keeps every item that
+  validates on its own. The original bytes are copied to
+  `data/todos/quarantine/<user>.corrupt-<utc>-<nonce>.json` and the salvaged
+  list atomically replaces the file.
+- A file that is not JSON text at all (truncated, or re-saved as cp1252 by a
+  Windows tool) or is not a JSON object is preserved the same way and the
+  list starts empty. UTF-8 with or without a byte-order mark, UTF-16 (what a
+  PowerShell 5.1 redirect writes) and UTF-32 all load normally.
+- A file that cannot be read (permissions, I/O), or whose preservation or
+  write-back fails (disk full), is left untouched: readers see an empty or
+  salvaged read-only list, and every write refuses with an error instead of
+  saving over it (the API answers such a write 503). Such a list still
+  appears to the sweeps, and the schedule rebuild keeps its existing rows.
+- A list whose embedded `user_id` names another user saves back to the file it
+  was loaded from, never to that user's file.
+
+Each repair records an `external_edit` activity row and sends the owner an
+alert (`[TODO LIST REPAIRED]` with kept and dropped counts, or
+`[TODO LIST CORRUPT]`) naming the quarantined file, so a dropped scheduled
+reminder can be restored by hand.
+
+When a scheduled TODO comes due while its list cannot be read or repaired,
+the ticker neither runs it (the in-progress write would be refused) nor
+unschedules it (its absence from the stand-in list proves nothing). It
+defers the TODO in memory and retries every 5 minutes, keeping the schedule
+row at the item's own slot, and alerts the owner once per episode
+(`[TODO LIST UNREADABLE]`). Once the file reads again the TODO fires once,
+late, and the skipped-occurrence report above covers any slots it missed.
+
+Concurrency: a healthy load takes no lock. Only the repair takes the per-user
+lock (with a bounded wait), re-reads under it, and checks the file is
+unchanged just before replacing it, so neither a same-process save nor a
+write from the other Docker process that landed meanwhile is overwritten.
+
 ---
 
 ## Frontend Implementation

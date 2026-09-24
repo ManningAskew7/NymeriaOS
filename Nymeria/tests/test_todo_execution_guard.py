@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -698,6 +699,155 @@ def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path, 
 
     ticker._execute_scheduled_todo(entry)
 
+    assert not agent._schedule_db.is_execution_active(todo.id, "owner")
+
+
+def _indexed_entry(agent: FakeAgent, todo) -> ScheduledTodoEntry:
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    entry = agent._schedule_db.get_entry(todo.id)
+    assert entry is not None
+    return entry
+
+
+def test_unreadable_todo_list_defers_the_run_then_fires_it_once(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#394: a due TODO whose list file cannot be read is neither dropped
+    from the schedule (a reminder lost until restart) nor run: the poll loop
+    defers it, the owner hears once, and its row keeps the item's own slot.
+    Once the file is readable again it fires exactly ONCE and re-arms (a
+    retry that moved the row's slot made the finalize path read a mid-run
+    reschedule and fire the TODO a second time)."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    ticker._executor = ThreadPoolExecutor(max_workers=1)
+    fire_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+    todo = _add_recurring_todo(
+        agent, task="Take the tablets", scheduled_for=fire_time, recurrence="1d"
+    )
+    _indexed_entry(agent, todo)
+    todos_path = agent.todo_manager.todos_dir / "owner.json"
+    real_read_bytes = Path.read_bytes
+    denied = {"on": True}
+
+    def _read_bytes(self: Path):
+        if denied["on"] and self == todos_path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        ticker_module, "send_owner_alert", lambda message, *a, **k: alerts.append(message)
+    )
+    runs: list = []
+
+    async def fake_astream(**kwargs):
+        runs.append(kwargs)
+        yield {"type": "response", "content": "done"}
+
+    agent.astream = fake_astream
+    executions: list[str] = []
+    real_execute = ticker._execute_scheduled_todo
+
+    def _counting_execute(entry):
+        executions.append(entry.todo_id)
+        return real_execute(entry)
+
+    monkeypatch.setattr(ticker, "_execute_scheduled_todo", _counting_execute)
+
+    def _poll() -> None:
+        ticker._check_and_execute()
+        for future in list(ticker._active_futures.values()):
+            future.result(timeout=10)
+        ticker._reap_finished_futures()
+
+    try:
+        _poll()  # due, list unreadable: deferred
+        row = agent._schedule_db.get_entry(todo.id)
+        assert row is not None, "the reminder was dropped from the schedule"
+        assert abs(row.scheduled_for - fire_time.timestamp()) < 1
+        assert runs == []
+        assert not agent._schedule_db.is_execution_active(todo.id, "owner")
+        assert len(alerts) == 1 and alerts[0].startswith("[TODO LIST UNREADABLE]")
+        assert todo.id in alerts[0]
+
+        _poll()  # still inside the deferral: not even submitted
+        assert executions == [todo.id]
+        assert len(alerts) == 1
+
+        ticker._list_unavailable_until[todo.id] = 0.0  # lapses, still unreadable
+        _poll()
+        assert executions == [todo.id, todo.id]
+        assert runs == []
+        assert len(alerts) == 1, "one alert per unreadable episode"
+
+        denied["on"] = False
+        ticker._list_unavailable_until[todo.id] = 0.0  # the deferral lapses
+        _poll()
+        assert len(runs) == 1
+        _poll()
+        assert len(runs) == 1, "the recovered TODO fired twice"
+        rearmed = agent._schedule_db.get_entry(todo.id)
+        assert rearmed is not None
+        assert rearmed.scheduled_for > time.time()
+
+        # A NEW episode after the recovery alerts again.
+        denied["on"] = True
+        real_execute(rearmed)
+        assert len(alerts) == 2
+    finally:
+        ticker._executor.shutdown(wait=True)
+
+
+def test_a_todo_present_in_a_read_only_list_is_deferred_not_retried_hot(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """A failed quarantine leaves a salvaged READ-ONLY view that still holds
+    the due TODO; the in-progress write would refuse, so the ticker defers
+    it like an unreadable list instead of failing it on every poll."""
+    from nymeria.core import todo_manager as todo_manager_module
+
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    todo = _add_scheduled_todo(
+        agent,
+        task="Overdue reminder",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    entry = _indexed_entry(agent, todo)
+    todos_path = agent.todo_manager.todos_dir / "owner.json"
+    data = json.loads(todos_path.read_text(encoding="utf-8"))
+    data["items"].append({"id": "broken01", "task": "x", "status": "completed"})
+    todos_path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(todo_manager_module, "quarantine_copy", lambda *_a: None)
+    monkeypatch.setattr(ticker_module, "send_owner_alert", lambda *a, **k: None)
+    streamed: list = []
+    monkeypatch.setattr(
+        ticker, "_stream_todo_execution", lambda *a, **k: streamed.append(a)
+    )
+
+    ticker._execute_scheduled_todo(entry)
+
+    assert streamed == []
+    assert todo.id in ticker._list_unavailable_until
+    assert agent._schedule_db.get_entry(todo.id) is not None
+    assert not agent._schedule_db.is_execution_active(todo.id, "owner")
+
+
+def test_a_todo_missing_from_a_readable_list_is_still_unscheduled(
+    tmp_path: Path, api_client_builder
+):
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    todo = _add_todo(agent)
+    entry = _indexed_entry(agent, todo)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.delete_item(todo.id)
+
+    ticker._execute_scheduled_todo(entry)
+
+    assert agent._schedule_db.get_entry(todo.id) is None
     assert not agent._schedule_db.is_execution_active(todo.id, "owner")
 
 

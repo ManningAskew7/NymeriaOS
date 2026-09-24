@@ -83,7 +83,9 @@ deliberately refuses to embed the vault key, so you must preserve
 After every create, the artifact is automatically re-read and verified
 (`--no-verify` skips this). Verification checks member digests against the
 manifest, runs `PRAGMA integrity_check` on every SQLite copy, parses every
-JSON store, validates the Postgres dumps, and runs the **vault canary**: it
+JSON store (files under a store's `quarantine/` directory are carried but not
+parsed: they are preserved unparseable bytes by design), validates the
+Postgres dumps, and runs the **vault canary**: it
 decrypts one real credential ciphertext with the embedded key, proving the
 key and the data actually belong together.
 

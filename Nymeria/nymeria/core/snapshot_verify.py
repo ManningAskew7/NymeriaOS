@@ -7,7 +7,7 @@ a restore always operates on exactly what was verified):
 - manifest presence + per-member sha256/size comparison (computed during
   extraction),
 - ``PRAGMA integrity_check`` on every captured SQLite database,
-- JSON parse of every ``.json`` store copy,
+- JSON parse of every ``.json`` store copy (quarantined bytes excepted),
 - shape checks on the Postgres COPY dumps (present, row counts match the
   manifest),
 - the vault canary: decrypt one real ``credential_secret_fields`` ciphertext
@@ -98,21 +98,38 @@ def verify_extracted(extracted: ExtractedSnapshot) -> List[SnapshotCheck]:
 
     # --- JSON stores ---------------------------------------------------------
     json_total = 0
+    json_quarantined = 0
     json_failures: List[str] = []
     if data_root.is_dir():
         for json_path in sorted(data_root.rglob("*.json")):
             if not json_path.is_file():
                 continue
+            rel_parts = json_path.relative_to(data_root).parts
+            if len(rel_parts) >= 2 and rel_parts[-2] == "quarantine":
+                # A store's quarantine dir holds the preserved bytes of a file
+                # that did NOT parse (``storage_paths.quarantine_corrupt_file``),
+                # by design: failing on them would make every store that ever
+                # quarantined a file unsnapshottable and unrestorable (#401).
+                json_quarantined += 1
+                continue
             json_total += 1
             try:
-                json.loads(json_path.read_text(encoding="utf-8"))
+                # Bytes, like the TODO and profile stores read them (#394,
+                # #400): UTF-8 with or without a BOM, UTF-16, UTF-32.
+                # Verification checks the artifact holds the bytes the live
+                # stores had, so it accepts these for every store rather than
+                # refuse a restore over one.
+                json.loads(json_path.read_bytes())
             except (ValueError, OSError, UnicodeDecodeError) as exc:
                 rel = json_path.relative_to(data_root).as_posix()
                 json_failures.append(f"{rel}: {exc.__class__.__name__}")
     if json_failures:
         checks.append(SnapshotCheck("JSON stores", "fail", "; ".join(json_failures[:5])))
     else:
-        checks.append(SnapshotCheck("JSON stores", "pass", f"{json_total} file(s) parse"))
+        detail = f"{json_total} file(s) parse"
+        if json_quarantined:
+            detail += f"; {json_quarantined} quarantined file(s) carried, not parsed"
+        checks.append(SnapshotCheck("JSON stores", "pass", detail))
 
     # --- Postgres dumps ------------------------------------------------------
     checks.append(_check_postgres_dumps(root, manifest))

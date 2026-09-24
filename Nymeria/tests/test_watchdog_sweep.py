@@ -91,16 +91,28 @@ class MidStreamFailureExecutor(FakeExecutor):
 
 
 class FakeTodoManager:
-    """Just the two readers the sweep uses."""
+    """Just the readers the sweep uses."""
 
-    def __init__(self, todos_by_user: Dict[str, List[TodoItem]] | None = None):
+    def __init__(
+        self,
+        todos_by_user: Dict[str, List[TodoItem]] | None = None,
+        *,
+        unreadable: frozenset = frozenset(),
+    ):
         self.todos_by_user = todos_by_user or {}
+        self.unreadable = unreadable
 
     def get_all_users_with_todos(self) -> List[str]:
         return list(self.todos_by_user)
 
     def get_todos(self, user_id: str):
-        return SimpleNamespace(items=list(self.todos_by_user.get(user_id, [])))
+        return self.load_todos(user_id)[0]
+
+    def load_todos(self, user_id: str):
+        # An unreadable list (#394) reads as an empty, non-authoritative one.
+        if user_id in self.unreadable:
+            return SimpleNamespace(items=[]), False
+        return SimpleNamespace(items=list(self.todos_by_user.get(user_id, []))), True
 
 
 def _sweep(tmp_path, executor, *, todo_manager=None) -> WatchdogSweep:
@@ -432,6 +444,27 @@ def test_check_user_prunes_state_for_vanished_todos(tmp_path, monkeypatch):
     assert ("u1", "dead") not in sweep._statuses
     assert ("u2", "other") in sweep._nudged
     # The fresh TODO is not stale, so no nudge fired.
+    assert executor.calls == []
+
+
+def test_an_unreadable_list_keeps_the_users_nudge_state(tmp_path, monkeypatch):
+    """#394: an unreadable list loads as an empty, NON-authoritative one;
+    pruning against it would forget every nudge and backoff for the user."""
+    _quiet_publishing(monkeypatch)
+    executor = FakeExecutor()
+    sweep = _sweep(
+        tmp_path,
+        executor,
+        todo_manager=FakeTodoManager({"u1": []}, unreadable=frozenset({"u1"})),
+    )
+    now = datetime.now(timezone.utc)
+    sweep._nudged[("u1", "kept")] = now.timestamp()
+    sweep._nudge_counts[("u1", "kept")] = 3
+
+    sweep._check_user("u1", None)
+
+    assert sweep._nudged[("u1", "kept")] == now.timestamp()
+    assert sweep._nudge_counts[("u1", "kept")] == 3
     assert executor.calls == []
 
 

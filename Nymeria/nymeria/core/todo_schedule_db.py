@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
+from .storage_paths import safe_path_segment
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -656,12 +658,42 @@ class TodoScheduleDB:
         with self._lock:
             conn = self._get_connection()
             try:
-                # Clear existing index
-                conn.execute("DELETE FROM scheduled_todos")
+                # Load first: a list that could not be read (#394) keeps its
+                # existing rows, since its items' absence proves nothing and
+                # dropping them would silence its reminders until a later
+                # restart. Compared as path segments, the same key the
+                # enumerator's filename stems carry.
+                lists = []
+                preserved = set()
+                for user_id in todo_manager.get_all_users_with_todos():
+                    todo_list, authoritative = todo_manager.load_todos(user_id)
+                    if not authoritative:
+                        logger.warning(
+                            "[SCHEDULE DB] TODO list for %s could not be read; "
+                            "keeping its existing schedule rows",
+                            user_id,
+                        )
+                        preserved.add(safe_path_segment(user_id))
+                        continue
+                    lists.append((user_id, todo_list))
+
+                if preserved:
+                    rows = conn.execute(
+                        "SELECT todo_id, user_id FROM scheduled_todos"
+                    ).fetchall()
+                    conn.executemany(
+                        "DELETE FROM scheduled_todos WHERE todo_id = ?",
+                        [
+                            (row[0],)
+                            for row in rows
+                            if safe_path_segment(row[1]) not in preserved
+                        ],
+                    )
+                else:
+                    conn.execute("DELETE FROM scheduled_todos")
 
                 count = 0
-                for user_id in todo_manager.get_all_users_with_todos():
-                    todo_list = todo_manager.get_todos(user_id)
+                for user_id, todo_list in lists:
                     scheduled_todos = todo_list.get_scheduled_todos()
                     logger.info(f"[SCHEDULE DB] Rebuilding: user={user_id}, found {len(scheduled_todos)} scheduled TODOs")
                     for todo in scheduled_todos:
