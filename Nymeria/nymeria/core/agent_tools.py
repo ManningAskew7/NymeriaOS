@@ -448,7 +448,13 @@ def prune_mcp_tool_bindings(agent: "NymeriaAgent", live_tool_names: set[str]) ->
     removed = 0
 
     try:
-        for user_id in agent.profile_manager.list_users():
+        users = agent.profile_manager.list_users()
+    except Exception:
+        logger.debug("Failed to list profiles for MCP pruning", exc_info=True)
+        users = []
+    for user_id in users:
+        # Per user: one unreadable profile (#400) must not stop the rest.
+        try:
             with agent.profile_manager.atomic_update(user_id) as profile:
                 defaults = profile.tool_preferences.default_thread_tools
                 if defaults is None:
@@ -460,8 +466,8 @@ def prune_mcp_tool_bindings(agent: "NymeriaAgent", live_tool_names: set[str]) ->
                 ]
                 removed += len(defaults) - len(filtered)
                 profile.tool_preferences.default_thread_tools = filtered
-    except Exception:
-        logger.debug("Failed to prune MCP defaults", exc_info=True)
+        except Exception:
+            logger.debug("Failed to prune MCP defaults for %s", user_id, exc_info=True)
 
     try:
         for thread_id in agent.thread_config_manager.list_configured_threads():

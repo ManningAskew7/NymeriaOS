@@ -884,6 +884,17 @@ def create_api_app(
         openapi_url="/openapi.json" if api_docs_enabled else None,
     )
 
+    from ..core.storage_paths import StoreUnavailableError
+
+    @app.exception_handler(StoreUnavailableError)
+    async def _store_unavailable(_request: Request, exc: StoreUnavailableError):
+        # A user's TODO list or profile file exists but could not be read or
+        # repaired, so the write was refused rather than save a stand-in over
+        # it (#394, #400): a server-side condition, not a bad request.
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     async def _resize_default_executor() -> None:
         # The API process is the single agent runtime, and nearly all of its
         # blocking work (to_thread / run_in_executor(None, ...)) funnels

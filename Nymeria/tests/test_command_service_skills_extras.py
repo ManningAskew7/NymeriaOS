@@ -7,6 +7,8 @@ command layer.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -109,6 +111,14 @@ class _FakeProfileManager:
 
     def save_profile(self, profile: _FakeProfile) -> None:
         self.saved.append(profile)
+
+    @contextmanager
+    def atomic_update(self, user_id: str):
+        profile = self.get_profile(user_id)
+        try:
+            yield profile
+        finally:
+            self.save_profile(profile)
 
 
 class _SkillCommandFakeApi:

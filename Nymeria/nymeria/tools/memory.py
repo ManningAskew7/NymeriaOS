@@ -773,7 +773,8 @@ def memory_clear_all(
     Clear ALL global memories for this user.
 
     Use this when the user explicitly asks you to forget everything about them.
-    This is irreversible — all memories and personality preferences will be deleted.
+    This is irreversible: all memories and personality preferences will be
+    deleted, including any copy of the profile file preserved by a repair.
     Does NOT touch per-thread notepads or shared team memory (manage those
     with memory_edit in their own scopes).
 
@@ -800,8 +801,15 @@ def memory_clear_all(
             except Exception as e:
                 logger.warning(f"Failed to clear memories from RAG index: {e}")
 
-        logger.info(f"All memories cleared for user {user_id}")
-        return f"[Cleared]: Deleted {count} memories and {personality_count} personality preferences. Starting fresh."
+    # A quarantined copy from a profile repair (#400) still holds the
+    # memories just wiped: "forget everything" covers it too.
+    purged = manager.purge_quarantined(user_id)
+    logger.info(f"All memories cleared for user {user_id}")
+    extra = f" and {purged} preserved profile cop{'y' if purged == 1 else 'ies'}" if purged else ""
+    return (
+        f"[Cleared]: Deleted {count} memories and {personality_count} "
+        f"personality preferences{extra}. Starting fresh."
+    )
 
 
 @tool

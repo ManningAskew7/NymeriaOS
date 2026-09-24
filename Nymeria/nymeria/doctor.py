@@ -216,7 +216,7 @@ def _check_web_search(settings: Any) -> CheckResult:
             Path(settings.data_dir) / "users" / BOOTSTRAP_USER_ID / "profile.json"
         )
         if profile_path.exists():
-            raw = json.loads(profile_path.read_text(encoding="utf-8"))
+            raw = json.loads(profile_path.read_bytes())
             names = (raw.get("tool_preferences") or {}).get("default_thread_tools")
     except Exception:  # noqa: BLE001 - diagnostics must not crash on a bad profile
         names = None

@@ -1087,7 +1087,10 @@ def _apply_profile_picks(
     profile.tool_preferences.default_thread_tools = tools
     skills = selected_global_skills_for_state(state)
     profile.enabled_global_skills = skills
-    manager.save_profile(profile)
+    if not manager.save_profile(profile):
+        # save_profile reports rather than raises; a refused save (an
+        # unreadable profile, #400) must not print a success summary.
+        raise RuntimeError(f"could not save the profile for {profile.user_id}")
     return len(tools), len(skills)
 
 

@@ -753,7 +753,7 @@ plus `ANTHROPIC_API_KEY` for an isolated API-key run.
 
 Three unified primitives  -  `memory_add`, `memory_edit`, `memory_read`  -  cover global user-profile facts, per-thread notepad content, and shared callable-team facts. The `scope` argument selects which store:
 
-- `scope="global"`  -  keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread as explicitly untrusted JSONL data records. Storage: `data/users/{user_id}/profile.json`.
+- `scope="global"`  -  keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread as explicitly untrusted JSONL data records. Storage: `data/users/{user_id}/profile.json` (a corrupt file is salvaged memory by memory and the original kept in `quarantine/`, never reset: `resource-filesystem.md`).
 - `scope="thread"`  -  free-form markdown notepad for the active thread, re-injected after context compaction. Storage: `data/thread_notes/{thread_id}.md`.
 - `scope="team"`  -  keyed entries shared by every thread in the acting thread's callable team (backlog #100 phase 3). Storage: the team entity in `data/teams/{user_id}.json`. The full `memory_read(scope="team")` also renders the team's identity header (name, description, teammate roster), which is how a thread learns its team: identity rides tool results, never prompt content, so team changes cannot bust the provider prompt cache. Teamed threads get this read in their session-start seed and every post-compaction reseed; unteamed threads get a clear error. Teammates see each other's writes on their next read or reseed, not mid-turn.
 

@@ -205,37 +205,39 @@ def apply_default_tools_update(
 
     resolved = migrate_tool_names(list(tool_names))
 
-    profile = agent.profile_manager.get_profile(user_id)
-    existing = set(profile.tool_preferences.default_thread_tools or ())
-    added = set(resolved) - existing
+    # One locked read-modify-write: a direct get_profile + save_profile
+    # raced other writers and reported success when the save was refused
+    # for an unreadable profile (#400).
+    with agent.profile_manager.atomic_update(user_id) as profile:
+        existing = set(profile.tool_preferences.default_thread_tools or ())
+        added = set(resolved) - existing
 
-    known = (
-        {t.name for t in SEED_TOOLS}
-        | set(CATALOG_TOOLS.keys())
-        | set(MCP_SERVER_TOOL_METADATA.keys())
-    )
-    unknown = added - known
-    if unknown:
-        raise DefaultToolsUpdateError(400, f"Unknown tools: {sorted(unknown)}")
+        known = (
+            {t.name for t in SEED_TOOLS}
+            | set(CATALOG_TOOLS.keys())
+            | set(MCP_SERVER_TOOL_METADATA.keys())
+        )
+        unknown = added - known
+        if unknown:
+            raise DefaultToolsUpdateError(400, f"Unknown tools: {sorted(unknown)}")
 
-    if not is_admin:
-        blocked = ADMIN_ONLY_TOOL_NAMES.intersection(added)
-        if blocked:
-            raise DefaultToolsUpdateError(
-                403,
-                "Admin-only tools cannot be set as defaults by this "
-                f"user: {sorted(blocked)}",
-            )
-        blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(added)
-        if blocked:
-            raise DefaultToolsUpdateError(
-                403,
-                "Developer-only diagnostic tools cannot be set as "
-                f"defaults by this user: {sorted(blocked)}",
-            )
+        if not is_admin:
+            blocked = ADMIN_ONLY_TOOL_NAMES.intersection(added)
+            if blocked:
+                raise DefaultToolsUpdateError(
+                    403,
+                    "Admin-only tools cannot be set as defaults by this "
+                    f"user: {sorted(blocked)}",
+                )
+            blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(added)
+            if blocked:
+                raise DefaultToolsUpdateError(
+                    403,
+                    "Developer-only diagnostic tools cannot be set as "
+                    f"defaults by this user: {sorted(blocked)}",
+                )
 
-    profile.tool_preferences.default_thread_tools = resolved
-    agent.profile_manager.save_profile(profile)
+        profile.tool_preferences.default_thread_tools = resolved
 
     agent._rebuild_default_graphs()
 
@@ -466,9 +468,10 @@ def create_tools_router(
         from ...tools import fresh_default_thread_tool_names
 
         agent = get_agent_fn()
-        profile = agent.profile_manager.get_profile(user_id)
-        profile.tool_preferences.default_thread_tools = fresh_default_thread_tool_names()
-        agent.profile_manager.save_profile(profile)
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            profile.tool_preferences.default_thread_tools = (
+                fresh_default_thread_tool_names()
+            )
 
         agent._rebuild_default_graphs()
 

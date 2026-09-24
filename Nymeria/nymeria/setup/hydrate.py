@@ -425,11 +425,17 @@ def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> None:
     if not profile_path.exists():
         return
     try:
-        raw = json.loads(profile_path.read_text(encoding="utf-8"))
+        # Bytes, as the profile store reads them: BOM, UTF-16 and UTF-32 load.
+        raw = json.loads(profile_path.read_bytes())
     except (OSError, ValueError):
         return
+    if not isinstance(raw, dict):
+        return
 
-    default_tools = raw.get("tool_preferences", {}).get("default_thread_tools")
+    tool_preferences = raw.get("tool_preferences")
+    if not isinstance(tool_preferences, dict):
+        tool_preferences = {}
+    default_tools = tool_preferences.get("default_thread_tools")
     if isinstance(default_tools, list):
         _apply_tool_picks(state, default_tools)
 

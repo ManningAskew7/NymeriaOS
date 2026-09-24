@@ -196,12 +196,11 @@ def create_skills_router(
 
         # Also clean up any stale references to this skill name in profile/thread configs.
         try:
-            profile = agent.profile_manager.get_profile(user_id)
-            if name in getattr(profile, "enabled_global_skills", []):
-                profile.enabled_global_skills = [
-                    n for n in profile.enabled_global_skills if n != name
-                ]
-                agent.profile_manager.save_profile(profile)
+            with agent.profile_manager.atomic_update(user_id) as profile:
+                if name in getattr(profile, "enabled_global_skills", []):
+                    profile.enabled_global_skills = [
+                        n for n in profile.enabled_global_skills if n != name
+                    ]
         except Exception:
             logger.warning("Failed to clean up stale skill refs in profile", exc_info=True)
 
@@ -257,10 +256,10 @@ def create_skills_router(
     ):
         """Replace the user's enabled-by-default skill list."""
         agent = get_agent_fn()
-        profile = agent.profile_manager.get_profile(user_id)
-        profile.enabled_global_skills = list(request.skill_names)
-        agent.profile_manager.save_profile(profile)
+        with agent.profile_manager.atomic_update(user_id) as profile:
+            profile.enabled_global_skills = list(request.skill_names)
+            enabled = list(profile.enabled_global_skills)
         _invalidate_graph_caches()
-        return {"enabled_global_skills": profile.enabled_global_skills}
+        return {"enabled_global_skills": enabled}
 
     return router

@@ -104,7 +104,31 @@ this revisited.
   a store file that no longer parses is moved to a `quarantine/` sibling
   directory (timestamped, bytes preserved) and the store loads without it.
   Applied by hooks, triggers, thread configs, callable teams, custom tools,
-  and MCP servers.
+  and MCP servers. TODO lists (`data/todos/<user>.json`) REPAIR instead
+  (#394), because their usual corruption is one bad item: a list that
+  parses but fails validation keeps every item that validates on its own;
+  the original bytes are COPIED to quarantine and the salvaged list then
+  atomically replaces the file (so it is never absent, and no later save
+  can overwrite the dropped item). Bytes that are not JSON text, or a
+  non-object document, are preserved the same way and the list starts
+  empty; UTF-8 with or without a BOM, UTF-16 and UTF-32 all load. A file
+  that cannot be read, or whose preservation or write-back fails, is left
+  in place and every write to it is refused (`StoreUnavailableError`,
+  answered 503 by the API). Each repair
+  writes an `external_edit` activity row and sends the owner a
+  `[TODO LIST REPAIRED]` or `[TODO LIST CORRUPT]` alert naming the
+  quarantined file (details in `user-todo-management.md`). User profiles
+  (`data/users/<id>/profile.json`) repair the same way (#400), salvaging
+  down to the single memory, opt-in flag, skill name or tool config (an
+  unreadable opt-in takes its conservative value, never the new-user
+  default), with `[PROFILE REPAIRED]` or `[PROFILE CORRUPT]` alerts and one
+  `[PROFILE UNREADABLE]` alert per episode when it cannot be repaired. Their old failure was worse: a plain READ
+  seeded a fresh profile and saved it, so the next prompt build erased the
+  user's memories. An unreadable profile is served as a seeded stand-in
+  marked read-only, which `save_profile` refuses, so the routes that read
+  and then save without `atomic_update` cannot write it either. Snapshot
+  verification carries every `quarantine/` file in the artifact without
+  parsing it.
   Corrupt `SKILL.md` files are deliberately not quarantined: markdown skills
   fail soft (skipped at scan; the cached copy keeps serving on a bad edit)
   and no manager ever rewrites them.

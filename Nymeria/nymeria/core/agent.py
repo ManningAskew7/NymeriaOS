@@ -4275,7 +4275,9 @@ class NymeriaAgent:
         from ..tools import CAPABILITY_EXPANSION_TOOL_NAMES
 
         for user_id in self.profile_manager.list_users():
-            profile = self.profile_manager.get_profile(user_id)
+            profile, authoritative = self.profile_manager.load_profile(user_id)
+            if not authoritative:
+                continue  # unreadable or unrepairable file: never rewrite it (#400)
             if profile.tool_preferences.default_thread_tools is None:
                 continue  # lazy seeding failed to persist; nothing to normalize
             current = set(profile.tool_preferences.default_thread_tools)

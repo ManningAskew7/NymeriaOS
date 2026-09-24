@@ -5,15 +5,20 @@ import logging
 import os
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, NamedTuple, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import (
+    StoreUnavailableError,
+    quarantine_copy,
+    safe_path_segment,
+    validation_summary,
+)
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -281,6 +286,12 @@ DEFAULT_BROWSER_PREFERENCES = {
 class UserProfile(BaseModel):
     """User profile containing memories and preferences."""
 
+    # True on a stand-in served for a profile file that exists but could not
+    # be read or repaired (#400): ``save_profile`` refuses it, so no caller,
+    # including the routes that read then save without ``atomic_update``,
+    # can write it over the user's real file. Private: never serialized.
+    _read_only: bool = PrivateAttr(default=False)
+
     user_id: str = Field(default="default")
     name: Optional[str] = Field(default=None, description="User's preferred name")
     created_at: datetime = Field(default_factory=utc_now)
@@ -483,6 +494,288 @@ class UserProfile(BaseModel):
         self.updated_at = utc_now()
 
 
+# Bounded wait for the per-user lock on the repair path (the TODO store's
+# lock-order rule, #394: a reader may hold a foreign lock while it loads).
+_REPAIR_LOCK_TIMEOUT_SECONDS = 10.0
+
+# (requested user, embedded id) pairs already warned about, so a mismatched
+# profile that is only ever read does not log a warning on every turn.
+_rebind_warned: set = set()
+
+
+class ProfileUnavailableError(StoreUnavailableError):
+    """A write was refused because the user's profile file exists but could
+    not be read or repaired (#400). Saving would replace it with a stand-in."""
+
+
+class _Unloadable:
+    """A profile file that exists and reads but does not load."""
+
+    __slots__ = ("data", "reason", "raw")
+
+    def __init__(self, data: object, reason: str, raw: bytes) -> None:
+        self.data = data  # the parsed JSON, or None when the bytes did not parse
+        self.reason = reason
+        self.raw = raw  # the exact bytes read, preserved by the quarantine copy
+
+
+class _ProfileSalvage(NamedTuple):
+    profile: "UserProfile"
+    dropped_memories: int
+    dropped_fields: List[str]
+    salvageable: bool  # False: not a JSON object, nothing could be kept
+
+
+def _read_profile(profile_path: Path) -> "UserProfile | OSError | _Unloadable | None":
+    """One read of a profile file: the profile, ``None`` when absent, the read
+    error, or an ``_Unloadable`` carrying the reason, the bytes, and the
+    parsed data when the bytes were JSON."""
+    try:
+        raw = profile_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return e
+    try:
+        # json.loads on BYTES detects UTF-8 (with or without a BOM), UTF-16
+        # and UTF-32, so a Windows editor or PowerShell save loads. Anything
+        # else (cp1252 with a non-ASCII byte) is corrupt: UnicodeDecodeError
+        # is a ValueError.
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as e:
+        return _Unloadable(None, f"not parseable as JSON ({type(e).__name__})", raw)
+    try:
+        return UserProfile.model_validate(data)
+    except Exception as e:  # noqa: BLE001 - one bad field must not cost the profile
+        return _Unloadable(data, validation_summary(e), raw)
+
+
+_DROP = object()
+
+# A stored opt-in that could not be read is replaced by the conservative
+# value, never the new-user default: a bad byte must not opt a user who had
+# opted out back INTO conversation indexing, or re-run onboarding.
+_CONSERVATIVE_OPT_IN: Dict[str, Any] = {
+    "rag_enabled": False,
+    "rag_migrated": True,
+    "first_conversation_completed": True,
+}
+
+
+def _salvage_value(value: Any, fits, path: str) -> "tuple[Any, List[str]]":
+    """Keep what validates inside a value that fails as a whole.
+
+    ``fits(candidate)`` says whether the field validates holding
+    ``candidate``. Dicts are salvaged entry by entry (recursively, so one bad
+    sub-setting of ``opt_in`` or one bad ``tool_configs`` entry costs only
+    itself) and lists item by item (one bad memory, one non-string skill
+    name). Returns the kept value, or ``_DROP``, plus the dropped paths.
+    """
+    if fits(value):
+        return value, []
+    if isinstance(value, dict):
+        kept: Dict[Any, Any] = {}
+        dropped: List[str] = []
+        for key, sub in value.items():
+            sub_kept, sub_dropped = _salvage_value(
+                sub, lambda cand, key=key: fits({key: cand}), f"{path}.{key}"
+            )
+            dropped.extend(sub_dropped)
+            if sub_kept is not _DROP:
+                kept[key] = sub_kept
+        if fits(kept):
+            return kept, dropped
+    elif isinstance(value, list):
+        items = [item for item in value if fits([item])]
+        dropped = [
+            f"{path}[{index}]" for index, item in enumerate(value) if not fits([item])
+        ]
+        if fits(items):
+            return items, dropped
+    return _DROP, [path]
+
+
+def _salvage_profile(data: object, user_id: str) -> _ProfileSalvage:
+    """Keep every setting and every memory that validates on its own.
+
+    Salvage is by field, then by dict entry and list item (``_salvage_value``),
+    so one bad memory, one bad opt-in flag or one non-string skill name costs
+    only itself. Fixups for what was dropped: an unreadable opt-in takes its
+    conservative value (``_CONSERVATIVE_OPT_IN``), and a skill list dropped
+    whole has its seeding watermark cleared so the defaults come back.
+    Undecodable or non-object data salvages nothing.
+    """
+    if not isinstance(data, dict):
+        return _ProfileSalvage(UserProfile(user_id=user_id), 0, [], False)
+    embedded = data.get("user_id")
+    owner = embedded if isinstance(embedded, str) else user_id
+    kept_fields: Dict[str, Any] = {"user_id": owner}
+    dropped: List[str] = []
+
+    def _fits(key: str):
+        def check(candidate: Any) -> bool:
+            try:
+                UserProfile.model_validate({"user_id": owner, key: candidate})
+            except Exception:  # noqa: BLE001
+                return False
+            return True
+
+        return check
+
+    for key, value in data.items():
+        if key == "user_id" or key not in UserProfile.model_fields:
+            continue
+        kept, key_dropped = _salvage_value(value, _fits(key), key)
+        dropped.extend(key_dropped)
+        if kept is not _DROP:
+            kept_fields[key] = kept
+
+    if any(path == "opt_in" or path.startswith("opt_in.") for path in dropped):
+        opt_in = dict(kept_fields.get("opt_in") or {})
+        for flag, safe in _CONSERVATIVE_OPT_IN.items():
+            if f"opt_in.{flag}" in dropped or "opt_in" in dropped:
+                opt_in[flag] = safe
+        kept_fields["opt_in"] = opt_in
+    if "enabled_global_skills" in dropped:
+        kept_fields["global_skill_defaults_migrated"] = False
+
+    try:
+        profile = UserProfile.model_validate(kept_fields)
+    except Exception:  # noqa: BLE001 - parts that pass alone may clash together
+        profile = UserProfile(user_id=owner)
+        dropped.extend(k for k in kept_fields if k != "user_id")
+    dropped_memories = sum(1 for path in dropped if path.startswith("memories["))
+    settings = [path for path in dropped if not path.startswith("memories[")]
+    return _ProfileSalvage(profile, dropped_memories, settings, True)
+
+
+def _bind_profile(profile: "UserProfile", user_id: str) -> "UserProfile":
+    """Keep a loaded profile saving to the file it came from.
+
+    ``save_profile`` routes by the EMBEDDED ``user_id``, so a profile whose id
+    names another user (a copied or hand-edited file) would write over that
+    user's profile on its next save. Compared as path segments, since that is
+    what picks the file.
+    """
+    if safe_path_segment(profile.user_id) != safe_path_segment(user_id):
+        key = (user_id, profile.user_id)
+        if key not in _rebind_warned:
+            _rebind_warned.add(key)
+            logger.warning(
+                "Profile loaded for %s claims user_id %r; rebinding it to the "
+                "file it was loaded from",
+                user_id,
+                profile.user_id,
+            )
+        profile.user_id = user_id
+    return profile
+
+
+def _read_only(profile: "UserProfile") -> "UserProfile":
+    profile._read_only = True
+    return profile
+
+
+# user_ids whose profile is currently unreadable or unrepairable and already
+# reported (one ERROR line and one owner alert per episode, not one per read:
+# every prompt build reads the profile). Cleared by an authoritative load.
+_unavailable_reported: set = set()
+
+
+def _report_profile_unavailable(user_id: str, why: str) -> None:
+    """Log and alert once per episode that a profile is served read-only."""
+    if user_id in _unavailable_reported:
+        logger.debug("Profile for %s still unavailable: %s", user_id, why)
+        return
+    _unavailable_reported.add(user_id)
+    logger.error(
+        "Profile for %s is unavailable (%s); serving a read-only stand-in and "
+        "refusing writes",
+        user_id,
+        why,
+    )
+    alert = (
+        f"[PROFILE UNREADABLE] Your profile file (memories and preferences) "
+        f"exists but could not be used: {why}. Until it can be, the assistant "
+        f"runs without your memories and no change to them can be saved; "
+        f"nothing in the file was changed. Check its permissions and free "
+        f"disk space."
+    )
+
+    def _send() -> None:
+        try:
+            from ..config.settings import get_settings
+            from .notification_dispatch import send_owner_alert
+
+            send_owner_alert(alert, get_settings(), user_id=user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("Profile unavailable alert failed for %s", user_id, exc_info=True)
+
+    threading.Thread(target=_send, name="profile-unavailable-alert", daemon=True).start()
+
+
+def _memories_phrase(count: int) -> str:
+    return "1 memory was" if count == 1 else f"{count} memories were"
+
+
+def _report_profile_repair(
+    user_id: str,
+    user_dir: str,
+    quarantine_name: str,
+    salvage: _ProfileSalvage,
+) -> None:
+    """Audit row now, owner alert off-thread. Never raises."""
+    where = f"users/{user_dir}/quarantine/{quarantine_name}"
+    if not salvage.salvageable:
+        detail = "corrupt profile preserved; a fresh profile started"
+        alert = (
+            f"[PROFILE CORRUPT] Your profile file (memories and preferences) "
+            f"could not be parsed (edited by hand or by a tool?), so a fresh "
+            f"profile with default settings started. Nothing was deleted: "
+            f"the original is preserved at {where}, and an admin can restore "
+            f"your memories from it."
+        )
+    else:
+        kept = len(salvage.profile.memories)
+        dropped = salvage.dropped_memories
+        reset = ", ".join(salvage.dropped_fields)
+        detail = (
+            f"invalid profile repaired: kept {kept} memories, dropped "
+            f"{dropped}" + (f", reset {reset}" if reset else "")
+        )
+        alert = (
+            f"[PROFILE REPAIRED] Your profile file failed validation (edited "
+            f"by hand or by a tool?). {_memories_phrase(kept)} kept"
+            + (f"; {_memories_phrase(dropped)} unreadable and dropped" if dropped else "")
+            + (
+                f"; these settings could not be read and were dropped or set "
+                f"to a safe default: {reset}"
+                if reset
+                else ""
+            )
+            + f". The original file is preserved at {where}."
+        )
+    try:
+        from .activity_log import log_external_edit
+
+        log_external_edit(
+            "profile", f"{detail} (original at {where})", user_id=user_id
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to record profile quarantine audit", exc_info=True)
+
+    def _send() -> None:
+        try:
+            from ..config.settings import get_settings
+            from .notification_dispatch import send_owner_alert
+
+            send_owner_alert(alert, get_settings(), user_id=user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("Profile repair alert failed for %s", user_id, exc_info=True)
+
+    threading.Thread(target=_send, name="profile-repair-alert", daemon=True).start()
+
+
 class UserProfileManager:
     """Manages user profiles on disk with thread-safe operations."""
 
@@ -495,8 +788,6 @@ class UserProfileManager:
         """
         self.users_dir = data_dir / "users"
         self.users_dir.mkdir(parents=True, exist_ok=True)
-        # Cache for profiles during atomic operations
-        self._profile_cache: Dict[str, UserProfile] = {}
         logger.info(f"UserProfileManager initialized with directory: {self.users_dir}")
 
     def _get_lock(self, user_id: str) -> threading.RLock:
@@ -517,7 +808,15 @@ class UserProfileManager:
         """
         lock = self._get_lock(user_id)
         with lock:
-            profile = self.get_profile(user_id)
+            profile, writable = self._load(user_id)
+            if not writable:
+                # The file exists but could not be read or repaired (#400):
+                # saving would replace the user's memories and preferences
+                # with this in-memory stand-in.
+                raise ProfileUnavailableError(
+                    f"Profile for user {user_id} could not be read or "
+                    f"repaired; refusing to overwrite it"
+                )
             try:
                 yield profile
             finally:
@@ -532,35 +831,185 @@ class UserProfileManager:
         """
         Load a user profile from disk, or create a new one if it doesn't exist.
 
+        A file that does not load is never replaced by a fresh profile (#400):
+        see ``_load``.
+
         Args:
             user_id: User identifier (defaults to "default")
 
         Returns:
             UserProfile instance
         """
-        profile_path = self._get_profile_path(user_id)
+        return self._load(user_id)[0]
 
-        if profile_path.exists():
-            try:
-                with open(profile_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                profile = UserProfile.model_validate(data)
-                logger.debug(f"Loaded profile for user: {user_id}")
-                profile = self._migrate_rag_enabled(profile)
-                profile = self._migrate_default_global_skills(profile)
-                profile = self._migrate_default_thread_tools(profile)
-                return profile
-            except Exception as e:
-                logger.error(f"Failed to load profile for {user_id}: {e}")
-                # Return new profile on error
-                fresh = self._migrate_default_global_skills(UserProfile(user_id=user_id))
-                return self._migrate_default_thread_tools(fresh)
-        else:
+    def load_profile(self, user_id: str) -> "tuple[UserProfile, bool]":
+        """``get_profile`` plus whether the profile is AUTHORITATIVE.
+
+        ``False`` means the file exists but could not be read or repaired
+        right now: the profile is a seeded or salvaged stand-in marked
+        read-only, which ``save_profile`` refuses. Callers that would act on
+        it (a startup sweep) check the flag and skip.
+        """
+        return self._load(user_id)
+
+    def _load(self, user_id: str) -> "tuple[UserProfile, bool]":
+        """Load a profile; returns ``(profile, writable)``.
+
+        A load failure used to answer a fresh profile that the seeding
+        migrations then SAVED, so a plain read (every turn's prompt build)
+        erased memories, preferences, opt-ins and skills. Now:
+
+        - A UTF-8 BOM (a Windows editor save) is tolerated.
+        - A file that does not load (not UTF-8, not JSON, or failing
+          validation) goes to ``_repair_unloadable``: every field and memory
+          that validates is kept, the original bytes are preserved in
+          ``quarantine/`` beside it.
+        - An unreadable file (``OSError``) is left in place: the caller gets
+          a seeded in-memory stand-in marked read-only, and ``atomic_update``
+          refuses.
+
+        The healthy read takes no lock, as before; only the repair locks.
+        """
+        loaded = _read_profile(self._get_profile_path(user_id))
+        if isinstance(loaded, _Unloadable):
+            return self._repair_unloadable(user_id)
+        return self._settled(loaded, user_id)
+
+    def _settled(
+        self,
+        loaded: "UserProfile | OSError | None",
+        user_id: str,
+        *,
+        persist: bool = True,
+    ) -> "tuple[UserProfile, bool]":
+        """The ``(profile, writable)`` answer for a read that needs no repair.
+
+        ``persist=False`` (the busy-lock path) runs the one-shot migrations in
+        memory only: persisting them takes the lock that is busy.
+        """
+        if isinstance(loaded, UserProfile):
+            logger.debug(f"Loaded profile for user: {user_id}")
+            _unavailable_reported.discard(user_id)
+            profile = _bind_profile(loaded, user_id)
+            return self._migrate_loaded(profile, persist=persist), True
+        if loaded is None:
             logger.debug(f"Creating new profile for user: {user_id}")
-            fresh = self._migrate_default_global_skills(UserProfile(user_id=user_id))
-            return self._migrate_default_thread_tools(fresh)
+            _unavailable_reported.discard(user_id)
+            return self._seed(UserProfile(user_id=user_id), persist=persist), True
+        _report_profile_unavailable(user_id, f"the file could not be read ({loaded})")
+        stand_in = self._seed(UserProfile(user_id=user_id), persist=False)
+        # The user's own opt-out is unknowable here: never index their
+        # conversations on the strength of a default.
+        stand_in.opt_in.rag_enabled = False
+        return _read_only(stand_in), False
 
-    def _migrate_rag_enabled(self, profile: UserProfile) -> UserProfile:
+    def _migrate_loaded(self, profile: UserProfile, *, persist: bool = True) -> UserProfile:
+        """The watermark-gated one-shot migrations every loaded profile gets."""
+        profile = self._migrate_rag_enabled(profile, persist=persist)
+        profile = self._migrate_default_global_skills(profile, persist=persist)
+        return self._migrate_default_thread_tools(profile, persist=persist)
+
+    def _seed(self, profile: UserProfile, *, persist: bool = True) -> UserProfile:
+        """Seed a brand-new profile (the defaults a first creation gets)."""
+        profile = self._migrate_default_global_skills(profile, persist=persist)
+        return self._migrate_default_thread_tools(profile, persist=persist)
+
+    def _repair_unloadable(self, user_id: str) -> "tuple[UserProfile, bool]":
+        """Salvage what validates, preserve the original, replace the file.
+
+        The #394 shape (``todo_manager.TodoManager._repair_unloadable``):
+        holds the per-user lock (re-entrant) with a bounded acquire and
+        re-reads under it; on timeout a healthy re-read is served as usual
+        and a still-corrupt file as a read-only salvaged view. The original
+        bytes are COPIED to quarantine and the repaired profile then
+        atomically replaces the file, so it never goes absent (a lock-free
+        read in the gap would seed and save a fresh profile over the
+        salvage). The file is checked unchanged since the read just before
+        the replace, which narrows (does not close) the window in which a
+        write from the other Docker process could be overwritten: the lock is
+        in-process only. The seeding migrations run in memory only, then ONE
+        save.
+        """
+        profile_path = self._get_profile_path(user_id)
+        lock = self._get_lock(user_id)
+        if not lock.acquire(timeout=_REPAIR_LOCK_TIMEOUT_SECONDS):
+            loaded = _read_profile(profile_path)
+            if not isinstance(loaded, _Unloadable):
+                return self._settled(loaded, user_id, persist=False)
+            logger.warning(
+                "Profile for %s needs repair but its lock is busy; serving a "
+                "read-only salvaged view",
+                user_id,
+            )
+            view = _bind_profile(_salvage_profile(loaded.data, user_id).profile, user_id)
+            return _read_only(self._migrate_loaded(view, persist=False)), False
+        try:
+            loaded = _read_profile(profile_path)
+            if not isinstance(loaded, _Unloadable):
+                return self._settled(loaded, user_id)
+            salvage = _salvage_profile(loaded.data, user_id)
+            profile = self._migrate_loaded(
+                _bind_profile(salvage.profile, user_id), persist=False
+            )
+            quarantine = quarantine_copy(profile_path, loaded.raw)
+            if quarantine is None:
+                _report_profile_unavailable(
+                    user_id,
+                    f"it {loaded.reason} and the original could not be "
+                    f"preserved in quarantine",
+                )
+                return _read_only(profile), False
+            try:
+                unchanged = profile_path.read_bytes() == loaded.raw
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                # Another process replaced the file after the read. The copy
+                # still holds the bytes this load saw; the new file is theirs.
+                logger.warning(
+                    "Profile for %s changed during repair; keeping the new file "
+                    "(the bytes read are preserved at %s)",
+                    user_id,
+                    quarantine,
+                )
+                again = _read_profile(profile_path)
+                if isinstance(again, _Unloadable):
+                    return _read_only(profile), False
+                return self._settled(again, user_id)
+            if not self.save_profile(profile):
+                # The original is still the live file: drop this copy so a
+                # full disk does not grow a copy per load, and refuse writes.
+                try:
+                    quarantine.unlink()
+                except OSError:
+                    pass  # a leftover copy is harmless; the refusal below stands
+                _report_profile_unavailable(
+                    user_id,
+                    f"it {loaded.reason} and the repaired profile could not be "
+                    f"written back",
+                )
+                return _read_only(profile), False
+            logger.error(
+                "Failed to load profile for %s: %s; kept %d memories, dropped "
+                "%d, reset fields %s, original preserved at %s",
+                user_id,
+                loaded.reason,
+                len(salvage.profile.memories),
+                salvage.dropped_memories,
+                salvage.dropped_fields,
+                quarantine,
+            )
+        finally:
+            lock.release()
+        _unavailable_reported.discard(user_id)
+        _report_profile_repair(
+            user_id, profile_path.parent.name, quarantine.name, salvage
+        )
+        return profile, True
+
+    def _migrate_rag_enabled(
+        self, profile: UserProfile, *, persist: bool = True
+    ) -> UserProfile:
         """One-time migration: ensure existing profiles get rag_enabled=True.
 
         Old profiles (pre-2026-04) were created when rag_enabled defaulted to False
@@ -572,13 +1021,16 @@ class UserProfileManager:
         if profile.opt_in.rag_migrated:
             return profile
 
-        lock = self._get_lock(profile.user_id)
-        with lock:
+        # A non-persisting run mutates a caller-private stand-in and must not
+        # wait on the lock: the busy-lock repair path relies on that (#400).
+        with self._get_lock(profile.user_id) if persist else nullcontext():
             # Re-check inside the lock in case another thread already migrated.
             if profile.opt_in.rag_migrated:
                 return profile
             profile.opt_in.rag_enabled = True
             profile.opt_in.rag_migrated = True
+            if not persist:
+                return profile
             try:
                 self.save_profile(profile)
                 logger.info(f"Migrated profile {profile.user_id}: rag_enabled=True")
@@ -586,7 +1038,9 @@ class UserProfileManager:
                 logger.warning(f"Failed to persist rag migration for {profile.user_id}: {e}")
         return profile
 
-    def _migrate_default_thread_tools(self, profile: UserProfile) -> UserProfile:
+    def _migrate_default_thread_tools(
+        self, profile: UserProfile, *, persist: bool = True
+    ) -> UserProfile:
         """One-time seed of an unset `default_thread_tools`.
 
         Two sources, in priority order:
@@ -627,12 +1081,15 @@ class UserProfileManager:
 
             seed = fresh_default_thread_tool_names()
 
-        lock = self._get_lock(profile.user_id)
-        with lock:
+        # A non-persisting run mutates a caller-private stand-in and must not
+        # wait on the lock: the busy-lock repair path relies on that (#400).
+        with self._get_lock(profile.user_id) if persist else nullcontext():
             if profile.tool_preferences.default_thread_tools is not None:
                 return profile
             profile.tool_preferences.default_thread_tools = migrate_tool_names(seed)
             profile.updated_at = utc_now()
+            if not persist:
+                return profile
             try:
                 self.save_profile(profile)
                 logger.info(
@@ -667,7 +1124,9 @@ class UserProfileManager:
                 return init_picks
         return DEFAULT_GLOBAL_SKILLS
 
-    def _migrate_default_global_skills(self, profile: UserProfile) -> UserProfile:
+    def _migrate_default_global_skills(
+        self, profile: UserProfile, *, persist: bool = True
+    ) -> UserProfile:
         """One-time migration: enable the bundled default capability kits.
 
         ``DEFAULT_GLOBAL_SKILLS`` (the self-improve guidance skill plus the
@@ -680,8 +1139,9 @@ class UserProfileManager:
         if profile.global_skill_defaults_migrated:
             return profile
 
-        lock = self._get_lock(profile.user_id)
-        with lock:
+        # A non-persisting run mutates a caller-private stand-in and must not
+        # wait on the lock: the busy-lock repair path relies on that (#400).
+        with self._get_lock(profile.user_id) if persist else nullcontext():
             if profile.global_skill_defaults_migrated:
                 return profile
             defaults = self._default_global_skills_for(profile.user_id)
@@ -693,6 +1153,8 @@ class UserProfileManager:
             profile.global_skill_defaults_migrated = True
             if changed:
                 profile.updated_at = utc_now()
+            if not persist:
+                return profile
             try:
                 self.save_profile(profile)
                 logger.info(
@@ -708,6 +1170,22 @@ class UserProfileManager:
                 )
         return profile
 
+    def purge_quarantined(self, user_id: str) -> int:
+        """Delete this user's quarantined profile copies; returns the count.
+
+        For an explicit "forget everything" (``memory_clear_all``): a copy
+        preserved by a repair (#400) still holds the memories being wiped.
+        """
+        quarantine_dir = self._get_profile_path(user_id).parent / "quarantine"
+        removed = 0
+        for copy in quarantine_dir.glob("profile.corrupt-*"):
+            try:
+                copy.unlink()
+                removed += 1
+            except OSError:
+                logger.warning("Could not remove quarantined profile %s", copy)
+        return removed
+
     def save_profile(self, profile: UserProfile) -> bool:
         """
         Save a user profile to disk.
@@ -718,6 +1196,14 @@ class UserProfileManager:
         Returns:
             True if successful
         """
+        if profile._read_only:
+            # A stand-in for a profile that could not be read or repaired
+            # (#400): writing it would replace the user's real file.
+            logger.error(
+                "Refusing to save a read-only stand-in profile for %s",
+                profile.user_id,
+            )
+            return False
         profile_path = self._get_profile_path(profile.user_id)
 
         try:

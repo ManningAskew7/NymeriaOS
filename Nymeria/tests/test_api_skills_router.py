@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from threading import Lock
@@ -75,6 +76,14 @@ class FakeProfileManager:
 
     def save_profile(self, profile):
         self.saved_profile = profile
+
+    @contextmanager
+    def atomic_update(self, user_id: str):
+        profile = self.get_profile(user_id)
+        try:
+            yield profile
+        finally:
+            self.save_profile(profile)
 
 
 class FakeThreadConfigManager:
@@ -198,3 +207,32 @@ def test_global_skills_update_clears_graph_caches(tmp_path: Path, api_client_bui
     assert agent.rebuild_calls == 1
     assert agent._user_graphs == {}
     assert agent._async_user_graphs == {}
+
+
+def test_a_refused_profile_write_answers_503_not_success(
+    tmp_path: Path, api_client_builder
+):
+    """#400: the global-skills route used to read with get_profile and save
+    with save_profile, reporting success even when the save was refused for
+    an unreadable profile. It now writes through atomic_update, whose
+    refusal the app answers 503 (a server-side condition)."""
+    from nymeria.core.user_profile import ProfileUnavailableError
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+
+    @contextmanager
+    def _refuse(user_id: str):
+        raise ProfileUnavailableError(f"Profile for user {user_id} could not be read")
+        yield  # pragma: no cover
+
+    agent.profile_manager.atomic_update = _refuse
+
+    response = client.put(
+        "/settings/global-skills",
+        headers=api_client_builder.auth(token),
+        json={"skill_names": ["kit-skill"]},
+    )
+
+    assert response.status_code == 503
+    assert "could not be read" in response.json()["detail"]
+    assert agent.profile_manager.saved_profile is None

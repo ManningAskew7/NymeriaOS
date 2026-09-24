@@ -124,7 +124,10 @@ Thread-safe persistent storage for user memories and preferences.
 - `UserProfile`: User's complete profile (memories, personality_overrides)
 - `UserProfileManager`: Disk persistence with atomic updates
 
-**Storage:** `data/users/{user_id}/profile.json`
+**Storage:** `data/users/{user_id}/profile.json`. A file that does not load
+is repaired, never reset: every field and memory that validates is kept and
+the original bytes are preserved in `quarantine/` beside it; an unreadable
+file is never written (#400, `agent-systems/resource-filesystem.md`).
 
 **Limits:**
 - 100 memories per user
@@ -907,6 +910,7 @@ JSON files store user memories:
 - Location: `data/users/{user_id}/profile.json`
 - Thread-safe with atomic file operations guarded by a per-user `KeyedRLockMap` lock
 - Contains: memories, personality_overrides, timestamps
+- A corrupt file is salvaged into `quarantine/`, never overwritten by a fresh profile (#400)
 - Prompt injection guard: profile memories and personality overrides are injected into prompts as explicitly untrusted JSONL records, not Markdown instructions.
 
 ### Audit Logs

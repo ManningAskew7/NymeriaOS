@@ -4642,15 +4642,14 @@ class _CommandExecutor(
             profile_manager = getattr(agent, "profile_manager", None)
             if profile_manager is None:
                 return command_error("Profile manager unavailable.")
-            profile = profile_manager.get_profile(self.user_id)
-            current = list(getattr(profile, "enabled_global_skills", []) or [])
-            if enabled:
-                if name not in current:
-                    current.append(name)
-            else:
-                current = [item for item in current if item != name]
-            profile.enabled_global_skills = sorted(set(current))
-            profile_manager.save_profile(profile)
+            with profile_manager.atomic_update(self.user_id) as profile:
+                current = list(getattr(profile, "enabled_global_skills", []) or [])
+                if enabled:
+                    if name not in current:
+                        current.append(name)
+                else:
+                    current = [item for item in current if item != name]
+                profile.enabled_global_skills = sorted(set(current))
             action = "Enabled globally" if enabled else "Disabled globally"
             return command_success(f"{action}: {name}")
 
