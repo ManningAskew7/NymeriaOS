@@ -1039,3 +1039,34 @@ def test_thread_config_twitch_channel_round_trip(
     assert clear_resp.json()["twitch_channel"] is None
     cleared = agent.thread_config_manager.get_config(thread_id)
     assert cleared is not None and cleared.twitch_channel is None
+
+
+def test_config_write_completes_when_the_thread_list_is_unavailable(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """#401: the thread row a config write ensures is bookkeeping. A refused
+    metadata write (the owner's list could not be read or repaired) must not
+    turn a saved config into a 503 with the tool sync skipped."""
+    from nymeria.core.thread_metadata import ThreadMetadataUnavailableError
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "config-while-list-unavailable"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    def _refuse(*args, **kwargs):
+        raise ThreadMetadataUnavailableError("thread list unreadable")
+
+    monkeypatch.setattr(agent.thread_metadata_manager, "ensure_thread_unless_deleting", _refuse)
+    monkeypatch.setattr(agent.thread_metadata_manager, "upsert_thread", _refuse)
+
+    response = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"callable": True, "callable_name": "list_helper", "callable_description": "Helps."},
+    )
+
+    assert response.status_code == 200, response.text
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None and saved.callable_name == "list_helper"
+    assert agent.synced_tools == 1

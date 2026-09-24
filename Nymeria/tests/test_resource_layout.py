@@ -1241,6 +1241,7 @@ def test_the_exec_deny_set_is_exactly_the_credential_stores():
         "fcm_tokens.json",         # push tokens, per user
         "mcp_servers",             # env_vars/headers carry inline secrets (C7-02)
         "snapshots",               # encrypted archives of all of the above
+        "quarantine",              # preserved copies, fcm_tokens.json's among them (#401)
     }, (
         "The exec sandbox deny set changed. If a credential store was added or "
         "renamed, update this pin; if a secret_at_rest answer was flipped, "

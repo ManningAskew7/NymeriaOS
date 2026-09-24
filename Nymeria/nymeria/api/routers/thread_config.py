@@ -15,6 +15,7 @@ from ...core.team_manager import (
     set_thread_team,
 )
 from ...core.thread_config import DreamingConfig, ThreadConfig, ThreadLLMConfig
+from ...core.thread_metadata import incidental_metadata_write
 from ..schemas.thread_config import (
     NotepadUpdateRequest,
     ThreadConfigUpdateRequest,
@@ -414,7 +415,8 @@ def create_thread_config_router(
         # from the moment of the write rather than after its first turn
         # (#272). Creation only; an existing row keeps its timestamps.
         # Skipped mid-deletion so a racing write cannot resurrect the row.
-        agent.thread_metadata_manager.ensure_thread_unless_deleting(user_id, thread_id)
+        with incidental_metadata_write("thread row for a config write"):
+            agent.thread_metadata_manager.ensure_thread_unless_deleting(user_id, thread_id)
 
         if (
             request.callable is not None
@@ -437,13 +439,14 @@ def create_thread_config_router(
             )
 
         if tc.callable and tc.callable_name:
-            agent.thread_metadata_manager.upsert_thread(
-                user_id,
-                thread_id,
-                title=tc.callable_name,
-                title_source="callable",
-                platform="callable",
-            )
+            with incidental_metadata_write("callable title for a config write"):
+                agent.thread_metadata_manager.upsert_thread(
+                    user_id,
+                    thread_id,
+                    title=tc.callable_name,
+                    title_source="callable",
+                    platform="callable",
+                )
 
         response = _config_response(tc, agent=agent, user_id=user_id)
         # A write that newly disables a tool carrying a cross-thread contract

@@ -902,6 +902,7 @@ Server-authoritative thread metadata replaces frontend-only localStorage titles:
 - Title sources: `"auto"` (generated from first message), `"user"` (manual rename), `"callable"` (synced from callable_name)
 - Platform detection: stored in metadata (e.g., `"desktop"`, `"callable"`, `"discord"`, `"telegram"`) rather than inferred from thread ID prefixes
 - Thread-safe with a per-user `KeyedRLockMap` lock
+- A file that does not load is repaired row by row, its original preserved in `quarantine/` before any rewrite; one that cannot be read refuses writes (#401)
 - All trigger sources (API, Discord, webhooks) create metadata entries on first message
 
 ### User Profiles

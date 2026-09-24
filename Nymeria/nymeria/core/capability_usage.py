@@ -12,11 +12,16 @@ from typing import Any, Callable, Container, Iterable, NamedTuple, Optional
 
 from ..config import get_settings
 from .storage_paths import write_text_atomic
+from .store_repair import UnavailableEpisodes, read_json, record_store_repair, repair_file
 from .time_utils import ensure_aware_utc, parse_usage_timestamp, utc_now
 
 logger = logging.getLogger(__name__)
 
 _lock = threading.RLock()
+
+# Paths already reported unreadable or unrepairable: one WARNING per episode,
+# since every tool call records usage.
+_unavailable = UnavailableEpisodes()
 
 
 @dataclass(frozen=True)
@@ -48,7 +53,9 @@ class CapabilityUsageStore:
             return
         now = utc_now().isoformat()
         with _lock:
-            data = self._read_locked()
+            data, writable = self._load_locked()
+            if not writable:
+                return  # never save over a file that could not be preserved
             entry = self._thread_entry(data, user_id, thread_id)
             for kind, names in (("tools", tools), ("skills", skills)):
                 bucket = entry.setdefault(kind, {})
@@ -88,14 +95,62 @@ class CapabilityUsageStore:
         return user_bucket.setdefault(self._safe_key(thread_id), {})
 
     def _read_locked(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return {}
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            logger.warning("Failed to read capability usage store", exc_info=True)
-            return {}
-        return raw if isinstance(raw, dict) else {}
+        return self._load_locked()[0]
+
+    def _load_locked(self) -> tuple[dict[str, Any], bool]:
+        """The index, and whether the file may be written.
+
+        A file that does not load (not JSON, not an object, or any bucket or
+        usage record of the wrong shape) is never saved over (#401): its
+        bytes go to ``quarantine/`` in the data dir and the file is replaced
+        with every record of the right shape. A wrong-shaped record used to
+        make ``record`` raise, silently ending usage tracking for that thread.
+        Unreadable or not preservable: read as what could be kept, not written.
+        """
+        key = str(self.path)
+        read = read_json(self.path)
+        if read.absent:
+            _unavailable.end(key)
+            return {}, True
+        if read.unreadable:
+            if _unavailable.start(key):
+                logger.warning("Capability usage store is unreadable: %s", read.error)
+            return {}, False
+        data = read.data if read.parsed else None
+        kept = _salvaged(data)
+        if kept == data:
+            _unavailable.end(key)
+            return kept, True
+        assert read.raw is not None
+        repaired = repair_file(
+            self.path,
+            read.raw,
+            json.dumps(kept, indent=2, sort_keys=True),
+            _valid_index,
+            store="capability_usage",
+        )
+        if repaired.status == "superseded":
+            _unavailable.end(key)
+            return repaired.fresh, True
+        if repaired.status == "replaced" and repaired.quarantine is not None:
+            _unavailable.end(key)
+            detail = (
+                "invalid capability usage index repaired"
+                if isinstance(data, dict)
+                else "corrupt capability usage index preserved; usage starts empty"
+            )
+            logger.warning("%s (original at %s)", detail, repaired.quarantine)
+            record_store_repair(
+                "capability_usage",
+                f"{detail} (original at quarantine/{repaired.quarantine.name})",
+            )
+            return kept, True
+        if _unavailable.start(key):
+            logger.warning(
+                "Capability usage store did not load and could not be repaired; "
+                "not recording usage over it"
+            )
+        return kept, False
 
     def _write_locked(self, data: dict[str, Any]) -> None:
         try:
@@ -108,6 +163,43 @@ class CapabilityUsageStore:
     @staticmethod
     def _safe_key(value: str) -> str:
         return str(value or "default")
+
+
+def _usage_ok(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    count = item.get("use_count", 0)
+    last = item.get("last_used_at")
+    return (
+        type(count) is int and count >= 0 and (last is None or isinstance(last, str))
+    )
+
+
+def _salvaged(data: Any) -> dict[str, Any]:
+    """Every user bucket, thread bucket, capability kind and usage record of
+    ``data`` that has its shape; the rest is dropped."""
+    if not isinstance(data, dict):
+        return {}
+    kept: dict[str, Any] = {}
+    for user, bucket in data.items():
+        if not isinstance(bucket, dict):
+            continue
+        threads: dict[str, Any] = {}
+        for thread, entry in bucket.items():
+            if not isinstance(entry, dict):
+                continue
+            threads[thread] = {
+                kind: {name: item for name, item in names.items() if _usage_ok(item)}
+                for kind, names in entry.items()
+                if isinstance(names, dict)
+            }
+        kept[user] = threads
+    return kept
+
+
+def _valid_index(read: Any) -> Optional[dict[str, Any]]:
+    data = read.data if read.parsed else None
+    return data if isinstance(data, dict) and _salvaged(data) == data else None
 
 
 def get_capability_usage_store() -> CapabilityUsageStore:

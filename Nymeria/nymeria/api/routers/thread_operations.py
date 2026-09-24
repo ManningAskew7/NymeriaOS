@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from ...core.accounts import AuthenticatedUser
 from ...core.agent_compaction import COMPACT_BUSY_MESSAGE
 from ...core.claude_code_delivery import cancel_active_job as cancel_active_code_job
+from ...core.thread_metadata import incidental_metadata_write
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.turn_stream_buffer import (
     TurnReplayGapError,
@@ -173,13 +174,14 @@ def create_thread_operations_router(
         metadata_title = tc.callable_name if tc.callable and tc.callable_name else title
         metadata_platform = "callable" if tc.callable else "desktop"
         metadata_source = "callable" if tc.callable else "user"
-        agent.thread_metadata_manager.upsert_thread(
-            user_id,
-            thread_id,
-            title=metadata_title,
-            title_source=metadata_source,
-            platform=metadata_platform,
-        )
+        with incidental_metadata_write("thread row for an imported thread"):
+            agent.thread_metadata_manager.upsert_thread(
+                user_id,
+                thread_id,
+                title=metadata_title,
+                title_source=metadata_source,
+                platform=metadata_platform,
+            )
 
         agent.invalidate_thread_config_cache(thread_id)
         if tc.callable:

@@ -2,6 +2,13 @@
 
 Provides in-app notification storage and retrieval for urgent
 messages from autonomous agent executions.
+
+A history file that does not load is never saved over (#401): the original
+bytes go to ``notifications/quarantine/`` and the file is replaced with every
+record that still validates. A file that cannot be read, or whose original
+cannot be preserved, is read-only: ``create`` still returns the notification
+(delivery never fails on bookkeeping) without saving it, and the other
+mutators raise ``NotificationsUnavailableError``.
 """
 
 import json
@@ -10,18 +17,34 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment, write_text_atomic
+from .storage_paths import StoreUnavailableError, safe_path_segment, write_text_atomic
+from .store_repair import (
+    UnavailableEpisodes,
+    read_json,
+    record_store_repair,
+    repair_file,
+)
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
 # Thread-safe locks for notification operations (keyed by user_id)
 _notification_locks = KeyedRLockMap()
+
+# user_ids whose history file is unreadable or unrepairable and already
+# reported: one ERROR line per episode, since every notify call reads it.
+_unavailable = UnavailableEpisodes()
+
+
+class NotificationsUnavailableError(StoreUnavailableError):
+    """A change was refused because the user's notification history file
+    exists but could not be read or repaired (#401). Saving would replace it.
+    The API answers it 503."""
 
 
 class Notification(BaseModel):
@@ -133,7 +156,15 @@ class NotificationStore:
 
         lock = self._get_lock(user_id)
         with lock:
-            notifications = self._load_notifications(user_id)
+            notifications, writable = self._load_state(user_id)
+            if not writable:
+                # The history cannot be read, so it is not saved over; the
+                # caller's delivery goes ahead regardless.
+                logger.warning(
+                    "Notification for %s not recorded: its history file is unavailable",
+                    user_id,
+                )
+                return notification
             notifications.append(notification)
 
             # Keep only the last MAX_NOTIFICATIONS
@@ -203,7 +234,7 @@ class NotificationStore:
         """
         lock = self._get_lock(user_id)
         with lock:
-            notifications = self._load_notifications(user_id)
+            notifications = self._writable_notifications(user_id)
 
             found = False
             for n in notifications:
@@ -230,7 +261,7 @@ class NotificationStore:
         """
         lock = self._get_lock(user_id)
         with lock:
-            notifications = self._load_notifications(user_id)
+            notifications = self._writable_notifications(user_id)
 
             count = 0
             for n in notifications:
@@ -273,7 +304,7 @@ class NotificationStore:
         """
         lock = self._get_lock(user_id)
         with lock:
-            notifications = self._load_notifications(user_id)
+            notifications = self._writable_notifications(user_id)
             original_len = len(notifications)
             notifications = [n for n in notifications if n.id != notification_id]
 
@@ -285,19 +316,90 @@ class NotificationStore:
             return False
 
     def _load_notifications(self, user_id: str) -> List[Notification]:
-        """Load notifications from disk."""
-        notifications_path = self._get_notifications_path(user_id)
+        """Load notifications from disk (what could be read, for readers)."""
+        return self._load_state(user_id)[0]
 
-        if not notifications_path.exists():
-            return []
+    def _writable_notifications(self, user_id: str) -> List[Notification]:
+        notifications, writable = self._load_state(user_id)
+        if not writable:
+            raise NotificationsUnavailableError(
+                f"Notification history for user {user_id} could not be read "
+                f"or repaired; refusing to overwrite it"
+            )
+        return notifications
 
-        try:
-            with open(notifications_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return [Notification.model_validate(item) for item in data]
-        except Exception as e:
-            logger.error(f"Failed to load notifications for {user_id}: {e}")
-            return []
+    def _load_state(self, user_id: str) -> Tuple[List[Notification], bool]:
+        """The user's notifications, and whether the file may be written.
+
+        Takes the user's lock (re-entrant: every caller already holds it). A
+        list that fails validation keeps each record that validates alone; the
+        original bytes are preserved in ``quarantine/`` before the file is
+        replaced, so no save can destroy them.
+        """
+        path = self._get_notifications_path(user_id)
+        with self._get_lock(user_id):
+            read = read_json(path)
+            if read.absent:
+                _unavailable.end(user_id)
+                return [], True
+            if read.unreadable:
+                return [], self._report_unavailable(user_id, str(read.error))
+            data = read.data if read.parsed else None
+            records = _validated(data)
+            if records is not None:
+                _unavailable.end(user_id)
+                return records, True
+            assert read.raw is not None
+            kept = _salvaged(data)
+            repaired = repair_file(
+                path,
+                read.raw,
+                _serialize(kept),
+                lambda again: _validated(again.data if again.parsed else None),
+                store="notifications",
+                user_id=user_id,
+            )
+            if repaired.status == "superseded":
+                _unavailable.end(user_id)
+                return repaired.fresh, True
+            if repaired.status == "replaced" and repaired.quarantine is not None:
+                _unavailable.end(user_id)
+                if isinstance(data, list):
+                    detail = (
+                        f"invalid notification history repaired: kept "
+                        f"{len(kept)}, dropped {len(data) - len(kept)}"
+                    )
+                else:
+                    detail = "corrupt notification history preserved; the history starts empty"
+                logger.warning(
+                    "Notifications for %s did not load; %s (original at %s)",
+                    user_id,
+                    detail,
+                    repaired.quarantine,
+                )
+                record_store_repair(
+                    "notifications",
+                    f"{detail} (original at quarantine/{repaired.quarantine.name})",
+                    user_id=user_id,
+                )
+                return kept, True
+            return kept, self._report_unavailable(
+                user_id, f"{read.error or 'invalid records'}; could not be repaired"
+            )
+
+    @staticmethod
+    def _report_unavailable(user_id: str, why: str) -> bool:
+        """Log once per episode that the history is read-only; returns False."""
+        if _unavailable.start(user_id):
+            logger.error(
+                "Notification history for %s is unavailable (%s); serving what "
+                "could be read and refusing changes",
+                user_id,
+                why,
+            )
+        else:
+            logger.debug("Notification history for %s still unavailable: %s", user_id, why)
+        return False
 
     def _save_notifications(self, user_id: str, notifications: List[Notification]) -> bool:
         """Save notifications to disk."""
@@ -306,14 +408,7 @@ class NotificationStore:
         try:
             notifications_path.parent.mkdir(parents=True, exist_ok=True)
 
-            write_text_atomic(
-                notifications_path,
-                json.dumps(
-                    [n.model_dump(mode="json") for n in notifications],
-                    indent=2,
-                    default=str,
-                ),
-            )
+            write_text_atomic(notifications_path, _serialize(notifications))
             return True
         except Exception as e:
             logger.error(f"Failed to save notifications for {user_id}: {e}")
@@ -337,7 +432,7 @@ class NotificationStore:
         """Delete notifications that point at a thread for one user."""
         lock = self._get_lock(user_id)
         with lock:
-            notifications = self._load_notifications(user_id)
+            notifications = self._writable_notifications(user_id)
             kept = [n for n in notifications if n.thread_id != thread_id]
             deleted = len(notifications) - len(kept)
             if deleted:
@@ -351,8 +446,43 @@ class NotificationStore:
             return deleted
         for path in self.notifications_dir.iterdir():
             if path.is_file() and path.suffix == ".json":
-                deleted += self.delete_for_thread(path.stem, thread_id)
+                try:
+                    deleted += self.delete_for_thread(path.stem, thread_id)
+                except NotificationsUnavailableError:
+                    # One user's unrepairable file must not stop the others'
+                    # cleanup; its rows stay until the file loads again.
+                    logger.warning(
+                        "Notifications for thread %s left in %s's unavailable history",
+                        thread_id,
+                        path.stem,
+                    )
         return deleted
+
+
+def _validated(data: Any) -> Optional[List[Notification]]:
+    """Every record validated, or None when the document is not a valid list."""
+    if not isinstance(data, list):
+        return None
+    try:
+        return [Notification.model_validate(item) for item in data]
+    except Exception:  # noqa: BLE001 - the caller salvages
+        return None
+
+
+def _salvaged(data: Any) -> List[Notification]:
+    kept: List[Notification] = []
+    for item in data if isinstance(data, list) else []:
+        try:
+            kept.append(Notification.model_validate(item))
+        except Exception:  # noqa: BLE001 - one bad record costs only itself
+            continue
+    return kept
+
+
+def _serialize(notifications: List[Notification]) -> str:
+    return json.dumps(
+        [n.model_dump(mode="json") for n in notifications], indent=2, default=str
+    )
 
 
 # Global notification store instance (initialized lazily)

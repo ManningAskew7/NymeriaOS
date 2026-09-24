@@ -126,7 +126,28 @@ this revisited.
   seeded a fresh profile and saved it, so the next prompt build erased the
   user's memories. An unreadable profile is served as a seeded stand-in
   marked read-only, which `save_profile` refuses, so the routes that read
-  and then save without `atomic_update` cannot write it either. Snapshot
+  and then save without `atomic_update` cannot write it either. Six more
+  JSON stores follow the same rule through the shared
+  `core/store_repair.py` (#401): thread metadata
+  (`thread_metadata/<user>.json`, kept row by row and field by field, so a
+  bad cost counter resets only itself; `[THREAD LIST REPAIRED]` or
+  `[THREAD LIST CORRUPT]` alerts, one `[THREAD LIST UNREADABLE]` per
+  episode, and a read-only list refuses every change), notifications
+  (record by record; a read-only history still delivers, it only skips
+  recording), device push tokens (`fcm_tokens.json`, entry by entry; now
+  written atomically under a lock, and created at mode 0600 when new, while
+  an existing file keeps its mode), workflow `nym.state`
+  documents (a corrupt one still reads as empty, but only once its bytes
+  are preserved; writes refuse when they cannot be), the ticker's
+  `scheduler_state.json`, and `capability_usage.json` (the last two skip
+  their save instead of refusing). Each repair writes an `external_edit`
+  row; only a thread-metadata repair also alerts the owner (a read error
+  changes nothing on disk, so it is logged, not paged). Preserved copies are
+  created no wider than the file they copy. A repair of the same bytes that
+  failed is not retried for a minute, since these stores are read on every
+  turn or tool call. The data-dir-level files keep their originals in
+  `data/quarantine/`, which is classified secret-at-rest (in the exec deny
+  set) because it can hold a copy of the push-token file. Snapshot
   verification carries every `quarantine/` file in the artifact without
   parsing it.
   Corrupt `SKILL.md` files are deliberately not quarantined: markdown skills

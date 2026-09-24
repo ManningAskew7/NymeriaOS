@@ -64,7 +64,10 @@ async def clear_thread_history(
                 )
         except Exception as error:
             logger.warning("Pre-clear RAG flush failed for %s: %s", thread_id, error)
-        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
+        from .thread_metadata import incidental_metadata_write
+
+        with incidental_metadata_write("thread row removal for a clear"):
+            agent.thread_metadata_manager.delete_thread(user_id, thread_id)
         try:
             delete_thread_checkpoints(settings, thread_id)
         except Exception as error:

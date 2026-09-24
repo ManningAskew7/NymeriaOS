@@ -13,7 +13,11 @@ capped at ``budget.state_cap_bytes`` (the approval-state cap), written
 atomically (temp + replace, the approvals idiom), and all I/O runs
 off-loop. Read-modify-write is serialized by an in-process lock, which is
 sufficient because the API process is the only workflow runtime; a corrupt
-document reads as empty (scratch state is derived: a watcher re-baselines).
+document reads as empty (scratch state is derived: a watcher re-baselines),
+but its bytes are first preserved under ``<workflow>/quarantine/`` and the
+file replaced with an empty document, so the next ``state.set`` cannot
+destroy them (#401). When they cannot be preserved, or the file cannot be
+read, ``state.set``/``state.delete`` refuse with ``VerbError``.
 """
 
 from __future__ import annotations
@@ -26,13 +30,20 @@ from pathlib import Path
 from typing import Any
 
 from ...config import get_settings
+from ..store_repair import UnavailableEpisodes
 from .registry import VerbContext, VerbError, register_verb
 
 logger = logging.getLogger(__name__)
 
+# Paths whose corrupt document could not be preserved and already logged
+# (one ERROR per episode: a watcher reads its state on every fire).
+_unavailable = UnavailableEpisodes()
+
 # Serializes read-modify-write across concurrent runs in this process (the
-# single agent-runtime invariant makes an in-process lock the whole story).
-_state_write_lock = threading.Lock()
+# single agent-runtime invariant makes an in-process lock the whole story),
+# and the repair of a document that does not load. Re-entrant: the writers
+# hold it across ``_load_document``.
+_state_write_lock = threading.RLock()
 
 
 def state_dir() -> Path:
@@ -52,19 +63,63 @@ def _state_path(workflow_id: str, user_id: str) -> Path:
     )
 
 
-def _load_document(path: Path) -> dict:
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+def _load_document(path: Path, *, for_write: bool = False) -> dict:
+    """The stored document; ``{}`` when absent or corrupt.
+
+    A document that is not a JSON object is preserved and replaced by an empty
+    one (#401). Unreadable, or corrupt and not preservable: ``for_write``
+    raises ``VerbError`` (a write would replace it); a read raises for an
+    unreadable file, as before, and reads a corrupt one as empty.
+    """
+    from ..store_repair import read_json, record_store_repair, repair_file
+
+    def _document(read) -> dict | None:
+        return read.data if read.parsed and isinstance(read.data, dict) else None
+
+    with _state_write_lock:
+        read = read_json(path)
+        if read.absent:
+            return {}
+        if read.unreadable:
+            raise VerbError(f"workflow state store unreadable: {read.error}")
+        document = _document(read)
+        if document is not None:
+            _unavailable.end(str(path))
+            return document
+        assert read.raw is not None
+        repaired = repair_file(
+            path, read.raw, "{}", _document, store="workflow_state", user_id=path.stem
+        )
+        if repaired.status == "superseded":
+            _unavailable.end(str(path))
+            return repaired.fresh
+        if repaired.status == "replaced" and repaired.quarantine is not None:
+            _unavailable.end(str(path))
+            logger.warning(
+                "workflow state file %s is corrupt; reading as empty (original at %s)",
+                path,
+                repaired.quarantine,
+            )
+            record_store_repair(
+                "workflow_state",
+                f"corrupt workflow state for {path.parent.name} preserved; it "
+                f"reads as empty (original at {path.parent.name}/quarantine/"
+                f"{repaired.quarantine.name})",
+                user_id=path.stem,
+            )
+            return {}
+        if _unavailable.start(str(path)):
+            logger.error(
+                "workflow state file %s is corrupt and could not be preserved; "
+                "refusing writes",
+                path,
+            )
+        if for_write:
+            raise VerbError(
+                "workflow state is corrupt and could not be preserved; "
+                "refusing to overwrite it"
+            )
         return {}
-    except OSError as e:
-        raise VerbError(f"workflow state store unreadable: {e}") from e
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        logger.warning("workflow state file %s is corrupt; reading as empty", path)
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _store_document(path: Path, document: dict, cap_bytes: int) -> None:
@@ -145,7 +200,7 @@ async def _state_set_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
 
     def _apply() -> None:
         with _state_write_lock:
-            document = _load_document(path)
+            document = _load_document(path, for_write=True)
             document[key] = value
             _store_document(path, document, cap)
 
@@ -170,7 +225,7 @@ async def _state_delete_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
 
     def _apply() -> bool:
         with _state_write_lock:
-            document = _load_document(path)
+            document = _load_document(path, for_write=True)
             existed = key in document
             if existed:
                 del document[key]

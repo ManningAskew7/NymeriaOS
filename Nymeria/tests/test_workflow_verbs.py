@@ -10,6 +10,7 @@ path (pydantic-style class in the child, JSON Schema dict at the parent).
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -1282,9 +1283,18 @@ async def test_threads_configure_kit_failure_raises(monkeypatch):
 
 
 def _patch_state_store(monkeypatch, tmp_path):
+    from nymeria.core import store_repair
+
     monkeypatch.setattr(
         verbs_state, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path)
     )
+    # A corrupt document is repaired with an audit row (#401): keep that row
+    # out of the checkout's real activity log, and start each test with no
+    # remembered failed repair.
+    monkeypatch.setattr(
+        "nymeria.core.activity_log.log_external_edit", lambda *a, **k: None
+    )
+    monkeypatch.setattr(store_repair, "_failed_repairs", {})
 
 
 async def test_state_requires_saved_workflow(monkeypatch, tmp_path):
@@ -1399,6 +1409,56 @@ async def test_state_corrupt_document_reads_empty(monkeypatch, tmp_path):
         )
         == "d"
     )
+
+
+@pytest.mark.parametrize("corrupt", ["{not json", "[1, 2]"], ids=["unparseable", "not-an-object"])
+async def test_a_corrupt_document_is_preserved_before_the_next_set(
+    monkeypatch, tmp_path, corrupt
+):
+    """#401: reading as empty is fine (a watcher re-baselines), but the
+    following ``state.set`` used to store over the unreadable bytes."""
+    _patch_state_store(monkeypatch, tmp_path)
+    audits: list = []
+    monkeypatch.setattr(
+        "nymeria.core.activity_log.log_external_edit",
+        lambda store, detail, *, user_id="default": audits.append((store, detail, user_id)),
+    )
+    ctx = _ctx(workflow_id="wf-1")
+    path = verbs_state._state_path("wf-1", "tester")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(corrupt, encoding="utf-8")
+
+    await verbs_state._state_set_verb(ctx, "state.set", {"key": "k", "value": 1})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"k": 1}
+    preserved = sorted((path.parent / "quarantine").glob("tester.corrupt-*.json"))
+    assert [p.read_text(encoding="utf-8") for p in preserved] == [corrupt]
+    assert len(audits) == 1
+    assert audits[0][0] == "workflow_state" and audits[0][2] == "tester"
+    assert preserved[0].name in audits[0][1]
+
+
+async def test_an_unpreservable_document_refuses_writes(monkeypatch, tmp_path):
+    from nymeria.core import store_repair
+
+    _patch_state_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(store_repair, "quarantine_copy", lambda path, data: None)
+    ctx = _ctx(workflow_id="wf-1")
+    path = verbs_state._state_path("wf-1", "tester")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+
+    for handler, args in (
+        (verbs_state._state_set_verb, {"key": "k", "value": 1}),
+        (verbs_state._state_delete_verb, {"key": "k"}),
+    ):
+        with pytest.raises(VerbError, match="could not be preserved"):
+            await handler(ctx, "state", args)
+    assert (
+        await verbs_state._state_get_verb(ctx, "state.get", {"key": "k", "default": "d"})
+        == "d"
+    )
+    assert path.read_text(encoding="utf-8") == "{not json"
 
 
 async def test_state_key_and_value_validation(monkeypatch, tmp_path):

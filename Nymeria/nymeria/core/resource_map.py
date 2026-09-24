@@ -560,6 +560,15 @@ _NON_STORE_DATA_DIR_CHILDREN: dict[str, _NonStoreChild] = {
     "scheduler_state.json": _NonStoreChild(
         "not yet classified: scheduler lifecycle state", secret_at_rest=False
     ),
+    # Where a data-dir-level JSON file that did not load keeps its original
+    # bytes (#401, ``storage_paths.quarantine_copy``). Secret because one such
+    # file is ``fcm_tokens.json``: its preserved copy must be denied wherever
+    # the original is.
+    "quarantine": _NonStoreChild(
+        "preserved originals of data-dir files that did not load (fcm tokens, "
+        "scheduler state, capability usage); read by an admin, never loaded",
+        secret_at_rest=True,
+    ),
     "claude_code_sessions.json": _NonStoreChild(
         "not yet classified: maps (thread, cwd) to a host Claude Code session "
         "id and is read automatically on resume, so it resolves a destination "
@@ -722,12 +731,14 @@ def render_resource_readme() -> str:
         "- A malformed edit to a JSON store file is quarantined on next load:",
         "  the file moves into a `quarantine/` subdirectory beside the store",
         "  (timestamped, bytes preserved) and the store loads without it. Fix",
-        "  the quarantined copy and move it back. TODO lists and user profiles",
-        "  REPAIR instead: every item, memory and setting that validates is",
-        "  kept, the original bytes are copied into `quarantine/`, and the live",
-        "  file is rewritten, so moving a copy back would undo later changes:",
-        "  restore single entries from it. A corrupt SKILL.md is skipped (or",
-        "  served from cache) instead of quarantined.",
+        "  the quarantined copy and move it back. TODO lists, user profiles,",
+        "  thread metadata, notifications, push tokens, workflow state and",
+        "  the scheduler and capability-usage files REPAIR instead: every",
+        "  entry that validates is kept, the original bytes are copied into",
+        "  `quarantine/`, and the live file is rewritten, so moving a copy",
+        "  back would undo later changes: restore single entries from it. A",
+        "  corrupt SKILL.md is skipped (or served from cache) instead of",
+        "  quarantined.",
         "- Raw edits emit no UI events; open client panels stay stale until",
         "  refreshed.",
         "",

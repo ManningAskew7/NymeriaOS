@@ -2502,9 +2502,12 @@ class CommandBackendClient:
         self.agent.invalidate_thread_config_cache(thread_id)
         # Same as PATCH /threads/{id}/config: a configured thread gets its
         # metadata row so the listing can address it (#272).
-        self.agent.thread_metadata_manager.ensure_thread_unless_deleting(
-            self.user.id, thread_id
-        )
+        from .thread_metadata import incidental_metadata_write
+
+        with incidental_metadata_write("thread row for a config write"):
+            self.agent.thread_metadata_manager.ensure_thread_unless_deleting(
+                self.user.id, thread_id
+            )
         return tc.model_dump(mode="json") | {"has_customizations": tc.has_customizations()}
 
     async def get_env_vars(self, *, user_id: Optional[str] = None) -> dict:

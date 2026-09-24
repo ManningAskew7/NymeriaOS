@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ...core.accounts import AuthenticatedUser
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
+from ...core.thread_metadata import incidental_metadata_write
 from ...tools import SEED_TOOLS
 from ..schemas.agent_threads import AgentThreadCreateRequest
 
@@ -118,13 +119,14 @@ def create_agent_threads_router(
         # anyone else.
         agent.accounts_repo.claim_thread(thread_id, user.id)
 
-        agent.thread_metadata_manager.upsert_thread(
-            user.id,
-            thread_id,
-            title=request.callable_name,
-            title_source="callable",
-            platform="callable",
-        )
+        with incidental_metadata_write("thread row for a new agent thread"):
+            agent.thread_metadata_manager.upsert_thread(
+                user.id,
+                thread_id,
+                title=request.callable_name,
+                title_source="callable",
+                platform="callable",
+            )
 
         agent.sync_agent_tools()
 

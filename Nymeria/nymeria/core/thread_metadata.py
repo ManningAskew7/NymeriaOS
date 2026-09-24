@@ -6,6 +6,12 @@ same view. This replaces the previous frontend-only localStorage approach.
 
 Storage: single JSON file per user at data/thread_metadata/{user_id}.json
 Pattern: follows todo_manager.py (per-user RLock, atomic writes).
+
+A file that does not load is never saved over (#401): the original bytes go
+to ``thread_metadata/quarantine/`` and the file is replaced with every row that
+still validates (a bad field resets only itself); a file that cannot be read,
+or whose original cannot be preserved, is served read-only and every write
+raises ``ThreadMetadataUnavailableError``.
 """
 
 import json
@@ -14,12 +20,19 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment, write_text_atomic
+from .storage_paths import StoreUnavailableError, safe_path_segment, write_text_atomic
+from .store_repair import (
+    UnavailableEpisodes,
+    read_json,
+    record_store_repair,
+    repair_file,
+    salvage_fields,
+)
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -88,6 +101,198 @@ class ThreadMetadataStore(BaseModel):
     threads: Dict[str, ThreadMetadata] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 
+    # Set on a stand-in served while the file cannot be read or repaired:
+    # ``save_store`` refuses it, so no caller can write it over the file.
+    _read_only: bool = PrivateAttr(default=False)
+
+
+class ThreadMetadataUnavailableError(StoreUnavailableError):
+    """A write was refused because the user's thread list file exists but
+    could not be read or repaired (#401). Saving would replace it with a
+    stand-in. The API answers it 503."""
+
+
+@contextmanager
+def incidental_metadata_write(what: str):
+    """Run a metadata write that is bookkeeping for a larger operation.
+
+    A refused write (the list could not be read or repaired) is logged, not
+    raised, so an operation that already committed (a config save, a claim,
+    a clear) is not reported as failed, or left half-done, over its thread
+    row. Where the metadata write IS the operation (rename, pin), call the
+    manager directly and let the refusal reach the caller.
+    """
+    try:
+        yield
+    except ThreadMetadataUnavailableError as error:
+        logger.warning("Skipped %s: %s", what, error)
+
+
+# ---------------------------------------------------------------------------
+# Loading a file that does not validate (#401)
+# ---------------------------------------------------------------------------
+
+# user_ids whose file is unreadable or unrepairable and already reported: one
+# ERROR line per episode, since every turn reads the file. No owner alert: a
+# transient read error (EMFILE, a network-share hiccup) would page the owner's
+# external channels on every flap; the refusal itself says what is wrong (the
+# TODO list's #394 precedent). Repairs, which change the file, do alert.
+_unavailable = UnavailableEpisodes()
+_rebind_warned: set = set()
+
+
+class _Salvage(NamedTuple):
+    store: ThreadMetadataStore
+    kept: int
+    dropped: int
+    reset_fields: int
+    parsed: bool  # False: nothing was salvageable (not a JSON object)
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"1 {noun} was" if count == 1 else f"{count} {noun}s were"
+
+
+def _salvage_store(data: Any, user_id: str) -> _Salvage:
+    """Keep every thread row that validates, field by field within a row.
+
+    A row with one bad field (a non-integer cost, an unknown type of
+    ``platform_meta``) keeps its title and pin and resets only that field; a
+    row that is not an object is dropped. The envelope's own fields are
+    salvaged the same way. Non-object data salvages nothing.
+    """
+    if not isinstance(data, dict):
+        return _Salvage(ThreadMetadataStore(user_id=user_id), 0, 0, 0, False)
+    threads: Dict[str, ThreadMetadata] = {}
+    dropped = reset = 0
+    rows = data.get("threads")
+    if isinstance(rows, dict):
+        for key, row in rows.items():
+            if not isinstance(row, dict):
+                dropped += 1
+                continue
+            try:
+                threads[key] = ThreadMetadata.model_validate(row)
+                continue
+            except Exception:  # noqa: BLE001 - salvage field by field below
+                pass
+            stored_id = row.get("thread_id")
+            usable_id = isinstance(stored_id, str)
+            meta, lost = salvage_fields(
+                ThreadMetadata, row, {"thread_id": stored_id if usable_id else key}
+            )
+            threads[key] = meta
+            reset += len(lost) + (0 if usable_id else 1)
+    elif rows is not None:
+        dropped += 1  # the whole thread map is unusable; count it once
+    embedded = data.get("user_id")
+    owner = embedded if isinstance(embedded, str) else user_id
+    envelope = {k: v for k, v in data.items() if k not in ("threads", "user_id")}
+    store, _ = salvage_fields(ThreadMetadataStore, envelope, {"user_id": owner})
+    store.threads = threads
+    return _Salvage(store, len(threads), dropped, reset, True)
+
+
+def _bind(store: ThreadMetadataStore, user_id: str) -> ThreadMetadataStore:
+    """Keep a loaded store saving to the file it came from.
+
+    ``save_store`` routes by the EMBEDDED ``user_id``, so a file whose id names
+    another user (a copied or hand-edited file) would write over that user's
+    list on its next save. Compared as path segments, since that is what picks
+    the file.
+    """
+    if safe_path_segment(store.user_id) != safe_path_segment(user_id):
+        key = (user_id, store.user_id)
+        if key not in _rebind_warned:
+            _rebind_warned.add(key)
+            logger.warning(
+                "Thread list loaded for %s claims user_id %r; rebinding it to "
+                "the file it was loaded from",
+                user_id,
+                store.user_id,
+            )
+        store.user_id = user_id
+    return store
+
+
+def _serialize(store: ThreadMetadataStore) -> str:
+    return json.dumps(store.model_dump(mode="json"), indent=2, default=str)
+
+
+def _send_alert(user_id: str, message: str) -> None:
+    """Owner alert off-thread (never blocks or breaks the load)."""
+
+    def _send() -> None:
+        try:
+            from ..config.settings import get_settings
+            from .notification_dispatch import send_owner_alert
+
+            send_owner_alert(message, get_settings(), user_id=user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("Thread list alert failed for %s", user_id, exc_info=True)
+
+    threading.Thread(target=_send, name="thread-list-alert", daemon=True).start()
+
+
+def _report_repair(user_id: str, quarantine_name: str, salvage: _Salvage) -> None:
+    where = f"thread_metadata/quarantine/{quarantine_name}"
+    if not salvage.parsed:
+        detail = "corrupt thread list preserved; the list starts empty"
+        alert = (
+            f"[THREAD LIST CORRUPT] Your thread list file (titles, pins, "
+            f"running costs) could not be parsed (edited by hand or by a "
+            f"tool?), so a new, empty one started. No conversation was "
+            f"deleted, but threads may be missing from the list or show "
+            f"default titles. The original is preserved at {where}, and an "
+            f"admin can restore it."
+        )
+    else:
+        detail = (
+            f"invalid thread list repaired: kept {salvage.kept} thread(s), "
+            f"dropped {salvage.dropped}, reset {salvage.reset_fields} field(s)"
+        )
+        alert = (
+            f"[THREAD LIST REPAIRED] Your thread list file failed validation "
+            f"(edited by hand or by a tool?). {_plural(salvage.kept, 'thread')} "
+            f"kept"
+            + (
+                f"; {_plural(salvage.dropped, 'unreadable row')} dropped"
+                if salvage.dropped
+                else ""
+            )
+            + (
+                f"; {_plural(salvage.reset_fields, 'unreadable field')} reset "
+                f"to its default"
+                if salvage.reset_fields
+                else ""
+            )
+            + f". The original file is preserved at {where}."
+        )
+    logger.warning(
+        "Thread list for %s did not load; %s (original at %s)", user_id, detail, where
+    )
+    record_store_repair(
+        "thread_metadata",
+        f"{detail} (original at quarantine/{quarantine_name})",
+        user_id=user_id,
+    )
+    _send_alert(user_id, alert)
+
+
+def _read_only(store: ThreadMetadataStore, user_id: str, why: str) -> ThreadMetadataStore:
+    """Serve ``store`` read-only, logging once per episode."""
+    store._read_only = True
+    if _unavailable.start(user_id):
+        logger.error(
+            "Thread list for %s is unavailable (%s); serving it read-only and "
+            "refusing writes",
+            user_id,
+            why,
+        )
+    else:
+        logger.debug("Thread list for %s still unavailable: %s", user_id, why)
+    return store
+
 
 # ---------------------------------------------------------------------------
 # Manager
@@ -111,10 +316,19 @@ class ThreadMetadataManager:
 
     @contextmanager
     def atomic_update(self, user_id: str = "default"):
-        """Context manager for read-modify-write on the metadata store."""
+        """Context manager for read-modify-write on the metadata store.
+
+        Raises ``ThreadMetadataUnavailableError`` before the body runs when the
+        file exists but could not be read or repaired.
+        """
         lock = self._get_lock(user_id)
         with lock:
             store = self.get_store(user_id)
+            if store._read_only:
+                raise ThreadMetadataUnavailableError(
+                    f"Thread list for user {user_id} could not be read or "
+                    f"repaired; refusing to overwrite it"
+                )
             try:
                 yield store
             finally:
@@ -127,28 +341,91 @@ class ThreadMetadataManager:
         return self.metadata_dir / f"{safe_id}.json"
 
     def get_store(self, user_id: str = "default") -> ThreadMetadataStore:
-        """Load the metadata store for a user, or create an empty one."""
+        """Load the metadata store for a user, or create an empty one.
+
+        A healthy read takes no lock. A file that does not load is repaired
+        under the user's lock (``_repair``); one that cannot be read comes
+        back read-only.
+        """
+        read = read_json(self._get_path(user_id))
+        if read.absent:
+            _unavailable.end(user_id)
+            return ThreadMetadataStore(user_id=user_id)
+        if read.unreadable:
+            return _read_only(ThreadMetadataStore(user_id=user_id), user_id, str(read.error))
+        store = self._validated(read.data, user_id) if read.parsed else None
+        if store is not None:
+            _unavailable.end(user_id)
+            return store
+        return self._repair(user_id)
+
+    @staticmethod
+    def _validated(data: Any, user_id: str) -> Optional[ThreadMetadataStore]:
+        try:
+            store = ThreadMetadataStore.model_validate(data)
+        except Exception:  # noqa: BLE001 - the caller repairs
+            return None
+        return _bind(store, user_id)
+
+    def _repair(self, user_id: str) -> ThreadMetadataStore:
+        """Salvage what validates, preserve the original, replace the file.
+
+        Under the user's lock (re-entrant, so ``atomic_update``'s own hold is
+        fine) and re-reading under it, since a concurrent load may already
+        have repaired the file. A blocking acquire is safe here, unlike the
+        TODO list's (#394): no ``atomic_update`` body takes another lock, so
+        no holder of this lock can be waiting on one a reader holds.
+        """
         path = self._get_path(user_id)
-        if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return ThreadMetadataStore.model_validate(data)
-            except Exception as e:
-                logger.error(f"Failed to load thread metadata for {user_id}: {e}")
+        with self._get_lock(user_id):
+            read = read_json(path)
+            if read.absent:
                 return ThreadMetadataStore(user_id=user_id)
-        return ThreadMetadataStore(user_id=user_id)
+            if read.unreadable:
+                return _read_only(ThreadMetadataStore(user_id=user_id), user_id, str(read.error))
+            healthy = self._validated(read.data, user_id) if read.parsed else None
+            if healthy is not None:
+                _unavailable.end(user_id)
+                return healthy
+            assert read.raw is not None
+            salvage = _salvage_store(read.data, user_id)
+            store = _bind(salvage.store, user_id)
+            repaired = repair_file(
+                path,
+                read.raw,
+                _serialize(store),
+                lambda again: self._validated(again.data, user_id) if again.parsed else None,
+                store="thread_metadata",
+                user_id=user_id,
+            )
+            if repaired.status == "replaced" and repaired.quarantine is not None:
+                _unavailable.end(user_id)
+                _report_repair(user_id, repaired.quarantine.name, salvage)
+                return store
+            if repaired.status == "superseded":
+                # Another writer replaced the file after the read; theirs is
+                # kept (the bytes this load saw are in quarantine).
+                _unavailable.end(user_id)
+                return repaired.fresh
+            return _read_only(store, user_id, f"{read.error or 'invalid'}; could not be repaired")
 
     def save_store(self, store: ThreadMetadataStore) -> bool:
-        """Atomically write the metadata store to disk."""
+        """Atomically write the metadata store to disk.
+
+        Refuses a read-only stand-in (a file that could not be read or
+        repaired), which would replace the real file.
+        """
+        if store._read_only:
+            logger.error(
+                "Refusing to save the read-only thread list stand-in for %s",
+                store.user_id,
+            )
+            return False
         path = self._get_path(store.user_id)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             store.updated_at = utc_now()
-            write_text_atomic(
-                path,
-                json.dumps(store.model_dump(mode="json"), indent=2, default=str),
-            )
+            write_text_atomic(path, _serialize(store))
             return True
         except Exception as e:
             logger.error(f"Failed to save thread metadata for {store.user_id}: {e}")
@@ -181,7 +458,12 @@ class ThreadMetadataManager:
                     if value is not None:
                         update_data[key] = value
                 update_data["updated_at"] = utc_now()
-                updated = existing.model_copy(update=update_data)
+                # Validated, unlike ``model_copy(update=...)``: a wrong-typed
+                # field would otherwise be saved into a row that fails the
+                # model on the next load and sends the list into repair.
+                updated = ThreadMetadata.model_validate(
+                    {**existing.model_dump(), **update_data}
+                )
                 store.threads[thread_id] = updated
                 return updated
             else:
@@ -261,10 +543,17 @@ class ThreadMetadataManager:
             store = self.get_store(user_id)
             if thread_id not in store.threads:
                 continue
-            with self.atomic_update(user_id) as locked_store:
-                if thread_id in locked_store.threads:
-                    del locked_store.threads[thread_id]
-                    deleted += 1
+            try:
+                with self.atomic_update(user_id) as locked_store:
+                    if thread_id in locked_store.threads:
+                        del locked_store.threads[thread_id]
+                        deleted += 1
+            except ThreadMetadataUnavailableError:
+                # One user's unrepairable file must not stop the others'
+                # cleanup; its row stays until the file loads again.
+                logger.warning(
+                    "Thread %s left in %s's unavailable thread list", thread_id, user_id
+                )
         return deleted
 
     def list_threads(self, user_id: str = "default") -> List[ThreadMetadata]:

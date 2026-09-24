@@ -184,15 +184,23 @@ def quarantine_copy(path: Path, data: bytes) -> Optional[Path]:
     reader in a rename-then-write gap would read "no file" as an empty
     store). Writing the bytes the caller parsed, rather than copying the
     path, preserves exactly what was salvaged from even if another process
-    changed the file since. Exclusive create and fsync. Returns the path, or
-    ``None`` on any failure (a partial copy is removed). Never raises.
+    changed the file since. Exclusive create and fsync. The copy is created
+    no wider than the source file's permission bits (0600 when those cannot
+    be read), so preserving a private store (``fcm_tokens.json``) does not
+    widen who can read it. Returns the path, or ``None`` on any failure (a
+    partial copy is removed). Never raises.
     """
     target: Optional[Path] = None
     created = False
     try:
+        try:
+            source_mode = stat.S_IMODE(path.stat().st_mode) & 0o666
+        except OSError:
+            source_mode = 0o600
         target = _quarantine_target(path)
-        with open(target, "xb") as handle:
-            created = True
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, source_mode)
+        created = True
+        with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())

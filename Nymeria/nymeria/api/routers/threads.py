@@ -14,6 +14,7 @@ from ...core.checkpoint_status import (
     has_direct_checkpoint_revision_backend,
 )
 from ...core.checkpointer_config import enumerate_checkpoint_thread_ids
+from ...core.thread_metadata import incidental_metadata_write
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.thread_classification import (
     classify_platform as _classify_thread_platform_from_id,
@@ -784,12 +785,13 @@ def create_threads_router(
             if platform:
                 fields["platform"] = platform
             if fields:
-                meta = agent.thread_metadata_manager.upsert_thread(
-                    user.id,
-                    thread_id,
-                    **fields,
-                )
-                metadata = meta.model_dump(mode="json")
+                with incidental_metadata_write("thread row for a claim"):
+                    meta = agent.thread_metadata_manager.upsert_thread(
+                        user.id,
+                        thread_id,
+                        **fields,
+                    )
+                    metadata = meta.model_dump(mode="json")
         if metadata is not None:
             return {"thread_id": thread_id, "owner": owner, **metadata}
         return {"thread_id": thread_id, "owner": owner}

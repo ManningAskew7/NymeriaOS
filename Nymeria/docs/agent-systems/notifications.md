@@ -107,6 +107,12 @@ The desktop sidebar's notifications panel is the audit log of every
 The frontend renders chips for each `delivered_to` entry and red chips for
 errors. Rows are stored at `data/notifications/{user_id}.json`; capacity is
 200 rows per user, unread rows are never evicted, oldest read rows go first.
+A file that does not load keeps every row that validates, with the original
+preserved under `data/notifications/quarantine/` before the file is rewritten.
+One that cannot be read or preserved is not saved over: notifications are
+still delivered but not recorded, and mark-read or delete answers 503.
+Clearing the whole history (`DELETE /notifications`) still removes the file,
+since that is what was asked (#401).
 
 The `in_app_notification_level` per-thread setting still gates whether
 **autonomous task completions** create rows (`notify_only` = explicit
