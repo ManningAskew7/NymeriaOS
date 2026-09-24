@@ -224,7 +224,10 @@ _UNREACHABLE_SETTINGS_EXEMPT = frozenset({
     "rag_rerank_top_n", "rag_result_max_chars", "rag_tool_result_max_chars",
     "scheduler_active_execution_stale_minutes",
     "scheduler_failure_alert_after", "scheduler_failure_pause_after",
-    "scheduler_missed_work_policy", "seatable_api_token",
+    # scheduler_skip_alert_*: read once at ticker start like the
+    # scheduler_failure_* pair above (#262); a PATCH would change nothing.
+    "scheduler_missed_work_policy", "scheduler_skip_alert_after",
+    "scheduler_skip_alert_cooldown_minutes", "seatable_api_token",
     "seatable_base_url",
     # server_browser_home: a host path written by nymeria init or the launcher
     # pointer. Read at runtime (the chrome_* refusals, doctor, snapshot), but

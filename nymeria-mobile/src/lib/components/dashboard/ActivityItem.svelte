@@ -24,6 +24,8 @@
         return 'success';
       case 'task_failed':
         return 'close';
+      case 'task_skipped':
+        return 'warning';
       case 'todo_added':
         return 'plus';
       case 'todo_updated':
@@ -49,6 +51,7 @@
       case 'task_failed':
         return 'var(--error)';
       case 'watchdog_nudge':
+      case 'task_skipped':
         return 'var(--warning)';
       case 'self_invoke':
         return 'var(--accent-primary)';
@@ -130,6 +133,7 @@
         return { lead: label, detail: rest };
       }
       case 'task_failed':
+      case 'task_skipped':
       case 'task_completed':
         return splitOutcome(msg);
       default:

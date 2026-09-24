@@ -283,6 +283,28 @@ class TodoScheduleDB:
             finally:
                 conn.close()
 
+    def get_execution_started_at(self, todo_id: str) -> Optional[float]:
+        """Return when a TODO's active execution marker was claimed, or None.
+
+        Read-only: unlike ``is_execution_active`` it does not run the stale
+        sweep, so a caller diagnosing a refused claim sees the marker that
+        refused it. None when no marker exists or the read fails.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.execute(
+                    "SELECT started_at FROM active_todo_executions WHERE todo_id = ?",
+                    (todo_id,),
+                )
+                row = cursor.fetchone()
+                return float(row["started_at"]) if row else None
+            except Exception as e:
+                logger.error(f"Failed to read active TODO execution marker: {e}")
+                return None
+            finally:
+                conn.close()
+
     def is_execution_active(
         self,
         todo_id: str,

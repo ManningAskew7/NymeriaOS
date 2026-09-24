@@ -203,6 +203,20 @@ class TodoItem(BaseModel):
         default=None, description="When delivery of the output last failed"
     )
 
+    # Skip-alert cooldown stamp (#262). Set when a late fire let scheduled
+    # occurrences pass unrun AND the owner was alerted; a further skip
+    # alerts again only once scheduler_skip_alert_cooldown_minutes have
+    # passed (every skip still writes an activity row). Persisted, not
+    # ticker memory, so a restart does not re-alert; a pause resume clears
+    # it (update_item).
+    skip_alerted_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "When the owner was last alerted that this recurring TODO "
+            "skipped scheduled occurrences (the skip-alert cooldown stamp)"
+        ),
+    )
+
     @field_validator(
         "created_at",
         "updated_at",
@@ -212,6 +226,7 @@ class TodoItem(BaseModel):
         "last_failure_at",
         "schedule_paused_at",
         "last_delivery_failure_at",
+        "skip_alerted_at",
     )
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
@@ -381,6 +396,9 @@ class TodoList(BaseModel):
                 item.delivery_failures = 0
                 item.last_delivery_failure = None
                 item.last_delivery_failure_at = None
+                # A resumed series starts a fresh skip-alert window (#262):
+                # its first late run after the resume alerts again.
+                item.skip_alerted_at = None
                 # The pause PREPENDED its reason to the notes (which are
                 # prompt input and user instructions); strip that prefix so
                 # a resumed TODO does not carry a stale pause banner.

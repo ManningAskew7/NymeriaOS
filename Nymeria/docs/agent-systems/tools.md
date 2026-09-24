@@ -2404,7 +2404,7 @@ activity_feed(minutes_ago: int = 10)
 **Parameters:**
 - `minutes_ago` (`int`): Look-back window in minutes (default 10)
 
-**Returns:** Structured text report grouped by thread showing user messages, autonomous tasks, TODO changes, and notifications. Returns "No activity" if the window is empty.
+**Returns:** Structured text report grouped by thread showing user messages, autonomous tasks (invoked, completed, failed, and skipped: a scheduled occurrence that never ran, #262), TODO changes, and notifications. Returns "No activity" if the window is empty.
 
 **Data source:** Reads from the persisted activity log (`data/activity/{user_id}.jsonl`, append-only JSON Lines). Only as complete as what gets logged: user messages, TODO state changes, autonomous task execution, and notifications are all captured.
 

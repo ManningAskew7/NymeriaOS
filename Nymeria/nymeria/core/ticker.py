@@ -30,6 +30,7 @@ from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from .scheduler_state import SchedulerStateManager
 from .storage_paths import safe_path_segment
 from .stream_bridge import StreamCollection, stream_and_collect
+from .time_utils import ensure_aware_utc
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import (
     BACKOFF_NOTE_PREFIX,
@@ -56,6 +57,30 @@ logger = logging.getLogger(__name__)
 # safe_box=True uses ASCII box-drawing characters, avoiding UnicodeEncodeError
 # on Windows consoles that use cp1252/charmap encoding
 _console = Console(force_terminal=True, safe_box=True)
+
+
+def _format_slot(moment: "float | datetime") -> str:
+    """Render an epoch or datetime for alert and row copy, in the user's zone.
+
+    Minute precision with the zone key (``2026-09-24 13:00 Australia/Sydney``),
+    since these lines reach a person over Telegram or the app; metadata keeps
+    ISO timestamps. Falls back to UTC if the configured zone cannot load.
+    """
+    if isinstance(moment, datetime):
+        value = (
+            moment.replace(tzinfo=timezone.utc)
+            if moment.tzinfo is None
+            else moment
+        )
+    else:
+        value = datetime.fromtimestamp(moment, timezone.utc)
+    try:
+        from .time_utils import get_user_tz
+
+        zone = get_user_tz()
+        return f"{value.astimezone(zone).strftime('%Y-%m-%d %H:%M')} {zone.key}"
+    except Exception:
+        return f"{value.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC"
 
 
 def _sanitize_unicode(text: str) -> str:
@@ -314,6 +339,14 @@ class Ticker:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._active_futures: Dict[str, Future] = {}  # todo_id -> running Future
+        # Execution-marker bookkeeping (#262), both guarded by _lock.
+        # todo_id -> user_id whose marker release failed at run end; the
+        # poll loop retries it so a failed DELETE cannot block the TODO for
+        # the whole stale window.
+        self._unreleased_markers: Dict[str, str] = {}
+        # todo_id -> started_at of a leftover marker already reported as
+        # blocking; one report per marker, reset by the next clean claim.
+        self._reported_blocking_markers: Dict[str, float] = {}
         self._lock = threading.Lock()
         self._retry_counts: dict = {}  # Track retries per TODO
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -383,6 +416,15 @@ class Ticker:
         self._failure_pause_after = max(
             0, int(getattr(settings, "scheduler_failure_pause_after", 5))
         )
+        # Skipped-occurrence alert policy (#262); 0 disables the alert (the
+        # activity rows are always written), cooldown 0 alerts every time.
+        self._skip_alert_after = max(
+            0, int(getattr(settings, "scheduler_skip_alert_after", 1))
+        )
+        self._skip_alert_cooldown_seconds = max(
+            0,
+            int(getattr(settings, "scheduler_skip_alert_cooldown_minutes", 1440)),
+        ) * 60
         self._scheduler_state = SchedulerStateManager(settings.data_dir)
         persisted_state = self._scheduler_state.load()
         self._pending_startup_missed_ids: set[str] = set(
@@ -807,6 +849,7 @@ class Ticker:
                 logger.debug(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - No due TODOs")
 
         self._reap_finished_futures()
+        self._retry_unreleased_markers()
 
         for entry in due_entries:
             # Skip if already running in the pool
@@ -855,6 +898,193 @@ class Ticker:
                 if exc:
                     logger.error(f"Task {tid} failed in thread pool: {exc}")
 
+    # ------------------------------------------------------------------
+    # Execution markers (#262): claim, release, and make a blocked run
+    # visible. The marker row in todo_schedule.db is the cross-process
+    # "this TODO is running" lock; a refused claim used to be one INFO line
+    # repeated every poll until the stale sweep reclaimed the marker.
+    # ------------------------------------------------------------------
+
+    def _claim_execution_marker(self, entry: ScheduledTodoEntry) -> bool:
+        """Claim the TODO's execution marker; report a refusal that blocks it."""
+        if self.schedule_db.mark_execution_started(
+            entry.todo_id,
+            entry.user_id,
+            entry.thread_id,
+            stale_after_seconds=self._active_execution_stale_seconds,
+        ):
+            with self._lock:
+                self._reported_blocking_markers.pop(entry.todo_id, None)
+            return True
+        try:
+            self._report_refused_claim(entry)
+        except Exception:
+            logger.error(
+                "Failed to report refused execution claim for TODO %s",
+                entry.todo_id,
+                exc_info=True,
+            )
+        return False
+
+    def _report_refused_claim(self, entry: ScheduledTodoEntry) -> None:
+        """Say why a due TODO did not start, loudly only when it is blocked.
+
+        ``_check_and_execute`` never submits a TODO that still has a future in
+        this pool, so a refusal means the marker has no live run HERE. Its
+        start time separates the cases, exactly under the one-ticker
+        invariant and approximately beyond it: a marker claimed at or after
+        this occurrence's due slot belongs to this occurrence (another
+        scheduler process running it, or a retry attempt's own leftover),
+        so it stays a log line; one claimed BEFORE the slot was left by an
+        earlier run and holds a new occurrence hostage until it is released.
+        Only that case writes a row and alerts the owner, once per marker
+        (the branch repeats on every poll). With a second scheduler process
+        on the same database (a misconfiguration, #397) a live run whose
+        turn re-armed its own TODO into a slot that comes due mid-run also
+        reads as blocked.
+        """
+        started_at = self.schedule_db.get_execution_started_at(entry.todo_id)
+        if started_at is None:
+            logger.warning(
+                "Scheduled TODO %s could not claim its execution marker and "
+                "none is present (database error?); retrying next poll",
+                entry.todo_id,
+            )
+            return
+        if started_at >= entry.scheduled_for:
+            logger.info(
+                "Scheduled TODO %s is already executing this occurrence "
+                "elsewhere, skipping duplicate run",
+                entry.todo_id,
+            )
+            return
+        with self._lock:
+            if self._reported_blocking_markers.get(entry.todo_id) == started_at:
+                logger.debug(
+                    "Scheduled TODO %s still blocked by its reported marker",
+                    entry.todo_id,
+                )
+                return
+            self._reported_blocking_markers[entry.todo_id] = started_at
+            release_pending = entry.todo_id in self._unreleased_markers
+        reclaim_epoch = started_at + self._active_execution_stale_seconds
+        started = _format_slot(started_at)
+        reclaim = _format_slot(reclaim_epoch)
+        due = _format_slot(entry.scheduled_for)
+        task = (entry.task_preview or "")[:80]
+        if release_pending:
+            # Our own failed release: the poll loop retries it every poll,
+            # so the reclaim time is only the worst case.
+            cause = (
+                f"this scheduler could not release the marker from the run "
+                f"that started {started} and retries every poll; if the "
+                f"database keeps failing it is reclaimed at {reclaim}"
+            )
+        else:
+            cause = (
+                f"an execution marker left by the run that started {started} "
+                f"was never released. The scheduler reclaims it "
+                f"automatically at {reclaim}; restarting the scheduler "
+                f"clears it now"
+            )
+        logger.warning(
+            "Scheduled TODO %s (due %s) is blocked by an execution marker "
+            "from a run started %s (release retry pending: %s); reclaimed "
+            "at %s at the latest",
+            entry.todo_id,
+            due,
+            started,
+            release_pending,
+            reclaim,
+        )
+        # Alert and row are isolated from each other: a failing row write
+        # must not swallow the alert, which is the durable signal.
+        try:
+            send_owner_alert(
+                (
+                    f"[SCHEDULED TASK BLOCKED] TODO [{entry.todo_id}] "
+                    f"\"{task}\" is due ({due}) but cannot start: {cause}."
+                ),
+                self.settings,
+                user_id=entry.user_id,
+                thread_id=entry.thread_id or "",
+                task_id=entry.todo_id,
+            )
+        except Exception:
+            logger.error(
+                "Blocked-run alert dispatch failed for TODO %s",
+                entry.todo_id,
+                exc_info=True,
+            )
+        try:
+            log_activity(
+                ActivityType.TASK_SKIPPED,
+                f"Blocked from starting: {task} (due {due}; {cause})",
+                user_id=entry.user_id,
+                thread_id=entry.thread_id,
+                metadata={
+                    "todo_id": entry.todo_id,
+                    "reason": "execution_marker_held",
+                    "due_slot": datetime.fromtimestamp(
+                        entry.scheduled_for, timezone.utc
+                    ).isoformat(),
+                    "marker_started_at": datetime.fromtimestamp(
+                        started_at, timezone.utc
+                    ).isoformat(),
+                    "reclaim_at": datetime.fromtimestamp(
+                        reclaim_epoch, timezone.utc
+                    ).isoformat(),
+                    "release_retry_pending": release_pending,
+                },
+            )
+        except Exception:
+            logger.error(
+                "Failed to record blocked run for TODO %s",
+                entry.todo_id,
+                exc_info=True,
+            )
+
+    def _release_execution_marker(self, todo_id: str, user_id: str) -> None:
+        """Release a run's marker, queueing a retry if the DELETE fails.
+
+        ``clear_execution`` swallows its sqlite error (locked past the
+        timeout, disk I/O) and returns False; before #262 nothing checked, so
+        one failed DELETE blocked the TODO until the stale sweep, up to a day.
+        """
+        if self.schedule_db.clear_execution(todo_id, user_id):
+            return
+        logger.warning(
+            "Failed to release the execution marker for TODO %s; retrying "
+            "on the next poll",
+            todo_id,
+        )
+        with self._lock:
+            self._unreleased_markers[todo_id] = user_id
+
+    def _retry_unreleased_markers(self) -> None:
+        """Retry marker releases that failed at run end.
+
+        Runs on the poll thread after ``_reap_finished_futures`` and before
+        any new submission, so a TODO with no registered future has no live
+        run in this process and its marker is the leftover. While a future
+        is still registered (the failing run's own last moments, or a new
+        run) the retry waits: releasing then could delete a live run's
+        marker.
+        """
+        with self._lock:
+            pending = [
+                (todo_id, user_id)
+                for todo_id, user_id in self._unreleased_markers.items()
+                if todo_id not in self._active_futures
+            ]
+        for todo_id, user_id in pending:
+            if self.schedule_db.clear_execution(todo_id, user_id):
+                with self._lock:
+                    self._unreleased_markers.pop(todo_id, None)
+                logger.info(
+                    "Released the execution marker for TODO %s on retry", todo_id
+                )
+
     def _should_create_autonomous_notification(self, thread_id: str) -> bool:
         return should_notify_autonomous(thread_id, self.thread_config_manager)
 
@@ -865,26 +1095,20 @@ class Ticker:
         continuation on iteration limit), and finalization.  Delegates
         streaming, success, and error paths to focused helpers.
         """
-        if not self.schedule_db.mark_execution_started(
-            entry.todo_id,
-            entry.user_id,
-            entry.thread_id,
-            stale_after_seconds=self._active_execution_stale_seconds,
-        ):
-            logger.info(f"Scheduled TODO {entry.todo_id} is already executing, skipping duplicate run")
+        if not self._claim_execution_marker(entry):
             return
 
         todo = self.todo_manager.get_todo_by_id(entry.user_id, entry.todo_id)
         if not todo:
             logger.warning(f"Scheduled TODO {entry.todo_id} not found, removing from schedule")
             self.schedule_db.remove_scheduled(entry.todo_id)
-            self.schedule_db.clear_execution(entry.todo_id, entry.user_id)
+            self._release_execution_marker(entry.todo_id, entry.user_id)
             return
 
         if not todo.is_active():
             logger.info(f"Scheduled TODO {entry.todo_id} is no longer active, removing from schedule")
             self.schedule_db.remove_scheduled(entry.todo_id)
-            self.schedule_db.clear_execution(entry.todo_id, entry.user_id)
+            self._release_execution_marker(entry.todo_id, entry.user_id)
             return
 
         thread_id = entry.thread_id or todo.thread_id or f"todo-{todo.id}"
@@ -894,7 +1118,7 @@ class Ticker:
             with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                 todo_list.update_item(todo.id, status=TodoStatus.IN_PROGRESS)
         except Exception:
-            self.schedule_db.clear_execution(todo.id, entry.user_id)
+            self._release_execution_marker(todo.id, entry.user_id)
             raise
 
         log_activity(
@@ -939,8 +1163,9 @@ class Ticker:
             # failure handler that itself raises, e.g. a disk-save error now
             # surfaced by ``atomic_update``). The early-return guards above
             # (not-found, inactive, status-update failure) clear their own
-            # marker before returning.
-            self.schedule_db.clear_execution(todo.id, entry.user_id)
+            # marker before returning. A failed release is retried by the
+            # poll loop (#262).
+            self._release_execution_marker(todo.id, entry.user_id)
 
     # ------------------------------------------------------------------
     # Helpers for _execute_scheduled_todo
@@ -1043,6 +1268,7 @@ class Ticker:
         logger.info(
             f"TODO {todo.id} workflow execution completed ({status or 'ok'})"
         )
+        self._report_fire_skips(entry, todo, thread_id)
 
     @staticmethod
     def _print_wakeup_banner(task_text: str) -> None:
@@ -1208,6 +1434,7 @@ class Ticker:
         todo,
         thread_id: str,
     ) -> None:
+        ticker_chose_wake = False
         current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
         if current_todo is not None and self._schedule_rewritten_mid_run(
             current_todo, entry
@@ -1231,6 +1458,7 @@ class Ticker:
                 "wake the run itself scheduled."
             )
         else:
+            ticker_chose_wake = True
             backoff_time = datetime.now(timezone.utc) + timedelta(minutes=10)
             banner = format_note_banner(
                 BACKOFF_NOTE_PREFIX,
@@ -1268,6 +1496,13 @@ class Ticker:
                 "content": content,
                 "todo_id": todo.id,
             },
+        )
+        # A late fire that double-limits still let slots pass, and the
+        # ticker's own +10min wake can pass over more on a short interval;
+        # the next fire anchors on the wake, so this is the only place to
+        # see them. An agent's own re-arm (honored above) stays intent.
+        self._report_fire_skips(
+            entry, todo, thread_id, through_armed=ticker_chose_wake
         )
         # Execution-marker cleanup happens once at the end of
         # _execute_scheduled_todo, which this path returns through.
@@ -1359,6 +1594,8 @@ class Ticker:
         except Exception:
             logger.debug("Console render failed for output spacing")
         logger.info(f"TODO {todo.id} scheduled execution completed, notify={should_notify}")
+
+        self._report_fire_skips(entry, todo, thread_id)
 
         self._trim_context_if_needed(entry, thread_id)
 
@@ -1462,6 +1699,219 @@ class Ticker:
                 entry.user_id, todo.id, self.schedule_db,
             )
         return False
+
+    def _count_fire_skips(
+        self,
+        entry: ScheduledTodoEntry,
+        snapshot,
+        armed: Optional[datetime] = None,
+        *,
+        through_armed: bool = False,
+    ) -> int:
+        """Cadence slots this fire let pass unrun, from the FIRE-TIME cadence.
+
+        ``snapshot`` is the TODO as read when the run started. Counting from
+        it rather than from whatever the run wrote makes the count
+        independent of which end-of-run branch set the next slot: the
+        ticker's automatic re-arm, a done the fire turn marked (the done
+        paths share the same skip-forward), the turn's own re-arm, or the
+        double-iteration-limit backoff. It is the slots strictly between the
+        fired slot and the first slot of that cadence after now, so an
+        on-time run with a deliberate re-arm counts 0 and a recurrence edited
+        mid-run cannot fake a skip.
+
+        The count stops at ``armed`` (the slot the run end actually wrote)
+        when it falls before that first slot: the report runs at the very
+        end of the run, and a slot the re-arm (or a mid-turn done) armed can
+        come due while the run is still wrapping up; it is due, not skipped,
+        and fires on the next poll. ``through_armed`` extends the count to
+        the armed slot even beyond that first slot, for a wake the ticker
+        itself chose (the double-iteration-limit backoff's now+10m), whose
+        passed-over slots no later fire can see; an agent's own later
+        re-arm stays intent and is not counted.
+        """
+        recurrence = getattr(snapshot, "recurrence", None)
+        if not recurrence:
+            return 0
+        from .todo_constants import (
+            compute_recurrence_reschedule,
+            count_skipped_occurrences,
+        )
+
+        fired = datetime.fromtimestamp(entry.scheduled_for, timezone.utc)
+        origin = getattr(snapshot, "recurrence_anchor", None)
+        upcoming, _ = compute_recurrence_reschedule(recurrence, fired, origin)
+        if upcoming is None:
+            return 0
+        if armed is not None:
+            armed = ensure_aware_utc(armed)
+            if fired < armed and (through_armed or armed < upcoming):
+                upcoming = armed
+        return count_skipped_occurrences(recurrence, fired, upcoming, origin=origin)
+
+    def _report_fire_skips(
+        self,
+        entry: ScheduledTodoEntry,
+        snapshot,
+        thread_id: str,
+        *,
+        through_armed: bool = False,
+    ) -> None:
+        """Make the occurrences a late fire let pass visible (#262).
+
+        Called by every end-of-run path AFTER it published the run's own
+        ``task_completed``, so an alert to a slow destination never delays
+        the reminder it is about. The skip-forward itself is intended (a
+        recurring TODO resumes its cadence instead of replaying every missed
+        slot), but each slot jumped is an occurrence that never ran, and
+        before #262 nothing said so: five missed medication reminders
+        produced zero signals. Every such fire writes an activity row; the
+        owner alert is gated by ``scheduler_skip_alert_after`` and a
+        per-TODO cooldown persisted as ``skip_alerted_at``. Each step is
+        fault-isolated on its own: reporting can never break the run's end.
+        """
+        try:
+            current = self.todo_manager.get_todo_by_id(entry.user_id, snapshot.id)
+            upcoming = current.scheduled_for if current else None
+            skipped = self._count_fire_skips(
+                entry, snapshot, upcoming, through_armed=through_armed
+            )
+        except Exception:
+            logger.error(
+                "Failed to count skipped occurrences for TODO %s",
+                entry.todo_id,
+                exc_info=True,
+            )
+            return
+        if not skipped:
+            return
+        todo_id = snapshot.id
+        recurrence = snapshot.recurrence
+        task = (snapshot.task or "")[:80]
+        noun = "occurrence" if skipped == 1 else "occurrences"
+        fired_at = datetime.fromtimestamp(entry.scheduled_for, timezone.utc)
+        now = datetime.now(timezone.utc)
+        next_copy = f"next run {_format_slot(upcoming)}" if upcoming else "no next run is scheduled"
+        logger.warning(
+            "Recurring TODO %s (%s) let %d occurrence(s) pass: the run due "
+            "%s ended at %s",
+            todo_id,
+            recurrence,
+            skipped,
+            fired_at.isoformat(),
+            now.isoformat(),
+        )
+        try:
+            log_activity(
+                ActivityType.TASK_SKIPPED,
+                (
+                    f"Skipped {skipped} scheduled {noun}: {task} (the run due "
+                    f"{_format_slot(fired_at)} ended at {_format_slot(now)}, "
+                    f"after later slots had passed; {next_copy})"
+                ),
+                user_id=entry.user_id,
+                thread_id=thread_id or None,
+                metadata={
+                    "todo_id": todo_id,
+                    "reason": "occurrences_collapsed",
+                    "skipped_occurrences": skipped,
+                    "fired_slot": fired_at.isoformat(),
+                    "next_slot": upcoming.isoformat() if upcoming else None,
+                    "recurrence": recurrence,
+                },
+            )
+        except Exception:
+            logger.error(
+                "Failed to record skipped occurrences for TODO %s",
+                todo_id,
+                exc_info=True,
+            )
+        try:
+            if not self._claim_skip_alert(entry.user_id, todo_id, skipped, now):
+                return
+        except Exception:
+            # The stamp did not persist, so no alert: an alert must never
+            # outrun the cooldown state that suppresses its repeats.
+            logger.error(
+                "Failed to record the skip-alert stamp for TODO %s",
+                todo_id,
+                exc_info=True,
+            )
+            return
+        try:
+            send_owner_alert(
+                (
+                    f"[SCHEDULED TASK SKIPPED] Recurring TODO [{todo_id}] "
+                    f"\"{task}\" skipped {skipped} scheduled {noun}: the run "
+                    f"due {_format_slot(fired_at)} ended at "
+                    f"{_format_slot(now)}, after later slots had already "
+                    f"passed; {next_copy}. Usual causes: the scheduler was "
+                    f"down or busy, or a run took longer than its "
+                    f"{recurrence} interval. At most one such alert per TODO "
+                    f"per {self._skip_alert_cooldown_label()}."
+                ),
+                self.settings,
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                task_id=todo_id,
+            )
+        except Exception:
+            logger.error(
+                "Skip alert dispatch failed for TODO %s", todo_id, exc_info=True
+            )
+
+    def _claim_skip_alert(
+        self, user_id: str, todo_id: str, skipped: int, now: datetime
+    ) -> bool:
+        """Decide and persist whether this skip alerts the owner.
+
+        True only when the policy allows it (``scheduler_skip_alert_after``
+        skipped occurrences in this fire, 0 disables) and the TODO's
+        ``skip_alerted_at`` is outside the cooldown; the new stamp is saved
+        before True is returned, so an unsaved stamp (the save raises) never
+        yields an alert. Persisted rather than ticker memory so a restart,
+        which deploy-sync does on every push, does not re-alert.
+        """
+        if not self._skip_alert_after or skipped < self._skip_alert_after:
+            return False
+        if not self._skip_alert_window_open(
+            self.todo_manager.get_todo_by_id(user_id, todo_id), now
+        ):
+            # Checked before the write lock: atomic_update saves on exit, so
+            # deciding inside it would rewrite the file for every suppressed
+            # alert. Re-checked inside against a concurrent claim.
+            return False
+        claimed = False
+        with self.todo_manager.atomic_update(user_id) as todo_list:
+            item = todo_list.get_item(todo_id)
+            if self._skip_alert_window_open(item, now):
+                assert item is not None
+                item.skip_alerted_at = now
+                claimed = True
+        return claimed
+
+    def _skip_alert_window_open(self, item, now: datetime) -> bool:
+        """True when ``item`` exists and its skip-alert cooldown has passed."""
+        if item is None:
+            return False
+        last = item.skip_alerted_at
+        return (
+            last is None
+            or not self._skip_alert_cooldown_seconds
+            or (now - last).total_seconds() >= self._skip_alert_cooldown_seconds
+        )
+
+    def _skip_alert_cooldown_label(self) -> str:
+        minutes = self._skip_alert_cooldown_seconds // 60
+        if not minutes:
+            return "late run"
+        if minutes % 1440 == 0:
+            days = minutes // 1440
+            return "day" if days == 1 else f"{days} days"
+        if minutes % 60 == 0:
+            hours = minutes // 60
+            return "hour" if hours == 1 else f"{hours} hours"
+        return f"{minutes} minutes"
 
     def _trim_context_if_needed(
         self, entry: ScheduledTodoEntry, thread_id: str,
@@ -1589,6 +2039,9 @@ class Ticker:
                     )
                 else:
                     self._handle_recurrence(entry, current_todo)
+                    # ``todo`` is this attempt's pre-run snapshot: the fire
+                    # cadence the skip count must use (#262).
+                    self._report_fire_skips(entry, todo, thread_id)
                     if (
                         self._failure_alert_after
                         and failure_count == self._failure_alert_after

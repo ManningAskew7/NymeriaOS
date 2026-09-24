@@ -37,3 +37,24 @@ def test_notification_summary_falls_back_to_count_without_channels():
     summary = _build_thread_summary(entries)
 
     assert "Notifications sent: 2" in summary
+
+
+def test_skipped_occurrences_count_and_list_under_autonomous_tasks():
+    # #262: a scheduled occurrence that never ran is summarized with the
+    # autonomous tasks (count plus its message), not dumped as an "other" line.
+    entries = [
+        ActivityEntry(
+            type=ActivityType.TASK_COMPLETED, message="Briefing sent"
+        ),
+        ActivityEntry(
+            type=ActivityType.TASK_SKIPPED,
+            message="Skipped 3 scheduled occurrences: Hourly check",
+            metadata={"reason": "occurrences_collapsed"},
+        ),
+    ]
+
+    summary = _build_thread_summary(entries)
+
+    assert "Autonomous tasks: 1 completed, 1 skipped" in summary
+    assert "    - Skipped 3 scheduled occurrences: Hourly check" in summary
+    assert "task_skipped:" not in summary

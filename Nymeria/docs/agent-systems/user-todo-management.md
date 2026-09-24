@@ -191,8 +191,13 @@ execution markers before the poll thread starts, so a TODO interrupted moments
 before a restart re-fires immediately instead of being held for up to a day.
 The 24-hour stale window (`--active-execution-stale-minutes`, default 1440)
 still guards the *live* in-flight path (`mark_execution_started` /
-`is_execution_active`) against a wedged execution thread inside a still-running
-process.
+`is_execution_active`) against a marker that outlives its run inside a
+still-running process: a release DELETE that keeps failing, or a marker from
+a second scheduler process on the same database. (A wedged run is a
+different mechanism: its future stays registered in the pool, so the poll
+never resubmits it.) A failed release is retried at the start of every poll,
+and a due TODO blocked by a leftover marker is reported rather than silently
+held (see "Occurrences that never run" below).
 
 When a scheduled TODO succeeds:
 
@@ -297,6 +302,59 @@ threshold (one-shot TODOs alert immediately), and a delivered report or
 an explicit reschedule clears the episode. The two streaks are separate
 fields because a successful execution resets `consecutive_failures`
 before the bot has finished delivering.
+
+### Occurrences that never run
+
+An occurrence that will not run is reported, not swallowed (#262; before
+it, five missed medication reminders produced zero signals). Two paths
+leave a scheduled occurrence unrun:
+
+- **A late fire.** When a recurring occurrence runs after later slots of
+  its cadence have already passed (downtime catch-up, a run longer than its
+  interval, a pool backlog, a late `ask` release), whatever writes the next
+  slot skips past them: the ticker's own re-arm, a "done" the fire turn
+  marks (the done paths share the same skip-forward), the turn's own
+  re-arm, or the double-iteration-limit backoff. That cadence behavior is
+  intended; the ticker now counts the slots the fire let pass FROM THE
+  CADENCE THE OCCURRENCE FIRED ON (the pre-run snapshot, via
+  `todo_constants.count_skipped_occurrences`), so the count does not depend
+  on which of those writers ran, an on-time fire with a deliberate re-arm
+  counts 0, and a recurrence edited mid-run cannot fake a skip. The count
+  stops at the slot the run end actually armed: on a short interval that
+  slot can come due while the run is still wrapping up, and it is due, not
+  skipped. The one exception is the double-iteration-limit backoff, whose
+  now+10m wake the ticker chose itself: the cadence slots it passes over are
+  counted too (an agent's own later re-arm stays intent). Every such
+  fire writes a `task_skipped` activity row (`metadata.reason:
+  occurrences_collapsed`, `skipped_occurrences`, ISO `fired_slot` and
+  `next_slot`) after the run's own `task_completed`, so the reminder is
+  never held up behind the report. The owner gets a
+  `[SCHEDULED TASK SKIPPED]` alert when one fire let at least
+  `SCHEDULER_SKIP_ALERT_AFTER` occurrences pass (default 1; 0 turns the
+  alert off), at most once per TODO per
+  `SCHEDULER_SKIP_ALERT_COOLDOWN_MINUTES` (default 1440). The cooldown
+  stamp `skip_alerted_at` is persisted and saved BEFORE the alert goes out,
+  so a restart (deploy-sync restarts on every push) does not re-alert, and
+  a resume of a paused series clears it. Explicit edits and done-paths
+  outside a late fire never report.
+- **A leftover execution marker.** A due TODO whose marker was claimed
+  BEFORE its due slot (left behind by an earlier run) cannot start until
+  it is released. The ticker writes one `task_skipped` row
+  (`reason: execution_marker_held`, ISO `reclaim_at`,
+  `release_retry_pending`) and sends one `[SCHEDULED TASK BLOCKED]` alert
+  per marker. When the marker is this scheduler's own failed release, the
+  alert says the release is retried every poll; otherwise it names the
+  stale-sweep reclaim time and that a restart clears it at once. A marker
+  claimed at or after the slot belongs to this occurrence (a second
+  scheduler process running it, or a retry attempt's own leftover), and a
+  claim that failed on a database error leaves no marker: both stay log
+  lines, the refusal repeating every poll. Under the one-ticker invariant
+  the split is exact; with a second scheduler process on the same database
+  (a misconfiguration, backlog #397) a live run that re-armed its own TODO
+  into a slot that comes due mid-run also reads as blocked.
+
+Activity rows expire with `ACTIVITY_RETENTION_HOURS` (default 12); the
+alert is the durable signal.
 
 The interval calculation lives in `core/todo_constants.py`:
 
@@ -422,7 +480,7 @@ This ensures users can see and interact with scheduled TODO responses.
 **Mitigation:**
 - Ticker claims an `active_todo_executions` marker in `TodoScheduleDB` before reading the TODO body and clears it when the scheduled run exits.
 - REST update, complete, and delete endpoints check that marker and return `409 Conflict` while the TODO is actively executing.
-- All markers are cleared at startup (any marker outliving the single ticker's process is orphaned), and within a running process markers older than 24 hours are removed automatically, so neither a crash nor a mid-run restart can lock a TODO.
+- All markers are cleared at startup (any marker outliving the single ticker's process is orphaned), a release that fails at run end is retried on every poll, and within a running process markers older than 24 hours are removed automatically, so neither a crash nor a mid-run restart can lock a TODO. A due TODO still held by a leftover marker raises a `task_skipped` row and an owner alert ("Occurrences that never run").
 
 ### 3. Thread Deletion
 

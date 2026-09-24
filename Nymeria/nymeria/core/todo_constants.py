@@ -250,6 +250,61 @@ def calculate_next_recurrence_time(
     return next_time
 
 
+def count_skipped_occurrences(
+    recurrence: str,
+    fired_slot: datetime,
+    next_slot: datetime,
+    *,
+    origin: datetime | None = None,
+) -> int:
+    """Count the cadence slots strictly between ``fired_slot`` and ``next_slot``.
+
+    The skip-forward in ``calculate_next_recurrence_time`` (shared by the
+    ticker's re-arm and every done path) jumps over every slot that has
+    already passed when a late occurrence re-arms (downtime catch-up, a run
+    longer than its interval, a late release), and nothing dispatched those
+    slots. This recounts them so the ticker can report the skip (#262)
+    instead of swallowing it.
+
+    Mirrors the slot arithmetic of the re-arm it audits: fixed intervals step
+    from the fired slot; calendar months step from ``origin`` (the series'
+    stored ``recurrence_anchor``, else the fired slot, the same lazy
+    adoption as ``compute_recurrence_reschedule``) so month-end clamping
+    lands on the same days. ``next_slot`` need not lie on the cadence (the
+    ticker caps it at whatever slot is actually armed): a slot equal to it
+    is not counted, one before it is. Returns 0 for an unparseable
+    recurrence or a ``next_slot`` not after ``fired_slot``.
+    """
+    delta = parse_recurrence_interval(recurrence)
+    if delta is None:
+        return 0
+    fired = _ensure_aware_utc(fired_slot)
+    upcoming = _ensure_aware_utc(next_slot)
+    if upcoming <= fired:
+        return 0
+    if isinstance(delta, timedelta):
+        # Integer microseconds: slots fired + k*step for k >= 1 that are
+        # strictly before ``upcoming`` number ceil(span / step) - 1, exact
+        # for on-cadence and off-cadence upper bounds alike.
+        step_us = delta // timedelta(microseconds=1)
+        if step_us <= 0:
+            return 0
+        span_us = (upcoming - fired) // timedelta(microseconds=1)
+        return max(0, -(-span_us // step_us) - 1)
+    interval = delta.years * 12 + delta.months
+    if interval <= 0:
+        return 0
+    series_origin = _ensure_aware_utc(origin) if origin is not None else fired
+    k = _months_between(series_origin, fired) + interval
+    skipped = 0
+    # Bounded by the months between two slots of one re-arm: a few dozen
+    # iterations for realistic downtime.
+    while series_origin + relativedelta(months=k) < upcoming:
+        skipped += 1
+        k += interval
+    return skipped
+
+
 def resolve_done_recurrence_anchor(item: Optional[TodoItem]) -> datetime:
     """Return the OCCURRENCE a "done" transition should advance the series from.
 

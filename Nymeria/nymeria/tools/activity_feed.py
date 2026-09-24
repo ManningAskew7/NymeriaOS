@@ -30,6 +30,7 @@ _TASK_TYPES = {
     ActivityType.SELF_INVOKE,
     ActivityType.TASK_COMPLETED,
     ActivityType.TASK_FAILED,
+    ActivityType.TASK_SKIPPED,
 }
 _NOTIFICATION_TYPES = {ActivityType.NOTIFICATION_SENT}
 
@@ -61,6 +62,7 @@ def _build_thread_summary(entries: List[ActivityEntry]) -> str:
     if tasks:
         completed = [e for e in tasks if e.type == ActivityType.TASK_COMPLETED]
         failed = [e for e in tasks if e.type == ActivityType.TASK_FAILED]
+        skipped = [e for e in tasks if e.type == ActivityType.TASK_SKIPPED]
         invoked = [e for e in tasks if e.type == ActivityType.SELF_INVOKE]
         parts = []
         if invoked:
@@ -69,8 +71,12 @@ def _build_thread_summary(entries: List[ActivityEntry]) -> str:
             parts.append(f"{len(completed)} completed")
         if failed:
             parts.append(f"{len(failed)} failed")
+        if skipped:
+            # A scheduled occurrence that never ran (#262); the message says
+            # whether a late re-arm skipped it or a leftover marker blocked it.
+            parts.append(f"{len(skipped)} skipped")
         lines.append(f"  Autonomous tasks: {', '.join(parts)}")
-        for e in completed + failed:
+        for e in completed + failed + skipped:
             lines.append(f"    - {e.message[:80]}")
 
     if todo_events:

@@ -54,6 +54,10 @@ class ActivityType(str, Enum):
     WATCHDOG_NUDGE = "watchdog_nudge"
     TASK_COMPLETED = "task_completed"
     TASK_FAILED = "task_failed"
+    # A scheduled occurrence that did not run (#262): skipped past by a late
+    # re-arm, or blocked by a leftover execution marker. metadata.reason says
+    # which.
+    TASK_SKIPPED = "task_skipped"
     TODO_ADDED = "todo_added"
     TODO_UPDATED = "todo_updated"
     TODO_COMPLETED = "todo_completed"

@@ -655,6 +655,7 @@ export type ActivityType =
   | 'watchdog_nudge'
   | 'task_completed'
   | 'task_failed'
+  | 'task_skipped'
   | 'todo_added'
   | 'todo_updated'
   | 'todo_completed'

@@ -3126,7 +3126,16 @@ Authorization: Bearer <token>
 ```
 
 Returns recent activity entries (autonomous tasks, tool executions, etc.) for
-the effective user.
+the effective user. `type` is one of `self_invoke`, `watchdog_nudge`,
+`task_completed`, `task_failed`, `task_skipped`, `todo_added`,
+`todo_updated`, `todo_completed`, `todo_deleted`, `trigger_completed`,
+`user_message`, `notification_sent`, `external_edit`; filter with
+`?activity_type=` (and `?thread_id=`). `task_skipped` marks a scheduled occurrence that never ran, with
+`metadata.reason` `occurrences_collapsed` (a late fire let it pass;
+`skipped_occurrences` counts them, `fired_slot`/`next_slot` are ISO
+timestamps) or `execution_marker_held` (a leftover execution marker blocked
+a due TODO; ISO `reclaim_at` is the latest it frees, `release_retry_pending`
+says whether this scheduler is already retrying the release).
 
 **Response:**
 ```json

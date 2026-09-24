@@ -1785,6 +1785,28 @@ class Settings(BaseSettings):
             "auto-pause."
         ),
     )
+    scheduler_skip_alert_after: int = Field(
+        default=1,
+        ge=0,
+        le=1000,
+        description=(
+            "Scheduled occurrences one late run of a recurring TODO must "
+            "have let pass unrun before the owner is alerted (in-app plus "
+            "external notification destinations). 0 disables the alert; "
+            "the task_skipped activity row is always written."
+        ),
+    )
+    scheduler_skip_alert_cooldown_minutes: int = Field(
+        default=1440,
+        ge=0,
+        le=10080,
+        description=(
+            "Minimum minutes between skipped-occurrence alerts for one "
+            "recurring TODO, so a series that keeps overrunning its "
+            "interval or a restart-heavy host alerts at most this often. "
+            "0 alerts on every qualifying late run."
+        ),
+    )
     trigger_failure_alert_after: int = Field(
         default=2,
         ge=0,
