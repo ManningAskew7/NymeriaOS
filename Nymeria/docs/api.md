@@ -4954,7 +4954,16 @@ POST /triggers/{trigger_id}/resume
 Authorization: Bearer <token>
 ```
 
-Clears an auto-pause (`auto_paused_at`) and the whole failure history: the action streak, the health counters and the last error. Returns the updated trigger. Leaves `enabled` alone, so resuming a trigger the user also switched off leaves it switched off. Also the way to clear health on a trigger that is `failing` but not paused, which otherwise keeps skipping 9 of 10 polls until an action succeeds.
+Clears an auto-pause (`auto_paused_at`) and the whole failure history: the action streak, the health counters and the last error. Returns the updated trigger. Failed events the trigger kept for a retry stay, and fire on its next poll. Leaves `enabled` alone, so resuming a trigger the user also switched off leaves it switched off. Also the way to clear health on a trigger that is `failing` but not paused, which otherwise keeps skipping 9 of 10 polls until an action succeeds.
+
+### Discard a Trigger's Failed Events
+
+```http
+DELETE /triggers/{trigger_id}/failed-events
+Authorization: Bearer <token>
+```
+
+A poll trigger whose action fails keeps that fire's events (`failed_events`, a count on every trigger response) and retries them on its next poll. This drops them instead, for an event that is itself what keeps failing (it would otherwise fail every retry and pause the trigger again after every resume). Returns the updated trigger. Leaves the pause and health alone: resume separately.
 
 ### Delete Trigger
 

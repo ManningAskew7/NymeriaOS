@@ -4934,6 +4934,9 @@ class _CommandExecutor(
             else:
                 status = "enabled" if t.enabled else "disabled"
                 health = t.health_status
+            if t.failed_events:
+                # #265: kept for a retry; say so where the owner looks.
+                health += f", {len(t.failed_events)} failed event(s) waiting"
             action_type = getattr(t.action, "type", "?") if t.action else "?"
             lines.append(
                 f"| `{t.id}` | {status} | {health} | {t.source_type} "

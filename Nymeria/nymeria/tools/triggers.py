@@ -19,10 +19,14 @@ from ..core.trigger_manager import (
     TriggerManager,
     _safe_format,
     describe_resume,
+    summarize_event,
 )
 from .utils import get_effective_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
+
+# How many parked failed events the detail view lists (#265).
+_PARKED_SHOWN = 5
 
 # Global trigger manager instance (initialized lazily)
 _trigger_manager: Optional[TriggerManager] = None
@@ -277,6 +281,10 @@ def _trigger_list(
             lines.append(f"    Conditions: {len(t.conditions)} filter(s)")
         if t.pending_events:
             lines.append(f"    Pending: {len(t.pending_events)} deferred event(s)")
+        if t.failed_events:
+            lines.append(
+                f"    Failed, awaiting retry: {len(t.failed_events)} event(s)"
+            )
         if t.last_error:
             lines.append(f"    Last error: {t.last_error[:100]}")
     return "\n".join(lines)
@@ -410,6 +418,29 @@ def _trigger_resume(
     return f"[Success]: {describe_resume(trigger_id, summary)}"
 
 
+def _trigger_discard_failed(
+    trigger_id: str,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """Drop a trigger's parked failed events (#265)."""
+    user_id = get_user_id(config)
+    discarded = _get_trigger_manager().discard_failed_events(user_id, trigger_id)
+    if discarded is None:
+        return f"[Error]: Trigger '{trigger_id}' not found."
+    if not discarded:
+        return f"[Success]: Trigger {trigger_id} had no failed events waiting."
+    # Name what went, so the transcript keeps a record of it.
+    lines = [
+        f"[Success]: Discarded {len(discarded)} failed event(s) from trigger "
+        f"{trigger_id}. They will not be retried."
+    ]
+    lines += [f"  - {summarize_event(p.event)}" for p in discarded[:_PARKED_SHOWN]]
+    if len(discarded) > _PARKED_SHOWN:
+        lines.append(f"  ... and {len(discarded) - _PARKED_SHOWN} more")
+    return "\n".join(lines)
+
+
 def _trigger_delete(
     trigger_id: str,
     *,
@@ -538,6 +569,20 @@ def _inspect_detail(manager: TriggerManager, user_id: str, trigger_id: str) -> s
         )
     if trigger.pending_events:
         lines.append(f"  Pending events: {len(trigger.pending_events)}")
+    if trigger.failed_events:
+        lines.append(
+            f"  Failed events awaiting retry: {len(trigger.failed_events)} "
+            f"(oldest failed {trigger.failed_events[0].first_failed_at.isoformat()}; "
+            f'trigger_config(action="discard_failed") drops them)'
+        )
+        shown = trigger.failed_events[:_PARKED_SHOWN]
+        for parked in shown:
+            lines.append(
+                f"    - {parked.attempts} failed attempt(s): "
+                f"{summarize_event(parked.event)}"
+            )
+        if len(trigger.failed_events) > len(shown):
+            lines.append(f"    ... and {len(trigger.failed_events) - len(shown)} more")
     if trigger.last_error:
         # Name the PLANE on both counters. They count different things
         # (polling vs the action that ran), so an unlabelled pair reads as a
@@ -698,8 +743,9 @@ def trigger_config(
 
     Use action="create" for a new trigger, action="update" to change one,
     action="delete" to remove one, and action="resume" to restart one that
-    was auto-paused after repeated failures. Triggers auto-bind to the
-    current thread. Use trigger_info(action="sources") before creating when
+    was auto-paused after repeated failures. Events whose action failed are
+    kept and retried; action="discard_failed" drops them. Triggers auto-bind
+    to the current thread. Use trigger_info(action="sources") before creating when
     you need source config fields or template variables.
 
     A trigger whose action keeps failing is auto-paused: it stops polling
@@ -709,8 +755,8 @@ def trigger_config(
     BEFORE resuming, or it will simply pause again.
 
     Args:
-        action: "create", "update", "delete", or "resume".
-        trigger_id: Required for update/delete/resume.
+        action: "create", "update", "delete", "resume", or "discard_failed".
+        trigger_id: Required for update/delete/resume/discard_failed.
         name: Trigger display name.
         source_type: Event source type for create, such as "webhook".
         action_type: "agent_prompt", "notify", or "create_todo".
@@ -776,7 +822,15 @@ def trigger_config(
             return "[Error]: resume requires trigger_id."
         return _trigger_resume(trigger_id=trigger_id, config=config)
 
-    return "[Error]: action must be one of: create, update, delete, resume."
+    if action_key == "discard_failed":
+        if not trigger_id:
+            return "[Error]: discard_failed requires trigger_id."
+        return _trigger_discard_failed(trigger_id=trigger_id, config=config)
+
+    return (
+        "[Error]: action must be one of: create, update, delete, resume, "
+        "discard_failed."
+    )
 
 
 @tool

@@ -17,7 +17,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -132,6 +132,14 @@ class TriggerDefinition(BaseModel):
     last_source_alert_at: Optional[datetime] = Field(default=None)
     # Pending events deferred because the thread was busy
     pending_events: List[dict] = Field(default_factory=list)
+    # Events whose ACTION failed (#265), kept for the next poll instead of
+    # lost: every poll source consumes an event before its action runs (an
+    # Outlook check tags the mail read on the mailbox, RSS/Slack/Teams/HTTP
+    # advance their cursor), so nothing would ever detect it again. Distinct
+    # from pending_events, which never failed. Oldest first, capped at
+    # MAX_FAILED_EVENTS; cleared only by a fire that delivers them, or with
+    # the trigger.
+    failed_events: List["ParkedTriggerEvent"] = Field(default_factory=list)
 
     @field_validator(
         "last_fired", "created_at", "last_error_at", "auto_paused_at",
@@ -164,6 +172,156 @@ class TriggerExecution(BaseModel):
     @classmethod
     def _timestamp_as_utc(cls, value: datetime) -> datetime:
         return ensure_aware_utc(value)
+
+
+class ParkedTriggerEvent(BaseModel):
+    """A trigger event whose action failed, kept for a retry (#265)."""
+
+    event: Dict[str, Any] = Field(default_factory=dict)
+    # Failed deliveries so far; 0 for an event never attempted (the rest of a
+    # batch the #264 pause stopped), which is then delivered as a first try.
+    attempts: int = 0
+    first_failed_at: datetime = Field(default_factory=utc_now)
+    last_error: str = ""
+    # File names of the attachments the event carried. Their bytes are NOT
+    # kept: an Outlook event carries each one base64-inline (up to 10 MB) and
+    # this store is read and rewritten on every poll. The retry says so.
+    dropped_attachments: List[str] = Field(default_factory=list)
+
+    @field_validator("first_failed_at")
+    @classmethod
+    def _first_failed_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
+
+
+TriggerDefinition.model_rebuild()
+
+# A backstop, not a policy: the #264 pause stops a failing trigger after a few
+# polls, so the list only grows this far with the pause disabled or a very
+# large failing batch. Oldest are dropped first, with a WARNING.
+MAX_FAILED_EVENTS = 200
+# Parked events handed back per poll, oldest first. Bounds the retry turn: a
+# resume after an outage would otherwise send every parked event in ONE
+# prompt, and a big batch is likelier to hit the iteration limit, which
+# counts as delivered.
+RETRY_BATCH_MAX = 10
+
+
+class _RetriedEvent(dict):
+    """A parked event handed back to the fire paths for another attempt.
+
+    The bookkeeping rides on the object, never as a key in the event: events
+    are source data (a webhook body is whatever its caller sent), so a
+    reserved key could be forged. Lives only in memory between
+    ``check_triggers`` and the fire, which run in the same process.
+    """
+
+    def __init__(self, parked: ParkedTriggerEvent):
+        super().__init__(parked.event)
+        self.parked = parked
+
+
+def _split_retry(event: dict) -> Tuple[dict, Optional[ParkedTriggerEvent]]:
+    """The plain event, and its parked record when it is a retry."""
+    if isinstance(event, _RetriedEvent):
+        return dict(event), event.parked
+    return event, None
+
+
+def _park_events(
+    trigger: "TriggerDefinition",
+    events: Sequence[dict],
+    error: Optional[str],
+    now: datetime,
+    *,
+    attempted: bool,
+) -> int:
+    """Append ``events`` to the trigger's failed list; returns how many of
+    the OLDEST were dropped by the cap."""
+    for event in events:
+        clean, parked = _split_retry(event)
+        clean = dict(clean)
+        attachments = clean.pop("attachments", None)
+        dropped = list(parked.dropped_attachments) if parked is not None else []
+        if isinstance(attachments, list):
+            dropped += [
+                str(item.get("file_name") or "attachment")
+                for item in attachments
+                if isinstance(item, dict)
+            ]
+        trigger.failed_events.append(
+            ParkedTriggerEvent(
+                event=clean,
+                attempts=(parked.attempts if parked is not None else 0)
+                + (1 if attempted else 0),
+                first_failed_at=parked.first_failed_at if parked is not None else now,
+                last_error=(
+                    error or (parked.last_error if parked is not None else "")
+                )[:200],
+                dropped_attachments=dropped,
+            )
+        )
+    # Oldest failure first (stable), so a failed retry chunk goes back in
+    # FRONT of the parked events it was taken ahead of, not behind them.
+    trigger.failed_events.sort(key=lambda parked: parked.first_failed_at)
+    overflow = len(trigger.failed_events) - MAX_FAILED_EVENTS
+    if overflow > 0:
+        trigger.failed_events = trigger.failed_events[overflow:]
+        return overflow
+    return 0
+
+
+def _is_retry(parked: Optional[ParkedTriggerEvent]) -> bool:
+    """A delivery of this event has failed before (a never-attempted event
+    held back by a pause is a first try)."""
+    return parked is not None and parked.attempts > 0
+
+
+def _attachments_note(parked: Optional[ParkedTriggerEvent]) -> str:
+    if parked is None or not parked.dropped_attachments:
+        return ""
+    names = [name[:80] for name in parked.dropped_attachments[:10]]
+    more = len(parked.dropped_attachments) - len(names)
+    listed = ", ".join(names) + (f" and {more} more" if more > 0 else "")
+    return (
+        f"[Its attachments were not kept while it waited ({listed}); fetch "
+        f"them from the source if you need them.]"
+    )
+
+
+def _retry_note(parked: Optional[ParkedTriggerEvent]) -> str:
+    """System lines telling the agent an event is a retry (never the error
+    text: an action's error can quote external content)."""
+    lines = []
+    if _is_retry(parked):
+        assert parked is not None
+        lines.append(
+            f"[Retry: delivering this trigger event failed before "
+            f"({parked.attempts} attempt(s)). The failed attempt may have done "
+            f"part of the work, so check before repeating any side effect.]"
+        )
+    note = _attachments_note(parked)
+    if note:
+        lines.append(note)
+    return "\n".join(lines)
+
+
+# Fields a person recognises an event by, most telling first.
+_SUMMARY_FIELDS = (
+    "subject", "title", "from_name", "from_address", "sender", "user",
+    "channel", "text", "message", "summary", "body_preview", "link", "url",
+)
+
+
+def summarize_event(event: Dict[str, Any], limit: int = 100) -> str:
+    """One short line naming an event (for listings a person chooses from)."""
+    parts = [
+        f"{key}: {event[key]}"
+        for key in _SUMMARY_FIELDS
+        if event.get(key) not in (None, "")
+    ]
+    text = "; ".join(parts) if parts else str(event)
+    return " ".join(text.split())[:limit]
 
 
 class TriggerStore(BaseModel):
@@ -209,6 +367,12 @@ def describe_resume(trigger_id: str, summary: dict) -> str:
         )
     else:
         head = f"Trigger {trigger_id} was already healthy; nothing to clear."
+    parked = summary.get("parked_events") or 0
+    if parked:
+        head += (
+            f" {parked} event(s) from its failed runs will be retried on its "
+            f"next poll."
+        )
     if not summary["enabled"]:
         # Resume is orthogonal to the user's toggle, so say so rather
         # than let the caller assume the trigger is now running.
@@ -648,6 +812,8 @@ class TriggerManager:
                 "consecutive_errors": trigger.consecutive_errors,
                 "previous_health": trigger.health_status,
                 "enabled": trigger.enabled,
+                # Kept across the resume: the next poll retries them (#265).
+                "parked_events": len(trigger.failed_events),
             }
             trigger.auto_paused_at = None
             trigger.action_failures = 0
@@ -952,6 +1118,15 @@ class TriggerManager:
                     events = trigger.pending_events + (events or [])
                     trigger.pending_events = []
 
+                # Events whose action failed on an earlier fire go first
+                # (#265), up to RETRY_BATCH_MAX per poll. Taken out of the
+                # store here, like pending_events: a failure of this fire
+                # parks them again (at the back) with attempts + 1.
+                if trigger.failed_events:
+                    retry_now = trigger.failed_events[:RETRY_BATCH_MAX]
+                    trigger.failed_events = trigger.failed_events[RETRY_BATCH_MAX:]
+                    events = [_RetriedEvent(p) for p in retry_now] + (events or [])
+
                 if not events:
                     continue
 
@@ -964,6 +1139,19 @@ class TriggerManager:
                     and agent is not None
                     and agent._thread_locks.is_thread_busy(thread_id)
                 ):
+                    # A retried event waits for an idle thread rather than
+                    # joining the pending-prompt queue: the queue hands it to
+                    # a turn whose failure nothing here would see, after the
+                    # store has already forgotten it (#265). Unchanged, so
+                    # it keeps its place in line and its attempt count.
+                    retries = [e for e in events if isinstance(e, _RetriedEvent)]
+                    if retries:
+                        _park_events(trigger, retries, None, now, attempted=False)
+                        events = [
+                            e for e in events if not isinstance(e, _RetriedEvent)
+                        ]
+                        if not events:
+                            continue
                     # Thread is busy: route through the pending-prompt
                     # queue so the running turn halts at its next
                     # sub-turn boundary and absorbs us. Falls back to
@@ -996,7 +1184,10 @@ class TriggerManager:
                     continue
 
                 trigger.last_fired = now
-                trigger.fire_count += len(events)
+                # Counts events, so a retried one is not counted twice.
+                trigger.fire_count += sum(
+                    1 for e in events if not isinstance(e, _RetriedEvent)
+                )
                 results.append((trigger, events))
 
         # Alerts go out AFTER the store lock releases (the sender does
@@ -1113,7 +1304,11 @@ class TriggerManager:
         ``agent`` may be a local ``NymeriaAgent`` (slim) or any
         ``TurnExecutor`` (Docker worker, which uses ``APIClientExecutor``
         to relay the turn into the API runtime).
+
+        A failed action keeps the event for the next poll (#265).
         """
+        original_event = event
+        event, retry = _split_retry(event)
         action = trigger.action
         template_vars = {
             **event,
@@ -1134,7 +1329,9 @@ class TriggerManager:
         try:
             known_action = True
             if action.type == "agent_prompt":
-                self._fire_agent_prompt(action.config, template_vars, agent, user_id, trigger)
+                self._fire_agent_prompt(
+                    action.config, template_vars, agent, user_id, trigger, retry=retry
+                )
             elif action.type == "notify":
                 self._fire_notify(action.config, template_vars, user_id, trigger)
             elif action.type == "create_todo":
@@ -1157,7 +1354,9 @@ class TriggerManager:
                 f"[TRIGGER] Action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
-            self._record_action_health(user_id, trigger.id, str(e))
+            self._record_action_health(
+                user_id, trigger.id, str(e), park=[original_event]
+            )
             self._publish_trigger_error(
                 trigger,
                 user_id,
@@ -1198,14 +1397,25 @@ class TriggerManager:
                 # written to the store by _record_action_health, and in
                 # Docker another process may have written it.
                 if index + 1 < len(events):
-                    live = self.get_trigger(user_id, trigger.id)
-                    if live is None or live.auto_paused_at is not None:
+                    try:
+                        live = self.get_trigger(user_id, trigger.id)
+                        stop = live is None or live.auto_paused_at is not None
+                    except Exception:  # noqa: BLE001 - unreadable: stop, keep the rest
+                        logger.warning(
+                            "[TRIGGER] %s: store unreadable mid-batch", trigger.id,
+                            exc_info=True,
+                        )
+                        stop = True
+                    if stop:
+                        # Kept for when it resumes (#265); _park_unattempted
+                        # says so when there is nothing left to keep them on.
                         logger.info(
-                            "[TRIGGER] %s auto-paused mid-batch; dropping %d "
+                            "[TRIGGER] %s stopped mid-batch; keeping %d "
                             "remaining event(s)",
                             trigger.id,
                             len(events) - index - 1,
                         )
+                        self._park_unattempted(user_id, trigger.id, events[index + 1:])
                         return
             return
 
@@ -1218,24 +1428,44 @@ class TriggerManager:
             or "Trigger {trigger_name} fired."
         )
         rendered_items = []
+        clean_events: List[dict] = []
+        retried = 0
 
-        for i, event in enumerate(events, 1):
+        for i, raw_event in enumerate(events, 1):
+            event, retry = _split_retry(raw_event)
+            clean_events.append(event)
             template_vars = {
                 **event,
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
                 "fired_at": utc_now().isoformat(),
             }
-            rendered_items.append(f"--- Item {i} ---\n{_safe_format(template, template_vars)}")
+            marker = ""
+            if _is_retry(retry):
+                retried += 1
+                marker = " (retry: an earlier attempt failed)"
+            body = _safe_format(template, template_vars)
+            note = _attachments_note(retry)
+            if note:
+                body = f"{note}\n{body}"
+            rendered_items.append(f"--- Item {i}{marker} ---\n{body}")
 
+        retry_line = (
+            f"{retried} item(s) marked retry failed on an earlier attempt, "
+            f"which may have done part of the work: check before repeating "
+            f"any side effect.\n\n"
+            if retried
+            else ""
+        )
         batch_prompt = (
             f"[Batch: {len(events)} events from trigger '{trigger.name}']\n\n"
+            + retry_line
             + "\n\n".join(rendered_items)
             + "\n\n---\nProcess all items above."
         )
 
         all_attachments: List[Dict[str, str]] = []
-        for event in events:
+        for event in clean_events:
             event_atts = event.get("attachments")
             if event_atts:
                 all_attachments.extend(event_atts)
@@ -1252,7 +1482,7 @@ class TriggerManager:
             trigger_id=trigger.id,
             trigger_name=trigger.name,
             event_count=len(events),
-            events_summary=str(events[0])[:200],
+            events_summary=str(clean_events[0])[:200],
             action_type=action.type,
         )
 
@@ -1302,7 +1532,7 @@ class TriggerManager:
                 f"[TRIGGER] Batched action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
-            self._record_action_health(user_id, trigger.id, str(e))
+            self._record_action_health(user_id, trigger.id, str(e), park=events)
             self._publish_trigger_error(
                 trigger,
                 user_id,
@@ -1320,6 +1550,8 @@ class TriggerManager:
         agent: "NymeriaAgent | TurnExecutor",
         user_id: str,
         trigger: TriggerDefinition,
+        *,
+        retry: Optional[ParkedTriggerEvent] = None,
     ) -> None:
         """Send a prompt to the agent, streaming events live."""
         template = (
@@ -1328,6 +1560,9 @@ class TriggerManager:
             or "Trigger {trigger_name} fired."
         )
         prompt = _safe_format(template, template_vars)
+        note = _retry_note(retry)
+        if note:
+            prompt = f"{note}\n\n{prompt}"
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
         task_id = f"trigger-{trigger.id}"
 
@@ -1504,52 +1739,67 @@ class TriggerManager:
         partial: bool = False,
         fanout: bool = False,
     ) -> None:
-        """Publish task_completed and log to activity feed."""
-        from .activity_log import ActivityType, log_activity
-        from .event_bus import publish_autonomous_event
+        """Publish task_completed and log to activity feed.
 
-        task_id = f"trigger-{trigger.id}"
+        Never raises: it runs after the action has already succeeded, and a
+        raise would reach the fire's failure handling and park events that
+        were delivered (#265).
+        """
+        try:
+            from .activity_log import ActivityType, log_activity
+            from .event_bus import publish_autonomous_event
 
-        completed_data: dict[str, Any] = {
-            "content": response,
-            "trigger_id": trigger.id,
-            "trigger_name": trigger.name,
-        }
-        if partial:
-            completed_data["partial"] = True
-        if fanout:
-            # Mirror-task marker: the content was fanned in from another
-            # task's holder turn (stream_bridge fanout marker); consumers
-            # must not deliver it a second time.
-            completed_data["fanout"] = True
+            task_id = f"trigger-{trigger.id}"
 
-        publish_autonomous_event(
-            event_type="task_completed",
-            thread_id=thread_id,
-            user_id=user_id,
-            task_id=task_id,
-            data=completed_data,
-        )
-
-        activity_msg = f"{trigger.name}: processed {event_count} event(s)"
-        if partial:
-            activity_msg += " (partial — hit iteration limit)"
-
-        log_activity(
-            ActivityType.TRIGGER_COMPLETED,
-            activity_msg,
-            user_id=user_id,
-            thread_id=thread_id,
-            metadata={
+            completed_data: dict[str, Any] = {
+                "content": response,
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
-                "event_count": event_count,
-                "partial": partial,
-            },
-        )
+            }
+            if partial:
+                completed_data["partial"] = True
+            if fanout:
+                # Mirror-task marker: the content was fanned in from another
+                # task's holder turn (stream_bridge fanout marker); consumers
+                # must not deliver it a second time.
+                completed_data["fanout"] = True
+
+            publish_autonomous_event(
+                event_type="task_completed",
+                thread_id=thread_id,
+                user_id=user_id,
+                task_id=task_id,
+                data=completed_data,
+            )
+
+            activity_msg = f"{trigger.name}: processed {event_count} event(s)"
+            if partial:
+                activity_msg += " (partial — hit iteration limit)"
+
+            log_activity(
+                ActivityType.TRIGGER_COMPLETED,
+                activity_msg,
+                user_id=user_id,
+                thread_id=thread_id,
+                metadata={
+                    "trigger_id": trigger.id,
+                    "trigger_name": trigger.name,
+                    "event_count": event_count,
+                    "partial": partial,
+                },
+            )
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.warning(
+                "Failed to publish completion for trigger %s", trigger.id, exc_info=True
+            )
 
     def _record_action_health(
-        self, user_id: str, trigger_id: str, error: Optional[str]
+        self,
+        user_id: str,
+        trigger_id: str,
+        error: Optional[str],
+        *,
+        park: Optional[List[dict]] = None,
     ) -> None:
         """Feed ACTION outcomes into the shared trigger health fields.
 
@@ -1580,10 +1830,15 @@ class TriggerManager:
         when the save fails, so a failed write leaves via the except below
         with no alert sent and no pause claimed. Fault-isolated: health
         bookkeeping must never break a fire.
+
+        ``park``: the events of a failed fire, kept on the trigger in the
+        SAME write for the next poll to retry (#265).
         """
         try:
             verdict: Optional[str] = None
             count = 0
+            parked = 0
+            dropped = 0
             trigger_name = trigger_id
             thread_id = f"trigger-{trigger_id}"
             last_error = ""
@@ -1604,6 +1859,8 @@ class TriggerManager:
                     # that must not silently un-pause it.
                     trigger.action_failures = 0
                 else:
+                    if park:
+                        dropped = _park_events(trigger, park, error, now, attempted=True)
                     trigger.action_failures += 1
                     count = trigger.action_failures
                     verdict = self._action_failure_verdict(trigger, count)
@@ -1615,6 +1872,16 @@ class TriggerManager:
                 trigger_name = trigger.name
                 thread_id = trigger.thread_id or f"trigger-{trigger_id}"
                 last_error = trigger.last_error or ""
+                parked = len(trigger.failed_events)
+
+            if dropped:
+                logger.warning(
+                    "Trigger %s dropped its %d oldest failed event(s): more than "
+                    "%d were waiting for a retry",
+                    trigger_id,
+                    dropped,
+                    MAX_FAILED_EVENTS,
+                )
 
             # Alerts go out AFTER the store lock releases: the sender does
             # network and store work of its own (same discipline as
@@ -1634,6 +1901,7 @@ class TriggerManager:
                     last_error,
                     count,
                     paused=True,
+                    parked=parked,
                 )
             elif verdict == "alert":
                 self._send_action_policy_alert(
@@ -1646,8 +1914,74 @@ class TriggerManager:
                     paused=False,
                 )
         except Exception:
-            logger.warning(
-                "Failed to record action health for trigger %s",
+            if park:
+                # The fire's events were taken out of the store before it
+                # ran, so a write that did not land loses them (#265).
+                logger.error(
+                    "Failed to record action health for trigger %s; the %d "
+                    "event(s) of its failed fire could not be kept and are lost",
+                    trigger_id,
+                    len(park),
+                    exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "Failed to record action health for trigger %s",
+                    trigger_id,
+                    exc_info=True,
+                )
+
+    def discard_failed_events(
+        self, user_id: str, trigger_id: str
+    ) -> Optional[List[ParkedTriggerEvent]]:
+        """Drop a trigger's parked failed events (#265); returns what was
+        dropped (so the caller can say WHAT), or None when no such trigger
+        exists.
+
+        The escape hatch for a POISON event: one that fails every delivery
+        (an attachment the provider rejects, an oversized body) would
+        otherwise fail every retry, take its batch-mates down with it and
+        pause the trigger again after every resume. Explicit on purpose: an
+        automatic attempts cap cannot tell a poison event from an outage, and
+        dropping during an outage is the loss parking exists to end. Leaves
+        the pause and health alone (resume is the separate repair verb).
+        """
+        with self.atomic_update(user_id) as store:
+            trigger = store.get_trigger(trigger_id)
+            if trigger is None:
+                return None
+            discarded = list(trigger.failed_events)
+            trigger.failed_events = []
+        for parked in discarded:
+            logger.info(
+                "Trigger %s: discarded parked event (%d attempt(s)): %s",
+                trigger_id,
+                parked.attempts,
+                summarize_event(parked.event, 200),
+            )
+        return discarded
+
+    def _park_unattempted(self, user_id: str, trigger_id: str, events: List[dict]) -> None:
+        """Keep events the #264 pause stopped before they ran (#265). Never raises."""
+        try:
+            with self.atomic_update(user_id) as store:
+                trigger = next((t for t in store.triggers if t.id == trigger_id), None)
+                if trigger is None:
+                    logger.info(
+                        "Trigger %s no longer exists; dropping %d unattempted event(s)",
+                        trigger_id,
+                        len(events),
+                    )
+                    return
+                dropped = _park_events(trigger, events, None, utc_now(), attempted=False)
+            if dropped:
+                logger.warning(
+                    "Trigger %s dropped its %d oldest failed event(s)", trigger_id, dropped
+                )
+        except Exception:  # noqa: BLE001 - bookkeeping must never break a fire
+            logger.error(
+                "Failed to keep %d unattempted event(s) for trigger %s: they are lost",
+                len(events),
                 trigger_id,
                 exc_info=True,
             )
@@ -1697,6 +2031,7 @@ class TriggerManager:
         count: int,
         *,
         paused: bool,
+        parked: int = 0,
     ) -> None:
         """Owner alert for the #264 action-failure policy. Never raises."""
         try:
@@ -1709,8 +2044,17 @@ class TriggerManager:
                     f"({trigger_id}) was auto-paused after {count} "
                     f"consecutive failed actions, so it has stopped running "
                     f"and stopped consuming events. Last error: "
-                    f"{last_error}. Fix the cause, then resume it with "
-                    f"/triggers resume {trigger_id}."
+                    f"{last_error}."
+                    + (
+                        f" The {parked} event(s) its failed runs could not "
+                        f"deliver are kept and will be retried once it resumes. "
+                        f"If those events are themselves what fails, ask the "
+                        f"agent to discard them before resuming."
+                        if parked
+                        else ""
+                    )
+                    + f" Fix the cause, then resume it with /triggers resume "
+                    f"{trigger_id}."
                 )
             else:
                 settings = get_settings()
@@ -1884,6 +2228,11 @@ class TriggerManager:
             config={"configurable": {"user_id": user_id, "thread_id": thread_id}},
         )
         logger.info(f"[TRIGGER] Notify result: {result}")
+        if isinstance(result, str) and result.startswith("[Error]"):
+            # The tool reports a total delivery failure as a string, never a
+            # raise, so without this the fire read as a success: never
+            # counted by the #264 policy and never kept for a retry (#265).
+            raise RuntimeError(result)
 
     def _fire_create_todo(self, config: dict, template_vars: dict, user_id: str) -> None:
         """Create a TODO item (no LLM call)."""

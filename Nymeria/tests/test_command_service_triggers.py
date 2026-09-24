@@ -25,6 +25,7 @@ def _make_trigger(
     consecutive_errors: int = 0,
     action_failures: int = 0,
     auto_paused_at: Any = None,
+    failed_events: list[Any] | None = None,
 ) -> SimpleNamespace:
     # Health and #264 policy fields are part of every real TriggerDefinition,
     # so the fake carries them too: a double that omits them lets a listing
@@ -40,6 +41,7 @@ def _make_trigger(
         consecutive_errors=consecutive_errors,
         action_failures=action_failures,
         auto_paused_at=auto_paused_at,
+        failed_events=list(failed_events or []),
     )
 
 
@@ -210,6 +212,34 @@ def test_triggers_list_shows_auto_paused_apart_from_enabled(
     )
     assert "enabled" in healthy_row
     assert "paused" not in healthy_row
+
+
+def test_triggers_list_shows_failed_events_waiting_for_a_retry(
+    patched_manager,
+) -> None:
+    """#265: events whose action failed are kept for a retry; the owner's
+    listing says how many, on both a paused and a running trigger."""
+    patched_manager(_FakeTriggerManager(triggers=[
+        _make_trigger("fine1", name="Fine"),
+        _make_trigger("flaky1", name="Flaky", failed_events=["e1", "e2"]),
+        _make_trigger(
+            "stopped1",
+            name="Stopped",
+            action_failures=5,
+            auto_paused_at=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+            failed_events=["e1", "e2", "e3"],
+        ),
+    ]))
+
+    result = run(CommandService().execute(_ctx(), "/triggers list"))
+
+    rows = {
+        name: next(line for line in result.markdown.splitlines() if name in line)
+        for name in ("Fine", "Flaky", "Stopped")
+    }
+    assert "failed event" not in rows["Fine"]
+    assert "2 failed event(s) waiting" in rows["Flaky"]
+    assert "3 failed event(s) waiting" in rows["Stopped"]
 
 
 def test_triggers_resume_clears_the_pause(patched_manager) -> None:

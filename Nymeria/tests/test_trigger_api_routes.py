@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.trigger_manager import (
+    ParkedTriggerEvent,
     TriggerAction,
     TriggerDefinition,
     TriggerManager,
@@ -60,6 +61,7 @@ def _insert_trigger(
     action_failures: int = 0,
     health_status: Any = "healthy",
     consecutive_errors: int = 0,
+    failed_events: list[dict] | None = None,
 ) -> None:
     manager = TriggerManager(data_dir)
     trigger = TriggerDefinition(
@@ -77,6 +79,10 @@ def _insert_trigger(
         action_failures=action_failures,
         health_status=health_status,
         consecutive_errors=consecutive_errors,
+        failed_events=[
+            ParkedTriggerEvent(event=event, attempts=1)
+            for event in (failed_events or [])
+        ],
     )
     with manager.atomic_update(user_id) as store:
         store.triggers.append(trigger)
@@ -358,3 +364,63 @@ def test_trigger_listing_exposes_the_paused_state(
     assert row["enabled"] is True  # the policy never touched the toggle
     assert row["auto_paused_at"] is not None
     assert row["action_failures"] == 5
+
+
+# --- #265: failed events are kept; the discard route drops them ----------
+
+
+def test_discard_route_drops_parked_events_and_leaves_the_pause(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    client, token, _agent = _client(tmp_path, api_client_builder, monkeypatch)
+    _insert_trigger(
+        tmp_path,
+        auto_paused_at=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+        action_failures=5,
+        failed_events=[{"message": "a"}, {"message": "b"}],
+    )
+    listed = client.get("/triggers", headers=api_client_builder.auth(token))
+    assert listed.json()[0]["failed_events"] == 2
+
+    response = client.delete(
+        "/triggers/trig1/failed-events", headers=api_client_builder.auth(token)
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["failed_events"] == 0
+    assert body["auto_paused_at"] is not None  # discard is not resume
+    assert body["action_failures"] == 5
+    stored = TriggerManager(tmp_path).get_trigger("owner", "trig1")
+    assert stored is not None and stored.failed_events == []
+
+
+def test_discard_route_answers_404_for_an_unknown_trigger(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    client, token, _agent = _client(tmp_path, api_client_builder, monkeypatch)
+
+    response = client.delete(
+        "/triggers/nope/failed-events", headers=api_client_builder.auth(token)
+    )
+
+    assert response.status_code == 404, response.text
+
+
+def test_resume_route_keeps_parked_events_for_the_next_poll(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    client, token, _agent = _client(tmp_path, api_client_builder, monkeypatch)
+    _insert_trigger(
+        tmp_path,
+        auto_paused_at=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+        action_failures=5,
+        failed_events=[{"message": "a"}],
+    )
+
+    response = client.post(
+        "/triggers/trig1/resume", headers=api_client_builder.auth(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["failed_events"] == 1

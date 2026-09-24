@@ -18,7 +18,9 @@ Event-driven automations that react to external events  -  webhooks, emails, RSS
 
 **Health**  -  automatic tracking of source AND action errors (one shared counter). 2 consecutive failures → `degraded`, 5 → `failing` with exponential backoff (only retries every 10th cycle). Resets to `healthy` on success. Repeated ACTION failures additionally alert the owner and then AUTO-PAUSE the trigger, which stops it polling and firing while leaving `enabled` alone; `/triggers resume <id>` clears it.
 
-**Busy-thread deferral**  -  for `agent_prompt` actions, poll-sourced triggers check if the target thread is busy (non-blocking lock check). If busy, events are stored in `pending_events` and retried next cycle. No thread-pool slots are blocked. Webhook triggers bypass this  -  they POST to `/chat` which queues on the lock naturally.
+**Failed events are kept**: every poll source consumes an event before its action runs, so an event whose action FAILS is parked on the trigger (`failed_events`) and fired again on a later poll, ahead of new events, instead of being lost. See "Failed events: kept and retried" under Health Monitoring.
+
+**Busy-thread deferral**: for `agent_prompt` actions, poll-sourced triggers check if the target thread is busy (non-blocking lock check; slim only, since the Docker worker passes no agent and the API's own queue handles contention). If busy, new events go into the thread's pending-prompt queue, so the running turn absorbs them at its next sub-turn boundary; only when that queue is unavailable are they stored in `pending_events` for the next cycle. Retried failed events never take either route: they wait on the trigger for an idle thread. No thread-pool slots are blocked. Webhook `agent_prompt` triggers bypass this: they POST to `/chat`, which queues on the lock naturally.
 
 ## Available Sources
 
@@ -84,6 +86,8 @@ was given against stored secrets.
 Template variables: `{subject}`, `{from_address}`, `{from_name}`, `{preview}`, `{received_at}`, `{importance}`, `{has_attachments}`.
 
 Requires Microsoft OAuth (shares Microsoft Graph infrastructure).
+
+Each check tags the mail it returns `Nymeria-Read` on the mailbox, before the action runs, so the same message is never detected twice. That tag is permanent from Nymeria's side, which is why a failed action keeps its events on the trigger for a retry rather than relying on the mailbox (see "Failed events: kept and retried").
 
 ### RSS/Atom Feed
 
@@ -443,12 +447,86 @@ A trigger whose source type is not registered at all (its plugin removed from
 the build) is treated as a failing source rather than skipped, so it reports
 `failing` and alerts instead of sitting `healthy` and silent.
 
+### Failed events: kept and retried
+
+Every poll source consumes an event BEFORE its action runs: Outlook tags the
+mail `Nymeria-Read` on the mailbox, RSS, Slack and Teams advance their
+cursor, and HTTP poll records the content it saw (in its `change` mode; its
+level-triggered modes fire again anyway while the condition holds), all
+persisted by the poll that returned the event. So if the action then failed
+(a turn error, a relay 5xx, a workflow error, a notify that reached no
+destination), nothing would ever detect that event again. Before backlog
+#265 it was simply lost, and the action-failure policy above only bounded
+the loss: a FLAPPING action (a success every few fires resets the streak)
+never paused and kept dropping events indefinitely.
+
+Now a failed fire parks its events on the trigger, `failed_events`, in the
+same store write that records the failure:
+
+- A later poll takes them back out and fires them again, oldest first, up to
+  10 per poll, ahead of that poll's new events. For `agent_prompt` they ride
+  the same one batched turn. A retry that fails again goes back to the front
+  of the list with `attempts` counted up and the newest error; one that
+  succeeds is done.
+- A retried `agent_prompt` item is marked as a retry (`--- Item N (retry: an
+  earlier attempt failed) ---` in a batch, a `[Retry: ...]` line before a
+  single prompt). The failed attempt may have done part of the work, so the
+  agent is told to check before repeating a side effect. The earlier error
+  text is never put in the prompt: it can quote external content. Other
+  action types retry as-is, so a `run_workflow` action should be safe to run
+  twice on one event.
+- Attachments are not kept while an event waits (an Outlook event carries
+  each one inline, up to 10 MB, and the trigger store is rewritten on every
+  poll). Their file names are, and the retry tells the agent to fetch them
+  from the source if it needs them.
+- When the auto-pause lands part-way through a per-event batch, the events
+  that had not run yet are kept too (with zero attempts, so they are later
+  delivered as a first try, not labelled a retry).
+- A trigger that does not poll does not retry: paused, disabled, cooling
+  down, backed off, or its source check failing. Its parked events wait;
+  after `/triggers resume` they fire on the next poll. The pause alert and
+  the resume reply both give the count.
+- On a busy thread (slim) a retry waits for the thread to go idle rather
+  than joining the pending-prompt queue, whose turn could fail after the
+  trigger had already let go of it.
+- Webhook triggers with a non-agent action park too: the fire route runs
+  them through the same code, and the parked event is retried on the
+  trigger's next poll cycle.
+- The list is capped at 200, dropping the oldest with a WARNING. The pause
+  normally stops a failing trigger long before that.
+
+`trigger_info` list and `/triggers list` show how many are waiting, the
+detail view lists the first few (attempts plus a subject or sender line),
+and every REST trigger response carries a `failed_events` count.
+
+**A poison event** (one that fails every delivery, such as a body the
+provider rejects) would fail every retry and take the rest of its batch with
+it, so the trigger pauses again after every resume. Discard the parked
+events: `trigger_config(action="discard_failed")` for the agent, `DELETE
+/triggers/{id}/failed-events` over REST. It drops all of that trigger's
+parked events, names them in its reply, and leaves the pause and health
+alone (resume separately). The pause alert mentions it. It is deliberately
+explicit: an automatic attempts cap cannot tell a poison event from an
+outage, and dropping events during an outage is the loss parking exists to
+end. Backlog #404 holds the smarter options.
+
+What this does NOT cover: events are taken out of the store when a poll
+hands them to a fire, so a process that dies before that fire finishes, or a
+store write that fails while recording its failure (logged as an ERROR
+naming the count), loses them, whether they were new or already parked. The
+webhook `agent_prompt` path (the coverage gap above) never parks anything
+(#405). And in the Docker shape an API-side write to the store (a webhook
+fire's park, a discard, a resume) can be overwritten by a worker poll that
+was mid-flight, the hazard described under Resuming.
+
 ### Resuming
 
 `POST /triggers/{id}/resume` (agent: `trigger_config(action="resume")`; CLI
 and chat: `/triggers resume <id>`) clears the pause marker, the action
 streak, the health counters and the last error in one act. Use it after
 fixing whatever the trigger was failing on, or it will simply pause again.
+Events its failed runs parked are kept across the resume and fire on the
+next poll.
 
 It is also the repair for a trigger that is merely `failing` rather than
 paused: before it existed, a trigger whose cause you had already fixed kept
@@ -616,7 +694,7 @@ For the webhook path, these flow through two optional fields on `ChatRequest` (`
 
 ### Pending events cap
 
-Poll-sourced triggers that fire into a busy thread store events in `pending_events` for the next poll cycle. The list is capped at 50; when exceeded, the **newest** 50 are kept (stale alerts are less useful than fresh ones).
+Poll-sourced triggers that fire into a busy thread store events in `pending_events` for the next poll cycle. The list is capped at 50; when exceeded, the **newest** 50 are kept (stale alerts are less useful than fresh ones). Retried events (from `failed_events`) never go into this list, so its cap cannot drop them: when a retry meets a busy thread whose pending-prompt queue is unavailable, it goes back to `failed_events` unchanged.
 
 ## Architecture
 

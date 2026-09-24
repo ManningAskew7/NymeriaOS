@@ -117,6 +117,8 @@ class TriggerResponse(BaseModel):
     # nothing, so a UI that renders only the toggle would misreport it.
     action_failures: int = 0
     auto_paused_at: Optional[str] = None
+    # Events whose action failed, kept for the next poll (#265).
+    failed_events: int = 0
 
     @classmethod
     def from_definition(cls, t: TriggerDefinition) -> "TriggerResponse":
@@ -145,6 +147,7 @@ class TriggerResponse(BaseModel):
             last_error=t.last_error,
             health_status=t.health_status,
             action_failures=t.action_failures,
+            failed_events=len(t.failed_events),
             auto_paused_at=(
                 t.auto_paused_at.isoformat() if t.auto_paused_at else None
             ),
@@ -638,6 +641,29 @@ def create_trigger_router(
             raise HTTPException(
                 status_code=404, detail="Trigger not found after resume"
             )
+        return TriggerResponse.from_definition(trigger)
+
+    @router.delete("/{trigger_id}/failed-events", response_model=TriggerResponse)
+    async def discard_failed_events(
+        trigger_id: str,
+        user_id: str = Query(default="default"),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """Drop a trigger's parked failed events (#265).
+
+        Events whose action failed are kept on the trigger and retried on
+        its next poll. This is the escape hatch for an event that is itself
+        what fails (it would otherwise fail every retry and pause the
+        trigger again after every resume). Leaves the pause and health
+        alone: resume is the separate repair verb.
+        """
+        user_id = user.id  # Override any client-claimed ?user_id=
+        manager = _get_manager()
+        if manager.discard_failed_events(user_id, trigger_id) is None:
+            raise HTTPException(status_code=404, detail="Trigger not found")
+        trigger = manager.get_trigger(user_id, trigger_id)
+        if trigger is None:
+            raise HTTPException(status_code=404, detail="Trigger not found")
         return TriggerResponse.from_definition(trigger)
 
     @router.delete("/{trigger_id}", status_code=204)
