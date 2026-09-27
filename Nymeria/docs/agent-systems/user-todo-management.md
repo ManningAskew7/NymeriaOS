@@ -171,18 +171,37 @@ The ticker rebuilds `todo_schedule.db` from TODO JSON files before its poll
 thread starts. This makes scheduled TODO recovery independent of whether the
 SQLite schedule index was current at shutdown.
 
-By default, missed scheduled TODOs run automatically on startup. Local
-desktop-managed slim launches can set `--missed-work-policy ask` so TODOs
-that were already overdue at startup are held in `data/scheduler_state.json`
-until an admin calls `POST /scheduler/missed-work/run`. While ask-mode missed
-work is pending, the first poll-based trigger catch-up pass is also paused.
-Future TODOs that become due after startup continue to run normally.
+By default, missed scheduled TODOs run automatically on startup. With
+`SCHEDULER_MISSED_WORK_POLICY=ask` (slim flag `--missed-work-policy ask`),
+TODOs that were already overdue at startup are held in
+`data/scheduler_state.json` until an admin releases them with
+`/scheduler release` (or `POST /scheduler/missed-work/run`). While ask-mode
+missed work is pending, the first poll-based trigger catch-up pass is also
+paused. Future TODOs that become due after startup continue to run normally.
 
-`GET /scheduler/status` reports the missed-work policy, pending missed TODOs,
-trigger catch-up pause, last startup and clean-shutdown timestamps, active
-scheduled-TODO execution marker count, and whether this process runs the
-schedule (`owns_schedule`; `schedule_held_by` names the owner while it stands
-by).
+The release works from any process on the data directory (#398). The process
+that runs the scheduler releases at once; any other (the Docker API, whose
+worker holds the work) records the request in
+`data/scheduler_release_request.json`, which the owner honors on its next
+poll, and waits a few seconds to report the outcome: `released` (with the
+TODO ids), `nothing_held`, or `requested` (HTTP 202: the owner has not picked
+it up yet). A request counts only against a hold detected BEFORE it, and a
+request dated in the future (beyond a minute of clock slack) is ignored, so a
+request left on disk never releases the hold a later restart takes. The same
+rule means a `requested` release is lost if the scheduler restarts before its
+next poll: its new hold needs a new release. With no scheduler running at
+all, the release answers 409; if the request cannot be written, 503. Writing
+the request file with the file tools is admin-only, like the route
+(`resource-filesystem.md`).
+
+`/scheduler` (admin; also `GET /scheduler/status`) reports which process runs
+the schedule from ANY process (#410: `schedule_owner` is `this_process`,
+`another_process`, `none` or `unknown`, `schedule_runner` names it), the
+missed-work policy, pending missed TODOs and a pending release request, the
+trigger catch-up pause, last startup and clean-shutdown timestamps, and the
+active scheduled-TODO execution marker count. A process that does not run the
+schedule answers by probing the scheduler lock (below), never from the
+lock file's note alone: the note outlives its writer.
 
 **One scheduler per data directory** (#397). Each shape runs one ticker by
 construction (slim: the API-agent; Docker: the worker, with the API-agent's
@@ -207,8 +226,8 @@ never takes over: a service restart leaves a gap its 5 s poll would win,
 stranding the service's schedule in a terminal, so it stays on standby for
 the session (restart it after the service stops to run the schedule
 there). `GET /scheduler/status` on a standby reads the hold from
-`scheduler_state.json`, and its `POST /scheduler/missed-work/run` answers
-409 naming the holder (the hold lives in the owner's process).
+`scheduler_state.json`, and its release is relayed to the owner like any
+other non-owner's (the hold lives in the owner's process).
 A filesystem that cannot lock at all fails OPEN with a WARNING: the ticker
 runs unguarded, as before, rather than leave the service with no scheduler,
 and retries the lock every poll (an ERROR says so if another process has
@@ -412,8 +431,9 @@ leave a scheduled occurrence unrun:
   fires and watchdog nudges, so long runs slow those too. A reported run
   that ends logs how long it took, and the next long run of the same TODO
   is reported again. Nothing aborts a run automatically yet (backlog #407).
-  In the Docker shape the worker does not yet receive any `SCHEDULER_*`
-  setting from compose (backlog #408), so it runs on the defaults.
+  In the Docker shape the worker reads it (like every `SCHEDULER_*`
+  setting) from `.env.docker`, which compose loads whole into the api and
+  worker since #408.
 
 Activity rows expire with `ACTIVITY_RETENTION_HOURS` (default 12); the
 alert is the durable signal.

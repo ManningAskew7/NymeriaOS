@@ -218,6 +218,15 @@ Unmasked environment reads are not offered here: there is no `/env_get`
 handler, because an unmasked secret typed back into a chat persists in
 platform history.
 
+### Scheduler
+
+Served by the passthrough (no native handler), admin-only.
+
+| Command | Description |
+|---------|-------------|
+| `/scheduler_status` | Which process runs the scheduler (the Docker worker, the slim service, or a fat CLI), the missed-work policy, and any missed work it is holding |
+| `/scheduler_release` | Run the missed work the `ask` policy is holding. The process that runs the scheduler releases at once, or picks the request up on its next poll when another process (the Docker API) took it |
+
 ### Claude Code (break-glass)
 
 Served by the passthrough (no native handler), admin-only.

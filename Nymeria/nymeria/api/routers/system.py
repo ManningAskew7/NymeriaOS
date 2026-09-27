@@ -15,6 +15,8 @@ from html import escape as html_escape
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from ...core.accounts import AuthenticatedUser
 from ...core.interactive_admission import get_interactive_turn_gate
@@ -462,58 +464,6 @@ def create_system_router(
             response.status_code = 503
         return readiness
 
-    def _scheduler_status_without_ticker(settings: Any) -> dict[str, Any]:
-        from ...core.scheduler_state import SchedulerStateManager
-        from ...core.todo_schedule_db import TodoScheduleDB
-
-        schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
-        state = SchedulerStateManager(settings.data_dir).load()
-        pending_ids = [
-            str(todo_id)
-            for todo_id in state.get("pending_missed_todo_ids") or []
-            if todo_id
-        ]
-        pending_entries = []
-        for todo_id in pending_ids:
-            entry = schedule_db.get_entry(todo_id)
-            if entry is None:
-                continue
-            pending_entries.append(
-                {
-                    "todo_id": entry.todo_id,
-                    "user_id": entry.user_id,
-                    "thread_id": entry.thread_id,
-                    "scheduled_for": datetime.fromtimestamp(
-                        entry.scheduled_for,
-                        timezone.utc,
-                    ).isoformat(),
-                    "task_preview": entry.task_preview,
-                }
-            )
-
-        return {
-            "status": "ok",
-            "ticker_running": False,
-            "owns_schedule": False,
-            "schedule_held_by": None,
-            "missed_work_policy": getattr(
-                settings,
-                "scheduler_missed_work_policy",
-                "run",
-            ),
-            "pending_missed_todo_count": len(pending_ids),
-            "pending_missed_todo_ids": pending_ids,
-            "pending_missed_todos": pending_entries,
-            "trigger_catchup_paused": bool(state.get("trigger_catchup_paused")),
-            "last_started_at": state.get("last_started_at"),
-            "last_clean_shutdown_at": state.get("last_clean_shutdown_at"),
-            "last_missed_detection_at": state.get("last_missed_detection_at"),
-            "active_execution_count": schedule_db.count_active_executions(),
-            "active_execution_stale_minutes": int(
-                getattr(settings, "scheduler_active_execution_stale_minutes", 1440)
-            ),
-        }
-
     @router.get("/status/turns", response_model=TurnActivityResponse)
     async def status_turns(
         user: AuthenticatedUser = Depends(verify_api_key),
@@ -570,41 +520,50 @@ def create_system_router(
         _user: AuthenticatedUser = Depends(require_admin_user),
         settings: Any = Depends(get_settings_fn),
     ):
-        """Return scheduler lifecycle state for local/on-off runtimes."""
-        ticker = getattr(get_agent_fn(), "_ticker", None)
-        if ticker is not None and hasattr(ticker, "get_scheduler_status"):
-            return ticker.get_scheduler_status()
-        return _scheduler_status_without_ticker(settings)
+        """Scheduler lifecycle state, and which process runs the schedule.
+
+        Answered in any process on the data dir (#410): the Docker API has no
+        ticker (the worker runs the schedule), so it probes the scheduler
+        lock rather than claiming nobody runs it. Sync on purpose: the probe
+        and the state reads are file I/O.
+        """
+        from ...core.scheduler_control import scheduler_status as read_status
+
+        return read_status(getattr(get_agent_fn(), "_ticker", None), settings)
 
     @router.post("/scheduler/missed-work/run")
     def run_scheduler_missed_work(
-        _user: AuthenticatedUser = Depends(require_admin_user),
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Any = Depends(get_settings_fn),
     ):
-        """Release startup-missed work that was held by ask-mode recovery.
+        """Release startup-missed work held by ask-mode recovery.
 
-        Sync on purpose (runs in the threadpool): the release waits on the
-        ticker's recovery lock, which a scheduler takeover holds mid-serve
-        while it rebuilds the schedule index (#397).
+        Works from any process (#398): the process that runs the scheduler
+        releases at once; any other records a request that the owner honors
+        on its next poll, and this waits briefly for it. 200 with
+        ``release`` = ``released`` or ``nothing_held``; 202 with
+        ``requested`` when the owner has not picked it up yet; 409 when no
+        process runs the scheduler; 503 when the request cannot be written to
+        the data dir. Sync on purpose (threadpool): the owner's
+        release waits on the ticker's recovery lock, and a relayed one waits
+        on the owner.
         """
-        ticker = getattr(get_agent_fn(), "_ticker", None)
-        if ticker is None or not hasattr(ticker, "release_missed_work"):
-            raise HTTPException(
-                status_code=409,
-                detail="Scheduler ticker is not available in this API process.",
+        from ...core.scheduler_control import (
+            SchedulerControlError,
+            release_missed_work,
+        )
+
+        try:
+            result = release_missed_work(
+                getattr(get_agent_fn(), "_ticker", None),
+                settings,
+                requested_by=user.id,
             )
-        if not getattr(ticker, "owns_schedule", True):
-            # On standby (#397): the hold lives in the process that runs the
-            # scheduler, so only that process can release it.
-            holder = ticker.get_scheduler_status().get("schedule_held_by")
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "This process does not run the scheduler"
-                    + (f" ({holder} does)" if holder else "")
-                    + "; release missed work in the process that does."
-                ),
-            )
-        return ticker.release_missed_work()
+        except SchedulerControlError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        if result.get("release") == "requested":
+            return JSONResponse(status_code=202, content=jsonable_encoder(result))
+        return result
 
     @router.post("/restart")
     async def restart_server(

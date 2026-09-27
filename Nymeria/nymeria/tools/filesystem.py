@@ -7,7 +7,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import Annotated, Optional
+from typing import Annotated, NamedTuple, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -211,7 +211,8 @@ def secrets_path_error(path: Path) -> Optional[str]:
 
 
 # Data-dir files whose WRITE is an admin-only action, mirroring the admin gate
-# their settings routes already carry (P4-02). Nothing here is secret, so unlike
+# their settings routes already carry (P4-02: the global prompt overrides; #398:
+# the scheduler release request). Nothing here is secret, so unlike
 # the credential stores above these stay READABLE by anyone: the agent
 # inspecting the prompt that governs it is useful and harmless.
 #
@@ -228,10 +229,42 @@ def secrets_path_error(path: Path) -> Optional[str]:
 # it. Renaming one there produces an unclassified data-dir child, the AST
 # discovery gate in `tests/test_resource_layout.py` fails, the register needs a
 # row, and the reconcile test then fails until this table matches it.
+class _AdminOnlyFile(NamedTuple):
+    route: str  # the sanctioned, admin-gated surface for the same change
+    effect: str  # what a write does, for the refusal
+    alternative: str  # what a non-admin can do instead
+
+
+_PROMPT_EFFECT = "it replaces a GLOBAL prompt for every user of this deployment"
+_PROMPT_ALTERNATIVE = (
+    "To steer one thread instead, use its per-thread instructions or dreaming "
+    "config, which need no admin."
+)
+
 _ADMIN_ONLY_WRITE_FILES = {
-    "system_prompt.md": "PUT /settings/system-prompt (Settings > System Prompt)",
-    "dream_prompt.md": "PUT /settings/dream-prompts (Settings > Dreaming)",
-    "dream_kickoff.md": "PUT /settings/dream-prompts (Settings > Dreaming)",
+    "system_prompt.md": _AdminOnlyFile(
+        "PUT /settings/system-prompt (Settings > System Prompt)",
+        _PROMPT_EFFECT,
+        _PROMPT_ALTERNATIVE,
+    ),
+    "dream_prompt.md": _AdminOnlyFile(
+        "PUT /settings/dream-prompts (Settings > Dreaming)",
+        _PROMPT_EFFECT,
+        _PROMPT_ALTERNATIVE,
+    ),
+    "dream_kickoff.md": _AdminOnlyFile(
+        "PUT /settings/dream-prompts (Settings > Dreaming)",
+        _PROMPT_EFFECT,
+        _PROMPT_ALTERNATIVE,
+    ),
+    # #398: the scheduler honors this record from another process and runs
+    # the missed work it held, which is an admin's release to make.
+    "scheduler_release_request.json": _AdminOnlyFile(
+        "/scheduler release (POST /scheduler/missed-work/run)",
+        "the scheduler reads it as an admin's order to release the missed "
+        "work it holds for every user",
+        "Ask an admin to run /scheduler release.",
+    ),
 }
 
 
@@ -255,7 +288,7 @@ def config_principal(config: Optional[RunnableConfig]) -> Optional[str]:
 
 
 def admin_only_write_error(path: Path, user_id: Optional[str]) -> Optional[str]:
-    """Error message if ``user_id`` may not write this global prompt override.
+    """Error message if ``user_id`` may not write this admin-only data-dir file.
 
     Write-side only: ``file_read`` is deliberately not a caller. Fails closed
     through ``is_admin``, so an unresolvable principal (no agent, or a caller
@@ -268,8 +301,8 @@ def admin_only_write_error(path: Path, user_id: Optional[str]) -> Optional[str]:
     rel = _data_dir_relative(path)
     if rel is None or not rel.parts:
         return None
-    route = _ADMIN_ONLY_WRITE_FILES.get(_store_key(rel.parts[0]))
-    if route is None:
+    guarded = _ADMIN_ONLY_WRITE_FILES.get(_store_key(rel.parts[0]))
+    if guarded is None:
         return None
 
     if len(rel.parts) > 1:
@@ -280,24 +313,21 @@ def admin_only_write_error(path: Path, user_id: Optional[str]) -> Optional[str]:
         # for EVERYONE, outside the role branch, because that is an
         # availability foot-gun rather than a role question and no caller of
         # any role has a use for the path.
-        logger.warning("Blocked file-tool write through a prompt-override name: %s", rel)
+        logger.warning("Blocked file-tool write through an admin-only file name: %s", rel)
         return (
-            f"Cannot write {rel}: {rel.parts[0]} is a global prompt override, "
-            "a FILE, and writing through it would replace it with a directory "
-            "that no longer loads. Pick another path."
+            f"Cannot write {rel}: {rel.parts[0]} is a FILE the platform reads, "
+            "and writing through it would replace it with a directory that no "
+            "longer loads. Pick another path."
         )
 
     if is_admin(user_id):
         return None
-    logger.warning(
-        "Blocked non-admin file-tool write to a global prompt override: %s", rel
-    )
+    logger.warning("Blocked non-admin file-tool write to an admin-only file: %s", rel)
     return (
-        f"Cannot write {rel}: it replaces a GLOBAL prompt for every user of "
-        "this deployment, so changing it is an admin-only action (the "
-        f"sanctioned surface, {route}, is admin-gated for the same reason). "
-        "Reading it is still allowed. To steer one thread instead, use its "
-        "per-thread instructions or dreaming config, which need no admin."
+        f"Cannot write {rel}: {guarded.effect}, so changing it is an "
+        f"admin-only action (the sanctioned surface, {guarded.route}, is "
+        "admin-gated for the same reason). Reading it is still allowed. "
+        f"{guarded.alternative}"
     )
 
 

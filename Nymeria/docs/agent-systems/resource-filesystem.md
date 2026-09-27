@@ -208,7 +208,10 @@ this revisited.
   so a same-named file in a skill folder or a workspace is untouched. To steer
   one thread rather than the deployment, use its per-thread instructions or
   dreaming config, neither of which needs an admin. Same tool-layer caveat as
-  the secrets denylist. `self_modify_rollback` does not share these policies but
+  the secrets denylist. The same admin-only write covers
+  `scheduler_release_request.json` (#398): the scheduler reads it as an
+  admin's release of held missed work, so the file route follows
+  `/scheduler release`. `self_modify_rollback` does not share these policies but
   cannot reach around them either: it restores only into the self-modification
   writable allowlist (`nymeria/tools/`, `nymeria/agents/`,
   `nymeria/triggers/sources/`), which is disjoint from the data dir.

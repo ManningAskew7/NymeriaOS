@@ -61,6 +61,25 @@ def _get_schedule_db():
     return getattr(agent, '_schedule_db', None)
 
 
+def _on_schedule(schedule_db, item) -> bool:
+    """Whether ``item`` is armed to fire, for a reply's "(scheduled)" note.
+
+    The schedule index is the truth (a done or fired one-shot keeps its
+    ``scheduled_for`` after its row is gone, #409); without an index (no
+    agent in this process) the item's own fields stand in.
+    """
+    if schedule_db is not None:
+        try:
+            return schedule_db.get_entry(item.id) is not None
+        except Exception:
+            logger.debug("Schedule lookup failed for TODO %s", item.id, exc_info=True)
+    return bool(
+        item.scheduled_for
+        and item.status != TodoStatus.DONE
+        and not getattr(item, "schedule_paused_at", None)
+    )
+
+
 def _format_todo_item(item, show_notes: bool = False) -> str:
     """Format a single TODO item for display."""
     icon = STATUS_ICONS.get(item.status, "[ ]")
@@ -221,9 +240,11 @@ def nym_todo(
 
     Returns:
         Create: "[Added]: TODO <id>: <task> (scheduled for <time>)".
-        Update: "[Updated]: TODO <id> - <task> (status: <status>)".
-        Done status: "[Completed]: <task>" (with auto-reschedule note
-        if recurring). Errors: "[Error]: <reason>".
+        Update: "[Updated]: TODO <id> - <task> (status: <status>)", with
+        "(scheduled)" only while the TODO is armed to fire again.
+        Done status: "[Completed]: TODO <id> - <task>", plus
+        "(auto-rescheduled: recurring <interval>)" when a recurring TODO
+        re-arms. Errors: "[Error]: <reason>".
     """
     user_id = get_user_id(config)
     thread_id = get_effective_thread_id(config)
@@ -419,10 +440,19 @@ def nym_todo(
                 metadata=metadata,
             )
 
-            result = f"[Updated]: TODO {todo_id} - {item.task[:50]} (status: {item.status.value})"
+            # A done transition says so (#409): "[Updated] ... (status: done)
+            # (scheduled)" read as a TODO that would run again, so an agent
+            # closing its own one-shot re-listed its TODOs to check.
+            if todo_status == TodoStatus.DONE:
+                result = f"[Completed]: TODO {todo_id} - {item.task[:100]}"
+            else:
+                result = (
+                    f"[Updated]: TODO {todo_id} - {item.task[:100]} "
+                    f"(status: {item.status.value})"
+                )
             if rescheduled_time:
                 result += f" (auto-rescheduled: recurring {item.recurrence})"
-            elif item.scheduled_for:
+            elif _on_schedule(schedule_db, item):
                 result += " (scheduled)"
             elif clear_schedule:
                 result += " (schedule cleared)"

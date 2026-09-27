@@ -5,6 +5,19 @@ every boot, which used to replace a corrupt file (and the pending missed-TODO
 ids and catch-up pause it held) with defaults. Its bytes now go to
 ``quarantine/`` in the data dir first; a file that cannot be read or
 preserved is left alone and the stamps are skipped.
+
+Beside it lives the one record ANOTHER process writes: the missed-work
+release request (#398). Under ``ask`` the hold lives in the process that runs
+the scheduler (the Docker worker), while the admin asks the API. The API
+writes ``scheduler_release_request.json``; the owner's poll honors a request
+newer than the hold it has and releases. The request is never deleted: it is
+"the last release request", and a hold detected after it (every restart
+detects afresh) is never released by it, so a leftover file is inert and no
+process ever read-modify-writes another's state file. That rule holds only
+because a request dated in the FUTURE is no request (``read_release_request``
+drops one beyond ``RELEASE_REQUEST_MAX_SKEW``): a far-future stamp would
+otherwise be "newer" than every hold, and one planted write would release
+the hold at every boot, forever.
 """
 
 from __future__ import annotations
@@ -12,9 +25,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .storage_paths import write_text_atomic
 from .store_repair import UnavailableEpisodes, read_json, record_store_repair, repair_file
@@ -206,3 +220,90 @@ class SchedulerStateManager:
             if writable:
                 self._save_unlocked(state)
             return state
+
+
+# --- the missed-work release request (#398) -------------------------------
+
+RELEASE_REQUEST_FILENAME = "scheduler_release_request.json"
+
+# Clock slack for a request stamped by another process on the same host (the
+# Docker containers share the kernel clock; the lock module already scopes
+# out cross-host data dirs). A request dated later than now plus this is
+# ignored: see the module notes.
+RELEASE_REQUEST_MAX_SKEW = timedelta(seconds=60)
+
+
+@dataclass(frozen=True)
+class ReleaseRequest:
+    requested_at: datetime
+    requested_by: str
+
+
+def parse_state_time(value: Any) -> Optional[datetime]:
+    """A stored ISO timestamp as an aware datetime, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def release_request_path(data_dir: Path) -> Path:
+    return Path(data_dir) / RELEASE_REQUEST_FILENAME
+
+
+def write_release_request(data_dir: Path, requested_by: str) -> ReleaseRequest:
+    """Record an admin's request to release held missed work. Raises OSError
+    when the data dir cannot be written (the caller reports it)."""
+    request = ReleaseRequest(
+        requested_at=datetime.now(timezone.utc),
+        requested_by=_printable(requested_by) or "unknown",
+    )
+    write_text_atomic(
+        release_request_path(data_dir),
+        json.dumps(
+            {
+                "requested_at": request.requested_at.isoformat(),
+                "requested_by": request.requested_by,
+            }
+        )
+        + "\n",
+    )
+    return request
+
+
+def read_release_request(data_dir: Path) -> Optional[ReleaseRequest]:
+    """The last release request, or None (absent, unreadable, malformed, or
+    dated in the future: a request that does not parse is no request, and
+    nothing saves over it but the next request)."""
+    path = release_request_path(data_dir)
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        logger.debug("Unreadable scheduler release request %s", path, exc_info=True)
+        return None
+    if not isinstance(data, dict):
+        return None
+    requested_at = parse_state_time(data.get("requested_at"))
+    if requested_at is None:
+        return None
+    if requested_at > datetime.now(timezone.utc) + RELEASE_REQUEST_MAX_SKEW:
+        logger.warning(
+            "Ignoring scheduler release request %s: it is dated in the future (%s)",
+            path,
+            requested_at.isoformat(timespec="seconds"),
+        )
+        return None
+    return ReleaseRequest(requested_at, _printable(data.get("requested_by")) or "unknown")
+
+
+def _printable(value: Any) -> str:
+    # Written by whoever can reach the data dir, read into logs and replies.
+    if not isinstance(value, str):
+        return ""
+    return "".join(ch for ch in value if ch.isprintable())[:200]

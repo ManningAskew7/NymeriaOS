@@ -100,6 +100,11 @@ class GeneratedCommandsCog(commands.Cog):
         description="Show the active LLM provider, or browse one provider's actions",
     )
 
+    scheduler_group = app_commands.Group(
+        name="scheduler",
+        description="Show which process runs the scheduler, and any held missed work",
+    )
+
     settings_group = app_commands.Group(
         name="settings",
         description="Show server settings",
@@ -1168,6 +1173,30 @@ class GeneratedCommandsCog(commands.Cog):
             require_admin=False,
         )
 
+    @scheduler_group.command(
+        name="release",
+        description="Run the missed work the ask policy is holding (admin-only)",
+    )
+    async def cmd_scheduler_release(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self.bot._send_backend_command(
+            interaction,
+            "scheduler release",
+            require_admin=True,
+        )
+
+    @scheduler_group.command(
+        name="status",
+        description="Show which process runs the scheduler, and any held missed work",
+    )
+    async def cmd_scheduler_status(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self.bot._send_backend_command(
+            interaction,
+            "scheduler status",
+            require_admin=True,
+        )
+
     @app_commands.command(
         name="sequential-tools",
         description="Show or set sequential (ordered, one-at-a-time) tool execution",
@@ -2110,6 +2139,8 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "provider switch",
     "provider test",
     "prune",
+    "scheduler release",
+    "scheduler status",
     "sequential-tools",
     "settings get",
     "settings reload",
@@ -2189,6 +2220,8 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "provider switch": "LLM",
     "provider test": "LLM",
     "prune": "Thread",
+    "scheduler release": "System",
+    "scheduler status": "System",
     "sequential-tools": "Tools",
     "settings get": "Settings",
     "settings reload": "Settings",

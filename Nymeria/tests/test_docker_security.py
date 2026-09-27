@@ -534,3 +534,125 @@ def test_twitch_chatter_service_is_a_pinned_silent_viewer_on_its_own_env_file() 
     assert original["TWITCH_BOT_ROLE"] == "${TWITCH_BOT_ROLE:-moderator}"
     assert "TWITCH_CHAT_COMMANDS" not in original  # default (on) for the mod bot
     assert services["twitch-bot"]["profiles"] == ["twitch"]
+
+
+# --- #408: the api and worker load the whole .env.docker ------------------
+
+
+def test_only_the_api_and_worker_load_the_deployment_env_file() -> None:
+    """The full env file reaches the two backend processes (every setting an
+    operator writes there, secrets included, is theirs to read) and NOT the
+    thin clients, which keep receiving only what they declare."""
+    services = _load_compose("docker-compose.yml")["services"]
+
+    for name in ("api", "worker"):
+        assert services[name].get("env_file") == [
+            {"path": ".env.docker", "required": False}
+        ], name
+    for name, service in services.items():
+        if name in ("api", "worker"):
+            continue
+        for entry in service.get("env_file") or []:
+            path = entry["path"] if isinstance(entry, dict) else entry
+            assert Path(path).name != ".env.docker", (
+                f"{name} loads the whole deployment env file; thin clients get "
+                "declared variables only"
+            )
+
+
+def _render_compose(project_dir: Path, *env_file: Path, **env: str) -> dict:
+    """``docker compose config`` of the real compose file, with relative
+    paths (its env_file entries) resolved against ``project_dir``."""
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("docker") is None:
+        pytest.skip("docker CLI not available")
+    command = [
+        "docker", "compose",
+        "-f", str(ROOT / "docker-compose.yml"),
+        "--project-directory", str(project_dir),
+    ]
+    for path in env_file:
+        command += ["--env-file", str(path)]
+    command += ["config", "--format", "json"]
+    # Interpolation prefers the shell environment over --env-file, so an
+    # ambient value would reshape the render: drop the ones these tests
+    # assert on or that reshape the project (COMPOSE_FILE, _PROFILES, ...).
+    base = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("POSTGRES_", "REDIS_", "COMPOSE_", "API_"))
+    }
+    done = subprocess.run(  # env-gate: test-only docker CLI render, no secrets
+        command,
+        env={**base, "DISCORD_BOT_TOKEN": "disabled", **env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if done.returncode != 0 and "is not a docker command" in (done.stderr or ""):
+        pytest.skip("docker compose plugin not available")
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)["services"]
+
+
+def test_a_setting_compose_never_named_reaches_the_api_and_worker(tmp_path) -> None:
+    """The measured #408 gap: SCHEDULER_* were set in .env.docker and the
+    worker, which runs the only scheduler in this shape, never saw them. The
+    compose file's own pins still win over the file, and the thin clients
+    still get nothing they do not declare."""
+    env_file = tmp_path / ".env.docker"
+    env_file.write_text(
+        "POSTGRES_PASSWORD=pw\n"
+        "REDIS_PASSWORD=pw\n"
+        "SCHEDULER_RUN_STUCK_ALERT_MINUTES=7\n"
+        "TRIGGER_FAILURE_PAUSE_AFTER=9\n"
+        # Host-shaped values the container shape must override:
+        "NYMERIA_DATA_DIR=/host/nymeria/data\n"
+        "API_PORT=8123\n"
+        "API_HOST=127.0.0.1\n"
+        "NYMERIA_API_URL=http://localhost:8123\n",
+        encoding="utf-8",
+    )
+
+    services = _render_compose(tmp_path, env_file)
+
+    for name in ("api", "worker"):
+        env = services[name]["environment"]
+        assert env["SCHEDULER_RUN_STUCK_ALERT_MINUTES"] == "7", name
+        assert env["TRIGGER_FAILURE_PAUSE_AFTER"] == "9", name
+        assert env["NYMERIA_DATA_DIR"] == "/data", name
+        assert env["API_PORT"] == "8000", name
+        assert env["API_HOST"] == "0.0.0.0", name
+    assert services["worker"]["environment"]["NYMERIA_API_URL"] == "http://nymeria-api:8000"
+    # The host side of the api's port mapping still follows API_PORT.
+    assert any(
+        str(port.get("published")) == "8123" and int(port.get("target", 0)) == 8000
+        for port in services["api"]["ports"]
+    )
+    assert "SCHEDULER_RUN_STUCK_ALERT_MINUTES" not in services["mcp"]["environment"]
+
+
+def test_the_worker_runs_on_the_api_environment_plus_its_own_pins(tmp_path) -> None:
+    """One shared anchor: a pin added to the api but not the worker (or the
+    reverse) would split the two processes that share one data dir."""
+    env_file = tmp_path / ".env.docker"
+    env_file.write_text("POSTGRES_PASSWORD=pw\nREDIS_PASSWORD=pw\n", encoding="utf-8")
+
+    services = _render_compose(tmp_path, env_file)
+
+    api, worker = services["api"]["environment"], services["worker"]["environment"]
+    assert set(worker) - set(api) == {"WORKER_MODE", "NYMERIA_API_URL"}
+    assert set(api) - set(worker) == set()
+    assert {k for k in api if api[k] != worker[k]} == set()
+
+
+def test_the_stack_still_renders_without_an_env_file(tmp_path) -> None:
+    services = _render_compose(tmp_path, POSTGRES_PASSWORD="pw", REDIS_PASSWORD="pw")
+
+    assert services["worker"]["environment"]["NYMERIA_DATA_DIR"] == "/data"

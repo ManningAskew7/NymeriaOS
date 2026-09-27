@@ -79,6 +79,11 @@ SANCTIONED_LEAF_TOKENS: dict[str, str] = {
         "'clear' (which would read as clearing the trigger itself, beside "
         "'delete')"
     ),
+    "release": (
+        "scheduler family: run the missed work the ask policy holds. Not "
+        "'clear' (nothing is erased: the held TODOs run) and not 'enable' "
+        "(no toggle flips)"
+    ),
     "issue": "tokens are issued",
     "revoke": "tokens are revoked",
     "branch": "thread branching",

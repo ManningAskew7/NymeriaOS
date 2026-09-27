@@ -582,13 +582,14 @@ def test_scheduler_status_and_release_endpoints_require_admin_and_release_missed
     assert release_body["trigger_catchup_paused"] is False
 
 
-def test_a_standby_scheduler_reports_its_holder_and_refuses_the_release(
+def test_a_standby_scheduler_reports_its_holder_and_relays_the_release(
     tmp_path: Path,
     api_client_builder,
 ):
-    """#397: the API process's ticker stands by behind another process's
-    scheduler. Its status says so, and the release is refused (409) because
-    the hold lives in the process that runs the scheduler."""
+    """#397 + #398: the API process's ticker stands by behind another
+    process's scheduler. Its status names the holder, and a release is no
+    longer refused: it is recorded for the owner, whose poll honors it, and
+    the route answers with the owner's outcome."""
     settings = api_client_builder.settings(
         tmp_path,
         scheduler_missed_work_policy="ask",
@@ -603,6 +604,14 @@ def test_a_standby_scheduler_reports_its_holder_and_refuses_the_release(
     owner = _make_ticker(agent)
     owner.prepare_startup_recovery()
     standby = _make_ticker(agent)
+    stop = threading.Event()
+
+    def owner_polls() -> None:  # the owner process's poll, reduced to the relay
+        while not stop.is_set():
+            owner._honor_release_request()
+            time.sleep(0.02)
+
+    poller = threading.Thread(target=owner_polls, daemon=True)
     try:
         assert standby.prepare_startup_recovery()["owns_schedule"] is False
         agent._ticker = standby
@@ -615,17 +624,24 @@ def test_a_standby_scheduler_reports_its_holder_and_refuses_the_release(
 
         body = client.get("/scheduler/status", headers=_headers(admin_token)).json()
         assert body["owns_schedule"] is False
+        assert body["schedule_owner"] == "another_process"
         assert f"pid {os.getpid()}" in body["schedule_held_by"]
         assert body["pending_missed_todo_ids"] == [todo.id]
 
-        refused = client.post(
+        poller.start()
+        released = client.post(
             "/scheduler/missed-work/run",
             headers=_headers(admin_token),
         )
-        assert refused.status_code == 409
-        assert f"pid {os.getpid()}" in refused.json()["detail"]
-        assert owner._pending_startup_missed_ids == {todo.id}
+        assert released.status_code == 200, released.text
+        assert released.json()["release"] == "released"
+        assert released.json()["released_todo_ids"] == [todo.id]
+        assert owner._pending_startup_missed_ids == set()
+        assert owner._trigger_catchup_paused is False
     finally:
+        stop.set()
+        if poller.is_alive():
+            poller.join(timeout=5)
         owner._release_schedule()
 
 
@@ -650,6 +666,56 @@ def test_an_api_process_without_a_ticker_reports_it_does_not_own_the_schedule(
     assert body["ticker_running"] is False
     assert body["owns_schedule"] is False
     assert body["schedule_held_by"] is None
+    assert body["schedule_owner"] == "none"  # nothing holds the lock
+
+
+def test_the_docker_api_names_the_worker_and_relays_a_release(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """#410 + #398 at the HTTP boundary: an API process with no ticker (the
+    Docker shape) names the process that runs the schedule, answers 202 when
+    that process has not picked a release up yet, and 409 once no process
+    runs the scheduler at all."""
+    from nymeria.core import scheduler_control
+
+    monkeypatch.setattr(scheduler_control, "_default_wait", lambda settings: 0.0)
+    settings = api_client_builder.settings(tmp_path, scheduler_missed_work_policy="ask")
+    api_client_builder.create_checkpoint_table(settings)
+    agent = FakeAgent(settings)
+    todo = _add_scheduled_todo(
+        agent,
+        task="Missed while offline",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    worker = _make_ticker(agent)  # the worker process's scheduler
+    worker.prepare_startup_recovery()
+    try:
+        client, admin_token = api_client_builder.authenticated_client(
+            agent, settings, user_id="admin", role="admin"
+        )
+
+        body = client.get("/scheduler/status", headers=_headers(admin_token)).json()
+        assert body["schedule_owner"] == "another_process"
+        assert f"pid {os.getpid()}" in body["schedule_runner"]
+        assert body["pending_missed_todo_ids"] == [todo.id]
+
+        requested = client.post("/scheduler/missed-work/run", headers=_headers(admin_token))
+        assert requested.status_code == 202, requested.text
+        assert requested.json()["release"] == "requested"
+
+        worker._honor_release_request()  # its next poll
+        assert worker._pending_startup_missed_ids == set()
+        after = client.get("/scheduler/status", headers=_headers(admin_token)).json()
+        assert after["pending_missed_todo_ids"] == []
+        assert after["release_requested_at"] is None
+    finally:
+        worker._release_schedule()  # the worker goes down
+
+    refused = client.post("/scheduler/missed-work/run", headers=_headers(admin_token))
+    assert refused.status_code == 409
+    assert "No process runs the scheduler" in refused.json()["detail"]
 
 
 def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path, api_client_builder):
@@ -1586,3 +1652,73 @@ def test_transient_banners_replace_across_kinds(
     assert "failed after 3 retries" in notes
     assert ticker_module.BACKOFF_NOTE_PREFIX not in notes  # replaced, not buried
     assert "user instructions here" in notes
+
+
+def test_the_http_command_client_reads_and_releases_through_the_routes(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """The bots and thin clients run `/scheduler` over HTTP
+    (``CommandHttpClient``), so its two methods must reach the real routes
+    and carry 202 and 409 through to the same replies the in-process client
+    gives."""
+    import asyncio
+
+    import httpx
+
+    from nymeria.core import scheduler_control
+    from nymeria.core.command_service import CommandContext, CommandHttpClient, CommandService
+
+    monkeypatch.setattr(scheduler_control, "_default_wait", lambda settings: 0.0)
+    settings = api_client_builder.settings(tmp_path, scheduler_missed_work_policy="ask")
+    api_client_builder.create_checkpoint_table(settings)
+    agent = FakeAgent(settings)
+    todo = _add_scheduled_todo(
+        agent,
+        task="Missed while offline",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    worker = _make_ticker(agent)  # the worker process's scheduler
+    worker.prepare_startup_recovery()
+    client, admin_token = api_client_builder.authenticated_client(
+        agent, settings, user_id="admin", role="admin"
+    )
+
+    async def scheduler(command: str):
+        http = CommandHttpClient("http://api.test", admin_token, use_act_as=False)
+        http._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app), base_url="http://api.test"
+        )
+        try:
+            return await CommandService().execute(
+                CommandContext(
+                    user_id="admin", thread_id=None, actor="user", surface="telegram",
+                    is_admin=True,
+                ),
+                command,
+                api=http,
+            )
+        finally:
+            await http.close()
+
+    try:
+        status = asyncio.run(scheduler("/scheduler"))
+        assert status.success is True
+        assert f"pid {os.getpid()}" in status.markdown
+        assert todo.id in status.markdown
+
+        requested = asyncio.run(scheduler("/scheduler release"))  # a 202
+        assert requested.success is True
+        assert "Release requested" in requested.markdown
+
+        worker._honor_release_request()
+        assert worker._pending_startup_missed_ids == set()
+        nothing = asyncio.run(scheduler("/scheduler release"))
+        assert "Nothing is held" in nothing.markdown
+    finally:
+        worker._release_schedule()
+
+    refused = asyncio.run(scheduler("/scheduler release"))  # a 409
+    assert refused.success is False
+    assert "No process runs the scheduler" in refused.markdown

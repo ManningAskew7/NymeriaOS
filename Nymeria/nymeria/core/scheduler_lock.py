@@ -93,6 +93,15 @@ class LockOutcome(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class ProbeOutcome(str, Enum):
+    """What ``ScheduleLock.probe`` saw: someone holds the lock, nobody does,
+    or the lock cannot be tested here."""
+
+    HELD = "held"
+    FREE = "free"
+    UNKNOWN = "unknown"
+
+
 def _command_label() -> str:
     """A short, secret-free name for this process: the program plus its
     subcommand (``nymeria slim``, ``run.py worker``), never flags or values.
@@ -108,6 +117,20 @@ def _command_label() -> str:
     if not _SUBCOMMAND_SHAPE.fullmatch(subcommand):
         subcommand = ""
     return f"{program} {subcommand}".strip()[:80]
+
+
+def _current_process_note() -> dict:
+    return {
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "command": _command_label(),
+        "since": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def describe_current_process() -> str:
+    """This process, in the words its holder note would use."""
+    return describe_holder(_current_process_note())
 
 
 def describe_holder(note: dict) -> str:
@@ -220,6 +243,53 @@ class ScheduleLock:
             except OSError:
                 pass  # already closed or invalid: nothing left to release
 
+    def probe(self) -> tuple[ProbeOutcome, str]:
+        """Whether a process holds this data dir's schedule NOW, and who.
+
+        ``holder()`` alone cannot answer that: the note outlives its writer
+        (the file is never deleted), so it names the last owner, running or
+        not. This tries the lock through a read-only descriptor and drops it
+        at once. It never creates the file (absent means nobody ever ran a
+        scheduler here: FREE) and never writes the note, so the owner's note
+        survives a probe byte for byte. For status readers in a process that
+        does NOT own the schedule (the Docker API, a standby); ``held``
+        already answers for this instance.
+
+        Two traps, both accepted:
+
+        - The probe holds the lock for microseconds. A ticker claiming in that
+          instant stands by: a service retries on its next poll, a fat CLI
+          (no takeover) stays on standby for its session. Vanishingly rare.
+        - Never call it from a process whose own ticker holds the lock on a
+          filesystem with PROCESS-owned locks (NFS, see the module notes):
+          closing the probe's descriptor would drop the owner's lock. The
+          ``scheduler_control`` status path asks the ticker first for that
+          reason.
+        """
+        if self._fd is not None:
+            return ProbeOutcome.HELD, self.holder()
+        binary = getattr(os, "O_BINARY", 0)
+        try:
+            fd = os.open(self.path, os.O_RDONLY | binary)
+        except FileNotFoundError:
+            return ProbeOutcome.FREE, ""
+        except OSError as exc:
+            return ProbeOutcome.UNKNOWN, f"cannot open {self.path}: {exc}"
+        try:
+            try:
+                _lock(fd)
+            except OSError as exc:
+                if exc.errno in _CONTENTION_ERRNOS:
+                    return ProbeOutcome.HELD, self.holder()
+                return ProbeOutcome.UNKNOWN, f"cannot lock {self.path}: {exc}"
+            try:
+                _unlock(fd)
+            except OSError:
+                pass  # closing the descriptor below drops it anyway
+            return ProbeOutcome.FREE, ""
+        finally:
+            os.close(fd)
+
     def holder(self) -> str:
         """Who holds the lock, from the note its holder wrote. Best effort."""
         try:
@@ -234,12 +304,7 @@ class ScheduleLock:
 
     @staticmethod
     def _write_note(fd: int) -> None:
-        note = {
-            "pid": os.getpid(),
-            "host": socket.gethostname(),
-            "command": _command_label(),
-            "since": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
+        note = _current_process_note()
         try:
             os.ftruncate(fd, 0)
             os.lseek(fd, 0, os.SEEK_SET)

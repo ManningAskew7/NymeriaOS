@@ -368,12 +368,16 @@ cp .env.docker.example .env.docker
 ```
 
 `.env.docker` is gitignored and should never be committed. Compose reads it with
-`--env-file` and injects only the variables each service declares; the full env
-file is not bind-mounted into containers.
+`--env-file` for interpolation, and the two backend containers (`api`, `worker`)
+also load it whole (`env_file`), so every setting in it reaches the backend,
+secrets included, with the compose `environment:` pins winning. The thin clients
+(`mcp`, the chat bots, Caddy) receive only the variables their service declares
+from it (`twitch-chatter` also loads its own `.env.twitch-chatter`).
+The file is never bind-mounted into any container.
 
 - **Per-machine values:** Each machine has its own `.env.docker` (different API keys, proxy URLs, passwords, etc.). Keep it local; do not share or commit it.
-- **Rotation:** When a credential is compromised or due for rotation, update the value in `.env.docker` and restart the affected services. This covers LLM API keys, CLIProxy OAuth, Postgres, Redis, service tokens, Fernet keys, and Firebase/Google credentials.
-- **Docker images:** `.env.docker` is excluded from the Docker build context. Compose injects selected values with `--env-file` instead of copying or mounting the full secret file into containers.
+- **Rotation:** When a credential is compromised or due for rotation, update the value in `.env.docker` and recreate the affected services (`docker compose --env-file .env.docker up -d <service>`; a plain `restart` keeps the old environment). This covers LLM API keys, CLIProxy OAuth, Postgres, Redis, service tokens, Fernet keys, and Firebase/Google credentials.
+- **Docker images:** `.env.docker` is excluded from the Docker build context and never baked into an image or mounted; its values reach containers as environment variables at start (the whole file for `api` and `worker`, declared variables for the rest).
 - **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/`. Never copy them between machines.
 
 ## Reverse Proxy (Caddy)
@@ -425,7 +429,7 @@ just as they do for local Docker.
 6. **Container privileges**: App containers run as the Dockerfile's non-root `nymeria` user (uid 999) with `cap_drop: ALL` and `no-new-privileges:true`. Full-runtime containers (`api`, `worker`) keep a writable rootfs for runtime caches and workspace operations, but do not get `SETUID`, `SETGID`, `DAC_OVERRIDE`, or other package-install capabilities. Thin-client containers (mcp, chat bots, caddy) also use read-only rootfs plus tmpfs for `/tmp` and `/home/nymeria`.
 7. **Network segmentation**: Two Docker networks: `edge` for Caddy, API, MCP, worker, profiled chat bots, and voice services; `backend` for PostgreSQL, Redis, API, and worker. Chat bots and MCP cannot reach the database directly even if compromised.
 8. **Resource limits**: Every service declares `mem_limit`, `cpus`, and `pids_limit` (see the `x-limits-*` anchors in `docker-compose.yml`). A runaway tool call cannot exhaust host memory or fork-bomb the kernel.
-9. **Bind mounts**: `./nymeria` and `run.py` are mounted **read-only** into containers for live code sync. `.env.docker` is not mounted; services receive only the selected environment variables declared in Compose. `.env.docker` stays out of image layers and is ignored by the Docker build context.
+9. **Bind mounts**: `./nymeria` and `run.py` are mounted **read-only** into containers for live code sync. `.env.docker` is not mounted; the `api` and `worker` containers receive its variables as environment (their `env_file`), the thin clients only the variables declared in Compose. Tool and agent child processes (`bash_execute`, workflow and Python custom-tool runners, MCP stdio servers) start from a deny-by-default environment (`nymeria/subprocess_env.py`), and the Python process is undumpable, so its own `/proc/<pid>/environ` is closed to them. The container's init shim is not: tini (PID 1) holds the whole container environment in `/proc/1/environ`, readable by any unsandboxed process in the container (`SECURITY.md` 2.4), and since #408 that is every variable in `.env.docker` for `api` and `worker`, so keep keys the backend does not use out of that file. `.env.docker` stays out of image layers and is ignored by the Docker build context.
 10. **Kali Tools**: The full image includes nmap, hydra, sqlmap, etc. for `bash_execute` access. Use responsibly and only on authorized targets. Since the container is non-root, nmap loses SYN-scan privileges and falls back to TCP-connect scans.
 
 ## Troubleshooting

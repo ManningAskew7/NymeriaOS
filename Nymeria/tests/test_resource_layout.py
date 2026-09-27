@@ -551,15 +551,21 @@ def _as(user_id: str) -> dict:
     return {"configurable": {"user_id": user_id}}
 
 
-_PROMPT_OVERRIDES = (
+# Every admin-only data-dir file, with the admin surface its refusal names.
+# Listed by hand rather than read from the gate's table, so a file dropped
+# from the table fails here instead of dropping out of the loop.
+_ADMIN_ONLY_FILES = (
     ("system_prompt.md", "/settings/system-prompt"),
     ("dream_prompt.md", "/settings/dream-prompts"),
     ("dream_kickoff.md", "/settings/dream-prompts"),
+    # #398: an admin's order to release the missed work the scheduler holds.
+    ("scheduler_release_request.json", "/scheduler release"),
 )
 
 
-def test_prompt_overrides_refuse_a_non_admin_and_stay_readable(tmp_path, monkeypatch):
-    """P4-02: each of these replaces a GLOBAL prompt for every user.
+def test_admin_only_files_refuse_a_non_admin_and_stay_readable(tmp_path, monkeypatch):
+    """P4-02: the prompts each replace a GLOBAL prompt for every user; the
+    #398 release request releases missed work held for every user.
 
     ``PUT /settings/system-prompt`` and ``PUT /settings/dream-prompts`` are both
     admin-only, and the file route reached the same effect with no role check,
@@ -577,7 +583,7 @@ def test_prompt_overrides_refuse_a_non_admin_and_stay_readable(tmp_path, monkeyp
     _patch_data_dir(monkeypatch, data_dir)
     _patch_roles(monkeypatch, boss="admin", nobody="user")
 
-    for name, route in _PROMPT_OVERRIDES:
+    for name, route in _ADMIN_ONLY_FILES:
         target = data_dir / name
 
         # 1. Fresh create, the actual attack: no file, so no read to notice.
@@ -615,7 +621,7 @@ def test_prompt_overrides_refuse_a_non_admin_and_stay_readable(tmp_path, monkeyp
         assert target.read_text(encoding="utf-8") == "original prompt"
 
 
-def test_prompt_overrides_still_serve_an_admin(tmp_path, monkeypatch):
+def test_admin_only_files_still_serve_an_admin(tmp_path, monkeypatch):
     """The other half of the control, and the reason it is not a denylist.
 
     On a solo deployment the only user IS an admin, so a flat refusal would
@@ -626,7 +632,7 @@ def test_prompt_overrides_still_serve_an_admin(tmp_path, monkeypatch):
     _patch_data_dir(monkeypatch, data_dir)
     _patch_roles(monkeypatch, boss="admin", nobody="user")
 
-    for name, _route in _PROMPT_OVERRIDES:
+    for name, _route in _ADMIN_ONLY_FILES:
         target = data_dir / name
         created = file_write.func(str(target), "authored prompt", config=_as("boss"))
         assert created.startswith("[Success]"), f"an admin could not create {name}"
@@ -1103,6 +1109,7 @@ def test_control_verdicts_match_the_controls_that_are_declared():
     assert {row.path for row in _STORE_ROWS if row.admin_only} == {
         "system_prompt.md",
         "dream_prompt.md, dream_kickoff.md",
+        "scheduler_release_request.json",  # #398
     }, "The admin-only set changed. That is a boundary move, not a refactor."
 
     for row in _STORE_ROWS:

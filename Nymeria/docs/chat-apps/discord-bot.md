@@ -351,7 +351,7 @@ Telegram, the GUIs, the agent).
 | `/skills enable <name>` | Activate a skill on this channel. |
 | `/skills disable <name>` | Deactivate a skill, or `all` to deactivate every active one (was `/skills off all`). |
 
-### Automation (`/hook`, `/triggers`, `/fallback`)
+### Automation (`/hook`, `/triggers`, `/fallback`, `/scheduler`)
 
 | Command | Description |
 |---------|-------------|
@@ -374,6 +374,8 @@ Telegram, the GUIs, the agent).
 | `/fallback approvals` | List pending model-swap consent prompts. |
 | `/fallback approve <record_id> [hold]` | Approve a pending model swap. |
 | `/fallback deny <record_id>` | Decline a pending model swap. |
+| `/scheduler status` | Admin: which process runs the scheduler (the Docker worker, the slim service, or a fat CLI), the missed-work policy and any held missed work. |
+| `/scheduler release` | Admin: run the missed work the `ask` policy is holding. The scheduler process releases at once, or picks the request up on its next poll when another process (the Docker API) took it. |
 
 ### MCP (`/mcp`)
 

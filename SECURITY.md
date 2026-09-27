@@ -285,7 +285,8 @@ not on the other. State both when reasoning about it.
     you should assume it is open.** The compose services run with `init: true`, so PID 1 is
     the container runtime's init shim (tini), not Python, and it holds a
     byte-identical copy of the container environment: every provider API key,
-    the service token, and the vault master key. It runs as the same
+    the service token, and the vault master key (for `api` and `worker`, every
+    variable in `.env.docker`, which compose loads whole into them). It runs as the same
     unprivileged user, and a process cannot make *another* process undumpable,
     so nothing inside the container can close it. Verified on a reference
     deployment: `/proc/1/environ` is world-of-that-uid readable and complete

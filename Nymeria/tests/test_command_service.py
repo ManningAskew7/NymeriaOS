@@ -3905,9 +3905,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # 152 after the single-browser-routing pass grew that family by
     # list + switch + default + rename, all executable. 153 with
     # `settings reload`, the #302 config-reload command. 155 with `/code`,
-    # the admin-only break-glass to Claude Code, executable.)
-    assert len(service._commands) == 155
-    assert sum(cmd.executable for cmd in service._commands.values()) == 146
+    # the admin-only break-glass to Claude Code, executable. 158 with the
+    # #410 /scheduler family: root overview + status + release, executable.)
+    assert len(service._commands) == 158
+    assert sum(cmd.executable for cmd in service._commands.values()) == 149
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"

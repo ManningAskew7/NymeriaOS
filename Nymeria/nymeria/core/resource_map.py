@@ -385,6 +385,30 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         ),
     ),
     _StoreRow(
+        "scheduler_release_request.json",
+        "The last admin request to release missed work held by the ask policy",
+        "global",
+        "yes (the scheduler's poll reads it while a hold is active)",
+        "readable; writes are admin-only, as at /scheduler release "
+        "(POST /scheduler/missed-work/run)",
+        admin_only=True,
+        covered=True,
+        drives_execution=True,
+        secret_at_rest=False,
+        control_note=(
+            "#398. The process that runs the scheduler honors a request newer "
+            "than its hold and runs the held missed TODOs, for every user, "
+            "unprompted: rule 1 positive. Low impact (the work runs what its "
+            "owners scheduled, which the default run policy does at once), but "
+            "releasing is an admin's call at both sanctioned doors, so the "
+            "file tools apply the same admin check "
+            "(tools/filesystem.py::admin_only_write_error). A request older "
+            "than the hold, or dated in the future, is inert, so a plant "
+            "cannot outlive a restart. Residual: bash_execute is not "
+            "path-checkable."
+        ),
+    ),
+    _StoreRow(
         "workflows/state/",
         "Workflow scratch state (nym.state)",
         "per workflow + user",

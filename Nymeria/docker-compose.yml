@@ -233,6 +233,18 @@ services:
     # local development without being exposed to the public internet.
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
+    # The api and worker load the WHOLE env file (#408), so every setting an
+    # operator writes there reaches the backend: the list below used to be the
+    # only way in, and a setting it did not name (the scheduler and trigger
+    # policy knobs, the hardening flags the template documents, several search
+    # provider keys) was silently ignored in this shape. The `environment:`
+    # block below still WINS over the file: it pins the container shape (data
+    # dirs, datastores, listen address, service URLs) and maps defaults. The
+    # thin clients (mcp, bots) deliberately do not load the file; they get the
+    # variables they declare. `required: false` needs Compose 2.24+.
+    env_file:
+      - path: .env.docker
+        required: false
     environment: &api-env
       # System timezone (matches USER_TIMEZONE for consistent bash/OS time)
       TZ: ${USER_TIMEZONE:-UTC}
@@ -309,6 +321,11 @@ services:
       # Data directory
       NYMERIA_DATA_DIR: /data
       NYMERIA_WORKSPACE_DIR: /workspace
+      # Listen address, pinned against the env file: the wizard writes
+      # API_PORT there for the HOST side of the port mapping above, which
+      # must never move the container side off 8000.
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
       # Claude Code bridge: the claude_code tool relays runs to a host runner
       # (python run.py claude-code-runner) reachable via host.docker.internal.
       # Inert unless NYMERIA_CLAUDE_CODE_URL is set. See
@@ -360,8 +377,9 @@ services:
       PERPLEXITY_SEARCH_MODEL: ${PERPLEXITY_SEARCH_MODEL:-low}
       # SearXNG metasearch for web_search_searxng. Defaults to the bundled
       # `searxng` sidecar (start it with the `search` compose profile). The
-      # other web-search providers (Tavily/Exa/Firecrawl/Brave) use API keys via
-      # the credential vault and are intentionally not passed through here.
+      # other web-search providers (Tavily/Exa/Firecrawl/Brave) take their API
+      # keys from the credential vault, so none is listed here; one set in
+      # .env.docker still reaches the api and worker through env_file (#408).
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_EXTRACTION_MODEL: ${GEMINI_EXTRACTION_MODEL:-gemini-3-flash-preview}
@@ -429,8 +447,9 @@ services:
       # without it (they tell the operator to install what is already
       # running, and tell a headless browser to click a popup) every time
       # the api container restarts and the in-process roster is empty.
-      # `env_file:` shapes (docker-compose.single*.yml) get it for free;
-      # this file passes an explicit allowlist, so it must be listed.
+      # The api and worker get it from .env.docker through env_file (#408);
+      # the line stays so a value exported in the shell that runs compose
+      # (the host rig's own environment) reaches them too.
       SERVER_BROWSER_HOME: ${SERVER_BROWSER_HOME:-}
       # Voice (TTS/STT). Base URLs default EMPTY on purpose: an unconditional
       # sidecar default here would hijack hosted providers (an explicit base
@@ -494,9 +513,18 @@ services:
     # Required because the container no longer runs as root and /root/ is
     # not writable from uid 999.
     command: ["python", "run.py", "worker"]
+    # Same env file as the api (#408): the worker runs the only scheduler in
+    # this shape, so the SCHEDULER_* and TRIGGER_FAILURE_* settings are read
+    # here. The anchor's pins win over the file, as for the api.
+    env_file:
+      - path: .env.docker
+        required: false
     environment:
       <<: *api-env
       WORKER_MODE: "true"
+      # Pinned against the env file: a host-side NYMERIA_API_URL there
+      # (http://localhost:...) would point the relay at the worker itself.
+      NYMERIA_API_URL: http://nymeria-api:8000
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace

@@ -108,7 +108,7 @@ def test_nym_todo_update_cannot_modify_another_thread(
         status="done",
         config=_config("thread-a"),
     )
-    assert current_result.startswith(f"[Updated]: TODO {current.id}")
+    assert current_result.startswith(f"[Completed]: TODO {current.id}")
     assert manager.get_todos("owner").get_item(current.id).status == TodoStatus.DONE
 
 
@@ -145,7 +145,7 @@ def test_nym_todo_recurring_done_preserves_scheduled_anchor(
     )
 
     updated = manager.get_todos("owner").get_item(recurring.id)
-    assert result.startswith(f"[Updated]: TODO {recurring.id}")
+    assert result.startswith(f"[Completed]: TODO {recurring.id}")
     assert updated.status == TodoStatus.PENDING
     assert updated.scheduled_for == scheduled_anchor + delta
     assert updated.last_execution == scheduled_anchor
@@ -216,7 +216,7 @@ def test_nym_todo_recurring_done_after_ticker_rearm_keeps_the_armed_slot(
     )
 
     updated = manager.get_todos("owner").get_item(todo_id)
-    assert result.startswith(f"[Updated]: TODO {todo_id}")
+    assert result.startswith(f"[Completed]: TODO {todo_id}")
     assert updated.status == TodoStatus.PENDING
     # Day N+1 survives, in the item AND in the index the ticker actually polls.
     assert updated.scheduled_for == day_n_plus_1
@@ -302,7 +302,7 @@ def test_nym_todo_done_on_paused_schedule_does_not_resume(
     )
 
     updated = manager.get_todos("owner").get_item(todo_id)
-    assert result.startswith(f"[Updated]: TODO {todo_id}")
+    assert result.startswith(f"[Completed]: TODO {todo_id}")
     # Completed as DONE with the pause intact: no PENDING flip, no re-arm,
     # no erased pause marker. Resume stays an explicit reschedule.
     assert updated.status == TodoStatus.DONE
@@ -657,3 +657,111 @@ def test_nym_todo_partial_update_preserves_omitted_schedule_and_recurrence(
     assert "(schedule cleared)" in result
     assert item().scheduled_for is None
     assert schedule_db.get_entry(todo_id) is None
+
+
+# --- #409: the reply to a done transition says completed, never "(scheduled)"
+
+
+def _seed_one_shot(manager: TodoManager, schedule_db: TodoScheduleDB, slot: datetime) -> str:
+    with manager.atomic_update("owner") as todo_list:
+        item = todo_list.add_item(
+            "Write the delta paragraph", scheduled_for=slot, thread_id="thread-a"
+        )
+        assert item is not None
+    schedule_db.add_scheduled(
+        todo_id=item.id,
+        user_id="owner",
+        scheduled_for=slot,
+        task_preview=item.task,
+        thread_id="thread-a",
+    )
+    return item.id
+
+
+def test_closing_a_scheduled_one_shot_replies_completed_and_not_scheduled(
+    tmp_path: Path, monkeypatch
+):
+    """A scheduled run that closes its own TODO was told "[Updated] ...
+    (status: done) (scheduled)", so it re-listed its TODOs and filed a report
+    (intake 20260924-145201Z). The TODO will never run again: say so."""
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: schedule_db)
+    todo_id = _seed_one_shot(manager, schedule_db, utc_now() - timedelta(minutes=5))
+
+    result = todo_tools.nym_todo.func(
+        todo_id=todo_id, status="done", config=_config("thread-a")
+    )
+
+    assert result == f"[Completed]: TODO {todo_id} - Write the delta paragraph"
+    assert schedule_db.get_entry(todo_id) is None
+    assert manager.get_todos("owner").get_item(todo_id).status == TodoStatus.DONE
+
+
+def test_closing_a_recurring_todo_replies_completed_with_its_next_slot(
+    tmp_path: Path, monkeypatch
+):
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: schedule_db)
+    slot = utc_now().replace(microsecond=0) - timedelta(minutes=5)
+    todo_id = _seed_rearmed_recurring(manager, schedule_db, slot=slot, last_execution=None)
+
+    result = todo_tools.nym_todo.func(
+        todo_id=todo_id, status="done", config=_config("thread-a")
+    )
+
+    assert result.startswith(f"[Completed]: TODO {todo_id} - Hound Alex")
+    assert "(auto-rescheduled: recurring 1d)" in result
+    assert "(scheduled)" not in result
+    assert _row_time(schedule_db, todo_id) == slot + timedelta(days=1)
+
+
+def test_an_update_says_scheduled_only_while_the_todo_is_armed(
+    tmp_path: Path, monkeypatch
+):
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: schedule_db)
+    todo_id = _seed_one_shot(manager, schedule_db, utc_now() - timedelta(minutes=5))
+    todo_tools.nym_todo.func(todo_id=todo_id, status="done", config=_config("thread-a"))
+
+    # The done one-shot keeps its old scheduled_for; a later edit is not armed.
+    noted = todo_tools.nym_todo.func(
+        todo_id=todo_id, notes="closed by the run", config=_config("thread-a")
+    )
+    assert noted.startswith(f"[Updated]: TODO {todo_id}")
+    assert "(scheduled)" not in noted
+
+    # Re-arming it is, and says so.
+    rearmed = todo_tools.nym_todo.func(
+        todo_id=todo_id, status="pending", scheduled_for="2h", config=_config("thread-a")
+    )
+    assert "(scheduled)" in rearmed
+    assert schedule_db.get_entry(todo_id) is not None
+
+
+def test_without_a_schedule_index_a_done_todo_is_not_reported_scheduled(
+    tmp_path: Path, monkeypatch
+):
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    monkeypatch.setattr(todo_tools, "_get_schedule_db", lambda: None)
+    with manager.atomic_update("owner") as todo_list:
+        item = todo_list.add_item(
+            "Offline task", scheduled_for=utc_now() + timedelta(hours=1), thread_id="thread-a"
+        )
+        assert item is not None
+
+    pending = todo_tools.nym_todo.func(
+        todo_id=item.id, notes="n", config=_config("thread-a")
+    )
+    done = todo_tools.nym_todo.func(
+        todo_id=item.id, status="done", config=_config("thread-a")
+    )
+
+    assert "(scheduled)" in pending
+    assert done == f"[Completed]: TODO {item.id} - Offline task"

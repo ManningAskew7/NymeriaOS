@@ -2614,6 +2614,48 @@ def register_default_commands(service: "CommandService") -> None:
         danger_level="dangerous",
     )  # params-exempt: act-now, trailing words must never block the clear
     service.register(
+        "scheduler",
+        description="Show which process runs the scheduler, and any held missed work",
+        category="System",
+        # Bare "/scheduler" is the status view (rule 1 of the style guide);
+        # `status` and `release` are registered children routed before this
+        # handler, so the root binds strictly with zero arguments.
+        requires_admin=True,
+        params=(),
+    )
+    service.register(
+        "scheduler status",
+        description="Show which process runs the scheduler, and any held missed work",
+        category="System",
+        aliases=("scheduler_status",),
+        requires_admin=True,
+        note=(
+            "The scheduler runs in exactly one process per data directory "
+            "(#397): the Docker worker, the slim service, or a fat CLI that "
+            "started while its service was down. Answered from any process."
+        ),
+        params=(),
+    )
+    service.register(
+        "scheduler release",
+        description="Run the missed work the ask policy is holding (admin-only)",
+        category="System",
+        aliases=("scheduler_release",),
+        # Holding missed work for a human decision is the point of the `ask`
+        # policy, so an agent may not make that decision for them.
+        agent_allowed=False,
+        requires_admin=True,
+        mutates_state=True,
+        danger_level="normal",
+        note=(
+            "With SCHEDULER_MISSED_WORK_POLICY=ask, TODOs missed while the "
+            "scheduler was down wait for this, and trigger polling pauses. "
+            "Works from any process: the one that runs the scheduler releases "
+            "at once, or picks a relayed request up on its next poll."
+        ),
+        params=(),
+    )
+    service.register(
         "restart api",
         description="Restart the API server process (admin-only)",
         category="System",

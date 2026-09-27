@@ -102,16 +102,18 @@ python3 run.py slim --missed-work-policy ask --active-execution-stale-minutes 10
 ```
 
 In ask mode, TODOs that were already overdue at startup are held in
-`data/scheduler_state.json` and do not execute until an admin calls:
+`data/scheduler_state.json` and do not execute until an admin runs
+`/scheduler release` from any client, or calls:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/scheduler/missed-work/run \
   -H "Authorization: Bearer nym_<admin-token>"
 ```
 
-Use `GET /scheduler/status` with an admin token to show the pending missed
-TODOs, trigger catch-up pause, last clean shutdown, and active execution
-marker count. Future TODOs that become due after startup still run normally.
+`/scheduler` (or `GET /scheduler/status` with an admin token) shows which
+process runs the scheduler, the pending missed TODOs, the trigger catch-up
+pause, last clean shutdown, and active execution marker count. Future TODOs
+that become due after startup still run normally.
 
 The active-execution stale window exists for interrupted local runs. If a
 laptop sleeps or the process is killed while a scheduled TODO is in progress,

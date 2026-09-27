@@ -473,7 +473,7 @@ def test_late_fire_whose_turn_marks_it_done_still_reports(
             status="done",
             config={"configurable": {"user_id": USER, "thread_id": "thread-1"}},
         )
-        assert result.startswith("[Updated]")
+        assert result.startswith("[Completed]")
 
     agent.on_turn = mark_done
 
@@ -610,7 +610,7 @@ def test_a_turn_that_marks_done_then_keeps_working_is_not_a_skip(
             todo_id=todo.id,
             status="done",
             config={"configurable": {"user_id": USER, "thread_id": "thread-1"}},
-        ).startswith("[Updated]")
+        ).startswith("[Completed]")
         clock.offset = timedelta(seconds=45)  # the turn keeps talking
 
     agent.on_turn = done_then_more_work

@@ -34,6 +34,7 @@ from .command_executor_cliproxy import CliproxyCommandsMixin
 from .command_executor_context import ContextCommandsMixin
 from .command_executor_llm import LLMCommandsMixin, model_select_form
 from .command_executor_provider_setup import ProviderSetupCommandsMixin
+from .command_executor_scheduler import SchedulerCommandsMixin
 from .command_executor_threads import ThreadCommandsMixin, _normalize_thread_id
 from .command_forms import (
     CommandOutput,
@@ -1158,6 +1159,14 @@ class CommandHttpClient:
             params={"reveal": "true"},
             act_as=user_id,
         )
+
+    async def get_scheduler_status(self, *, user_id: Optional[str] = None) -> dict:
+        return await self._get("/scheduler/status", act_as=user_id)
+
+    async def release_missed_work(self, *, user_id: Optional[str] = None) -> dict:
+        # The route may wait up to ~15 s for the scheduler process (#398),
+        # inside this client's 30 s read timeout; 202 carries the same body.
+        return await self._post("/scheduler/missed-work/run", act_as=user_id)
 
     async def list_available_models(
         self,
@@ -2537,6 +2546,30 @@ class CommandBackendClient:
             )
         except HTTPException as exc:
             _raise_http_status(exc.status_code, str(exc.detail))
+
+    def _ticker(self) -> Any:
+        return getattr(self.agent, "_ticker", None)
+
+    async def get_scheduler_status(self, *, user_id: Optional[str] = None) -> dict:
+        self._require_admin()
+        from .scheduler_control import scheduler_status
+
+        # The lock probe and the state reads are file I/O: off the loop.
+        return await asyncio.to_thread(scheduler_status, self._ticker(), self._settings())
+
+    async def release_missed_work(self, *, user_id: Optional[str] = None) -> dict:
+        self._require_admin()
+        from .scheduler_control import SchedulerControlError, release_missed_work
+
+        try:
+            return await asyncio.to_thread(
+                release_missed_work,
+                self._ticker(),
+                self._settings(),
+                requested_by=self.user.id,
+            )
+        except SchedulerControlError as exc:
+            _raise_http_status(exc.status_code, str(exc))
 
     async def list_available_models(
         self,
@@ -4292,6 +4325,7 @@ class _CommandExecutor(
     AliasCommandsMixin,
     BrowserCommandsMixin,
     ClaudeCodeCommandsMixin,
+    SchedulerCommandsMixin,
 ):
     """Per-request command executor with the migrated command bodies."""
 

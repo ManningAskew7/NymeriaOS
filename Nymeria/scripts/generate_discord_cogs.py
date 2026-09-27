@@ -152,6 +152,9 @@ EXPECTED_DROPPED_ROOTS: tuple[str, ...] = (
     # `/show-settings` covering the folded settings readout).
     "model",
     "provider",
+    # The /scheduler bare-root status (#410) duplicates `scheduler status`,
+    # which Discord keeps, so nothing is lost here.
+    "scheduler",
     "settings",
     "skills",
     "smart",

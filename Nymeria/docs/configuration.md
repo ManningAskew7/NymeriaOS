@@ -11,6 +11,18 @@ highest dotenv-file precedence. Packaged `nymeria` installs use
 `.env.docker` for the full local/Docker template, run `nymeria init` for
 packaged setup, or create `.env` manually for a lighter source-checkout setup.
 
+In the full Docker stack (`docker-compose.yml`), the `api` and `worker`
+containers load the whole `.env.docker` (`env_file`), so every variable below
+set there reaches the backend; the compose `environment:` block still wins
+where it pins the container shape (`NYMERIA_DATA_DIR=/data`, the datastores,
+`API_HOST=0.0.0.0` and `API_PORT=8000` inside the container, the worker's
+`NYMERIA_API_URL`). Before #408 only the variables that block named got in,
+so anything else set in `.env.docker` (the scheduler and trigger policy
+knobs, the hardening flags, several search keys) was silently ignored there.
+The thin clients (`mcp`, the chat bots) still receive only the variables
+their service declares. A changed value needs `up -d` (a recreate), not
+`restart`.
+
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
 ## Runtime Settings Updates
@@ -788,7 +800,7 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `HARNESS_REPORT_INSTANCE_LABEL` | hostname | Deployment label stamped into `harness_report` files so operators running several instances can tell reports apart. |
 | `HARNESS_REPORT_EMAIL` | - | When set, each successfully filed harness report is additionally emailed to this address with the report file attached, in a background thread over the owner account's connected Outlook credential (the same mechanism as `POST /report`). The model controls neither destination nor credential; email failures are logged and never disturb the written report. Unset = file-only. |
 | `API_HOST` | `0.0.0.0` | Server bind address |
-| `API_PORT` | `8000` | Server port. `nymeria init` writes it (the API port wizard step, or `--port` in scripted runs). `run.py slim` resolves an explicit `--port` flag first, then this value, then 8000; the installed background service health-probes the configured port, and the single-container Docker shape publishes it as the host-side port while the container keeps listening on 8000 internally. |
+| `API_PORT` | `8000` | Server port. `nymeria init` writes it (the API port wizard step, or `--port` in scripted runs). `run.py slim` resolves an explicit `--port` flag first, then this value, then 8000; the installed background service health-probes the configured port, and both Docker shapes publish it as the host-side port while the container keeps listening on 8000 internally (the full stack pins `API_PORT=8000` in the container environment for that reason). |
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled. The setup wizard's external-access step appends the configured public origin automatically |
@@ -1612,11 +1624,11 @@ registry, and REST API.
 | `WATCHDOG_INTERVAL_MINUTES` | `5` | Minutes between watchdog checks (1-60) |
 | `TODO_STALENESS_MINUTES` | `20` | Minutes without update before TODO is stale (5-1440) |
 | `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before the ticker removes completed TODOs from the active TODO JSON list (1-30) |
-| `SCHEDULER_MISSED_WORK_POLICY` | `run` | Startup policy for scheduled TODOs that fell due while the scheduler was offline: `run` executes them on the first poll. `ask` (slim / single-process only, slim flag `--missed-work-policy`) holds them until an admin calls `POST /scheduler/missed-work/run`; in the Docker stack the API process runs no ticker, so that call answers 409 and the worker keeps holding (backlog #398): leave it `run` there |
+| `SCHEDULER_MISSED_WORK_POLICY` | `run` | Startup policy for scheduled TODOs that fell due while the scheduler was offline: `run` executes them on the first poll. `ask` (slim flag `--missed-work-policy`) holds them, and pauses trigger polling, until an admin runs `/scheduler release` (`POST /scheduler/missed-work/run`). Works in every shape: in the Docker stack the API relays the release to the worker, which picks it up on its next poll (#398) |
 | `SCHEDULER_ACTIVE_EXECUTION_STALE_MINUTES` | `1440` | Minutes before the ticker reclaims an execution marker whose run never released it (1-10080; read at ticker start, so a restart applies it; slim flag `--active-execution-stale-minutes`). Startup clears every marker regardless; a due TODO held by a leftover marker is reported with this reclaim time |
 | `SCHEDULER_SKIP_ALERT_AFTER` | `1` | Scheduled occurrences one late run of a recurring TODO must have let pass unrun before the owner is alerted, in-app plus external notification destinations. The `task_skipped` activity row is written for every such run regardless (0 disables the alert; 0-1000; read at ticker start) |
 | `SCHEDULER_SKIP_ALERT_COOLDOWN_MINUTES` | `1440` | Minimum minutes between skipped-occurrence alerts for one recurring TODO, so a series that keeps overrunning its interval, or a host that restarts or sleeps often, alerts at most this often (0 alerts on every qualifying late run; 0-10080; read at ticker start) |
-| `SCHEDULER_RUN_STUCK_ALERT_MINUTES` | `60` | Minutes a scheduled TODO's run may have been running before it is reported once as possibly stuck: a WARNING, a `task_skipped` row (`reason: run_still_running`) and a `[SCHEDULED TASK STILL RUNNING]` owner alert. Nothing times a run out, and while it runs its TODO does not start again; a run still queued for a free slot is not counted (0 disables the report; 0-10080; read at ticker start; not yet passed to the Docker worker, backlog #408) |
+| `SCHEDULER_RUN_STUCK_ALERT_MINUTES` | `60` | Minutes a scheduled TODO's run may have been running before it is reported once as possibly stuck: a WARNING, a `task_skipped` row (`reason: run_still_running`) and a `[SCHEDULED TASK STILL RUNNING]` owner alert. Nothing times a run out, and while it runs its TODO does not start again; a run still queued for a free slot is not counted (0 disables the report; 0-10080; read at ticker start) |
 | `SCHEDULER_FAILURE_ALERT_AFTER` | `2` | Consecutive failed occurrences of a recurring scheduled TODO before the owner is alerted once, in-app plus external notification destinations (0 disables the alert; 0-100) |
 | `SCHEDULER_FAILURE_PAUSE_AFTER` | `5` | Consecutive failed occurrences before a recurring TODO's schedule auto-pauses with a resumable marker; recurrence is kept and rescheduling resumes it (0 disables auto-pause; 0-1000) |
 | `TRIGGER_FAILURE_ALERT_AFTER` | `2` | Consecutive failed ACTION fires of a trigger before the owner is alerted once. Separate from the scheduler keys above: a trigger's failures accrue per event batch, not per time slot (0 disables the alert; 0-100) |

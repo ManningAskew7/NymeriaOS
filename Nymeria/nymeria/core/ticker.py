@@ -29,7 +29,11 @@ from .notification_dispatch import (
 )
 from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from .scheduler_lock import LockOutcome, ScheduleLock
-from .scheduler_state import SchedulerStateManager
+from .scheduler_state import (
+    SchedulerStateManager,
+    parse_state_time,
+    read_release_request,
+)
 from .storage_paths import safe_path_segment
 from .stream_bridge import StreamCollection, stream_and_collect
 from .time_utils import ensure_aware_utc
@@ -496,6 +500,11 @@ class Ticker:
         self._trigger_catchup_paused = bool(
             persisted_state.get("trigger_catchup_paused")
         )
+        # When the hold this owner keeps was detected: a release request
+        # (#398, written by another process) counts only if it is newer, so a
+        # request left from before a restart never releases the new hold.
+        # Set by the recovery that establishes or adopts a hold.
+        self._hold_since: Optional[datetime] = None
 
     def prepare_startup_recovery(self) -> dict[str, Any]:
         """Claim this data dir's schedule, then synchronize its state.
@@ -558,18 +567,21 @@ class Ticker:
         indexed = self.rebuild_schedule_index()
 
         missed_ids: list[str] = []
+        self._hold_since = None
         if takeover:
+            persisted = self._scheduler_state.load()
             held = [
                 str(todo_id)
-                for todo_id in self._scheduler_state.load().get(
-                    "pending_missed_todo_ids"
-                )
-                or []
+                for todo_id in persisted.get("pending_missed_todo_ids") or []
                 if todo_id
             ]
             if self._missed_work_policy == "ask" and held:
                 self._pending_startup_missed_ids = set(held)
                 self._trigger_catchup_paused = True
+                # A request made against the adopted hold still counts.
+                self._hold_since = parse_state_time(
+                    persisted.get("last_missed_detection_at")
+                ) or datetime.now(timezone.utc)
             else:
                 self._pending_startup_missed_ids.clear()
                 self._trigger_catchup_paused = False
@@ -582,13 +594,16 @@ class Ticker:
             if self._missed_work_policy == "ask" and missed_ids:
                 self._pending_startup_missed_ids = set(missed_ids)
                 self._trigger_catchup_paused = True
-                self._scheduler_state.set_pending_missed(
+                persisted = self._scheduler_state.set_pending_missed(
                     missed_ids,
                     trigger_catchup_paused=True,
                 )
+                self._hold_since = parse_state_time(
+                    persisted.get("last_missed_detection_at")
+                ) or datetime.now(timezone.utc)
                 self._print_recovery_notice(
                     len(missed_ids),
-                    "awaiting release from /scheduler/missed-work/run",
+                    "held until an admin releases them (/scheduler release)",
                 )
             else:
                 self._pending_startup_missed_ids.clear()
@@ -885,6 +900,8 @@ class Ticker:
         if not self._ensure_schedule_owner():
             return
         self._check_lock_file()
+        # Before the due check, so released work runs on this same poll.
+        self._honor_release_request()
         try:
             self._check_and_execute()
         except Exception as e:
@@ -917,6 +934,33 @@ class Ticker:
             except Exception:
                 logger.error("Scheduler startup recovery failed", exc_info=True)
             return self._startup_recovery_prepared
+
+    def _honor_release_request(self) -> None:
+        """Release held missed work when another process asked (#398).
+
+        Under ``ask`` the hold lives here, in the process that runs the
+        scheduler, but an admin asks through the API, which in Docker is a
+        different process. It records the request in the data dir; the owner
+        honors one newer than its hold. No file I/O unless a hold is active.
+        """
+        if not (self._pending_startup_missed_ids or self._trigger_catchup_paused):
+            return
+        try:
+            request = read_release_request(self.settings.data_dir)
+            since = self._hold_since
+            # An unknown hold age refuses rather than releases.
+            if request is None or since is None or request.requested_at <= since:
+                return
+            status = self.release_missed_work()
+        except Exception:
+            logger.error("Honoring the missed-work release request failed", exc_info=True)
+            return
+        logger.info(
+            "Released %s held missed TODO(s) at the request of %s (requested %s)",
+            len(status.get("released_todo_ids") or []),
+            request.requested_by,
+            request.requested_at.isoformat(timespec="seconds"),
+        )
 
     def _maybe_submit_archive(self, now: float) -> bool:
         """Submit hourly TODO archival without occupying autonomous workers."""
@@ -2958,14 +3002,18 @@ class Ticker:
         with self._recovery_lock:
             if not self._owns_schedule:
                 # The hold lives in the owner's memory; clearing the shared
-                # state file from here would only make it lie (#397). The
-                # route answers 409 before this; this guards other callers.
+                # state file from here would only make it lie (#397).
+                # `scheduler_control.release_missed_work` relays a non-owner's
+                # release to the owner instead (#398); this guards other callers.
                 status = self.get_scheduler_status()
                 status["released_todo_ids"] = []
+                status["release"] = "not_owner"
                 return status
             released_ids = sorted(self._pending_startup_missed_ids)
+            was_held = bool(released_ids) or self._trigger_catchup_paused
             self._pending_startup_missed_ids.clear()
             self._trigger_catchup_paused = False
+            self._hold_since = None
             self._scheduler_state.clear_pending_missed()
             logger.info(
                 "Released %s startup-missed TODO(s) for scheduler execution",
@@ -2973,6 +3021,7 @@ class Ticker:
             )
             status = self.get_scheduler_status()
             status["released_todo_ids"] = released_ids
+            status["release"] = "released" if was_held else "nothing_held"
             return status
 
     def get_scheduler_status(self) -> dict[str, Any]:

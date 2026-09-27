@@ -331,6 +331,9 @@ def test_leading_single_token_aliases_snapshot() -> None:
         # spelling was never registered, so /restart_api dead-ended in a
         # did-you-mean pointing at bare /restart.
         "restart.api": "restart_api",
+        # #410: new family, new menu names (not a rename).
+        "scheduler.release": "scheduler_release",
+        "scheduler.status": "scheduler_status",
         "settings": "settings_show",
         "settings.get": "settings_get",
         "settings.reload": "settings_reload",
