@@ -187,6 +187,7 @@ class NymeriaAgent:
         settings: Optional[Settings] = None,
         tools: Optional[List[BaseTool]] = None,
         enable_ticker: bool = True,
+        scheduler_takeover: bool = True,
     ):
         """
         Initialize NymeriaAgent.
@@ -197,6 +198,9 @@ class NymeriaAgent:
             enable_ticker: Whether to start the ticker for scheduled TODO execution.
                 Set to False when a separate worker container handles the ticker
                 (Docker deployments with Redis).
+            scheduler_takeover: Whether this agent's ticker, when it starts on
+                standby behind another process's scheduler, takes the schedule
+                over once that process exits (#397). The fat CLI passes False.
         """
         self.settings = settings or get_settings()
 
@@ -576,6 +580,7 @@ class NymeriaAgent:
                 busy_agent=self,
                 spawn_sweeper=_local_spawn_sweeper,
                 dream_sweeper=_local_dream_sweeper,
+                take_over=scheduler_takeover,
             )
 
             startup_status = self._ticker.prepare_startup_recovery()

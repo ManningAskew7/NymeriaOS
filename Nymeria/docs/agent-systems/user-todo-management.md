@@ -52,6 +52,7 @@ This feature allows users to create, edit, complete, and delete TODOs for Nymeri
 | CRUD endpoints | `nymeria/api/routers/todos.py` | REST API for create/update/delete/complete |
 | Schedule DB | `nymeria/core/todo_schedule_db.py` | SQLite index for efficient polling |
 | Ticker | `nymeria/core/ticker.py` | Polls and executes due TODOs |
+| Scheduler lock | `nymeria/core/scheduler_lock.py` | One ticker per data directory across processes (#397) |
 | Frontend form | `nymeria-desktop/src/lib/components/todos/TodoForm.svelte` | Create/edit modal |
 | Frontend item | `nymeria-desktop/src/lib/components/todos/TodoItem.svelte` | Display with badges |
 
@@ -178,14 +179,50 @@ work is pending, the first poll-based trigger catch-up pass is also paused.
 Future TODOs that become due after startup continue to run normally.
 
 `GET /scheduler/status` reports the missed-work policy, pending missed TODOs,
-trigger catch-up pause, last startup and clean-shutdown timestamps, and active
-scheduled-TODO execution marker count.
+trigger catch-up pause, last startup and clean-shutdown timestamps, active
+scheduled-TODO execution marker count, and whether this process runs the
+schedule (`owns_schedule`; `schedule_held_by` names the owner while it stands
+by).
+
+**One scheduler per data directory** (#397). Each shape runs one ticker by
+construction (slim: the API-agent; Docker: the worker, with the API-agent's
+ticker disabled), and the ticker also claims an OS lock on
+`data/scheduler.lock` before it touches the schedule, so a second process on
+the same data directory cannot start another. That second process is usually
+the fat CLI (`nymeria cli --fat`, the local transport) opened beside a running
+slim instance; before the lock, its startup deleted the live ticker's
+execution markers and then both processes polled the same schedule and fired
+the same triggers. A ticker that finds the lock held stands by: it runs no
+scheduled TODOs, trigger polls, archive, spawn, dream or watchdog sweeps, and
+prints one "Scheduler On Standby" notice naming the holder (pid, host,
+program and subcommand). The owner keeps the lock until its PROCESS exits
+(a crash or `kill -9` included: the OS drops the lock with the process);
+stopping its ticker does not hand the schedule over, because runs in flight
+outlive the stop. A service's standby (slim, `run.py api`, the worker)
+retries the lock every poll and takes over on the poll after the owner
+exits: it clears the dead owner's execution markers and rebuilds the index
+like a start, but decides no missed work (a scheduler ran until moments
+ago), and under `ask` it adopts the owner's persisted hold. The fat CLI
+never takes over: a service restart leaves a gap its 5 s poll would win,
+stranding the service's schedule in a terminal, so it stays on standby for
+the session (restart it after the service stops to run the schedule
+there). `GET /scheduler/status` on a standby reads the hold from
+`scheduler_state.json`, and its `POST /scheduler/missed-work/run` answers
+409 naming the holder (the hold lives in the owner's process).
+A filesystem that cannot lock at all fails OPEN with a WARNING: the ticker
+runs unguarded, as before, rather than leave the service with no scheduler,
+and retries the lock every poll (an ERROR says so if another process has
+since taken it). The guard does not reach a data directory on NFS (Linux
+emulates the lock per process there) or a Docker Desktop bind mount shared
+between a host process and a container; named Docker volumes on one host
+are fine. Never delete `scheduler.lock` while Nymeria runs: the owner keeps
+its lock on the deleted file, and the next process would lock a new one
+(the owner notices on its next poll and locks the new file when it can).
 
 If the process stops while a scheduled TODO is executing, its
 `active_todo_executions` marker is left behind. Because exactly one ticker
-owns `todo_schedule.db` (slim: the API-agent; Docker: the worker, with the
-API-agent's ticker disabled), any marker present at startup is by definition
-orphaned  -  an in-flight execution runs on a daemon thread that cannot survive
+owns `todo_schedule.db`, any marker present at startup is by definition
+orphaned: an in-flight execution runs on a daemon thread that cannot survive
 the process boundary. `prepare_startup_recovery` therefore clears **all**
 execution markers before the poll thread starts, so a TODO interrupted moments
 before a restart re-fires immediately instead of being held for up to a day.
@@ -193,7 +230,7 @@ The 24-hour stale window (`--active-execution-stale-minutes`, default 1440)
 still guards the *live* in-flight path (`mark_execution_started` /
 `is_execution_active`) against a marker that outlives its run inside a
 still-running process: a release DELETE that keeps failing, or a marker from
-a second scheduler process on the same database. (A wedged run is a
+a second scheduler process where the lock failed open. (A wedged run is a
 different mechanism: its future stays registered in the pool, so the poll
 never resubmits it; it is reported instead, see "A run that never ends"
 below.) A failed release is retried at the start of every poll,
@@ -350,9 +387,9 @@ leave a scheduled occurrence unrun:
   scheduler process running it, or a retry attempt's own leftover), and a
   claim that failed on a database error leaves no marker: both stay log
   lines, the refusal repeating every poll. Under the one-ticker invariant
-  the split is exact; with a second scheduler process on the same database
-  (a misconfiguration, backlog #397) a live run that re-armed its own TODO
-  into a slot that comes due mid-run also reads as blocked.
+  the split is exact; only where the scheduler lock failed open could a
+  second scheduler process make a live run that re-armed its own TODO into
+  a slot that comes due mid-run also read as blocked.
 - **A run that never ends** (#395). Nothing times a scheduled run out: the
   only cancellation is cooperative (`/stop` flags the turn between stream
   events, so a single stalled network read never sees it), and the Docker

@@ -494,6 +494,8 @@ def create_system_router(
         return {
             "status": "ok",
             "ticker_running": False,
+            "owns_schedule": False,
+            "schedule_held_by": None,
             "missed_work_policy": getattr(
                 settings,
                 "scheduler_missed_work_policy",
@@ -564,7 +566,7 @@ def create_system_router(
         )
 
     @router.get("/scheduler/status")
-    async def scheduler_status(
+    def scheduler_status(
         _user: AuthenticatedUser = Depends(require_admin_user),
         settings: Any = Depends(get_settings_fn),
     ):
@@ -575,15 +577,32 @@ def create_system_router(
         return _scheduler_status_without_ticker(settings)
 
     @router.post("/scheduler/missed-work/run")
-    async def run_scheduler_missed_work(
+    def run_scheduler_missed_work(
         _user: AuthenticatedUser = Depends(require_admin_user),
     ):
-        """Release startup-missed work that was held by ask-mode recovery."""
+        """Release startup-missed work that was held by ask-mode recovery.
+
+        Sync on purpose (runs in the threadpool): the release waits on the
+        ticker's recovery lock, which a scheduler takeover holds mid-serve
+        while it rebuilds the schedule index (#397).
+        """
         ticker = getattr(get_agent_fn(), "_ticker", None)
         if ticker is None or not hasattr(ticker, "release_missed_work"):
             raise HTTPException(
                 status_code=409,
                 detail="Scheduler ticker is not available in this API process.",
+            )
+        if not getattr(ticker, "owns_schedule", True):
+            # On standby (#397): the hold lives in the process that runs the
+            # scheduler, so only that process can release it.
+            holder = ticker.get_scheduler_status().get("schedule_held_by")
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This process does not run the scheduler"
+                    + (f" ({holder} does)" if holder else "")
+                    + "; release missed work in the process that does."
+                ),
             )
         return ticker.release_missed_work()
 

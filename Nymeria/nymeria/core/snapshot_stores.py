@@ -69,8 +69,19 @@ POSTGRES_CHECKPOINT_TABLES = (
 # The name is pinned to `server_browser.rig_home_pointer` by tests.
 SERVER_BROWSER_DIR = "server-browser"
 SERVER_BROWSER_POINTER = "server-browser-home"
+# `scheduler.lock` is the live OS lock of the process running the scheduler
+# (#397). Restoring it would swap the file under that holder, and a second
+# process could then lock the new one: host-local, never captured or swept.
 DEFAULT_EXCLUDED_TOP_LEVEL = frozenset(
-    {"snapshots", "logs", "flags", "voice", SERVER_BROWSER_DIR, SERVER_BROWSER_POINTER}
+    {
+        "snapshots",
+        "logs",
+        "flags",
+        "voice",
+        SERVER_BROWSER_DIR,
+        SERVER_BROWSER_POINTER,
+        "scheduler.lock",
+    }
 )
 CODE_BACKUPS_DIR = "backups"
 

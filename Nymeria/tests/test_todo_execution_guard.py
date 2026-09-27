@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -579,6 +580,76 @@ def test_scheduler_status_and_release_endpoints_require_admin_and_release_missed
     assert release_body["released_todo_ids"] == [todo.id]
     assert release_body["pending_missed_todo_ids"] == []
     assert release_body["trigger_catchup_paused"] is False
+
+
+def test_a_standby_scheduler_reports_its_holder_and_refuses_the_release(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """#397: the API process's ticker stands by behind another process's
+    scheduler. Its status says so, and the release is refused (409) because
+    the hold lives in the process that runs the scheduler."""
+    settings = api_client_builder.settings(
+        tmp_path,
+        scheduler_missed_work_policy="ask",
+    )
+    api_client_builder.create_checkpoint_table(settings)
+    agent = FakeAgent(settings)
+    todo = _add_scheduled_todo(
+        agent,
+        task="Missed while offline",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    owner = _make_ticker(agent)
+    owner.prepare_startup_recovery()
+    standby = _make_ticker(agent)
+    try:
+        assert standby.prepare_startup_recovery()["owns_schedule"] is False
+        agent._ticker = standby
+        client, admin_token = api_client_builder.authenticated_client(
+            agent,
+            settings,
+            user_id="admin",
+            role="admin",
+        )
+
+        body = client.get("/scheduler/status", headers=_headers(admin_token)).json()
+        assert body["owns_schedule"] is False
+        assert f"pid {os.getpid()}" in body["schedule_held_by"]
+        assert body["pending_missed_todo_ids"] == [todo.id]
+
+        refused = client.post(
+            "/scheduler/missed-work/run",
+            headers=_headers(admin_token),
+        )
+        assert refused.status_code == 409
+        assert f"pid {os.getpid()}" in refused.json()["detail"]
+        assert owner._pending_startup_missed_ids == {todo.id}
+    finally:
+        owner._release_schedule()
+
+
+def test_an_api_process_without_a_ticker_reports_it_does_not_own_the_schedule(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The Docker API (its ticker disabled; the worker runs the schedule)
+    answers the same status fields as a ticker would (#397)."""
+    settings = api_client_builder.settings(tmp_path)
+    api_client_builder.create_checkpoint_table(settings)
+    agent = FakeAgent(settings)
+    client, admin_token = api_client_builder.authenticated_client(
+        agent,
+        settings,
+        user_id="admin",
+        role="admin",
+    )
+
+    body = client.get("/scheduler/status", headers=_headers(admin_token)).json()
+
+    assert body["ticker_running"] is False
+    assert body["owns_schedule"] is False
+    assert body["schedule_held_by"] is None
 
 
 def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path, api_client_builder):

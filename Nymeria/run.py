@@ -540,7 +540,10 @@ def run_cli(args: argparse.Namespace) -> None:
         from nymeria import NymeriaAgent
         from nymeria.tools import SEED_TOOLS
 
-        agent = NymeriaAgent(tools=list(SEED_TOOLS))
+        # The fat CLI never takes over a schedule it started on standby for
+        # (#397): a service restart leaves a gap it would otherwise win,
+        # stranding the service's scheduled work in this terminal.
+        agent = NymeriaAgent(tools=list(SEED_TOOLS), scheduler_takeover=False)
         agent.sync_agent_tools()
 
     # Start CLI. Explicit launch thread refs are resolved by the CLI after the
@@ -1040,6 +1043,7 @@ def run_worker(args: argparse.Namespace) -> None:
                     ticker_thread is not None and ticker_thread.is_alive()
                 ),
                 "poll_interval_seconds": settings.ticker_poll_interval,
+                "owns_schedule": ticker.owns_schedule,
                 "api_url": api_url,
                 "watchdog": ticker.watchdog_stats(),
             },
@@ -1522,7 +1526,9 @@ Examples:
         const="local",
         help=(
             "Run an embedded in-process agent (alias for --transport local). "
-            "Tools execute on this machine; no backend server required."
+            "Tools execute on this machine; no backend server required. "
+            "Scheduled TODOs and poll triggers run here only when no other "
+            "Nymeria process uses the same data directory."
         ),
     )
     transport_group.add_argument(

@@ -728,6 +728,39 @@ def test_the_rig_home_pointer_is_host_local_and_never_travels(settings_root, mon
     assert SERVER_BROWSER_POINTER not in {rel for _, rel in iter_data_dir_files(data_dir)}
 
 
+def test_the_scheduler_lock_never_travels_and_a_restore_leaves_it_held(
+    snapshot_env, tmp_path
+):
+    """#397: ``scheduler.lock`` is the live OS lock of the process running the
+    scheduler. Captured, it would carry a host-local note (pid, hostname);
+    swept aside by an in-place restore, its owner would keep the lock on the
+    moved file while another process locked a fresh one: two schedulers."""
+    from nymeria.core.scheduler_lock import (
+        SCHEDULER_LOCK_FILENAME,
+        LockOutcome,
+        ScheduleLock,
+    )
+
+    data_dir = snapshot_env.data_dir
+    owner = ScheduleLock(data_dir)
+    assert owner.acquire()[0] is LockOutcome.ACQUIRED
+    try:
+        lock_path = data_dir / SCHEDULER_LOCK_FILENAME
+        inode = lock_path.stat().st_ino
+        assert SCHEDULER_LOCK_FILENAME not in {
+            rel for _, rel in iter_data_dir_files(data_dir)
+        }
+        result = _create(snapshot_env)
+        extracted = extract_snapshot(result.artifact, PASSPHRASE, tmp_path / "work")
+
+        restore_snapshot(snapshot_env, extracted)
+
+        assert lock_path.stat().st_ino == inode
+        assert ScheduleLock(data_dir).acquire()[0] is LockOutcome.HELD_ELSEWHERE
+    finally:
+        owner.release()
+
+
 def test_a_restore_leaves_the_live_rig_where_it_is(tmp_path, monkeypatch):
     """The rig is never captured, so the artifact has nothing to put in its
     place: sweeping it into .pre-restore would relocate a RUNNING Chrome's

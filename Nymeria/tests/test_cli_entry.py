@@ -489,3 +489,67 @@ def test_run_cli_default_starts_without_local_agent(monkeypatch):
 
     assert captured["agent"] is None
     assert captured["runtime_config"].transport == "api"
+
+
+class _RecordingAgent:
+    """Stands in for NymeriaAgent: records how the fat CLI builds it."""
+
+    built: list[dict] = []
+
+    def __init__(self, **kwargs):
+        type(self).built.append(kwargs)
+
+    def sync_agent_tools(self):
+        pass
+
+
+def test_run_cli_fat_agent_never_takes_over_a_schedule(monkeypatch):
+    """#397: a fat CLI opened beside a service stays on standby for its whole
+    life; taking over in a service restart's gap would strand the service's
+    scheduled work in this terminal."""
+    import logging
+
+    import nymeria
+    import nymeria.triggers.cli as cli_module
+    import run as run_module
+
+    _RecordingAgent.built = []
+    monkeypatch.setattr(nymeria, "NymeriaAgent", _RecordingAgent)
+    monkeypatch.setattr(run_module, "_apply_fat_runtime_env", lambda: None)
+    captured = {}
+    monkeypatch.setattr(cli_module, "run_cli", lambda **kw: captured.update(kw))
+    nymeria_logger = logging.getLogger("nymeria")
+    level = nymeria_logger.level
+    try:
+        run_module.run_cli(run_module.build_parser().parse_args(["cli", "--fat"]))
+    finally:
+        nymeria_logger.setLevel(level)  # run_cli silences it for the REPL
+
+    assert len(_RecordingAgent.built) == 1
+    assert _RecordingAgent.built[0]["scheduler_takeover"] is False
+    assert isinstance(captured["agent"], _RecordingAgent)
+
+
+def test_embedded_cli_fallback_agent_never_takes_over_a_schedule(monkeypatch):
+    """The same rule for a caller that hands the CLI no agent."""
+    from types import SimpleNamespace
+
+    import nymeria.core.agent as agent_module
+    import nymeria.triggers.cli as cli_module
+
+    _RecordingAgent.built = []
+    monkeypatch.setattr(agent_module, "NymeriaAgent", _RecordingAgent)
+    started = []
+
+    class _Trigger:
+        def __init__(self, agent, **_kwargs):
+            started.append(agent)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(cli_module, "CLITrigger", _Trigger)
+    cli_module.run_cli(runtime_config=SimpleNamespace(transport="local"))
+
+    assert _RecordingAgent.built[0]["scheduler_takeover"] is False
+    assert isinstance(started[0], _RecordingAgent)

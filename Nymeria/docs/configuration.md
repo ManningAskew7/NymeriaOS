@@ -1689,6 +1689,7 @@ checkouts that defaults to `Nymeria/data/`; in packaged installs it defaults to
 | `data/nymeria.db` | SQLite conversation database |
 | `data/accounts.db` | Account users, tokens, and chat-app bindings |
 | `data/todo_schedule.db` | SQLite scheduled TODO index for polling |
+| `data/scheduler.lock` | OS lock held by the one process that runs the schedule; its content names the holder. Never delete it while Nymeria runs |
 | `data/BOOTSTRAP_TOKEN.txt` | First-run admin bootstrap token, written with mode 0600 |
 | `data/todos/` | TODO list storage (`{user_id}.json`) |
 | `data/logs/` | HTTP/API primitive tool audit logs (`audit_YYYYMMDD.jsonl`) |

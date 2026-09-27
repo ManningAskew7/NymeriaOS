@@ -167,7 +167,9 @@ class TodoScheduleDB:
     def clear_all_executions(self) -> int:
         """Clear every active execution marker.
 
-        Called once at startup: with a single ticker owning this database, any
+        Called once at startup (or at a scheduler takeover): with a single
+        ticker owning this database (``scheduler_lock.py`` enforces it across
+        processes, #397), any
         marker present before the poll loop starts is by definition orphaned by
         a crash or a non-graceful shutdown (an in-flight daemon-thread execution
         cannot survive the process boundary). Clearing them all unblocks a TODO

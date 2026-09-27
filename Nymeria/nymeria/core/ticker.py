@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, NamedTuple, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 
 from .activity_log import ActivityType, log_activity
@@ -27,6 +28,7 @@ from .notification_dispatch import (
     should_notify_autonomous,
 )
 from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
+from .scheduler_lock import LockOutcome, ScheduleLock
 from .scheduler_state import SchedulerStateManager
 from .storage_paths import safe_path_segment
 from .stream_bridge import StreamCollection, stream_and_collect
@@ -310,6 +312,7 @@ class Ticker:
         busy_agent: Optional["NymeriaAgent"] = None,
         spawn_sweeper: Optional[Callable[[], int]] = None,
         dream_sweeper: Optional[Callable[[], int]] = None,
+        take_over: bool = True,
     ):
         """
         Initialize the ticker.
@@ -343,6 +346,11 @@ class Ticker:
                 local agent and Docker passes None (the API heartbeat
                 drives it, since the worker holds no agent to dream
                 against).
+            take_over: Whether a ticker that finds another process running
+                this data dir's schedule takes it over when that process
+                exits (#397). The services (slim, the API, the worker) do;
+                the fat CLI passes False, so a CLI opened beside a service
+                never grabs the schedule in the gap of a service restart.
         """
         self._turn_executor = executor
         self.settings = settings
@@ -438,6 +446,20 @@ class Ticker:
 
         self._recovery_lock = threading.Lock()
         self._startup_recovery_prepared = False
+        # One scheduler per data dir, across processes (#397). The ticker
+        # claims this lock before it touches the schedule and holds it until
+        # the process exits (the OS drops it then, a crash or an exec
+        # included); without it the ticker stands by and keeps the holder's
+        # description here for the status and the one notice. Guarded by
+        # _recovery_lock.
+        self._schedule_lock = ScheduleLock(settings.data_dir)
+        self._owns_schedule = False
+        self._standby_holder: Optional[str] = None
+        # Stood by and not yet recovered as the owner: the next successful
+        # claim is a TAKEOVER, even when the first takeover recovery raised.
+        self._stood_by = False
+        self._can_take_over = take_over
+        self._lock_file_alarm: Optional[LockOutcome] = None
         self._missed_work_policy = getattr(
             settings,
             "scheduler_missed_work_policy",
@@ -476,25 +498,87 @@ class Ticker:
         )
 
     def prepare_startup_recovery(self) -> dict[str, Any]:
-        """Synchronize scheduler state before the polling thread starts."""
+        """Claim this data dir's schedule, then synchronize its state.
+
+        A ticker that cannot claim it (another process runs the scheduler for
+        this data dir, #397) does none of the recovery, since every step would
+        act on the owner's live state: clearing its in-flight execution
+        markers, re-deciding its missed work. It returns a standby status; a
+        ticker that may take over retries the claim from its poll loop.
+        """
         with self._recovery_lock:
             if self._startup_recovery_prepared:
                 return self.get_scheduler_status()
+            status = self._claim_and_recover_locked()
+            if status is None:
+                status = self.get_scheduler_status()
+                status.update(
+                    {
+                        "indexed_schedule_count": 0,
+                        "startup_missed_count": 0,
+                        "startup_execution_markers_cleared": 0,
+                    }
+                )
+            return status
 
-            self._scheduler_state.record_start()
-            # A single ticker owns the schedule DB, so any execution marker
-            # present at startup is orphaned by a crash or a non-graceful
-            # shutdown that left a mid-run daemon thread's marker behind. Clear
-            # them all here (before the poll loop starts) so a TODO interrupted
-            # moments before a restart re-fires immediately instead of being
-            # held by the 24h stale sweep. The stale sweep still guards the
-            # live in-flight path (mark_execution_started / is_execution_active)
-            # against a wedged thread within a running process.
-            startup_markers_cleared = self.schedule_db.clear_all_executions()
-            indexed = self.rebuild_schedule_index()
-            missed_entries = self.schedule_db.get_due(before=time.time())
-            missed_ids = [entry.todo_id for entry in missed_entries]
+    def _claim_and_recover_locked(self) -> Optional[dict[str, Any]]:
+        """Claim the schedule and recover; None means stand by. Caller holds
+        _recovery_lock.
 
+        The ONE claim rule for both callers (startup, which ``start()``
+        repeats on a standby, and the poll): a ticker that has stood by
+        claims only if it may take over, and then recovers as a takeover.
+        """
+        if self._stood_by and not self._can_take_over:
+            return None
+        if not self._claim_schedule():
+            return None
+        return self._recover_locked(takeover=self._stood_by)
+
+    def _recover_locked(self, *, takeover: bool) -> dict[str, Any]:
+        """The startup recovery. Caller holds _recovery_lock and the schedule.
+
+        A TAKEOVER (the previous owner process exited while this one stood
+        by) clears the markers and rebuilds the index like a start, since the
+        owner's runs died with it, but decides no missed work: a scheduler ran
+        until moments ago, so nothing was missed, and under ``ask`` the hold
+        the owner persisted is adopted rather than replaced.
+        """
+        self._scheduler_state.record_start()
+        # A single ticker owns the schedule DB (the lock enforces it across
+        # processes, #397), so any execution marker present now is orphaned:
+        # by a crash or a non-graceful shutdown that left a mid-run daemon
+        # thread's marker behind, or by the owner a takeover replaces. Clear
+        # them all here (before this ticker polls) so a TODO interrupted
+        # moments before a restart re-fires immediately instead of being
+        # held by the 24h stale sweep. The stale sweep still guards the
+        # live in-flight path (mark_execution_started / is_execution_active)
+        # against a wedged thread within a running process.
+        startup_markers_cleared = self.schedule_db.clear_all_executions()
+        indexed = self.rebuild_schedule_index()
+
+        missed_ids: list[str] = []
+        if takeover:
+            held = [
+                str(todo_id)
+                for todo_id in self._scheduler_state.load().get(
+                    "pending_missed_todo_ids"
+                )
+                or []
+                if todo_id
+            ]
+            if self._missed_work_policy == "ask" and held:
+                self._pending_startup_missed_ids = set(held)
+                self._trigger_catchup_paused = True
+            else:
+                self._pending_startup_missed_ids.clear()
+                self._trigger_catchup_paused = False
+                self._scheduler_state.clear_pending_missed()
+        else:
+            missed_ids = [
+                entry.todo_id
+                for entry in self.schedule_db.get_due(before=time.time())
+            ]
             if self._missed_work_policy == "ask" and missed_ids:
                 self._pending_startup_missed_ids = set(missed_ids)
                 self._trigger_catchup_paused = True
@@ -513,16 +597,184 @@ class Ticker:
                 if missed_ids:
                     self._print_recovery_notice(len(missed_ids), "executing now")
 
-            self._startup_recovery_prepared = True
-            status = self.get_scheduler_status()
-            status.update(
-                {
-                    "indexed_schedule_count": indexed,
-                    "startup_missed_count": len(missed_ids),
-                    "startup_execution_markers_cleared": startup_markers_cleared,
-                }
+        self._startup_recovery_prepared = True
+        self._stood_by = False
+        status = self.get_scheduler_status()
+        status.update(
+            {
+                "indexed_schedule_count": indexed,
+                "startup_missed_count": len(missed_ids),
+                "startup_execution_markers_cleared": startup_markers_cleared,
+            }
+        )
+        return status
+
+    def _claim_schedule(self) -> bool:
+        """Take the schedule lock; False means stand by. Holds _recovery_lock."""
+        if self._owns_schedule:
+            return True
+        outcome, detail = self._schedule_lock.acquire()
+        if outcome is LockOutcome.HELD_ELSEWHERE:
+            if self._standby_holder is None:
+                logger.warning(
+                    "Scheduler on standby: %s runs the scheduler for %s. This "
+                    "process runs no scheduled TODOs, trigger polls or sweeps "
+                    "%s.",
+                    detail,
+                    self._schedule_lock.path.parent,
+                    "until that process exits, then takes over"
+                    if self._can_take_over
+                    else "for as long as it runs",
+                )
+                self._print_standby_notice(detail, self._can_take_over)
+            self._standby_holder = detail
+            self._stood_by = True
+            return False
+        if outcome is LockOutcome.UNAVAILABLE:
+            # Fail OPEN: running unguarded is the pre-#397 behavior, while
+            # failing closed would leave this service with no scheduler. The
+            # poll retries the lock (_check_lock_file), so a transient error
+            # does not leave the guard off for the process's life.
+            logger.warning(
+                "Scheduler lock unavailable (%s); running the scheduler "
+                "without the one-scheduler-per-data-dir guard",
+                detail,
             )
-            return status
+            self._print_lock_unavailable_notice(detail)
+        elif self._standby_holder is not None:
+            logger.info(
+                "Scheduler takeover: %s released the scheduler for %s; this "
+                "process runs it now",
+                self._standby_holder,
+                self._schedule_lock.path.parent,
+            )
+        self._standby_holder = None
+        self._owns_schedule = True
+        return True
+
+    def _release_schedule(self) -> None:
+        """Drop the schedule lock: what this process's exit does (test seam).
+
+        Production never calls this. The lock is held until the process exits,
+        because stop() leaves in-flight runs going (the pool shuts down
+        without waiting) and a standby that took over then would clear their
+        markers and fire a still-due TODO a second time.
+        """
+        with self._recovery_lock:
+            self._schedule_lock.release()
+            self._owns_schedule = False
+            self._standby_holder = None
+            self._stood_by = False
+            self._startup_recovery_prepared = False
+
+    def _check_lock_file(self) -> None:
+        """An owner re-checks, each poll, that ``scheduler.lock`` is still the
+        file it locked: deleted or replaced, another process could lock the
+        new one and run a second scheduler. It re-locks the new file when it
+        can and says so once when it cannot. An owner running unguarded (the
+        lock failed open) retries the lock instead."""
+        if not self._schedule_lock.held:
+            self._retry_unguarded_lock()
+            return
+        outcome = self._schedule_lock.relock_if_replaced()
+        if outcome is None or outcome is self._lock_file_alarm:
+            return
+        self._lock_file_alarm = outcome
+        if outcome is LockOutcome.ACQUIRED:
+            logger.warning(
+                "%s was deleted or replaced while this process ran the "
+                "scheduler; it is locked again",
+                self._schedule_lock.path,
+            )
+            self._lock_file_alarm = None
+        elif outcome is LockOutcome.HELD_ELSEWHERE:
+            logger.error(
+                "%s was replaced and %s now holds the new file: two processes "
+                "may be running this data dir's scheduler. Restart one of them.",
+                self._schedule_lock.path,
+                self._schedule_lock.holder(),
+            )
+        else:
+            logger.warning(
+                "%s was deleted or replaced and cannot be locked again; this "
+                "process keeps running the scheduler unguarded",
+                self._schedule_lock.path,
+            )
+
+    def _retry_unguarded_lock(self) -> None:
+        """Retry the lock of an owner that failed open. Getting it turns the
+        guard on; finding it held means a second process started a scheduler
+        while this one ran unguarded, which is said once, as an ERROR. A lock
+        that stays unavailable stays quiet: the claim already warned."""
+        outcome, detail = self._schedule_lock.acquire()
+        if outcome is LockOutcome.ACQUIRED:
+            logger.info(
+                "Scheduler lock %s acquired: the one-scheduler-per-data-dir "
+                "guard is on again",
+                self._schedule_lock.path,
+            )
+            self._lock_file_alarm = None
+            return
+        if outcome is self._lock_file_alarm:
+            return
+        self._lock_file_alarm = outcome
+        if outcome is LockOutcome.HELD_ELSEWHERE:
+            logger.error(
+                "%s holds the scheduler lock for %s while this process runs "
+                "the scheduler unguarded: two processes may be running this "
+                "data dir's scheduler. Restart one of them.",
+                detail,
+                self._schedule_lock.path.parent,
+            )
+
+    @property
+    def owns_schedule(self) -> bool:
+        """Whether this ticker runs the schedule (False while on standby)."""
+        return self._owns_schedule
+
+    @staticmethod
+    def _print_standby_notice(holder: str, takes_over: bool) -> None:
+        after = (
+            "while it does, and takes over when it exits"
+            if takes_over
+            else "in this session; restart the session after that process "
+            "exits to run them here"
+        )
+        try:
+            _console.print()
+            _console.print(
+                Panel(
+                    "[yellow]Another Nymeria process runs the scheduler for "
+                    f"this data directory: {escape(holder)}. This process "
+                    f"runs no scheduled TODOs, trigger polls or sweeps {after}."
+                    "[/yellow]",
+                    title="[bold]Scheduler On Standby[/bold]",
+                    border_style="yellow",
+                )
+            )
+            _console.print()
+        except Exception:
+            logger.debug("Console render failed for scheduler standby notice")
+
+    @staticmethod
+    def _print_lock_unavailable_notice(detail: str) -> None:
+        # The fat CLI silences the nymeria logger, so the WARNING alone would
+        # never reach the one user this case is most likely to hit.
+        try:
+            _console.print()
+            _console.print(
+                Panel(
+                    "[yellow]The scheduler lock for this data directory is "
+                    f"unavailable ({escape(detail)}). This process runs the "
+                    "scheduler anyway; make sure no other Nymeria process uses "
+                    "this data directory.[/yellow]",
+                    title="[bold]Scheduler Lock Unavailable[/bold]",
+                    border_style="yellow",
+                )
+            )
+            _console.print()
+        except Exception:
+            logger.debug("Console render failed for scheduler lock notice")
 
     @staticmethod
     def _print_recovery_notice(count: int, detail: str) -> None:
@@ -578,7 +830,12 @@ class Ticker:
         atexit.register(self.stop)
 
     def stop(self) -> None:
-        """Stop the ticker thread gracefully."""
+        """Stop the ticker thread gracefully.
+
+        The schedule lock stays held until the process exits (#397): runs in
+        flight outlive this call, and releasing now would let a standby clear
+        their markers and fire a still-due TODO again.
+        """
         if not self._running:
             return
 
@@ -591,15 +848,18 @@ class Ticker:
         if self._executor:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
-        self._scheduler_state.record_clean_shutdown()
+        # A standby ticker never ran the schedule: the shutdown record in the
+        # shared state file is the owner's to write.
+        with self._recovery_lock:
+            owns_schedule = self._owns_schedule
+        if owns_schedule:
+            self._scheduler_state.record_clean_shutdown()
         logger.info("Ticker stopped")
 
     def _get_trigger_manager(self) -> TriggerManager:
         """Lazy-init the trigger manager."""
         if self._trigger_manager is None:
-            from ..config import get_settings
-            settings = get_settings()
-            self._trigger_manager = TriggerManager(settings.data_dir)
+            self._trigger_manager = TriggerManager(self.settings.data_dir)
         return self._trigger_manager
 
     def _poll_loop(self) -> None:
@@ -611,18 +871,7 @@ class Ticker:
         check cycle or consume autonomous worker capacity.
         """
         while self._running:
-            try:
-                self._check_and_execute()
-            except Exception as e:
-                logger.error(f"Ticker poll error: {e}", exc_info=True)
-
-            now = time.time()
-
-            self._maybe_submit_archive(now)
-            self._maybe_submit_trigger_poll(now)
-            self._maybe_submit_spawn_sweep(now)
-            self._maybe_submit_dream_sweep(now)
-            self._maybe_submit_watchdog_sweep(now)
+            self._poll_once()
 
             # Sleep in small increments to allow fast shutdown
             sleep_increments = int(self.poll_interval * 10)
@@ -630,6 +879,44 @@ class Ticker:
                 if not self._running:
                     break
                 time.sleep(0.1)
+
+    def _poll_once(self) -> None:
+        """One poll. A standby ticker (#397) only retries the schedule lock."""
+        if not self._ensure_schedule_owner():
+            return
+        self._check_lock_file()
+        try:
+            self._check_and_execute()
+        except Exception as e:
+            logger.error(f"Ticker poll error: {e}", exc_info=True)
+
+        now = time.time()
+
+        self._maybe_submit_archive(now)
+        self._maybe_submit_trigger_poll(now)
+        self._maybe_submit_spawn_sweep(now)
+        self._maybe_submit_dream_sweep(now)
+        self._maybe_submit_watchdog_sweep(now)
+
+    def _ensure_schedule_owner(self) -> bool:
+        """True once this ticker owns the schedule. A standby that may take
+        over retries the claim each poll and, once the owner process has
+        exited, runs the recovery it skipped and carries on as the owner."""
+        if self._startup_recovery_prepared:
+            return True
+        if not self._can_take_over:
+            return False
+        with self._recovery_lock:
+            if self._startup_recovery_prepared:
+                return True
+            # A poll thread that stop() already told to exit claims nothing.
+            if not self._running:
+                return False
+            try:
+                self._claim_and_recover_locked()
+            except Exception:
+                logger.error("Scheduler startup recovery failed", exc_info=True)
+            return self._startup_recovery_prepared
 
     def _maybe_submit_archive(self, now: float) -> bool:
         """Submit hourly TODO archival without occupying autonomous workers."""
@@ -1216,10 +1503,11 @@ class Ticker:
         so it stays a log line; one claimed BEFORE the slot was left by an
         earlier run and holds a new occurrence hostage until it is released.
         Only that case writes a row and alerts the owner, once per marker
-        (the branch repeats on every poll). With a second scheduler process
-        on the same database (a misconfiguration, #397) a live run whose
-        turn re-armed its own TODO into a slot that comes due mid-run also
-        reads as blocked.
+        (the branch repeats on every poll). A second scheduler process on
+        the same database is refused by the schedule lock (#397); only where
+        that lock is unavailable (it fails open) could a live run whose turn
+        re-armed its own TODO into a slot that comes due mid-run also read
+        as blocked.
         """
         started_at = self.schedule_db.get_execution_started_at(entry.todo_id)
         if started_at is None:
@@ -2668,6 +2956,13 @@ class Ticker:
     def release_missed_work(self) -> dict[str, Any]:
         """Release startup-missed TODOs and paused trigger catch-up."""
         with self._recovery_lock:
+            if not self._owns_schedule:
+                # The hold lives in the owner's memory; clearing the shared
+                # state file from here would only make it lie (#397). The
+                # route answers 409 before this; this guards other callers.
+                status = self.get_scheduler_status()
+                status["released_todo_ids"] = []
+                return status
             released_ids = sorted(self._pending_startup_missed_ids)
             self._pending_startup_missed_ids.clear()
             self._trigger_catchup_paused = False
@@ -2683,7 +2978,19 @@ class Ticker:
     def get_scheduler_status(self) -> dict[str, Any]:
         """Return scheduler state for API/UI lifecycle controls."""
         state = self._scheduler_state.load()
-        pending_ids = sorted(self._pending_startup_missed_ids)
+        standby_holder = self._standby_holder
+        if standby_holder is not None:
+            # A standby ticker's copy of the hold is whatever the owner had
+            # persisted when this one was built; the shared file is current.
+            pending_ids = sorted(
+                str(todo_id)
+                for todo_id in state.get("pending_missed_todo_ids") or []
+                if todo_id
+            )
+            catchup_paused = bool(state.get("trigger_catchup_paused"))
+        else:
+            pending_ids = sorted(self._pending_startup_missed_ids)
+            catchup_paused = self._trigger_catchup_paused
         pending_entries = []
         for todo_id in pending_ids:
             entry = self.schedule_db.get_entry(todo_id)
@@ -2706,11 +3013,13 @@ class Ticker:
         return {
             "status": "ok",
             "ticker_running": self.is_running(),
+            "owns_schedule": self._owns_schedule,
+            "schedule_held_by": standby_holder,
             "missed_work_policy": self._missed_work_policy,
             "pending_missed_todo_count": len(pending_ids),
             "pending_missed_todo_ids": pending_ids,
             "pending_missed_todos": pending_entries,
-            "trigger_catchup_paused": self._trigger_catchup_paused,
+            "trigger_catchup_paused": catchup_paused,
             "last_started_at": state.get("last_started_at"),
             "last_clean_shutdown_at": state.get("last_clean_shutdown_at"),
             "last_missed_detection_at": state.get("last_missed_detection_at"),

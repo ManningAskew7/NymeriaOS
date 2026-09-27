@@ -557,6 +557,11 @@ _NON_STORE_DATA_DIR_CHILDREN: dict[str, _NonStoreChild] = {
         "surfaced, never which one may run (that is the role gate's job)",
         secret_at_rest=False,
     ),
+    "scheduler.lock": _NonStoreChild(
+        "OS lock naming the one process that runs the scheduler (#397); its "
+        "content is a diagnostic note, the lock is the open file",
+        secret_at_rest=False,
+    ),
     "scheduler_state.json": _NonStoreChild(
         "not yet classified: scheduler lifecycle state", secret_at_rest=False
     ),
