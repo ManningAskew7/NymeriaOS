@@ -40,14 +40,14 @@ Upgrade later with `uv tool upgrade nymeriaos`. To try it without installing:
 **One-line installer** (Linux, macOS, WSL; asks which track you want):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh | sh
+curl -fsSL https://nymeriaos.com/install.sh | sh
 ```
 
 **Windows** (PowerShell; installs the stable track and can start the backend
 at logon):
 
 ```powershell
-irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 | iex
+irm https://nymeriaos.com/install.ps1 | iex
 ```
 
 **Source** (hackable: edits under the checkout apply on the next restart,

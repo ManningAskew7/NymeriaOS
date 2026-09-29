@@ -1,7 +1,7 @@
 #!/bin/sh
 # NymeriaOS installer (front door).
 #
-#   curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh | sh
+#   curl -fsSL https://nymeriaos.com/install.sh | sh
 #
 # Lets you choose between three install tracks:
 #   Slim   - simpler, best for a few users. Single process on SQLite, installed
@@ -15,7 +15,8 @@
 #            for diff/branch/revert safety.
 #
 # Cautious users: download and read this script before running it, e.g.
-#   curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh -o install.sh
+#   curl -fsSL https://nymeriaos.com/install.sh -o install.sh
+# (that URL redirects to https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh)
 #   less install.sh && sh install.sh
 #
 # Overridable via environment variables:

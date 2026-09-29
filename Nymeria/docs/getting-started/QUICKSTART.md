@@ -29,13 +29,13 @@ Get NymeriaOS running in under 10 minutes.
 The installer lets you pick a track and runs the right commands for you:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh | sh
+curl -fsSL https://nymeriaos.com/install.sh | sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 | iex
+irm https://nymeriaos.com/install.ps1 | iex
 ```
 
 It asks whether you want **Slim** (simpler, best for a few users; single process
@@ -47,8 +47,13 @@ own source). Non-interactive use: `... | sh -s -- --slim`, `--full`, or
 `--source`. Cautious users can download and read the script first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh -o install.sh
+curl -fsSL https://nymeriaos.com/install.sh -o install.sh
 ```
+
+The short URLs redirect to the scripts in the public repository,
+`https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh`
+and `install.ps1` beside it; fetch those directly if you would rather not go
+through the redirect.
 
 ### Manual install: the Stable channel
 

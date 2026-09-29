@@ -131,7 +131,7 @@ fetches its own Python, so the Microsoft Store `python` stub does not matter).
 from PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 | iex
+irm https://nymeriaos.com/install.ps1 | iex
 ```
 
 Update later with `uv tool upgrade nymeriaos`. Config and data live under

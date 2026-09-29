@@ -11,10 +11,11 @@
     Mirrors the Slim track of install.sh. The Full (Docker) track is offered
     only as a fallback message if the native wheel install fails.
 
-        irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 | iex
+        irm https://nymeriaos.com/install.ps1 | iex
 
     Cautious users: download and read this script before running it, e.g.
-        irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1 -OutFile install.ps1
+        irm https://nymeriaos.com/install.ps1 -OutFile install.ps1
+    (that URL redirects to https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.ps1)
         notepad install.ps1
         powershell -ExecutionPolicy Bypass -File .\install.ps1
 
@@ -184,7 +185,7 @@ function Show-WheelFailureHelp {
     Write-Host 'Fall back to the containerized Slim stack (Docker Desktop required):' -ForegroundColor Cyan
     Write-Host '  1. Install Docker Desktop: https://www.docker.com/products/docker-desktop/'
     Write-Host '  2. Then run the Full (Docker) track of the shell installer:'
-    Write-Host '       irm https://raw.githubusercontent.com/ManningAskew7/NymeriaOS/main/install.sh -OutFile install.sh'
+    Write-Host '       irm https://nymeriaos.com/install.sh -OutFile install.sh'
     Write-Host '       # in WSL or Git Bash:  sh install.sh --full'
     Write-Host ''
     Write-Host 'The Docker path builds from a source checkout and bundles Python and'
