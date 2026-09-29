@@ -146,17 +146,22 @@ def _stdin_is_interactive() -> bool:
         return False
 
 
-_BOT_API_URL_HELP = "URL of running Nymeria API (e.g. http://localhost:8000)"
+_BOT_API_URL_HELP = (
+    "URL of the running Nymeria API (default: NYMERIA_API_URL, else this "
+    "install's own http://localhost:API_PORT; inside a container, nymeria-api:8000)"
+)
 
 
 def _resolve_api_url(args: argparse.Namespace) -> str:
-    """Thin-client API URL: explicit ``--api-url``, else the Docker default.
+    """Thin-client API URL for the chat-platform bot runners.
 
-    Shared by the chat-platform bot runners. The worker resolves its own URL
-    (it also honours the ``NYMERIA_API_URL`` env var) and the MCP server
-    defers resolution, so neither routes through this helper.
+    ``--api-url``, else ``NYMERIA_API_URL``, else this install's own API
+    (``config.settings.thin_client_api_url``, shared with the MCP server; #101
+    entry 11b). The worker resolves its own URL and is Docker-only.
     """
-    return getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    from nymeria.config.settings import thin_client_api_url
+
+    return thin_client_api_url(getattr(args, "api_url", None))
 
 
 def _install_exit_handlers(
@@ -1836,7 +1841,7 @@ Examples:
     mcp_parser.add_argument(
         "--api-url",
         default=None,
-        help="URL of the running Nymeria API (default: NYMERIA_API_URL, Docker nymeria-api, or localhost:8000)",
+        help=_BOT_API_URL_HELP,
     )
 
     # Claude Code runner subcommand (host-side bridge service)

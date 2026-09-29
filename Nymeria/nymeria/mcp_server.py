@@ -12,11 +12,9 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import sys
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -56,13 +54,15 @@ _client: Optional[NymeriaBackendClient] = None
 
 
 def _resolve_api_url(api_url: Optional[str] = None) -> str:
-    """Resolve the Nymeria API URL for local and Docker runs."""
-    explicit = api_url or _backend_url_override or os.environ.get("NYMERIA_API_URL")
-    if explicit:
-        return explicit.rstrip("/")
-    if Path("/.dockerenv").exists():
-        return "http://nymeria-api:8000"
-    return "http://localhost:8000"
+    """Resolve the Nymeria API URL for local and Docker runs.
+
+    Same rule as the chat bots (``thin_client_api_url``): an explicit URL, then
+    ``NYMERIA_API_URL``, then the compose service in a container, then this
+    install's own ``API_PORT`` on loopback.
+    """
+    from nymeria.config.settings import thin_client_api_url
+
+    return thin_client_api_url(api_url or _backend_url_override)
 
 
 def configure_backend(

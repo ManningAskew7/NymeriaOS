@@ -68,10 +68,12 @@ Restart after code or environment changes:
 docker compose --env-file .env.docker restart slack-bot
 ```
 
-Local thin-client run:
+Local thin-client run (a native install; it finds the backend from
+`NYMERIA_API_URL`, else `http://localhost:<API_PORT>` from the install's
+config, so `--api-url` is only needed for another backend):
 
 ```bash
-python3 run.py slack-bot --api-url http://localhost:8000
+nymeria slack-bot             # or: python3 run.py slack-bot
 ```
 
 ## Linking Users

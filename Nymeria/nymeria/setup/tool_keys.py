@@ -69,7 +69,11 @@ BACKEND_KEY_SPECS: dict[str, KeySpec] = {
         "SEARXNG_BASE_URL",
         "SearXNG base URL",
         "url",
-        note="The URL of your self-hosted SearXNG instance, not a secret.",
+        note=(
+            "The URL of a SearXNG instance you run yourself (not a secret); "
+            "Nymeria does not start one on this install shape. Docker installs "
+            "get a bundled one instead."
+        ),
     ),
     # fetch_url_* (fetch_url_nymeria is keyless and intentionally absent)
     "jina_reader_fetch_url": KeySpec(
@@ -201,6 +205,19 @@ def already_provided_env(state: "WizardState") -> set[str]:
     return provided
 
 
+def _bundled_env(state: "WizardState") -> set[str]:
+    """Env vars this hosting shape supplies itself, so the keys step skips them.
+
+    The Docker stacks run the SearXNG sidecar (the `search` compose profile)
+    and finalize seeds its URL (`http://searxng:8080`), so asking a Docker
+    install for "your self-hosted instance" invited a wrong answer that would
+    have replaced the working sidecar URL (#101 entry 7).
+    """
+    from ..onboarding import HostingOption
+
+    return {"SEARXNG_BASE_URL"} if state.hosting is HostingOption.DOCKER else set()
+
+
 def required_backend_credentials(state: "WizardState") -> list[KeySpec]:
     """KeySpecs to prompt for, given the selected backends and what's already set.
 
@@ -209,7 +226,7 @@ def required_backend_credentials(state: "WizardState") -> list[KeySpec]:
     credential need; provider-scoped voice vars stop counting as provided
     when the voice provider switched this run (``_stale_voice_env``).
     """
-    provided = already_provided_env(state) - _stale_voice_env(state)
+    provided = (already_provided_env(state) - _stale_voice_env(state)) | _bundled_env(state)
     candidates: list[KeySpec] = [
         spec
         for tool in _selected_backends(state)

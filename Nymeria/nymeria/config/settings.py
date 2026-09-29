@@ -342,6 +342,32 @@ def _in_container() -> bool:
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
+DOCKER_API_URL = "http://nymeria-api:8000"
+
+
+def thin_client_api_url(explicit: Optional[str] = None) -> str:
+    """The API a thin client (chat bot, MCP server, ``slash_command``) dials.
+
+    ``explicit`` (a ``--api-url`` flag), else ``NYMERIA_API_URL``, else inside a
+    container the full stack's compose service, else this install's own
+    loopback API: the ``API_PORT`` the boot load read from the root's config
+    (``nymeria init`` writes it; :8000 when unset). The host fallback used to
+    be the Docker service name for the bots and :8000 for MCP, so a bot on a
+    native install dialed a hostname only a compose network resolves (#101
+    entry 11b). Every compose file passes ``--api-url`` or sets the env var,
+    so the container branch is a last resort, not the Docker path.
+    """
+
+    env = os.environ
+    url = (explicit or "").strip() or (env.get("NYMERIA_API_URL") or "").strip()
+    if url:
+        return url.rstrip("/")
+    if _in_container():
+        return DOCKER_API_URL
+    port = (env.get("API_PORT") or "").strip()
+    return f"http://localhost:{port if port.isdigit() else 8000}"
+
+
 def _docker_service_host(value: str) -> Optional[str]:
     """The host of a URL value when it looks like a Docker service name, else None.
 

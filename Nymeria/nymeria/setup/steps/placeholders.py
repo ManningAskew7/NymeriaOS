@@ -147,10 +147,10 @@ def make_image_gen_step() -> Step:
         step_id="image_gen",
         title="Image generation providers",
         note=(
-            "Pick the image generation tools for your default toolset (all five "
-            "are built and saved to your default thread tools). Each needs "
-            "its provider API key set. The budget hosts (Replicate, fal.ai) cost "
-            "far less than the flagship providers."
+            "Optional: select none to skip image generation; you can enable "
+            "these tools later. Each one needs its provider's API key (asked "
+            "on a later screen). The budget hosts (Replicate, fal.ai) cost far "
+            "less than the flagship providers."
         ),
         choices=_choices(family_catalog.image_gen_choices()),
         get_initial=get_initial,

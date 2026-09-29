@@ -18,14 +18,14 @@ from textual.widgets import Static
 from ...onboarding import HOSTING_CHOICES
 from ..environment import EnvironmentReport, _floor1, detect_environment
 from ..nav import Step
-from .base import ACCENT, SECONDARY, WizardStep
+from .base import ACCENT, SECONDARY, SUCCESS, WizardStep
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
 
 
 def _ok(flag: bool) -> str:
-    return "[#86efac]yes[/#86efac]" if flag else "[#fca5a5]no[/#fca5a5]"
+    return f"[{SUCCESS}]yes[/]" if flag else "[#fca5a5]no[/#fca5a5]"
 
 
 def _report_markup(report: EnvironmentReport) -> str:

@@ -73,6 +73,13 @@ Screen {
     padding: 0 2;
 }
 
+/* CLIProxy login status: a blank row between it and the OAuth URL block
+   below, so a finished login (green) is not lost in the URL text (backlog
+   #101 log entry 3). */
+#cliproxy-login-status {
+    margin: 0 0 1 0;
+}
+
 /* The reranker step's dynamic per-embedder pairing hint: secondary text in a
    quiet box so the guidance reads as help, not a selectable option. */
 #combo-rec {

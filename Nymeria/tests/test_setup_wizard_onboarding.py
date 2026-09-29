@@ -244,6 +244,33 @@ def test_required_backend_credentials_handles_url_keyless_and_primary_key():
     assert "FAL_API_KEY" in needed
 
 
+def test_searxng_copy_says_who_runs_the_instance():
+    """#101 entry 7: "Self-hosted" did not land as "you run it". Docker installs
+    get the bundled sidecar (finalize seeds http://searxng:8080), so they are
+    not asked for a URL at all; other shapes are asked, with copy that says
+    Nymeria starts nothing there."""
+    from nymeria.onboarding import HostingOption
+    from nymeria.setup import family_catalog
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.tool_keys import required_backend_credentials
+
+    desc = {c.value: c.description for c in family_catalog.web_search_choices()}[
+        "web_search_searxng"
+    ]
+    assert "SEARXNG_BASE_URL" in desc and "Docker" in desc
+
+    picks = {"web_search": ["web_search_searxng", "web_search_tavily"]}
+    docker = WizardState(hosting=HostingOption.DOCKER, extras=dict(picks))
+    docker_needed = {spec.env_var for spec in required_backend_credentials(docker)}
+    assert "SEARXNG_BASE_URL" not in docker_needed
+    assert "TAVILY_API_KEY" in docker_needed  # only the bundled URL is skipped
+
+    for hosting in (HostingOption.LOCAL, HostingOption.SERVICE, None):
+        native = WizardState(hosting=hosting, extras=dict(picks))
+        by_env = {spec.env_var: spec for spec in required_backend_credentials(native)}
+        assert "does not start" in by_env["SEARXNG_BASE_URL"].note
+
+
 def test_fetch_dependency_nudge_predicates():
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps.placeholders import (

@@ -68,6 +68,20 @@ docker logs nymeria-discord-bot --tail 50
 
 When not using the Discord bot, set `DISCORD_BOT_TOKEN=disabled` to prevent docker-compose from complaining about the missing env var.
 
+Without Docker (a native install: `nymeria slim`, the background service, or a
+source checkout), put the token in the install's config file (`config.env`,
+or `.env` in a checkout) and run the bot in its own terminal next to the
+backend:
+
+```bash
+nymeria discord-bot                 # or: python3 run.py discord-bot
+```
+
+It finds the backend itself (`NYMERIA_API_URL`, else
+`http://localhost:<API_PORT>` from the same config; `--api-url` overrides) and
+uses the service token the backend mints into its data dir. A pip install
+without the bot's SDK says which extra to install (`nymeriaos[discord]`).
+
 ### 4. Link Accounts
 
 Every Discord sender resolves to a Nymeria account through a platform link:

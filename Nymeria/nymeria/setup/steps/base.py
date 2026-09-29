@@ -43,6 +43,9 @@ ACCENT = "#bbddfb"
 # read comfortably. Keep in sync with the secondary color in theme.tcss.
 SECONDARY = "#b6c1ce"
 _HINT_TEXT = "#6b7280"
+# Success text (the welcome report's "yes", a completed login): the same green
+# every wizard screen uses for a good outcome.
+SUCCESS = "#86efac"
 
 _CODE_SPAN = re.compile(r"`([^`\n]+)`")
 
@@ -507,9 +510,26 @@ class MultiSelectStep(WizardStep):
         # BracketSelectionList renders the checkboxes as [x] / [ ]; queries
         # keep using the SelectionList base type.
         yield BracketSelectionList(*selections)
+        # The highlighted row's description, like the single-select panel. The
+        # catalogs write one per choice ("keyless", "key required", who runs
+        # SearXNG) and they never rendered here (#101 entries 7 and 8).
+        yield Static("", id="choice-desc")
 
     def on_mount(self) -> None:
+        # Focus highlights the first row, whose SelectionHighlighted fills the
+        # description panel below (no separate initial sync needed).
         self.query_one(SelectionList).focus()
+
+    def on_selection_list_selection_highlighted(
+        self, event: SelectionList.SelectionHighlighted
+    ) -> None:
+        self._sync_description(event.selection_index)
+
+    def _sync_description(self, index: int | None) -> None:
+        description = ""
+        if index is not None and 0 <= index < len(self._choices):
+            description = self._choices[index].description
+        self.query_one("#choice-desc", Static).update(code_markup(description))
 
     def collect(self) -> bool:
         self._store(self.state, list(self.query_one(SelectionList).selected))

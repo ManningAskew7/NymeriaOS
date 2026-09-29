@@ -1166,3 +1166,74 @@ def test_compose_up_without_a_joined_network_touches_no_network(monkeypatch, tmp
 
     assert cliproxy_deploy.compose_up(tmp_path) == (True, "")
     assert docker.calls == [["docker", "compose", "up", "-d"]]
+
+
+def _run_wizard_login(monkeypatch, **fake_kwargs):
+    """Drive the TUI login step against the scripted proxy; return the status
+    panel's (plain text, markup spans, bottom margin)."""
+    import asyncio
+
+    from textual.widgets import Static
+
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps import cliproxy as cliproxy_steps
+
+    _fake_cliproxy_client(monkeypatch, knobs={"api-keys": ["cpx-existing"]}, **fake_kwargs)
+    monkeypatch.setattr(cliproxy_steps, "_browser_launch_blocked", lambda: True)
+    monkeypatch.setattr(cliproxy_steps, "LOGIN_POLL_INTERVAL_SECONDS", 0.01)
+    state = WizardState(
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH,
+        cliproxy_provider="claude",
+        cliproxy_management_url="http://localhost:8318",
+        cliproxy_management_key="cpm-secret",
+    )
+
+    async def drive():
+        app = SetupWizardApp(state, steps=[cliproxy_steps.make_cliproxy_login_step()])
+        async with app.run_test() as pilot:
+            for _ in range(40):
+                await pilot.pause(0.02)
+                panel = app.screen.query_one("#cliproxy-login-status", Static)
+                if "Starting" not in str(panel.render()):
+                    break
+            rendered = panel.render()
+            spans = " ".join(str(span.style) for span in getattr(rendered, "spans", []))
+            return str(rendered), spans, panel.styles.margin.bottom
+
+    return asyncio.run(drive())
+
+
+def test_wizard_login_success_is_green_and_set_apart(monkeypatch):
+    """#101 entry 3: the success line rendered plain, easy to miss beside the
+    OAuth URL block. Both success shapes are green; the panel keeps a blank
+    row between the status and the URL block below it."""
+    from nymeria.setup.steps.base import SUCCESS
+
+    text, spans, margin = _run_wizard_login(
+        monkeypatch, auth_files=[_active_auth("claude", account="max@example.com")]
+    )
+    assert text.startswith("Already logged in as max@example.com")
+    assert SUCCESS in spans
+    assert margin == 1
+
+    text, spans, _ = _run_wizard_login(
+        monkeypatch,
+        auth_files=[],
+        status_script=["ok"],
+        login_lands=_active_auth("claude", account="new@example.com"),
+    )
+    assert text.startswith("Login complete as new@example.com")
+    assert SUCCESS in spans
+
+
+def test_wizard_login_failure_is_not_green_and_proxy_text_is_literal(monkeypatch):
+    from nymeria.cliproxy.management_client import CLIProxyManagementError
+    from nymeria.setup.steps.base import SUCCESS
+
+    text, spans, _ = _run_wizard_login(
+        monkeypatch, raise_on_list=CLIProxyManagementError("bad [bold]gateway[/bold]")
+    )
+    assert text == "Cannot reach the proxy: bad [bold]gateway[/bold]"
+    assert SUCCESS not in spans

@@ -46,7 +46,12 @@ _WEB_SEARCH_LABELS: dict[str, tuple[str, str]] = {
     "web_search_exa_ai": ("Exa", "Links and previews; pair with a web fetch backend."),
     "web_search_firecrawl": ("Firecrawl", "Links and previews; pair with a web fetch backend."),
     "web_search_brave": ("Brave Search", "Links and previews; pair with a web fetch backend."),
-    "web_search_searxng": ("SearXNG", "Self-hosted; pair with a web fetch backend."),
+    "web_search_searxng": (
+        "SearXNG",
+        "Self-hosted metasearch. Docker installs start a bundled SearXNG; on "
+        "other installs you run it yourself and give its URL "
+        "(SEARXNG_BASE_URL). Pair with a web fetch backend.",
+    ),
     "web_search_ddgs": (
         "DDGS metasearch",
         "Keyless, no setup; rotates scraped engines; pair with a web fetch backend.",

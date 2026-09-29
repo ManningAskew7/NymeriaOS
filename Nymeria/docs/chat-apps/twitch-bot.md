@@ -271,8 +271,11 @@ api container predates them, recreate it (`up -d api`, not `restart`, which
 keeps old env) or `twitch_send` fails with "TWITCH_CHANNEL is not
 configured" while the bot itself looks healthy.
 
-Outside Docker: `python3 run.py twitch-bot --api-url http://localhost:8000`
-(requires `pip install 'nymeriaos[twitch]'` and `NYMERIA_SERVICE_TOKEN`).
+Outside Docker: `nymeria twitch-bot` (or `python3 run.py twitch-bot`) in its
+own terminal next to the backend. It finds the backend from `NYMERIA_API_URL`,
+else `http://localhost:<API_PORT>` from the install's config (`--api-url`
+overrides), and uses the service token the backend mints into its data dir
+(`NYMERIA_SERVICE_TOKEN` overrides). Requires `pip install 'nymeriaos[twitch]'`.
 
 ### 6. Configure the Thread
 

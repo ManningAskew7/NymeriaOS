@@ -713,6 +713,62 @@ def test_wizard_pilot_image_gen_multiselect_seeds_real_backend():
     ]
 
 
+def test_wizard_pilot_multiselect_shows_the_highlighted_choice_description():
+    """#101 entries 7 and 8: the family descriptions ("Keyless, no setup",
+    "(key required)", who runs SearXNG) never rendered on a multi-select step,
+    only the bare labels. The highlighted row's description now shows under the
+    list and follows the cursor, like the single-select panel."""
+    from textual.content import Content
+    from textual.widgets import Static
+
+    from nymeria.setup import family_catalog
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.base import code_markup
+    from nymeria.setup.steps.placeholders import make_web_search_step
+
+    choices = family_catalog.web_search_choices()
+    target = next(i for i, c in enumerate(choices) if c.value == "web_search_searxng")
+    assert target > 0  # the cursor has to MOVE for the second assert to mean anything
+
+    def desc(index: int) -> str:
+        return Content.from_markup(code_markup(choices[index].description)).plain
+
+    async def drive() -> tuple[str, str]:
+        app = SetupWizardApp(WizardState(), steps=[make_web_search_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            panel = app.screen.query_one("#choice-desc", Static)
+            first = str(panel.render())
+            for _ in range(target):
+                await pilot.press("down")
+            await pilot.pause()
+            return first, str(panel.render())
+
+    first, moved = asyncio.run(drive())
+    assert first == desc(0)
+    assert moved == desc(target)
+
+
+def test_wizard_pilot_image_gen_step_says_skipping_is_fine():
+    """#101 entry 8: with no key on hand, the image step read as a demand."""
+    from textual.widgets import Static
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import make_image_gen_step
+
+    async def drive() -> str:
+        app = SetupWizardApp(WizardState(), steps=[make_image_gen_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return str(app.screen.query_one("#wizard-note", Static).render())
+
+    note = " ".join(asyncio.run(drive()).split())
+    assert "Optional" in note
+    assert "select none to skip" in note
+
+
 def test_wizard_pilot_backend_keys_step_collects_key():
     """The backend-keys step renders one input per selected backend and writes
     the value into optional_env under the canonical env var.

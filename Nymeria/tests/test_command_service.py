@@ -9366,3 +9366,19 @@ def test_thread_list_renders_a_row_without_timestamps_and_resolves_it_by_id() ->
     assert len(rows) == 2
     assert "live-111" in rows[0] and "bare-000" in rows[1]
     assert resolve_thread_reference(threads, "bare-000").thread == threads[0]
+
+
+def test_slash_command_backend_url_follows_this_installs_port(monkeypatch) -> None:
+    # The in-process `slash_command` client used to fall back to :8000 (and to
+    # `api:8000` in a container) whatever API_PORT said; it now shares the
+    # thin-client rule with the bots and the MCP server (#101 entry 11b review).
+    from nymeria.config import settings as settings_mod
+    from nymeria.core import command_service
+
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: False)
+    monkeypatch.delenv("NYMERIA_API_URL", raising=False)
+    monkeypatch.setenv("API_PORT", "8010")
+    assert command_service._resolve_base_url() == "http://localhost:8010"
+
+    monkeypatch.setenv("NYMERIA_API_URL", "http://pinned:9/")
+    assert command_service._resolve_base_url() == "http://pinned:9"

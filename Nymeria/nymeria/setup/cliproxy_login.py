@@ -353,7 +353,7 @@ async def _login_console(
             return False
         if status == "ok":
             console.print(
-                f"[green]Logged in to {spec.label}"
+                f"\n[green]Logged in to {spec.label}"
                 f"{f' as {escape(detail)}' if detail else ''}.[/green]"
             )
             await _post_login_console(state, client, spec)

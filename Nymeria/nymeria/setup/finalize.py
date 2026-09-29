@@ -835,6 +835,7 @@ def finalize(
         root=root,
         connect_token=connect_token,
         non_interactive=non_interactive,
+        config_path=config_path,
     )
 
 
@@ -2342,6 +2343,13 @@ def _warn_stale_service_artifact(state: WizardState, console: Console) -> None:
     )
 
 
+# The per-platform bot guides, on the public mirror (a pip install has no docs
+# dir; the source path is Nymeria/docs/chat-apps/).
+CHAT_APPS_DOCS = (
+    "https://github.com/ManningAskew7/NymeriaOS/tree/main/Nymeria/docs/chat-apps"
+)
+
+
 def print_external_access_summary(state: WizardState, console: Console) -> None:
     """Report the external-access outcome: URL + verification, or guidance."""
 
@@ -2361,7 +2369,7 @@ def print_external_access_summary(state: WizardState, console: Console) -> None:
     if access is ExternalAccess.CHAT_BOTS:
         console.print(
             "  Chat-app bots need no inbound networking: set a bot token and "
-            "start the bot. See the remote-access doc for per-platform steps."
+            "start the bot (see Chat apps below)."
         )
         return
     active_url = active_public_url(state)
@@ -2402,6 +2410,51 @@ def print_external_access_summary(state: WizardState, console: Console) -> None:
             "  Not set up in this run. See the remote-access doc, or re-run "
             "`nymeria init external_access`."
         )
+
+
+def print_chat_apps_hint(
+    state: WizardState, console: Console, *, config_path: Path
+) -> None:
+    """Point at chat-app bots with a start command that works on this shape.
+
+    The closing output used to mention only the browser and the CLI (#101
+    entry 11b). Native installs run ``nymeria <platform>-bot`` beside the
+    backend: the bot finds this install's API from its own config
+    (``config.settings.thin_client_api_url``) and the self-minted service
+    token from the shared data dir. The full Docker stack starts a bot by its
+    compose profile. The single-container image carries no bot SDKs, so it
+    gets an honest "not here" rather than a command that cannot work.
+    """
+
+    console.print("\n[bold]Chat apps[/bold] (optional)")
+    if state.hosting is HostingOption.DOCKER and not _is_full_stack(state):
+        console.print(
+            "  The single-container stack does not run chat-app bots yet (its "
+            "image leaves out the bot libraries); the full Docker stack or a "
+            "native install runs Discord, Telegram, Slack, and Twitch bots."
+        )
+        console.print(f"  Setup guides: {CHAT_APPS_DOCS}", soft_wrap=True)
+        return
+    console.print(
+        "  Discord, Telegram, Slack, and Twitch bots can talk to this install. "
+        f"Add the platform's bot token to {escape(str(config_path))} (for "
+        "example TELEGRAM_BOT_TOKEN), then start the bot:"
+    )
+    if _is_full_stack(state):
+        spec = _docker_stack_spec(state)
+        _print_command(
+            console, _compose_command_str(spec, "--profile", "telegram", "up", "-d")
+        )
+        console.print("  Other profiles: discord, slack, twitch.")
+        console.print(f"  Setup guides: {CHAT_APPS_DOCS}", soft_wrap=True)
+        return
+    _print_command(console, "nymeria telegram-bot")
+    console.print(
+        "  Or discord-bot, slack-bot, twitch-bot, each in its own terminal next "
+        "to the backend. A bot finds this install by itself and says what else "
+        "it needs."
+    )
+    console.print(f"  Setup guides: {CHAT_APPS_DOCS}", soft_wrap=True)
 
 
 def verify_public_url_now(state: WizardState, console: Console) -> None:
@@ -2631,6 +2684,7 @@ def run_next_action(
     root: Path,
     connect_token: str | None = None,
     non_interactive: bool = False,
+    config_path: Path | None = None,
 ) -> int:
     """Hand off after config is written.
 
@@ -2646,7 +2700,15 @@ def run_next_action(
     a fresh interactive native install, the started backend's web UI is
     opened already signed in (the URL fragment carries the token), so the
     local happy path never requires learning what a token is.
+
+    ``config_path`` (the file this run wrote) enables the closing Chat apps
+    block (#101 entry 11b): last on every path, except before a foreground
+    start, whose server output would bury it.
     """
+
+    def chat_apps() -> None:
+        if config_path is not None:
+            print_chat_apps_hint(state, console, config_path=config_path)
 
     if state.next_action is NextAction.START_API_OPEN_FRONTEND:
         handoff_token = (
@@ -2657,8 +2719,11 @@ def run_next_action(
             else None
         )
         if state.hosting is HostingOption.DOCKER:
-            return _start_now_docker(console, state=state, root=root)
+            status = _start_now_docker(console, state=state, root=root)
+            chat_apps()
+            return status
         if state.hosting is HostingOption.LOCAL:
+            chat_apps()
             return _start_now_local(
                 console,
                 state=state,
@@ -2667,10 +2732,13 @@ def run_next_action(
                 token_printed=connect_token is not None,
             )
         if state.hosting is HostingOption.SERVICE:
-            return _start_now_service(
+            status = _start_now_service(
                 console, state=state, root=root, handoff_token=handoff_token
             )
+            chat_apps()
+            return status
     print_next_action(state, console, connect_token=connect_token)
+    chat_apps()
     return 0
 
 

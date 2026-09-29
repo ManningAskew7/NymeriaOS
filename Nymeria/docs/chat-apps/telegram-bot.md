@@ -71,6 +71,20 @@ docker compose --env-file .env.docker restart telegram-bot
 docker logs nymeria-telegram-bot --tail 50
 ```
 
+Without Docker (a native install: `nymeria slim`, the background service, or a
+source checkout), put the token in the install's config file (`config.env`,
+or `.env` in a checkout) and run the bot in its own terminal next to the
+backend:
+
+```bash
+nymeria telegram-bot                 # or: python3 run.py telegram-bot
+```
+
+It finds the backend itself (`NYMERIA_API_URL`, else
+`http://localhost:<API_PORT>` from the same config; `--api-url` overrides) and
+uses the service token the backend mints into its data dir. A pip install
+without the bot's SDK says which extra to install (`nymeriaos[telegram]`).
+
 ### 4. Find Your Chat ID
 
 Send a message to the bot, then check the logs:

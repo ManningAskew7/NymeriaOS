@@ -21,6 +21,7 @@ import webbrowser
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from rich.markup import escape
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -71,7 +72,15 @@ from ..nav import Step
 from ..state import WizardState
 from ..widgets import ListItem, SearchableList
 from .auth import is_cliproxy_auth
-from .base import Choice, CircleRadioButton, FormStep, SingleSelectStep, WizardStep
+from .base import (
+    SUCCESS,
+    Choice,
+    CircleRadioButton,
+    FormStep,
+    SingleSelectStep,
+    WizardStep,
+    code_markup,
+)
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -202,7 +211,10 @@ class CLIProxyEndpointStep(FormStep):
 
     def _status(self, message: str) -> None:
         if self.is_mounted:
-            self.query_one("#cliproxy-endpoint-status", Static).update(message)
+            # Plain text: an interpolated proxy URL or error is data, not markup.
+            self.query_one("#cliproxy-endpoint-status", Static).update(
+                code_markup(message)
+            )
 
     def _deploy_selected(self) -> bool:
         buttons = list(self.query_one(".radio-group").query(CircleRadioButton))
@@ -412,9 +424,15 @@ class CLIProxyLoginStep(WizardStep):
         self._spec = get_cliproxy_provider(self.state.cliproxy_provider or "")
         self._run_login()
 
-    def _status(self, message: str) -> None:
+    def _status(self, message: str, *, ok: bool = False) -> None:
+        """Show ``message`` (plain text; proxy errors and account labels are
+        data, never markup). ``ok`` marks a finished login: green, so it stands
+        out from the OAuth URL block below it (#101 entry 3)."""
         if self.is_mounted:
-            self.query_one("#cliproxy-login-status", Static).update(message)
+            markup = code_markup(message)
+            if ok:
+                markup = f"[bold {SUCCESS}]{markup}[/]"
+            self.query_one("#cliproxy-login-status", Static).update(markup)
 
     def action_relogin(self) -> None:
         self._force_relogin = True
@@ -459,7 +477,8 @@ class CLIProxyLoginStep(WizardStep):
             self._status(
                 f"Already logged in{f' as {account}' if account else ''}"
                 f"{backoff_note}. "
-                "Press Enter to continue, or Ctrl+R to log in again."
+                "Press Enter to continue, or Ctrl+R to log in again.",
+                ok=True,
             )
             return
 
@@ -478,7 +497,8 @@ class CLIProxyLoginStep(WizardStep):
         self._oauth_state = started["state"]
         url = started["url"]
         if self.is_mounted:
-            self.query_one("#cliproxy-login-url", Static).update(url)
+            # Data, not markup (a `[` in a URL would otherwise parse).
+            self.query_one("#cliproxy-login-url", Static).update(escape(url))
         if spec.flow == "device":
             self._status(
                 "Open the link above on any device and approve the login; "
@@ -511,7 +531,8 @@ class CLIProxyLoginStep(WizardStep):
                 await self._post_login(client, spec)
                 self._status(
                     f"Login complete{f' as {detail}' if detail else ''}. "
-                    "Press Enter to continue."
+                    "Press Enter to continue.",
+                    ok=True,
                 )
                 return
             if status == "error":

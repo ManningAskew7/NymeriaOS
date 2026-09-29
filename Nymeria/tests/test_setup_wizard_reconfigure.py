@@ -886,6 +886,97 @@ def test_print_deployment_summary_is_silent_without_recorded_choices():
     assert buf.getvalue().strip() == ""
 
 
+def test_chat_apps_hint_gives_a_start_command_that_works_on_this_shape(tmp_path):
+    """#101 entry 11b: the closing output never mentioned chat-app bots. Each
+    shape gets the command that actually starts one there."""
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.finalize import print_chat_apps_hint
+    from nymeria.setup.state import WizardState
+
+    native_config = tmp_path / "config.env"
+    for hosting in (HostingOption.LOCAL, HostingOption.SERVICE, None):
+        console, buf = _capture_console()
+        print_chat_apps_hint(WizardState(hosting=hosting), console, config_path=native_config)
+        out = " ".join(buf.getvalue().split())
+        assert "nymeria telegram-bot" in out
+        assert str(native_config) in out and "TELEGRAM_BOT_TOKEN" in out
+        assert "docs/chat-apps" in out
+        assert "--profile" not in out
+
+    console, buf = _capture_console()
+    print_chat_apps_hint(
+        WizardState(hosting=HostingOption.DOCKER, docker_stack=DockerStack.FULL, api_port=8010),
+        console,
+        config_path=tmp_path / ".env.docker",
+    )
+    out = " ".join(buf.getvalue().split())
+    assert "API_PORT=8010 docker compose" in out and "--profile telegram up -d" in out
+    assert "TELEGRAM_BOT_TOKEN" in out
+    assert "nymeria telegram-bot" not in out
+
+    # The single-container image carries no bot SDKs: say so instead of
+    # printing a command that cannot work.
+    console, buf = _capture_console()
+    print_chat_apps_hint(
+        WizardState(hosting=HostingOption.DOCKER, docker_stack=DockerStack.SLIM),
+        console,
+        config_path=tmp_path / ".env.docker",
+    )
+    out = " ".join(buf.getvalue().split())
+    assert "does not run chat-app bots" in out
+    assert "--profile" not in out and "nymeria telegram-bot" not in out
+
+
+def test_a_finished_run_points_at_chat_apps(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "init"
+    _first_run(monkeypatch, root, "--hosting", "local")
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Chat apps" in out and "nymeria telegram-bot" in out
+    # Part of the CLOSING instructions (review): after the start command and
+    # the doctor line, not above them where a chatty doctor scrolls it away.
+    assert out.index("Chat apps") > out.index("Start Nymeria with")
+    assert out.index("Chat apps") > out.rindex("nymeria doctor")
+
+
+def test_chat_apps_block_closes_a_start_now_but_precedes_a_foreground_one(
+    monkeypatch, tmp_path
+):
+    from nymeria.onboarding import NextAction
+    from nymeria.setup.state import WizardState
+
+    config_path = tmp_path / "config.env"
+
+    # Foreground local start: the server's own output would bury the block,
+    # so it prints BEFORE the start.
+    console, buf = _capture_console()
+    seen: dict[str, bool] = {}
+
+    def fake_local(console, **_kwargs):
+        seen["printed_before_start"] = "Chat apps" in buf.getvalue()
+        return 0
+
+    monkeypatch.setattr(finalize_mod, "_start_now_local", fake_local)
+    state = WizardState(
+        hosting=HostingOption.LOCAL, next_action=NextAction.START_API_OPEN_FRONTEND
+    )
+    finalize_mod.run_next_action(state, console, root=tmp_path, config_path=config_path)
+    assert seen == {"printed_before_start": True}
+
+    # Detached Docker start: the block comes after the start output.
+    console, buf = _capture_console()
+    monkeypatch.setattr(
+        finalize_mod,
+        "_start_now_docker",
+        lambda console, **_kwargs: console.print("STACK STARTED") or 0,
+    )
+    state = WizardState(
+        hosting=HostingOption.DOCKER, next_action=NextAction.START_API_OPEN_FRONTEND
+    )
+    finalize_mod.run_next_action(state, console, root=tmp_path, config_path=config_path)
+    out = buf.getvalue()
+    assert out.index("STACK STARTED") < out.index("Chat apps")
+
+
 def test_noninteractive_does_not_duplicate_primary_openai_key(monkeypatch, tmp_path):
     _stub_llm(monkeypatch)
     root = tmp_path / "runtime"

@@ -1831,3 +1831,23 @@ def test_primary_replay_gap_reports_incomplete_mcp_capture(monkeypatch):
     assert result["truncated"]
     assert result["done"] is False
     assert result["errors"][0]["code"] == "turn_replay_gap"
+
+
+def test_mcp_server_default_url_follows_this_installs_port(monkeypatch):
+    # The stdio server on a non-default native install (API_PORT=8010) used
+    # to fall back to localhost:8000 (#101 entry 11b, same resolver as the bots).
+    from nymeria import mcp_server
+    from nymeria.config import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: False)
+    monkeypatch.setattr(mcp_server, "_backend_url_override", None)
+    monkeypatch.delenv("NYMERIA_API_URL", raising=False)
+    monkeypatch.setenv("API_PORT", "8010")
+    assert mcp_server._resolve_api_url() == "http://localhost:8010"
+
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: True)
+    assert mcp_server._resolve_api_url() == "http://nymeria-api:8000"
+
+    monkeypatch.setenv("NYMERIA_API_URL", "http://env-url:1/")
+    assert mcp_server._resolve_api_url() == "http://env-url:1"
+    assert mcp_server._resolve_api_url("http://flag-url:2/") == "http://flag-url:2"

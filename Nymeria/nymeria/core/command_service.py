@@ -12,14 +12,12 @@ import asyncio
 import difflib
 import json
 import logging
-import os
 import shlex
 import time
 import uuid
 import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from collections.abc import Iterable, Sequence
 from typing import Any, Callable, Literal, Mapping, NoReturn, Optional
 from urllib.parse import quote
@@ -433,12 +431,12 @@ def _raise_http_status(status_code: int, detail: str) -> NoReturn:
 
 
 def _resolve_base_url() -> str:
-    explicit = os.environ.get("NYMERIA_API_URL")
-    if explicit:
-        return explicit.rstrip("/")
-    if Path("/.dockerenv").exists():
-        return "http://api:8000"
-    return "http://localhost:8000"
+    # The shared thin-client rule (NYMERIA_API_URL, the compose service in a
+    # container, else this install's own API_PORT on loopback); the old
+    # fallback here ignored API_PORT.
+    from ..config.settings import thin_client_api_url
+
+    return thin_client_api_url()
 
 
 def _actor_from_source(source: str | None) -> CommandActor:

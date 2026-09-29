@@ -156,9 +156,48 @@ def test_resolve_api_url_prefers_explicit():
     )
 
 
-def test_resolve_api_url_defaults_when_missing_or_none():
+@pytest.fixture
+def host_process(monkeypatch):
+    """A bot launched on the host (not in a container) with no URL configured."""
+    from nymeria.config import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: False)
+    monkeypatch.delenv("NYMERIA_API_URL", raising=False)
+    monkeypatch.delenv("API_PORT", raising=False)
+
+
+def test_resolve_api_url_on_the_host_dials_this_installs_own_port(host_process, monkeypatch):
+    # #101 entry 11b: `nymeria telegram-bot` on a slim or service install used
+    # to dial the Docker-only http://nymeria-api:8000.
+    monkeypatch.setenv("API_PORT", "8010")
+    assert run._resolve_api_url(argparse.Namespace()) == "http://localhost:8010"
+    assert run._resolve_api_url(argparse.Namespace(api_url=None)) == "http://localhost:8010"
+
+    monkeypatch.delenv("API_PORT")
+    assert run._resolve_api_url(argparse.Namespace()) == "http://localhost:8000"
+    monkeypatch.setenv("API_PORT", "not-a-port")
+    assert run._resolve_api_url(argparse.Namespace()) == "http://localhost:8000"
+
+
+def test_resolve_api_url_honours_nymeria_api_url(host_process, monkeypatch):
+    monkeypatch.setenv("API_PORT", "8010")
+    monkeypatch.setenv("NYMERIA_API_URL", "http://backend.lan:9000/")
+    assert run._resolve_api_url(argparse.Namespace()) == "http://backend.lan:9000"
+    # The flag still wins over the environment.
+    assert (
+        run._resolve_api_url(argparse.Namespace(api_url="http://localhost:9001"))
+        == "http://localhost:9001"
+    )
+
+
+def test_resolve_api_url_in_a_container_keeps_the_compose_service(monkeypatch):
+    from nymeria.config import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: True)
+    monkeypatch.delenv("NYMERIA_API_URL", raising=False)
+    # API_PORT is the HOST side of the mapping; the container side stays 8000.
+    monkeypatch.setenv("API_PORT", "8010")
     assert run._resolve_api_url(argparse.Namespace()) == "http://nymeria-api:8000"
-    assert run._resolve_api_url(argparse.Namespace(api_url=None)) == "http://nymeria-api:8000"
 
 
 def test_add_api_url_arg_default_help_and_parsing():
