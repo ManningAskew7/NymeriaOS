@@ -28,8 +28,10 @@ from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .bot_helpers import (
     RESOLVER_UNAVAILABLE_MESSAGE,
+    UNLINKED_BUTTON_NOTICE,
     PlatformResolveUnavailableError,
     UserResolver,
+    unlinked_sender_notice,
 )
 from .message_splitter import split_discord_message as split_message
 from .sse_consumer import (
@@ -405,9 +407,7 @@ class NymeriaDiscordBot(_BotBase):
         """Reply to an unlinked Discord user with a polite rejection."""
         try:
             await message.channel.send(
-                "This Discord account isn't linked to a Nymeria user yet. "
-                "Ask the admin to run: "
-                f"`python run.py users link-platform <email> discord {message.author.id}`"
+                unlinked_sender_notice("discord", message.author.id, logger=logger)
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not send unlinked rejection: %s", e)
@@ -448,9 +448,7 @@ class NymeriaDiscordBot(_BotBase):
 
         if user_id is None:
             await _send(
-                "This Discord account isn't linked to a Nymeria user yet. "
-                "Ask the admin to run: "
-                f"`python run.py users link-platform <email> discord {interaction.user.id}`"
+                unlinked_sender_notice("discord", interaction.user.id, logger=logger)
             )
             return None
 
@@ -1614,8 +1612,7 @@ class NymeriaDiscordBot(_BotBase):
                     return
                 if user_id is None:
                     await interaction.response.send_message(
-                        "This Discord account isn't linked to a Nymeria user "
-                        "yet, so it can't resolve approvals.",
+                        UNLINKED_BUTTON_NOTICE,
                         ephemeral=True,
                     )
                     return
@@ -1813,8 +1810,7 @@ class NymeriaDiscordBot(_BotBase):
                     return
                 if user_id is None:
                     await interaction.response.send_message(
-                        "This Discord account isn't linked to a Nymeria user "
-                        "yet, so it can't resolve consent prompts.",
+                        UNLINKED_BUTTON_NOTICE,
                         ephemeral=True,
                     )
                     return
@@ -1922,8 +1918,7 @@ class NymeriaDiscordBot(_BotBase):
                     return
                 if user_id is None:
                     await interaction.response.send_message(
-                        "This Discord account isn't linked to a Nymeria user "
-                        "yet, so it can't revert the swap.",
+                        UNLINKED_BUTTON_NOTICE,
                         ephemeral=True,
                     )
                     return

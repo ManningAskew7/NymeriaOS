@@ -73,14 +73,15 @@ When not using the Discord bot, set `DISCORD_BOT_TOKEN=disabled` to prevent dock
 Every Discord sender resolves to a Nymeria account through a platform link:
 
 ```bash
-python run.py users link-platform <email> discord <discord_user_id>
+python run.py users link-platform <user id or email> discord <discord_user_id>
 ```
 
-Unlinked senders get a rejection reply containing their numeric Discord id.
-The bot caches the "unlinked" answer for 30 minutes, so restart the bot
-container after linking someone who already messaged (under the
-default-account fallback below, that pre-restart window is worse than a
-rejection: the newly linked member's messages land on the shared account).
+Unlinked senders get a plain reply containing their numeric Discord id to
+pass on to you; the bot logs the exact link command at INFO. The bot re-checks
+an "unlinked" answer after 30 seconds, so a link takes effect on the sender's
+next message after that, with no restart. (Under the default-account fallback
+below, messages sent inside those 30 seconds still land on the shared
+account.)
 
 **Shared-server deployments** (one account for a whole guild) can skip
 per-user linking with an opt-in fallback: an unlinked sender whose message

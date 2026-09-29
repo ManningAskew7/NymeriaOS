@@ -1539,14 +1539,10 @@ def print_capability_summary(
     openai_ready = (
         spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars
     ) or bool(optional_env.get("OPENAI_API_KEY"))
-    search_ready = (
-        keyless_search_selected
-        or bool(optional_env.get("PERPLEXITY_API_KEY"))
-        or any(
-            optional_env.get(env)
-            for env in ("TAVILY_API_KEY", "EXA_API_KEY", "FIRECRAWL_API_KEY",
-                        "BRAVE_API_KEY", "SEARXNG_BASE_URL")
-        )
+    from ..config.settings import WEB_SEARCH_BACKEND_ENV_VARS
+
+    search_ready = keyless_search_selected or any(
+        optional_env.get(env) for env in WEB_SEARCH_BACKEND_ENV_VARS
     )
     image_ready = openai_ready or any(
         optional_env.get(env)

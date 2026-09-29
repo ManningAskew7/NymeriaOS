@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional
 
 import httpx
@@ -8,8 +9,10 @@ import httpx
 import pytest
 
 from nymeria.triggers.bot_helpers import (
+    NEGATIVE_USER_CACHE_TTL_SECONDS,
     SEEN_EVENT_MAX,
     SEEN_EVENT_TTL_SECONDS,
+    USER_CACHE_TTL_SECONDS,
     PlatformResolveUnavailableError,
     SeenEventCache,
     UserResolver,
@@ -21,6 +24,7 @@ from nymeria.triggers.bot_helpers import (
     join_api_base,
     normalize_base_url,
     safe_id,
+    unlinked_sender_notice,
 )
 
 
@@ -432,3 +436,88 @@ def test_seen_event_cache_probe_does_not_record():
     assert cache.mark_seen("k") is False and cache.was_seen("k") is True
     clock["t"] += 11
     assert cache.was_seen("k") is False  # expired
+
+
+# --- #101 entry 20 (2026-08-24): a fresh link takes effect on the retry ------
+
+
+def test_user_resolver_rechecks_a_miss_after_the_short_negative_ttl() -> None:
+    # The live onboarding order: message the bot to learn your id, the admin
+    # links it seconds later, you try again. Misses used to be cached for the
+    # full 30 minutes, so the retry was rejected identically.
+    clock = [100.0]
+    api = FlakyPlatformAPI([None, "dana", "should-not-be-asked"])
+    resolver = UserResolver(api, "telegram", clock=lambda: clock[0])
+
+    async def run() -> None:
+        assert await resolver.resolve(5559876543) is None
+        clock[0] = 100.0 + NEGATIVE_USER_CACHE_TTL_SECONDS - 1
+        assert await resolver.resolve(5559876543) is None  # still cached
+        clock[0] = 100.0 + NEGATIVE_USER_CACHE_TTL_SECONDS
+        assert await resolver.resolve(5559876543) == "dana"  # re-checked
+        # A hit keeps the long TTL: 29 minutes on, no new lookup.
+        clock[0] += USER_CACHE_TTL_SECONDS - 60
+        assert await resolver.resolve(5559876543) == "dana"
+
+    asyncio.run(run())
+
+    assert len(api.calls) == 2
+    assert NEGATIVE_USER_CACHE_TTL_SECONDS < USER_CACHE_TTL_SECONDS
+
+
+# --- #101 entry 14: the unlinked-sender reply is for the sender --------------
+
+
+@pytest.mark.parametrize(
+    "platform,label",
+    [
+        ("telegram", "Telegram"),
+        ("discord", "Discord"),
+        ("slack", "Slack"),
+        ("teams", "Microsoft Teams"),
+        ("whatsapp", "WhatsApp"),
+    ],
+)
+def test_unlinked_sender_notice_is_plain_copy_and_logs_the_admin_command(
+    caplog: pytest.LogCaptureFixture, platform: str, label: str
+) -> None:
+    logger = logging.getLogger("test.unlinked")
+    with caplog.at_level("INFO", logger="test.unlinked"):
+        reply = unlinked_sender_notice(platform, 12345, logger=logger)
+
+    assert f"This {label} account isn't linked to this assistant yet" in reply
+    assert reply.rstrip().endswith("12345")
+    for admin_only in ("run.py", "link-platform", "<email>", "`"):
+        assert admin_only not in reply
+    assert "link code" not in reply
+
+    [record] = [r for r in caplog.records if r.name == "test.unlinked"]
+    assert record.levelname == "INFO"
+    assert (
+        f"users link-platform <user id or email> {platform} 12345"
+        in record.getMessage()
+    )
+
+
+def test_unlinked_sender_notice_offers_link_code_only_where_parsed() -> None:
+    logger = logging.getLogger("test.unlinked")
+    reply = unlinked_sender_notice(
+        "slack", "T1:U2", logger=logger, accepts_link_code=True
+    )
+
+    assert reply.splitlines()[-1] == (
+        "If they gave you a link code, send the word link, a space, then the code."
+    )
+    # Teams renders inline HTML, so an angle-bracket placeholder would vanish.
+    assert "<" not in reply
+    assert "T1:U2" in reply
+
+
+def test_unlinked_button_notice_fits_a_telegram_alert_and_names_no_command() -> None:
+    # Telegram caps callback alerts at 200 characters, and the old copy sent
+    # unlinked users to /bind, which binds a thread and links no account.
+    from nymeria.triggers.bot_helpers import UNLINKED_BUTTON_NOTICE
+
+    assert len(UNLINKED_BUTTON_NOTICE) <= 200
+    assert "/bind" not in UNLINKED_BUTTON_NOTICE
+    assert "isn't linked to this assistant" in UNLINKED_BUTTON_NOTICE

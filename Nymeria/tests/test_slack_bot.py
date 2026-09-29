@@ -282,7 +282,7 @@ def test_unlinked_user_gets_rejection_without_agent_call():
     )
 
     assert api.chat_stream_calls == []
-    assert "not linked" in client.posts[0]["text"]
+    assert "isn't linked to this assistant" in client.posts[0]["text"]
     assert "T1:U1" in client.posts[0]["text"]
 
 
@@ -316,7 +316,7 @@ def test_resolver_failure_gets_infra_copy_not_link_instructions():
 
     assert api.chat_stream_calls == []
     text = client.posts[0]["text"]
-    assert "not linked" not in text
+    assert "isn't linked" not in text
     assert "service token" in text
 
 
@@ -483,7 +483,7 @@ def test_unlinked_user_slash_command_is_rejected_without_backend_call():
 
     assert api.command_calls == []
     assert api.chat_stream_calls == []
-    assert "not linked" in client.posts[0]["text"]
+    assert "isn't linked to this assistant" in client.posts[0]["text"]
 
 
 def test_bang_chat_stream_command_falls_through_normalized():

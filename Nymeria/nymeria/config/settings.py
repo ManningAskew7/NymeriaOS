@@ -97,6 +97,19 @@ DEFAULT_CORS_ORIGINS = (
 )
 DEFAULT_USER_TIMEZONE = "UTC"
 MAX_LLM_OUTPUT_TOKENS = 1_000_000
+# The keyed web search backends, env var -> Settings attribute. One list for the
+# startup warning (Settings.has_web_search_backend) and the wizard's capability
+# summary (setup/finalize.py), so the two cannot disagree again (#101 entry 12).
+# web_search_ddgs is absent on purpose: it needs no key.
+_WEB_SEARCH_BACKEND_SETTINGS: Mapping[str, str] = {
+    "PERPLEXITY_API_KEY": "perplexity_api_key",
+    "TAVILY_API_KEY": "tavily_api_key",
+    "EXA_API_KEY": "exa_api_key",
+    "FIRECRAWL_API_KEY": "firecrawl_api_key",
+    "BRAVE_API_KEY": "brave_api_key",
+    "SEARXNG_BASE_URL": "searxng_base_url",
+}
+WEB_SEARCH_BACKEND_ENV_VARS: Tuple[str, ...] = tuple(_WEB_SEARCH_BACKEND_SETTINGS)
 DEFAULT_LLM_FALLBACK_MODELS = "anthropic:claude-haiku-4-5-20251001"
 ReasoningEffort = Literal["off", "low", "medium", "high", "xhigh", "max"]
 
@@ -2555,13 +2568,33 @@ class Settings(BaseSettings):
             )
 
         # Warnings for optional features
-        if not self.perplexity_api_key:
+        if not self.has_web_search_backend():
             warnings.append(
-                "PERPLEXITY_API_KEY not set. Web search will be unavailable.\n"
-                "  Get an API key from https://perplexity.ai if you want web search."
+                "No web search backend is available: the keyless ddgs package is "
+                "not installed and no search backend is configured.\n"
+                "  Set one of: " + ", ".join(WEB_SEARCH_BACKEND_ENV_VARS) + " "
+                "(nymeria init offers each), save one in the credential vault, "
+                "or reinstall NymeriaOS to restore ddgs."
             )
 
         return errors, warnings
+
+    def has_web_search_backend(self) -> bool:
+        """True when at least one web search tool can work without more setup.
+
+        ``web_search_ddgs`` is keyless and ``ddgs`` is a core dependency, so on
+        a normal install this is always True. The keyed backends count when
+        their settings value is set. A credential-vault record is not visible
+        here (the vault needs the database), which is why the startup warning
+        this feeds names the vault as a remedy rather than claiming search is
+        impossible. Before #101 entry 12 the warning knew only Perplexity and
+        told every Exa, SearXNG, or ddgs install that search was unavailable.
+        """
+        from importlib.util import find_spec
+
+        if any(getattr(self, attr, None) for attr in _WEB_SEARCH_BACKEND_SETTINGS.values()):
+            return True
+        return find_spec("ddgs") is not None
 
 
 @lru_cache

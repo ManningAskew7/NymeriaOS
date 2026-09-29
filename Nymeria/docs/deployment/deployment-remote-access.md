@@ -58,7 +58,7 @@ For those outbound bot daemons, **no inbound network access is needed**. Your ba
 5. Open a chat with your bot in Telegram. Send `/start`.
 6. Link your Telegram sender to a Nymeria account with the desktop/mobile Chat App wizard or:
    ```bash
-   python3 run.py users link-platform <email> telegram <telegram-user-id>
+   python3 run.py users link-platform <user id or email> telegram <telegram-user-id>
    ```
 
 For other chat platforms see [telegram-bot.md](../chat-apps/telegram-bot.md), [discord-bot.md](../chat-apps/discord-bot.md), and [slack-bot.md](../chat-apps/slack-bot.md).

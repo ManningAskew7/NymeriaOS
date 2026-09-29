@@ -284,3 +284,82 @@ def test_add_default_slug_from_dotted_email_is_canonical(
     repo = AccountsRepo(tmp_path / "accounts.db")
     assert result == 0
     assert repo.verify_token(_extract_token(output)).id == "alice_smith"
+
+
+# --- #101 entry 13: every action naming a user takes its id OR its email -----
+
+
+def _parse(argv: list[str]) -> Namespace:
+    """Parse through the real argparse wiring, as `run.py users ...` does."""
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    users_cli.build_parser(parser.add_subparsers(dest="command"))
+    return parser.parse_args(["users", *argv])
+
+
+@pytest.mark.parametrize("ref", ["default", "owner@localhost"])
+def test_link_platform_accepts_the_user_id_or_the_email(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    ref: str,
+) -> None:
+    # The shipped failure: `users list` leads with `default`, and
+    # `link-platform default telegram <id>` answered "No user with email:
+    # default" while standing up a real user's bot.
+    _patch_data_dir(monkeypatch, tmp_path)
+    repo = AccountsRepo(tmp_path / "accounts.db")
+    repo.create_user("default", "owner@localhost", "Owner", role="admin")
+
+    result = users_cli.dispatch(_parse(["link-platform", ref, "telegram", "5559876543"]))
+
+    assert result == 0
+    assert repo.resolve_platform("telegram", "5559876543") == "default"
+    assert "-> default (owner@localhost)" in capsys.readouterr().out
+
+
+def test_link_platform_unknown_ref_names_both_spellings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_data_dir(monkeypatch, tmp_path)
+    repo = AccountsRepo(tmp_path / "accounts.db")
+    repo.create_user("default", "owner@localhost", "Owner", role="admin")
+
+    with pytest.raises(SystemExit) as exc_info:
+        users_cli.dispatch(_parse(["link-platform", "nobody", "telegram", "1"]))
+
+    assert exc_info.value.code == 2
+    assert "No user with id or email: nobody" in capsys.readouterr().err
+    assert repo.resolve_platform("telegram", "1") is None
+
+
+def test_disable_enable_rotate_and_platforms_accept_the_user_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_data_dir(monkeypatch, tmp_path)
+    repo = AccountsRepo(tmp_path / "accounts.db")
+    repo.create_user("default", "owner@localhost", "Owner", role="admin")
+    repo.create_user("alice", "alice@example.com", "Alice", role="user")
+    old = repo.issue_token("alice", label="laptop")
+    repo.link_platform("discord", "42", "alice")
+
+    assert users_cli.dispatch(_parse(["disable", "alice"])) == 0
+    assert repo.get_user_by_id("alice").disabled is True
+    assert "Disabled user alice (alice@example.com)" in capsys.readouterr().out
+
+    assert users_cli.dispatch(_parse(["enable", "alice"])) == 0
+    assert repo.get_user_by_id("alice").disabled is False
+    assert "Enabled user alice (alice@example.com)" in capsys.readouterr().out
+
+    assert users_cli.dispatch(_parse(["rotate-token", "alice"])) == 0
+    fresh = _extract_token(capsys.readouterr().out.replace("New token:", "Token:"))
+    assert repo.verify_token(old) is None
+    assert repo.verify_token(fresh) is not None
+
+    assert users_cli.dispatch(_parse(["platforms", "alice"])) == 0
+    assert "discord" in capsys.readouterr().out

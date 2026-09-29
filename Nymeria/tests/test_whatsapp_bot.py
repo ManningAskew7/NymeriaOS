@@ -248,7 +248,7 @@ def test_unlinked_sender_is_rejected_without_agent_call() -> None:
         )
 
         assert api.chat_stream_calls == []
-        assert "not linked" in cloud.sent[0][1]
+        assert "isn't linked to this assistant" in cloud.sent[0][1]
 
     asyncio.run(run())
 
@@ -422,7 +422,7 @@ def test_unlinked_slash_command_is_rejected_without_backend_call() -> None:
 
         assert api.command_calls == []
         assert api.chat_stream_calls == []
-        assert "not linked" in cloud.sent[0][1]
+        assert "isn't linked to this assistant" in cloud.sent[0][1]
 
     asyncio.run(run())
 

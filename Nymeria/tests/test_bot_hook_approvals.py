@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 import httpx
 
+from nymeria.triggers.bot_helpers import UNLINKED_BUTTON_NOTICE
 from nymeria.triggers.discord_bot import NymeriaDiscordBot
 from nymeria.triggers.telegram_bot import NymeriaTelegramBot
 
@@ -214,6 +215,8 @@ def test_telegram_button_rejects_unlinked_clicker():
 
     assert api.resolved == []
     assert query.answers and query.answers[0][1] is True  # alert shown
+    # Not "/bind": that binds a thread and links no account.
+    assert query.answers[0][0] == UNLINKED_BUTTON_NOTICE
 
 
 def test_telegram_button_404_means_not_authorized():
@@ -421,7 +424,7 @@ def test_discord_view_rejects_unlinked_clicker():
     asyncio.run(view._resolve(interaction, True))
 
     assert api.resolved == []
-    assert "isn't linked" in interaction.response.sent[0][0]
+    assert interaction.response.sent[0][0] == UNLINKED_BUTTON_NOTICE
     assert view.resolved is False
 
 

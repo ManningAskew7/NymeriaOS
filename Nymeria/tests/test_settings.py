@@ -182,3 +182,108 @@ def test_load_soul_prefers_override_then_packaged_default(tmp_path):
     assert settings.load_soul() == packaged
 
 
+
+
+# --- #101 entry 12: the startup web-search warning ---------------------------
+
+_SEARCH_WARNING_MARK = "web search"
+
+
+def _hide_ddgs(monkeypatch):
+    """Make ``ddgs`` look uninstalled to has_web_search_backend's find_spec."""
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "ddgs":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+
+def _clear_search_env(monkeypatch):
+    from nymeria.config.settings import WEB_SEARCH_BACKEND_ENV_VARS
+
+    for env in WEB_SEARCH_BACKEND_ENV_VARS:
+        monkeypatch.delenv(env, raising=False)
+
+
+def _search_warnings(settings):
+    _errors, warnings = settings.validate_runtime()
+    return [w for w in warnings if _SEARCH_WARNING_MARK in w.lower()]
+
+
+def test_no_search_warning_when_only_keyless_ddgs_is_available(monkeypatch):
+    # The shipped bug: every install without Perplexity was told "Web search
+    # will be unavailable" although web_search_ddgs needs no key and ddgs is a
+    # core dependency.
+    _clear_search_env(monkeypatch)
+    settings = Settings(_env_file=None)
+
+    assert settings.has_web_search_backend() is True
+    assert _search_warnings(settings) == []
+
+
+def test_search_warning_when_no_backend_at_all_names_every_option(monkeypatch):
+    from nymeria.config.settings import WEB_SEARCH_BACKEND_ENV_VARS
+
+    _clear_search_env(monkeypatch)
+    _hide_ddgs(monkeypatch)
+    settings = Settings(_env_file=None)
+
+    assert settings.has_web_search_backend() is False
+    [warning] = _search_warnings(settings)
+    for env in WEB_SEARCH_BACKEND_ENV_VARS:
+        assert env in warning
+    assert "ddgs" in warning
+    assert "Web search will be unavailable" not in warning
+
+
+@pytest.mark.parametrize(
+    "env,value",
+    [
+        ("PERPLEXITY_API_KEY", "pplx-test"),
+        ("TAVILY_API_KEY", "tvly-test"),
+        ("EXA_API_KEY", "exa-test"),
+        ("FIRECRAWL_API_KEY", "fc-test"),
+        ("BRAVE_API_KEY", "brave-test"),
+        ("SEARXNG_BASE_URL", "http://searxng:8080"),
+    ],
+)
+def test_any_keyed_backend_satisfies_search_without_ddgs(monkeypatch, env, value):
+    # Also pins the env-var -> Settings attribute map: a wrong attribute name
+    # for any backend would leave this one red.
+    _clear_search_env(monkeypatch)
+    _hide_ddgs(monkeypatch)
+    monkeypatch.setenv(env, value)
+    settings = Settings(_env_file=None)
+
+    assert settings.has_web_search_backend() is True
+    assert _search_warnings(settings) == []
+
+
+def test_keyed_backend_list_matches_the_wizard_key_specs_and_the_catalog():
+    # Three places name the web_search family's credentials: this list (the
+    # startup warning and the wizard's capability summary), the wizard's
+    # per-tool key specs, and the tool catalog. Compared by env-var NAME, so a
+    # misspelled var fails here, not only a missing one. Scope is the
+    # web_search_* family the wizard offers; jina_search_web belongs to the Jina
+    # service integration, not this family.
+    from nymeria.config.settings import WEB_SEARCH_BACKEND_ENV_VARS
+    from nymeria.setup.tool_keys import BACKEND_KEY_SPECS
+    from nymeria.tools import CATALOG_TOOLS
+
+    keyed_tools = {
+        name for name in CATALOG_TOOLS
+        if name.startswith("web_search_") and name != "web_search_ddgs"
+    }
+    spec_env = {
+        spec.env_var for tool, spec in BACKEND_KEY_SPECS.items()
+        if tool.startswith("web_search_")
+    }
+    spec_tools = {tool for tool in BACKEND_KEY_SPECS if tool.startswith("web_search_")}
+
+    assert spec_tools == keyed_tools
+    assert set(WEB_SEARCH_BACKEND_ENV_VARS) == spec_env

@@ -27,6 +27,7 @@ from .bot_helpers import (
     forward_backend_command,
     http_error_detail,
     safe_id as _safe_id,
+    unlinked_sender_notice,
 )
 from .message_splitter import split_slack_message as split_message
 from .sse_consumer import consume_chat_stream_with_recovery
@@ -657,9 +658,9 @@ class NymeriaSlackBot:
         platform_user_id = make_platform_user_id(team_id, slack_user_id)
         await self._send_text(
             target,
-            "This Slack account is not linked to a Nymeria user yet.\n"
-            f"Use `link <code>` here, or ask an admin to run "
-            f"`python3 run.py users link-platform <email> slack {platform_user_id}`.",
+            unlinked_sender_notice(
+                "slack", platform_user_id, logger=logger, accepts_link_code=True
+            ),
         )
 
     async def _collect_attachments(

@@ -12,6 +12,14 @@ import httpx
 
 
 USER_CACHE_TTL_SECONDS = 30 * 60
+# A confirmed "no binding" is cached far more briefly than a hit. The natural
+# onboarding order is: the new user messages the bot to learn their id from the
+# rejection, the admin links that id, the user tries again. With misses cached
+# for the full 30 minutes that retry was always rejected too, with nothing
+# saying a wait or a bot restart would fix it (#101 entry 20 of 2026-08-24).
+# Short enough to feel immediate, long enough that a stranger spamming the bot
+# costs one backend lookup per half minute.
+NEGATIVE_USER_CACHE_TTL_SECONDS = 30
 
 # Defaults for the shared event-dedupe cache. A platform event id stays
 # "seen" for this long, and the cache evicts down to half capacity once it
@@ -62,6 +70,64 @@ RESOLVER_UNAVAILABLE_SHORT = (
     "Backend unavailable: the bot can't authenticate to Nymeria. "
     "Ask the admin to check the service token, then try again."
 )
+
+
+_PLATFORM_LABELS = {
+    "discord": "Discord",
+    "slack": "Slack",
+    "teams": "Microsoft Teams",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+}
+
+
+# Short form for a button press by an unlinked account (Telegram caps callback
+# alerts at 200 characters; Discord shows it ephemerally). The full reply with
+# the id is what the sender got on their first message.
+UNLINKED_BUTTON_NOTICE = (
+    "This account isn't linked to this assistant yet, so it can't use these "
+    "buttons. Ask whoever runs the assistant to link it."
+)
+
+
+def unlinked_sender_notice(
+    platform: str,
+    platform_user_id: int | str,
+    *,
+    logger: logging.Logger,
+    accepts_link_code: bool = False,
+) -> str:
+    """Reply for a sender with no linked account; logs the admin's fix.
+
+    The reply is for the person who messaged, usually not the operator: plain
+    words, the id they need to pass on, no CLI (#101 entry 14; it used to hand
+    them ``python run.py users link-platform <email> ...``). The exact admin
+    command goes to the bot's log instead, which is where the operator looks.
+    ``accepts_link_code`` is for the bots that parse a typed ``link <code>``.
+    ``UNLINKED_BUTTON_NOTICE`` is the short form for a button press.
+    """
+    label = _PLATFORM_LABELS.get(platform, platform)
+    logger.info(
+        "Turned away unlinked %s sender %s. To link them: "
+        "nymeria users link-platform <user id or email> %s %s "
+        "(python3 run.py users ... from a source checkout)",
+        platform,
+        platform_user_id,
+        platform,
+        platform_user_id,
+    )
+    lines = [
+        f"This {label} account isn't linked to this assistant yet, so I can't "
+        "reply to it.",
+        f"To get set up, send this ID to whoever runs the assistant: {platform_user_id}",
+    ]
+    if accepts_link_code:
+        # No angle-bracket placeholder: Teams renders markdown with inline
+        # HTML, so a bare "<code>" is swallowed as a tag.
+        lines.append(
+            "If they gave you a link code, send the word link, a space, then the code."
+        )
+    return "\n".join(lines)
 
 
 def fmt_tokens(n: Optional[int]) -> str:
@@ -222,12 +288,14 @@ class UserResolver:
         platform: str,
         *,
         ttl_seconds: int = USER_CACHE_TTL_SECONDS,
+        negative_ttl_seconds: int = NEGATIVE_USER_CACHE_TTL_SECONDS,
         logger: logging.Logger | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._api = api
         self._platform = platform
         self._ttl_seconds = ttl_seconds
+        self._negative_ttl_seconds = min(negative_ttl_seconds, ttl_seconds)
         self._logger = logger or logging.getLogger(__name__)
         self._clock = clock
         self._cache: dict[str, tuple[Optional[str], float]] = {}
@@ -236,7 +304,8 @@ class UserResolver:
         """Resolve and cache a platform user id, including confirmed misses.
 
         Returns the Nymeria user id, or ``None`` for a confirmed "no binding"
-        (cached like a hit). A lookup that FAILS (backend auth/unreachable)
+        (cached too, but only for ``negative_ttl_seconds``, so a fresh link
+        takes effect on the sender's next try). A lookup that FAILS (backend auth/unreachable)
         raises ``PlatformResolveUnavailableError`` instead of returning
         ``None`` and is never cached, so recovery after the backend heals is
         immediate.
@@ -261,7 +330,8 @@ class UserResolver:
                 exc_info=True,
             )
             raise error from exc
-        self._cache[key] = (user_id, now + self._ttl_seconds)
+        ttl = self._ttl_seconds if user_id is not None else self._negative_ttl_seconds
+        self._cache[key] = (user_id, now + ttl)
         return user_id
 
     def invalidate(self, platform_user_id: int | str) -> None:

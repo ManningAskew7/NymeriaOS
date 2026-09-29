@@ -35,10 +35,12 @@ from .api_client import NymeriaAPIClient
 from .bot_helpers import (
     RESOLVER_UNAVAILABLE_MESSAGE,
     RESOLVER_UNAVAILABLE_SHORT,
+    UNLINKED_BUTTON_NOTICE,
     PlatformResolveUnavailableError,
     UserResolver,
     forward_backend_command,
     http_error_detail,
+    unlinked_sender_notice,
 )
 from .telegram_format import (
     escape_html,
@@ -540,8 +542,9 @@ class NymeriaTelegramBot:
     async def resolve_user_id(self, telegram_user_id: int) -> Optional[str]:
         """Resolve a Telegram user id to a linked Nymeria account, or None.
 
-        Caches the result (including ``None`` for confirmed-unlinked users)
-        so admin relinks propagate without a restart. Raises
+        Caches the result; a confirmed-unlinked ``None`` only briefly, so a
+        link made right after a sender's first rejected message takes effect
+        on their retry, and a hit for the usual 30 minutes. Raises
         ``PlatformResolveUnavailableError`` (never cached) when the lookup
         itself failed, e.g. the backend rejected the bot's service token;
         callers must render infra copy for that, not link instructions.
@@ -836,9 +839,7 @@ class NymeriaTelegramBot:
 
         if user_id is None:
             await _reply(
-                "This Telegram account isn't linked to a Nymeria user yet. "
-                "Ask the admin to run: "
-                f"`python run.py users link-platform <email> telegram {tg_user.id}`"
+                unlinked_sender_notice("telegram", tg_user.id, logger=logger)
             )
             return None
 
@@ -3019,9 +3020,7 @@ class NymeriaTelegramBot:
         if nymeria_user_id is None:
             try:
                 await update.message.reply_text(
-                    "This Telegram account isn't linked to a Nymeria user yet.\n"
-                    "Ask the admin to run: "
-                    f"`python run.py users link-platform <email> telegram {telegram_user_id}`"
+                    unlinked_sender_notice("telegram", telegram_user_id, logger=logger)
                 )
             except Exception:
                 logger.warning("Failed to send account-not-linked message to Telegram", exc_info=True)
@@ -3754,9 +3753,7 @@ class NymeriaTelegramBot:
             await self._answer_resolver_unavailable(query)
             return
         if user_id is None:
-            await query.answer(
-                "Link your Nymeria account first (/bind).", show_alert=True
-            )
+            await query.answer(UNLINKED_BUTTON_NOTICE, show_alert=True)
             return
 
         try:
@@ -4037,9 +4034,7 @@ class NymeriaTelegramBot:
             await self._answer_resolver_unavailable(query)
             return
         if user_id is None:
-            await query.answer(
-                "Link your Nymeria account first (/bind).", show_alert=True
-            )
+            await query.answer(UNLINKED_BUTTON_NOTICE, show_alert=True)
             return
 
         approved = verdict != "d"
@@ -4126,9 +4121,7 @@ class NymeriaTelegramBot:
             await self._answer_resolver_unavailable(query)
             return
         if user_id is None:
-            await query.answer(
-                "Link your Nymeria account first (/bind).", show_alert=True
-            )
+            await query.answer(UNLINKED_BUTTON_NOTICE, show_alert=True)
             return
 
         try:

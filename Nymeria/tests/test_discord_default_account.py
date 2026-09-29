@@ -137,7 +137,9 @@ def test_on_message_dm_still_rejects_unlinked():
     bot, dispatched = _wired_bot(channel)
     asyncio.run(bot.on_message(_message(None, channel)))
     assert dispatched == []
-    assert len(channel.sent) == 1 and "isn't linked" in channel.sent[0]
+    assert len(channel.sent) == 1
+    assert "isn't linked to this assistant" in channel.sent[0]
+    assert "run.py" not in channel.sent[0]
 
 
 def test_init_parses_default_account_settings(monkeypatch):

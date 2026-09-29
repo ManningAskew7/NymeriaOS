@@ -168,17 +168,29 @@ python3 run.py users issue-token owner@localhost --label desktop
 python3 run.py users issue-token default --label desktop
 
 # Temporarily disable / re-enable
-python3 run.py users disable alice@example.com
+python3 run.py users disable alice
 python3 run.py users enable alice@example.com
 
 # Revoke every active token, then mint a replacement
-python3 run.py users rotate-token alice@example.com
+python3 run.py users rotate-token alice
 
 # Link a chat-platform identity to a user (enables bot routing)
-python3 run.py users link-platform alice@example.com discord 123456789
-python3 run.py users platforms alice@example.com
+python3 run.py users link-platform alice discord 123456789
+python3 run.py users platforms alice
 python3 run.py users unlink-platform discord 123456789
 ```
+
+Every action that names an existing user takes its id (the first column of
+`users list`) or its email; the id is tried first. A slim install's
+auto-created owner is `default` (email `owner@localhost`).
+
+An unlinked sender who messages a chat bot gets a plain reply with the
+platform id to pass on to the operator, never a CLI command; the bot logs the
+exact `users link-platform ... <provider> <id>` command at INFO instead. The
+native bots (Discord, Slack, Telegram) re-check an "unlinked" answer after 30
+seconds, so a link made right after someone's first message takes effect on
+their next one, with no bot restart. A resolved link is cached for 30 minutes,
+which is also how long an unlink takes to reach them.
 
 Inside Docker, run the command in the API container so it uses the live
 `/data/accounts.db` database from the Docker volume:

@@ -224,3 +224,14 @@ def test_main_loads_the_deployment_env_before_parsing_args(monkeypatch):
 
     with pytest.raises(_Loaded):
         run.main()
+
+
+def test_version_flag_prints_the_package_version_and_exits_zero(capsys):
+    # #101 entry 37: `nymeria --version` was "unrecognized arguments".
+    from nymeria import __version__
+
+    with pytest.raises(SystemExit) as exc_info:
+        run.build_parser().parse_args(["--version"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"nymeria {__version__}"

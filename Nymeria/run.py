@@ -1466,6 +1466,16 @@ Examples:
         default="INFO",
         help="Logging level",
     )
+    # The first thing a tester or a bug report asks for (#101 entry 37).
+    # argparse prints and exits during parse_args, before settings load or any
+    # subcommand runs, so this works even on a broken config.
+    from nymeria import __version__
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"nymeria {__version__}",
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 

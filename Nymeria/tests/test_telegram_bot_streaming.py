@@ -423,7 +423,10 @@ def test_telegram_command_policy_rejects_unlinked_linked_command():
     asyncio.run(bot._guarded_command("thread", handler)(update, context))
 
     assert called is False
-    assert "isn't linked" in update.message.replies[0]
+    reply = update.message.replies[0]
+    # #101 entry 14: consumer copy with the id, never the admin CLI.
+    assert "isn't linked to this assistant" in reply and "42" in reply
+    assert "run.py" not in reply and "link-platform" not in reply
 
 
 def test_telegram_command_policy_renders_infra_copy_on_resolver_failure():
@@ -1140,7 +1143,10 @@ def test_unregistered_command_unlinked_user_gets_link_copy():
     asyncio.run(bot._on_unregistered_command(update, context))
 
     assert api.command_calls == []
-    assert any("isn't linked" in reply for reply in update.message.replies)
+    assert any(
+        "isn't linked to this assistant" in reply and "run.py" not in reply
+        for reply in update.message.replies
+    )
 
 
 def test_catch_all_command_handler_is_registered_last():
@@ -1175,3 +1181,21 @@ def test_catch_all_command_handler_is_registered_last():
         if isinstance(handler, CommandHandler)
     )
     assert app.handlers.index(catch_all) > last_command_index
+
+
+def test_telegram_plain_message_from_unlinked_sender_gets_consumer_copy():
+    # #101 entry 14, the chat path (not a command): the first thing a new
+    # user of the bot ever sees. Plain words and the id to pass on; no admin
+    # CLI, and no agent turn.
+    api = _CaptureAPI(user_map={})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(text="hello?", telegram_user_id=5559876543)
+    context = SimpleNamespace(bot=_FakeBot())
+
+    asyncio.run(bot._on_message(update, context))
+
+    assert api.chat_calls == []
+    [reply] = update.message.replies
+    assert "isn't linked to this assistant" in reply
+    assert "5559876543" in reply
+    assert "run.py" not in reply and "link-platform" not in reply

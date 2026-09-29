@@ -17,6 +17,7 @@ from nymeria.core.accounts import (
     InvalidIdentityId,
     TokenLimitExceeded,
     UserAlreadyExists,
+    UserRecord,
     UserNotFound,
 )
 
@@ -36,20 +37,24 @@ def _repo() -> AccountsRepo:
     return AccountsRepo.from_settings(settings, settings.data_dir / "accounts.db")
 
 
-def _resolve_user_id_by_email(repo: AccountsRepo, email: str) -> str:
-    user = repo.get_user_by_email(email)
-    if user is None:
-        print(f"[error] No user with email: {email}", file=sys.stderr)
-        sys.exit(2)
-    return user.id
+def _resolve_user_by_ref(repo: AccountsRepo, user_ref: str) -> UserRecord:
+    """Resolve a user by id, then by email; exit 2 naming both when neither hits.
 
-
-def _resolve_user_id_by_ref(repo: AccountsRepo, user_ref: str) -> str:
+    Every action that names an existing user takes either spelling: ``users
+    list`` leads with the id, and slim's auto-created owner has an email
+    (``owner@localhost``) that appears nowhere else, so an email-only argument
+    turned the id every other surface shows into "No user with email:
+    default" (#101 entry 13).
+    """
     user = repo.get_user_by_id(user_ref) or repo.get_user_by_email(user_ref)
     if user is None:
         print(f"[error] No user with id or email: {user_ref}", file=sys.stderr)
         sys.exit(2)
-    return user.id
+    return user
+
+
+def _resolve_user_id_by_ref(repo: AccountsRepo, user_ref: str) -> str:
+    return _resolve_user_by_ref(repo, user_ref).id
 
 
 def _default_slug(email: str) -> str:
@@ -126,27 +131,27 @@ def _cmd_list(_: argparse.Namespace) -> int:
 
 def _cmd_disable(args: argparse.Namespace) -> int:
     repo = _repo()
-    user_id = _resolve_user_id_by_email(repo, args.email)
+    user = _resolve_user_by_ref(repo, args.user)
     try:
-        repo.set_disabled(user_id, True)
+        repo.set_disabled(user.id, True)
     except UserNotFound:
-        print(f"[error] User not found: {args.email}", file=sys.stderr)
+        print(f"[error] User not found: {args.user}", file=sys.stderr)
         return 2
-    print(f"Disabled user {user_id} ({args.email}). Existing tokens will be rejected.")
+    print(f"Disabled user {user.id} ({user.email}). Existing tokens will be rejected.")
     return 0
 
 
 def _cmd_enable(args: argparse.Namespace) -> int:
     repo = _repo()
-    user_id = _resolve_user_id_by_email(repo, args.email)
-    repo.set_disabled(user_id, False)
-    print(f"Enabled user {user_id} ({args.email}).")
+    user = _resolve_user_by_ref(repo, args.user)
+    repo.set_disabled(user.id, False)
+    print(f"Enabled user {user.id} ({user.email}).")
     return 0
 
 
 def _cmd_rotate_token(args: argparse.Namespace) -> int:
     repo = _repo()
-    user_id = _resolve_user_id_by_email(repo, args.email)
+    user_id = _resolve_user_by_ref(repo, args.user).id
     revoked = repo.revoke_all_tokens(user_id)
     token = repo.issue_token(user_id, label=args.label)
     print(f"Revoked {revoked} existing active token(s) for {user_id}.")
@@ -209,10 +214,10 @@ def _cmd_link_platform(args: argparse.Namespace) -> int:
     # The provider is validated by argparse (choices=VALID_PROVIDERS on the
     # link-platform subparser), so an unknown provider can never reach here.
     repo = _repo()
-    user_id = _resolve_user_id_by_email(repo, args.email)
-    repo.link_platform(args.provider, args.provider_user_id, user_id)
+    user = _resolve_user_by_ref(repo, args.user)
+    repo.link_platform(args.provider, args.provider_user_id, user.id)
     print(
-        f"Linked {args.provider}:{args.provider_user_id} -> {user_id} ({args.email})."
+        f"Linked {args.provider}:{args.provider_user_id} -> {user.id} ({user.email})."
     )
     return 0
 
@@ -231,7 +236,7 @@ def _cmd_unlink_platform(args: argparse.Namespace) -> int:
 
 def _cmd_list_platforms(args: argparse.Namespace) -> int:
     repo = _repo()
-    user_id = _resolve_user_id_by_email(repo, args.email)
+    user_id = _resolve_user_by_ref(repo, args.user).id
     identities = repo.list_platforms_for_user(user_id)
     if not identities:
         print("(no linked platforms)")
@@ -244,6 +249,9 @@ def _cmd_list_platforms(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Argparse wiring — called from run.py
 # ---------------------------------------------------------------------------
+
+
+_USER_REF_HELP = "User id or email, for example default or owner@localhost"
 
 
 def build_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -260,19 +268,16 @@ def build_parser(subparsers: argparse._SubParsersAction) -> None:
     actions.add_parser("list", help="List all users")
 
     p_disable = actions.add_parser("disable", help="Disable a user")
-    p_disable.add_argument("email")
+    p_disable.add_argument("user", help=_USER_REF_HELP)
 
     p_enable = actions.add_parser("enable", help="Re-enable a disabled user")
-    p_enable.add_argument("email")
+    p_enable.add_argument("user", help=_USER_REF_HELP)
 
     p_issue = actions.add_parser(
         "issue-token",
         help="Issue an additional token without revoking existing tokens",
     )
-    p_issue.add_argument(
-        "user",
-        help="User id or email, for example default or owner@localhost",
-    )
+    p_issue.add_argument("user", help=_USER_REF_HELP)
     p_issue.add_argument("--label", default=None)
     p_issue.add_argument(
         "--replace",
@@ -288,14 +293,14 @@ def build_parser(subparsers: argparse._SubParsersAction) -> None:
         "rotate-token",
         help="Revoke all active tokens, then mint a replacement",
     )
-    p_rotate.add_argument("email")
+    p_rotate.add_argument("user", help=_USER_REF_HELP)
     p_rotate.add_argument("--label", default=None)
 
     p_link = actions.add_parser(
         "link-platform",
         help="Link a chat-platform identity to a user",
     )
-    p_link.add_argument("email")
+    p_link.add_argument("user", help=_USER_REF_HELP)
     p_link.add_argument("provider", choices=VALID_PROVIDERS)
     p_link.add_argument("provider_user_id")
 
@@ -307,7 +312,7 @@ def build_parser(subparsers: argparse._SubParsersAction) -> None:
     p_unlink.add_argument("provider_user_id")
 
     p_platforms = actions.add_parser("platforms", help="List linked platform identities")
-    p_platforms.add_argument("email")
+    p_platforms.add_argument("user", help=_USER_REF_HELP)
 
 
 def dispatch(args: argparse.Namespace) -> int:

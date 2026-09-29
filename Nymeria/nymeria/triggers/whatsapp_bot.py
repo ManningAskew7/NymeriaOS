@@ -11,7 +11,12 @@ from typing import Any, Optional, Protocol
 
 import httpx
 
-from .bot_helpers import SeenEventCache, forward_backend_command, safe_id as _safe_id
+from .bot_helpers import (
+    SeenEventCache,
+    forward_backend_command,
+    safe_id as _safe_id,
+    unlinked_sender_notice,
+)
 from .message_splitter import split_whatsapp_message as split_message
 from .sse_consumer import consume_chat_stream_with_recovery
 
@@ -492,9 +497,9 @@ class NymeriaWhatsAppBot:
     async def _reject_unlinked(self, target: WhatsAppReplyTarget, platform_user_id: str) -> None:
         await self._send_text(
             target,
-            "This WhatsApp account is not linked to a Nymeria user yet.\n"
-            "Use `link <code>` here, or ask an admin to run "
-            f"`python3 run.py users link-platform <email> whatsapp {platform_user_id}`.",
+            unlinked_sender_notice(
+                "whatsapp", platform_user_id, logger=logger, accepts_link_code=True
+            ),
         )
 
     async def _stream_to_whatsapp(

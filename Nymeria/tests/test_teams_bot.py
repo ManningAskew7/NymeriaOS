@@ -368,7 +368,11 @@ def test_unlinked_sender_is_rejected_without_agent_call() -> None:
     asyncio.run(bot.handle_payload(payload(text="hello")))
 
     assert api.chat_stream_calls == []
-    assert "not linked to a Nymeria user" in client.sent[0]["text"]
+    text = client.sent[0]["text"]
+    assert "isn't linked to this assistant" in text
+    # #101 entry 14: consumer copy, no admin CLI in the chat surface.
+    assert "run.py" not in text and "link-platform" not in text
+    assert "link code" in text and "<code>" not in text
 
 
 def test_dm_slash_command_is_forwarded_to_backend() -> None:
@@ -460,7 +464,7 @@ def test_unlinked_slash_command_is_rejected_without_backend_call() -> None:
 
     assert api.command_calls == []
     assert api.chat_stream_calls == []
-    assert "not linked to a Nymeria user" in client.sent[0]["text"]
+    assert "isn't linked to this assistant" in client.sent[0]["text"]
 
 
 def test_active_chats_set_stays_bounded(monkeypatch) -> None:

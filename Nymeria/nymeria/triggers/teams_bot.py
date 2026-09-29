@@ -17,7 +17,12 @@ import httpx
 import jwt
 from jwt import InvalidTokenError, PyJWKClient
 
-from .bot_helpers import SeenEventCache, forward_backend_command, safe_id as _safe_id
+from .bot_helpers import (
+    SeenEventCache,
+    forward_backend_command,
+    safe_id as _safe_id,
+    unlinked_sender_notice,
+)
 from .message_splitter import split_teams_message as split_message
 from .sse_consumer import consume_chat_stream_with_recovery
 
@@ -760,9 +765,9 @@ class NymeriaTeamsBot:
     async def _reject_unlinked(self, target: TeamsReplyTarget, platform_user_id: str) -> None:
         await self._send_text(
             target,
-            "This Microsoft Teams account is not linked to a Nymeria user yet.\n"
-            "Use `link <code>` here, or ask an admin to run "
-            f"`python3 run.py users link-platform <email> teams {platform_user_id}`.",
+            unlinked_sender_notice(
+                "teams", platform_user_id, logger=logger, accepts_link_code=True
+            ),
         )
 
     async def _stream_to_teams(
