@@ -210,7 +210,11 @@ _UNREACHABLE_SETTINGS_EXEMPT = frozenset({
     "nymeria_claude_code_token", "nymeria_claude_code_url",
     "nymeria_confine_file_to_workspace", "nymeria_debug",
     "nymeria_enforce_mcp_stdio_allowlist", "nymeria_error_report_email",
-    "nymeria_mcp_extra_stdio_commands", "nymeria_service_token",
+    "nymeria_mcp_extra_stdio_commands",
+    # nymeria_published_api_port: compose derives it from the same expression
+    # as the API's port mapping (#101 entry 19); a PATCH could only make the
+    # two disagree. Deployment wiring like api_port.
+    "nymeria_published_api_port", "nymeria_service_token",
     "nymeria_snapshots_dir", "outlook_default_account_id",
     "postgres_pool_max_size", "postgres_pool_min_size",
     "quickbase_base_url", "quickbase_hostname", "quickbase_user_token",

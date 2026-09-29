@@ -255,6 +255,62 @@ def test_single_compose_files_interpolate_api_port():
         assert "http://localhost:8000/health" in content, name
 
 
+def _published_port_bindings():
+    """(file, service, host-side expression, environment) for every compose
+    service that publishes the API port. The composes git tracks plus the
+    wheel's asset copy: gitignored local composes (the operator override,
+    hexstrike) are not the repo's. Outside a git checkout, every compose on
+    disk except the override."""
+    import re
+    import subprocess
+
+    import yaml
+
+    repo = Path(__file__).resolve().parents[1]
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "docker-compose*.yml"],
+            cwd=repo, capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        tracked = []
+    if tracked:
+        files = [repo / name for name in sorted(tracked) if "/" not in name]
+    else:
+        files = [p for p in sorted(repo.glob("docker-compose*.yml")) if ".override." not in p.name]
+    files.append(repo / "nymeria" / "setup" / "assets" / "docker-compose.single.published.yml")
+    found = []
+    for path in files:
+        services = (yaml.safe_load(path.read_text()) or {}).get("services") or {}
+        for name, service in services.items():
+            for mapping in service.get("ports") or []:
+                match = re.search(r"(\$\{API_PORT[^}]*\})", str(mapping))
+                if match:
+                    env = service.get("environment") or {}
+                    if isinstance(env, list):
+                        env = dict(item.split("=", 1) for item in env)
+                    found.append((path.name, name, match.group(1), env))
+    return found
+
+
+def test_every_compose_publishing_the_api_tells_it_the_published_port():
+    # #101 entry 19: the container listens on 8000 while the browser reaches the
+    # host side of the mapping, and an OAuth localhost redirect must name the
+    # latter. Passing the SAME expression as the mapping means the two cannot
+    # disagree, including the default when compose runs without --env-file.
+    bindings = _published_port_bindings()
+    names = {(f, s) for f, s, _, _ in bindings}
+    assert ("docker-compose.yml", "api") in names
+    assert ("docker-compose.single.yml", "nymeria-single") in names
+    # The repo copy and the wheel's asset copy both publish it.
+    assert [s for f, s in sorted(names) if f == "docker-compose.single.published.yml"] == [
+        "nymeria-single"
+    ]
+    assert len([b for b in bindings if b[0] == "docker-compose.single.published.yml"]) == 2
+    for filename, service, expression, env in bindings:
+        assert env.get("NYMERIA_PUBLISHED_API_PORT") == expression, (filename, service)
+
+
 def test_review_shows_api_port_row():
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps.review import _summary_markup

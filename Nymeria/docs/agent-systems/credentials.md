@@ -368,7 +368,13 @@ When `NYMERIA_PUBLIC_URL` is not configured and the provider does not
 support device-code, the tool returns `status="missing_public_url"` without
 emitting a prompt. The agent can retry with `use_localhost=True` after
 confirming with the user; that path is only safe when the user's browser is
-on the same machine as Nymeria.
+on the same machine as Nymeria (or reaches it through a tunnel on the same
+port). The redirect is `http://localhost:<port>/connect/credentials/oauth/callback`,
+where the port is the one the browser reaches: in Docker the host side of the
+API's port mapping (`NYMERIA_PUBLISHED_API_PORT`, which every compose file
+Nymeria ships sets), otherwise `API_PORT`. An OAuth client that pins redirect URIs must
+list that exact URI, port included, so an install on 8020 registers the 8020
+URI.
 
 The vault record written by both flows uses these conventions:
 

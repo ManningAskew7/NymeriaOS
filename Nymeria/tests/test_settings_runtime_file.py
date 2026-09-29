@@ -139,9 +139,12 @@ def test_the_file_never_moves_a_key_the_container_pins(container):
     _app, runtime = container
     os.environ["NYMERIA_DATA_DIR"] = "/data"
     os.environ["POSTGRES_URI"] = "postgresql://compose"
+    # #101 entry 19: compose derives it from the port mapping expression.
+    os.environ["NYMERIA_PUBLISHED_API_PORT"] = "8020"
     runtime.write_text(
         "NYMERIA_DATA_DIR=/workspace/elsewhere\n"
         "POSTGRES_URI=postgresql://planted\n"
+        "NYMERIA_PUBLISHED_API_PORT=8000\n"
         "LLM_MODEL=saved-in-app\n",
         encoding="utf-8",
     )
@@ -150,6 +153,7 @@ def test_the_file_never_moves_a_key_the_container_pins(container):
 
     assert os.environ["NYMERIA_DATA_DIR"] == "/data"
     assert os.environ["POSTGRES_URI"] == "postgresql://compose"
+    assert os.environ["NYMERIA_PUBLISHED_API_PORT"] == "8020"
     assert os.environ["LLM_MODEL"] == "saved-in-app"
     line = settings_mod.describe_runtime_settings_file()
     assert "Ignored" in line and "NYMERIA_DATA_DIR" in line and "POSTGRES_URI" in line

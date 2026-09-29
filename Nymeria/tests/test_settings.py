@@ -452,3 +452,53 @@ def test_thin_clients_skip_the_server_dependency_warnings(monkeypatch):
     # What a thin client does need is still checked.
     assert any("NYMERIA_SERVICE_TOKEN" in w for w in thin_warnings)
     assert thin_errors == server_errors and any("POSTGRES_URI" in e for e in thin_errors)
+
+
+# #101 entry 19 of 2026-08-24: inside both Docker shapes API_PORT is the
+# container side of the port mapping (pinned 8000), so an OAuth localhost
+# redirect built from it sent the browser to the wrong port (on the reference
+# host, to a different instance). Compose passes the host side as
+# NYMERIA_PUBLISHED_API_PORT; browser_api_port prefers it.
+
+
+@pytest.mark.parametrize("raw, expected", [("8020", 8020), (" 8030 ", 8030)])
+def test_browser_port_is_the_published_port_when_compose_passes_one(monkeypatch, raw, expected):
+    from nymeria.config.settings import browser_api_port
+
+    monkeypatch.setenv("API_PORT", "8000")
+    monkeypatch.setenv("NYMERIA_PUBLISHED_API_PORT", raw)
+    settings = Settings(_env_file=None)
+
+    assert settings.api_port == 8000  # the listening port is untouched
+    assert browser_api_port(settings) == expected
+    assert _warnings_mentioning(settings, "NYMERIA_PUBLISHED_API_PORT") == []
+
+
+def test_browser_port_is_the_listening_port_without_a_published_port(monkeypatch):
+    # Native installs: the browser reaches the port the process listens on.
+    from nymeria.config.settings import browser_api_port
+
+    monkeypatch.delenv("NYMERIA_PUBLISHED_API_PORT", raising=False)
+    monkeypatch.setenv("API_PORT", "8765")
+    settings = Settings(_env_file=None)
+
+    assert browser_api_port(settings) == 8765
+    # Duck-typed settings objects that predate the field keep working.
+    assert browser_api_port(SimpleNamespace(api_port=8123)) == 8123
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "70000", "80.5", "-1", "8020x", "8²", "８０２０"])
+def test_a_malformed_published_port_warns_and_falls_back(monkeypatch, raw):
+    # A hand-edited typo must not fail boot, and must not silently send the
+    # browser somewhere odd either: fall back to API_PORT and say so.
+    from nymeria.config.settings import browser_api_port
+
+    monkeypatch.setenv("API_PORT", "8000")
+    monkeypatch.setenv("NYMERIA_PUBLISHED_API_PORT", raw)
+    settings = Settings(_env_file=None)
+
+    assert browser_api_port(settings) == 8000
+    [warning] = _warnings_mentioning(settings, "NYMERIA_PUBLISHED_API_PORT")
+    assert repr(raw.strip()) in warning
+    assert "8000" in warning
+    assert "OAuth" in warning

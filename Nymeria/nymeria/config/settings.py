@@ -11,7 +11,7 @@ import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Literal, Mapping, Optional, Tuple
+from typing import Any, List, Literal, Mapping, Optional, Tuple
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -129,6 +129,9 @@ CONTAINER_PINNED_KEYS: frozenset[str] = frozenset({
     "NYMERIA_API_URL",
     "NYMERIA_DATA_DIR",
     "NYMERIA_PROJECT_ROOT",
+    # Derived from the same expression as the API port mapping (#101 entry
+    # 19); a durable copy would outlive a later port change.
+    "NYMERIA_PUBLISHED_API_PORT",
     "NYMERIA_SETTINGS_FILE",
     "NYMERIA_WORKSPACE_DIR",
     "POSTGRES_URI",
@@ -366,6 +369,35 @@ def thin_client_api_url(explicit: Optional[str] = None) -> str:
         return DOCKER_API_URL
     port = (env.get("API_PORT") or "").strip()
     return f"http://localhost:{port if port.isdigit() else 8000}"
+
+
+def _port_number(value: Any) -> Optional[int]:
+    text = str(value if value is not None else "").strip()
+    # isascii: str.isdigit accepts superscripts ("8²") that int() rejects,
+    # and fullwidth digits no operator means.
+    if text.isascii() and text.isdigit() and 1 <= int(text) <= 65535:
+        return int(text)
+    return None
+
+
+def browser_api_port(settings: Any) -> int:
+    """The port a browser on this host reaches the API at.
+
+    ``API_PORT`` is where the process LISTENS. Inside both Docker shapes that
+    is the container side of the port mapping (pinned 8000), while the browser
+    reaches the host side, so every compose file passes the host side as
+    ``NYMERIA_PUBLISHED_API_PORT`` (the same expression as its mapping). A
+    browser-facing ``localhost`` URL (the OAuth redirect) uses this; a
+    self-call inside the process keeps ``api_port`` (#101 entry 19 of
+    2026-08-24: the redirect sent consent on an 8020 install to :8000, on the
+    reference host a different instance). Duck-typed so settings stand-ins
+    without the field keep working.
+    """
+
+    published = _port_number(getattr(settings, "nymeria_published_api_port", None))
+    if published is not None:
+        return published
+    return int(getattr(settings, "api_port", None) or 8000)
 
 
 def _docker_service_host(value: str) -> Optional[str]:
@@ -661,6 +693,16 @@ class Settings(BaseSettings):
         description=(
             "Public browser base URL for hosted credential setup links, "
             "for example https://nymeria.example.com"
+        ),
+    )
+    # Raw text, parsed by browser_api_port: a hand-edited typo warns at boot
+    # (validate_runtime) rather than failing it.
+    nymeria_published_api_port: Optional[str] = Field(
+        default=None,
+        description=(
+            "Host-side port a browser on this machine reaches the API at, when "
+            "it differs from API_PORT (a Docker port mapping). Every compose "
+            "file sets it; OAuth localhost redirects use it"
         ),
     )
     nymeria_error_report_email: Optional[str] = Field(
@@ -3001,6 +3043,16 @@ class Settings(BaseSettings):
                 "new key cannot read what the old one saved); if nothing was "
                 f"saved yet, replace it with a fresh one:\n  {SECRETS_KEY_MINT_COMMAND}\n"
                 f"{apply_hint}"
+            )
+
+        published = (self.nymeria_published_api_port or "").strip()
+        if published and _port_number(published) is None:
+            warnings.append(
+                f"NYMERIA_PUBLISHED_API_PORT={published!r} is not a port number "
+                f"(1-65535): OAuth localhost redirects use API_PORT "
+                f"({self.api_port}) instead.\n"
+                "  Set it to the host side of the API's port mapping, or remove it "
+                "on an install that is not behind one."
             )
 
         # A local embedder or reranker on an install without the local-rag

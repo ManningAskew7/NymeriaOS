@@ -15,7 +15,8 @@ In the full Docker stack (`docker-compose.yml`), the `api` and `worker`
 containers load the whole `.env.docker` (`env_file`), so every variable below
 set there reaches the backend; the compose `environment:` block still wins
 where it pins the container shape (`NYMERIA_DATA_DIR=/data`, the datastores,
-`API_HOST=0.0.0.0` and `API_PORT=8000` inside the container, the worker's
+`API_HOST=0.0.0.0` and `API_PORT=8000` inside the container, the host-side
+`NYMERIA_PUBLISHED_API_PORT`, the worker's
 `NYMERIA_API_URL`). Before #408 only the variables that block named got in,
 so anything else set in `.env.docker` (the scheduler and trigger policy
 knobs, the hardening flags, several search keys) was silently ignored there.
@@ -814,6 +815,7 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `HARNESS_REPORT_EMAIL` | - | When set, each successfully filed harness report is additionally emailed to this address with the report file attached, in a background thread over the owner account's connected Outlook credential (the same mechanism as `POST /report`). The model controls neither destination nor credential; email failures are logged and never disturb the written report. Unset = file-only. |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port. `nymeria init` writes it (the API port wizard step, or `--port` in scripted runs). `run.py slim` resolves an explicit `--port` flag first, then this value, then 8000; the installed background service health-probes the configured port, and both Docker shapes publish it as the host-side port while the container keeps listening on 8000 internally (the full stack pins `API_PORT=8000` in the container environment for that reason). |
+| `NYMERIA_PUBLISHED_API_PORT` | - | The host-side port a browser on this machine reaches the API at, when a Docker port mapping makes it differ from `API_PORT`. Every compose file Nymeria ships sets it from the same expression as its API port mapping (`${API_PORT:-8000}`), so do not set it by hand there; a custom compose sets it in its env file or `environment:` block (not in the app-saved settings file, which cannot move it). OAuth `use_localhost=True` redirects use it (`http://localhost:<port>/connect/credentials/oauth/callback`), falling back to `API_PORT` when unset; a value that is not a port number warns at boot and falls back. Not settable at runtime |
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled. The setup wizard's external-access step appends the configured public origin automatically |

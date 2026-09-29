@@ -51,6 +51,7 @@ class _Settings:
     data_dir: Path
     api_port: int = 8000
     nymeria_public_url: str | None = "https://nymeria.example.test"
+    nymeria_published_api_port: str | None = None
 
 
 @pytest.fixture
@@ -305,6 +306,35 @@ def test_use_localhost_builds_localhost_redirect(env, monkeypatch):
     qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
     assert qs["redirect_uri"] == (
         "http://localhost:8765/connect/credentials/oauth/callback"
+    )
+
+
+def test_use_localhost_redirects_to_the_port_the_browser_reaches(env, monkeypatch):
+    """#101 entry 19: in Docker the API listens on 8000 inside the container
+    while the browser reaches the host side of the mapping; compose passes that
+    as NYMERIA_PUBLISHED_API_PORT and the redirect must use it."""
+    settings, _repo = env
+    settings.nymeria_public_url = None  # type: ignore[attr-defined]
+    settings.api_port = 8000  # type: ignore[attr-defined]
+    settings.nymeria_published_api_port = "8020"  # type: ignore[attr-defined]
+
+    captured = _run_with_cancel("google_calendar", use_localhost=True)
+    parsed = urlparse(captured["event"]["auth_url"])
+    qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    assert qs["redirect_uri"] == (
+        "http://localhost:8020/connect/credentials/oauth/callback"
+    )
+
+
+def test_public_url_still_wins_over_a_published_port(env, monkeypatch):
+    settings, _repo = env
+    settings.nymeria_published_api_port = "8020"  # type: ignore[attr-defined]
+
+    captured = _run_with_cancel("google_calendar", use_localhost=True)
+    parsed = urlparse(captured["event"]["auth_url"])
+    qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    assert qs["redirect_uri"] == (
+        "https://nymeria.example.test/connect/credentials/oauth/callback"
     )
 
 

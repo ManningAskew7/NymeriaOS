@@ -44,6 +44,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .. import config as config_mod
+from ..config.settings import browser_api_port
 from ..core.auth_prompt_coordinator import (
     get_auth_prompt_coordinator,
     hash_prompt_token,
@@ -219,8 +220,9 @@ async def request_credential(
             provider default (auth_code when a redirect URL is available,
             device_code otherwise).
         use_localhost: For ``kind="oauth"`` only. When True, builds an
-            auth_code redirect URL pointing at ``http://localhost:<api_port>``
-            instead of ``NYMERIA_PUBLIC_URL``. Safe only when the user's
+            auth_code redirect URL pointing at ``http://localhost:<port>``
+            (the port the browser reaches the API at) instead of
+            ``NYMERIA_PUBLIC_URL``. Safe only when the user's
             browser is on the same machine as Nymeria. Set only after the
             user explicitly confirms.
         bind_target: Optional ``"type:id"`` binding to apply automatically
@@ -286,7 +288,7 @@ async def request_credential(
             use_localhost=use_localhost,
             prompt_id=prompt_id,
             public_url=getattr(settings, "nymeria_public_url", None),
-            api_port=int(getattr(settings, "api_port", 8000) or 8000),
+            api_port=browser_api_port(settings),
         )
         if isinstance(start_outcome, OAuthStartError):
             # No vault placeholder, no SSE event — early return to agent.
