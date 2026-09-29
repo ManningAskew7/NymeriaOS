@@ -317,3 +317,33 @@ def test_version_flag_prints_the_package_version_and_exits_zero(capsys):
 
     assert exc_info.value.code == 0
     assert capsys.readouterr().out.strip() == f"nymeria {__version__}"
+
+
+# ---------------------------------------------------------------------------
+# Missing bot SDK guidance (#101 entry 15 of 2026-08-23)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("in_container", [False, True])
+def test_a_missing_bot_sdk_names_the_fix_for_where_it_runs(monkeypatch, capsys, in_container):
+    # A pip install inside a container dies with the next recreate, so a
+    # containerized bot is told to rebuild the image, not to pip install.
+    import types
+
+    import nymeria.config.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: in_container)
+    with pytest.raises(SystemExit) as exc:
+        run._require_bot_sdk(types.SimpleNamespace(SDK_AVAILABLE=False), "Telegram", "telegram")
+    assert exc.value.code == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Telegram support is not installed" in out
+    assert ("pip install 'nymeriaos[telegram]'" in out) is not in_container
+    assert ("add --build to the same docker compose up command" in out) is in_container
+
+
+def test_an_installed_bot_sdk_passes_the_guard(capsys):
+    import types
+
+    run._require_bot_sdk(types.SimpleNamespace(SDK_AVAILABLE=True), "Telegram", "telegram")
+    assert capsys.readouterr().out == ""

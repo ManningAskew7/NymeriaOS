@@ -67,7 +67,8 @@ mcp>=1.2.0,<2
 
 # Chat-platform bot SDKs are NOT core dependencies. They live in
 # requirements-bots.txt (and the nymeria[<platform>] extras) so a default/slim
-# install stays lean. The full Docker image pulls them via requirements-docker.txt.
+# install stays lean. The full Docker image pulls them via requirements-docker.txt;
+# the single-container image installs the requirements-bots-chat.txt subset.
 
 # Symmetric encryption for at-rest secrets (BYO Telegram bot tokens, etc).
 # Already a transitive dep via langchain/google-auth, but pinned explicitly

@@ -64,7 +64,7 @@ The slim shape is not a stripped-down product. It runs the same code in a smalle
 | Network segmentation | None | `edge` + `backend` networks |
 | TLS / public URL | Bring your own (see [remote-access.md](deployment-remote-access.md)) | Bundled Caddy |
 | Container security boundary | N/A (runs on host) | Cap-dropped, non-root, read-only rootfs where possible |
-| Chat bots | Run as separate thin-client processes if launched | Profiled thin-client containers for Discord, Telegram, and Slack; API-hosted webhooks run inside `api` |
+| Chat bots | Run as separate thin-client processes if launched; the single-container compose runs Discord, Telegram, and Slack as profiled sidecars from its own image | Profiled thin-client containers for Discord, Telegram, and Slack; API-hosted webhooks run inside `api` |
 
 The Docker `worker` container is a scheduler + event relay: it polls
 scheduled TODOs and poll-based triggers, then POSTs to `/chat` on the

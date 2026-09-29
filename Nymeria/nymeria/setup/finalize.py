@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
@@ -109,6 +109,10 @@ DOCKER_FULL_SERVICE = "api"
 # `x-nymeria-full-image`). One fixed name across checkouts, so a stale one
 # can outlive the config that built it (#314).
 DOCKER_FULL_IMAGE = "nymeria-full:local"
+# The source-checkout single-container image (docker-compose.single.yml), one
+# fixed name like the full stack's, so an image built before the bot SDKs
+# (#101 entry 15 of 2026-08-23) outlives the Dockerfile change.
+DOCKER_SINGLE_IMAGE = "nymeria-single:local"
 
 # Clone-free single-container artifacts: the same slim shape, but pulling the
 # published image instead of building from a checkout. The compose file ships
@@ -262,6 +266,15 @@ def _full_image_has_local_rag() -> bool | None:
     is no image yet or no answer.
     """
     return environment.docker_image_has_module(DOCKER_FULL_IMAGE, "sentence_transformers")
+
+
+def _single_image_has_bots() -> bool | None:
+    """Whether the existing source-checkout single image carries the bot SDKs.
+
+    The one seam over the docker probe (the suite stubs it); None when there
+    is no image yet (compose builds a current one) or no answer.
+    """
+    return environment.docker_image_has_module(DOCKER_SINGLE_IMAGE, "telegram")
 
 
 def _image_rebuild_needed(spec: _DockerStackSpec) -> bool:
@@ -2498,17 +2511,54 @@ def print_chat_apps_hint(
     entry 11b). Native installs run ``nymeria <platform>-bot`` beside the
     backend: the bot finds this install's API from its own config
     (``config.settings.thin_client_api_url``) and the self-minted service
-    token from the shared data dir. The full Docker stack starts a bot by its
-    compose profile. The single-container image carries no bot SDKs, so it
-    gets an honest "not here" rather than a command that cannot work.
+    token from the shared data dir. Both Docker shapes start a bot by its
+    compose profile; the single-container image carries the Discord,
+    Telegram, and Slack SDKs but not Twitch's (#101 entry 15 of 2026-08-23),
+    and its bots receive their token only through compose interpolation, so
+    that command always carries ``--env-file``. `up -d` builds only a MISSING
+    image, so a source-checkout image built before the SDKs gets ``--build``
+    (without it the bot crash-loops on "not installed"); clone-free commands
+    name the runtime root they are relative to.
     """
 
     console.print("\n[bold]Chat apps[/bold] (optional)")
     if state.hosting is HostingOption.DOCKER and not _is_full_stack(state):
+        spec = _docker_stack_spec(state)
+        if "--env-file" not in spec.compose_args:
+            file_index = spec.compose_args.index("-f") + 2
+            spec = replace(
+                spec,
+                compose_args=(
+                    *spec.compose_args[:file_index],
+                    "--env-file",
+                    ".env.docker",
+                    *spec.compose_args[file_index:],
+                ),
+            )
+        clone_free = DOCKER_SINGLE_PUBLISHED_COMPOSE in spec.compose_args
+        rebuild = not clone_free and _single_image_has_bots() is False
         console.print(
-            "  The single-container stack does not run chat-app bots yet (its "
-            "image leaves out the bot libraries); the full Docker stack or a "
-            "native install runs Discord, Telegram, Slack, and Twitch bots."
+            "  Discord, Telegram, and Slack bots can talk to this install. Add "
+            f"the platform's bot token to {escape(str(config_path))} (for "
+            "example TELEGRAM_BOT_TOKEN), then start the bot"
+            + (
+                f" from {escape(str(resolve_runtime_root(state, for_docker=True)))}:"
+                if clone_free
+                else ":"
+            )
+        )
+        if rebuild:
+            console.print(
+                f"  The existing {DOCKER_SINGLE_IMAGE} image predates the bot "
+                "libraries, so this command rebuilds it once."
+            )
+        _print_command(
+            console,
+            _compose_command_str(spec, "--profile", "telegram", *_up_subcommand(rebuild)),
+        )
+        console.print(
+            "  Other profiles: discord, slack. A Twitch bot needs the full "
+            "Docker stack or a native install."
         )
         console.print(f"  Setup guides: {CHAT_APPS_DOCS}", soft_wrap=True)
         return

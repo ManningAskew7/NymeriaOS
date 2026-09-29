@@ -12,7 +12,9 @@
 # it runs the full NymeriaAgent in-process. Keep the names distinct.
 #
 # Base is plain Debian (python:3.11-slim-bookworm), not Kali. The ~1250 optional
-# tools are in-process Python and work here. Tools that shell out to system
+# tools are in-process Python and work here. The Discord, Telegram, and Slack
+# bot SDKs are included (the compose runs each bot as a profile-gated sidecar
+# from this image); Twitch is not. Tools that shell out to system
 # binaries are NOT installed: browser automation (Chromium/Playwright), Kali
 # security tools, the Claude Code CLI tool (Node), and npx/uvx-spawned MCP
 # servers. Layer those in later if a specific test needs them.
@@ -51,8 +53,11 @@ RUN groupadd -r -g 999 nymeria \
 # aiosqlite, langgraph-checkpoint-sqlite), which is everything slim needs.
 # Postgres/Redis/Firebase deps from requirements-docker.txt are intentionally
 # omitted - slim forces DATABASE_BACKEND=sqlite and REDIS_ENABLED=false.
+# requirements-bots-chat.txt adds the Discord, Telegram, and Slack SDKs (about
+# 3 MB) so the compose's bot profiles can run from this same image; the Twitch
+# listener's PyAV + streamlink (about 120 MB) stay in the full image only.
 COPY requirements*.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-bots-chat.txt \
     && apt-get purge -y --auto-remove gcc g++ make \
     && rm -rf /var/lib/apt/lists/*
 

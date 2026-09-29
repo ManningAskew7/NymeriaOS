@@ -33,6 +33,8 @@ PYPROJECT = BACKEND / "pyproject.toml"
 CHECKS = [
     ("core", "requirements.txt", None),
     ("bots", "requirements-bots.txt", "bots"),
+    # The single-container image's subset: the union of these extras.
+    ("chat bots", "requirements-bots-chat.txt", ("discord", "telegram", "slack")),
     ("postgres", "requirements-postgres.txt", "postgres"),
 ]
 
@@ -73,8 +75,10 @@ def parse_requirements(path: Path, _seen: set[Path] | None = None) -> set[str]:
     return names
 
 
-def pyproject_names(data: dict, extra: str | None) -> set[str]:
+def pyproject_names(data: dict, extra: str | tuple[str, ...] | None) -> set[str]:
     project = data["project"]
+    if isinstance(extra, tuple):
+        return set().union(*(pyproject_names(data, one) for one in extra))
     specs = (
         project["dependencies"]
         if extra is None
@@ -95,7 +99,12 @@ def main() -> int:
             ok = False
             print(f"[DRIFT] {label}: {req_file} vs pyproject")
             if only_req:
-                target = "[project.dependencies]" if extra is None else f"[{extra}] extra"
+                if extra is None:
+                    target = "[project.dependencies]"
+                elif isinstance(extra, tuple):
+                    target = " + ".join(f"[{one}]" for one in extra) + " extras"
+                else:
+                    target = f"[{extra}] extra"
                 print(f"  in {req_file} but missing from pyproject {target}: {only_req}")
             if only_proj:
                 print(f"  in pyproject but missing from {req_file}: {only_proj}")

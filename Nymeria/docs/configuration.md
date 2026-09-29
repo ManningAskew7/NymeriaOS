@@ -21,7 +21,9 @@ where it pins the container shape (`NYMERIA_DATA_DIR=/data`, the datastores,
 so anything else set in `.env.docker` (the scheduler and trigger policy
 knobs, the hardening flags, several search keys) was silently ignored there.
 The thin clients (`mcp`, the chat bots) still receive only the variables
-their service declares. A changed value needs `up -d` (a recreate), not
+their service declares, as do the single-container compose's bot profiles
+(discord, telegram, slack), which is why those need `--env-file .env.docker`
+on the compose command. A changed value needs `up -d` (a recreate), not
 `restart`.
 
 Settings changed in the app (the Settings screens, `/settings set`,

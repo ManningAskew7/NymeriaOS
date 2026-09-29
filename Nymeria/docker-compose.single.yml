@@ -8,10 +8,57 @@
 #   docker compose -f docker-compose.single.yml up -d --build
 #   docker compose -f docker-compose.single.yml logs -f
 #   docker compose -f docker-compose.single.yml down
+#   Chat-app bots (token in .env.docker first; see the bot services at the end):
+#   docker compose -f docker-compose.single.yml --env-file .env.docker --profile telegram up -d
 #
 # Data (SQLite DBs, accounts, bootstrap/service tokens) lives in the
 # nymeria_single_data volume, kept separate from the main stack's nymeria_data
 # volume so this test never touches a production deployment's state.
+
+# Chat-app bot sidecars (#101 entry 15 of 2026-08-23): thin clients of the app
+# service, run from its own image (which carries the Discord, Telegram, and
+# Slack SDKs; Twitch needs the full stack or a native install). Hardened like
+# the full stack's bots: read-only rootfs, no capabilities, small limits. The
+# data volume carries the service token the app self-mints (and the bot's log
+# file; its heartbeat is on the /tmp tmpfs). An image built before these SDKs
+# needs `--build` once on the bot's `up -d` (`nymeria init` detects that).
+x-single-bot: &single-bot
+  image: nymeria-single:local
+  build:
+    context: .
+    dockerfile: Dockerfile.single
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp
+    - /home/nymeria
+  mem_limit: 384m
+  memswap_limit: 384m
+  cpus: 0.5
+  pids_limit: 128
+  volumes:
+    - nymeria_single_data:/data
+    - ./nymeria:/app/nymeria:ro
+    - ./run.py:/app/run.py:ro
+  depends_on:
+    nymeria-single:
+      condition: service_healthy
+
+# A bot gets only its own curated variables, never the whole env file (which
+# carries the vault key and the provider keys set there). They are interpolated, so a
+# bot profile needs `--env-file .env.docker` on the compose command.
+x-single-bot-env: &single-bot-env
+  TZ: ${USER_TIMEZONE:-UTC}
+  NYMERIA_SERVICE_TOKEN: ${NYMERIA_SERVICE_TOKEN:-}
+  NYMERIA_DATA_DIR: /data
+  USER_TIMEZONE: ${USER_TIMEZONE:-UTC}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_PROFILES: ${LOG_PROFILES:-}
+  LOG_MODULES: ${LOG_MODULES:-}
 
 services:
   nymeria-single:
@@ -110,6 +157,69 @@ services:
       interval: 30s
       timeout: 10s
       start_period: 20s
+      retries: 3
+
+  # Chat-app bots, one profile each (discord, telegram, slack). Put the
+  # platform's token in .env.docker (DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, or
+  # SLACK_BOT_TOKEN plus SLACK_APP_TOKEN), then start it with the stack:
+  #   docker compose -f docker-compose.single.yml --env-file .env.docker --profile telegram up -d
+  # Setup per platform: docs/chat-apps/<platform>-bot.md.
+  discord-bot:
+    <<: *single-bot
+    container_name: nymeria-single-discord-bot
+    command: ["python", "run.py", "discord-bot", "--api-url", "http://nymeria-single:8000"]
+    profiles:
+      - discord
+    environment:
+      <<: *single-bot-env
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_MODE: ${DISCORD_MODE:-gateway}
+      DISCORD_RESPOND_MODE: ${DISCORD_RESPOND_MODE:-mention}
+      DISCORD_REACTION_TRIGGER_ENABLED: ${DISCORD_REACTION_TRIGGER_ENABLED:-false}
+      DISCORD_DEFAULT_ACCOUNT: ${DISCORD_DEFAULT_ACCOUNT:-}
+      DISCORD_DEFAULT_ACCOUNT_GUILDS: ${DISCORD_DEFAULT_ACCOUNT_GUILDS:-}
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "discord-bot", "--api-url", "http://nymeria-single:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  telegram-bot:
+    <<: *single-bot
+    container_name: nymeria-single-telegram-bot
+    command: ["python", "run.py", "telegram-bot", "--api-url", "http://nymeria-single:8000"]
+    profiles:
+      - telegram
+    environment:
+      <<: *single-bot-env
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
+      TELEGRAM_REACTION_TRIGGER_ENABLED: ${TELEGRAM_REACTION_TRIGGER_ENABLED:-false}
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "telegram-bot", "--api-url", "http://nymeria-single:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  slack-bot:
+    <<: *single-bot
+    container_name: nymeria-single-slack-bot
+    command: ["python", "run.py", "slack-bot", "--api-url", "http://nymeria-single:8000"]
+    profiles:
+      - slack
+    environment:
+      <<: *single-bot-env
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SLACK_RESPOND_MODE: ${SLACK_RESPOND_MODE:-mention}
+      SLACK_SHOW_TOOL_EVENTS: ${SLACK_SHOW_TOOL_EVENTS:-false}
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "slack-bot", "--api-url", "http://nymeria-single:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
       retries: 3
 
 volumes:

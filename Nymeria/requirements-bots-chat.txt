@@ -1,0 +1,18 @@
+# Chat-platform bot SDKs for Discord, Telegram, and Slack (optional).
+#
+# The light part of requirements-bots.txt, which includes this file and adds
+# Twitch. The single-container image (Dockerfile.single) installs only this
+# file: these three add about 3 MB, while the Twitch stream listener's PyAV and
+# streamlink add about 120 MB. Keep it in sync with the [discord]/[telegram]/
+# [slack] extras in pyproject.toml; scripts/check_requirements_sync.py enforces
+# this.
+
+# Discord bot (two-way communication)
+discord.py>=2.3.0
+
+# Telegram bot (two-way communication)
+python-telegram-bot[rate-limiter]>=22.0
+
+# Slack bot (two-way communication via Socket Mode)
+slack-bolt>=1.22.0
+slack-sdk>=3.35.0

@@ -68,6 +68,23 @@ Restart after code or environment changes:
 docker compose --env-file .env.docker restart slack-bot
 ```
 
+On the single-container stack (`docker-compose.single.yml`, or
+`docker-compose.single.published.yml` on a clone-free install), the same
+profile runs the bot from the app's own image. `--env-file` is required: the
+bot receives only its own variables, interpolated from `.env.docker`, never the
+whole file. After changing the token, run the same `up -d` again (a restart
+does not re-read it). A clone-free install uses
+`docker-compose.single.published.yml` in the same command, run from the
+directory `nymeria init` named. A source-checkout image built before the
+single image carried bot libraries needs `--build` once (the bot otherwise
+exits "support is not installed"); `nymeria init` prints the flag when it
+detects that.
+
+```bash
+docker compose -f docker-compose.single.yml --env-file .env.docker --profile slack up -d
+docker logs nymeria-single-slack-bot --tail 50
+```
+
 Local thin-client run (a native install; it finds the backend from
 `NYMERIA_API_URL`, else `http://localhost:<API_PORT>` from the install's
 config, so `--api-url` is only needed for another backend):

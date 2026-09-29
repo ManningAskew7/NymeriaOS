@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -681,11 +682,109 @@ def test_runtime_settings_persist_on_a_named_volume() -> None:
         for name in services or compose["services"]:
             service = compose["services"][name]
             env = service.get("environment") or {}
-            if services is None and "NYMERIA_DATA_DIR" not in env:
-                continue  # a sidecar (searxng), not the Nymeria service
+            if services is None and ("NYMERIA_DATA_DIR" not in env or service.get("profiles")):
+                continue  # a sidecar (searxng, a bot), not the Nymeria service
             settings_file = env.get("NYMERIA_SETTINGS_FILE")
             assert settings_file, f"{filename}:{name} sets no NYMERIA_SETTINGS_FILE"
             parent = str(Path(settings_file).parent)
             assert parent in _named_volume_targets(service, compose), (
                 f"{filename}:{name}: {settings_file} is not on a named volume"
             )
+
+
+# #101 entry 15 of 2026-08-23: the single-container shape runs chat-app bots as
+# profile-gated sidecars from its own image. Twitch stays out: its stream
+# listener pulls PyAV (bundled ffmpeg) and streamlink, about 120 MB installed,
+# against about 3 MB for the other three.
+SINGLE_BOT_PLATFORMS = ("discord", "telegram", "slack")
+SINGLE_COMPOSES = (
+    "docker-compose.single.yml",
+    "docker-compose.single.published.yml",
+    "nymeria/setup/assets/docker-compose.single.published.yml",
+)
+
+
+def _extra_names(extra: str) -> set[str]:
+    import re
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    specs = data["project"]["optional-dependencies"][extra]
+    return {re.split(r"[<>=!~\[;\s]", spec, maxsplit=1)[0].lower() for spec in specs}
+
+
+def _requirement_names(filename: str) -> set[str]:
+    import re
+
+    names = set()
+    for raw in (ROOT / filename).read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line and not line.startswith("-"):
+            names.add(re.split(r"[<>=!~\[;\s]", line, maxsplit=1)[0].lower())
+    return names
+
+
+def test_single_image_carries_the_chat_bot_sdks_but_not_twitch() -> None:
+    import shlex
+
+    dockerfile = (ROOT / "Dockerfile.single").read_text(encoding="utf-8")
+    # The pip RUN instruction itself (continuations joined), not a comment.
+    logical = dockerfile.replace("\\\n", " ").splitlines()
+    [pip_run] = [line for line in logical if line.startswith("RUN pip install")]
+    words = shlex.split(pip_run.split("&&", 1)[0])
+    installed = [words[i + 1] for i, word in enumerate(words) if word == "-r"]
+    assert installed == ["requirements.txt", "requirements-bots-chat.txt"]
+    chat = _requirement_names("requirements-bots-chat.txt")
+    expected = set().union(*(_extra_names(p) for p in SINGLE_BOT_PLATFORMS))
+    assert chat == expected
+    assert not chat & _extra_names("twitch")
+    # The full image still gets every platform (requirements-bots includes it).
+    assert "-r requirements-bots-chat.txt" in (ROOT / "requirements-bots.txt").read_text()
+
+
+@pytest.mark.parametrize("filename", SINGLE_COMPOSES)
+def test_single_compose_bots_are_hardened_thin_clients(filename: str) -> None:
+    compose = _load_compose(filename)
+    services = compose["services"]
+    app = services["nymeria-single"]
+    full = _load_compose("docker-compose.yml")["services"]
+    forbidden = {
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+        "EMBEDDING_API_KEY", "NYMERIA_SECRETS_KEY", "GOOGLE_OAUTH_CREDENTIALS",
+    }
+    bots = {name for name, svc in services.items() if "-bot" in " ".join(svc.get("command") or [])}
+    assert bots == {f"{p}-bot" for p in SINGLE_BOT_PLATFORMS}, bots
+    for platform in SINGLE_BOT_PLATFORMS:
+        name = f"{platform}-bot"
+        bot = services[name]
+        where = f"{filename}:{name}"
+        assert bot["profiles"] == [platform], where
+        assert bot["image"] == app["image"], where
+        # Same image, same way of getting it: the source compose builds it
+        # (a bot-only `up` must not try to pull a local tag); the published
+        # one pulls it like the app does.
+        assert bot.get("build") == app.get("build"), where
+        assert bot.get("pull_policy") == app.get("pull_policy"), where
+        assert bot["command"] == [
+            "python", "run.py", name, "--api-url", "http://nymeria-single:8000"
+        ], where
+        # Never the whole env file: it carries the vault key and every
+        # provider key. The same curated keys as the full stack's bot.
+        assert "env_file" not in bot, where
+        env = bot.get("environment") or {}
+        assert set(env) == set(full[name]["environment"]), where
+        assert not forbidden & set(env), where
+        assert env["NYMERIA_DATA_DIR"] == "/data", where
+        # The service token the app self-mints lives on the data volume.
+        assert "nymeria_single_data:/data" in bot["volumes"], where
+        for entry in bot["volumes"]:
+            if entry.startswith("./"):
+                assert entry.endswith(":ro"), where
+        assert bot["read_only"] is True, where
+        assert {"/tmp", "/home/nymeria"} <= set(bot["tmpfs"]), where
+        assert bot["security_opt"] == EXPECTED_SECURITY_OPT, where
+        assert bot["cap_drop"] == EXPECTED_CAP_DROP, where
+        assert bot.get("mem_limit") and bot.get("pids_limit"), where
+        assert bot["depends_on"]["nymeria-single"]["condition"] == "service_healthy", where
+        health = " ".join(bot["healthcheck"]["test"])
+        assert f"service_health check {name} --api-url http://nymeria-single:8000" in health, where

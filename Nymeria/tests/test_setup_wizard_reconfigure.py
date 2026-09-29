@@ -914,8 +914,10 @@ def test_chat_apps_hint_gives_a_start_command_that_works_on_this_shape(tmp_path)
     assert "TELEGRAM_BOT_TOKEN" in out
     assert "nymeria telegram-bot" not in out
 
-    # The single-container image carries no bot SDKs: say so instead of
-    # printing a command that cannot work.
+    # #101 entry 15 of 2026-08-23: the single-container image now carries the
+    # Discord, Telegram, and Slack SDKs and its compose runs them as profiles.
+    # The bot's token reaches it only through compose interpolation, so the
+    # command always carries --env-file, even on the default-port short form.
     console, buf = _capture_console()
     print_chat_apps_hint(
         WizardState(hosting=HostingOption.DOCKER, docker_stack=DockerStack.SLIM),
@@ -923,8 +925,86 @@ def test_chat_apps_hint_gives_a_start_command_that_works_on_this_shape(tmp_path)
         config_path=tmp_path / ".env.docker",
     )
     out = " ".join(buf.getvalue().split())
-    assert "does not run chat-app bots" in out
-    assert "--profile" not in out and "nymeria telegram-bot" not in out
+    assert (
+        "docker compose -f docker-compose.single.yml --env-file .env.docker "
+        "--profile telegram up -d"
+    ) in out
+    assert "TELEGRAM_BOT_TOKEN" in out and str(tmp_path / ".env.docker") in out
+    assert "discord, slack" in out
+    assert "A Twitch bot needs the full Docker stack or a native install" in out
+    assert "--build" not in out  # the suite's probe stub answers "no image"
+    assert "does not run chat-app bots" not in out
+    assert "nymeria telegram-bot" not in out
+
+    # A non-default port keeps its prefix and does not double the flag.
+    console, buf = _capture_console()
+    print_chat_apps_hint(
+        WizardState(hosting=HostingOption.DOCKER, docker_stack=DockerStack.SLIM, api_port=8020),
+        console,
+        config_path=tmp_path / ".env.docker",
+    )
+    out = " ".join(buf.getvalue().split())
+    assert (
+        "API_PORT=8020 docker compose -f docker-compose.single.yml --env-file "
+        ".env.docker --profile telegram up -d"
+    ) in out
+    assert out.count("--env-file") == 1
+
+
+def test_single_shape_bot_command_rebuilds_an_image_built_before_the_sdks(monkeypatch, tmp_path):
+    # `up -d` builds only a MISSING image: an image from before the bot SDKs
+    # would start a bot that crash-loops on "support is not installed".
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup import finalize as finalize_mod
+    from nymeria.setup.state import WizardState
+
+    state = WizardState(hosting=HostingOption.DOCKER, docker_stack=DockerStack.SLIM)
+    for answer, rebuilds in ((False, True), (True, False), (None, False)):
+        monkeypatch.setattr(finalize_mod, "_single_image_has_bots", lambda a=answer: a)
+        console, buf = _capture_console()
+        finalize_mod.print_chat_apps_hint(state, console, config_path=tmp_path / ".env.docker")
+        out = " ".join(buf.getvalue().split())
+        assert ("--profile telegram up -d --build" in out) is rebuilds, answer
+        assert ("predates the bot libraries" in out) is rebuilds, answer
+        assert "--profile telegram up -d" in out
+
+
+def test_clone_free_bot_command_names_its_root_and_never_builds(monkeypatch, tmp_path):
+    # The published compose and .env.docker live in the runtime root, not a
+    # checkout the user stands in; and there is nothing to build there.
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup import environment as env_mod
+    from nymeria.setup import finalize as finalize_mod
+    from nymeria.setup.state import WizardState
+
+    monkeypatch.setattr(env_mod, "source_checkout_root", lambda *a, **k: None)
+    monkeypatch.setattr(finalize_mod, "_single_image_has_bots", lambda: False)
+    state = WizardState(hosting=HostingOption.DOCKER, docker_stack=DockerStack.SLIM)
+    root = finalize_mod.resolve_runtime_root(state, for_docker=True)
+    console, buf = _capture_console()
+    finalize_mod.print_chat_apps_hint(state, console, config_path=root / ".env.docker")
+    out = " ".join(buf.getvalue().split())
+    assert f"start the bot from {root}:" in out
+    assert (
+        "docker compose -f docker-compose.single.published.yml --env-file .env.docker "
+        "--profile telegram up -d"
+    ) in out
+    assert "--build" not in out
+    assert out.count("--env-file") == 1
+
+
+def test_a_searxng_pick_keeps_its_profile_on_the_bot_command(tmp_path):
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.finalize import print_chat_apps_hint
+    from nymeria.setup.state import WizardState
+
+    state = WizardState(hosting=HostingOption.DOCKER, docker_stack=DockerStack.SLIM)
+    state.extras["web_search"] = ["web_search_searxng"]
+    console, buf = _capture_console()
+    print_chat_apps_hint(state, console, config_path=tmp_path / ".env.docker")
+    out = " ".join(buf.getvalue().split())
+    assert "--env-file .env.docker --profile search --profile telegram up -d" in out
+    assert out.count("--env-file") == 1
 
 
 def test_a_finished_run_points_at_chat_apps(monkeypatch, tmp_path, capsys):

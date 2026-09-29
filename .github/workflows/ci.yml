@@ -282,13 +282,15 @@ jobs:
         working-directory: Nymeria
         run: docker compose --profile discord --profile telegram --profile slack --profile voice --env-file .env.docker.example -f docker-compose.yml config --quiet
 
-      - name: Validate single-container published compose
+      - name: Validate single-container composes (bot profiles included)
         working-directory: Nymeria
         run: |
           # This compose declares `env_file: .env.docker`, which is gitignored,
           # so seed it from the committed example for validation only.
           cp .env.docker.example .env.docker
           docker compose -f docker-compose.single.published.yml config --quiet
+          docker compose --profile discord --profile telegram --profile slack -f docker-compose.single.published.yml --env-file .env.docker config --quiet
+          docker compose --profile discord --profile telegram --profile slack -f docker-compose.single.yml --env-file .env.docker config --quiet
           rm -f .env.docker
 
       - name: Check full Dockerfile

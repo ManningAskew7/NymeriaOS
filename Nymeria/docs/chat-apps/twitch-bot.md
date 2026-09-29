@@ -493,8 +493,10 @@ pause transcription for 60 s. Missing dependencies or an unset
 on without a listener; `!status` shows `Listening: starting | live | off |
 backoff | stt_paused | error` and the heartbeat details carry `listener`
 and `listener_error`. Health is never affected by the listener. The
-single-container image (`Dockerfile.single`) carries no bot extras, so
-that shape cannot listen; the compose stack's slim and full images can.
+single-container image (`Dockerfile.single`) carries the Discord,
+Telegram, and Slack SDKs but not the Twitch extra (its listener alone adds
+about 120 MB), so that shape runs no Twitch bot; the compose stack's slim and
+full images and a native install with `nymeriaos[twitch]` can.
 
 Cost: one STT request per voiced window, so roughly 200 to 300 requests
 per talkative hour at 12 s windows (OpenAI's transcribe pricing is per

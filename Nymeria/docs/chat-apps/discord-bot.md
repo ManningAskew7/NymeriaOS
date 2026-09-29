@@ -68,6 +68,23 @@ docker logs nymeria-discord-bot --tail 50
 
 When not using the Discord bot, set `DISCORD_BOT_TOKEN=disabled` to prevent docker-compose from complaining about the missing env var.
 
+On the single-container stack (`docker-compose.single.yml`, or
+`docker-compose.single.published.yml` on a clone-free install), the same
+profile runs the bot from the app's own image. `--env-file` is required: the
+bot receives only its own variables, interpolated from `.env.docker`, never the
+whole file. After changing the token, run the same `up -d` again (a restart
+does not re-read it). A clone-free install uses
+`docker-compose.single.published.yml` in the same command, run from the
+directory `nymeria init` named. A source-checkout image built before the
+single image carried bot libraries needs `--build` once (the bot otherwise
+exits "support is not installed"); `nymeria init` prints the flag when it
+detects that.
+
+```bash
+docker compose -f docker-compose.single.yml --env-file .env.docker --profile discord up -d
+docker logs nymeria-single-discord-bot --tail 50
+```
+
 Without Docker (a native install: `nymeria slim`, the background service, or a
 source checkout), put the token in the install's config file (`config.env`,
 or `.env` in a checkout) and run the bot in its own terminal next to the

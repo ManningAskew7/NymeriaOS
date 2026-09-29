@@ -338,9 +338,20 @@ def _require_bot_sdk(module, platform: str, extra: str) -> None:
     letting the bot crash with a raw ImportError/AttributeError on instantiation.
     """
     if not getattr(module, "SDK_AVAILABLE", True):
+        from nymeria.config.settings import _in_container
+
         print(f"\n[Error] {platform} support is not installed.")
-        print(f"  Install it with:  pip install 'nymeriaos[{extra}]'")
-        print("  (or 'nymeriaos[bots]' to install every chat platform at once)")
+        if _in_container():
+            # pip inside a container is lost on the next recreate; the image
+            # is what needs the SDK (#101 entry 15 of 2026-08-23).
+            print("  This container's image does not carry it. An image built before")
+            print("  the bot libraries needs one rebuild: add --build to the same")
+            print("  docker compose up command. The single-container image carries")
+            print("  Discord, Telegram, and Slack; Twitch runs from the full Docker")
+            print("  stack or a native install.")
+        else:
+            print(f"  Install it with:  pip install 'nymeriaos[{extra}]'")
+            print("  (or 'nymeriaos[bots]' to install every chat platform at once)")
         sys.exit(1)
 
 

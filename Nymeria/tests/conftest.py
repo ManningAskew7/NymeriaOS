@@ -278,7 +278,7 @@ def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     detection unit tests call `nymeria.setup.environment` directly, which this
     does not touch. The start command's image probe (#314) is stubbed at its
     finalize seam for the same reason: this host's real `nymeria-full:local`
-    image must not decide a test's `--build`.
+    (or `nymeria-single:local`) image must not decide a test's `--build`.
     """
     from nymeria.onboarding import HostingOption
     from nymeria.setup import finalize as finalize_module
@@ -286,6 +286,7 @@ def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     from nymeria.setup.environment import EnvironmentReport
 
     monkeypatch.setattr(finalize_module, "_full_image_has_local_rag", lambda: None)
+    monkeypatch.setattr(finalize_module, "_single_image_has_bots", lambda: None)
 
     monkeypatch.setattr(
         runner_module,
