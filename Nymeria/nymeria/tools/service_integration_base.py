@@ -277,7 +277,7 @@ def require_joined_destination(
     the vault. The message below therefore names the stale setting as a remedy;
     it is the one people will actually be hitting. The cost-free version is to
     order the auth branches by provenance so the vault-supplied credential's
-    branch wins, which is task #65.
+    branch wins, which is backlog #121.
 
     Three cases deliberately pass:
 

@@ -974,7 +974,7 @@ def test_the_guard_refuses_the_leak_and_names_the_remedy():
     # was then unactionable for the case it fires on most: a record that already
     # holds a working credential of a different kind, with a stale environment
     # variable feeding an earlier auth branch. That reading told the operator to
-    # do something they had already done. See task #65 for the version that
+    # do something they had already done. See backlog #121 for the version that
     # removes the refusal instead of explaining it.
     assert "Add that credential to the same record" in message
     assert "configure the address in settings" in message
@@ -1065,12 +1065,12 @@ _ENFORCED_ELSEWHERE = "join-gate: enforced-elsewhere"
 # The rule catches a guard deleted from a site it still recognises. It cannot
 # catch a refactor that stops it recognising the site at all, so something has
 # to pin the recognised set. That used to be two integers
-# (``_SHAPED_SITE_FLOOR = 48``, ``_GUARD_CALL_FLOOR = 79``), and audit task #69
-# replaced them for the reason the sibling gates already record about tables
-# keyed on locations: a count cannot tell one site from another. When the set
-# moved by four during that task, the failure said only that four sites had
-# gone, and naming them took a bisect against the committed version of this file
-# with a debug print patched into both copies.
+# (``_SHAPED_SITE_FLOOR = 48``, ``_GUARD_CALL_FLOOR = 79``), and the 2026-08-01
+# join-ratchet pass (``233140ad``) replaced them for the reason the sibling
+# gates already record about tables keyed on locations: a count cannot tell one
+# site from another. When the set moved by four during that pass, the failure
+# said only that four sites had gone, and naming them took a bisect against the
+# committed version of this file with a debug print patched into both copies.
 #
 # The COUNT half is not decoration, and review supplied the witness. A site can
 # stay recognised while one of its guards disappears: contentful resolves a
@@ -1153,7 +1153,8 @@ def _call_name(node):
 def _resolved_field_names(value, module):
     """``field_names=`` as a concrete set, whether spelled literally or via group().
 
-    Deliberately NARROW, and audit task #69 is the record of why. It was widened to
+    Deliberately NARROW, and the 2026-08-01 join-ratchet pass (``233140ad``) is
+    the record of why. It was widened to
     follow an ``ast.IfExp``, a local bound by an if/elif/else ladder, a
     partially literal tuple and a callee's default argument, so that four
     helpers using those spellings would be classified precisely instead of
@@ -1597,11 +1598,15 @@ def test_every_shaped_call_site_joins_its_destination_to_its_secret():
       still is not answered here: a CONSTRAINED fragment reaches another TENANT
       of the same vendor, and the reason this gate cannot ask is mechanical
       rather than deliberate. Those lookups resolve to ``provider=None,
-      fields=None`` and are dropped by ``if not resolves_address: continue``
-      before the fail-closed "unknown" rule below can require a guard. Widening
-      the join to fragments is therefore blocked on fixing that ordering (task
-      #69), and adding a fragment rule first would add it to an analysis that
-      cannot see the functions it applies to.
+      fields=None`` and were dropped by the skip below (then
+      ``if not resolves_address: continue``) before the fail-closed "unknown"
+      rule could require a guard. Widening
+      the join to fragments was therefore blocked on fixing that ordering, and
+      adding a fragment rule first would add it to an analysis that cannot see
+      the functions it applies to. ``233140ad`` since landed the fail-closed
+      reorder (the ``unresolved_here`` clause on that skip), so re-check this
+      paragraph against the current skip before widening; the fragment rule
+      itself is backlog #119.
     * Whether a guard is placed CORRECTLY, beyond ordering. It requires a guard
       naming each anchor local between that lookup and the next rebinding of the
       name, which catches a guard above its own assignment and a second branch
@@ -2727,7 +2732,8 @@ def test_every_join_gate_exemption_marker_carries_a_reason():
     that the next reader finds the justification where the code is. An
     unexplained marker gives that up and keeps the opt-out.
 
-    Audit task #69 more than doubled the marker count, from 3 to 7, by reverting
+    The 2026-08-01 join-ratchet pass (``233140ad``) more than doubled the marker
+    count, from 3 to 7, by reverting
     a resolver widening in favour of marking the four helpers it had been widened
     to resolve. That is a defensible trade only if each marker says why, so the
     test arrives with the markers rather than after them.

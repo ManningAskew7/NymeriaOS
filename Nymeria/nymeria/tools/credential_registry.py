@@ -298,7 +298,7 @@ DESTINATION_URL_FIELDS: frozenset[str] = frozenset({
 #
 # Do not read that as inert. A constrained fragment still names a different
 # TENANT of the same vendor, which is a provenance question rather than a
-# syntactic one, and the join gate cannot yet see these lookups (task #69).
+# syntactic one, and the join gate cannot yet see these lookups (backlog #119).
 DESTINATION_HOST_FRAGMENT_FIELDS: frozenset[str] = frozenset({
     "app_name", "cloud_domain", "domain", "host", "instance", "region",
     "server_prefix", "shop_subdomain", "site", "subdomain",
@@ -338,7 +338,7 @@ def destination_url_fields_for(spec: ProviderCredentialSpec) -> frozenset[str]:
     ``tests/test_service_integration_egress.py``. The gap between them is where
     E10-02-E lived; its syntactic half is closed by
     ``destination_host_fragment_fields_for`` below, and its provenance half
-    (which TENANT of the vendor) is still open, tracked as task #69.
+    (which TENANT of the vendor) is still open, tracked as backlog #119.
     """
     return frozenset(
         name
