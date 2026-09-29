@@ -96,6 +96,7 @@ def _append_settings_checks(
     results.extend(
         [
             _check_data_dir(settings),
+            _check_secrets_key(project_root=_project_root_override(args)),
             _check_web_search(settings),
             _check_llm(settings, skip=bool(getattr(args, "skip_llm_test", False))),
             _check_database(settings),
@@ -105,15 +106,25 @@ def _append_settings_checks(
             _check_port(settings),
         ]
     )
-    project_root_arg = getattr(args, "project_root", None)
-    project_root = (
-        Path(project_root_arg).expanduser().resolve()
-        if project_root_arg is not None
-        else PROJECT_ROOT
-    )
+    override = _project_root_override(args)
+    project_root = override if override is not None else PROJECT_ROOT
+    # Only for this install's own root: the extra is a property of THIS
+    # interpreter, and the one caller that names another root (the wizard's
+    # final doctor) may be configuring a Docker image, whose Python is not this
+    # one. The wizard reports the extra itself for the installs it serves.
+    local_rag = _check_local_rag(settings) if override is None else None
+    if local_rag is not None:
+        results.append(local_rag)
     browser = _check_server_browser(settings, project_root)
     if browser is not None:
         results.append(browser)
+
+
+def _project_root_override(args: argparse.Namespace) -> Path | None:
+    project_root_arg = getattr(args, "project_root", None)
+    if project_root_arg is None:
+        return None
+    return Path(project_root_arg).expanduser().resolve()
 
 
 def _format_result(result: CheckResult) -> str:
@@ -191,6 +202,80 @@ def _check_data_dir(settings: Any) -> CheckResult:
     except OSError as exc:
         return CheckResult("Data dir", "fail", f"{data_dir} is not writable: {exc}")
     return CheckResult("Data dir", "pass", f"{data_dir} (writable)")
+
+
+def _check_secrets_key(project_root: Path | None = None) -> CheckResult:
+    """The credential vault key (#101 entry 17 of 2026-08-24).
+
+    The process environment wins, as it does for every setting (``run.py``
+    loaded this install's env files into it before doctor runs); for another
+    root, that root's own env files fill in a key the environment lacks.
+    Missing or malformed is a warning, not a failure: the install runs, and
+    only credential saves and reads break.
+    """
+    from .core.secrets import (
+        SECRETS_KEY_ENV_VAR,
+        SECRETS_KEY_MINT_COMMAND,
+        secrets_key_problem,
+    )
+
+    raw = os.environ.get(SECRETS_KEY_ENV_VAR) or ""
+    if not raw and project_root is not None:
+        from dotenv import dotenv_values
+
+        for path in get_env_file_paths(project_root):
+            try:
+                if path.is_file():
+                    raw = dotenv_values(path).get(SECRETS_KEY_ENV_VAR) or raw
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+    problem = secrets_key_problem(raw)
+    if problem is None:
+        return CheckResult("Secrets key", "pass", f"{SECRETS_KEY_ENV_VAR} is set")
+    if problem == "invalid":
+        return CheckResult(
+            "Secrets key",
+            "warn",
+            f"{SECRETS_KEY_ENV_VAR} is set but is not a valid key, so saving or "
+            "reading any credential will fail; restore the original value if it "
+            f"was changed by mistake, otherwise replace it with `{SECRETS_KEY_MINT_COMMAND}`",
+        )
+    return CheckResult(
+        "Secrets key",
+        "warn",
+        f"{SECRETS_KEY_ENV_VAR} is not set, so saving any credential will fail; "
+        f"generate one with `{SECRETS_KEY_MINT_COMMAND}` and add it to your env file",
+    )
+
+
+def _check_local_rag(settings: Any) -> CheckResult | None:
+    """A local embedder or reranker needs the local-rag extra (#101 entry 21).
+
+    ``None`` when nothing asks for a local model, so installs on a hosted
+    embedder get no row at all.
+    """
+    from .config.settings import (
+        describe_missing_local_rag,
+        local_rag_keys,
+        local_rag_keys_without_extra,
+    )
+
+    embedding = getattr(settings, "embedding_provider", None)
+    rerank = getattr(settings, "rag_rerank_provider", None)
+    rerank_enabled = bool(getattr(settings, "rag_rerank_enabled", False))
+    local = local_rag_keys(embedding, rerank, rerank_enabled)
+    if not local:
+        return None
+    missing = local_rag_keys_without_extra(embedding, rerank, rerank_enabled)
+    if not missing:
+        return CheckResult("Local RAG", "pass", f"{', '.join(local)}=local; extra installed")
+    return CheckResult(
+        "Local RAG",
+        "warn",
+        f"{describe_missing_local_rag(missing)}; install nymeriaos[local-rag] "
+        "(Docker: NYMERIA_LOCAL_RAG=1, then up -d --build) or choose a hosted "
+        "provider with `nymeria init`",
+    )
 
 
 def _check_web_search(settings: Any) -> CheckResult:

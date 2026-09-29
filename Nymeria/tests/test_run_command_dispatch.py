@@ -60,6 +60,49 @@ def test_full_validation_set_matches_server_and_bot_commands():
         assert name not in run._FULL_VALIDATION_COMMANDS
 
 
+def test_thin_client_commands_are_the_relays():
+    """Exactly the commands that relay to the API skip the server-dependency
+    warnings; every agent-running command keeps them."""
+    thin = {name for name, command in run.COMMANDS.items() if command.thin_client}
+    assert thin == {"mcp", "discord-bot", "telegram-bot", "slack-bot", "twitch-bot"}
+
+
+@pytest.mark.parametrize(
+    "command,thin",
+    [("mcp", True), ("twitch-bot", True), ("api", False), ("worker", False)],
+)
+def test_main_passes_the_thin_client_flag_to_validation(monkeypatch, command, thin):
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(run, "validate_config", lambda *a, **k: seen.update(k))
+    monkeypatch.setattr(run, "_load_environment", lambda: None)
+    monkeypatch.setattr(run, "_require_launch_mode_service_token", lambda *a, **k: None)
+    monkeypatch.setattr(run, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(run, run.COMMANDS[command].runner.__name__, lambda args: None)
+    monkeypatch.setattr(sys, "argv", ["run.py", command])
+
+    run.main()
+
+    assert seen.get("thin_client", False) is thin
+
+
+@pytest.mark.parametrize("thin_client", [True, False])
+def test_validate_config_maps_thin_client_to_a_non_server_validation(monkeypatch, thin_client):
+    import nymeria.config
+
+    seen: dict[str, Any] = {}
+
+    class FakeSettings:
+        def validate_runtime(self, **kwargs):
+            seen.update(kwargs)
+            return [], []
+
+    monkeypatch.setattr(nymeria.config, "get_settings", lambda: FakeSettings())
+
+    run.validate_config(thin_client=thin_client)
+
+    assert seen == {"server_process": not thin_client}
+
+
 def test_exit_returning_commands():
     """Only the commands that return an exit code are marked exits=True."""
     exits = {name for name, command in run.COMMANDS.items() if command.exits}

@@ -175,6 +175,56 @@ def _is_process_root(root: Path) -> bool:
         return False
 
 
+def local_rag_keys(
+    embedding_provider: Optional[str],
+    rerank_provider: Optional[str],
+    rerank_enabled: bool,
+) -> List[str]:
+    """Env keys whose value makes the runtime load a local sentence-transformers model.
+
+    Each predicate mirrors its consumer, so the startup warning and
+    ``nymeria doctor`` fire exactly when the runtime would reach for the
+    package: ``EmbeddingClient`` normalizes its provider (strip, lower), while
+    ``rag_search_tool`` compares the reranker exactly and only when reranking
+    is enabled. Config does not import either (nor setup's install-time twin,
+    ``local_rag_install.requires_local_rag``).
+    """
+    keys: List[str] = []
+    if (embedding_provider or "").strip().lower() == "local":
+        keys.append("EMBEDDING_PROVIDER")
+    if rerank_enabled and rerank_provider == "local":
+        keys.append("RAG_RERANK_PROVIDER")
+    return keys
+
+
+def local_rag_keys_without_extra(
+    embedding_provider: Optional[str],
+    rerank_provider: Optional[str],
+    rerank_enabled: bool,
+) -> List[str]:
+    """``local_rag_keys`` while ``sentence_transformers`` is not importable, else []."""
+    keys = local_rag_keys(embedding_provider, rerank_provider, rerank_enabled)
+    if not keys:
+        return []
+    from importlib.util import find_spec
+
+    return [] if find_spec("sentence_transformers") is not None else keys
+
+
+def describe_missing_local_rag(keys: List[str]) -> str:
+    """What stops working when ``keys`` point at a local model the install lacks."""
+    losses = []
+    if "EMBEDDING_PROVIDER" in keys:
+        losses.append("memory, skill, and tool search run without embeddings")
+    if "RAG_RERANK_PROVIDER" in keys:
+        losses.append("memory search results are not reranked")
+    return (
+        f"{' and '.join(key + '=local' for key in keys)} needs the local-rag "
+        "extra (sentence-transformers), which this install lacks, so "
+        f"{' and '.join(losses)}"
+    )
+
+
 def get_env_file_paths(project_root: Path | None = None) -> Tuple[Path, ...]:
     """Return environment files loaded for a runtime project root, in load order.
 
@@ -2668,9 +2718,16 @@ class Settings(BaseSettings):
             "Begin the cycle. Phase 1: orient. Read memory before acting."
         )
 
-    def validate_runtime(self) -> Tuple[List[str], List[str]]:
+    def validate_runtime(self, *, server_process: bool = True) -> Tuple[List[str], List[str]]:
         """
         Validate runtime configuration settings.
+
+        Args:
+            server_process: False for a thin client (the MCP server, the chat
+                bots). Those relay to the API and deliberately run without the
+                server's LLM key, search backends, vault key, and embedder, so
+                warning about any of them there is a false alarm that tells a
+                correctly configured stack to change something.
 
         Returns:
             Tuple of (errors, warnings) lists.
@@ -2695,6 +2752,22 @@ class Settings(BaseSettings):
                 "  python run.py users add bot-service@localhost --role admin --id bot-service"
             )
 
+        # Check database backend configuration
+        if self.database_backend == "postgres" and not self.postgres_uri:
+            errors.append(
+                "DATABASE_BACKEND is 'postgres' but POSTGRES_URI is not set.\n"
+                "  Either set POSTGRES_URI or change DATABASE_BACKEND to 'sqlite'."
+            )
+
+        if server_process:
+            warnings.extend(self._server_dependency_warnings())
+
+        return errors, warnings
+
+    def _server_dependency_warnings(self) -> List[str]:
+        """Warnings about what only an agent-running process uses (see validate_runtime)."""
+        warnings: List[str] = []
+
         # Check for LLM provider API key
         provider_key = self.get_api_key_for_provider()
         provider = normalize_llm_provider(self.llm_provider)
@@ -2711,13 +2784,6 @@ class Settings(BaseSettings):
                 f"record for provider '{provider}' with secret field 'api_key'."
             )
 
-        # Check database backend configuration
-        if self.database_backend == "postgres" and not self.postgres_uri:
-            errors.append(
-                "DATABASE_BACKEND is 'postgres' but POSTGRES_URI is not set.\n"
-                "  Either set POSTGRES_URI or change DATABASE_BACKEND to 'sqlite'."
-            )
-
         # Warnings for optional features
         if not self.has_web_search_backend():
             warnings.append(
@@ -2728,7 +2794,58 @@ class Settings(BaseSettings):
                 "or reinstall NymeriaOS to restore ddgs."
             )
 
-        return errors, warnings
+        # The credential vault key (#101 entry 17 of 2026-08-24). The wizard
+        # mints it; a compose stood up by hand does not, and the first sign
+        # used to be a failed credential save deep in some UI. A warning, not a
+        # self-mint: core/secrets.py keeps the key off the disk the encrypted
+        # data lives on, and a minted key would silently orphan every stored
+        # secret the day an operator set their own.
+        from ..core.secrets import (
+            SECRETS_KEY_ENV_VAR,
+            SECRETS_KEY_MINT_COMMAND,
+            secrets_key_problem,
+        )
+
+        key_problem = secrets_key_problem()
+        apply_hint = (
+            "  Then restart (a Docker container needs up -d, which re-reads the "
+            "env file; restart does not)."
+        )
+        if key_problem == "missing":
+            warnings.append(
+                f"{SECRETS_KEY_ENV_VAR} not set: saving any credential (provider "
+                "and integration API keys, bot tokens, OAuth logins) will fail.\n"
+                "  Generate one and add it to your env file (.env.docker or "
+                f"config.env):\n  {SECRETS_KEY_MINT_COMMAND}\n{apply_hint}\n"
+                "  Keep it: a new key cannot read what an old one saved."
+            )
+        elif key_problem == "invalid":
+            warnings.append(
+                f"{SECRETS_KEY_ENV_VAR} is set but is not a valid key (44 url-safe "
+                "base64 characters ending in '=', no b'' around it): saving or "
+                "reading any credential will fail.\n"
+                "  If it was changed by mistake, restore the original value (a "
+                "new key cannot read what the old one saved); if nothing was "
+                f"saved yet, replace it with a fresh one:\n  {SECRETS_KEY_MINT_COMMAND}\n"
+                f"{apply_hint}"
+            )
+
+        # A local embedder or reranker on an install without the local-rag
+        # extra (#101 entry 21 of 2026-08-24): chat works, retrieval quietly
+        # degrades, and the only trace was an error line at first use.
+        missing = local_rag_keys_without_extra(
+            self.embedding_provider, self.rag_rerank_provider, self.rag_rerank_enabled
+        )
+        if missing:
+            warnings.append(
+                describe_missing_local_rag(missing) + ".\n"
+                "  Install the extra (pip or uv: nymeriaos[local-rag]; the full "
+                "Docker stack: NYMERIA_LOCAL_RAG=1 in .env.docker, then up -d "
+                "--build; the single-container image does not carry it), or "
+                "choose a hosted provider with nymeria init."
+            )
+
+        return warnings
 
     def has_web_search_backend(self) -> bool:
         """True when at least one web search tool can work without more setup.

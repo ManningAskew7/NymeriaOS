@@ -192,7 +192,11 @@ def _add_api_url_arg(
     parser.add_argument("--api-url", default=None, help=help_text)
 
 
-def validate_config(skip_api_key: bool = False, suppress_service_token_warning: bool = False) -> None:
+def validate_config(
+    skip_api_key: bool = False,
+    suppress_service_token_warning: bool = False,
+    thin_client: bool = False,
+) -> None:
     """
     Validate configuration before starting any command.
 
@@ -200,6 +204,9 @@ def validate_config(skip_api_key: bool = False, suppress_service_token_warning: 
         skip_api_key: If True, skip NYMERIA_API_KEY check (for service status checks)
         suppress_service_token_warning: If True, omit the generic service-token
             warning because launch-mode validation will enforce it as fatal.
+        thin_client: The command relays to the API (MCP server, chat bots), so
+            the server-dependency warnings (LLM key, search, vault key, local
+            RAG) would be false alarms; see ``Settings.validate_runtime``.
 
     Exits with code 1 if critical errors are found.
     """
@@ -208,7 +215,7 @@ def validate_config(skip_api_key: bool = False, suppress_service_token_warning: 
     settings = get_settings()
     # Locals are named config_* so they do not shadow the stdlib ``warnings``
     # module imported at the top of this file.
-    config_errors, config_warnings = settings.validate_runtime()
+    config_errors, config_warnings = settings.validate_runtime(server_process=not thin_client)
 
     # Filter out API key error if skip_api_key is True
     if skip_api_key:
@@ -2034,11 +2041,14 @@ class _Command(NamedTuple):
                      in ``main``; everything else
                      (init/doctor/reembed/snapshot/completion) runs no config
                      validation.
+    thin_client:     relays to the API rather than running agents, so its
+                     validation skips the server-dependency warnings.
     """
 
     runner: Callable[[argparse.Namespace], Optional[int]]
     exits: bool = False
     full_validation: bool = False
+    thin_client: bool = False
 
 
 # Single source of truth mapping a subcommand to its runner and validation
@@ -2052,11 +2062,11 @@ COMMANDS: dict[str, _Command] = {
     "init": _Command(run_init, exits=True),
     "doctor": _Command(run_doctor, exits=True),
     "reembed": _Command(run_reembed, exits=True),
-    "discord-bot": _Command(run_discord_bot, full_validation=True),
-    "telegram-bot": _Command(run_telegram_bot, full_validation=True),
-    "slack-bot": _Command(run_slack_bot, full_validation=True),
-    "twitch-bot": _Command(run_twitch_bot, full_validation=True),
-    "mcp": _Command(run_mcp, full_validation=True),
+    "discord-bot": _Command(run_discord_bot, full_validation=True, thin_client=True),
+    "telegram-bot": _Command(run_telegram_bot, full_validation=True, thin_client=True),
+    "slack-bot": _Command(run_slack_bot, full_validation=True, thin_client=True),
+    "twitch-bot": _Command(run_twitch_bot, full_validation=True, thin_client=True),
+    "mcp": _Command(run_mcp, full_validation=True, thin_client=True),
     "claude-code-runner": _Command(run_claude_code_runner),
     "service": _Command(run_service),
     "browser": _Command(run_browser, exits=True),
@@ -2144,7 +2154,10 @@ def main() -> None:
         if getattr(args, "transport", "api") == "local":
             validate_config(suppress_service_token_warning=suppress_service_token_warning)
     elif args.command in _FULL_VALIDATION_COMMANDS:
-        validate_config(suppress_service_token_warning=suppress_service_token_warning)
+        validate_config(
+            suppress_service_token_warning=suppress_service_token_warning,
+            thin_client=COMMANDS[args.command].thin_client,
+        )
     elif args.command == "service":
         # Only the foreground gateway run needs a valid config; the service
         # manager actions must work before (install) or without (status,

@@ -287,3 +287,168 @@ def test_keyed_backend_list_matches_the_wizard_key_specs_and_the_catalog():
 
     assert spec_tools == keyed_tools
     assert set(WEB_SEARCH_BACKEND_ENV_VARS) == spec_env
+
+
+# --- #101 entries 17 and 21 (2026-08-24): silent container misconfig ---------
+
+
+def _fake_module_presence(monkeypatch, name, present):
+    """Make ``name`` look installed (or not) to the find_spec probes."""
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(module, *args, **kwargs):
+        if module == name:
+            return object() if present else None
+        return real_find_spec(module, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+
+def _warnings_mentioning(settings, needle, **kwargs):
+    _errors, warnings = settings.validate_runtime(**kwargs)
+    return [w for w in warnings if needle in w]
+
+
+def _real_secrets_key() -> str:
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key().decode()
+
+
+def test_missing_secrets_key_warns_at_boot_with_a_mint_command(monkeypatch):
+    # A compose stood up by hand never runs the wizard that mints the key, and
+    # the first sign used to be a failed credential save deep in some UI.
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    settings = Settings(_env_file=None)
+
+    [warning] = _warnings_mentioning(settings, "NYMERIA_SECRETS_KEY")
+    assert "not set" in warning
+    assert "credential" in warning.lower()
+    # The exact command: without .decode() it prints b'...', which is not a key.
+    assert (
+        'python3 -c "from cryptography.fernet import Fernet; '
+        'print(Fernet.generate_key().decode())"'
+    ) in warning
+    assert "docker exec" not in warning  # shape-neutral: no container name
+    # A Docker restart does not re-read the env file; the copy must say up -d.
+    assert "up -d" in warning
+
+
+def test_a_valid_secrets_key_is_silent(monkeypatch):
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", _real_secrets_key())
+    settings = Settings(_env_file=None)
+
+    assert _warnings_mentioning(settings, "NYMERIA_SECRETS_KEY") == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # What a bare print(Fernet.generate_key()) writes: the bytes repr.
+        "b'" + "A" * 43 + "='",
+        "not-a-key",
+        "A" * 40 + "=",  # decodes, but to the wrong length
+    ],
+)
+def test_a_malformed_secrets_key_warns_at_boot(monkeypatch, value):
+    # Set but unusable passes a presence check, then fails every save.
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", value)
+    settings = Settings(_env_file=None)
+
+    [warning] = _warnings_mentioning(settings, "NYMERIA_SECRETS_KEY")
+    assert "not a valid key" in warning
+    assert "print(Fernet.generate_key().decode())" in warning
+    assert value not in warning  # never echo a secret-shaped value
+
+
+@pytest.mark.parametrize(
+    "overrides,env,loss",
+    [
+        # The embedder normalizes its provider, so " Local " still loads it.
+        ({"embedding_provider": " Local "}, "EMBEDDING_PROVIDER", "without embeddings"),
+        (
+            {"rag_rerank_provider": "local", "rag_rerank_enabled": True},
+            "RAG_RERANK_PROVIDER",
+            "not reranked",
+        ),
+    ],
+)
+def test_local_rag_config_without_the_extra_warns_at_boot(monkeypatch, overrides, env, loss):
+    # The config asks for an in-process model the image cannot load: chat works
+    # and retrieval quietly degrades.
+    _fake_module_presence(monkeypatch, "sentence_transformers", present=False)
+    settings = Settings(_env_file=None, **overrides)
+
+    [warning] = _warnings_mentioning(settings, "local-rag")
+    assert f"{env}=local" in warning
+    assert loss in warning
+    assert "nymeriaos[local-rag]" in warning
+    assert "NYMERIA_LOCAL_RAG=1" in warning
+    assert "nymeria init" in warning
+
+
+def test_local_rag_warning_names_both_keys_and_both_losses(monkeypatch):
+    _fake_module_presence(monkeypatch, "sentence_transformers", present=False)
+    settings = Settings(
+        _env_file=None,
+        embedding_provider="local",
+        rag_rerank_provider="local",
+        rag_rerank_enabled=True,
+    )
+
+    [warning] = _warnings_mentioning(settings, "local-rag")
+    assert "EMBEDDING_PROVIDER=local and RAG_RERANK_PROVIDER=local" in warning
+    assert "without embeddings" in warning and "not reranked" in warning
+
+
+def test_local_rag_warning_is_silent_when_the_runtime_would_not_load_a_model(monkeypatch):
+    _fake_module_presence(monkeypatch, "sentence_transformers", present=True)
+    installed = Settings(
+        _env_file=None,
+        embedding_provider="local",
+        rag_rerank_provider="local",
+        rag_rerank_enabled=True,
+    )
+    assert _warnings_mentioning(installed, "local-rag") == []
+
+    _fake_module_presence(monkeypatch, "sentence_transformers", present=False)
+    for overrides in (
+        {"embedding_provider": "openai", "rag_rerank_provider": "llm"},
+        # Reranking off: the local reranker is never reached.
+        {"rag_rerank_provider": "local", "rag_rerank_enabled": False},
+        # The rerank path compares exactly, so this never selects local.
+        {"rag_rerank_provider": "Local", "rag_rerank_enabled": True},
+    ):
+        settings = Settings(_env_file=None, **overrides)
+        assert _warnings_mentioning(settings, "local-rag") == [], overrides
+
+
+def test_thin_clients_skip_the_server_dependency_warnings(monkeypatch):
+    # The MCP server and the bots relay to the API and run without the LLM
+    # key, vault key, and embedder by design: warning there tells a correctly
+    # configured stack to change something.
+    _fake_module_presence(monkeypatch, "sentence_transformers", present=False)
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_DIRECT_API_KEY", raising=False)
+    settings = Settings(
+        _env_file=None,
+        llm_provider="anthropic",
+        embedding_provider="local",
+        nymeria_service_token=None,
+        database_backend="postgres",
+        postgres_uri=None,
+    )
+
+    server_errors, server_warnings = settings.validate_runtime()
+    thin_errors, thin_warnings = settings.validate_runtime(server_process=False)
+
+    server_text = "\n".join(server_warnings)
+    for needle in ("LLM provider", "NYMERIA_SECRETS_KEY", "local-rag"):
+        assert needle in server_text
+        assert not any(needle in w for w in thin_warnings), needle
+    # What a thin client does need is still checked.
+    assert any("NYMERIA_SERVICE_TOKEN" in w for w in thin_warnings)
+    assert thin_errors == server_errors and any("POSTGRES_URI" in e for e in thin_errors)

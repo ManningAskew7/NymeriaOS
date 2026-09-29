@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 SECRETS_KEY_ENV_VAR = "NYMERIA_SECRETS_KEY"
+# The one-line mint command every surface prints. `.decode()` matters: a bare
+# print of the bytes writes b'...' around the key, which is then invalid.
+SECRETS_KEY_MINT_COMMAND = (
+    'python3 -c "from cryptography.fernet import Fernet; '
+    'print(Fernet.generate_key().decode())"'
+)
 
 
 class SecretsKeyMissing(RuntimeError):
@@ -85,6 +91,26 @@ def has_secrets_key() -> bool:
     return bool(os.environ.get(SECRETS_KEY_ENV_VAR))
 
 
+def secrets_key_problem(raw: Optional[str] = None) -> Optional[str]:
+    """``None`` when a usable key is configured, else ``"missing"`` or ``"invalid"``.
+
+    Stricter than ``has_secrets_key``: a malformed value (a typo, or the
+    ``b'...'`` bytes form a bare ``print(Fernet.generate_key())`` produces)
+    passes that check and then fails every save with ``SecretsKeyInvalid``.
+    Validated the way ``_load_cipher`` builds the cipher, without caching it.
+    ``raw`` checks a value from elsewhere than this process's environment
+    (``nymeria doctor --project-root`` inspecting another install).
+    """
+    value = os.environ.get(SECRETS_KEY_ENV_VAR) if raw is None else raw
+    if not value:
+        return "missing"
+    try:
+        Fernet(value.encode("ascii"))
+    except (ValueError, TypeError):
+        return "invalid"
+    return None
+
+
 def encrypt(plaintext: str) -> str:
     """Encrypt a UTF-8 string. Returns a Fernet token (url-safe base64).
 
@@ -123,7 +149,9 @@ __all__ = [
     "SecretsKeyMissing",
     "SecretsKeyInvalid",
     "SECRETS_KEY_ENV_VAR",
+    "SECRETS_KEY_MINT_COMMAND",
     "has_secrets_key",
+    "secrets_key_problem",
     "encrypt",
     "decrypt",
     "generate_key",

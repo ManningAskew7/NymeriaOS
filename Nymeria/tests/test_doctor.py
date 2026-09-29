@@ -269,3 +269,152 @@ def test_web_search_check_is_wired_into_settings_checks(tmp_path: Path) -> None:
         argparse.Namespace(skip_llm_test=True),
     )
     assert any(result.name == "Web search" for result in results)
+
+
+# --- #101 entries 17 and 21 (2026-08-24) ---------------------------------------
+
+
+MINT_COMMAND = (
+    'python3 -c "from cryptography.fernet import Fernet; '
+    'print(Fernet.generate_key().decode())"'
+)
+
+
+def _real_secrets_key() -> str:
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key().decode()
+
+
+def test_secrets_key_check_warns_when_unset_or_malformed_and_passes_when_valid(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    missing = doctor._check_secrets_key()
+    assert missing.status == "warn"
+    assert "is not set" in missing.detail
+    assert MINT_COMMAND in missing.detail
+
+    # The bytes repr a bare print(Fernet.generate_key()) writes: set, unusable.
+    malformed = "b'" + "A" * 43 + "='"
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", malformed)
+    invalid = doctor._check_secrets_key()
+    assert invalid.status == "warn"
+    assert "not a valid key" in invalid.detail
+    assert MINT_COMMAND in invalid.detail
+    assert malformed not in invalid.detail
+
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", _real_secrets_key())
+    assert doctor._check_secrets_key().status == "pass"
+
+
+def test_secrets_key_check_reads_another_roots_own_env_files(monkeypatch, tmp_path: Path) -> None:
+    # The wizard's final doctor inspects the root it just configured, whose key
+    # may live only in that root's files.
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    (other_root / "config.env").write_text(
+        f"NYMERIA_SECRETS_KEY={_real_secrets_key()}\n", encoding="utf-8"
+    )
+
+    assert doctor._check_secrets_key(project_root=other_root).status == "pass"
+    # This process's own root (no override) does not read another root's files.
+    assert doctor._check_secrets_key().status == "warn"
+
+    (other_root / "config.env").write_text("NYMERIA_SECRETS_KEY=nope\n", encoding="utf-8")
+    assert "not a valid key" in doctor._check_secrets_key(project_root=other_root).detail
+
+
+def _fake_sentence_transformers(monkeypatch) -> dict[str, bool]:
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+    present = {"value": False}
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "sentence_transformers":
+            return object() if present["value"] else None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    return present
+
+
+@dataclass
+class RagSettings(FakeSettings):
+    embedding_provider: str = "local"
+    rag_rerank_provider: str = "llm"
+    rag_rerank_enabled: bool = False
+
+
+def test_local_rag_check_warns_only_when_the_runtime_would_load_a_missing_model(
+    monkeypatch, tmp_path: Path
+) -> None:
+    present = _fake_sentence_transformers(monkeypatch)
+
+    local = doctor._check_local_rag(RagSettings(data_dir=tmp_path))
+    assert local is not None and local.status == "warn"
+    assert "EMBEDDING_PROVIDER=local" in local.detail
+    assert "without embeddings" in local.detail
+    assert "nymeriaos[local-rag]" in local.detail
+
+    reranker = doctor._check_local_rag(
+        RagSettings(
+            data_dir=tmp_path,
+            embedding_provider="openai",
+            rag_rerank_provider="local",
+            rag_rerank_enabled=True,
+        )
+    )
+    assert reranker is not None and reranker.status == "warn"
+    assert "RAG_RERANK_PROVIDER=local" in reranker.detail
+    assert "not reranked" in reranker.detail
+    assert "EMBEDDING_PROVIDER" not in reranker.detail
+
+    # Reranking off: the local reranker is never reached, so nothing to check.
+    rerank_off = RagSettings(
+        data_dir=tmp_path, embedding_provider="openai", rag_rerank_provider="local"
+    )
+    assert doctor._check_local_rag(rerank_off) is None
+
+    present["value"] = True
+    assert doctor._check_local_rag(RagSettings(data_dir=tmp_path)).status == "pass"
+
+    hosted = RagSettings(data_dir=tmp_path, embedding_provider="openai")
+    assert doctor._check_local_rag(hosted) is None  # nothing local to check
+
+
+def test_new_checks_are_wired_into_settings_checks(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    _fake_sentence_transformers(monkeypatch)
+
+    results: list[doctor.CheckResult] = []
+    doctor._append_settings_checks(
+        results, RagSettings(data_dir=tmp_path / "data"), argparse.Namespace(skip_llm_test=True)
+    )
+    assert _result(results, "Secrets key").status == "warn"
+    assert _result(results, "Local RAG").status == "warn"
+
+
+def test_another_roots_doctor_skips_the_local_rag_row(monkeypatch, tmp_path: Path) -> None:
+    # The extra is a property of THIS interpreter; the root the wizard just
+    # configured may run in a Docker image with its own Python.
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    _fake_sentence_transformers(monkeypatch)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    (other_root / "config.env").write_text(
+        f"NYMERIA_SECRETS_KEY={_real_secrets_key()}\n", encoding="utf-8"
+    )
+
+    results: list[doctor.CheckResult] = []
+    doctor._append_settings_checks(
+        results,
+        RagSettings(data_dir=tmp_path / "data"),
+        argparse.Namespace(skip_llm_test=True, project_root=other_root),
+    )
+    names = {result.name for result in results}
+    assert "Local RAG" not in names
+    # ...while the key check follows the override to that root's files.
+    assert _result(results, "Secrets key").status == "pass"
