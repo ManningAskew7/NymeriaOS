@@ -1,6 +1,6 @@
 """Workflow SDK engine (the ``nym`` runtime).
 
-Phase 1 of ``docs/private/plans/workflow-tools.md``: subprocess execution of
+Phase 1 of the workflow-tools plan (backlog #42): subprocess execution of
 agent-authored workflow code with a private, per-run, token-authenticated RPC
 channel back to this (the API) process. The child runs author Python against a
 generic ``nym`` proxy; every ``nym.*`` verb is answered here by the verb

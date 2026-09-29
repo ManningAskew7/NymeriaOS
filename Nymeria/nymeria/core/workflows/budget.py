@@ -1,7 +1,7 @@
 """Workflow run budgets: one object carries every cap.
 
-Plan: ``docs/private/plans/workflow-tools.md`` (WorkflowBudget table). Defaults
-are module constants for phase 1; per-definition overrides clamped by settings
+Plan: the WorkflowBudget table in the workflow-tools design (backlog #42).
+Defaults are module constants for phase 1; per-definition overrides clamped by settings
 arrive with the persistence phase. The per-verb timeout defaults to the node
 ``tool_timeout`` so a workflow tool call is never more patient than a direct
 tool call would be.

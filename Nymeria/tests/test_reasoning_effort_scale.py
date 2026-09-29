@@ -785,8 +785,7 @@ def test_anthropic_legacy_budget_map_covers_xhigh_and_max():
     applies `payload["thinking"] = self.thinking` AFTER **kwargs, so a per-call
     `thinking` override is ignored (measured 2026-07-15). Fixing the collapse
     properly needs per-path instances or resolution at the LLMConfig choke
-    point; see the deferred note in
-    docs/private/plans/shipped/07-config-providers-and-vendor.md.
+    point.
 
     Scope: legacy thinking only (`uses_adaptive` is 4.6+), so every current
     model (sonnet-5, opus-4-8, fable-5, opus-4-6/4-7) is unaffected. Those

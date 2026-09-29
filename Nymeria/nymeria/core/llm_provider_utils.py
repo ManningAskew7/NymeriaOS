@@ -417,7 +417,7 @@ def cliproxy_failure_hint(
     editorialized. ONE shared helper for /provider test AND the live-turn
     error path (backlog #148): the two surfaces must not drift. This
     appends copy to an already-failed request; it never classifies behavior
-    off message text (the trap `docs/private/cliproxy.md` documents for the
+    off message text (the trap the maintainer's CLIProxy notes document for the
     verify endpoint): the auth/quota branches key on ``status_code``
     (callers pass the response's status field or the extracted exception
     status), and only the proxy-generated shapes whose TEXT is the signal
@@ -564,8 +564,8 @@ def _unambiguous_max_tokens_as_output(
     a ceiling the size of its whole window. So accept it only on the shape where
     that misreading is not possible: a row that also carries a context window,
     with ``max_tokens`` strictly below it. A source that conflates the two axes
-    repeats the same number (the context == output fingerprint recorded in
-    docs/private/plans/model-capability-resolution.md), which this refuses along
+    repeats the same number (the context == output fingerprint recorded in the
+    model-capability-resolution plan and backlog #112), which this refuses along
     with rows that carry no context at all.
 
     Two residual ambiguities this does NOT resolve, both shared with the

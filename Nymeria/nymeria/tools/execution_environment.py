@@ -65,8 +65,8 @@ def resource_root(user_id: str | None = None) -> Path:
 
     v1 is single-user: the acting user id is accepted but ignored so that a
     future per-user resource root is a one-function change. Callers that know
-    the acting user should pass it (multi-user principle, see
-    docs/private/plans/resource-filesystem-layout.md section 5).
+    the acting user should pass it (multi-user principle, section 5 of the
+    resource-filesystem-layout plan, backlog #75).
     """
     del user_id  # v1: one shared root for all users.
     try:

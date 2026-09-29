@@ -21,8 +21,8 @@ the package for every ``data_dir / "<name>"`` and fails on any child that is in
 neither this list, ``_OPERATIONAL_DIRS``, nor ``_NON_STORE_DATA_DIR_CHILDREN``.
 It also reconciles the refusal columns against live ``file_write`` behavior and
 ratchets the uncontrolled set so it can only shrink. The reasoning behind each
-verdict, and what a gate is and is not worth, is in
-``docs/private/security/control-store-matrix.md``.
+verdict, and what a gate is and is not worth, is in the control-store
+classification matrix (a maintainer security doc).
 
 All three of those sources carry one further column, ``secret_at_rest``: is the
 child's CONTENT a credential or an authentication token? That question is

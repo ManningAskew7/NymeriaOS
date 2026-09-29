@@ -23,7 +23,7 @@ text; ``core/agent_results.tool_result_extra_events`` emits the
 ``reply_suppressed`` stream event only when the marker is present AND this
 registry confirms the flag for the thread, so no other tool's output (not
 even one relayed verbatim through ``tool_invoke``) can suppress a bot reply
-by echoing the marker text. Doc: ``docs/private/plans/emoji-reactions.md``.
+by echoing the marker text. Design: backlog #45 (two-way emoji reactions).
 
 This module also hosts the per-process reaction-fire debouncer the bot
 handlers use so toggling an emoji on and off cannot fire repeated full agent

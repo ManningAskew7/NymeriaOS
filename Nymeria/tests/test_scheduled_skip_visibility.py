@@ -1,7 +1,7 @@
 """#262: a scheduled occurrence that never runs must say so.
 
-Two silent-skip holes, both measured in the Effexor-miss diagnosis
-(tmp/keep/effexor-miss-diagnosis.md): the ticker's re-arm skip-forward
+Two silent-skip holes, both measured in the Effexor-miss diagnosis (record:
+shipped/06, 2026-09-24): the ticker's re-arm skip-forward
 collapses every slot that already passed (downtime, a run longer than its
 interval, a late release) with no signal, and a leftover execution marker
 refuses every poll of a due TODO until the stale sweep reclaims it, with one

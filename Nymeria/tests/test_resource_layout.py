@@ -998,7 +998,7 @@ def test_workflow_gate_refusal_explains_raw_edits_and_next_step():
 # ---------------------------------------------------------------------------
 #
 # `_STORE_ROWS` carries the security classification alongside the doc columns
-# (see StoreControl and docs/private/security/control-store-matrix.md). These
+# (see StoreControl and the control-store classification matrix). These
 # tests exist so the classification is an enforced claim rather than a comment:
 # each declared gate is handed something it should refuse, each declared
 # denylist entry is handed a write it should block, and the uncontrolled set is
@@ -1157,8 +1157,9 @@ def test_uncontrolled_stores_cite_a_finding_and_only_shrink():
 
     assert uncontrolled == _UNCONTROLLED_STORES, (
         "The uncontrolled set changed. If a control landed, update this pin "
-        "(that is the ratchet working) AND the remediation table in "
-        "docs/private/security/control-store-matrix.md, which counts these. "
+        "(that is the ratchet working) AND the remediation table in the "
+        "control-store classification matrix (a maintainer security doc), "
+        "which counts these. "
         "If a store was ADDED here, classify it instead: see StoreControl, new "
         "stores may not be uncontrolled. If a row's display path was merely "
         "reworded, re-pin it. Note the pin lives here and the verdict lives in "

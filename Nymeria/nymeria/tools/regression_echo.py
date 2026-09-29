@@ -1,8 +1,8 @@
 """
 Regression suite echo tool.
 
-A simple, deterministic optional tool used by `Nymeria/eval/agent_regression/`
-specs (TH-01, CX-01) to verify the tool hot-load pipeline end-to-end without
+A simple, deterministic optional tool used by the maintainer's prompt-regression
+suite (specs TH-01, CX-01) to verify the tool hot-load pipeline end-to-end without
 needing admin privileges.
 
 This tool is intentionally distinct from `hello_test`:

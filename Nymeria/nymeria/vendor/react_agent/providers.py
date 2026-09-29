@@ -2154,8 +2154,8 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
         kwargs["model_kwargs"] = model_kwargs
 
     # Merged AFTER the reasoning branches above, which ASSIGN extra_body
-    # wholesale and would clobber earlier merges (#239, evidence in
-    # docs/private/provider-caching-status.md):
+    # wholesale and would clobber earlier merges (backlog #239, evidence in the
+    # maintainer's provider-caching status notes):
     #
     # - session_id: OpenRouter's sticky-routing key. Pins follow-up requests
     #   to the warm upstream endpoint under provider fan-out so prefix-cache
@@ -3256,8 +3256,8 @@ def _inject_cliproxy_billing_block(payload: dict) -> None:
     Anthropic classifies a CLIProxy OAuth request as subscription-tier traffic
     only when the body carries this lightweight system block; without it,
     premium Claude models return a misleading 429 on a valid token (or, with
-    extra-usage billing enabled, silently draw metered spend). See
-    docs/private/cliproxy.md, "OAuth billing fingerprint". Injecting at the
+    extra-usage billing enabled, silently draw metered spend). See the
+    maintainer's CLIProxy notes, "OAuth billing fingerprint". Injecting at the
     request payload covers every langchain entry point (invoke/stream/batch,
     sync and async, tool calling, structured output) per client instance, and
     therefore per fallback candidate.
@@ -3496,7 +3496,7 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
             # User-Agent, and its own Anthropic-Beta default can redact visible
             # thinking. Override both only on CLIProxy routes so direct Anthropic
             # calls keep SDK defaults.
-            # See Nymeria/docs/cliproxy.md for the full constraints.
+            # The maintainer's CLIProxy notes carry the full constraints.
             kwargs["default_headers"] = {
                 "User-Agent": CLIPROXY_CLAUDE_USER_AGENT,
                 "Anthropic-Beta": CLIPROXY_ANTHROPIC_BETA_HEADER,
@@ -3955,8 +3955,8 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
         # verbatim (the proxy's gemini-inbound translator only substitutes
         # the bypass sentinel for missing/short signatures), where the
         # chat_completions shape structurally cannot carry them. Verified
-        # live 2026-08-07
-        # (docs/private/cliproxy-gemini-native-inbound-2026-08.md).
+        # live 2026-08-07 (shipped/07, the 2026-08-07 antigravity
+        # native-Gemini route entry).
         # langchain-google-genai 4.x aliases base_url to client_options;
         # REST only, no gRPC implication.
         kwargs["base_url"] = config.base_url

@@ -604,8 +604,8 @@ async def confirm_login_landed(
 ) -> tuple[str, str]:
     """(status, detail) for a pending login, with confirm-on-ok.
 
-    THE one implementation of the confirm-on-ok invariant (see
-    docs/private/cliproxy.md): the proxy's /get-auth-status answers ok for
+    THE one implementation of the confirm-on-ok invariant (recorded in the
+    maintainer's CLIProxy notes): the proxy's /get-auth-status answers ok for
     unknown or expired sessions, so a bare ok proves nothing. An ok is
     trusted only once an active auth file for the provider exists;
     confirmed ok carries the account label as detail, unconfirmed ok is

@@ -392,10 +392,10 @@ def web_search_perplexity(
 web_search_perplexity.metadata = {"inline_wait_timeout": _search_inline_wait_timeout}
 
 
-# Opt-in web search tool group. web_search_perplexity is the first member;
-# additional providers (Tavily, Exa, Firecrawl, Brave, DuckDuckGo, SearXNG) are
-# planned in docs/private/plans/web-search-integrations.md and will be appended
-# here as they land.
+# Opt-in web search tool group. web_search_perplexity is the first member; the
+# additional providers (Tavily, Exa, Firecrawl, Brave, SearXNG, ddgs) landed per
+# the web-search-integrations plan in web_search_integrations.py's own
+# WEB_SEARCH_INTEGRATION_TOOLS, which shares the Web Search catalog group.
 WEB_SEARCH_SERVICE_TOOLS = [web_search_perplexity]
 
 

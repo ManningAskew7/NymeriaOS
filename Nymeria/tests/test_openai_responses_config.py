@@ -327,7 +327,7 @@ def test_prompt_cache_key_scoping_local_vs_cliproxy_vs_openrouter():
 
 
 # --- #239: OpenRouter prompt caching (top-level cache_control, session_id,
-# usage accounting). Live evidence: docs/private/provider-caching-status.md
+# usage accounting). Live evidence: the maintainer's provider-caching notes
 # (Bedrock-served haiku via OR: B read 15,236 of 15,254 at a 92% cost cut).
 
 

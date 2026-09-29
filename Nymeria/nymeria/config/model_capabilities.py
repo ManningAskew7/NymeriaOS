@@ -204,15 +204,15 @@ DEFAULT_CONTEXT_LIMITS = {
     # LiteLLM catalog does carry moonshot and xai rows, but only under vendor
     # prefixes (moonshot/kimi-k2.5, xai/grok-4.3), and candidate generation
     # synthesizes a prefix for OpenAI-looking ids only, so the BARE ids these
-    # subscriptions actually serve can never reach them (gap G3 in
-    # docs/private/plans/model-capability-resolution.md, where the general fix
-    # lives). Until then they fell through to the 128k "_default", which capped
+    # subscriptions actually serve can never reach them (gap G3 in the
+    # model-capability-resolution plan, where the general fix lives). Until
+    # then they fell through to the 128k "_default", which capped
     # the compaction threshold at a HALF to a TWENTIETH of the real window.
     # These rows are that stopgap, named rather than derived. Each number is the
     # vendor's own
     # published context length (platform.kimi.ai, docs.x.ai), independently
     # matched by the proxy's channel definition; where the two disagreed we
-    # trusted neither (see docs/private/plans/model-capability-resolution.md).
+    # trusted neither (see the model-capability-resolution plan).
     # Context windows only: xai documents 128000 as the max_completion_tokens
     # DEFAULT rather than a ceiling, and Moonshot publishes no output cap for
     # K2.5, so neither belongs in an output table.
@@ -1576,7 +1576,7 @@ _ANTHROPIC_CAPABILITY_MODELS: Dict[str, frozenset[str]] = {
     # Vision-only AND provider-form-only (see _ANTHROPIC_PROVIDER_FORM_ONLY): this
     # entry historically appears only as "anthropic/claude-opus-4.6-fast" and only
     # in the vision set. Both asymmetries are likely unintentional drift (flagged
-    # in docs/private/plans/optimizations/24-config.md F7); preserved verbatim
+    # as finding F7 of optimization slice 24, config); preserved verbatim
     # pending a capability-data decision, not "fixed" by this refactor.
     "claude-opus-4.6-fast": _VISION,
 }
@@ -2116,8 +2116,8 @@ def mark_model_input_unsupported(model_id: str, *modalities: str) -> None:
 # version-first ids are abstained on separately (see below).
 #
 # The measured audit behind those two sentences (row counts, the distribution,
-# the worst over-claim) lives in docs/private/plans/shipped/
-# 07-config-providers-and-vendor.md and is enforced, not just recorded, by
+# the worst over-claim) lives in shipped/07's 2026-07-28 capability-resolution
+# review follow-ups entry and is enforced, not just recorded, by
 # test_family_rule_never_over_claims_against_the_real_bundle.
 _ANTHROPIC_STANDARD_CONTEXT = 200000
 _ANTHROPIC_LONG_CONTEXT = 1000000

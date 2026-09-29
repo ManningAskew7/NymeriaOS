@@ -10,8 +10,8 @@ restart: the mount fails (`interrupted system call`, `no route to host`,
 `operation now in progress`), the container stays down although the share is
 reachable seconds later, and everything fronting it (a tunnel, a proxy, a
 dependent container) reports the outage until a human runs `docker start`.
-Incident and derivation: `Nymeria/docs/private/plans/shipped/10-operational-gotchas.md`
-(CIFS section, 2026-09-04).
+Incident and derivation: shipped/10 (operational gotchas), the NAS-share CIFS
+section's 2026-09-04 incident.
 
 One tick selects containers that match ALL of:
 

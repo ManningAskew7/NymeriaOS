@@ -25,9 +25,10 @@ that attach via ptrace (py-spy, gdb) stop working from an unprivileged same-UID
 shell. They keep working as root or with ``CAP_SYS_PTRACE``. In a container
 that means ``docker exec -u 0 --privileged``: ``--privileged`` alone does not
 change the exec'd user, so with ``cap_drop: ALL`` you stay unprivileged and it
-does not help. The full corrected recipe, including why ``--pid 1`` is the
-wrong target when ``init: true`` is set, is in
-``docs/private/plans/shipped/10-operational-gotchas.md``. If you need the
+does not help. The full corrected recipe is the py-spy entry in shipped/10
+(operational gotchas). ``--pid 1`` is the wrong target when ``init: true`` is
+set: PID 1 is then tini, not Python, so find the Python child's pid with
+``pgrep`` first. If you need the
 unprivileged path back on a debugging host, set
 ``NYMERIA_DISABLE_PROCESS_HARDENING=1``.
 

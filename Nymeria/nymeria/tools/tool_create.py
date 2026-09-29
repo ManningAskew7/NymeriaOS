@@ -4,8 +4,8 @@ Supports HTTP, Python, and nym-SDK workflow custom tools. Drafts are scoped
 per user; published definitions go into the global custom-tool registry but
 are not enabled by default for other users or threads.
 
-Workflow tools follow the per-revision approval model (plan:
-docs/private/plans/workflow-tools.md "Authoring gate"): ANY user may draft
+Workflow tools follow the per-revision approval model (the "Authoring gate" of
+the workflow-tools plan, backlog #42): ANY user may draft
 (authoring is inert), but executing a revision (test, publish, run) requires
 an admin-approved revision hash. Admin saves self-approve; non-admin saves
 create a pending request announced to admins. The approval service functions

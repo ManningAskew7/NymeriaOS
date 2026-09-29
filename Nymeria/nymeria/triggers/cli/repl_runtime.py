@@ -1,7 +1,7 @@
 """Rich REPL runtime and prompt_toolkit shell.
 
-Moved out of ``app.py`` in Phase 2b of
-``docs/private/plans/cli-modernization.md``. ``_RichReplRuntime`` holds the
+Moved out of ``app.py`` in Phase 2b of the CLI-modernization plan.
+``_RichReplRuntime`` holds the
 Rich REPL's live state (busy/notice, the submission queue, slash/form panel
 state, hook-approval forms, the autonomous and reconnect background tasks)
 and delegates all scroll-region/pinned-footer terminal control to the

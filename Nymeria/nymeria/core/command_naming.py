@@ -1,7 +1,7 @@
 """Naming-canon validation for the built-in command catalog (backlog #131).
 
-The human rules live in ``docs/private/command-style-guide.md``; this module
-is their machine-checkable half, called from
+The human rules live in the command style guide (a maintainer doc, not
+published with the mirror); this module is their machine-checkable half, called from
 ``CommandService.validate_registry()`` at construction. Scope is the
 BUILT-IN catalog only: runtime registrations (tests, plugins, agent-authored
 commands) are exempt by design, because agents are users too and the canon
@@ -189,8 +189,7 @@ def validate_command_naming(
                     f"Command {command_id}: leaf token {leaf!r} is neither a "
                     "canon verb nor a sanctioned domain word. Use a canon "
                     "verb, or record the word in "
-                    "command_naming.SANCTIONED_LEAF_TOKENS with a reason "
-                    "(style guide: docs/private/command-style-guide.md)."
+                    "command_naming.SANCTIONED_LEAF_TOKENS with a reason."
                 )
         for param in cmd.params or ():
             kind = getattr(param, "kind", "")

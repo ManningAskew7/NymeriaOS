@@ -100,9 +100,9 @@ _NOTE_PREVIEW_CHARS = 80
 
 # Claude models DO serve through the proxy's OpenAI-compatible path (the
 # proxy translates), but only the anthropic provider path carries the
-# CLIProxy treatment (cloak-skip UA + billing fingerprint; see
-# docs/private/cliproxy.md), so the working-but-degraded combination gets a
-# warning wherever it can be chosen.
+# CLIProxy treatment (cloak-skip UA + billing fingerprint, both applied in
+# ``vendor/react_agent/providers.py``), so the working-but-degraded
+# combination gets a warning wherever it can be chosen.
 CLAUDE_VIA_OPENAI_ROUTE_WARNING = (
     "a Claude model on the OpenAI-compatible CLIProxy route skips the"
     " Claude OAuth treatment (identity cloak bypass and billing"

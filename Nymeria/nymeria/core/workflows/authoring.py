@@ -2,7 +2,7 @@
 revision hashing, the execution gate, and source retention (plan:
 "Workflow as a callable tool" + "Authoring gate").
 
-Design (settled in docs/private/plans/workflow-tools.md):
+Design (settled in the workflow-tools plan, backlog #42):
 
 - The definition's ``parameters`` map is DERIVED from the entrypoint
   signature at draft time (type hints, literal defaults, docstring

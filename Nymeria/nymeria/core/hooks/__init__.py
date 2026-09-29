@@ -8,7 +8,8 @@ tool, and the ``/hook`` command); the enable model lives in
 ``core/agent_safety.py``. The ``nym`` workflow substrate (a second logic
 substrate behind the same contract) is the remaining deferred pass.
 
-Design doc: ``docs/private/plans/lifecycle-hooks.md``.
+Design: backlog #52 (lifecycle hooks); user reference:
+``docs/agent-systems/hooks.md``.
 """
 
 from __future__ import annotations

@@ -6,9 +6,8 @@ allowed-tools: Read
 
 # Regression Noop Skill
 
-This skill exists for one reason: the regression test suite at
-`Nymeria/eval/agent_regression/skill-kits/SK-02-plain-skill-dispatch.md`
-needs a plain (non-Kit) skill to point `/skill` at, and every other
+This skill exists for one reason: the maintainer's prompt-regression suite
+(its SK-02 plain-skill dispatch spec) needs a plain (non-Kit) skill to point `/skill` at, and every other
 bundled skill is a Skill Kit (has `required_tools`).
 
 If you are a Nymeria agent and a user activated this skill outside of a

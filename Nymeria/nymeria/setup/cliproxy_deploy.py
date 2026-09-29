@@ -29,7 +29,8 @@ from .environment import docker_available
 
 # Digest-pinned: floating tags can be reassigned upstream and the cloak gate
 # changed once already (v6.9.0 -> v6.9.36). v7.1.61 is the verified baseline
-# (cloak smoke test + management OAuth endpoints; see docs/private/cliproxy.md).
+# (the cloak smoke test, Nymeria/tools/check_cliproxy_cloak.py, plus a check of
+# the management OAuth endpoints).
 CLIPROXY_PINNED_IMAGE = (
     "eceasy/cli-proxy-api:v7.1.61@sha256:"
     "bee212f92a6860d58bcbd587047e1b33713282dd0dbb79c43c299651084714f1"
@@ -182,7 +183,7 @@ def generate_cliproxy_deployment(
         "services:",
         "  cli-proxy-api:",
         "    # PINNED to a digest; bumping it requires re-running",
-        "    # Nymeria/tools/check_cliproxy_cloak.py (see docs/private/cliproxy.md).",
+        "    # Nymeria/tools/check_cliproxy_cloak.py (the cloak smoke test).",
         f"    image: {CLIPROXY_PINNED_IMAGE}",
         "    pull_policy: missing",
         "    container_name: nymeria-cliproxy",

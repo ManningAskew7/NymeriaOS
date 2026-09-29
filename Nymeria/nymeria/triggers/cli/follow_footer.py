@@ -1,7 +1,7 @@
 """Follow-footer/scroll-region terminal engine for the Rich REPL.
 
-Extracted from ``_RichReplRuntime`` (Phase 2a of
-``docs/private/plans/cli-modernization.md``). This module owns every piece of
+Extracted from ``_RichReplRuntime`` (Phase 2a of the CLI-modernization
+plan). This module owns every piece of
 raw terminal control behind the Rich REPL's pinned footer: DEC scroll margins,
 cursor save/restore bookkeeping, prompt_toolkit height-probe suppression,
 sigwinch/resize debouncing, and the render-above-prompt orchestration that

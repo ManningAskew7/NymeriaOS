@@ -63,7 +63,7 @@ def test_mcp_tool_display_label_falls_back_to_tool_name_without_server_label():
     assert display_mcp_tool_names({}, [{"name": "ping"}]) == ["ping"]
 
 
-# Pinned to the tested classifier table in docs/private/cliproxy.md
+# Pinned to the live-tested classifier table in the maintainer's CLIProxy notes
 # ("Claude OAuth MCP tool-name classifier"). A regression here means a naming
 # change would silently 400 every Claude-OAuth thread with an MCP tool bound.
 @pytest.mark.parametrize(

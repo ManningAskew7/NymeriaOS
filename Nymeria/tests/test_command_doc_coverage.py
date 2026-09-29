@@ -39,7 +39,17 @@ from nymeria.triggers.discord_cogs import ALL_COGS
 from nymeria.triggers.discord_cogs.config import ConfigCog
 from nymeria.triggers.telegram_bot import NymeriaTelegramBot
 
-CHAT_APP_DOCS = Path(__file__).resolve().parents[1] / "docs" / "public" / "chat-apps"
+# The public mirror flattens docs/ into docs/, and its text rewrite
+# cannot reach a path joined from separate segments, so resolve by layout
+# (#414): the private repo's tree first, then the mirror's.
+def _chat_app_docs(docs: Path) -> Path:
+    for candidate in (docs / "public" / "chat-apps", docs / "chat-apps"):
+        if candidate.is_dir():
+            return candidate
+    return docs / "public" / "chat-apps"
+
+
+CHAT_APP_DOCS = _chat_app_docs(Path(__file__).resolve().parents[1] / "docs")
 DISCORD_DOC = CHAT_APP_DOCS / "discord-bot.md"
 TELEGRAM_DOC = CHAT_APP_DOCS / "telegram-bot.md"
 TWITCH_DOC = CHAT_APP_DOCS / "twitch-bot.md"
@@ -355,3 +365,13 @@ def test_show_settings_relays_the_canonical_settings_readout() -> None:
         {"command": "/settings", "thread_id": "discord_123_456"}
     ]
     assert interaction.messages == ["ran /settings"]
+
+
+def test_the_doc_dir_resolves_on_both_trees(tmp_path: Path) -> None:
+    # #414: the mirror flattens docs/ into docs/; this module used to
+    # join the private layout's segments and fail on every clone.
+    (tmp_path / "chat-apps").mkdir()
+    assert _chat_app_docs(tmp_path) == tmp_path / "chat-apps"
+    (tmp_path / "public" / "chat-apps").mkdir(parents=True)
+    assert _chat_app_docs(tmp_path) == tmp_path / "public" / "chat-apps"
+    assert CHAT_APP_DOCS.is_dir() and TELEGRAM_DOC.is_file()

@@ -1,8 +1,7 @@
 """``react``: post an emoji reaction to the chat-platform message behind a turn.
 
-The outbound half of two-way bot reactions (backlog #45,
-``docs/private/plans/emoji-reactions.md``). Chat-platform bots stamp every
-dispatched turn with the originating platform message
+The outbound half of two-way bot reactions (backlog #45). Chat-platform bots
+stamp every dispatched turn with the originating platform message
 (``ChatRequest.platform_origin`` -> ``core/bot_reactions.set_turn_origin``,
 honored for admin/service-token callers only, and cleared at the start of
 every turn without one); this tool reads that origin and publishes one

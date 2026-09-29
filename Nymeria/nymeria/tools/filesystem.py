@@ -252,8 +252,10 @@ def secrets_path_error(path: Path) -> Optional[str]:
 # inspecting the prompt that governs it is useful and harmless.
 #
 # Why a role check rather than the content-hash gate its sibling stores got, and
-# why role-scoped rather than an outright refusal: the rule-2 paragraph of
-# `docs/private/security/control-store-matrix.md`, which owns that argument.
+# why role-scoped rather than an outright refusal: the rule-2 paragraph of the
+# control-store classification matrix (a maintainer security doc), which owns
+# that argument. In short: the REST routes for these files are already
+# admin-only, so the file route was the same action minus the role check.
 #
 # Same tool-layer caveat as the credential denylist: `bash_execute` is not
 # path-checkable, so this is policy, not a boundary (SECURITY.md 2.2).

@@ -6,8 +6,8 @@ user together. This module bounds the number of concurrent interactive
 HOLDER turns in the API process, mirroring how autonomous work is bounded by
 ``max_concurrent_autonomous`` on the ticker executor.
 
-Scope and shape (see docs/private/plans/interactive-admission-control.md for
-the full decision record):
+Scope and shape (the full decision record is the interactive admission-control
+plan, backlog #83):
 
 - One in-process gate. Both runtime shapes make the API process the single
   agent runtime (the Docker worker relays turns to the API), so an in-process

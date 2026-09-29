@@ -202,8 +202,9 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         # chat_completions is DELIBERATE, not a fallback: on this channel
         # that pair is a byte-level passthrough (reasoning_content and
         # Moonshot fields survive verbatim), while the proxy's responses
-        # translator drops replayed reasoning and sampling params
-        # (docs/private/cliproxy-kimi-channel-audit-2026-08.md).
+        # translator drops replayed reasoning and sampling params (the
+        # 2026-08 kimi channel audit, recorded in shipped/07's 2026-08-07
+        # Kimi/Grok CLIProxy channel treatment entry).
         description=(
             "Kimi device-code login (approve on kimi.com, no callback). "
             "Routes through the proxy's OpenAI-compatible /v1 endpoint in "
@@ -231,8 +232,8 @@ CLIPROXY_PROVIDERS: tuple[CLIProxyProviderSpec, ...] = (
         # replays reasoning items with no injected effort default and
         # surfaces upstream failures, while its chat_completions translator
         # drops replayed reasoning and injects a medium effort when the
-        # field is omitted
-        # (docs/private/cliproxy-xai-channel-audit-2026-08.md).
+        # field is omitted (the 2026-08 xai channel audit, recorded in
+        # shipped/07's 2026-08-07 Kimi/Grok CLIProxy channel treatment entry).
         description=(
             "xAI OAuth (7.1.x proxies only). Routes as the openai provider "
             "in responses mode at the proxy /v1 URL, the highest-fidelity "

@@ -14,7 +14,7 @@
  * Upgrade procedure: download the same three dist files at the new pinned
  * versions from npm, re-prepend the `// @ts-nocheck` first line on the two
  * JS files (checkJs is on), update the filenames + imports + the version
- * table in Nymeria/docs/private/plans/ui-prompt-tool.md.
+ * table in the ui_prompt design notes (backlog #5, section 3).
  *
  * Security invariants (see the spec doc; do not weaken):
  *   - The iframe uses sandbox="allow-scripts" with NO allow-same-origin,

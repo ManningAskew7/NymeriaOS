@@ -1,6 +1,6 @@
 """The #131 naming-canon validator (core/command_naming.py).
 
-Pins the machine-checkable half of docs/private/command-style-guide.md:
+Pins the machine-checkable half of the command style guide:
 leaf vocabulary, the shrink-only grandfather ratchet, the rootless-family
 rule, the scope-grammar rules, and the AGENT_BLOCKED registration check.
 The built-in catalog passing is exercised by every CommandService()
@@ -388,12 +388,16 @@ def test_sanctioned_tokens_appear_in_the_style_guide() -> None:
     token."""
     from pathlib import Path
 
-    guide = (
-        Path(__file__).resolve().parents[1]
-        / "docs"
-        / "private"
-        / "command-style-guide.md"
-    ).read_text(encoding="utf-8")
+    # The guide is a maintainer doc: the public mirror strips it, so a clone
+    # skips this pin rather than failing on a file it cannot have (#414). The
+    # mirror is recognised by its missing strip list (stripped too), so in
+    # this repo a moved or renamed guide still fails here instead of skipping.
+    repo = Path(__file__).resolve().parents[2]
+    path = repo / "Nymeria" / "docs" / "private" / "command-style-guide.md"
+    on_mirror = not (repo / "scripts" / "publish_prep" / "paths_to_remove.txt").is_file()
+    if on_mirror and not path.is_file():
+        pytest.skip("the command style guide is a maintainer doc, absent from the public mirror")
+    guide = path.read_text(encoding="utf-8")
     missing = [
         token
         for token in SANCTIONED_LEAF_TOKENS
@@ -401,6 +405,6 @@ def test_sanctioned_tokens_appear_in_the_style_guide() -> None:
         and f"`{token.replace('_', '-')}`" not in guide
     ]
     assert not missing, (
-        "Sanctioned tokens absent from docs/private/command-style-guide.md "
-        f"(add them to the Recorded exceptions section): {missing}"
+        "Sanctioned tokens absent from the command style guide "
+        f"(add them to its Recorded exceptions section): {missing}"
     )

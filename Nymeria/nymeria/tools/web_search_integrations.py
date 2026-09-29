@@ -1,9 +1,9 @@
 """Additional opt-in web search provider tools for Nymeria.
 
 The first web search tool, ``web_search_perplexity``, lives in ``web.py``. This
-module holds the extra opt-in providers added per
-``docs/private/plans/web-search-integrations.md``, starting with Tavily, Exa,
-Firecrawl, Brave, then SearXNG, then the keyless in-process ddgs metasearch.
+module holds the extra opt-in providers added per the web-search-integrations
+plan, starting with Tavily, Exa, Firecrawl, Brave, then SearXNG, then the
+keyless in-process ddgs metasearch.
 Each keyed provider resolves its credential (an API key, or a base URL for the
 self-hosted SearXNG) through the credential vault (vault, then settings, then
 env); ``web_search_ddgs`` needs no credential at all. Every provider is
@@ -1274,7 +1274,7 @@ def web_search_ddgs(
 # Opt-in web search providers beyond Perplexity. tools/__init__.py folds this
 # into CATALOG_TOOLS alongside WEB_SEARCH_SERVICE_TOOLS so they share the Web
 # Search group. SearXNG (keyless, self-hosted) replaced the old utility-group
-# searxng_search per docs/private/plans/web-search-integrations.md; ddgs
+# searxng_search per the web-search-integrations plan; ddgs
 # (keyless, in-process) joined 2026-06-12 as the zero-infra quickstart default
 # (partial reversal of the DDG skip recorded in the same plan doc).
 WEB_SEARCH_INTEGRATION_TOOLS = [

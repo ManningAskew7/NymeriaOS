@@ -77,7 +77,7 @@ class CliproxyCommandsMixin:
     # parallel store with the same sliding 10-minute TTL, which also
     # matches the proxy's own OAuth session lifetime.
     #
-    # INVARIANT (docs/private/cliproxy.md): a polled "ok" from the proxy
+    # INVARIANT (the confirm-on-ok rule): a polled "ok" from the proxy
     # proves nothing (it answers ok for unknown/expired sessions), so
     # every completion check goes through the server-side confirmed
     # status (``cliproxy_oauth_status``), which verifies an active auth

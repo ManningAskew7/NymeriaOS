@@ -7,7 +7,7 @@ template-editable through every hook surface. This module is the FIRE POINT:
 ``NymeriaAgent._prefix_turn_metadata`` / ``_aprefix_turn_metadata`` delegate
 here from both chat paths.
 
-Invariants (spec: ``docs/private/plans/metadata-injection-hook.md``):
+Invariants (spec: the metadata-injection-hook design, backlog #66):
 
 - BYTE-IDENTICAL DEFAULT: with no stored override (the pristine state), the
   fast path is the legacy construction itself

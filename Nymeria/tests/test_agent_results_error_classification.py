@@ -73,8 +73,8 @@ def test_generic_error_falls_back_to_runtime_error():
 
 # --- CLIProxy turn-time hints (#148) ------------------------------------------
 # The three taxonomy shapes gain the same actionable line /provider test
-# renders, gated on the destination actually being a CLIProxy base. See
-# docs/private/cliproxy.md "Interpreting proxy auth errors".
+# renders, gated on the destination actually being a CLIProxy base. See the
+# maintainer's CLIProxy notes, "Interpreting proxy auth errors".
 
 _CLIPROXY_BASE = "http://cli-proxy-api:8317"
 

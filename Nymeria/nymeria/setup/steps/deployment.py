@@ -4,8 +4,8 @@ These mirror the high-level decisions in the setup-wizard plan. The Docker-stack
 choice (slim vs full) is wired through finalize. The external-access choice
 gates the guided tailscale/cloudflare setup steps (steps/external_access.py).
 Security profile offers Unleashed only for now: Secure and Standard render
-greyed out as "to come" until the approval gate lands (design:
-docs/private/security/security-profiles.md). Each choice carries a sensible default so
+greyed out as "to come" until the approval gate lands (design: the
+maintainer's security-profiles doc). Each choice carries a sensible default so
 a quick run can Enter straight through.
 """
 
@@ -112,7 +112,7 @@ def make_security_profile_step() -> Step:
     """First-run security posture. Unleashed-only until the approval gate lands.
 
     Secure and Standard are shown greyed out with a "(to come)" suffix; their
-    enforcement design lives in docs/private/security/security-profiles.md.
+    enforcement design lives in the maintainer's security-profiles doc.
     """
 
     def get_initial(state: WizardState) -> SecurityProfile:

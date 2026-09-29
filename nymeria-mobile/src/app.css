@@ -356,7 +356,7 @@ pre code {
 
 /* ── Centralized text-role utilities ─────────────────────────────────
    Two small typographic roles defined once so they can't drift across
-   components (see Nymeria/docs/private/AI-UI-Design-Diagnosis guide). */
+   components (see the AI UI design diagnosis and repair guide). */
 
 /* One timestamp text style, reused for every absolute clock time in chat. */
 .timestamp {

@@ -102,7 +102,8 @@ class SecurityProfile(StrEnum):
     Per-tool-call approval gating does not exist yet, so the wizard offers only
     UNLEASHED (the current behavior) and shows SECURE and STANDARD greyed out
     as "to come". The full enforcement design (approval gate, always-allow
-    lists, slimmed Secure defaults) lives in docs/private/security/security-profiles.md.
+    lists, slimmed Secure defaults) lives in the maintainer's security-profiles
+    design.
     """
 
     SECURE = "secure"

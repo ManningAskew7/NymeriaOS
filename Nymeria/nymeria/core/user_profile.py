@@ -110,9 +110,9 @@ DEFAULT_GLOBAL_SKILLS: List[str] = [
 # so "skipped init" and "no init at all" produce the same tool set (rule
 # parity, decided 2026-08-30). Search first, then fetch, matching the wizard's
 # family order. ddgs is the sole search default on every shape: the 2026-08-30
-# head-to-head (tmp/ddgs-vs-searxng-report.md, findings preserved in
-# docs/private/plans/core-toolset-plan.md) measured the shipped SearXNG
-# sidecar effectively dead from datacenter IPs (every classic engine blocks
+# head-to-head (findings preserved in the core-toolset plan's 2026-08-30
+# defaults pass; SearXNG follow-ups: backlog #296) measured the shipped
+# SearXNG sidecar effectively dead from datacenter IPs (every classic engine blocks
 # self-identified requests) while ddgs's engine rotation + browser
 # impersonation went 13/13 with zero failures on the same IP. SearXNG stays an
 # offered wizard pick (deploying its sidecar), just not the default. These are

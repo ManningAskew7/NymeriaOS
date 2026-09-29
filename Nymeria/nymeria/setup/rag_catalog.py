@@ -3,9 +3,10 @@
 TUI-free (like ``setup/providers.py``) so the interactive wizard, the headless
 finalize path, and the quickstart helper share one source of truth. The
 premium / value / local recommendations and the per-option ``metrics`` come from
-an internal retrieval-quality eval on a blended 40k-chunk agentic corpus (see
-``docs/private/rag/rag-eval-notes.md``; the public summary is in the local-LLM
-doc). Metrics are internal avg nDCG@5 across the tool/prose/code layers under a
+an internal retrieval-quality eval on a blended 40k-chunk agentic corpus (full
+record in the maintainer's RAG eval notes; the public summary is the "RAG
+embeddings and rerankers" section of ``docs/providers/local-llm.md``).
+Metrics are internal avg nDCG@5 across the tool/prose/code layers under a
 frozen, set-wise LLM-graded qrels; treat them as relative, corpus-specific
 rankings, not absolute scores. Benchmark leaderboard order frequently did NOT
 transfer to this corpus, so the picks here are what won OUR eval.

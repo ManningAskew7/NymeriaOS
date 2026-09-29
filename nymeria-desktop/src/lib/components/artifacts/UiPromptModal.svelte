@@ -20,7 +20,7 @@
    * close on click: dismissal cancels the agent's question irrevocably, so
    * it must be an explicit act (Escape, the X, or Dismiss).
    *
-   * Security invariants (see docs/private/plans/ui-prompt-tool.md):
+   * Security invariants (the ui_prompt spec, backlog #5, section 4.4):
    * - sandbox="allow-scripts" ONLY. NEVER add allow-same-origin: the agent's
    *   script would inherit the app origin (Tauri IPC, tokens, backend).
    * - The srcdoc carries a default-src 'none' CSP (only inline script/style

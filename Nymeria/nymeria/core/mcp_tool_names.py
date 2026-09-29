@@ -35,8 +35,8 @@ def sanitize_tool_component(raw: str) -> str:
 
 # Leading forms that Claude OAuth classifies as third-party MCP app usage and
 # rejects with a 400 "Third-party apps now draw from your extra usage" BEFORE
-# the model runs. Tested table: docs/private/cliproxy.md "Claude OAuth MCP
-# tool-name classifier". The DOUBLE-underscore ``mcp__`` prefix is tested-clean,
+# the model runs (a table observed live through CLIProxy on 2026-05-05, recorded
+# in the maintainer's CLIProxy notes). The DOUBLE-underscore ``mcp__`` prefix is tested-clean,
 # so a tool name must start with ``mcp__`` and never ``mcp`` + a single
 # separator. This guard is what keeps a future naming refactor (or an
 # "mcp"-leading server id) from silently breaking every Claude-OAuth thread
@@ -59,7 +59,7 @@ def assert_cliproxy_safe(name: str) -> str:
         raise ValueError(
             f"MCP tool name {name!r} would trip the Claude OAuth third-party-MCP "
             "classifier (leading 'mcp' + single separator). It must start with "
-            "'mcp__'. See docs/private/cliproxy.md."
+            "'mcp__'."
         )
     return name
 
