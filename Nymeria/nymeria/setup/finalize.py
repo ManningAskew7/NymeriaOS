@@ -105,6 +105,10 @@ DOCKER_SINGLE_SERVICE = "nymeria-single"
 # The `api` service runs `run.py api` and mints the bootstrap admin + token
 # into the `nymeria_data` volume.
 DOCKER_FULL_SERVICE = "api"
+# The image the full stack's api/worker/mcp run (docker-compose.yml's
+# `x-nymeria-full-image`). One fixed name across checkouts, so a stale one
+# can outlive the config that built it (#314).
+DOCKER_FULL_IMAGE = "nymeria-full:local"
 
 # Clone-free single-container artifacts: the same slim shape, but pulling the
 # published image instead of building from a checkout. The compose file ships
@@ -153,6 +157,12 @@ class _DockerStackSpec:
     # version in os.environ). None for source-checkout stacks, which build
     # their images locally.
     image_version: str | None = None
+    # Full stack only: whether this config bakes the local-rag extra into the
+    # image (the NYMERIA_LOCAL_RAG build arg write_config writes). None for the
+    # single-container stacks, whose images do not consume it. _compose_env
+    # pins it for the same process-env-beats-env-file reason as api_port, and
+    # the start command rebuilds when the existing image lacks it (#314).
+    local_rag: bool | None = None
 
 
 def _searxng_sidecar_selected(state: WizardState) -> bool:
@@ -234,6 +244,51 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
         # First boot builds the image and waits on a deep Postgres + Redis check,
         # so allow longer than the single container.
         health_timeout=120.0,
+        local_rag=_config_bakes_local_rag(state),
+    )
+
+
+def _config_bakes_local_rag(state: WizardState) -> bool:
+    """write_config's NYMERIA_LOCAL_RAG rule, from state (full stack only)."""
+    from .local_rag_install import requires_local_rag
+
+    return requires_local_rag(rag_env_for_state(state))
+
+
+def _full_image_has_local_rag() -> bool | None:
+    """Whether the existing full-stack image carries sentence-transformers.
+
+    The one seam over the docker probe (the suite stubs it); None when there
+    is no image yet or no answer.
+    """
+    return environment.docker_image_has_module(DOCKER_FULL_IMAGE, "sentence_transformers")
+
+
+def _image_rebuild_needed(spec: _DockerStackSpec) -> bool:
+    """True when this config needs the local-rag extra and the image lacks it (#314).
+
+    `up -d` builds only a MISSING image and ignores a changed build arg, so a
+    reconfigure onto a local embedder (or a declined rebuild, or another
+    checkout's image under the same fixed name) would start the lean image.
+    Only this direction forces a rebuild: an image carrying an extra the
+    config no longer needs still works, and the retired flag makes the next
+    rebuild lean. An unknown answer keeps plain `up -d`; the backend's boot
+    warning names the gap if one remains.
+    """
+    if not spec.local_rag:
+        return False
+    return _full_image_has_local_rag() is False
+
+
+def _up_subcommand(rebuild: bool) -> tuple[str, ...]:
+    return ("up", "-d", "--build") if rebuild else ("up", "-d")
+
+
+def _print_rebuild_reason(console: Console, action: str) -> None:
+    console.print(
+        f"The existing {DOCKER_FULL_IMAGE} image lacks the local RAG extra this "
+        f"configuration needs, so {action} (several minutes: it installs "
+        "CPU-only PyTorch)."
     )
 
 
@@ -258,6 +313,13 @@ def _compose_env(spec: _DockerStackSpec) -> dict[str, str]:
     env = dict(os.environ)
     env.update(dict(spec.command_env))
     env["API_PORT"] = str(spec.api_port)
+    if spec.local_rag is not None:
+        # The OLD config's flag is in os.environ too: without this pin, a
+        # reconfigure that retired it would still bake the extra into any
+        # build this invocation runs (and a flip on could build lean).
+        from .local_rag_install import DOCKER_LOCAL_RAG_ENV
+
+        env[DOCKER_LOCAL_RAG_ENV] = "1" if spec.local_rag else "0"
     if spec.image_version:
         # Same hazard as API_PORT: after a wheel upgrade, the OLD version is in
         # os.environ (run.py's import-time dotenv load of the previous
@@ -2133,23 +2195,24 @@ def _maybe_install_local_rag(
         requires_local_rag,
     )
 
-    if not requires_local_rag(extra_env) or local_rag_importable():
+    if not requires_local_rag(extra_env):
         return
 
+    # Docker first: the extra is a property of the IMAGE, so whether this
+    # wizard's own interpreter has it says nothing there (#314 review).
     if for_docker:
         if full_stack:
-            # write_config already wrote the build flag; say what it does and
-            # the one case `up -d` does not cover (an image built before the
-            # flag was set is reused as-is).
+            # write_config already wrote the build flag; say what it does. The
+            # start command itself decides `--build` for an existing image
+            # (#314), so this names no command of its own to contradict it.
             console.print(
                 "\n[yellow]The local RAG stack (granite + Ettin) runs in-process "
                 "via the sentence-transformers extra, which the lean default "
                 f"image omits. {DOCKER_LOCAL_RAG_ENV}=1 was written to "
                 ".env.docker so the compose build bakes it into nymeria-full "
-                "(CPU-only torch, roughly 1.5 GB more image). A first `up -d` "
-                "builds it in; a stack whose image already exists needs "
-                "`docker compose --env-file .env.docker up -d --build api worker` "
-                "once.[/yellow]"
+                "(CPU-only torch, roughly 1.5 GB more image). A first start "
+                "builds it in, and the start command adds `--build` when an "
+                "existing image lacks it.[/yellow]"
             )
             return
         console.print(
@@ -2160,6 +2223,8 @@ def _maybe_install_local_rag(
         )
         return
 
+    if local_rag_importable():
+        return
     command = build_install_command()
     # escape() stops Rich from eating the [local-rag] in the command as markup.
     hint = escape(manual_install_hint(command))
@@ -2440,22 +2505,26 @@ def print_next_action(
 
 def _start_command_for_hosting(state: WizardState) -> str:
     # Only reached for LOCAL/None hosting: DOCKER and SERVICE return earlier
-    # in print_next_action with their own command blocks.
-    if state.hosting is HostingOption.DOCKER:
-        return _compose_command_str(_docker_stack_spec(state), "up", "-d")
+    # in print_next_action with their own command blocks (the Docker one owns
+    # the #314 `--build` decision, so it must not grow a second copy here).
     return "nymeria slim"
 
 
-def _print_docker_next_steps(console: Console, state: WizardState) -> None:
+def _print_docker_next_steps(
+    console: Console, state: WizardState, *, rebuild: bool | None = None
+) -> None:
     """Print the start command and token handoff for the chosen Docker stack.
 
     Both stacks are now a single `up -d` plus the in-container bootstrap-token
     read: the slim container mints its internal service token in-process, and the
     full stack's api mints it onto the shared `nymeria_data` volume where the
     worker / mcp containers read it, so there is no host-side
-    service-token step to run.
+    service-token step to run. ``rebuild`` is start-now's already-made
+    `--build` decision; None decides it here (#314).
     """
     spec = _docker_stack_spec(state)
+    if rebuild is None:
+        rebuild = _image_rebuild_needed(spec)
     console.print(f"\nStart Nymeria ({spec.label}):")
     if DOCKER_SINGLE_PUBLISHED_COMPOSE in spec.compose_args:
         # Clone-free: the compose file and .env.docker live in the runtime
@@ -2463,7 +2532,9 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
         # compose commands below only work from there.
         root = resolve_runtime_root(state, for_docker=True)
         console.print(f"Run these from {root}:")
-    _print_command(console, _compose_command_str(spec, "up", "-d"))
+    if rebuild:
+        _print_rebuild_reason(console, "the command below rebuilds it")
+    _print_command(console, _compose_command_str(spec, *_up_subcommand(rebuild)))
     _print_docker_token_command(console, spec)
     if state.auth_method_is_cliproxy() and _is_full_stack(state) and not state.cliproxy_deploy:
         # A wizard-generated deployment already joins the stack's edge network;
@@ -2584,8 +2655,12 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
     # service token onto the shared volume during its own startup, and the worker /
     # mcp read that token from disk once the api is healthy. No host-side
     # service-token provisioning is needed for either stack.
-    up_command = _compose_command_str(spec, "up", "-d")
+    rebuild = _image_rebuild_needed(spec)
+    up = _up_subcommand(rebuild)
+    up_command = _compose_command_str(spec, *up)
     console.print(f"\nStarting Nymeria ({spec.label})...")
+    if rebuild:
+        _print_rebuild_reason(console, "this start rebuilds it")
     _print_command(console, up_command)
     try:
         # env-gate: full-copy - compose interpolation reads the process
@@ -2598,7 +2673,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
         # the same category as the API re-exec rather than a leak: what makes
         # it acceptable is that the child is bringing up Nymeria itself.
         result = subprocess.run(
-            _compose_argv(spec, "up", "-d"),
+            _compose_argv(spec, *up),
             cwd=str(root),
             env=_compose_env(spec),
         )
@@ -2607,7 +2682,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             f"[yellow]Could not start Docker automatically ({exc}). "
             "Run it yourself:[/yellow]"
         )
-        _print_docker_next_steps(console, state)
+        _print_docker_next_steps(console, state, rebuild=rebuild)
         _print_docker_server_browser_steps(console, state, root=root)
         return 0
     if result.returncode != 0:
@@ -2622,7 +2697,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
                 "set NYMERIA_VERSION in .env.docker to an available tag (e.g. "
                 "latest) and re-run the start command.[/yellow]"
             )
-        _print_docker_next_steps(console, state)
+        _print_docker_next_steps(console, state, rebuild=rebuild)
         _print_docker_server_browser_steps(console, state, root=root)
         return 0
     if not wait_for_health(
@@ -2641,6 +2716,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
         _print_docker_server_browser_steps(console, state, root=root)
         return 0
     console.print("[green]Nymeria is up.[/green]")
+    _print_docker_settings_overrides(console, _docker_settings_overrides(spec=spec, root=root))
     verify_public_url_now(state, console)
     smoke_token = None
     if not state.skip_llm_test:
@@ -3208,6 +3284,68 @@ def _read_docker_token_file(
         return None
     match = re.search(BOOTSTRAP_TOKEN_REGEX, result.stdout)
     return match.group(0) if match else None
+
+
+# The in-container half of the #254 follow-up: the server's own override
+# computation (runtime settings file vs the container environment, i.e. the
+# `.env.docker` values), key NAMES only. An image older than #254 lacks the
+# functions and exits non-zero, which reads as "nothing to report".
+_SETTINGS_OVERRIDES_MARKER = "NYMERIA_SETTINGS_OVERRIDES="
+_SETTINGS_OVERRIDES_SNIPPET = (
+    "from nymeria.config.settings import "
+    "load_env_files_into_environ, runtime_settings_overrides\n"
+    "load_env_files_into_environ()\n"
+    f"print({_SETTINGS_OVERRIDES_MARKER!r} + ','.join(runtime_settings_overrides()))\n"
+)
+_ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _docker_settings_overrides(*, spec: _DockerStackSpec, root: Path) -> tuple[str, ...]:
+    """Env keys whose app-saved value overrides the one in `.env.docker` (#254).
+
+    A setting saved in the app lives in the data volume's runtime settings
+    file, which loads last and wins, so a reconfigure's `.env.docker` value
+    for that key is silently not in effect. Empty on any failure.
+    """
+    command = _compose_argv(
+        spec, "exec", "-T", spec.service, "python3", "-c", _SETTINGS_OVERRIDES_SNIPPET
+    )
+    try:
+        # env-gate: full-copy - same `_compose_env` and reason as
+        # _read_docker_token_file: compose needs it to identify the project;
+        # the exec runs inside the already-running container.
+        result = subprocess.run(
+            command,
+            cwd=str(root),
+            env=_compose_env(spec),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return ()
+    if result.returncode != 0:
+        return ()
+    for line in (result.stdout or "").splitlines():
+        if line.startswith(_SETTINGS_OVERRIDES_MARKER):
+            names = (name.strip() for name in line[len(_SETTINGS_OVERRIDES_MARKER):].split(","))
+            return tuple(name for name in names if _ENV_KEY_RE.match(name))
+    return ()
+
+
+def _print_docker_settings_overrides(console: Console, keys: tuple[str, ...]) -> None:
+    """Warn, not rewrite: the wizard cannot tell a key the user just changed
+    from one it re-produced unchanged from `.env.docker`, so clearing the
+    app-saved copy could revert a newer in-app change (#254 follow-up)."""
+    if not keys:
+        return
+    console.print(
+        f"\n[yellow]Settings saved in the app override {len(keys)} value(s) set "
+        f"elsewhere (for example in .env.docker): {', '.join(keys)}. The app's "
+        "copy (/data/settings.env on the data volume) loads last and wins, so "
+        "the other values for those keys are not in effect. To change one, use "
+        "the app's Settings (or /settings set), which updates that copy.[/yellow]"
+    )
 
 
 def _print_docker_bootstrap_token(

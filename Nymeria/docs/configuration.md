@@ -927,7 +927,7 @@ reuses an existing image regardless of build args, so changing one needs
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NYMERIA_LOCAL_RAG` | `0` | `1` bakes the local-rag extra (sentence-transformers + CPU-only torch, roughly 1.5 GB) into `nymeria-full` so `EMBEDDING_PROVIDER=local` / `RAG_RERANK_PROVIDER=local` (granite + Ettin) load their models in the container. `nymeria init` writes it for a local pick and retires it on a reconfigure to a hosted embedder. |
+| `NYMERIA_LOCAL_RAG` | `0` | `1` bakes the local-rag extra (sentence-transformers + CPU-only torch, roughly 1.5 GB) into `nymeria-full` so `EMBEDDING_PROVIDER=local` / `RAG_RERANK_PROVIDER=local` (granite + Ettin) load their models in the container. `nymeria init` writes it for a local pick and retires it on a reconfigure to a hosted embedder. `up -d` alone reuses an existing image, so its start-now adds `--build` when the image lacks the extra the config needs. |
 
 ### Container Resource Limits (Docker Only)
 

@@ -316,6 +316,63 @@ def docker_compose_available(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> bool 
     return proc.returncode == 0
 
 
+# Exit code the in-image probe uses for "module not installed", distinct from
+# docker's own failures (125-127) and from a crashed interpreter (1).
+_MODULE_ABSENT_EXIT = 3
+
+
+def module_probe_code(module: str) -> str:
+    """The ``python3 -c`` program the image probe runs: exit 0 when ``module``
+    is importable, ``_MODULE_ABSENT_EXIT`` when not (anything else: no answer)."""
+    return (
+        "import importlib.util, sys; "
+        f"sys.exit(0 if importlib.util.find_spec({module!r}) else {_MODULE_ABSENT_EXIT})"
+    )
+
+
+def docker_image_has_module(
+    image: str, module: str, *, timeout: float = 60.0
+) -> bool | None:
+    """Whether a LOCAL image's ``python3`` can import ``module`` (#314).
+
+    ``None`` when there is no answer to act on: docker absent, the image not
+    present locally (compose would build or pull it, so there is nothing stale
+    to compare), or any probe failure. Never pulls (``--pull never``), never
+    networks (``--network none``), and bypasses the image's entrypoint, so the
+    probe runs no Nymeria code and costs one short-lived container.
+    """
+    if shutil.which("docker") is None:
+        return None
+    env = _docker_probe_env()
+    try:
+        inspect = subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            env=env,
+        )
+        if inspect.returncode != 0:
+            return None
+        proc = subprocess.run(
+            [
+                "docker", "run", "--rm", "--pull", "never", "--network", "none",
+                "--entrypoint", "python3", image, "-c", module_probe_code(module),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == _MODULE_ABSENT_EXIT:
+        return False
+    return None
+
+
 def list_nymeria_containers(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> tuple[str, ...]:
     """Names of running nymeria* containers (an existing install), best effort."""
     if shutil.which("docker") is None:

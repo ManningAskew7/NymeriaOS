@@ -7,7 +7,10 @@ Split out of the former monolithic test_setup_wizard.py (dev-todo #54).
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 import pytest
 from nymeria.onboarding import HostingOption
@@ -765,3 +768,287 @@ def test_full_stack_hosted_rag_writes_no_image_opt_in(monkeypatch, tmp_path):
     env_path.write_text(content + "NYMERIA_LOCAL_RAG=1\n", encoding="utf-8")
     assert setup_main(base) == 0
     assert "NYMERIA_LOCAL_RAG" not in env_path.read_text(encoding="utf-8")
+
+
+# --- #314: start-now must not reuse an image the config has outgrown ---------
+# --- #254 follow-up: say when app-saved settings override .env.docker -------
+
+# Captured at import, before the suite-wide conftest stub replaces it.
+_REAL_IMAGE_PROBE = finalize_mod._full_image_has_local_rag
+
+_FULL_UP = ["docker", "compose", "--env-file", ".env.docker", "up", "-d"]
+_FULL_ARGS = [
+    "--provider", "anthropic", "--model", "claude-test-model",
+    "--api-key", "sk-ant-x", "--hosting", "docker", "--docker-stack", "full",
+    "--non-interactive",
+]
+
+
+def _record_compose(monkeypatch, *, overrides_stdout: str = "", overrides_rc: int = 0):
+    """Fake every finalize subprocess: record argv + env, answer the probes."""
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((list(cmd), dict(kwargs.get("env") or {})))
+        if "python3" in cmd:
+            return subprocess.CompletedProcess(cmd, overrides_rc, overrides_stdout, "")
+        if "cat" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "Token: nym_bootstrap_aaa111\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    return calls
+
+
+def _hosted_rag(monkeypatch):
+    monkeypatch.setattr(
+        finalize_mod,
+        "apply_quickstart_rag",
+        lambda state: setattr(state, "embedder", "value-openai-small"),
+    )
+
+
+def _image_has_extra(monkeypatch, answer):
+    seen: list[bool] = []
+
+    def probe():
+        seen.append(True)
+        return answer
+
+    monkeypatch.setattr(finalize_mod, "_full_image_has_local_rag", probe)
+    return seen
+
+
+def test_start_now_rebuilds_a_full_stack_image_that_lacks_the_local_rag_extra(
+    monkeypatch, tmp_path, capsys
+):
+    # The config needs sentence-transformers baked in; `up -d` alone reuses
+    # the lean image that is already there.
+    _stub_llm(monkeypatch)
+    _image_has_extra(monkeypatch, False)
+    calls = _record_compose(monkeypatch)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--quick", "--root", str(root), "--start"]) == 0
+
+    up_calls = [(cmd, env) for cmd, env in calls if "up" in cmd]
+    assert [cmd for cmd, _env in up_calls] == [[*_FULL_UP, "--build"]]
+    # The build arg the rebuild bakes in is this run's value, whatever the
+    # process inherited from the old config.
+    assert up_calls[0][1]["NYMERIA_LOCAL_RAG"] == "1"
+    out = capsys.readouterr().out
+    assert re.search(r"^\s*docker compose --env-file \.env\.docker up -d --build\s*$", out, re.M)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        True,  # the image already carries the extra
+        None,  # no image yet (compose builds it), or the probe could not tell
+    ],
+)
+def test_start_now_keeps_plain_up_when_no_rebuild_is_needed(monkeypatch, tmp_path, answer):
+    _stub_llm(monkeypatch)
+    _image_has_extra(monkeypatch, answer)
+    calls = _record_compose(monkeypatch)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--quick", "--root", str(root), "--start"]) == 0
+
+    assert [cmd for cmd, _env in calls if "up" in cmd] == [_FULL_UP]
+
+
+def test_a_hosted_config_neither_rebuilds_nor_bakes_a_stale_flag(monkeypatch, tmp_path):
+    # Switching the extra OFF: the heavier image still works, so no forced
+    # rebuild; but the build arg is pinned to this run's "0", so the stale "1"
+    # the process inherited from the old config cannot reach a later build.
+    _stub_llm(monkeypatch)
+    _hosted_rag(monkeypatch)
+    seen = _image_has_extra(monkeypatch, False)
+    monkeypatch.setenv("NYMERIA_LOCAL_RAG", "1")
+    calls = _record_compose(monkeypatch)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--root", str(root), "--start"]) == 0
+
+    [(cmd, env)] = [(cmd, env) for cmd, env in calls if "up" in cmd]
+    assert cmd == _FULL_UP
+    assert env["NYMERIA_LOCAL_RAG"] == "0"
+    assert seen == []  # a config that needs no extra never probes the image
+
+
+def test_single_container_start_never_probes_or_rebuilds(monkeypatch, tmp_path):
+    # The single-container image does not consume the flag at all.
+    _stub_llm(monkeypatch)
+    seen = _image_has_extra(monkeypatch, False)
+    calls = _record_compose(monkeypatch)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    args = [a if a != "full" else "slim" for a in _FULL_ARGS]
+    assert setup_main([*args, "--quick", "--root", str(root), "--start"]) == 0
+
+    ups = [cmd for cmd, _env in calls if "up" in cmd]
+    assert ups and all("--build" not in cmd for cmd in ups)
+    assert seen == []
+
+
+@pytest.mark.parametrize("answer,rebuild", [(False, True), (True, False)])
+def test_the_printed_start_command_carries_build_under_the_same_rule(
+    monkeypatch, tmp_path, capsys, answer, rebuild
+):
+    _stub_llm(monkeypatch)
+    _image_has_extra(monkeypatch, answer)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--quick", "--root", str(root)]) == 0
+
+    out = capsys.readouterr().out
+    with_build = re.search(
+        r"^\s*docker compose --env-file \.env\.docker up -d --build\s*$", out, re.M
+    )
+    plain = re.search(r"^\s*docker compose --env-file \.env\.docker up -d\s*$", out, re.M)
+    assert bool(with_build) is rebuild
+    assert bool(plain) is not rebuild
+    # The printed command says why it rebuilds, as start-now does.
+    assert ("lacks the local RAG extra" in out) is rebuild
+
+
+def test_docker_local_rag_hint_ignores_the_host_interpreter(monkeypatch, tmp_path, capsys):
+    # sentence-transformers in the WIZARD's Python says nothing about the image.
+    _stub_llm(monkeypatch)
+    from nymeria.setup import local_rag_install as lri
+
+    monkeypatch.setattr(lri, "local_rag_importable", lambda: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--quick", "--root", str(root)]) == 0
+
+    assert "NYMERIA_LOCAL_RAG=1 was written" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("stack,service", [("full", "api"), ("slim", "nymeria-single")])
+def test_start_now_names_env_keys_the_app_saved_settings_override(
+    monkeypatch, tmp_path, capsys, stack, service
+):
+    # A value saved in the app lives in /data/settings.env and loads last, so
+    # the .env.docker value this run wrote for that key is not in effect.
+    _stub_llm(monkeypatch)
+    calls = _record_compose(
+        monkeypatch,
+        overrides_stdout="noise\nNYMERIA_SETTINGS_OVERRIDES=LLM_MODEL,USER_TIMEZONE,bad key;rm\n",
+    )
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    args = [a if a != "full" else stack for a in _FULL_ARGS]
+
+    assert setup_main([*args, "--root", str(root), "--start"]) == 0
+
+    [probe] = [cmd for cmd, _env in calls if "python3" in cmd]
+    assert probe[probe.index("exec") : probe.index("exec") + 3] == ["exec", "-T", service]
+    out = " ".join(capsys.readouterr().out.split())
+    assert "LLM_MODEL, USER_TIMEZONE" in out
+    # The base is the container environment (compose defaults included), so
+    # the copy must not claim every key came from .env.docker.
+    assert "set elsewhere (for example in .env.docker)" in out
+    assert "bad key" not in out and "rm" not in out.split("USER_TIMEZONE")[1][:20]
+    assert "/data/settings.env" in out
+    assert "Settings" in out
+
+
+@pytest.mark.parametrize(
+    "stdout,rc",
+    [
+        ("NYMERIA_SETTINGS_OVERRIDES=\n", 0),  # nothing overridden
+        ("Traceback: no such function\n", 1),  # an older image
+        ("", 0),
+    ],
+)
+def test_start_now_prints_no_override_note_without_overrides(
+    monkeypatch, tmp_path, capsys, stdout, rc
+):
+    _stub_llm(monkeypatch)
+    _record_compose(monkeypatch, overrides_stdout=stdout, overrides_rc=rc)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--root", str(root), "--start"]) == 0
+
+    assert "settings.env" not in capsys.readouterr().out
+
+
+def test_no_override_probe_when_the_stack_is_not_healthy(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    calls = _record_compose(
+        monkeypatch, overrides_stdout="NYMERIA_SETTINGS_OVERRIDES=LLM_MODEL\n"
+    )
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: False)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--root", str(root), "--start"]) == 0
+
+    assert not any("python3" in cmd for cmd, _env in calls)
+
+
+def test_the_image_probe_names_the_compose_files_full_image(monkeypatch):
+    # The probe must inspect the image compose actually runs.
+    checkout = Path(finalize_mod.__file__).resolve().parents[2]
+    compose = (checkout / "docker-compose.yml").read_text(encoding="utf-8")
+    anchor = compose.index("x-nymeria-full-image:")
+    image = re.search(r"^\s*image:\s*(\S+)", compose[anchor:], re.M)
+    assert image and image.group(1) == finalize_mod.DOCKER_FULL_IMAGE
+
+    asked: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        environment_mod,
+        "docker_image_has_module",
+        lambda image, module, **_kw: asked.append((image, module)) or True,
+    )
+    assert _REAL_IMAGE_PROBE() is True
+    assert asked == [(finalize_mod.DOCKER_FULL_IMAGE, "sentence_transformers")]
+
+
+def test_the_in_container_override_snippet_runs_the_servers_own_computation(tmp_path):
+    # Runs the real program the wizard execs in the container: a renamed or
+    # broken function would otherwise fail silently (non-zero reads as "none").
+    marker = finalize_mod._SETTINGS_OVERRIDES_MARKER
+    settings_file = tmp_path / "settings.env"
+    settings_file.write_text(
+        "NYMERIA_TEST_OVERRIDE_PROBE=from-file\nNYMERIA_TEST_ONLY_IN_FILE=x\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "root"
+    root.mkdir()
+    env = dict(os.environ)
+    env.update(
+        NYMERIA_PROJECT_ROOT=str(root),
+        NYMERIA_SETTINGS_FILE=str(settings_file),
+        NYMERIA_TEST_OVERRIDE_PROBE="from-env",
+    )
+    checkout = Path(finalize_mod.__file__).resolve().parents[2]
+
+    result = subprocess.run(
+        [sys.executable, "-c", finalize_mod._SETTINGS_OVERRIDES_SNIPPET],
+        cwd=str(checkout),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    [line] = [line for line in result.stdout.splitlines() if line.startswith(marker)]
+    # Only a key that held a DIFFERENT value first is an override.
+    assert line == marker + "NYMERIA_TEST_OVERRIDE_PROBE"

@@ -902,3 +902,77 @@ def test_file_defined_env_keys_covers_target_root(tmp_path):
     keys = finalize_mod._file_defined_env_keys(root)
     assert {"API_PORT", "LLM_BASE_URL"} <= keys
     assert "COMMENT" not in keys
+
+
+# --- docker_image_has_module (#314) --------------------------------------------
+
+
+def _fake_docker(monkeypatch, *, inspect_rc: int = 0, run_rc: int = 0, run_raises=None):
+    import subprocess as subprocess_mod
+
+    from nymeria.setup import environment as env_mod
+
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((list(cmd), kwargs))
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return subprocess_mod.CompletedProcess(cmd, inspect_rc, "", "")
+        if run_raises is not None:
+            raise run_raises
+        return subprocess_mod.CompletedProcess(cmd, run_rc, "", "")
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
+    return env_mod, calls, subprocess_mod
+
+
+def test_image_module_probe_reports_present_and_absent(monkeypatch):
+    env_mod, calls, _sp = _fake_docker(monkeypatch, run_rc=0)
+    assert env_mod.docker_image_has_module("img:tag", "some_mod") is True
+    run_argv, run_kwargs = calls[-1]
+    # Never pulls, never touches the network, never runs the image's entrypoint.
+    for flag in ("--rm", "--pull", "never", "--network", "none", "--entrypoint", "python3"):
+        assert flag in run_argv
+    assert "img:tag" in run_argv
+    assert "some_mod" in " ".join(run_argv)
+    assert "env" in run_kwargs and "timeout" in run_kwargs
+
+    env_mod, calls, _sp = _fake_docker(monkeypatch, run_rc=3)
+    assert env_mod.docker_image_has_module("img:tag", "some_mod") is False
+
+
+def test_image_module_probe_is_unknown_without_an_answer(monkeypatch):
+    # No image: compose will build one, so there is nothing to compare.
+    env_mod, calls, _sp = _fake_docker(monkeypatch, inspect_rc=1)
+    assert env_mod.docker_image_has_module("img:tag", "m") is None
+    assert len(calls) == 1  # never tries to run a missing image
+
+    for rc in (125, 1):  # docker's own failure; the interpreter crashed
+        env_mod, _calls, _sp = _fake_docker(monkeypatch, run_rc=rc)
+        assert env_mod.docker_image_has_module("img:tag", "m") is None, rc
+
+    env_mod, _calls, sp = _fake_docker(
+        monkeypatch, run_raises=__import__("subprocess").TimeoutExpired("docker", 1)
+    )
+    assert env_mod.docker_image_has_module("img:tag", "m") is None
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda name: None)
+    assert env_mod.docker_image_has_module("img:tag", "m") is None
+
+
+def test_the_image_probe_program_answers_present_and_absent():
+    # The real program, run by this interpreter, so a broken probe cannot hide
+    # behind the faked docker above (every failure reads as "no answer").
+    import subprocess
+    import sys
+
+    from nymeria.setup import environment as env_mod
+
+    def exit_code(module: str) -> int:
+        return subprocess.run(
+            [sys.executable, "-c", env_mod.module_probe_code(module)], timeout=60
+        ).returncode
+
+    assert exit_code("json") == 0
+    assert exit_code("nymeria_no_such_module_for_the_probe") == env_mod._MODULE_ABSENT_EXIT

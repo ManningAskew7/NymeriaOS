@@ -276,11 +276,16 @@ def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     (a `--hosting docker` test must not fail on a host without docker).
     Gating tests re-patch `runner.detect_environment` with crafted reports;
     detection unit tests call `nymeria.setup.environment` directly, which this
-    does not touch.
+    does not touch. The start command's image probe (#314) is stubbed at its
+    finalize seam for the same reason: this host's real `nymeria-full:local`
+    image must not decide a test's `--build`.
     """
     from nymeria.onboarding import HostingOption
+    from nymeria.setup import finalize as finalize_module
     from nymeria.setup import runner as runner_module
     from nymeria.setup.environment import EnvironmentReport
+
+    monkeypatch.setattr(finalize_module, "_full_image_has_local_rag", lambda: None)
 
     monkeypatch.setattr(
         runner_module,
