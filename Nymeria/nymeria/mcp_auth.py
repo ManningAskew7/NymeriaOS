@@ -8,6 +8,12 @@ victim's data (full multi-tenant compromise). This module closes that hole:
 * A pure-ASGI middleware requires ``Authorization: Bearer <token>`` on every
   HTTP request, resolves it against the backend ``GET /me`` (short TTL cache),
   and rejects unknown/missing tokens with ``401``.
+* A backend that cannot answer (restarting, erroring, misconfigured) is NOT a
+  bad credential: that answers ``503`` with ``Retry-After`` and no Bearer
+  challenge, and is never cached (#374). A ``401`` + ``WWW-Authenticate``
+  tells an MCP client to authenticate, so answering it during a compose
+  restart made clients drop the server as needing auth and never reconnect.
+  Access stays fail-closed either way.
 * The resolved ``{user_id, role}`` is stored in a context var for the request.
 * :func:`effective_act_as` pins non-admin callers to their own identity
   (ignoring any ``user_id`` argument) while letting admins keep Act-As.
@@ -20,6 +26,7 @@ straight through.
 from __future__ import annotations
 
 import contextvars
+import enum
 import hashlib
 import json
 import logging
@@ -39,6 +46,18 @@ _RESOLVE_CACHE: dict[str, tuple[float, Optional[dict[str, str]]]] = {}
 _RESOLVE_TTL_OK = 60.0
 _RESOLVE_TTL_BAD = 10.0
 _RESOLVE_CACHE_MAX = 512
+# Seconds a client is told to wait when the backend cannot resolve a token.
+_RETRY_AFTER_SECONDS = 5
+# The resolver's HTTP transport: None in production; tests inject an
+# ``httpx.MockTransport`` to drive the real resolver through the middleware.
+_HTTP_TRANSPORT: Any = None
+
+
+class _Resolution(enum.Enum):
+    """A resolution outcome that is neither an identity nor a rejected token."""
+
+    UNAVAILABLE = "unavailable"  # no answer: restarting, timing out, 5xx (503)
+    UNEXPECTED = "unexpected"  # an answer that is not a Nymeria /me (502)
 
 
 def set_identity(identity: Optional[dict[str, str]]):
@@ -101,10 +120,18 @@ def _cache_put(token_hash: str, identity: Optional[dict[str, str]]) -> None:
     _RESOLVE_CACHE[token_hash] = (time.monotonic() + ttl, identity)
 
 
-async def _resolve_token(base_url: str, token: str) -> Optional[dict[str, str]]:
+async def _resolve_token(
+    base_url: str, token: str
+) -> Optional[dict[str, str]] | _Resolution:
     """Resolve an inbound bearer to ``{user_id, role}`` via backend ``/me``.
 
-    Returns None for an invalid token or any backend failure (fail closed).
+    Returns the identity; ``None`` when the backend REJECTED the token (401 or
+    403, cached briefly; 429 too, uncached, see below);
+    ``_Resolution.UNAVAILABLE`` when it could not answer (connection error,
+    timeout, 5xx); or ``_Resolution.UNEXPECTED`` for an answer that is not a
+    Nymeria ``/me`` (another status, e.g. a base URL pointing elsewhere, or a
+    200 without an identity). Neither says anything about the token, so
+    neither is cached. Every non-identity outcome denies access.
     """
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     hit, identity = _cache_get(token_hash)
@@ -113,37 +140,65 @@ async def _resolve_token(base_url: str, token: str) -> Optional[dict[str, str]]:
 
     import httpx
 
-    resolved: Optional[dict[str, str]] = None
     try:
-        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, trust_env=False, transport=_HTTP_TRANSPORT
+        ) as client:
             response = await client.get(
                 f"{base_url.rstrip('/')}/me",
                 headers={"Authorization": f"Bearer {token}"},
             )
-        if response.status_code == 200:
-            data = response.json()
-            user_id = data.get("id")
-            if user_id:
-                resolved = {"user_id": str(user_id), "role": str(data.get("role", "user"))}
-        elif response.status_code in (401, 403):
-            resolved = None
-        else:
-            logger.warning("MCP auth: unexpected /me status %s", response.status_code)
-            resolved = None
     except Exception as exc:
-        logger.warning("MCP auth: token resolution failed: %s", exc)
-        resolved = None
+        logger.warning("MCP auth: backend unavailable for token resolution: %s", exc)
+        return _Resolution.UNAVAILABLE
 
+    if response.status_code in (401, 403):
+        _cache_put(token_hash, None)
+        return None
+    if response.status_code == 429:
+        # The API's per-IP auth-FAILURE limiter (triggers/api.py) is the only
+        # source of a /me 429 and runs only after the token failed, so this is
+        # a rejection. Every MCP resolution shares one client IP there, so a
+        # spray of junk tokens trips it for everyone: answering 503 would turn
+        # every genuinely revoked token into "retry shortly" (a client would
+        # never re-authenticate). Not cached: that keeps a junk spray from
+        # filling the cache, whose overflow clears valid identities too.
+        return None
+    if response.status_code >= 500:
+        logger.warning(
+            "MCP auth: backend unavailable for token resolution: /me answered %s",
+            response.status_code,
+        )
+        return _Resolution.UNAVAILABLE
+    if response.status_code != 200:
+        logger.warning(
+            "MCP auth: /me answered %s; is the MCP server's API URL a Nymeria API?",
+            response.status_code,
+        )
+        return _Resolution.UNEXPECTED
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not data.get("id"):
+        logger.warning("MCP auth: /me answered 200 without an identity")
+        return _Resolution.UNEXPECTED
+    resolved = {"user_id": str(data["id"]), "role": str(data.get("role", "user"))}
     _cache_put(token_hash, resolved)
     return resolved
 
 
 def _extract_bearer(scope) -> Optional[str]:
+    """The bearer token, or None when absent or not RFC 6750 token-shaped
+    (printable ASCII, no whitespace): such a value cannot be a Nymeria token,
+    and forwarding it would fail inside the HTTP client as a false outage."""
     for name, value in scope.get("headers", []):
         if name == b"authorization":
             text = value.decode("latin-1").strip()
             if text.lower().startswith("bearer "):
-                return text[7:].strip()
+                token = text[7:].strip()
+                if token and all("!" <= ch <= "~" for ch in token):
+                    return token
             return None
     return None
 
@@ -159,18 +214,18 @@ class MCPAuthMiddleware:
 
     @staticmethod
     async def _reject(send, status: int, message: str) -> None:
-        body = json.dumps({"error": message, "type": "unauthorized"}).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": status,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                    (b"www-authenticate", b"Bearer"),
-                ],
-            }
-        )
+        # Only a 401 challenges for a bearer; a 5xx never says "authenticate".
+        kind = {401: "unauthorized", 502: "unexpected"}.get(status, "unavailable")
+        body = json.dumps({"error": message, "type": kind}).encode("utf-8")
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ]
+        if status == 401:
+            headers.append((b"www-authenticate", b"Bearer"))
+        elif status == 503:
+            headers.append((b"retry-after", str(_RETRY_AFTER_SECONDS).encode("ascii")))
+        await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send) -> None:
@@ -190,6 +245,16 @@ class MCPAuthMiddleware:
         resolver = self._resolve_base_url
         base_url = str(resolver() if callable(resolver) else resolver)
         identity = await _resolve_token(base_url, token)
+        if identity is _Resolution.UNAVAILABLE:
+            await self._reject(
+                send, 503, "The Nymeria backend is not answering yet; retry shortly"
+            )
+            return
+        if identity is _Resolution.UNEXPECTED:
+            await self._reject(
+                send, 502, "The MCP server's backend did not answer as a Nymeria API"
+            )
+            return
         if identity is None:
             await self._reject(send, 401, "Invalid or unknown bearer token")
             return
