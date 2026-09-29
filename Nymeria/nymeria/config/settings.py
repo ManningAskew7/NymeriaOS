@@ -286,6 +286,9 @@ _env_load_lock = threading.RLock()
 _runtime_pins: dict[str, Optional[str]] = {}
 _runtime_settings_overrides: Tuple[str, ...] = ()
 _runtime_settings_ignored: Tuple[str, ...] = ()
+# The env files the last load read, in order (#101 entry 6: the boot warning
+# inspects only what this process actually loaded, never re-reads a root).
+_loaded_env_files: Tuple[Path, ...] = ()
 
 
 def _apply_runtime_settings_file(path: Path) -> Tuple[List[str], List[str]]:
@@ -312,6 +315,36 @@ def _apply_runtime_settings_file(path: Path) -> Tuple[List[str], List[str]]:
         if old and old != value:
             overrides.append(key)
     return sorted(overrides), sorted(ignored)
+
+
+def _in_container() -> bool:
+    """True inside a Docker or Podman container (their marker files)."""
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
+def _docker_service_host(value: str) -> Optional[str]:
+    """The host of a URL value when it looks like a Docker service name, else None.
+
+    Dotless, not ``localhost``, not an IP literal: the names a compose network
+    resolves (``postgres``, ``nymeria-api``, ``cli-proxy-api-latest``) and a
+    host outside the stack does not. Only the host is returned, never the URL,
+    which can carry credentials.
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(value.strip())
+        host = parts.hostname
+    except ValueError:
+        return None
+    if not parts.scheme or not host or host == "localhost" or "." in host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return None
 
 
 def runtime_settings_overrides() -> Tuple[str, ...]:
@@ -422,11 +455,13 @@ def reset_env_loading_state_for_tests() -> None:
     hermeticity guarantee (#294) and must survive every test.
     """
     global _env_files_loaded, _runtime_settings_overrides, _runtime_settings_ignored
+    global _loaded_env_files
     with _env_load_lock:
         _env_files_loaded = False
         _runtime_pins.clear()
         _runtime_settings_overrides = ()
         _runtime_settings_ignored = ()
+        _loaded_env_files = ()
 
 
 def load_env_files_into_environ(
@@ -449,6 +484,7 @@ def load_env_files_into_environ(
     from starting on the rest of its configuration.
     """
     global _env_files_loaded, _runtime_settings_overrides, _runtime_settings_ignored
+    global _loaded_env_files
     with _env_load_lock:
         if _env_file_loading_suppressed and (
             project_root is None or Path(project_root) == PROJECT_ROOT
@@ -478,6 +514,7 @@ def load_env_files_into_environ(
 
         _runtime_settings_overrides = tuple(overrides)
         _runtime_settings_ignored = tuple(ignored)
+        _loaded_env_files = tuple(loaded)
 
         _env_files_loaded = True
         _apply_runtime_pins()
@@ -2752,6 +2789,13 @@ class Settings(BaseSettings):
                 "  python run.py users add bot-service@localhost --role admin --id bot-service"
             )
 
+        # A Docker install's config loaded by a process outside Docker (#101
+        # entry 6). Every role, thin clients included: a host bot pointed at
+        # http://nymeria-api:8000 cannot reach the API either.
+        docker_leak = self._docker_env_leak_warning(server_process=server_process)
+        if docker_leak:
+            warnings.append(docker_leak)
+
         # Check database backend configuration
         if self.database_backend == "postgres" and not self.postgres_uri:
             errors.append(
@@ -2763,6 +2807,89 @@ class Settings(BaseSettings):
             warnings.extend(self._server_dependency_warnings())
 
         return errors, warnings
+
+    def _docker_env_leak_warning(self, *, server_process: bool) -> Optional[str]:
+        """Name what a loaded `.env.docker` does to a process outside Docker.
+
+        Containers never see the file (`.dockerignore` excludes it; compose
+        injects it as the environment), so loading it at all means a host
+        process sharing a root with a Docker install. Reports keys it overrides
+        in the local config at the same root, and in-effect URLs whose host is
+        a Docker service name; key and host names only, never values. Silent
+        when neither applies: a host process may use the file on purpose. A
+        thin client hears only about the one URL it dials (NYMERIA_API_URL):
+        the server's LLM route and overrides are not its concern (review).
+        """
+        docker_file = next(
+            (path for path in _loaded_env_files if path.name == ".env.docker"), None
+        )
+        if docker_file is None or _in_container():
+            return None
+        from dotenv import dotenv_values
+
+        try:
+            docker_values = {
+                key: value
+                for key, value in dotenv_values(docker_file).items()
+                if value is not None
+            }
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+
+        overridden: set[str] = set()
+        local_names: List[str] = []
+        for path in _loaded_env_files if server_process else ():
+            if path.name not in (".env", "config.env"):
+                continue
+            try:
+                local_values = dotenv_values(path)
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            hits = {
+                key
+                for key, value in local_values.items()
+                if value is not None and key in docker_values and docker_values[key] != value
+            }
+            if hits:
+                overridden |= hits
+                local_names.append(path.name)
+
+        unused = set()
+        if self.database_backend != "postgres":
+            unused.add("POSTGRES_URI")
+        if not self.redis_enabled:
+            unused.add("REDIS_URL")
+        hosts = []
+        for key, value in docker_values.items():
+            if key in unused or os.environ.get(key) != value:
+                continue
+            if not server_process and key != "NYMERIA_API_URL":
+                continue
+            host = _docker_service_host(value)
+            if host:
+                hosts.append(f"{key} ({host})")
+
+        if not overridden and not hosts:
+            return None
+        lines = [
+            f".env.docker in {docker_file.parent} (a Docker install's config) is "
+            "loaded into this process, which runs outside Docker."
+        ]
+        if overridden:
+            lines.append(
+                f"  It overrides {len(overridden)} value(s) from "
+                f"{' and '.join(local_names)}: {', '.join(sorted(overridden))}."
+            )
+        if hosts:
+            lines.append(
+                "  These name Docker service hosts, which resolve only inside the "
+                f"stack's network: {', '.join(sorted(hosts))}."
+            )
+        lines.append(
+            "  Give this install its own root: set NYMERIA_PROJECT_ROOT to another "
+            "directory, then run nymeria init there."
+        )
+        return "\n".join(lines)
 
     def _server_dependency_warnings(self) -> List[str]:
         """Warnings about what only an agent-running process uses (see validate_runtime)."""

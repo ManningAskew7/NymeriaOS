@@ -7,6 +7,7 @@ Split out of the former monolithic test_setup_wizard.py (dev-todo #54).
 from __future__ import annotations
 
 import pytest
+from nymeria.onboarding import HostingOption
 from nymeria.setup import finalize as finalize_mod
 from nymeria.setup.providers import LLMConnectionError
 from nymeria.setup.runner import main as setup_main
@@ -1035,3 +1036,194 @@ def test_hydrate_infers_local_model_branch_from_ollama_provider(tmp_path):
     )
     assert hydrate_state_from_disk(explicit) is True
     assert explicit.auth_method is ProviderAuthMethod.API_KEY
+
+
+# --- #101 multi-root (entries 6, 10, 15a): one host, several installs ----------
+
+
+def _checkout_with_docker_config(monkeypatch, tmp_path):
+    """A source checkout that also drives a Docker install (its .env.docker)."""
+    from nymeria.setup import environment as environment_mod
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".env.docker").write_text(
+        "LLM_PROVIDER=openai\nLLM_MODEL=docker-model\n"
+        "LLM_BASE_URL=http://cli-proxy-api-latest:8317/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: checkout)
+    return checkout
+
+
+def _launched_with_root(monkeypatch, root):
+    """This process was LAUNCHED with NYMERIA_PROJECT_ROOT (None: without it)."""
+    from nymeria import _runtime_paths
+
+    monkeypatch.setattr(
+        _runtime_paths, "_LAUNCH_PROJECT_ROOT_ENV", None if root is None else str(root)
+    )
+    if root is not None:
+        monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(root))
+
+
+def test_an_explicit_root_never_hydrates_from_the_checkouts_docker_config(
+    monkeypatch, tmp_path
+):
+    # Entry 10: an exported root for a NEW install opened as "Reconfiguring the
+    # existing install at Docker", carrying the Docker install's values over.
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _checkout_with_docker_config(monkeypatch, tmp_path)
+    own = tmp_path / "own"
+    own.mkdir()
+    _launched_with_root(monkeypatch, own)
+
+    state = WizardState()
+    assert hydrate_state_from_disk(state) is False
+    assert not state.model and state.hosting is None and not state.reconfigure
+
+    # ...and its own config is what a reconfigure there reads.
+    (own / "config.env").write_text(
+        "LLM_PROVIDER=anthropic\nLLM_MODEL=own-model\n", encoding="utf-8"
+    )
+    state = WizardState()
+    assert hydrate_state_from_disk(state) is True
+    assert state.model == "own-model"
+    assert state.hosting is not HostingOption.DOCKER
+
+
+@pytest.mark.parametrize("launched_with", ["checkout", None])
+def test_the_checkout_root_still_finds_its_docker_config(monkeypatch, tmp_path, launched_with):
+    # An explicit root that IS the checkout, or no explicit root at all, keeps
+    # the checkout's Docker config as the install being reconfigured.
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    checkout = _checkout_with_docker_config(monkeypatch, tmp_path)
+    _launched_with_root(monkeypatch, checkout if launched_with else None)
+
+    state = WizardState()
+    assert hydrate_state_from_disk(state) is True
+    assert state.hosting is HostingOption.DOCKER
+    assert state.model == "docker-model"
+
+
+@pytest.mark.parametrize(
+    "setup,source",
+    [
+        ("explicit", "NYMERIA_PROJECT_ROOT"),
+        ("checkout", "source checkout"),
+        ("flag", "--root"),
+    ],
+)
+def test_the_reconfigure_line_names_the_file_and_where_the_root_came_from(
+    monkeypatch, tmp_path, setup, source
+):
+    # Entry 15a: a lost export silently retargeted init at another install;
+    # naming the file and the root's origin makes that visible at once.
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    checkout = _checkout_with_docker_config(monkeypatch, tmp_path)
+    own = tmp_path / "own"
+    own.mkdir()
+    (own / "config.env").write_text("LLM_PROVIDER=anthropic\n", encoding="utf-8")
+    if setup == "explicit":
+        _launched_with_root(monkeypatch, own)
+        state, expected = WizardState(), own / "config.env"
+    elif setup == "checkout":
+        _launched_with_root(monkeypatch, None)
+        state, expected = WizardState(), checkout / ".env.docker"
+    else:
+        _launched_with_root(monkeypatch, None)
+        state, expected = WizardState(root=own), own / "config.env"
+    console, buf = _capture_console()
+
+    assert hydrate_state_from_disk(state, console=console) is True
+
+    out = " ".join(buf.getvalue().split())
+    assert str(expected) in out
+    assert source in out
+
+
+def test_a_fresh_install_says_which_root_it_will_use(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "fresh"
+    _first_run(monkeypatch, root)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"New install at {root}" in out
+    assert "--root" in out
+
+
+def test_writing_a_local_config_beside_a_docker_one_warns(monkeypatch, tmp_path, capsys):
+    # Entry 6: every process started from this root also loads .env.docker,
+    # AFTER the local file, so the Docker install's values win and fill gaps.
+    root = tmp_path / "shared"
+    root.mkdir()
+    (root / ".env.docker").write_text("LLM_MODEL=docker-model\n", encoding="utf-8")
+
+    _first_run(monkeypatch, root, "--hosting", "local", "--force")
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert (root / "config.env").exists() or (root / ".env").exists()
+    assert "also holds .env.docker" in out
+    assert "NYMERIA_PROJECT_ROOT" in out
+
+
+@pytest.mark.parametrize("docker_config,hosting", [(False, "local"), (True, "docker")])
+def test_no_shared_root_warning_otherwise(monkeypatch, tmp_path, capsys, docker_config, hosting):
+    root = tmp_path / "root"
+    root.mkdir()
+    if docker_config:
+        (root / ".env.docker").write_text("LLM_MODEL=docker-model\n", encoding="utf-8")
+
+    _first_run(monkeypatch, root, "--hosting", hosting, "--force")
+
+    assert "also holds .env.docker" not in " ".join(capsys.readouterr().out.split())
+
+
+def test_docker_hosting_under_an_exported_root_reconfigures_the_docker_install(
+    monkeypatch, tmp_path
+):
+    # The operator's own setup: slim's root exported in the shell profile, the
+    # Docker stack at the checkout. A Docker run must hydrate the Docker config
+    # it will merge-write, never the exported local install's.
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _checkout_with_docker_config(monkeypatch, tmp_path)
+    own = tmp_path / "own"
+    own.mkdir()
+    (own / "config.env").write_text(
+        "LLM_PROVIDER=anthropic\nLLM_MODEL=own-model\n", encoding="utf-8"
+    )
+    _launched_with_root(monkeypatch, own)
+
+    state = WizardState(hosting=HostingOption.DOCKER)
+    assert hydrate_state_from_disk(state) is True
+    assert state.model == "docker-model"
+
+
+def test_a_fresh_run_before_the_hosting_pick_names_both_roots(monkeypatch, tmp_path):
+    from nymeria.setup.hydrate import announce_fresh_install
+    from nymeria.setup.state import WizardState
+
+    checkout = _checkout_with_docker_config(monkeypatch, tmp_path)
+    own = tmp_path / "own"
+    own.mkdir()
+    _launched_with_root(monkeypatch, own)
+
+    console, buf = _capture_console()
+    announce_fresh_install(WizardState(), console=console)
+    out = " ".join(buf.getvalue().split())
+    assert f"A local install goes to {own} (root from NYMERIA_PROJECT_ROOT)" in out
+    assert f"a Docker install to {checkout} (root from this source checkout)" in out
+
+    # Once the hosting is known, only the root the run writes to.
+    console, buf = _capture_console()
+    announce_fresh_install(WizardState(hosting=HostingOption.LOCAL), console=console)
+    out = " ".join(buf.getvalue().split())
+    assert f"New install at {own}" in out
+    assert str(checkout) not in out

@@ -42,6 +42,9 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
+from rich.markup import escape
+
+from .._runtime_paths import explicit_project_root, find_project_root
 
 from ..onboarding import HOSTING_MARKER_ENV, ExternalAccess, HostingOption
 from . import family_catalog, finalize
@@ -70,7 +73,7 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
     located = _locate_config(state)
     if located is None:
         return False
-    config_path, for_docker = located
+    config_path, for_docker, origin = located
 
     try:
         from dotenv import dotenv_values
@@ -216,9 +219,93 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
         _hydrate_profile_picks(state, for_docker=for_docker)
 
     if console is not None:
-        where = "Docker (.env.docker)" if for_docker else str(config_path)
-        console.print(f"[green]Reconfiguring[/green] the existing install at {where}")
+        shape = "Docker config" if for_docker else "local config"
+        console.print(
+            f"[green]Reconfiguring[/green] the existing install at "
+            f"{escape(str(config_path))} ({shape}; root from {origin})",
+            soft_wrap=True,
+        )
     return True
+
+
+def announce_fresh_install(state: WizardState, *, console: Console) -> None:
+    """Say which root a run that found no install will write to, and why (#101 15a).
+
+    A lost ``NYMERIA_PROJECT_ROOT`` export silently retargets every command at
+    another install; naming the root and its origin on every run makes that
+    visible before anything is written.
+    """
+    if state.hosting is None:
+        # The interactive path announces before the hosting pick, and a Docker
+        # install's config goes beside the compose file, not to the local root:
+        # name both rather than one the run may not write to (review).
+        local = finalize.resolve_runtime_root(state, for_docker=False)
+        docker = finalize.resolve_runtime_root(state, for_docker=True)
+        if local != docker:
+            scoped = _explicit_scope(state) is not None
+            console.print(
+                f"New install. A local install goes to {escape(str(local))} (root "
+                f"from {_root_origin(state, local, scoped=scoped)}); a Docker "
+                f"install to {escape(str(docker))} (root from "
+                f"{_root_origin(state, docker, scoped=False)}).",
+                soft_wrap=True,
+            )
+            return
+    for_docker = state.hosting is HostingOption.DOCKER
+    root = finalize.resolve_runtime_root(state, for_docker=for_docker)
+    origin = _root_origin(state, root, scoped=_explicit_scope(state) is not None)
+    if state.force:
+        console.print(
+            f"Writing a fresh config at {escape(str(root))} (root from {origin}; --force).",
+            soft_wrap=True,
+        )
+    else:
+        # soft_wrap: a hard wrap would split the path mid-name, breaking copy-paste.
+        console.print(
+            f"New install at {escape(str(root))} (root from {origin}).", soft_wrap=True
+        )
+
+
+def _explicit_scope(state: WizardState) -> Optional[Path]:
+    """An exported root that is not the source checkout: discovery stays inside it.
+
+    Without this, a run for a NEW install at an exported root found the
+    checkout's `.env.docker` first and reconfigured that other install
+    (#101 entry 10). An exported root equal to the checkout, or none at all,
+    keeps the checkout-first discovery a Docker install needs. So does Docker
+    hosting itself: its config lives beside the compose file
+    (`finalize.resolve_runtime_root`), so scoping a Docker run to the export
+    would hydrate one install and merge-write it into another (review).
+    """
+    if state.root is not None or state.hosting is HostingOption.DOCKER:
+        return None
+    explicit = explicit_project_root()
+    if explicit is None:
+        return None
+    from . import environment
+
+    checkout = environment.source_checkout_root()
+    if checkout is not None and explicit == checkout.resolve():
+        return None
+    return explicit
+
+
+def _root_origin(state: WizardState, root: Path, *, scoped: bool) -> str:
+    """Where ``root`` came from, in the words an operator would search for."""
+    if state.root is not None:
+        return "--root"
+    if scoped:
+        return "NYMERIA_PROJECT_ROOT"
+    from . import environment
+
+    checkout = environment.source_checkout_root()
+    if checkout is not None and root == checkout.resolve():
+        return "this source checkout"
+    if explicit_project_root() == root:
+        return "NYMERIA_PROJECT_ROOT"
+    if find_project_root(root) == root:
+        return "this source checkout"
+    return "the default per-user root"
 
 
 def _hydrate_server_browser(
@@ -260,16 +347,21 @@ def _hydrate_server_browser(
         state.extras.setdefault("server_browser", "skip")
 
 
-def _locate_config(state: WizardState) -> Optional[tuple[Path, bool]]:
-    """Find the highest-precedence existing config file and its shape.
+def _locate_config(state: WizardState) -> Optional[tuple[Path, bool, str]]:
+    """Find the highest-precedence existing config file, its shape, and root origin.
 
-    Honors an explicit ``--root``; otherwise checks the Docker source-checkout
-    root (for ``.env.docker``) and the normal init root (for ``config.env``/
-    ``.env``). The first existing file wins; ``.env.docker`` implies Docker.
+    Honors an explicit ``--root``, and an exported ``NYMERIA_PROJECT_ROOT``
+    that is not the source checkout (``_explicit_scope``) the same way;
+    otherwise checks the Docker source-checkout root (for ``.env.docker``) and
+    the normal init root (for ``config.env``/``.env``). The first existing
+    file wins; ``.env.docker`` implies Docker.
     """
     candidates: list[tuple[Path, bool]] = []
-    if state.root is not None:
+    scope = _explicit_scope(state)
+    root: Optional[Path] = scope
+    if root is None and state.root is not None:
         root = Path(state.root).expanduser().resolve()
+    if root is not None:
         candidates = [
             (root / ".env.docker", True),
             (root / "config.env", False),
@@ -285,7 +377,9 @@ def _locate_config(state: WizardState) -> Optional[tuple[Path, bool]]:
         ]
     for path, is_docker in candidates:
         if path.exists():
-            return path, is_docker
+            return path, is_docker, _root_origin(
+                state, path.parent.resolve(), scoped=scope is not None
+            )
     return None
 
 

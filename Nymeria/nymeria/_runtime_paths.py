@@ -8,6 +8,19 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 
+# The NYMERIA_PROJECT_ROOT this process was LAUNCHED with, captured at import:
+# ``configure_project_root`` sets the variable itself from discovery, after
+# which an exported root and a discovered one look the same. Both launchers
+# import this module before anything can set it (#101 entry 10).
+_LAUNCH_PROJECT_ROOT_ENV: Optional[str] = os.environ.get("NYMERIA_PROJECT_ROOT")
+
+
+def explicit_project_root() -> Optional[Path]:
+    """The root the user named with ``NYMERIA_PROJECT_ROOT`` at launch, if any."""
+    raw = (_LAUNCH_PROJECT_ROOT_ENV or "").strip()
+    return Path(raw).expanduser().resolve() if raw else None
+
+
 PROJECT_ROOT_MARKERS: Tuple[Tuple[str, ...], ...] = (
     ("run.py", "nymeria/config/soul.md"),
     ("docker-compose.yml", "nymeria/config/settings.py"),

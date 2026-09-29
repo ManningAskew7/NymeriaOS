@@ -553,3 +553,38 @@ def test_embedded_cli_fallback_agent_never_takes_over_a_schedule(monkeypatch):
 
     assert _RecordingAgent.built[0]["scheduler_takeover"] is False
     assert isinstance(started[0], _RecordingAgent)
+
+
+@pytest.mark.parametrize("exported", [True, False])
+def test_only_an_exported_root_counts_as_explicit(tmp_path: Path, exported: bool):
+    # configure_project_root WRITES the variable after discovering a root, so
+    # "explicit" must be read from what the process was launched with (#101
+    # entry 10), in a fresh interpreter that imports the way the launchers do.
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "NYMERIA_PROJECT_ROOT"}
+    if exported:
+        env["NYMERIA_PROJECT_ROOT"] = str(tmp_path)
+    program = (
+        "import os\n"
+        "from nymeria._runtime_paths import configure_project_root, explicit_project_root\n"
+        "configure_project_root()\n"
+        "assert os.environ.get('NYMERIA_PROJECT_ROOT')\n"
+        "print('EXPLICIT=' + str(explicit_project_root()))\n"
+    )
+    checkout = Path(_runtime_paths.__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=str(checkout),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    expected = str(tmp_path.resolve()) if exported else "None"
+    assert f"EXPLICIT={expected}" in result.stdout

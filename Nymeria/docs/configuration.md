@@ -854,6 +854,18 @@ writes an explicit `NYMERIA_DATA_DIR=<root>/data` line to `config.env` by
 default, or the custom `--data-dir` value, so a later root or data-directory
 move should update that value or rerun `nymeria init --root ...` or
 `nymeria init --data-dir ...`.
+
+One root holds one install. Every process loads its root's `.env`,
+`config.env`, then `.env.docker`, each overriding the last, so a bare-metal
+install sharing a root with a Docker install's `.env.docker` runs with the
+Docker values, container-only hostnames included. Give each install its own
+root with `NYMERIA_PROJECT_ROOT` (export it in the shell profile of whoever
+runs that install). `nymeria init` prints the root it resolved and why on
+every run, and scopes discovery to an exported root, so it never reconfigures
+another install; it warns when it writes a local config beside a
+`.env.docker`. At boot, a process that loaded a `.env.docker` outside Docker
+warns when that file overrides the local config or points at Docker service
+hostnames (key and host names only).
 The beta Windows desktop release is client-only: it does not bundle a backend
 executable, does not read or write backend config files, and does not set
 `NYMERIA_PROJECT_ROOT` for a local backend process.

@@ -712,6 +712,10 @@ def run_init(args: argparse.Namespace) -> int:
             from .hydrate import hydrate_state_from_disk
 
             reconfigure = hydrate_state_from_disk(state, console=console)
+        if not reconfigure:
+            from .hydrate import announce_fresh_install
+
+            announce_fresh_install(state, console=console)
         if section and not reconfigure:
             # A scoped run skips the bootstrap-token handoff a fresh install
             # needs, so sections only make sense against an existing config.
@@ -862,6 +866,10 @@ def run_init(args: argparse.Namespace) -> int:
     from .hydrate import hydrate_state_from_disk
 
     reconfigure = hydrate_state_from_disk(state, console=console)
+    if not reconfigure:
+        from .hydrate import announce_fresh_install
+
+        announce_fresh_install(state, console=console)
 
     # Deep detection (docker daemon, compose plugin, running containers, port
     # owner) runs once here, before the TUI starts, and is cached on state: the

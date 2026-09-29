@@ -219,3 +219,126 @@ def test_settings_declares_no_env_file_of_its_own():
     # The mechanism behind every assertion above: if this comes back, the dotenv
     # source starts filling gaps again and the process stops being authoritative.
     assert not Settings.model_config.get("env_file")
+
+
+# --- #101 entry 6: a Docker install's .env.docker loaded outside Docker ------
+
+
+def _root_with(tmp_path: Path, monkeypatch, *, local: str | None = None, docker: str | None = None):
+    """Load a root's env files as a process there would; not in a container."""
+    root = tmp_path / "root"
+    root.mkdir()
+    if local is not None:
+        (root / ".env").write_text(local, encoding="utf-8")
+    if docker is not None:
+        (root / ".env.docker").write_text(docker, encoding="utf-8")
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: False)
+    settings_mod.load_env_files_into_environ(root)
+    return root
+
+
+def _docker_env_warnings(*, server_process: bool = True, **settings_kwargs):
+    _errors, warnings = Settings(_env_file=None, **settings_kwargs).validate_runtime(
+        server_process=server_process
+    )
+    return [w for w in warnings if "a Docker install's config" in w]
+
+
+def test_a_docker_config_that_overrides_the_local_one_is_named(tmp_path, monkeypatch):
+    root = _root_with(
+        tmp_path,
+        monkeypatch,
+        local="LLM_MODEL=local-model\nLLM_TEMPERATURE=0.5\n",
+        docker="LLM_MODEL=docker-model\nLLM_TEMPERATURE=0.5\nONLY_IN_DOCKER=1\n",
+    )
+
+    [warning] = _docker_env_warnings()
+    assert str(root) in warning
+    assert "LLM_MODEL" in warning
+    # Equal values are no conflict, and a Docker-only non-URL key is not one.
+    assert "LLM_TEMPERATURE" not in warning and "ONLY_IN_DOCKER" not in warning
+    assert "local-model" not in warning and "docker-model" not in warning
+    assert "NYMERIA_PROJECT_ROOT" in warning
+
+
+def test_docker_service_hostnames_in_effect_are_named(tmp_path, monkeypatch):
+    _root_with(
+        tmp_path,
+        monkeypatch,
+        docker=(
+            "LLM_BASE_URL=http://cli-proxy-api-latest:8317/v1\n"
+            "NYMERIA_API_URL=http://nymeria-api:8000\n"
+            "SEARXNG_BASE_URL=http://localhost:8888\n"
+            "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n"
+            "TTS_BASE_URL=http://172.18.0.5:8880\n"
+            "STT_BASE_URL=http://[fd00::5]:8000\n"
+            "POSTGRES_URI=postgresql://nymeria:secretpw@postgres:5432/nymeria\n"
+        ),
+    )
+
+    [warning] = _docker_env_warnings(database_backend="sqlite")
+    assert "LLM_BASE_URL (cli-proxy-api-latest)" in warning
+    assert "NYMERIA_API_URL (nymeria-api)" in warning
+    # Loopback, real domains, and literal IPs resolve outside the stack.
+    for key in ("SEARXNG_BASE_URL", "OPENROUTER_BASE_URL", "TTS_BASE_URL", "STT_BASE_URL"):
+        assert key not in warning
+    # An unused Postgres URI is not a problem; a used one is, credentials never shown.
+    assert "POSTGRES_URI" not in warning
+    [warning] = _docker_env_warnings(database_backend="postgres", postgres_uri="x")
+    assert "POSTGRES_URI (postgres)" in warning
+    assert "secretpw" not in warning
+
+
+def test_a_thin_client_hears_only_about_the_api_url_it_dials(tmp_path, monkeypatch):
+    # A host bot pointed at http://nymeria-api:8000 cannot reach the API; the
+    # server's LLM route and the local config's overrides are not its concern.
+    _root_with(
+        tmp_path,
+        monkeypatch,
+        local="LLM_MODEL=local-model\n",
+        docker=(
+            "NYMERIA_API_URL=http://nymeria-api:8000\n"
+            "LLM_BASE_URL=http://cli-proxy-api-latest:8317/v1\n"
+            "LLM_MODEL=docker-model\n"
+        ),
+    )
+
+    [warning] = _docker_env_warnings(server_process=False)
+    assert "NYMERIA_API_URL (nymeria-api)" in warning
+    assert "LLM_BASE_URL" not in warning and "LLM_MODEL" not in warning
+
+
+def test_a_thin_client_is_silent_about_urls_it_never_dials(tmp_path, monkeypatch):
+    _root_with(
+        tmp_path, monkeypatch, docker="LLM_BASE_URL=http://cli-proxy-api-latest:8317/v1\n"
+    )
+
+    assert _docker_env_warnings(server_process=False) == []
+    assert _docker_env_warnings() != []  # ...which the server still hears about
+
+
+def test_a_value_changed_after_loading_is_not_blamed_on_the_file(tmp_path, monkeypatch):
+    _root_with(tmp_path, monkeypatch, docker="LLM_BASE_URL=http://cli-proxy-api:8317\n")
+    os.environ["LLM_BASE_URL"] = "http://localhost:8318"
+
+    assert _docker_env_warnings() == []
+
+
+def test_silent_when_the_docker_config_is_clean_absent_or_in_a_container(tmp_path, monkeypatch):
+    _root_with(tmp_path, monkeypatch, docker="LLM_MODEL=only-here\n")
+    assert _docker_env_warnings() == []
+
+    settings_mod.reset_env_loading_state_for_tests()
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / ".env").write_text("LLM_MODEL=local\n", encoding="utf-8")
+    settings_mod.load_env_files_into_environ(other)
+    assert _docker_env_warnings() == []
+
+    settings_mod.reset_env_loading_state_for_tests()
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    (inside / ".env.docker").write_text("NYMERIA_API_URL=http://nymeria-api:8000\n", encoding="utf-8")
+    monkeypatch.setattr(settings_mod, "_in_container", lambda: True)
+    settings_mod.load_env_files_into_environ(inside)
+    assert _docker_env_warnings() == []

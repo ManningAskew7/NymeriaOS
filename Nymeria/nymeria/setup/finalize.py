@@ -679,6 +679,7 @@ def finalize(
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
+    _warn_shared_docker_root(console, config_path=config_path, for_docker=for_docker)
     if clone_free_docker:
         try:
             compose_path = _materialize_published_compose(root)
@@ -838,6 +839,31 @@ def finalize(
 
 
 # --- config writing ---------------------------------------------------------
+
+
+def _warn_shared_docker_root(console: Console, *, config_path: Path, for_docker: bool) -> None:
+    """A local config written beside another install's `.env.docker` (#101 entry 6).
+
+    Every process started from that root loads `.env.docker` AFTER the local
+    file (`ENV_FILENAMES` order), so the Docker install's values win and also
+    fill every key the local file leaves unset, container-only addresses
+    included. No load order serves two installs in one root, so this names the
+    one remedy that works rather than reordering. Warn, not block: the wizard
+    has written what was asked.
+    """
+    if for_docker:
+        return
+    root = config_path.parent
+    if not (root / ".env.docker").exists():
+        return
+    console.print(
+        f"\n[yellow]{escape(str(root))} also holds .env.docker (a Docker "
+        f"install's config). Every process started from this root loads it "
+        f"after {config_path.name}, so its values win and fill any key this "
+        "config leaves unset, container-only addresses included. Give this "
+        "install its own root: set NYMERIA_PROJECT_ROOT to another directory "
+        "in your shell profile, then run nymeria init again.[/yellow]"
+    )
 
 
 def write_config(
