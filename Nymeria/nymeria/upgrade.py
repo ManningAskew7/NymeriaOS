@@ -16,7 +16,14 @@ root, so a relocated ``UV_TOOL_DIR`` or ``PIPX_HOME`` still resolves):
 - uv tool, editable checkout: refused. An editable install tracks its source
   tree; the upgrade is ``git pull`` there, then a restart.
 - Anything else (a venv, a system pip): refused with the pip line, because
-  this process cannot know which interpreter the user means to change.
+  this process cannot know which interpreter the user means to change; inside
+  a container, refused with the image/checkout route instead.
+
+``--add-extra EXTRA`` (#422) adds optional extras through the same stop,
+install, restart flow: ``uv tool install --upgrade`` with the receipt's
+target plus the new extras (other extras, index, and an editable source
+kept), so it works for an editable install too. The setup wizard names it
+where it cannot install an extra itself (a Windows uv tool install).
 
 On Linux and macOS the upgrade runs in place (replacing files under a running
 process is safe there) and the background service restarts AFTER it, because a
@@ -73,9 +80,6 @@ WINDOWS_TASK_NAME = "NymeriaOS Slim"
 # (measured, pipx 1.17.8).
 INDEX_ENV = "NYMERIA_PYPI_SIMPLE_INDEX_URL"
 _URL_USERINFO = re.compile(r"(?<=://)[^/\s]+@")
-# The package managers' own configuration (UV_TOOL_DIR, PIPX_HOME, PIP_CERT,
-# index credentials): the user's settings, needed to find the right install.
-_PACKAGE_MANAGER_ENV_PREFIXES = ("UV_", "PIPX_", "PIP_")
 UV_TOOL = "uv-tool"
 UV_TOOL_EDITABLE = "uv-tool-editable"
 PIPX = "pipx"
@@ -170,6 +174,56 @@ def upgrade_argv(
     return None
 
 
+def _normalize_extra(name: str) -> str:
+    """PEP 685 extra normalization, as ``Provides-Extra`` spells them."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _with_index(target: list[str], index_url: Optional[str]) -> list[str]:
+    """``target`` with the credentialed ``index_url`` in place of the receipt's
+    credential-stripped copy of it (same flag kind), else added as ``--index``."""
+    if not index_url:
+        return target
+    bare = _URL_USERINFO.sub("", index_url).rstrip("/")
+    flag, rest, i = "--index", [], 0
+    while i < len(target):
+        if target[i] in ("--index", "--default-index") and i + 1 < len(target):
+            if target[i + 1].rstrip("/") == bare:
+                flag = target[i]
+            else:
+                rest += target[i : i + 2]
+            i += 2
+            continue
+        rest.append(target[i])
+        i += 1
+    return [flag, index_url, *rest]
+
+
+def install_argv(
+    shape: InstallShape,
+    extras: Sequence[str],
+    which: Callable[[str], Optional[str]] = shutil.which,
+    index_url: Optional[str] = None,
+) -> Optional[list[str]]:
+    """``uv tool install --upgrade`` adding ``extras`` to a uv tool install, or None.
+
+    No ``--force``: uv syncs the environment in place and records the extras
+    in the receipt; a rebuild would delete the environment under this very
+    process (the wizard's rule, ``setup/local_rag_install.py``).
+    """
+    if shape.kind not in (UV_TOOL, UV_TOOL_EDITABLE):
+        return None
+    uv = which("uv")
+    if not uv:
+        return None
+    from .setup.local_rag_install import uv_tool_install_target
+
+    target = uv_tool_install_target(shape.prefix, list(extras))
+    if target is None:
+        return None
+    return [uv, "tool", "install", "--upgrade", *_with_index(target, index_url)]
+
+
 def redact(text: str) -> str:
     """``text`` with any URL's ``user:password@`` replaced, for printing and logs."""
     return _URL_USERINFO.sub("***@", text)
@@ -187,13 +241,13 @@ def child_env(index_url: Optional[str] = None) -> dict[str, str]:
     script's ``Get-CimInstance`` lives in a ``$PSHOME`` module), and the index
     URL when one is in play. Never the deployment secrets ``run.py`` loaded.
     """
-    from .subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
+    from .subprocess_env import (
+        NETWORK_RUNTIME_PASSTHROUGH,
+        package_manager_env_names,
+        scrubbed_subprocess_env,
+    )
 
-    names = [
-        *NETWORK_RUNTIME_PASSTHROUGH,
-        "PSModulePath",
-        *(name for name in os.environ if name.upper().startswith(_PACKAGE_MANAGER_ENV_PREFIXES)),
-    ]
+    names = [*NETWORK_RUNTIME_PASSTHROUGH, "PSModulePath", *package_manager_env_names()]
     env = scrubbed_subprocess_env(names)
     if index_url:
         env[INDEX_ENV] = index_url
@@ -332,8 +386,27 @@ class UpgradeDeps:
     temp_dir: Callable[[], str] = tempfile.gettempdir
     getenv: Callable[[str], Optional[str]] = os.environ.get
     snapshot: Callable[[], frozenset[str]] = installed_distributions
+    in_container: Optional[Callable[[], bool]] = None
+    known_extras: Optional[Callable[[], Optional[frozenset[str]]]] = None
     active_service: Optional[Callable[[], object]] = None
     backend_answering: Optional[Callable[[], bool]] = None
+
+
+def _default_in_container() -> bool:
+    from .service_install import _in_container
+
+    return _in_container()
+
+
+def _default_known_extras() -> Optional[frozenset[str]]:
+    """The extras the installed package declares, or None when unreadable."""
+    from importlib import metadata
+
+    try:
+        declared = metadata.metadata(PACKAGE).get_all("Provides-Extra") or []
+    except metadata.PackageNotFoundError:
+        return None
+    return frozenset(_normalize_extra(name) for name in declared) or None
 
 
 def _default_active_service() -> object:
@@ -345,9 +418,16 @@ def _default_active_service() -> object:
         service_manager,
     )
 
-    if installed_artifact_path() is None:
+    artifact = installed_artifact_path()
+    if artifact is None:
         return None
     try:
+        # One backend unit per box, but a box can carry several installs (a dev
+        # checkout beside a published one): only a unit whose command line runs
+        # THIS environment's interpreter runs the code just upgraded.
+        # With the separator: `.../nymeriaos` must not match `.../nymeriaos-dev`.
+        if f"{Path(sys.prefix)}{os.sep}" not in artifact.read_text(encoding="utf-8", errors="replace"):
+            return None
         manager = service_manager()
         return manager if manager.status().running else None
     except (ServiceUnavailableError, ServiceInstallError, OSError):
@@ -373,7 +453,13 @@ def _confirm(deps: UpgradeDeps, yes: bool) -> bool:
     return answer in ("", "y", "yes")
 
 
-def upgrade_cli(*, yes: bool = False, dry_run: bool = False, deps: Optional[UpgradeDeps] = None) -> int:
+def upgrade_cli(
+    *,
+    yes: bool = False,
+    dry_run: bool = False,
+    add_extras: Sequence[str] = (),
+    deps: Optional[UpgradeDeps] = None,
+) -> int:
     """Back ``nymeria upgrade``. Returns the process exit code."""
     from . import __version__
 
@@ -381,7 +467,22 @@ def upgrade_cli(*, yes: bool = False, dry_run: bool = False, deps: Optional[Upgr
     shape = detect_install(deps.prefix)
     print(f"NymeriaOS {__version__} ({shape.describe()} at {shape.prefix})")
 
-    if shape.kind == UV_TOOL_EDITABLE:
+    extras = list(dict.fromkeys(_normalize_extra(name) for name in add_extras))
+    if extras:
+        known = (deps.known_extras or _default_known_extras)()
+        if known is None:
+            # uv accepts an unknown extra with only a warning and records it,
+            # so never pass one through unchecked.
+            print(f"Could not read which extras {PACKAGE} declares, so --add-extra cannot check them.")
+            return 2
+        unknown = [name for name in extras if name not in known]
+        if unknown:
+            print(f"{PACKAGE} has no {', '.join(unknown)} extra.")
+            print(f"  Available: {', '.join(sorted(known))}")
+            return 2
+    spec = f'"{PACKAGE}[{",".join(extras)}]"' if extras else PACKAGE
+
+    if shape.kind == UV_TOOL_EDITABLE and not extras:
         print(
             "This is an editable install: it runs the source in "
             f"{shape.checkout}, so upgrading means updating that checkout."
@@ -390,20 +491,52 @@ def upgrade_cli(*, yes: bool = False, dry_run: bool = False, deps: Optional[Upgr
         print("Then restart the backend (nymeria service restart, or start nymeria slim again).")
         return 2
     if shape.kind == OTHER:
+        if (deps.in_container or _default_in_container)():
+            print(
+                "This runs inside a container, whose image carries NymeriaOS, so it is "
+                "upgraded by updating the image, not from in here:"
+            )
+            print("  published image: docker compose pull, then docker compose up -d")
+            print("  built from a checkout: git pull there, then docker compose up -d --build")
+            return 2
         print(
             "This is not a uv tool or pipx install, so this command will not guess "
             "which environment to change. Upgrade it the way it was installed, e.g.:"
         )
-        print(f"  {sys.executable} -m pip install --upgrade {PACKAGE}")
+        print(f"  {sys.executable} -m pip install --upgrade {spec}")
+        return 2
+    if shape.kind == PIPX and extras:
+        print("pipx cannot add an extra in place; reinstall with it (name any extras added before, too):")
+        print(f"  pipx install --force {spec}")
         return 2
 
     index_url = deps.getenv(INDEX_ENV) or None
-    argv = upgrade_argv(shape, deps.which, index_url)
+    if extras:
+        argv = install_argv(shape, extras, deps.which, index_url)
+        if argv is None and deps.which("uv"):
+            # The receipt records something a rebuilt requirement cannot carry
+            # (a directory, git, or url source, constraints, or uv options
+            # beyond an index); uv would silently drop it, so do not guess.
+            print(
+                f"This install's uv receipt ({shape.prefix / 'uv-receipt.toml'}) records settings "
+                "this command cannot carry over (a local, git, or URL source, constraints, or uv "
+                "options beyond an index), so it will not rebuild the install for you."
+            )
+            print(
+                "  Add the extra by hand, repeating how you installed NymeriaOS plus the extra, "
+                f"with nothing running: uv tool install --upgrade <your options> {spec}"
+            )
+            return 2
+    else:
+        argv = upgrade_argv(shape, deps.which, index_url)
     if argv is None:
-        tool = "uv" if shape.kind == UV_TOOL else "pipx"
-        manual = f"uv tool upgrade {PACKAGE}" if tool == "uv" else f"pipx upgrade {PACKAGE}"
+        tool = "pipx" if shape.kind == PIPX else "uv"
+        if extras:
+            manual = f"uv tool install --upgrade {spec}"
+        else:
+            manual = f"uv tool upgrade {PACKAGE}" if tool == "uv" else f"pipx upgrade {PACKAGE}"
         if index_url:
-            manual += f' {"--index" if tool == "uv" else "--index-url"} "${INDEX_ENV}"'
+            manual += f' {"--index-url" if tool == "pipx" else "--index"} "${INDEX_ENV}"'
         print(f"`{tool}` is not on PATH, so the upgrade cannot run from here.")
         print(f"  Open a terminal where `{tool}` works and run: {manual}")
         return 2
@@ -412,11 +545,19 @@ def upgrade_cli(*, yes: bool = False, dry_run: bool = False, deps: Optional[Upgr
 
     if deps.platform == "win32":
         return _upgrade_windows(argv, shape, yes=yes, dry_run=dry_run, deps=deps, index_url=index_url)
-    return _upgrade_in_place(argv, yes=yes, dry_run=dry_run, deps=deps, index_url=index_url)
+    return _upgrade_in_place(
+        argv, yes=yes, dry_run=dry_run, deps=deps, index_url=index_url, extras=extras
+    )
 
 
 def _upgrade_in_place(
-    argv: list[str], *, yes: bool, dry_run: bool, deps: UpgradeDeps, index_url: Optional[str]
+    argv: list[str],
+    *,
+    yes: bool,
+    dry_run: bool,
+    deps: UpgradeDeps,
+    index_url: Optional[str],
+    extras: Sequence[str] = (),
 ) -> int:
     from . import __version__
 
@@ -426,7 +567,11 @@ def _upgrade_in_place(
     if service is not None:
         print("Then restart the background service so it runs the new version.")
     if foreground:
-        print("A backend answers on this install's port outside the service: restart it after the upgrade.")
+        # A port cannot say which install serves it (a box can carry several).
+        print(
+            "A backend answers on the configured port outside the background service; "
+            "if it runs this install, restart it after the upgrade."
+        )
     if dry_run:
         print("Dry run: nothing changed.")
         return 0
@@ -444,16 +589,20 @@ def _upgrade_in_place(
 
     after = deps.snapshot()
     old, new = _package_version(before), _package_version(after)
+    named = f"the {', '.join(extras)} extra{'s' if len(extras) > 1 else ''}"
     if before and before == after:
-        print(f"Already up to date ({old or __version__}).")
+        suffix = f"; {named} {'were' if len(extras) > 1 else 'was'} already installed" if extras else ""
+        print(f"Already up to date ({old or __version__}){suffix}.")
         return 0
     if not before and not after:
         # Could not read the environment: assume it changed, restarting is safe.
         print("Upgrade finished (run nymeria --version to see the version).")
     elif new and new != old:
         print(f"Upgraded {PACKAGE} {old or __version__} -> {new}.")
-    else:
+    elif not extras:
         print(f"{PACKAGE} {new or old or __version__} is current; some of its dependencies were upgraded.")
+    if extras:
+        print(f"Added {named}.")
 
     if service is not None:
         try:
@@ -464,7 +613,7 @@ def _upgrade_in_place(
             return 1
         print("Restarted the background service.")
     if foreground:
-        print("Restart the backend that is running in another terminal to pick up the new version.")
+        print("If the backend on the configured port runs this install, restart it to pick up the new version.")
     return 0
 
 

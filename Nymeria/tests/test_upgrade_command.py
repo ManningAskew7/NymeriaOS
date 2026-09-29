@@ -27,6 +27,8 @@ def _tool_prefix(
     kind: str = "uv",
     package: str = "nymeriaos",
     shim: str | None = None,
+    extras: tuple[str, ...] = (),
+    index: str | None = None,
 ) -> Path:
     # Deliberately not under a `uv/tools` or `pipx/venvs` path: detection must
     # come from the marker file, as with a relocated UV_TOOL_DIR or PIPX_HOME.
@@ -34,13 +36,16 @@ def _tool_prefix(
     prefix.mkdir(parents=True)
     if kind == "uv":
         extra = f', editable = "{editable}"' if editable else ""
+        if extras:
+            extra += ", extras = [" + ", ".join(f'"{e}"' for e in extras) + "]"
         entry = (
             f"\nentrypoints = [{{ name = \"nymeria\", install-path = '{shim}', from = \"nymeriaos\" }}]"
             if shim
             else ""
         )
+        options = f'\n[tool.options]\nindex = [{{ url = "{index}", default = false }}]' if index else ""
         (prefix / "uv-receipt.toml").write_text(
-            f'[tool]\nrequirements = [{{ name = "{package}"{extra} }}]{entry}\n', encoding="utf-8"
+            f'[tool]\nrequirements = [{{ name = "{package}"{extra} }}]{entry}{options}\n', encoding="utf-8"
         )
     elif kind == "pipx":
         (prefix / "pipx_metadata.json").write_text(
@@ -74,6 +79,7 @@ def _deps(
     popen_calls: list | None = None,
     temp: Path | None = None,
     env: dict | None = None,
+    container: bool = False,
 ):
     calls = calls if calls is not None else []
     order: list = []
@@ -95,6 +101,8 @@ def _deps(
         temp_dir=lambda: str(temp or prefix),
         getenv=(env or {}).get,  # never the developer's own environment
         snapshot=lambda: next(shots),
+        in_container=lambda: container,
+        known_extras=lambda: frozenset({"local-rag", "voice-local", "discord"}),
         active_service=lambda: service,
         backend_answering=lambda: answering,
     )
@@ -172,7 +180,9 @@ def test_a_failed_upgrade_restarts_nothing_and_says_what_still_runs(tmp_path: Pa
 def test_a_foreground_backend_gets_a_restart_hint(tmp_path: Path, capsys) -> None:
     deps, _ = _deps(_tool_prefix(tmp_path), answering=True)
     assert up.upgrade_cli(yes=True, deps=deps) == 0
-    assert "Restart the backend that is running in another terminal" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "if it runs this install, restart it after the upgrade" in out
+    assert "restart it to pick up the new version" in out
 
 
 def test_a_service_restart_failure_is_reported_not_hidden(tmp_path: Path, capsys) -> None:
@@ -192,12 +202,17 @@ def test_the_upgrade_never_inherits_the_deployment_secrets(tmp_path: Path, monke
         "UV_TOOL_DIR": "/opt/uv-tools",
         "PIPX_HOME": "/opt/pipx",
         "HTTPS_PROXY": "http://proxy:3128",
+        # Match the prefix but must not pass: an interpreter request that
+        # disagrees with the env makes uv rebuild it under this process.
+        "UV_PYTHON": "3.12",
+        "UV_PUBLISH_TOKEN": "pypi-token",
     }.items():
         monkeypatch.setenv(name, value)
     deps, order = _deps(_tool_prefix(tmp_path))
     assert up.upgrade_cli(yes=True, deps=deps) == 0
     env = order[0]["env"]
     assert not {"NYMERIA_SECRETS_KEY", "NYMERIA_SERVICE_TOKEN", "OPENAI_API_KEY"} & set(env)
+    assert not {"UV_PYTHON", "UV_PUBLISH_TOKEN"} & set(env)
     assert env["UV_TOOL_DIR"] == "/opt/uv-tools" and env["PIPX_HOME"] == "/opt/pipx"
     assert env["HTTPS_PROXY"] == "http://proxy:3128"
 
@@ -217,6 +232,17 @@ def test_pipx_install_runs_pipx_upgrade(tmp_path: Path) -> None:
     deps, _ = _deps(_tool_prefix(tmp_path, kind="pipx"), calls=calls)
     assert up.upgrade_cli(yes=True, deps=deps) == 0
     assert calls == [["/bin/pipx", "upgrade", "nymeriaos"]]
+
+
+def test_inside_a_container_the_refusal_names_the_image_route(tmp_path: Path, capsys) -> None:
+    # pip-upgrading a container's package in place is lost on the next recreate.
+    calls: list = []
+    deps, _ = _deps(tmp_path / "venv", calls=calls, container=True)
+    assert up.upgrade_cli(yes=True, deps=deps) == 2
+    out = capsys.readouterr().out
+    assert calls == []
+    assert "docker compose pull" in out and "--build" in out
+    assert "pip install" not in out
 
 
 def test_unknown_install_is_refused_with_the_pip_line(tmp_path: Path, capsys) -> None:
@@ -309,10 +335,11 @@ def test_the_windows_script_stops_before_upgrading_and_restarts_only_a_backend()
 def test_the_cli_command_is_registered_and_passes_its_flags(monkeypatch) -> None:
     seen = {}
     monkeypatch.setattr("nymeria.upgrade.upgrade_cli", lambda **kw: seen.update(kw) or 0)
-    assert run.run_upgrade(run.build_parser().parse_args(["upgrade", "--yes", "--dry-run"])) == 0
-    assert seen == {"yes": True, "dry_run": True}
+    args = ["upgrade", "--yes", "--dry-run", "--add-extra", "local-rag", "--add-extra", "discord"]
+    assert run.run_upgrade(run.build_parser().parse_args(args)) == 0
+    assert seen == {"yes": True, "dry_run": True, "add_extras": ["local-rag", "discord"]}
     assert run.run_upgrade(run.build_parser().parse_args(["upgrade"])) == 0
-    assert seen == {"yes": False, "dry_run": False}
+    assert seen == {"yes": False, "dry_run": False, "add_extras": []}
     assert run.COMMANDS["upgrade"].exits is True
 
 
@@ -513,3 +540,164 @@ def test_powershell_captures_a_native_upgrade_command_and_its_exit_code(tmp_path
     # A line of its own: the "Running: ..." echo also contains the words.
     assert "uv-said-this" in [line.strip() for line in out.splitlines()]
     assert "The upgrade failed (exit 3)" in out
+
+
+
+# --- #422: `--add-extra` ------------------------------------------------------
+
+
+def test_add_extra_installs_it_keeping_the_receipts_extras_then_restarts(tmp_path: Path, capsys) -> None:
+    # X1: one `uv tool install --upgrade`, no --force (it runs from inside the env).
+    service = _Service()
+    calls: list = []
+    deps, order = _deps(
+        _tool_prefix(tmp_path, extras=("discord",)), service=service, calls=calls,
+        snapshots=(_OLD, _OLD | {"sentence_transformers-5.0.0.dist-info"}),
+    )
+    assert up.upgrade_cli(yes=True, add_extras=["local_rag"], deps=deps) == 0
+    assert calls == [["/bin/uv", "tool", "install", "--upgrade", "nymeriaos[discord,local-rag]"]]
+    assert order[0]["restarts_so_far"] == 0 and service.restarts == 1
+    out = capsys.readouterr().out
+    assert "Added the local-rag extra." in out
+    assert "dependencies were upgraded" not in out
+
+
+def test_add_extra_on_an_editable_install_keeps_it_editable(tmp_path: Path) -> None:
+    # X2: plain upgrade refuses an editable install, adding an extra does not.
+    calls: list = []
+    deps, _ = _deps(_tool_prefix(tmp_path, editable="/src/Nymeria"), calls=calls)
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 0
+    assert calls == [["/bin/uv", "tool", "install", "--upgrade", "--editable", "/src/Nymeria[local-rag]"]]
+
+
+def test_an_extra_already_present_is_reported_as_such(tmp_path: Path, capsys) -> None:
+    service = _Service()
+    deps, _ = _deps(_tool_prefix(tmp_path, extras=("local-rag",)), service=service, snapshots=(_OLD, _OLD))
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 0
+    assert service.restarts == 0
+    assert "the local-rag extra was already installed" in capsys.readouterr().out
+
+
+def test_an_unknown_extra_is_refused_with_the_real_ones(tmp_path: Path, capsys) -> None:
+    # X3
+    calls: list = []
+    deps, _ = _deps(_tool_prefix(tmp_path), calls=calls)
+    assert up.upgrade_cli(yes=True, add_extras=["local-rga"], deps=deps) == 2
+    out = capsys.readouterr().out
+    assert calls == []
+    assert "no local-rga extra" in out and "discord, local-rag, voice-local" in out
+
+
+def test_add_extra_on_pipx_is_refused_with_the_reinstall_line(tmp_path: Path, capsys) -> None:
+    # X4
+    calls: list = []
+    deps, _ = _deps(_tool_prefix(tmp_path, kind="pipx"), calls=calls)
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 2
+    assert calls == []
+    assert 'pipx install --force "nymeriaos[local-rag]"' in capsys.readouterr().out
+
+
+def test_add_extra_on_windows_goes_through_the_detached_script(tmp_path: Path) -> None:
+    # X5
+    calls: list = []
+    popen_calls: list = []
+    deps, _ = _deps(
+        _tool_prefix(tmp_path), platform="win32", calls=calls, popen_calls=popen_calls, temp=tmp_path
+    )
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 0
+    assert calls == []
+    [(argv, _kwargs)] = popen_calls
+    script = Path(argv[5]).read_text(encoding="utf-8-sig")
+    assert "& '/bin/uv' 'tool' 'install' '--upgrade' 'nymeriaos[local-rag]'" in script
+
+
+def test_add_extra_swaps_in_the_credentialed_index_for_the_receipts_stripped_one(tmp_path: Path) -> None:
+    # The receipt kept the URL without its password; passing both would leave
+    # uv two copies of one index, one of which cannot authenticate.
+    calls: list = []
+    deps, _ = _deps(
+        _tool_prefix(tmp_path, index="https://pypi.example.com/simple/"), calls=calls,
+        env={up.INDEX_ENV: _INDEX},
+    )
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 0
+    assert calls == [["/bin/uv", "tool", "install", "--upgrade", "--index", _INDEX, "nymeriaos[local-rag]"]]
+
+
+def test_add_extra_keeps_an_unrelated_receipt_index(tmp_path: Path) -> None:
+    calls: list = []
+    deps, _ = _deps(_tool_prefix(tmp_path, index="https://mirror.corp/simple/"), calls=calls)
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 0
+    assert calls[0][-3:] == ["--index", "https://mirror.corp/simple/", "nymeriaos[local-rag]"]
+    # ...and alongside the credentialed one, only the matching copy is replaced.
+    calls.clear()
+    deps, _ = _deps(
+        _tool_prefix(tmp_path / "b", index="https://mirror.corp/simple/"), calls=calls,
+        env={up.INDEX_ENV: _INDEX},
+    )
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 0
+    assert calls[0][4:] == ["--index", _INDEX, "--index", "https://mirror.corp/simple/", "nymeriaos[local-rag]"]
+
+
+def test_the_real_known_extras_come_from_package_metadata() -> None:
+    # The default seam, unfaked (None only where nymeriaos is not installed).
+    known = up._default_known_extras()
+    assert known is None or {"local-rag", "voice-local"} <= known
+
+
+@pytest.mark.parametrize("which", ["ours", "other", "sibling"])
+def test_only_a_service_running_this_install_is_restarted(tmp_path: Path, monkeypatch, which: str) -> None:
+    # The default seam, over a real unit file: a second install on the box
+    # (a dev checkout beside a published one) must not restart the other's unit.
+    import nymeria.service_install as si
+
+    env_dir = tmp_path / "tools" / "nymeriaos"
+    other = tmp_path / "tools" / "other-install"
+    unit = tmp_path / "nymeria.service"
+    # `nymeriaos-dev` starts with this env's path: a bare substring test matches it.
+    runs = {"ours": env_dir, "other": other, "sibling": env_dir.with_name("nymeriaos-dev")}[which]
+    unit.write_text(f"[Service]\nExecStart={runs}/bin/python /home/u/.local/bin/nymeria slim\n", encoding="utf-8")
+    manager = type("M", (), {"status": lambda self: type("S", (), {"running": True})()})()
+    monkeypatch.setattr(si, "installed_artifact_path", lambda *a, **k: unit)
+    monkeypatch.setattr(si, "service_manager", lambda *a, **k: manager)
+    monkeypatch.setattr(up.sys, "prefix", str(env_dir))
+    assert (up._default_active_service() is manager) is (which == "ours")
+
+
+
+def test_add_extra_refuses_when_the_declared_extras_cannot_be_read(tmp_path: Path, capsys) -> None:
+    # uv would accept a typo with a warning and record it in the receipt.
+    calls: list = []
+    deps, _ = _deps(_tool_prefix(tmp_path), calls=calls)
+    deps.known_extras = lambda: None
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 2
+    assert calls == [] and "cannot check them" in capsys.readouterr().out
+
+
+def test_add_extra_keeps_a_default_index_a_default_index(tmp_path: Path) -> None:
+    # `--default-index` replaces PyPI; demoting it to `--index` would let PyPI
+    # back in ahead of nothing.
+    root = tmp_path / "tools-dir" / "nymeriaos"
+    root.mkdir(parents=True)
+    (root / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{ name = "nymeriaos" }]\n'
+        '[tool.options]\nindex = [{ url = "https://pypi.example.com/simple/", default = true }]\n',
+        encoding="utf-8",
+    )
+    calls: list = []
+    deps, _ = _deps(root, calls=calls, env={up.INDEX_ENV: _INDEX})
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 0
+    assert calls[0][4:] == ["--default-index", _INDEX, "nymeriaos[local-rag]"]
+
+
+def test_add_extra_refuses_a_receipt_it_cannot_carry_over(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "tools-dir" / "nymeriaos"
+    root.mkdir(parents=True)
+    (root / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{ name = "nymeriaos" }, { name = "plug", git = "https://g/p" }]\n',
+        encoding="utf-8",
+    )
+    calls: list = []
+    deps, _ = _deps(root, calls=calls)
+    assert up.upgrade_cli(yes=True, add_extras=["local-rag"], deps=deps) == 2
+    assert calls == []
+    assert "cannot carry over" in capsys.readouterr().out

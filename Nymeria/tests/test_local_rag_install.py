@@ -642,3 +642,138 @@ def test_docker_full_stack_hint_names_the_build_flag(monkeypatch, force_missing)
     assert calls == []
     assert f"{lri.DOCKER_LOCAL_RAG_ENV}=1" in console.text
     assert "--build" in console.text
+
+
+# --- #422: one command that closes NymeriaOS around the install -------------
+
+
+def test_a_relocated_uv_tool_dir_is_still_a_uv_tool_install(tmp_path, monkeypatch):
+    # UV_TOOL_DIR=D:\tools leaves no `uv/tools` in the path; the receipt does.
+    monkeypatch.setattr(lri.shutil, "which", lambda name: "/usr/bin/uv")
+    prefix = tmp_path / "D-tools" / "nymeriaos"
+    prefix.mkdir(parents=True)
+    assert not lri._is_uv_tool_prefix(prefix)
+    (prefix / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{ name = "nymeriaos" }]\n', encoding="utf-8"
+    )
+    assert lri._is_uv_tool_prefix(prefix)
+    assert lri.build_install_command(prefix=str(prefix)) == [
+        "uv", "tool", "install", "nymeriaos[local-rag]",
+    ]
+
+
+def test_the_receipt_target_takes_several_extras_and_keeps_existing_ones(tmp_path):
+    prefix = _uv_prefix(
+        tmp_path, '[tool]\nrequirements = [{ name = "nymeriaos", extras = ["discord"] }]\n'
+    )
+    assert lri.uv_tool_install_target(prefix, ["local-rag", "discord", "voice-local"]) == [
+        "nymeriaos[discord,local-rag,voice-local]"
+    ]
+
+
+def test_windows_defer_names_the_one_step_command(monkeypatch, force_missing, tty, tmp_path):
+    """A Windows uv tool install gets `nymeria upgrade --add-extra local-rag`,
+    which closes NymeriaOS itself, with the raw uv line kept as the fallback."""
+    prefix = _uv_prefix(tmp_path, '[tool]\nrequirements = [{ name = "nymeriaos" }]\n')
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(lri.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(
+        lri, "in_process_install_blocked", lambda **k: "Windows keeps the files locked."
+    )
+    calls = []
+    monkeypatch.setattr(finalize_mod.subprocess, "run", lambda *a, **k: calls.append(a))
+    console = _FakeConsole(answer="")
+    _run(console)
+    assert calls == [] and console.input_prompts == []
+    assert "nymeria upgrade --add-extra local-rag" in console.text
+    assert "uv tool install --force" in console.text  # the by-hand fallback
+
+
+def test_the_in_process_install_keeps_uv_settings_and_drops_secrets(
+    monkeypatch, force_missing, tty
+):
+    # Without UV_TOOL_DIR uv would install a second copy in its default dir.
+    monkeypatch.setattr(lri, "build_install_command", lambda **k: ["uv", "tool", "install", "x"])
+    monkeypatch.setenv("UV_TOOL_DIR", "/opt/uv-tools")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", "vault-key")
+    captured = {}
+
+    def fake_run(command, *a, **k):
+        captured["env"] = k["env"]
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    _run(_FakeConsole(answer=""))
+    assert captured["env"]["UV_TOOL_DIR"] == "/opt/uv-tools"
+    assert captured["env"]["HTTPS_PROXY"] == "http://proxy:3128"
+    assert "NYMERIA_SECRETS_KEY" not in captured["env"]
+
+
+@pytest.mark.parametrize("uv_tool", [True, False])
+def test_the_voice_hint_offers_the_one_step_command_on_a_uv_tool_install(
+    monkeypatch, tmp_path, uv_tool
+):
+    import nymeria.core.voice_local as voice_local
+
+    monkeypatch.setattr(voice_local, "local_tts_importable", lambda: False)
+    if uv_tool:
+        prefix = _uv_prefix(tmp_path, '[tool]\nrequirements = [{ name = "nymeriaos" }]\n')
+    else:
+        prefix = tmp_path / "venv"
+        prefix.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    state = WizardState()
+    state.extras["tts"] = "kokoro"
+    console = _FakeConsole()
+    finalize_mod._print_voice_hints(state, console)
+    assert ("nymeria upgrade --add-extra voice-local" in console.text) is uv_tool
+    assert ("pip install" in console.text) is (not uv_tool)
+
+
+def test_the_receipt_target_carries_with_packages_pins_and_python(tmp_path):
+    # The shape uv 0.11.10 writes for `uv tool install nymeriaos==0.2.0b6
+    # --with cowsay==6.1 --with-editable ./plug --python 3.11`: dropping any
+    # of it would uninstall the plugin, lift the pin, or forget the Python.
+    prefix = _uv_prefix(
+        tmp_path,
+        "[tool]\n"
+        "requirements = [\n"
+        '    { name = "nymeriaos", extras = ["discord"], specifier = "==0.2.0b6" },\n'
+        '    { name = "cowsay", specifier = "==6.1" },\n'
+        '    { name = "plugx", editable = "/src/plug" },\n'
+        "]\n"
+        'python = "3.11"\n',
+    )
+    assert lri.uv_tool_install_target(prefix, ["local-rag"]) == [
+        "--python", "3.11",
+        "--with", "cowsay==6.1",
+        "--with-editable", "/src/plug",
+        "nymeriaos[discord,local-rag]==0.2.0b6",
+    ]
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        # A local (non-editable) source: rebuilt by name it would become the index wheel.
+        '[tool]\nrequirements = [{ name = "nymeriaos", directory = "/src/Nymeria" }]\n',
+        '[tool]\nrequirements = [{ name = "nymeriaos" }, { name = "plug", git = "https://g/p" }]\n',
+        '[tool]\nrequirements = [{ name = "nymeriaos" }, { name = "x", marker = "sys_platform == \'win32\'" }]\n',
+        '[tool]\nrequirements = [{ name = "nymeriaos" }]\nconstraints = [{ name = "httpx", specifier = "<1" }]\n',
+        '[tool]\nrequirements = [{ name = "nymeriaos" }]\n[tool.options]\nprerelease = "allow"\n',
+    ],
+)
+def test_a_receipt_setting_that_cannot_be_carried_refuses_the_rebuild(tmp_path, receipt):
+    prefix = _uv_prefix(tmp_path, receipt)
+    assert lri.uv_tool_install_target(prefix, ["local-rag"]) is None
+
+
+def test_add_extra_command_is_offered_only_for_a_uv_tool_install(tmp_path):
+    relocated = tmp_path / "D-tools" / "nymeriaos"
+    relocated.mkdir(parents=True)
+    (relocated / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{ name = "nymeriaos" }]\n', encoding="utf-8"
+    )
+    assert lri.add_extra_command("local-rag", prefix=str(relocated)) == "nymeria upgrade --add-extra local-rag"
+    assert lri.add_extra_command("local-rag", prefix=str(tmp_path / "venv")) is None

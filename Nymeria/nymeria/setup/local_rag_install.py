@@ -45,7 +45,7 @@ import shutil
 import sys
 import tomllib
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 # Matches the extra defined in pyproject's [project.optional-dependencies].
 LOCAL_RAG_EXTRA = "local-rag"
@@ -96,10 +96,12 @@ def local_rag_importable() -> bool:
 def _is_uv_tool_prefix(prefix: Path) -> bool:
     """True when the running interpreter lives in a uv-managed tool environment.
 
-    uv installs each tool under ``.../uv/tools/<name>``; mirrors the detection in
-    ``finalize._print_voice_hints``.
+    uv installs each tool under ``.../uv/tools/<name>`` and leaves its receipt
+    at the environment root; the receipt also covers a relocated
+    ``UV_TOOL_DIR`` whose path carries no ``uv/tools`` (the same marker
+    ``nymeria upgrade`` reads). Mirrors ``finalize._print_voice_hints``.
     """
-    return "uv/tools" in prefix.as_posix()
+    return "uv/tools" in prefix.as_posix() or (prefix / "uv-receipt.toml").is_file()
 
 
 def _pip_available() -> bool:
@@ -132,19 +134,46 @@ def _uv_receipt_index_flags(tool: dict) -> list[str]:
     return flags
 
 
+# What the reconstruction can carry over from a receipt. Anything else (a
+# `directory`/`git`/`url` source, constraints or overrides, uv options beyond
+# an index such as `prerelease`) makes it return None: uv syncs the tool to
+# exactly the requirement it is given and rewrites the receipt, so a silently
+# dropped setting is a silent downgrade (a `--with` plugin UNINSTALLED, a pin
+# lifted), measured on uv 0.11.10. The caller then prints a by-hand line.
+_RECEIPT_TOOL_KEYS = frozenset({"requirements", "python", "entrypoints", "options"})
+_RECEIPT_OPTION_KEYS = frozenset({"index"})
+# A requirement row this can re-express; any other key (a `directory`, `git`,
+# or `url` source, a marker, a per-requirement index) is not carried.
+_RECEIPT_REQUIREMENT_KEYS = frozenset({"name", "extras", "specifier", "editable"})
+
+
+def _receipt_requirement_spec(req: dict, extras: Sequence[str]) -> Optional[str]:
+    """``name[extras]specifier`` (or ``path[extras]`` for an editable), or None
+    for a source this reconstruction cannot express."""
+    if req.keys() - _RECEIPT_REQUIREMENT_KEYS:
+        return None
+    spec = f"[{','.join(extras)}]" if extras else ""
+    editable = req.get("editable")
+    if editable:
+        return f"{editable}{spec}"
+    return f"{req['name']}{spec}{req.get('specifier') or ''}"
+
+
 def _uv_receipt_install_target(
-    prefix: Path, extra: str = LOCAL_RAG_EXTRA
+    prefix: Path, extra: str | Sequence[str] = LOCAL_RAG_EXTRA
 ) -> Optional[list[str]]:
     """Reconstruct the uv tool install target (with ``extra`` added to the extras
-    the receipt already records, plus any custom index from the receipt) so a
-    reinstall preserves how it was originally installed: an editable dev
-    checkout stays editable; a published wheel stays the named package; a
-    private-index install keeps its index; ``nymeriaos[discord]`` keeps discord
-    (uv syncs the environment exactly to the new requirement and rewrites the
-    receipt, so an extra left off here would be uninstalled).
+    the receipt already records) so a reinstall preserves how it was originally
+    installed: an editable dev checkout stays editable; a published wheel stays
+    the named package with its version pin; a private-index install keeps its
+    index; ``nymeriaos[discord]`` keeps discord; a `--with` package stays
+    (`--with` / `--with-editable`); a recorded Python stays (`--python`). uv
+    syncs the environment exactly to the new requirement and rewrites the
+    receipt, so anything left off here would be uninstalled or forgotten.
 
     Returns the argv tail that follows ``uv tool install``, or ``None`` when
-    the receipt is unreadable or does not describe the nymeriaos tool.
+    the receipt is unreadable, does not describe the nymeriaos tool, or
+    records something this cannot carry over (``_RECEIPT_*_KEYS``).
     """
     receipt = prefix / "uv-receipt.toml"
     try:
@@ -152,18 +181,57 @@ def _uv_receipt_install_target(
     except (OSError, ValueError):
         return None
     tool = data.get("tool") or {}
-    for req in tool.get("requirements") or []:
-        if not isinstance(req, dict) or req.get("name") != PROJECT_NAME:
+    if any(tool.get(key) for key in tool.keys() - _RECEIPT_TOOL_KEYS):
+        return None
+    if any((tool.get("options") or {}).get(key) for key in (tool.get("options") or {}).keys() - _RECEIPT_OPTION_KEYS):
+        return None
+    requirements = [req for req in tool.get("requirements") or [] if isinstance(req, dict)]
+    main = next((req for req in requirements if req.get("name") == PROJECT_NAME), None)
+    if main is None:
+        return None
+    extras = [e for e in (main.get("extras") or []) if isinstance(e, str)]
+    for wanted in [extra] if isinstance(extra, str) else extra:
+        if wanted not in extras:
+            extras.append(wanted)
+    target_spec = _receipt_requirement_spec(main, extras)
+    if target_spec is None:
+        return None
+    with_flags: list[str] = []
+    for req in requirements:
+        if req is main:
             continue
-        extras = [e for e in (req.get("extras") or []) if isinstance(e, str)]
-        if extra not in extras:
-            extras.append(extra)
-        spec = f"[{','.join(extras)}]"
-        editable = req.get("editable")
-        target = (
-            ["--editable", f"{editable}{spec}"] if editable else [f"{PROJECT_NAME}{spec}"]
-        )
-        return [*_uv_receipt_index_flags(tool), *target]
+        own = [e for e in (req.get("extras") or []) if isinstance(e, str)]
+        spec = _receipt_requirement_spec(req, own) if req.get("name") else None
+        if spec is None:
+            return None
+        with_flags += ["--with-editable" if req.get("editable") else "--with", spec]
+    python = tool.get("python")
+    python_flags = ["--python", str(python)] if python else []
+    target = ["--editable", target_spec] if main.get("editable") else [target_spec]
+    return [*_uv_receipt_index_flags(tool), *python_flags, *with_flags, *target]
+
+
+def uv_tool_install_target(prefix: Path, extras: Sequence[str]) -> Optional[list[str]]:
+    """The ``uv tool install`` argv tail that adds ``extras`` to the install at
+    ``prefix``, keeping everything the receipt records (see
+    ``_uv_receipt_install_target``).
+
+    ``None`` when the receipt is unreadable, names no nymeriaos requirement, or
+    records a setting that cannot be carried over. Backs ``nymeria upgrade
+    --add-extra``.
+    """
+    return _uv_receipt_install_target(prefix, extras)
+
+
+def add_extra_command(extra: str, *, prefix: Optional[str] = None) -> Optional[str]:
+    """``nymeria upgrade --add-extra <extra>`` when that command can add it here.
+
+    It can for a uv tool install (published or editable), where it also closes
+    a running NymeriaOS first on Windows; ``None`` for any other shape, whose
+    callers keep their pip line.
+    """
+    if _is_uv_tool_prefix(Path(prefix or sys.prefix)):
+        return f"nymeria upgrade --add-extra {extra}"
     return None
 
 
@@ -326,5 +394,7 @@ __all__ = [
     "build_install_command",
     "in_process_install_blocked",
     "extra_install_hint",
+    "add_extra_command",
+    "uv_tool_install_target",
     "manual_install_hint",
 ]

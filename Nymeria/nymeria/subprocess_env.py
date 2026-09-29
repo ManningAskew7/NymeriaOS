@@ -94,6 +94,39 @@ DOCKER_CLI_PASSTHROUGH: tuple[str, ...] = (
 )
 
 
+# The package managers' own configuration: UV_TOOL_DIR / UV_TOOL_BIN_DIR /
+# UV_CACHE_DIR, PIPX_HOME, PIP_CERT, index credentials the user configured.
+# Not Nymeria secrets, and a uv/pipx/pip child that loses them acts on the
+# WRONG install (a relocated UV_TOOL_DIR sends `uv tool install` to the
+# default dir, creating a second copy). Only the spawns that run a package
+# manager on the user's behalf opt these in.
+PACKAGE_MANAGER_ENV_PREFIXES: tuple[str, ...] = ("UV_", "PIPX_", "PIP_")
+# Never passed, though they match: an interpreter request that disagrees with
+# an existing tool environment's Python makes uv REBUILD that environment
+# (measured, uv 0.11.10: `UV_PYTHON=3.12` over a 3.11 tool env), deleting it
+# under the process that spawned uv; moving a tool to another Python is a
+# deliberate `uv tool upgrade --python` by hand. Publish credentials have no
+# business in a package build.
+PACKAGE_MANAGER_ENV_EXCLUDED: frozenset[str] = frozenset(
+    {"UV_PYTHON", "UV_MANAGED_PYTHON", "UV_NO_MANAGED_PYTHON", "UV_PYTHON_PREFERENCE"}
+)
+_PACKAGE_MANAGER_ENV_EXCLUDED_PREFIXES: tuple[str, ...] = ("UV_PUBLISH_",)
+
+
+def package_manager_env_names() -> list[str]:
+    """The ``PACKAGE_MANAGER_ENV_PREFIXES`` variables currently set, for
+    ``extra_names``, minus ``PACKAGE_MANAGER_ENV_EXCLUDED`` and publish tokens."""
+    names = []
+    for name in os.environ:
+        upper = name.upper()
+        if not upper.startswith(PACKAGE_MANAGER_ENV_PREFIXES):
+            continue
+        if upper in PACKAGE_MANAGER_ENV_EXCLUDED or upper.startswith(_PACKAGE_MANAGER_ENV_EXCLUDED_PREFIXES):
+            continue
+        names.append(name)
+    return names
+
+
 def scrubbed_subprocess_env(extra_names: Iterable[str] = ()) -> dict[str, str]:
     """Return an allowlisted copy of ``os.environ`` for a child process.
 
@@ -111,6 +144,9 @@ __all__ = [
     "BASE_SUBPROCESS_ENV_PASSTHROUGH",
     "DOCKER_CLI_PASSTHROUGH",
     "NETWORK_RUNTIME_PASSTHROUGH",
+    "PACKAGE_MANAGER_ENV_EXCLUDED",
+    "PACKAGE_MANAGER_ENV_PREFIXES",
     "WINDOWS_RUNTIME_PASSTHROUGH",
+    "package_manager_env_names",
     "scrubbed_subprocess_env",
 ]

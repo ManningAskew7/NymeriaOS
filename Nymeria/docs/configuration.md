@@ -1706,7 +1706,8 @@ The watchdog is a supervisory sub-loop of the ticker (`core/watchdog_sweep.py`):
 
 Local voice has two shapes. Bare-metal installs run the engines in-process via
 the `nymeriaos[voice-local]` extra (kokoro-onnx + faster-whisper, CPU-friendly;
-model weights download on first use into `data/voice/`). The Docker full stack
+model weights download on first use into `data/voice/`; a uv tool install adds
+it with `nymeria upgrade --add-extra voice-local`). The Docker full stack
 runs the `speaches` sidecar instead (`--profile voice`, digest-pinned CPU
 image, published on `127.0.0.1:8970` only): one container serves both
 faster-whisper STT and Kokoro TTS over OpenAI-compatible endpoints, and the

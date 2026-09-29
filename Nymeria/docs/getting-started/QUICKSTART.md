@@ -89,8 +89,13 @@ background service) before any `uv tool install` or `uv tool upgrade` of
 program's files locked, so an install attempted while it runs stops halfway and
 leaves a half-deleted install (the repair is the same command, run again with
 nothing running). For the same reason `nymeria init` on Windows does not
-install the local semantic-memory extra itself: it prints the command to run
-once setup has finished.
+install the local semantic-memory extra itself: it points you at
+`nymeria upgrade --add-extra local-rag` to run once setup has finished.
+
+`nymeria upgrade --add-extra <extra>` (repeatable) adds an optional extra to a
+uv tool install the same careful way, keeping the extras you already have: for
+example `local-rag` (local semantic memory) or `voice-local` (in-process
+voice). It also works on an editable source install.
 
 With `pipx`:
 
@@ -170,10 +175,10 @@ flags now and will get their own wizard steps later.
 Local semantic memory (the quickstart default) needs the `local-rag` extra:
 sentence-transformers plus PyTorch, a few hundred MB, with the models
 downloading on first use. On Linux and macOS the wizard offers to install it
-on the spot. On Windows it prints the command instead
-(`uv tool install --force "nymeriaos[local-rag]"`), to run after setup with
-NymeriaOS not running; the capability summary shows semantic memory as not
-ready until then.
+on the spot. On Windows it prints a command to run after setup instead,
+`nymeria upgrade --add-extra local-rag`, which closes NymeriaOS first and
+restarts the logon task afterwards (the raw uv command is printed too); the
+capability summary shows semantic memory as not ready until then.
 
 On a fresh interactive install that starts the backend from the wizard ("Start
 now" with local or background-service hosting), the wizard also opens your

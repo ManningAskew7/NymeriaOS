@@ -77,7 +77,11 @@ from .voice_catalog import (
     voice_drop_env,
     voice_env_for_state,
 )
-from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
+from ..subprocess_env import (
+    NETWORK_RUNTIME_PASSTHROUGH,
+    package_manager_env_names,
+    scrubbed_subprocess_env,
+)
 from .state import WizardState
 from .tool_seed import (
     default_thread_tools_for_state,
@@ -1805,16 +1809,24 @@ def _print_voice_hints(state: WizardState, console: Console) -> None:
         if selected_stt(state) in LOCAL_STT_PROVIDERS and not local_stt_importable():
             missing.append("faster-whisper")
         if missing:
-            from .local_rag_install import extra_install_hint
+            from .local_rag_install import add_extra_command, extra_install_hint
 
             # The shared helper reinstalls a uv tool with the receipt's extras
             # kept (so a local-rag install is not dropped) and quotes for the
-            # platform; escape() stops Rich from eating [voice-local].
+            # platform; escape() stops Rich from eating [voice-local]. A uv tool
+            # install gets the one command that also closes and restarts
+            # NymeriaOS around the install (#422).
             install_cmd = escape(extra_install_hint("voice-local"))
+            one_step = add_extra_command("voice-local")
+            run_it = (
+                f"Run: {escape(one_step)}, or by hand, with Nymeria not running: {install_cmd}"
+                if one_step
+                else f"Run, with Nymeria not running: {install_cmd}"
+            )
             console.print(
                 "\n[yellow]Local voice needs the voice extra "
-                f"({' and '.join(missing)} not installed). Run, with Nymeria "
-                f"not running: {install_cmd}. Models download on first use.[/yellow]"
+                f"({' and '.join(missing)} not installed). {run_it}. "
+                "Models download on first use.[/yellow]"
             )
     if uses_voice_sidecar(state):
         console.print(
@@ -2305,6 +2317,8 @@ def _maybe_install_local_rag(
     """
     from .local_rag_install import (
         DOCKER_LOCAL_RAG_ENV,
+        LOCAL_RAG_EXTRA,
+        add_extra_command,
         build_install_command,
         in_process_install_blocked,
         local_rag_importable,
@@ -2347,11 +2361,21 @@ def _maybe_install_local_rag(
     hint = escape(manual_install_hint(command))
     blocked = in_process_install_blocked()
     if blocked:
+        # `nymeria upgrade --add-extra` closes NymeriaOS itself (a detached
+        # window on Windows, #422), so the user need not know to stop the
+        # backend or logon task first; the raw uv line stays as the fallback.
+        one_step = add_extra_command(LOCAL_RAG_EXTRA)
+        after = (
+            f"After setup finishes, run: {escape(one_step)} (it closes "
+            "NymeriaOS first, then restarts the logon task if it was running). "
+            f"By hand, with Nymeria not running: {hint}"
+            if one_step
+            else f"After setup finishes, with Nymeria not running, run: {hint}"
+        )
         console.print(
             "\n[yellow]The local RAG stack (granite + Ettin) needs the local-rag "
             "extra: sentence-transformers plus PyTorch (a few hundred MB; the "
-            f"models download on first use). {escape(blocked)} After setup "
-            f"finishes, with Nymeria not running, run: {hint}[/yellow]"
+            f"models download on first use). {escape(blocked)} {after}[/yellow]"
         )
         return
     if command is None:
@@ -2394,9 +2418,14 @@ def _maybe_install_local_rag(
         # at import (master key, DB and Redis credentials, provider keys), so
         # a bare inherit would put all of it inside a third party's setup.py.
         # The network passthrough keeps proxies, custom CA bundles and the XDG
-        # cache dirs working, which is everything uv/pip legitimately needs.
+        # cache dirs working; the package managers' own settings (UV_TOOL_DIR
+        # above all) keep uv acting on THIS install rather than creating a
+        # second one in its default tool dir.
         result = subprocess.run(
-            command, env=scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH)
+            command,
+            env=scrubbed_subprocess_env(
+                [*NETWORK_RUNTIME_PASSTHROUGH, *package_manager_env_names()]
+            ),
         )
     except OSError as exc:
         console.print(
