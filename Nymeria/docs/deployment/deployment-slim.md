@@ -134,9 +134,14 @@ from PowerShell:
 irm https://nymeriaos.com/install.ps1 | iex
 ```
 
-Update later with `uv tool upgrade nymeriaos`. Config and data live under
-`%USERPROFILE%\.nymeria` (the same `~/.nymeria` root every packaged install
-uses), so they survive a `uv tool upgrade`.
+Update later with `nymeria upgrade`. On Windows it finishes in a new window,
+because Windows keeps a running program's files locked: it waits for the
+command to exit, closes every running NymeriaOS process (the backend and any
+other `nymeria` window), upgrades, and re-runs the `NymeriaOS Slim` logon task
+if a backend had been running. A log of the window lands beside its script in
+`%TEMP%` (`nymeria-upgrade-<time>.log`). Config and data live
+under `%USERPROFILE%\.nymeria` (the same `~/.nymeria` root every packaged
+install uses), so they survive an upgrade.
 
 Logon autostart is a per-user scheduled task named `NymeriaOS Slim`. It runs
 `nymeria slim` through a generated `%USERPROFILE%\.nymeria\nymeria-slim-hidden.vbs`

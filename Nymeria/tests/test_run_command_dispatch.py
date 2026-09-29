@@ -56,7 +56,7 @@ def test_full_validation_set_matches_server_and_bot_commands():
         }
     )
     # The conditionally-validated commands are deliberately NOT in the set.
-    for name in ("cli", "service", "users", "snapshot"):
+    for name in ("cli", "service", "users", "snapshot", "upgrade"):
         assert name not in run._FULL_VALIDATION_COMMANDS
 
 
@@ -106,7 +106,7 @@ def test_validate_config_maps_thin_client_to_a_non_server_validation(monkeypatch
 def test_exit_returning_commands():
     """Only the commands that return an exit code are marked exits=True."""
     exits = {name for name, command in run.COMMANDS.items() if command.exits}
-    assert exits == {"init", "doctor", "reembed", "users", "snapshot", "browser"}
+    assert exits == {"init", "doctor", "reembed", "users", "snapshot", "browser", "upgrade"}
 
 
 def test_dispatch_resolves_runner_through_module_namespace(monkeypatch):

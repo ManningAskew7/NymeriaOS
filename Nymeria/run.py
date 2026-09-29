@@ -1419,6 +1419,13 @@ def run_completion(args: argparse.Namespace) -> None:
     print(generate(args.shell, parser))
 
 
+def run_upgrade(args: argparse.Namespace) -> int:
+    """Upgrade the installed package, then restart what runs it (#353)."""
+    from nymeria.upgrade import upgrade_cli
+
+    return upgrade_cli(yes=args.yes, dry_run=args.dry_run)
+
+
 def run_gateway_foreground(args: argparse.Namespace) -> None:
     """
     Run the gateway server in foreground mode for debugging.
@@ -2028,6 +2035,18 @@ Examples:
         help="Target shell (bash, zsh, or fish)",
     )
 
+    # Upgrade subcommand (#353): stop, upgrade, restart, Windows-safe.
+    upgrade_parser = subparsers.add_parser(
+        "upgrade",
+        help="Upgrade NymeriaOS and restart the background service (Windows-safe)",
+    )
+    upgrade_parser.add_argument(
+        "-y", "--yes", action="store_true", help="Do not ask for confirmation"
+    )
+    upgrade_parser.add_argument(
+        "--dry-run", action="store_true", help="Print what would happen and change nothing"
+    )
+
     return parser
 
 
@@ -2089,6 +2108,7 @@ COMMANDS: dict[str, _Command] = {
     "users": _Command(run_users, exits=True),
     "snapshot": _Command(run_snapshot, exits=True),
     "completion": _Command(run_completion),
+    "upgrade": _Command(run_upgrade, exits=True),
 }
 
 _FULL_VALIDATION_COMMANDS = frozenset(

@@ -14,7 +14,7 @@ Two channels, both giving you the `nymeria` command:
 
 ```bash
 uv tool install nymeriaos
-# update later: uv tool upgrade nymeriaos
+# update later: nymeria upgrade
 ```
 
 ```bash

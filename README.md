@@ -34,7 +34,8 @@ nymeria doctor                # check the install
 nymeria slim                  # API + scheduler + MCP in one process; open http://localhost:8000
 ```
 
-Upgrade later with `uv tool upgrade nymeriaos`. To try it without installing:
+Upgrade later with `nymeria upgrade` (it runs the right upgrade for how you
+installed and restarts a running background service). To try it without installing:
 `uvx --from nymeriaos nymeria slim`.
 
 **One-line installer** (Linux, macOS, WSL; asks which track you want):

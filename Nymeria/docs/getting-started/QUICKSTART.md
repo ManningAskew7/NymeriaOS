@@ -69,9 +69,21 @@ nymeria doctor
 nymeria slim
 ```
 
-Update later with `uv tool upgrade nymeriaos`.
+Update later with `nymeria upgrade`. It runs the upgrade that matches how you
+installed (`uv tool upgrade nymeriaos` or `pipx upgrade nymeriaos`), shows the
+plan and asks first, then restarts the background service so it runs the new
+version (`--dry-run` shows the plan only, `--yes` skips the question). An
+editable source checkout is updated with `git pull` instead, and the command
+says so. With `NYMERIA_PYPI_SIMPLE_INDEX_URL` set, as for the installers, it
+upgrades from that index.
 
-On Windows, stop NymeriaOS first (the wizard, `nymeria slim`, or the
+On Windows, `nymeria upgrade` finishes in a new window: it waits for the
+command to exit, closes every running NymeriaOS process (the backend and any
+other `nymeria` window, forcibly, since a background process cannot be asked
+to quit), upgrades, and re-runs the `NymeriaOS Slim` logon task if a backend
+had been running. If something refuses to close, it stops without upgrading
+and says so, rather than leave a half-replaced install. If you run uv by
+hand instead, stop NymeriaOS first (the wizard, `nymeria slim`, or the
 background service) before any `uv tool install` or `uv tool upgrade` of
 `nymeriaos`. uv rebuilds the tool's environment, and Windows keeps a running
 program's files locked, so an install attempted while it runs stops halfway and
