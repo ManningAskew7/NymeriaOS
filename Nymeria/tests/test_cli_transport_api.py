@@ -744,3 +744,193 @@ def test_attempt_saved_reconnect_ignores_plain_disconnected_placeholder() -> Non
 
     assert reconnected is None
     assert FakeAPIClient.instances == []
+
+
+# --- #101 entry 15a (CLI half): which credential, and a rejected one lands in the REPL
+
+
+@pytest.fixture
+def env_file_with_token(tmp_path, monkeypatch):
+    """A loaded env file (as run.py's boot load records it) holding the token."""
+    from nymeria.config import settings as settings_mod
+
+    env_file = tmp_path / ".env.docker"
+    env_file.write_text(
+        "NYMERIA_SERVICE_TOKEN=file-token\nNYMERIA_API_URL=http://file-url\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_mod, "_loaded_env_files", (env_file,))
+    return env_file
+
+
+def test_an_env_file_token_rejected_with_401_lands_in_the_repl(env_file_with_token) -> None:
+    # Entry 15a: this used to hard-exit with a bare "API authentication
+    # failed", while the same stale token SAVED by /login got the REPL.
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(401, "Invalid API key")
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api"),
+            api_client_factory=FakeAPIClient,
+            environ={"NYMERIA_SERVICE_TOKEN": "file-token"},
+            saved_profile=CLIConnectionProfile(
+                api_url="http://saved", api_key="saved-token", user_id="alice"
+            ),
+        )
+    )
+
+    assert isinstance(selected, DisconnectedAgentClient)
+    assert selected.can_reconnect is False
+    error = selected.startup_error
+    assert "NYMERIA_SERVICE_TOKEN" in error
+    assert str(env_file_with_token) in error
+    assert "/login" in error
+    assert "/reconnect" in error  # the saved connection may be fine
+    assert "file-token" not in error  # never the secret itself
+
+
+def test_a_shell_exported_token_is_named_as_such() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(401, "Invalid API key")
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api"),
+            api_client_factory=FakeAPIClient,
+            environ={"NYMERIA_CLI_API_KEY": "shell-token"},
+        )
+    )
+
+    assert isinstance(selected, DisconnectedAgentClient)
+    assert "NYMERIA_CLI_API_KEY" in selected.startup_error
+    assert "shell environment" in selected.startup_error
+
+
+def test_an_env_token_refused_with_403_still_raises() -> None:
+    # 403 is a permission answer against a good token: not this path.
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(403, "Act-As requires admin")
+
+    with pytest.raises(APITransportStartupError):
+        run(
+            select_agent_client(
+                runtime_config(transport="api"),
+                api_client_factory=FakeAPIClient,
+                environ={"NYMERIA_SERVICE_TOKEN": "env-token"},
+            )
+        )
+
+
+def test_a_rejected_api_key_flag_still_exits_but_says_why() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(401, "Invalid API key")
+
+    with pytest.raises(APITransportStartupError) as caught:
+        run(
+            select_agent_client(
+                runtime_config(transport="api", api_key="flag-token", api_url="http://flag"),
+                api_client_factory=FakeAPIClient,
+                environ={},
+            )
+        )
+
+    assert "--api-key" in caught.value.message
+    assert "http://flag" in caught.value.message
+    assert "rejected" in caught.value.message
+    assert "flag-token" not in caught.value.message
+
+
+def test_a_connection_from_an_env_file_says_so_at_startup(env_file_with_token) -> None:
+    # Had the token been valid, the CLI would have driven the other install
+    # silently. The notice names what came from the file.
+    FakeAPIClient.reset()
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api"),
+            api_client_factory=FakeAPIClient,
+            environ={"NYMERIA_SERVICE_TOKEN": "file-token", "NYMERIA_API_URL": "http://file-url"},
+        )
+    )
+
+    assert isinstance(selected, APIAgentClient)
+    notice = selected.startup_notice
+    assert "NYMERIA_API_URL" in notice and "NYMERIA_SERVICE_TOKEN" in notice
+    assert str(env_file_with_token) in notice
+    assert "http://file-url" in notice
+    assert "file-token" not in notice
+
+
+@pytest.mark.parametrize(
+    "overrides,environ,saved",
+    [
+        ({}, {"NYMERIA_SERVICE_TOKEN": "shell-token"}, None),  # a deliberate export
+        ({"api_key": "flag-token"}, {}, None),  # typed for this run
+        (
+            {},
+            {},
+            CLIConnectionProfile(api_url="http://saved", api_key="saved", user_id="a"),
+        ),
+    ],
+)
+def test_no_startup_notice_for_deliberate_sources(overrides, environ, saved) -> None:
+    FakeAPIClient.reset()
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api", **overrides),
+            api_client_factory=FakeAPIClient,
+            environ=environ,
+            saved_profile=saved,
+        )
+    )
+
+    assert isinstance(selected, APIAgentClient)
+    assert selected.startup_notice == ""
+
+
+def test_an_env_file_url_with_the_saved_token_rejected_lands_in_the_repl(
+    env_file_with_token,
+) -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(401, "Invalid API key")
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api"),
+            api_client_factory=FakeAPIClient,
+            environ={"NYMERIA_API_URL": "http://file-url"},
+            saved_profile=CLIConnectionProfile(
+                api_url="http://saved", api_key="saved-token", user_id="alice"
+            ),
+        )
+    )
+
+    assert isinstance(selected, DisconnectedAgentClient)
+    error = selected.startup_error
+    assert "NYMERIA_API_URL" in error and str(env_file_with_token) in error
+    assert "/reconnect" in error
+    assert "saved-token" not in error
+
+
+def test_an_unreachable_env_file_url_names_the_file(env_file_with_token) -> None:
+    # The literal 15a shape: http://nymeria-api:8000 from another install's
+    # .env.docker cannot resolve on the host.
+    FakeAPIClient.reset()
+    FakeAPIClient.health_result = False
+
+    with pytest.raises(APITransportStartupError) as caught:
+        run(
+            select_agent_client(
+                runtime_config(transport="api"),
+                api_client_factory=FakeAPIClient,
+                environ={"NYMERIA_API_URL": "http://file-url", "NYMERIA_SERVICE_TOKEN": "file-token"},
+            )
+        )
+
+    message = caught.value.message
+    assert "NYMERIA_API_URL set in" in message
+    assert str(env_file_with_token) in message
+    assert "NYMERIA_PROJECT_ROOT" in message
+    assert "file-token" not in message

@@ -274,6 +274,12 @@ class CLIApp:
             except Exception as exc:  # noqa: BLE001
                 sys.stderr.write(f"Error: {exc}\n")
                 return False
+            if is_disconnected_client(client):
+                # The REPL's own notice (a rejected token, a backend that is
+                # down, a detected alternate backend) instead of the
+                # placeholder's generic "Not connected" chat error.
+                sys.stderr.write(f"Error: {_disconnected_notice_text(client)}\n")
+                return False
             self._client = client
             try:
                 if self._session_resume_requested():
@@ -363,6 +369,7 @@ class CLIApp:
                 capabilities=capabilities,
             )
         self._render_disconnected_notice(self._client, capabilities)
+        self._render_startup_notice(self._client, capabilities)
 
         # patch_stdout intercepts background-thread writes (ticker, watchdog)
         # and redraws the prompt after they finish.
@@ -1755,6 +1762,23 @@ class CLIApp:
             return await asyncio.to_thread(getpass.getpass, prompt)
         return await asyncio.to_thread(self.state.console.input, prompt)
 
+    def _render_startup_notice(
+        self,
+        client: Any,
+        capabilities: TerminalCapabilities,
+    ) -> None:
+        """Print a connected client's one startup line, if it has one (#101 15a)."""
+        notice = str(getattr(client, "startup_notice", "") or "")
+        if not notice:
+            return
+        if capabilities.renderer == "plain":
+            sys.stderr.write(f"{strip_ansi(notice)}\n")
+            sys.stderr.flush()
+            return
+        from rich.markup import escape
+
+        self.state.console.print(f"[dim]{escape(notice)}[/dim]")
+
     def _render_disconnected_notice(
         self,
         client: AgentClient | None,
@@ -1772,7 +1796,10 @@ class CLIApp:
             sys.stderr.write(f"{strip_ansi(message)}\n")
             sys.stderr.flush()
             return
-        self.state.console.print(f"[yellow]{message}[/yellow]")
+        from rich.markup import escape
+
+        # escape: the copy can carry a file path, and a `[` in it is markup.
+        self.state.console.print(f"[yellow]{escape(message)}[/yellow]")
 
 
 def _fast_prompt_from_result(result: Any) -> tuple[str, str] | None:

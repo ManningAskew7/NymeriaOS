@@ -537,3 +537,94 @@ def test_renderer_fallback_notice_is_silent_unless_rich_was_asked_for(capsys) ->
     )
 
     assert capsys.readouterr().err == ""
+
+
+# --- #101 entry 15a (CLI half) ---------------------------------------------------
+
+
+def test_oneshot_reports_why_it_is_not_connected(capsys) -> None:
+    # A rejected token used to surface in oneshot as the generic "Not
+    # connected" chat error; the actual reason is on the placeholder.
+    from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
+
+    app = CLIApp(
+        DummyAgent(),
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(transport="api", oneshot_message="hello"),
+    )
+    placeholder = DisconnectedAgentClient(startup_error="http://x rejected the token in FOO.")
+    chats: list[str] = []
+    placeholder.stream_chat = lambda *a, **k: chats.append("chat")  # type: ignore[method-assign]
+
+    async def select():
+        return placeholder
+
+    app._select_agent_client = select  # type: ignore[method-assign]
+
+    assert app.run_oneshot() is False
+    err = capsys.readouterr().err
+    assert "Error: http://x rejected the token in FOO." in err
+    assert "Not connected" not in err
+    assert chats == []
+
+
+def test_the_startup_notice_goes_where_the_renderer_writes(capsys) -> None:
+    app = CLIApp(
+        DummyAgent(),
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(transport="api"),
+    )
+    client = SimpleNamespace(startup_notice="Using NYMERIA_SERVICE_TOKEN from /x/.env.docker.")
+
+    app._render_startup_notice(client, FakeTerminalCapabilities(renderer="plain"))
+    assert capsys.readouterr().err == "Using NYMERIA_SERVICE_TOKEN from /x/.env.docker.\n"
+
+    app._render_startup_notice(SimpleNamespace(startup_notice=""), FakeTerminalCapabilities(renderer="plain"))
+    app._render_startup_notice(SimpleNamespace(), FakeTerminalCapabilities(renderer="plain"))
+    assert capsys.readouterr().err == ""
+
+    # Rich: on the console, a path's brackets survive as text, not markup.
+    app._render_startup_notice(
+        SimpleNamespace(startup_notice="Using TOKEN from /srv/[prod]/.env."),
+        FakeTerminalCapabilities(renderer="rich"),
+    )
+    assert "Using TOKEN from /srv/[prod]/.env." in " ".join(capsys.readouterr().out.split())
+
+
+def test_the_disconnected_notice_keeps_a_bracketed_path_as_text(capsys) -> None:
+    from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
+
+    app = CLIApp(
+        DummyAgent(),
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(transport="api"),
+    )
+    client = DisconnectedAgentClient(
+        startup_error="Rejected the token in NYMERIA_SERVICE_TOKEN (set in /srv/[prod]/.env.docker)."
+    )
+
+    app._render_disconnected_notice(client, FakeTerminalCapabilities(renderer="rich"))
+
+    assert "(set in /srv/[prod]/.env.docker)." in " ".join(capsys.readouterr().out.split())
+
+
+def test_oneshot_says_what_the_repl_would_when_not_connected(capsys) -> None:
+    # Any placeholder, not only one carrying a startup_error: a detected
+    # alternate backend is the most actionable thing to say (review finding).
+    from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
+
+    app = CLIApp(
+        DummyAgent(),
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(transport="api", oneshot_message="hello"),
+    )
+
+    async def select():
+        return DisconnectedAgentClient(suggested_url="http://localhost:8010")
+
+    app._select_agent_client = select  # type: ignore[method-assign]
+
+    assert app.run_oneshot() is False
+    err = capsys.readouterr().err
+    assert "Error: A Nymeria backend is running at http://localhost:8010" in err
+    assert "/login http://localhost:8010" in err

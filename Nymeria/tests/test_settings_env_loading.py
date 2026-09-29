@@ -342,3 +342,18 @@ def test_silent_when_the_docker_config_is_clean_absent_or_in_a_container(tmp_pat
     monkeypatch.setattr(settings_mod, "_in_container", lambda: True)
     settings_mod.load_env_files_into_environ(inside)
     assert _docker_env_warnings() == []
+
+
+def test_env_file_source_names_the_last_loaded_file_holding_that_value(tmp_path, monkeypatch):
+    first = tmp_path / ".env"
+    second = tmp_path / ".env.docker"
+    first.write_text("TOKEN=a\nOTHER=x\nSAME=v\n", encoding="utf-8")
+    second.write_text("TOKEN=b\nSAME=v\n", encoding="utf-8")
+    monkeypatch.setattr(settings_mod, "_loaded_env_files", (first, second))
+
+    assert settings_mod.env_file_source("TOKEN", "b") == second
+    assert settings_mod.env_file_source("TOKEN", "a") == first  # overridden since, but its value
+    assert settings_mod.env_file_source("OTHER", "x") == first
+    assert settings_mod.env_file_source("TOKEN", "shell") is None  # exported, not from a file
+    assert settings_mod.env_file_source("MISSING", "x") is None
+    assert settings_mod.env_file_source("SAME", "v") == second  # the one that loaded last

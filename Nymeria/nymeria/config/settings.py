@@ -317,6 +317,26 @@ def _apply_runtime_settings_file(path: Path) -> Tuple[List[str], List[str]]:
     return sorted(overrides), sorted(ignored)
 
 
+def env_file_source(key: str, value: str) -> Optional[Path]:
+    """The last env file this process loaded that sets ``key`` to ``value``.
+
+    ``None`` when no loaded file does, i.e. the value came from the process
+    environment itself (a shell export, a service unit). Lets a client say
+    WHERE an ambient credential came from (#101 entry 15a: a lost root export
+    had the CLI take another install's token from its `.env.docker`). Reads
+    only files the last boot load recorded, never a root on its own.
+    """
+    from dotenv import dotenv_values
+
+    for path in reversed(_loaded_env_files):
+        try:
+            if dotenv_values(path).get(key) == value:
+                return path
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+    return None
+
+
 def _in_container() -> bool:
     """True inside a Docker or Podman container (their marker files)."""
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()

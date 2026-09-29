@@ -122,6 +122,9 @@ class APIConnectionConfig:
     api_url_source: str = "default"
     api_key_source: str = ""
     user_id_source: str = "default"
+    # The environment variable that supplied the key when its source is "env"
+    # (one of three), so startup copy can name it and its file (#101 15a).
+    api_key_env_var: str = ""
 
     @property
     def has_api_key(self) -> bool:
@@ -181,6 +184,9 @@ class APIAgentClient:
         self.api = api
         self.base_url = (base_url or getattr(api, "base_url", DEFAULT_API_URL)).rstrip("/")
         self.default_user_id = default_user_id or "default"
+        # One line the REPL prints at startup (select_agent_client sets it when
+        # the URL or token came from an env file, #101 15a); "" when silent.
+        self.startup_notice = ""
 
     @property
     def connection_label(self) -> str:
@@ -668,11 +674,15 @@ def resolve_api_connection_config(
     cli_url = _clean_optional(getattr(runtime_config, "api_url", None))
     cli_key = _clean_optional(getattr(runtime_config, "api_key", None))
     env_url = _clean_optional(env.get("NYMERIA_API_URL"))
-    env_key = (
-        _clean_optional(env.get("NYMERIA_CLI_API_KEY"))
-        or _clean_optional(env.get("NYMERIA_SERVICE_TOKEN"))
-        or _clean_optional(env.get("NYMERIA_API_KEY"))
+    env_key_var = next(
+        (
+            var
+            for var in ("NYMERIA_CLI_API_KEY", "NYMERIA_SERVICE_TOKEN", "NYMERIA_API_KEY")
+            if _clean_optional(env.get(var))
+        ),
+        "",
     )
+    env_key = _clean_optional(env.get(env_key_var)) if env_key_var else None
     saved_url = _clean_optional(saved_profile.api_url if saved_profile else None)
     saved_key = _clean_optional(saved_profile.api_key if saved_profile else None)
 
@@ -712,6 +722,116 @@ def resolve_api_connection_config(
         api_url_source=api_url_source,
         api_key_source=api_key_source,
         user_id_source=user_id_source,
+        api_key_env_var=env_key_var if api_key_source == "env" else "",
+    )
+
+
+def _env_var_file(var: str, env: Mapping[str, str]) -> Path | None:
+    """The env file the value of ``var`` came from; None for the shell or unset.
+
+    ``config.settings`` is already loaded by the time the CLI runs (run.py's
+    boot load goes through it), so this import costs nothing.
+    """
+
+    value = env.get(var) if var else None
+    if not value:
+        return None
+    from ....config.settings import env_file_source
+
+    return env_file_source(var, value)
+
+
+def _env_file_parts(
+    config: APIConnectionConfig, env: Mapping[str, str]
+) -> list[tuple[str, Path]]:
+    """``(variable, file)`` for each connection value an env FILE supplied."""
+
+    names = ("NYMERIA_API_URL" if config.api_url_source == "env" else "", config.api_key_env_var)
+    parts = []
+    for var in names:
+        source = _env_var_file(var, env)
+        if source is not None:
+            parts.append((var, source))
+    return parts
+
+
+def _provenance_suffix(parts: list[tuple[str, Path]]) -> str:
+    """`` (VAR set in FILE; ...)`` for a failure message, or "" (#101 15a review).
+
+    Every startup failure names the env files behind it, not only a rejected
+    env token: an unreachable `http://nymeria-api:8000` from another install's
+    `.env.docker` is the same trap as its token.
+    """
+
+    if not parts:
+        return ""
+    where = "; ".join(f"{var} set in {source}" for var, source in parts)
+    return f" ({where}; if this is the wrong install, check NYMERIA_PROJECT_ROOT)"
+
+
+def _stop_hint(var: str, source: Path | None) -> tuple[str, str]:
+    """``(where, how to stop it)`` for a variable from a file or the shell."""
+
+    if source is not None:
+        return (
+            f"{var} (set in {source})",
+            f"remove it from {source}, or point NYMERIA_PROJECT_ROOT at the "
+            "install you mean to use",
+        )
+    return f"{var} (from your shell environment)", "unset it"
+
+
+def env_token_rejected_message(
+    api_url: str, var: str, source: Path | None, *, detail: str = ""
+) -> str:
+    """A 401 for a token the CLI took from the environment (#101 15a).
+
+    It wins over the saved /login connection on EVERY launch, so the copy
+    names the variable, where it came from, and how to stop it, not just
+    "/login": a /login fixes this session and the next launch fails again.
+    """
+
+    reason = f" ({detail})" if detail else ""
+    where, permanent = _stop_hint(var, source)
+    return (
+        f"{api_url} rejected the token in {where}{reason}. That variable wins "
+        "over your saved /login connection on every launch: run /reconnect if "
+        "your saved connection still works, or /login with a token for this "
+        f"backend, and {permanent} to stop this."
+    )
+
+
+def env_url_rejected_message(
+    api_url: str, source: Path | None, *, detail: str = ""
+) -> str:
+    """A 401 for the saved token sent to a URL taken from the environment."""
+
+    reason = f" ({detail})" if detail else ""
+    where, permanent = _stop_hint("NYMERIA_API_URL", source)
+    return (
+        f"{api_url} rejected your saved token{reason}. That URL comes from "
+        f"{where}, which wins over your saved /login connection on every "
+        f"launch: run /reconnect to use your saved connection, and {permanent} "
+        "to stop this."
+    )
+
+
+def _env_connection_notice(config: APIConnectionConfig, env: Mapping[str, str]) -> str:
+    """Name a URL/token the CLI took from an env FILE, or "" (#101 15a).
+
+    Values from a loaded env file are ambient: a lost NYMERIA_PROJECT_ROOT
+    export silently swaps in another install's file and the CLI drives that
+    install. Shell exports, flags, and the saved profile are deliberate and
+    stay silent.
+    """
+
+    parts = [f"{var} from {source}" for var, source in _env_file_parts(config, env)]
+    if not parts:
+        return ""
+    return (
+        f"Connected to {config.api_url} using {', '.join(parts)}. Env-file values "
+        "win over a saved /login connection; if this is the wrong backend, check "
+        "NYMERIA_PROJECT_ROOT."
     )
 
 
@@ -813,12 +933,50 @@ async def select_agent_client(
     if not config.has_api_key:
         return DisconnectedAgentClient(default_user_id=config.user_id)
 
+    env = os.environ if environ is None else environ
     try:
-        return await validate_api_agent_client(
+        client = await validate_api_agent_client(
             config,
             api_client_factory=api_client_factory,
         )
     except APITransportStartupError as exc:
+        detail = str(exc.details.get("detail") or "")
+        parts = _env_file_parts(config, env)
+        url_parts = [part for part in parts if part[0] == "NYMERIA_API_URL"]
+        if exc.status_code == 401 and config.api_key_source == "env":
+            # The same REPL a stale SAVED token gets, instead of a hard exit
+            # with no /login path (#101 15a). 403 stays below: a permission
+            # answer against a good token is not fixed by another token.
+            var = config.api_key_env_var
+            return DisconnectedAgentClient(
+                default_user_id=config.user_id,
+                startup_error=env_token_rejected_message(
+                    config.api_url, var, _env_var_file(var, env), detail=detail
+                )
+                + _provenance_suffix(url_parts),
+            )
+        if exc.status_code == 401 and config.api_key_source == "flag":
+            # Typed for this run: still an exit (scripts rely on the code),
+            # but one that says what happened.
+            raise APITransportStartupError(
+                f"{config.api_url} rejected the token passed with --api-key"
+                f"{f' ({detail})' if detail else ''}: check it, or mint one with "
+                "`nymeria users issue-token <user-id>` on the host."
+                + _provenance_suffix(url_parts),
+                code=exc.code,
+                api_url=exc.api_url,
+                status_code=exc.status_code,
+                details=exc.details,
+            ) from exc
+        if exc.status_code == 401 and config.api_url_source == "env":
+            # The saved token sent to a URL from the environment: the saved
+            # connection itself may be fine, and /reconnect uses it (review).
+            return DisconnectedAgentClient(
+                default_user_id=config.user_id,
+                startup_error=env_url_rejected_message(
+                    config.api_url, _env_var_file("NYMERIA_API_URL", env), detail=detail
+                ),
+            )
         if config.from_saved_profile and not config.explicitly_configured:
             if exc.code in RECONNECTABLE_STARTUP_CODES:
                 # Backend is simply not up yet: keep the saved profile so the
@@ -854,7 +1012,17 @@ async def select_agent_client(
                 default_user_id=config.user_id,
                 startup_error=startup_error,
             )
+        if parts:
+            raise APITransportStartupError(
+                exc.message + _provenance_suffix(parts),
+                code=exc.code,
+                api_url=exc.api_url,
+                status_code=exc.status_code,
+                details=exc.details,
+            ) from exc
         raise
+    client.startup_notice = _env_connection_notice(config, env)
+    return client
 
 
 def _reconnect_config(client: DisconnectedAgentClient) -> APIConnectionConfig:
