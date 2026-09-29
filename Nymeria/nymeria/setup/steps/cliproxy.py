@@ -67,6 +67,7 @@ from ..cliproxy_login import (
     login_account_label,
     make_management_client,
     management_credentials,
+    verify_login_serves,
 )
 from ..nav import Step
 from ..state import WizardState
@@ -74,6 +75,7 @@ from ..widgets import ListItem, SearchableList
 from .auth import is_cliproxy_auth
 from .base import (
     SUCCESS,
+    WARNING,
     Choice,
     CircleRadioButton,
     FormStep,
@@ -413,6 +415,9 @@ class CLIProxyLoginStep(WizardStep):
         self._oauth_state: str | None = None
         self._force_relogin = False
         self._spec: CLIProxyProviderSpec | None = None
+        # True while the post-login completion runs, so an early Enter cannot
+        # carry a login the check is about to reject past this step.
+        self._verifying = False
 
     def compose_body(self) -> ComposeResult:
         yield Static("Starting login...", id="cliproxy-login-status")
@@ -424,15 +429,63 @@ class CLIProxyLoginStep(WizardStep):
         self._spec = get_cliproxy_provider(self.state.cliproxy_provider or "")
         self._run_login()
 
-    def _status(self, message: str, *, ok: bool = False) -> None:
+    def _status(self, message: str, *, ok: bool = False, warn: bool = False) -> None:
         """Show ``message`` (plain text; proxy errors and account labels are
         data, never markup). ``ok`` marks a finished login: green, so it stands
-        out from the OAuth URL block below it (#101 entry 3)."""
+        out from the OAuth URL block below it (#101 entry 3); ``warn`` marks a
+        login the provider rejected (yellow)."""
         if self.is_mounted:
             markup = code_markup(message)
             if ok:
                 markup = f"[bold {SUCCESS}]{markup}[/]"
+            elif warn:
+                markup = f"[bold {WARNING}]{markup}[/]"
             self.query_one("#cliproxy-login-status", Static).update(markup)
+
+    async def _verify_and_report(
+        self,
+        client: CLIProxyManagementClient,
+        spec: CLIProxyProviderSpec,
+        prefix: str,
+    ) -> None:
+        """Prove the login serves traffic before calling it done (#101 entry 2).
+
+        ``prefix`` is the login line ("Already logged in as X", "Login
+        complete as X"). A listed auth file keeps a revoked or expired token,
+        so one real completion decides: ok is green, a 401/403 undoes the
+        logged-in state (Enter no longer passes the step), and anything else
+        (quota window, proxy hiccup) is reported but never blocks.
+        """
+        self._verifying = True
+        self._status(f"{prefix}. Checking that it answers a test request...")
+        try:
+            verdict, detail = await verify_login_serves(
+                client, spec, api_key=self.state.cliproxy_gatekeeper_key.strip()
+            )
+        finally:
+            self._verifying = False
+            # An Enter pressed mid-check left "Checking the login"; stale now.
+            self.show_error("")
+        if verdict == "ok":
+            self._status(
+                f"{prefix}, and it answered a test request. Press Enter to "
+                "continue, or Ctrl+R to log in again.",
+                ok=True,
+            )
+            return
+        if verdict == "auth_failed":
+            self.state.cliproxy_logged_in = False
+            self._status(
+                f"{prefix}, but {spec.label} rejected the stored login "
+                f"({detail}). Press Ctrl+R to log in again, or Ctrl+S to skip "
+                "and log in later.",
+                warn=True,
+            )
+            return
+        self._status(
+            f"{prefix}. Could not confirm it serves traffic yet ({detail}). "
+            "Press Enter to continue, or Ctrl+R to log in again."
+        )
 
     def action_relogin(self) -> None:
         self._force_relogin = True
@@ -474,11 +527,11 @@ class CLIProxyLoginStep(WizardStep):
                 f" ({CLIPROXY_BACKOFF_NOTE})" if entry.get("unavailable") else ""
             )
             await self._post_login(client, spec)
-            self._status(
+            await self._verify_and_report(
+                client,
+                spec,
                 f"Already logged in{f' as {account}' if account else ''}"
-                f"{backoff_note}. "
-                "Press Enter to continue, or Ctrl+R to log in again.",
-                ok=True,
+                f"{backoff_note}",
             )
             return
 
@@ -529,10 +582,8 @@ class CLIProxyLoginStep(WizardStep):
                 return
             if status == "ok":
                 await self._post_login(client, spec)
-                self._status(
-                    f"Login complete{f' as {detail}' if detail else ''}. "
-                    "Press Enter to continue.",
-                    ok=True,
+                await self._verify_and_report(
+                    client, spec, f"Login complete{f' as {detail}' if detail else ''}"
                 )
                 return
             if status == "error":
@@ -567,6 +618,9 @@ class CLIProxyLoginStep(WizardStep):
             self.show_error(gatekeeper_warning.strip())
 
     def collect(self) -> bool:
+        if self._verifying:
+            self.show_error("Checking the login; one moment.")
+            return False
         pasted = self.query_one("#cliproxy-callback", Input).value.strip()
         if pasted and not self.state.cliproxy_logged_in:
             self._deliver_callback(pasted)
@@ -638,10 +692,34 @@ class CLIProxyModelStep(WizardStep):
             list_id="cliproxy-model-options",
             empty_text="No models listed - type the exact model id",
         )
+        # Enter both picks and advances, so say which model it will take
+        # before it does (#101 entry 4); `_pending_model` is what collect stores.
+        yield Static("", id="cliproxy-model-pick", classes="field-note")
 
     def on_mount(self) -> None:
         self.query_one(SearchableList).focus()
+        self._show_pending_model()
         self._load_models()
+
+    def _pending_model(self) -> str:
+        """The model Enter would store: highlighted row, typed id, or default."""
+        picker = self.query_one(SearchableList)
+        spec = get_cliproxy_provider(self.state.cliproxy_provider or "")
+        model = (picker.selected_value or picker.search_value or "").strip()
+        if not model and spec is not None:
+            model = spec.default_model
+        return model
+
+    def _show_pending_model(self) -> None:
+        model = self._pending_model()
+        self.query_one("#cliproxy-model-pick", Static).update(
+            code_markup(f"Enter uses: {model}" if model else "Type a model id.")
+        )
+
+    def on_searchable_list_highlighted(self, event: SearchableList.Highlighted) -> None:
+        # Also fires on every keystroke in the search box (the list refilters
+        # and re-highlights), which covers a typed id with no matching row.
+        self._show_pending_model()
 
     @work(exclusive=True)
     async def _load_models(self) -> None:
@@ -683,11 +761,7 @@ class CLIProxyModelStep(WizardStep):
             )
 
     def collect(self) -> bool:
-        picker = self.query_one(SearchableList)
-        spec = get_cliproxy_provider(self.state.cliproxy_provider or "")
-        model = (picker.selected_value or picker.search_value or "").strip()
-        if not model and spec is not None:
-            model = spec.default_model
+        model = self._pending_model()
         if not model:
             self.show_error("Enter a model id.")
             return False

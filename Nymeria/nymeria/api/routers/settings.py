@@ -56,7 +56,6 @@ from ...core.llm_provider_utils import (
     provider_probe_headers,
     redact_secrets,
 )
-from ...vendor.react_agent.providers import resolve_max_output_tokens
 from ..schemas.settings import (
     AGENT_WRITE_BLOCKED_SETTINGS,
     HIDDEN_CONFIG_SETTINGS,
@@ -84,6 +83,21 @@ from ..schemas.settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_max_output_tokens(*args: Any, **kwargs: Any) -> Any:
+    """Lazy seam over ``vendor.react_agent.providers.resolve_max_output_tokens``.
+
+    The providers module pulls the ML stack (torch, transformers, about 8 s
+    cold), and this router is also imported by `nymeria init`'s CLIProxy
+    credential check (#101 entry 2), so it is loaded on first call, not at
+    import. Kept at module scope as the tests' monkeypatch seam.
+    """
+    from ...vendor.react_agent.providers import (
+        resolve_max_output_tokens as _resolve_max_output_tokens,
+    )
+
+    return _resolve_max_output_tokens(*args, **kwargs)
 
 _CLEARABLE_NULL_SETTINGS = {
     "llm_context_length",

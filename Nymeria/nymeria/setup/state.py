@@ -78,6 +78,12 @@ class WizardState:
     cliproxy_deploy: bool = False
     # Set by the login step once an active auth file exists for the pick.
     cliproxy_logged_in: bool = False
+    # Set by the headless CLIProxy preparation: True when this run sets up or
+    # changes the subscription route (a fresh install, a login, an explicit
+    # flag). Finalize's credential check then runs even with the gatekeeper
+    # already on disk, and a rejected login stops the run; otherwise
+    # (interactive, or a lenient reconfigure) a rejection is a note (#101 e2).
+    cliproxy_verify_strict: bool = False
 
     # How the backend is reached from outside this machine. The choice gates
     # the tailscale/cloudflare setup steps; the resolved public origin lands in

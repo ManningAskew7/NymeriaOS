@@ -14,6 +14,7 @@ expired sessions, so a completed login must always be confirmed against
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import queue
 import sys
@@ -98,6 +99,45 @@ def make_management_client(state: WizardState) -> CLIProxyManagementClient | Non
     if not url or not key:
         return None
     return CLIProxyManagementClient(url, key)
+
+
+async def verify_login_serves(
+    client: CLIProxyManagementClient,
+    spec: CLIProxyProviderSpec,
+    *,
+    model: str = "",
+    api_key: str = "",
+) -> tuple[str, str]:
+    """``(verdict, detail)`` from ONE real completion through the proxy.
+
+    The auth-file list (what "logged in" means everywhere else) keeps a
+    revoked or expired token, and a GET /v1/models is answered from the
+    proxy's own registry, so neither proves the subscription serves traffic
+    (#101 entry 2; cliproxy.md, "A confirmed login still does not prove the
+    credential works"). This is the backend's own check,
+    ``api/routers/cliproxy.py::verify_cliproxy_credential`` (the
+    ``/provider test`` probe with the cloak-skip identity and the billing
+    block, gatekeeper read-only), not a second probe: raw-HTTP copies of that
+    payload drift. Verdicts: ``ok``, ``auth_failed`` (401/403 upstream: log
+    in again), ``inconclusive`` (quota window, transient, or anything else;
+    never a reason to block). ``model`` defaults to the spec's default;
+    ``api_key`` is the gatekeeper the run will write (else the proxy's own).
+
+    The router is imported at call time (the setup package stays
+    import-light, and the tests patch the probe on the settings router) and
+    OFF the event loop: a cold import of the API layer takes about a second,
+    which would freeze the TUI's keys mid-check.
+    """
+    try:
+        module = await asyncio.to_thread(
+            importlib.import_module, "nymeria.api.routers.cliproxy"
+        )
+        return await module.verify_cliproxy_credential(
+            client, client.base_url, spec, model=model, api_key=api_key or None
+        )
+    except Exception as exc:  # noqa: BLE001 (a check must never crash setup)
+        logger.debug("CLIProxy credential check failed", exc_info=True)
+        return "inconclusive", str(exc) or type(exc).__name__
 
 
 async def ensure_gatekeeper_key(
@@ -486,6 +526,9 @@ def prepare_headless_cliproxy(
             "--cliproxy-management-key (or an existing install that recorded "
             "it) to drive the proxy's management API"
         )
+    # A strict run is about the subscription route itself: finalize checks
+    # the credential even with the gatekeeper on disk, and a rejection stops.
+    state.cliproxy_verify_strict = strict
     if client is None and not gatekeeper_available:
         raise SystemExit(
             "--cliproxy-gatekeeper-key or --cliproxy-management-key is "

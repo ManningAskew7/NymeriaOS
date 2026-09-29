@@ -288,11 +288,16 @@ async def verify_cliproxy_credential(
     spec: CLIProxyProviderSpec,
     *,
     model: str = "",
+    api_key: str | None = None,
     settings: Any | None = None,
     vault: Any | None = None,
     owner_user_id: str | None = None,
 ) -> tuple[CLIProxyVerifyVerdict, str]:
     """Prove a freshly logged-in subscription actually serves traffic.
+
+    ``api_key`` probes with the gatekeeper the caller is about to WRITE (the
+    setup wizard), so a mistyped key fails here rather than on every runtime
+    call; without it the proxy's first configured key is read.
 
     ``confirm_login_landed`` only establishes that the proxy LISTS an enabled
     auth file for the provider; a revoked or expired refresh token passes it. So
@@ -333,7 +338,7 @@ async def verify_cliproxy_credential(
             f"no model is known for {spec.label}, so the credential could not "
             "be exercised"
         )
-    keys = await configured_gatekeeper_keys(client)
+    keys = [api_key] if api_key else await configured_gatekeeper_keys(client)
     data_plane_url = cliproxy_data_plane_url(management_url, spec)
     request = LLMProviderTestRequest(
         llm_provider=spec.nymeria_provider,

@@ -477,7 +477,22 @@ def finalize(
                 f"[red]{spec.label} needs a base URL. Re-run with --base-url.[/red]"
             )
             return 2
-        if state.skip_llm_test or keep_existing_key:
+        # CLIProxy: the credential check never needed the key field, so a
+        # strict headless run (a re-login on an installed system, the case
+        # --cliproxy-login exists for) is checked with the gatekeeper on disk.
+        cliproxy_check = (
+            _cliproxy_login_check(state)
+            if not state.skip_llm_test
+            and (not keep_existing_key or state.cliproxy_verify_strict)
+            else None
+        )
+        if cliproxy_check is not None:
+            console.print("\nTesting LLM connection...")
+            verdict = _verify_cliproxy_login(console, state, *cliproxy_check, model=model)
+            if verdict == "auth_failed" and state.cliproxy_verify_strict:
+                return 2
+            provider_auth_validated = verdict == "ok"
+        elif state.skip_llm_test or keep_existing_key:
             console.print("[yellow]Skipping LLM connection test.[/yellow]")
         else:
             console.print("\nTesting LLM connection...")
@@ -1283,6 +1298,68 @@ def _cliproxy_backend_host(state: WizardState) -> str:
     return (state.cliproxy_management_url or "").strip().rstrip("/") or (
         "http://localhost:8318"
     )
+
+
+def _cliproxy_login_check(state: WizardState):
+    """``(client, spec)`` to prove a CLIProxy route serves traffic, else None.
+
+    None (the generic ``check_llm_connection_for_spec`` runs instead) off the
+    CLIProxy branch, or without a management key to read the gatekeeper with.
+    """
+    if not state.auth_method_is_cliproxy():
+        return None
+    from ..cliproxy.catalog import get_cliproxy_provider
+    from .cliproxy_login import make_management_client
+
+    spec = get_cliproxy_provider(state.cliproxy_provider or "")
+    client = make_management_client(state) if spec is not None else None
+    return (client, spec) if client is not None else None
+
+
+def _verify_cliproxy_login(console: Console, state: WizardState, client, spec, *, model: str) -> str:
+    """One real completion on the chosen model through the proxy (#101 entry 2).
+
+    Replaces the generic check on this branch: that one is a GET /v1/models,
+    which the proxy answers from its own registry, so it passed with a revoked
+    login and never touched the model. Probes with the gatekeeper this run
+    writes. Returns the verdict (``ok`` / ``auth_failed`` / ``inconclusive``);
+    the caller stops on ``auth_failed`` only for a strict headless run, the
+    one place a dead credential must not be written as working. Elsewhere
+    (interactive, where the login step already offered Ctrl+R and the user
+    may have chosen to log in later; a lenient reconfigure editing something
+    else) the config is written with the remedy in red.
+    """
+    import asyncio
+
+    from .cliproxy_login import verify_login_serves
+
+    verdict, detail = asyncio.run(
+        verify_login_serves(
+            client, spec, model=model, api_key=state.cliproxy_gatekeeper_key.strip()
+        )
+    )
+    if verdict == "ok":
+        console.print(
+            f"[green]Connected:[/green] {escape(model)} (it answered a test request)"
+        )
+    elif verdict == "auth_failed":
+        stop = state.cliproxy_verify_strict
+        console.print(
+            f"[red]{spec.label} rejected the proxy's stored login[/red] "
+            f"({escape(detail)}). Log in again: re-run `nymeria init` (Ctrl+R "
+            "on the login step) or pass --cliproxy-login."
+            + (
+                " Pass --skip-llm-test to write the config anyway."
+                if stop
+                else " Writing the config anyway; chats fail until then."
+            )
+        )
+    else:
+        console.print(
+            f"[yellow]Could not confirm the {spec.label} login serves traffic "
+            f"yet[/yellow] ({escape(detail)}); writing the config anyway."
+        )
+    return verdict
 
 
 def _apply_cliproxy_route(state: WizardState) -> str | None:

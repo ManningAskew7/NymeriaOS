@@ -357,6 +357,42 @@ def _offline_server_browser_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _offline_cliproxy_management(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the wizard's CLIProxy management client off every real proxy.
+
+    The reference host runs a live CLIProxy on `localhost:8318`, the URL most
+    wizard tests type, and the proxy bans an IP after 5 bad management
+    attempts: an unfaked test with a fake key would lock production (and the
+    end-user instances behind the same proxy) out. Finalize itself reads the
+    gatekeeper through this client since the #101 entry 2 credential check,
+    so the exposure is no longer limited to the login steps. Every call here
+    raises `CLIProxyUnreachable`, and the client reports an unresolvable
+    `.invalid` base URL, so the data-plane probe the check derives from it
+    (with a supplied gatekeeper it skips the management read) cannot reach a
+    live proxy either. `_fake_cliproxy_client` (and any test that patches
+    the class itself) overrides it.
+    """
+    from nymeria.cliproxy.management_client import CLIProxyUnreachable
+    from nymeria.setup import cliproxy_login
+
+    class _OfflineManagementClient:
+        def __init__(self, base_url: str, *_args, **_kwargs) -> None:
+            self.configured_url = base_url
+            self.base_url = "http://cliproxy-offline.invalid"
+
+        def __getattr__(self, name: str):
+            async def _refuse(*_args, **_kwargs):
+                raise CLIProxyUnreachable(
+                    f"the test suite is offline; {name} tried to reach the proxy "
+                    f"at {self.configured_url}. Use _fake_cliproxy_client."
+                )
+
+            return _refuse
+
+    monkeypatch.setattr(cliproxy_login, "CLIProxyManagementClient", _OfflineManagementClient)
+
+
+@pytest.fixture(autouse=True)
 def clear_settings_cache():
     """Reset the cached ``get_settings()`` between tests, suite-wide.
 

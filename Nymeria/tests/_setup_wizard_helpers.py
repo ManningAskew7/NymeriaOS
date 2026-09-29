@@ -113,6 +113,7 @@ class _FakeCLIProxyClient:
     login_lands: dict | None = None
     raise_on_list: Exception | None = None
     calls: list[tuple] = []
+    probes: list = []
 
     def __init__(self, base_url: str, secret: str, **kwargs) -> None:
         self.base_url = (base_url or "").strip().rstrip("/")
@@ -177,8 +178,19 @@ def _fake_cliproxy_client(
     login_lands=None,
     raise_on_list=None,
     start_result=None,
+    probe=None,
 ):
-    """Reset and patch the fake client into the headless CLIProxy path."""
+    """Reset and patch the fake client into the headless CLIProxy path.
+
+    Also stubs the ONE data-plane probe the credential verification runs
+    (`/provider test`'s `_test_llm_provider_config`), so the wizard's
+    "does the login serve traffic" check (#101 entry 2) never reaches a
+    network. ``probe`` is the probe's response (default: ok); every probed
+    request is recorded on ``cls.probes``.
+    """
+    from types import SimpleNamespace
+
+    from nymeria.api.routers import settings as settings_router_module
     from nymeria.setup import cliproxy_login as cliproxy_login_mod
 
     cls = _FakeCLIProxyClient
@@ -191,7 +203,19 @@ def _fake_cliproxy_client(
         start_result or {"url": "https://auth.example/login", "state": "s1"}
     )
     cls.calls = []
+    cls.probes = []
+    response = probe if probe is not None else SimpleNamespace(
+        ok=True, message="", status_code=200
+    )
+
+    async def fake_probe(request, *, settings=None, vault=None, owner_user_id=None):
+        cls.probes.append(request)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
     monkeypatch.setattr(cliproxy_login_mod, "CLIProxyManagementClient", cls)
+    monkeypatch.setattr(settings_router_module, "_test_llm_provider_config", fake_probe)
     return cls
 
 

@@ -46,6 +46,8 @@ _HINT_TEXT = "#6b7280"
 # Success text (the welcome report's "yes", a completed login): the same green
 # every wizard screen uses for a good outcome.
 SUCCESS = "#86efac"
+# Warning text (a rejected login, detection notes).
+WARNING = "#fcd34d"
 
 _CODE_SPAN = re.compile(r"`([^`\n]+)`")
 

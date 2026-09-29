@@ -6,6 +6,8 @@ Split out of the former monolithic test_setup_wizard.py (dev-todo #54).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from nymeria.setup.runner import main as setup_main
 
@@ -28,7 +30,7 @@ def test_finalize_cliproxy_claude_local_writes_root_url_and_gatekeeper(
     gatekeeper in ANTHROPIC_API_KEY (never the DIRECT slot), and the management
     endpoint persisted for the backend's /cliproxy routes."""
     calls = _stub_llm(monkeypatch)
-    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
+    fake = _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     rc = setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
@@ -46,8 +48,14 @@ def test_finalize_cliproxy_claude_local_writes_root_url_and_gatekeeper(
     assert "ANTHROPIC_DIRECT_API_KEY" not in content
     assert _env_line(content, "CLIPROXY_MANAGEMENT_URL") == "http://localhost:8318"
     assert _env_line(content, "CLIPROXY_MANAGEMENT_KEY") == "cpm-secret"
-    # The live test ran against the host-reachable proxy with the gatekeeper.
-    assert calls and calls[0][2] == "cpx-gate"
+    # The live test is ONE real completion (#101 entry 2) through the
+    # host-reachable proxy, on the chosen model, with the gatekeeper; the old
+    # GET /models check passed with a dead credential and is not used.
+    assert calls == []
+    (probe,) = fake.probes
+    assert probe.llm_base_url == "http://localhost:8318"
+    assert probe.llm_model == "claude-opus-5"
+    assert probe.api_key.get_secret_value() == "cpx-gate"
 
 
 def test_finalize_cliproxy_codex_full_stack_writes_v1_responses(
@@ -57,7 +65,7 @@ def test_finalize_cliproxy_codex_full_stack_writes_v1_responses(
     in OPENAI_API_KEY, and the backend-facing URLs use the docker network
     alias while the live test used the host URL."""
     calls = _stub_llm(monkeypatch)
-    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("codex")])
+    fake = _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("codex")])
     root = tmp_path / "checkout"
     root.mkdir()
     rc = setup_main(
@@ -76,7 +84,12 @@ def test_finalize_cliproxy_codex_full_stack_writes_v1_responses(
     assert _env_line(content, "OPENAI_API_MODE") == "responses"
     assert _env_line(content, "OPENAI_API_KEY") == "cpx-gate"
     assert _env_line(content, "CLIPROXY_MANAGEMENT_URL") == "http://cli-proxy-api:8317"
-    assert calls and calls[0][1] == "gpt-5.5"
+    # Probed from the HOST (the written URL is a container alias).
+    assert calls == []
+    (probe,) = fake.probes
+    assert probe.llm_base_url == "http://localhost:8318/v1"
+    assert probe.llm_model == "gpt-5.5"
+    assert probe.api_key.get_secret_value() == "cpx-gate"
 
 
 def test_finalize_cliproxy_slim_docker_uses_host_gateway(monkeypatch, tmp_path):
@@ -166,7 +179,7 @@ def test_noninteractive_cliproxy_gatekeeper_optional_with_management_key(
 ):
     """With a management key, setup reads the proxy's existing cpx- key itself."""
     calls = _stub_llm(monkeypatch)
-    _fake_cliproxy_client(
+    fake = _fake_cliproxy_client(
         monkeypatch,
         auth_files=[_active_auth("claude")],
         knobs={"api-keys": ["cpx-existing"]},
@@ -178,7 +191,8 @@ def test_noninteractive_cliproxy_gatekeeper_optional_with_management_key(
     assert "Verified" in out
     content = (root / "config.env").read_text(encoding="utf-8")
     assert _env_line(content, "ANTHROPIC_API_KEY") == "cpx-existing"
-    assert calls and calls[0][2] == "cpx-existing"
+    assert calls == []
+    assert [p.api_key.get_secret_value() for p in fake.probes] == ["cpx-existing"]
 
 
 def test_noninteractive_cliproxy_mints_gatekeeper_when_proxy_has_none(
@@ -1168,9 +1182,10 @@ def test_compose_up_without_a_joined_network_touches_no_network(monkeypatch, tmp
     assert docker.calls == [["docker", "compose", "up", "-d"]]
 
 
-def _run_wizard_login(monkeypatch, **fake_kwargs):
+def _run_wizard_login(monkeypatch, *, with_state=False, **fake_kwargs):
     """Drive the TUI login step against the scripted proxy; return the status
-    panel's (plain text, markup spans, bottom margin)."""
+    panel's (plain text, markup spans, bottom margin), plus the state when
+    ``with_state``. Waits past the transient "Starting"/"Checking" lines."""
     import asyncio
 
     from textual.widgets import Static
@@ -1193,16 +1208,18 @@ def _run_wizard_login(monkeypatch, **fake_kwargs):
     async def drive():
         app = SetupWizardApp(state, steps=[cliproxy_steps.make_cliproxy_login_step()])
         async with app.run_test() as pilot:
-            for _ in range(40):
+            for _ in range(100):
                 await pilot.pause(0.02)
                 panel = app.screen.query_one("#cliproxy-login-status", Static)
-                if "Starting" not in str(panel.render()):
+                text = str(panel.render())
+                if "Starting" not in text and "Checking" not in text:
                     break
             rendered = panel.render()
             spans = " ".join(str(span.style) for span in getattr(rendered, "spans", []))
             return str(rendered), spans, panel.styles.margin.bottom
 
-    return asyncio.run(drive())
+    result = asyncio.run(drive())
+    return (*result, state) if with_state else result
 
 
 def test_wizard_login_success_is_green_and_set_apart(monkeypatch):
@@ -1215,6 +1232,7 @@ def test_wizard_login_success_is_green_and_set_apart(monkeypatch):
         monkeypatch, auth_files=[_active_auth("claude", account="max@example.com")]
     )
     assert text.startswith("Already logged in as max@example.com")
+    assert "answered a test request" in text
     assert SUCCESS in spans
     assert margin == 1
 
@@ -1237,3 +1255,353 @@ def test_wizard_login_failure_is_not_green_and_proxy_text_is_literal(monkeypatch
     )
     assert text == "Cannot reach the proxy: bad [bold]gateway[/bold]"
     assert SUCCESS not in spans
+
+
+# --- #101 entry 2: a listed login is not a working login ----------------------
+# The wizard used to say "Already logged in" from the proxy's auth-file LIST,
+# and finalize's "Connected" came from a GET /models the proxy answers from its
+# own registry: a revoked token passed both. One real completion now decides.
+
+_REJECTED = SimpleNamespace(
+    ok=False, status_code=401, message="authentication_error: Invalid authentication credentials"
+)
+_QUOTA = SimpleNamespace(ok=False, status_code=429, message="rate_limit_error")
+
+
+def test_wizard_login_with_a_rejected_credential_is_not_logged_in(monkeypatch):
+    from nymeria.setup.steps.base import SUCCESS
+
+    for fake_kwargs, prefix in (
+        ({"auth_files": [_active_auth("claude", account="max@example.com")]},
+         "Already logged in as max@example.com"),
+        ({"auth_files": [], "status_script": ["ok"],
+          "login_lands": _active_auth("claude", account="new@example.com")},
+         "Login complete as new@example.com"),
+    ):
+        text, spans, _, state = _run_wizard_login(
+            monkeypatch, with_state=True, probe=_REJECTED, **fake_kwargs
+        )
+        assert text.startswith(prefix)
+        assert "rejected" in text and "Ctrl+R" in text
+        assert SUCCESS not in spans
+        # Enter no longer passes the step on a dead login.
+        assert state.cliproxy_logged_in is False
+
+
+def test_wizard_login_inconclusive_check_never_blocks(monkeypatch):
+    from nymeria.setup.steps.base import SUCCESS
+
+    text, spans, _, state = _run_wizard_login(
+        monkeypatch,
+        with_state=True,
+        probe=_QUOTA,
+        auth_files=[_active_auth("claude", account="max@example.com")],
+    )
+    assert text.startswith("Already logged in as max@example.com")
+    assert "could not confirm" in text.lower()
+    assert "Press Enter to continue" in text
+    assert SUCCESS not in spans
+    assert state.cliproxy_logged_in is True
+
+
+def test_finalize_stops_when_the_subscription_rejects_the_stored_login(
+    monkeypatch, tmp_path, capsys
+):
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[_active_auth("claude")],
+        knobs={"api-keys": ["cpx-existing"]},
+        probe=_REJECTED,
+    )
+    root = tmp_path / "init"
+    rc = setup_main(_CLIPROXY_BASE_ARGS + ["--root", str(root)])
+    out = " ".join(capsys.readouterr().out.split())
+    assert rc == 2
+    assert "rejected" in out and "--cliproxy-login" in out
+    assert "Connected" not in out
+    assert not (root / "config.env").exists()
+
+
+def test_finalize_proceeds_with_a_note_when_the_check_is_inconclusive(
+    monkeypatch, tmp_path, capsys
+):
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[_active_auth("claude")],
+        knobs={"api-keys": ["cpx-existing"]},
+        probe=_QUOTA,
+    )
+    root = tmp_path / "init"
+    rc = setup_main(_CLIPROXY_BASE_ARGS + ["--root", str(root)])
+    out = " ".join(capsys.readouterr().out.split())
+    assert rc == 0
+    assert "could not confirm" in out.lower()
+    assert "Connected" not in out
+    assert (root / "config.env").exists()
+
+
+def test_finalize_ok_says_the_login_answered_and_skip_skips_it(
+    monkeypatch, tmp_path, capsys
+):
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch, auth_files=[_active_auth("claude")], knobs={"api-keys": ["cpx-existing"]}
+    )
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--root", str(tmp_path / "a"), "--model", "claude-sonnet-5"]
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert rc == 0
+    # The CHOSEN model is what gets exercised, not the spec default.
+    assert [p.llm_model for p in fake.probes] == ["claude-sonnet-5"]
+    assert "Connected: claude-sonnet-5 (it answered a test request)" in out
+
+    fake.probes.clear()
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--root", str(tmp_path / "b"), "--skip-llm-test"]
+    )
+    assert rc == 0
+    assert fake.probes == []
+
+
+# --- #101 entry 4: the model picker says what Enter will take -----------------
+
+
+def test_model_picker_shows_what_enter_takes_and_collect_agrees(monkeypatch):
+    """Enter both selects and advances, so the dev left the step unsure which
+    model it took. A live "Enter uses: X" line mirrors exactly what collect
+    stores: the highlighted row, else the typed id, else the spec default."""
+    import asyncio
+
+    from textual.widgets import Static
+
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps import cliproxy as cliproxy_steps
+    from nymeria.setup.widgets import ListItem, SearchableList
+
+    # No management URL: the live model fetch stops at once (the list is fed
+    # below as if it had answered).
+    state = WizardState(
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH, cliproxy_provider="claude"
+    )
+
+    async def drive() -> list[str]:
+        app = SetupWizardApp(state, steps=[cliproxy_steps.make_cliproxy_model_step()])
+        seen: list[str] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def line() -> str:
+                return str(app.screen.query_one("#cliproxy-model-pick", Static).render())
+
+            seen.append(line())  # nothing listed yet: the default
+            picker = app.screen.query_one(SearchableList)
+            picker.set_items(
+                [ListItem(value=m, primary=m) for m in ("claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5")]
+            )
+            await pilot.pause()
+            seen.append(line())  # the default is highlighted in the list
+            await pilot.press("down", "down")
+            await pilot.pause()
+            seen.append(line())  # the cursor moved one row
+            picker.focus()  # back to the search box
+            await pilot.press(*"my-custom-id")
+            await pilot.pause()
+            seen.append(line())  # no row matches: the typed id
+            await pilot.press("enter")
+            await pilot.pause()
+        return seen
+
+    seen = asyncio.run(drive())
+    assert seen == [
+        "Enter uses: claude-opus-5",
+        "Enter uses: claude-opus-5",
+        "Enter uses: claude-sonnet-5",
+        "Enter uses: my-custom-id",
+    ]
+    assert state.model == "my-custom-id"
+
+
+def test_enter_waits_for_the_login_check(monkeypatch):
+    """An early Enter must not carry a login past the step while the check
+    that may reject it is still running."""
+    import asyncio
+
+    from textual.widgets import Static
+
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps import cliproxy as cliproxy_steps
+
+    _fake_cliproxy_client(
+        monkeypatch,
+        knobs={"api-keys": ["cpx-existing"]},
+        auth_files=[_active_auth("claude", account="max@example.com")],
+    )
+    release = asyncio.Event()
+
+    async def slow_check(*_args, **_kwargs):
+        await release.wait()
+        return "ok", "claude-opus-5"
+
+    monkeypatch.setattr(cliproxy_steps, "verify_login_serves", slow_check)
+    state = WizardState(
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH,
+        cliproxy_provider="claude",
+        cliproxy_management_url="http://localhost:8318",
+        cliproxy_management_key="cpm-secret",
+    )
+
+    async def drive() -> tuple[str, bool, str]:
+        app = SetupWizardApp(state, steps=[cliproxy_steps.make_cliproxy_login_step()])
+        async with app.run_test() as pilot:
+            for _ in range(100):
+                await pilot.pause(0.02)
+                status = str(app.screen.query_one("#cliproxy-login-status", Static).render())
+                if "Checking" in status:
+                    break
+            await pilot.press("enter")
+            await pilot.pause()
+            error = str(app.screen.query_one("#wizard-error", Static).render())
+            held = not app.completed
+            release.set()
+            await pilot.pause(0.1)
+            after = str(app.screen.query_one("#wizard-error", Static).render())
+            return status, held, error, after
+
+    status, held, error, after = asyncio.run(drive())
+    assert "Checking" in status
+    assert held
+    assert "Checking the login" in error
+    assert after.strip() == ""  # the hold message does not outlive the check
+
+
+def test_an_unfaked_cliproxy_run_never_reaches_a_real_proxy(monkeypatch, tmp_path, capsys):
+    """The suite-wide guard: a test that forgets `_fake_cliproxy_client` gets
+    the offline refusal, never a management request to a live proxy (which
+    bans an IP after 5 bad attempts)."""
+    _stub_llm(monkeypatch)
+    import httpx
+
+    class _NoNetwork:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("an unfaked CLIProxy test reached httpx")
+
+    # Belt and braces: were the guard ever missing, this fails the run
+    # instead of spending one of the live proxy's five bad attempts.
+    monkeypatch.setattr(httpx, "AsyncClient", _NoNetwork)
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-gatekeeper-key", "cpx-gate", "--root", str(tmp_path / "x")]
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    # The preflight hits the refusal; finalize's check probes the stub's
+    # `.invalid` data plane (never the live proxy), which this test's httpx
+    # stand-in refuses too. Both carry on unverified.
+    assert "list_auth_files tried to reach the proxy at http://localhost:8318" in out
+    assert "Could not confirm the Claude" in out
+    assert "an unfaked CLIProxy test reached httpx" in out
+    assert rc == 0  # unverifiable, never a block
+
+
+def test_the_check_uses_the_gatekeeper_being_written(monkeypatch, tmp_path, capsys):
+    """A mistyped --cliproxy-gatekeeper-key must fail HERE: probing with the
+    proxy's own key would pass and ship a config whose every call 401s (the
+    old GET check used the written key; review finding)."""
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch, auth_files=[_active_auth("claude")], knobs={"api-keys": ["cpx-proxy"]}
+    )
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS
+        + ["--cliproxy-gatekeeper-key", "cpx-typo", "--root", str(tmp_path / "init")]
+    )
+    assert rc == 0
+    assert [p.api_key.get_secret_value() for p in fake.probes] == ["cpx-typo"]
+
+
+def test_a_headless_relogin_on_an_installed_system_is_checked(monkeypatch, tmp_path, capsys):
+    """The case --cliproxy-login exists for: the gatekeeper is already on
+    disk (so the key field is blank), and the check used to be skipped with
+    it. A strict run now checks, and a rejection stops before writing."""
+    root = tmp_path / "init"
+    _cliproxy_first_run(monkeypatch, root)
+    before = (root / "config.env").read_text(encoding="utf-8")
+    capsys.readouterr()
+    fake = _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[],
+        knobs={"api-keys": ["cpx-gate"]},
+        status_script=["ok"],
+        login_lands=_active_auth("claude"),
+        probe=_REJECTED,
+    )
+    monkeypatch.setattr("nymeria.setup.cliproxy_login._browser_launch_blocked", lambda: True)
+    monkeypatch.setattr("nymeria.setup.cliproxy_login.LOGIN_POLL_INTERVAL_SECONDS", 0.01)
+    rc = setup_main(
+        ["--cliproxy-login", "--root", str(root), "--non-interactive"]
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert len(fake.probes) == 1
+    assert "rejected" in out
+    assert rc == 2
+    assert (root / "config.env").read_text(encoding="utf-8") == before
+
+
+def test_a_rejection_outside_a_strict_run_is_a_note_not_a_block(monkeypatch, tmp_path):
+    """Interactive (the login step already offered Ctrl+R, and the user may
+    have chosen Ctrl+S to log in later) and lenient reconfigures write the
+    config with the remedy, never strand the run at the end."""
+    from rich.console import Console
+
+    from nymeria.onboarding import HostingOption, ProviderAuthMethod
+    from nymeria.setup.finalize import finalize as finalize_fn
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch, auth_files=[_active_auth("claude")], probe=_REJECTED
+    )
+    root = tmp_path / "init"
+    state = WizardState(
+        hosting=HostingOption.LOCAL,
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH,
+        cliproxy_provider="claude",
+        cliproxy_management_url="http://localhost:8318",
+        cliproxy_management_key="cpm-secret",
+        cliproxy_gatekeeper_key="cpx-gate",
+        cliproxy_logged_in=False,  # the user skipped the login step
+        root=root,
+    )
+    console = Console(record=True, width=200)
+    rc = finalize_fn(state, console=console, non_interactive=False)
+    out = console.export_text()
+    assert len(fake.probes) == 1
+    assert "rejected the proxy's stored login" in out
+    assert "Writing the config anyway" in out
+    assert rc == 0
+    assert (root / "config.env").exists()
+
+
+def test_the_credential_check_does_not_load_the_ml_stack():
+    """`nymeria init` imports the API layer for the check (#101 entry 2). The
+    settings router once imported the LLM providers module at module scope,
+    which drags in torch and transformers (about 8 s cold) and froze the
+    wizard's TUI mid-check."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import nymeria.api.routers.cliproxy, nymeria.api.routers.settings; "
+        "heavy = [m for m in ('torch', 'transformers', "
+        "'nymeria.vendor.react_agent.providers') if m in sys.modules]; "
+        "print(heavy); sys.exit(1 if heavy else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

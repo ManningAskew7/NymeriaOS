@@ -18,7 +18,7 @@ from textual.widgets import Static
 from ...onboarding import HOSTING_CHOICES
 from ..environment import EnvironmentReport, _floor1, detect_environment
 from ..nav import Step
-from .base import ACCENT, SECONDARY, SUCCESS, WizardStep
+from .base import ACCENT, SECONDARY, SUCCESS, WARNING, WizardStep
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -83,7 +83,7 @@ def _report_markup(report: EnvironmentReport) -> str:
     lines = [f"[{SECONDARY}]{label:<22}[/]  {value}" for label, value in rows]
     for note in report.notes:
         lines.append("")
-        lines.append(f"[#fcd34d]Note:[/#fcd34d] {note}")
+        lines.append(f"[{WARNING}]Note:[/] {note}")
     return "\n".join(lines)
 
 
