@@ -32,6 +32,9 @@ services:
     environment:
       NYMERIA_DATA_DIR: /data
       NYMERIA_WORKSPACE_DIR: /workspace
+      # Where settings changed in the app persist (#254): the data volume, not
+      # the image tree, which a recreate discards. Wins over .env.docker.
+      NYMERIA_SETTINGS_FILE: /data/settings.env
     # Lets the in-process agent reach CLIProxy (and any other host service) via
     # http://host.docker.internal:<port> from inside the container.
     extra_hosts:

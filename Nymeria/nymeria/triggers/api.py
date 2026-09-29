@@ -930,7 +930,17 @@ def create_api_app(
         except Exception:
             logger.exception("Failed to stop agent ticker during API shutdown")
 
+    async def _log_runtime_settings_file() -> None:
+        # Where app-made settings changes persist on the container shapes, and
+        # which env-file values they shadow (#254). Names only, never values.
+        from ..config.settings import describe_runtime_settings_file
+
+        line = describe_runtime_settings_file()
+        if line:
+            logger.info(line)
+
     app.router.add_event_handler("startup", _resize_default_executor)
+    app.router.add_event_handler("startup", _log_runtime_settings_file)
     from ..core.turn_runner import open_turn_runner, shutdown_turns
 
     app.router.add_event_handler("startup", open_turn_runner)

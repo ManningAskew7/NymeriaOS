@@ -3253,3 +3253,61 @@ def test_llm_provider_test_custom_non_cliproxy_base_gets_no_cliproxy_treatment(
     assert call["headers"]["User-Agent"] == "claude-cli/2.1.113"
     assert "Anthropic-Beta" not in call["headers"]
     assert "system" not in call["json"]
+
+
+def test_patch_settings_persists_to_the_shape_named_runtime_file(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # #254: on the container shapes the project root is the image tree, and a
+    # write there (the old /app/.env) died on every recreate. With
+    # NYMERIA_SETTINGS_FILE set the write lands in that file instead, and the
+    # root dotenv is left alone.
+    from nymeria.config import settings as settings_mod
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setattr(settings_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings_mod, "_PROCESS_ROOT", tmp_path)
+    root_env = tmp_path / ".env"
+    root_env.write_text("LLM_MODEL=from-image-tree\n", encoding="utf-8")
+    runtime = tmp_path / "volume" / "settings.env"
+    runtime.parent.mkdir()
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"llm_model": "saved-in-app"}
+    )
+
+    assert response.status_code == 200
+    assert "LLM_MODEL=saved-in-app" in runtime.read_text(encoding="utf-8")
+    assert runtime.stat().st_mode & 0o777 == 0o600
+    assert root_env.read_text(encoding="utf-8") == "LLM_MODEL=from-image-tree\n"
+
+
+def test_patch_settings_refuses_a_container_pinned_key_while_the_file_is_set(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # #254 review: nymeria_data_dir is PATCHable, and saved to the durable
+    # runtime file it would outlive every recreate. Refused with the place it
+    # is really set, and nothing is written.
+    from nymeria.config import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings_mod, "_PROCESS_ROOT", tmp_path)
+    runtime = tmp_path / "volume" / "settings.env"
+    runtime.parent.mkdir()
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"nymeria_data_dir": "/workspace/elsewhere", "llm_model": "m"},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "NYMERIA_DATA_DIR" in detail and "compose" in detail
+    assert not runtime.exists()

@@ -704,3 +704,76 @@ def test_a_store_too_expensive_to_carve_is_left_reachable(tmp_path, monkeypatch)
     monkeypatch.setattr(exec_policy, "_MAX_CARVE_ENTRIES", 5)
 
     assert exec_policy.denied_paths() == ("/proc",)
+
+
+# --- the runtime settings file (#254) -----------------------------------------
+
+
+def test_the_runtime_settings_file_is_denied_on_the_container_layout(
+    tmp_path, monkeypatch
+):
+    # It holds provider keys the app saved. On the container shapes it sits on
+    # the data volume beside the other stores, outside the /app working tree,
+    # so it is the one dotenv this control can actually deny.
+    project = tmp_path / "app"
+    data = tmp_path / "data"
+    project.mkdir()
+    _seed_data_dir(data)
+    runtime = data / "settings.env"
+    runtime.write_text("OPENAI_API_KEY=sk-saved", encoding="utf-8")
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+    _settings(monkeypatch, project_root=project, data_dir=data)
+
+    assert str(runtime) in exec_policy.denied_paths()
+
+
+def test_the_runtime_settings_file_follows_the_creation_root_rule(
+    tmp_path, monkeypatch
+):
+    # Same rule as every store: inside the working tree it is dropped, not
+    # carved (the source-checkout layout).
+    project = tmp_path / "project"
+    data = project / "data"
+    _seed_data_dir(data)
+    runtime = project / "settings.env"
+    runtime.write_text("K=V", encoding="utf-8")
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+    _settings(monkeypatch, project_root=project, data_dir=data)
+
+    assert exec_policy.denied_paths() == ("/proc",)
+
+
+@requires_landlock
+def test_enforcement_a_sandboxed_child_cannot_read_the_runtime_settings_file(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "app"
+    data = tmp_path / "data"
+    project.mkdir()
+    _seed_data_dir(data)
+    runtime = data / "settings.env"
+    runtime.write_text("OPENAI_API_KEY=sk-saved", encoding="utf-8")
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+    _settings(monkeypatch, project_root=project, data_dir=data)
+
+    script = (
+        "try:\n"
+        f"    print(open({str(runtime)!r}).read())\n"
+        "except OSError as exc:\n"
+        "    print('DENIED:' + exc.__class__.__name__)\n"
+    )
+    policy = carved_policy(
+        read_only=(*DEFAULT_SYSTEM_ROOTS, *_PY_ROOTS, *exec_policy.PROC_READABLE_FILES),
+        read_write=(str(tmp_path), *DEFAULT_DEVICE_NODES),
+        denied=exec_policy.denied_paths(),
+    )
+    proc = subprocess.run(
+        wrap_argv([sys.executable, "-c", script]),
+        env={**os.environ, **sandbox_env_overlay(policy)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("DENIED"), proc.stdout
+    assert "sk-saved" not in proc.stdout

@@ -23,6 +23,19 @@ The thin clients (`mcp`, the chat bots) still receive only the variables
 their service declares. A changed value needs `up -d` (a recreate), not
 `restart`.
 
+Settings changed in the app (the Settings screens, `/settings set`,
+`/model ... global`, `PATCH /settings`) are saved to `NYMERIA_SETTINGS_FILE`,
+which every container shape sets to `/data/settings.env` on the data volume.
+That file loads LAST, so a value saved there wins over the same key in
+`.env.docker`; the api logs at startup which keys it overrides (names only).
+To go back to the `.env.docker` value, change it in the app or delete its line
+from `/data/settings.env`. Keys the compose file pins (the data, workspace and
+project dirs, `DATABASE_BACKEND`, `POSTGRES_URI`, `REDIS_*`, the listen address,
+`NYMERIA_API_URL`) cannot be changed this way: a settings write refuses them,
+and the file never applies them. Before #254 these writes went to `/app/.env` in the
+container's own filesystem: they applied on a `restart` and were silently lost
+on the next recreate.
+
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
 ## Runtime Settings Updates
@@ -815,6 +828,7 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `NYMERIA_SNAPSHOT_PASSPHRASE` | - | Passphrase for `snapshot` create/verify/restore when running non-interactively (alternative to `--passphrase-file`). Never persisted by Nymeria; set it in the invoking environment only |
 | `NYMERIA_WORKSPACE_DIR` | `/workspace` | Workspace root for generated artifacts and optional file-tool confinement |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
+| `NYMERIA_SETTINGS_FILE` | - (containers: `/data/settings.env`) | Where settings changed at runtime are saved, loaded after every other env file so its values win. Set it in the process environment (compose does), never in an env file, since it decides which env files load; a relative path is taken against the project root. Holds provider keys, so the file tools refuse it and the exec sandbox denies it when it sits outside the project root. Unset: writes go to the highest-precedence existing root dotenv, as before |
 | `NYMERIA_CONFINE_FILE_TO_WORKSPACE` | `false` | When true, `file_write` and `file_edit` reject write targets outside `NYMERIA_WORKSPACE_DIR`. False keeps broad personal-assistant file access and relies on deployment sandboxing |
 | `NYMERIA_ALLOW_SELF_EDIT` | `true` | Enables admin-only `self_file_write`, `self_file_delete`, and `self_reload`; set false to disable self-modifying maintenance tools |
 | `NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL` | `true` | Enables managed MCP installs that execute downloaded package/bundle code inside the current backend environment. Set false to require an external sandbox/maintenance workflow |

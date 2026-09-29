@@ -13,6 +13,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
+from ..config.settings import runtime_settings_file
 from ..core.exec_policy import PROC_READABLE_FILES
 from ..core.storage_paths import write_text_atomic
 from ..core.time_utils import get_user_tz
@@ -178,6 +179,36 @@ def _process_state_error(path: Path) -> Optional[str]:
     )
 
 
+def _runtime_settings_file_error(path: Path) -> Optional[str]:
+    """Refuse the runtime settings file (``NYMERIA_SETTINGS_FILE``, #254).
+
+    It holds whatever the app saved at runtime, provider API keys included
+    (``llm_api_key`` writes the provider's key var there), so it is a
+    credential store by content. Matched by resolved path rather than by
+    data-dir name because the shape names the file, not this table; on the
+    container shapes it sits in the data dir, where the other stores are.
+    Writing it by hand would also bypass the settings path's own validation
+    and the #157 agent block on sensitive keys.
+    """
+    runtime = runtime_settings_file()
+    if runtime is None:
+        return None
+    try:
+        same = os.path.normcase(os.path.realpath(path)) == os.path.normcase(
+            os.path.realpath(runtime)
+        )
+    except (OSError, ValueError):
+        return None
+    if not same:
+        return None
+    logger.warning("Blocked file-tool access to the runtime settings file: %s", runtime)
+    return (
+        f"Cannot access {runtime}: it is the deployment's saved settings file, "
+        "which holds provider credentials, and is excluded from the file tools. "
+        "Read or change a setting with /settings get and /settings set instead."
+    )
+
+
 def secrets_path_error(path: Path) -> Optional[str]:
     """Return an error message if ``path`` targets a credential store,
     else ``None``.
@@ -190,6 +221,10 @@ def secrets_path_error(path: Path) -> Optional[str]:
     process_error = _process_state_error(path)
     if process_error:
         return process_error
+
+    settings_file_error = _runtime_settings_file_error(path)
+    if settings_file_error:
+        return settings_file_error
 
     rel = _data_dir_relative(path)
     if rel is None:

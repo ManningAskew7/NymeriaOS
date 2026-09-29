@@ -746,6 +746,31 @@ _GRAPH_REBUILD_FIELDS = (
 )
 
 
+def _refuse_container_pinned_keys(produced: list[tuple[str, str]]) -> None:
+    """Refuse a write to a key the container shape pins, before anything lands.
+
+    Only while a runtime settings file is configured (the container shapes):
+    there a saved value would be ignored at the next boot, and before that fix
+    it would have outlived every recreate (#254 review). Elsewhere these keys
+    stay writable as before, restart-required.
+    """
+    from ...config.settings import CONTAINER_PINNED_KEYS, runtime_settings_file
+
+    if runtime_settings_file() is None:
+        return
+    pinned = sorted({key for key, _value in produced if key in CONTAINER_PINNED_KEYS})
+    if pinned:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{', '.join(pinned)} is fixed by this deployment's container "
+                "configuration (the compose file's environment block), so a "
+                "value saved here would be ignored. Change it there and "
+                "recreate the containers. No changes were applied."
+            ),
+        )
+
+
 def apply_server_settings_update(
     updates: ServerSettingsUpdate,
     *,
@@ -849,6 +874,7 @@ def apply_server_settings_update(
         for name, value in updates_dict.items()
         if name in env_mapping
     ] + extra_env_pairs
+    _refuse_container_pinned_keys(produced)
     write_env_file(env_path, produced, merge=True)
     _sync_updated_env_vars(produced)
 

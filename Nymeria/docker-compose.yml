@@ -321,6 +321,10 @@ services:
       # Data directory
       NYMERIA_DATA_DIR: /data
       NYMERIA_WORKSPACE_DIR: /workspace
+      # Where settings changed in the app persist (#254). Without it they went
+      # to /app/.env in the container layer and died on every recreate. Loaded
+      # last, so it wins over .env.docker; the api logs which keys it overrides.
+      NYMERIA_SETTINGS_FILE: /data/settings.env
       # Listen address, pinned against the env file: the wizard writes
       # API_PORT there for the HOST side of the port mapping above, which
       # must never move the container side off 8000.

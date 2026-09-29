@@ -656,3 +656,36 @@ def test_the_stack_still_renders_without_an_env_file(tmp_path) -> None:
     services = _render_compose(tmp_path, POSTGRES_PASSWORD="pw", REDIS_PASSWORD="pw")
 
     assert services["worker"]["environment"]["NYMERIA_DATA_DIR"] == "/data"
+
+
+def _named_volume_targets(service: dict, compose: dict) -> set[str]:
+    targets = set()
+    for mount in service.get("volumes", []):
+        source, _, rest = str(mount).partition(":")
+        if source in (compose.get("volumes") or {}):
+            targets.add(rest.split(":")[0])
+    return targets
+
+
+def test_runtime_settings_persist_on_a_named_volume() -> None:
+    # #254: without NYMERIA_SETTINGS_FILE a setting changed in the app landed
+    # in /app/.env, the container's writable layer, and vanished on the next
+    # recreate. Every agent-running service must name a file whose directory
+    # is a NAMED volume, the only mount here that survives `up -d`.
+    for filename, services in (
+        ("docker-compose.yml", ("api", "worker")),
+        ("docker-compose.single.yml", None),
+        ("docker-compose.single.published.yml", None),
+    ):
+        compose = _load_compose(filename)
+        for name in services or compose["services"]:
+            service = compose["services"][name]
+            env = service.get("environment") or {}
+            if services is None and "NYMERIA_DATA_DIR" not in env:
+                continue  # a sidecar (searxng), not the Nymeria service
+            settings_file = env.get("NYMERIA_SETTINGS_FILE")
+            assert settings_file, f"{filename}:{name} sets no NYMERIA_SETTINGS_FILE"
+            parent = str(Path(settings_file).parent)
+            assert parent in _named_volume_targets(service, compose), (
+                f"{filename}:{name}: {settings_file} is not on a named volume"
+            )

@@ -290,6 +290,16 @@ def denied_paths(
     """
     settings = get_settings()
     candidates: list[str] = [str(path) for path in secret_at_rest_paths(settings.data_dir)]
+    # The runtime settings file (#254) holds provider keys the app saved. It
+    # is the one dotenv that CAN be denied: the shapes that set it put it on
+    # the data volume, outside the project root, so the creation-root rule
+    # below keeps it (the comment that follows explains why the root dotenvs
+    # cannot be).
+    from ..config.settings import runtime_settings_file
+
+    runtime_file = runtime_settings_file()
+    if runtime_file is not None:
+        candidates.append(str(runtime_file))
     # The dotenv files are NOT candidates, and the reason is worth stating
     # because they hold the same secrets as the environment this control is
     # about. ``get_env_file_paths`` is ``project_root / <name>`` by

@@ -114,15 +114,89 @@ DEFAULT_LLM_FALLBACK_MODELS = "anthropic:claude-haiku-4-5-20251001"
 ReasoningEffort = Literal["off", "low", "medium", "high", "xhigh", "max"]
 
 
+SETTINGS_FILE_ENV = "NYMERIA_SETTINGS_FILE"
+# Keys the container shapes pin in their compose `environment:` block, which the
+# runtime settings file may never override and a settings write refuses while
+# one is configured. Four of them are writable through PATCH /settings, and a
+# value saved to a DURABLE file would outlive every recreate: one
+# `/settings set nymeria_data_dir ...` would point api and worker at an empty
+# data dir (every token invalid) with no recreate to clear it (#254 review).
+# The rest are listed so a hand edit of the file cannot move them either.
+CONTAINER_PINNED_KEYS: frozenset[str] = frozenset({
+    "API_HOST",
+    "API_PORT",
+    "DATABASE_BACKEND",
+    "NYMERIA_API_URL",
+    "NYMERIA_DATA_DIR",
+    "NYMERIA_PROJECT_ROOT",
+    "NYMERIA_SETTINGS_FILE",
+    "NYMERIA_WORKSPACE_DIR",
+    "POSTGRES_URI",
+    "REDIS_ENABLED",
+    "REDIS_URL",
+})
+# The root this process booted with. `_is_process_root` compares against it,
+# not the mutable PROJECT_ROOT global, because `doctor --project-root` swaps
+# that global to inspect ANOTHER install (#254 review).
+_PROCESS_ROOT = PROJECT_ROOT
+
+
+def runtime_settings_file() -> Optional[Path]:
+    """The durable file runtime settings changes go to, when the shape names one.
+
+    Set by the container shapes (``/data/settings.env`` on the data volume).
+    Their project root is the image tree ``/app``, so without it a settings
+    change made in the app (``PATCH /settings``, ``/model ... global``) was
+    written to ``/app/.env`` in the container's writable layer: it applied on
+    a restart and vanished on the next ``up -d`` recreate, silently (#254,
+    #101 entry 18 of 2026-08-24). Moving the project root to ``/data`` instead
+    is wrong for the full stack, where the root also anchors the exec
+    sandbox's creation roots and self-modification.
+
+    Read from the PROCESS environment only (compose sets it), never from an env
+    file, because it decides which env files are read. A relative value is
+    taken against the project root. Loaded LAST (see ``get_env_file_paths``),
+    so a value saved at runtime wins over the root env files and over the
+    container environment; ``runtime_settings_overrides`` names what it won
+    over, for the startup log. Denied to the file tools and to sandboxed
+    commands like the other credential stores: provider keys are written here.
+    """
+    raw = os.environ.get(SETTINGS_FILE_ENV, "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _is_process_root(root: Path) -> bool:
+    try:
+        return Path(root).resolve() == _PROCESS_ROOT.resolve()
+    except OSError:
+        return False
+
+
 def get_env_file_paths(project_root: Path | None = None) -> Tuple[Path, ...]:
-    """Return environment files loaded for a runtime project root."""
+    """Return environment files loaded for a runtime project root, in load order.
+
+    The runtime settings file (``runtime_settings_file``) belongs to THIS
+    process, so it is appended only for this process's own root: a caller
+    inspecting another install (``doctor``, the wizard) never sees it.
+    """
     root = project_root or PROJECT_ROOT
-    return tuple(root / filename for filename in ENV_FILENAMES)
+    paths = tuple(root / filename for filename in ENV_FILENAMES)
+    runtime = runtime_settings_file()
+    if runtime is not None and runtime not in paths and _is_process_root(root):
+        paths += (runtime,)
+    return paths
 
 
 def get_env_write_path(project_root: Path | None = None) -> Path:
     """Return the dotenv file that should receive runtime settings updates."""
     root = project_root or PROJECT_ROOT
+
+    runtime = runtime_settings_file()
+    if runtime is not None and _is_process_root(root):
+        return runtime
 
     # Match load precedence: .env, config.env, then .env.docker. Updating the
     # highest-precedence existing file prevents lower files from being shadowed
@@ -160,6 +234,72 @@ _env_files_loaded = False
 _env_file_loading_suppressed = False
 _env_load_lock = threading.RLock()
 _runtime_pins: dict[str, Optional[str]] = {}
+_runtime_settings_overrides: Tuple[str, ...] = ()
+_runtime_settings_ignored: Tuple[str, ...] = ()
+
+
+def _apply_runtime_settings_file(path: Path) -> Tuple[List[str], List[str]]:
+    """Merge the runtime settings file into os.environ; return (overrides, ignored).
+
+    ``load_dotenv(override=True)`` semantics, minus ``CONTAINER_PINNED_KEYS``,
+    which stay whatever the shape set. An override is a key that held a
+    DIFFERENT non-empty value first: compose's ``${VAR:-}`` idiom injects an
+    empty string for every unset optional, which is not "a value set
+    elsewhere" (#254 review).
+    """
+    from dotenv import dotenv_values
+
+    overrides: List[str] = []
+    ignored: List[str] = []
+    for key, value in dotenv_values(path).items():
+        if value is None:
+            continue
+        if key in CONTAINER_PINNED_KEYS:
+            ignored.append(key)
+            continue
+        old = os.environ.get(key)
+        os.environ[key] = value
+        if old and old != value:
+            overrides.append(key)
+    return sorted(overrides), sorted(ignored)
+
+
+def runtime_settings_overrides() -> Tuple[str, ...]:
+    """Keys the runtime settings file changed at the last env load, sorted.
+
+    Names only, never values (most are secrets or harmless, and the log line
+    this feeds must be safe either way). A key counts when the process already
+    held a DIFFERENT value before the file loaded: on the container shapes
+    that is the compose environment, usually a value from ``.env.docker``, so
+    this is the list of ".env.docker edits that will not take effect".
+    """
+    return _runtime_settings_overrides
+
+
+def describe_runtime_settings_file() -> Optional[str]:
+    """One startup log line about the runtime settings file, or None when unset.
+
+    Says where app-made settings changes are saved, and names (never values)
+    the keys that file overrides, which is the list of ``.env.docker`` edits
+    that will not take effect until the line is removed or changed in the app.
+    """
+    runtime = runtime_settings_file()
+    if runtime is None:
+        return None
+    line = f"Settings changed in the app are saved to {runtime} ({SETTINGS_FILE_ENV})."
+    overrides = runtime_settings_overrides()
+    if overrides:
+        line += (
+            f" It loads last and overrides {len(overrides)} value(s) set elsewhere "
+            f"(for example in .env.docker): {', '.join(overrides)}. Change them in "
+            "the app, or delete their lines there, to use the other value."
+        )
+    if _runtime_settings_ignored:
+        line += (
+            f" Ignored (the container configuration fixes them): "
+            f"{', '.join(_runtime_settings_ignored)}."
+        )
+    return line
 
 
 def register_runtime_pins(pins: Mapping[str, Optional[str]]) -> None:
@@ -231,10 +371,12 @@ def reset_env_loading_state_for_tests() -> None:
     Deliberately does NOT clear the suppression flag: that one is the suite's
     hermeticity guarantee (#294) and must survive every test.
     """
-    global _env_files_loaded
+    global _env_files_loaded, _runtime_settings_overrides, _runtime_settings_ignored
     with _env_load_lock:
         _env_files_loaded = False
         _runtime_pins.clear()
+        _runtime_settings_overrides = ()
+        _runtime_settings_ignored = ()
 
 
 def load_env_files_into_environ(
@@ -256,7 +398,7 @@ def load_env_files_into_environ(
     non-UTF-8 byte in a password or a Notepad UTF-16 BOM must not stop a process
     from starting on the rest of its configuration.
     """
-    global _env_files_loaded
+    global _env_files_loaded, _runtime_settings_overrides, _runtime_settings_ignored
     with _env_load_lock:
         if _env_file_loading_suppressed and (
             project_root is None or Path(project_root) == PROJECT_ROOT
@@ -267,16 +409,25 @@ def load_env_files_into_environ(
 
         from dotenv import load_dotenv
 
+        runtime = runtime_settings_file()
+        overrides: List[str] = []
+        ignored: List[str] = []
         loaded: List[Path] = []
         for path in get_env_file_paths(project_root):
             try:
                 if not path.exists():
                     continue
-                load_dotenv(path, override=True)
+                if path == runtime:
+                    overrides, ignored = _apply_runtime_settings_file(path)
+                else:
+                    load_dotenv(path, override=True)
             except (OSError, UnicodeDecodeError, ValueError):
                 logger.warning("Skipping unreadable env file: %s", path, exc_info=True)
                 continue
             loaded.append(path)
+
+        _runtime_settings_overrides = tuple(overrides)
+        _runtime_settings_ignored = tuple(ignored)
 
         _env_files_loaded = True
         _apply_runtime_pins()
