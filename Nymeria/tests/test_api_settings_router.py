@@ -114,6 +114,7 @@ class FakeSettings:
     stt_language: str | None = None
     voice_default_thread_id: str | None = None
     openai_api_key: str | None = None
+    openai_direct_api_key: str | None = None
     anthropic_api_key: str | None = "anthropic-token"
     anthropic_direct_api_key: str | None = None
     openrouter_api_key: str | None = None
@@ -314,6 +315,10 @@ class FakeSettingsProvider:
             openai_api_key=os.environ.get(
                 "OPENAI_API_KEY",
                 self.settings.openai_api_key,
+            ),
+            openai_direct_api_key=os.environ.get(
+                "OPENAI_DIRECT_API_KEY",
+                self.settings.openai_direct_api_key,
             ),
             openrouter_api_key=os.environ.get(
                 "OPENROUTER_API_KEY",
@@ -2193,6 +2198,7 @@ def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_DIRECT_API_KEY",
         "OPENAI_API_KEY",
+        "OPENAI_DIRECT_API_KEY",
         "OPENROUTER_API_KEY",
         "EMBEDDING_API_KEY",
         "GEMINI_API_KEY",
@@ -2211,6 +2217,7 @@ def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
         "anthropic_api_key": "cpx-anthropic-new",
         "anthropic_direct_api_key": "sk-ant-direct-new",
         "openai_api_key": "sk-openai-new",
+        "openai_direct_api_key": "sk-openai-direct-new",
         "openrouter_api_key": "sk-or-new",
         "embedding_api_key": "sk-embedding-new",
         "gemini_api_key": "sk-gemini-new",
@@ -2230,6 +2237,7 @@ def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
     assert "ANTHROPIC_API_KEY=cpx-anthropic-new" in env_text
     assert "ANTHROPIC_DIRECT_API_KEY=sk-ant-direct-new" in env_text
     assert "OPENAI_API_KEY=sk-openai-new" in env_text
+    assert "OPENAI_DIRECT_API_KEY=sk-openai-direct-new" in env_text
     assert "OPENROUTER_API_KEY=sk-or-new" in env_text
     assert "EMBEDDING_API_KEY=sk-embedding-new" in env_text
     assert "GEMINI_API_KEY=sk-gemini-new" in env_text
@@ -2373,6 +2381,7 @@ def test_env_settings_list_masks_provider_and_capability_keys(
         "embedding_api_key": "sk-env-embedding-secret",
         "gemini_api_key": "sk-env-gemini-secret",
         "gemini_direct_api_key": "AIza-env-gemini-direct-secret",
+        "openai_direct_api_key": "sk-env-openai-direct-secret",
         "perplexity_api_key": "pplx-env-secret",
     }
     settings = FakeSettings(project_root=tmp_path, data_dir=tmp_path, **secrets)

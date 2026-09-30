@@ -34,6 +34,9 @@ OPTIONAL_ENV_ORDER = (
     "EMBEDDING_API_KEY",
     "RAG_RERANK_API_KEY",
     "OPENAI_API_KEY",
+    # The OpenAI media tools' key on a gateway route (setup/tool_keys.py
+    # openai_slot_holds_gateway_key), where OPENAI_API_KEY is the gatekeeper.
+    "OPENAI_DIRECT_API_KEY",
     "GEMINI_API_KEY",
     # The Gemini media tools' key on a gateway route (setup/tool_keys.py
     # gemini_slot_holds_gateway_key), where GEMINI_API_KEY is the gatekeeper.

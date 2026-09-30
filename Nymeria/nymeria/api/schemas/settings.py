@@ -334,6 +334,9 @@ class ServerSettingsUpdate(BaseModel):
     anthropic_api_key: Optional[str] = None
     anthropic_direct_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
+    # Direct OpenAI key for image generation and OpenAI speech (#428); never
+    # an LLM-route credential (so no graph rebuild).
+    openai_direct_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     # Generic write-only key slot: routed by the applier to the FIRST declared
     # api_key_env_var of the provider being set (updates.llm_provider, falling

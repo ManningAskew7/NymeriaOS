@@ -149,8 +149,10 @@ def _write_image_file(
 
 
 def _openai_key() -> str | None:
-    settings = get_settings()
-    return settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
+    # The direct-call resolver, never OPENAI_API_KEY raw: on a CLIProxy codex
+    # (or gemini-cli, kimi, grok) route that slot holds the proxy's
+    # gatekeeper, which this call would hand to OpenAI (#428).
+    return get_settings().openai_media_api_key
 
 
 def _gemini_key() -> str | None:
@@ -216,7 +218,7 @@ def _generate_openai(
 ) -> tuple[bytes, str, str]:
     api_key = api_key or _openai_key()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured.")
+        raise RuntimeError(f"No OpenAI API key: set {get_settings().openai_media_key_hint()}.")
 
     try:
         from openai import OpenAI

@@ -373,7 +373,8 @@ class STTService:
 
 def _resolve_api_key(provider_key: Optional[str], settings: Settings,
                      *, keyless_ok: bool = False) -> str:
-    """Resolve API key: provider-specific key, then the OpenAI key.
+    """Resolve API key: provider-specific key, then the OpenAI media key
+    (``Settings.openai_media_api_key``, which never yields a gateway's key).
 
     Local sidecars (speaches, qwen3) ignore the bearer token, so ``keyless_ok``
     providers get a placeholder when no provider key is set; never forward the
@@ -383,9 +384,15 @@ def _resolve_api_key(provider_key: Optional[str], settings: Settings,
         return provider_key
     if keyless_ok:
         return "local"
-    if settings.openai_api_key:
-        return settings.openai_api_key
-    raise VoiceServiceError("No API key configured for voice service. Set TTS_API_KEY/STT_API_KEY or OPENAI_API_KEY.")
+    # The direct-call resolver, never OPENAI_API_KEY raw: on a CLIProxy route
+    # that slot holds the proxy's gatekeeper (#428).
+    openai_key = settings.openai_media_api_key
+    if openai_key:
+        return openai_key
+    raise VoiceServiceError(
+        "No API key configured for voice service. Set TTS_API_KEY/STT_API_KEY or "
+        f"{settings.openai_media_key_hint()}."
+    )
 
 
 def _resolve_base_url(provider: str, explicit_url: Optional[str], defaults: dict) -> str:

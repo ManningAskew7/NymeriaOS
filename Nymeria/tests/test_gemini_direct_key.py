@@ -69,6 +69,12 @@ def test_antigravity_route_without_a_direct_key_has_no_media_key():
     assert "GEMINI_DIRECT_API_KEY" in settings.gemini_media_key_hint()
 
 
+def test_an_empty_slot_on_a_gateway_route_points_at_the_direct_slot():
+    settings = _settings(llm_base_url=PROXY_ROOT)
+    assert settings.gemini_media_api_key is None
+    assert "GEMINI_DIRECT_API_KEY" in settings.gemini_media_key_hint()
+
+
 def test_a_non_cpx_gateway_key_on_a_google_proxy_route_is_still_withheld():
     """A hand-configured proxy key (not cpx-shaped) behind a google route
     belongs to that gateway: the base URL says so, as it does for anthropic."""
@@ -216,6 +222,21 @@ def test_image_gen_tool_refuses_the_gatekeeper_with_the_remedy(monkeypatch):
     assert content.startswith("[Error]")
     assert "GEMINI_DIRECT_API_KEY" in content
     assert artifact == {}
+
+
+def test_image_gen_tool_never_sends_a_gatekeeper_from_the_direct_env_var(
+    monkeypatch, genai_client
+):
+    """The config file lands in os.environ, so a cpx- line copied into
+    GEMINI_DIRECT_API_KEY is in the env too (#428 review)."""
+    from nymeria.tools import image_gen_integrations as igi
+
+    _use_settings(monkeypatch, _antigravity(gemini_direct_api_key=GATEKEEPER))
+    monkeypatch.setenv("GEMINI_DIRECT_API_KEY", GATEKEEPER)
+    assert igi._get_gemini_image_api_key(None) is None
+    content, _artifact = igi.image_gen_gemini.func(prompt="a banana", config=None)
+    assert "real Google key" in content
+    assert genai_client.keys == []
 
 
 def test_outlook_extraction_uses_the_direct_key(monkeypatch, genai_client):

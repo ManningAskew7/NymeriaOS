@@ -223,6 +223,7 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
     "API Keys": (
         "cliproxy_management_key",
         "openai_api_key",
+        "openai_direct_api_key",
         "anthropic_api_key",
         "anthropic_direct_api_key",
         "openrouter_api_key",
@@ -345,6 +346,7 @@ _SECRET_KEYS: frozenset[str] = frozenset({
     # CLIProxy remote-management secret needs an explicit allowlist row.
     "cliproxy_management_key",
     "openai_api_key",
+    "openai_direct_api_key",
     "anthropic_api_key",
     "anthropic_direct_api_key",
     "openrouter_api_key",

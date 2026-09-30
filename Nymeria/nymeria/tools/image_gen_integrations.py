@@ -55,8 +55,14 @@ _OPENAI = register_provider_spec(
         provider="openai",
         aliases=("openai_api", "gpt_image"),
         groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
-        settings_attr="openai_api_key",
-        env_vars=("OPENAI_API_KEY",),
+        # The direct-call resolver property, not the raw OPENAI_API_KEY slot:
+        # on a CLIProxy codex/gemini-cli/kimi/grok route that slot holds the
+        # proxy's gatekeeper, and this tool calls OpenAI directly (#428). NO
+        # env leg: resolve_native_credential reads it raw, after the property,
+        # so even OPENAI_DIRECT_API_KEY there would skip the property's
+        # gatekeeper screen; Settings already reads that var from the env.
+        settings_attr="openai_media_api_key",
+        env_vars=(),
         tools=("image_gen_openai",),
     )
 )
@@ -68,11 +74,10 @@ _GEMINI = register_provider_spec(
         groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
         # The direct-call resolver property, not the raw GEMINI_API_KEY slot:
         # on a CLIProxy antigravity route that slot holds the proxy's
-        # gatekeeper, and this tool calls Google directly. The env leg names
-        # only the direct slot for the same reason (a raw GEMINI_API_KEY read
-        # would bypass the screen).
+        # gatekeeper, and this tool calls Google directly. No env leg, for
+        # the reason on _OPENAI above (#428 review).
         settings_attr="gemini_media_api_key",
-        env_vars=("GEMINI_DIRECT_API_KEY",),
+        env_vars=(),
         tools=("image_gen_gemini",),
     )
 )
@@ -226,12 +231,9 @@ def _poll_json(
 
 # --- OpenAI ------------------------------------------------------------------
 def _get_openai_image_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
-    """Resolve the OpenAI key: credential vault, then settings, then env.
-
-    Note: in some deployments OPENAI_API_KEY is a CLIProxy gatekeeper value
-    (cpx-*) that cannot call the real OpenAI image API, so a genuine OpenAI key
-    supplied through the vault is the primary path for this tool.
-    """
+    """Resolve the OpenAI key: credential vault, then the direct-call resolver
+    (``Settings.openai_media_api_key``, which skips a gateway's key in either
+    slot). No raw env read: see ``_OPENAI``."""
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
@@ -278,7 +280,10 @@ def image_gen_openai(
     """
     api_key = _get_openai_image_api_key(config)
     if not api_key:
-        return _missing_key_error("OpenAI", "openai", "image_gen_openai", "OPENAI_API_KEY"), {}
+        from ..config import get_settings
+
+        hint = get_settings().openai_media_key_hint()
+        return _missing_key_error("OpenAI", "openai", "image_gen_openai", hint), {}
 
     cfg = {
         "openai_model": model,
@@ -301,7 +306,8 @@ def image_gen_openai(
 
 # --- Gemini ------------------------------------------------------------------
 def _get_gemini_image_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
-    """Resolve the Gemini key: credential vault, then settings, then env."""
+    """Resolve the Gemini key: credential vault, then the direct-call resolver
+    (``Settings.gemini_media_api_key``). No raw env read: see ``_GEMINI``."""
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(

@@ -5,14 +5,17 @@ interactive wizard, the headless finalize path, and tests share one source of
 truth. Maps each selectable ``web_search_*`` / ``fetch_url_*`` / ``image_gen_*``
 backend to the single environment variable its tool reads (each tool resolves a
 key in the order credential-vault -> ``settings.<field>`` -> ``os.environ``; the
-canonical name is the settings field uppercased). ``fetch_url_nymeria`` needs no
-key, SearXNG takes a base URL rather than a secret, and Jina's key is optional.
+canonical name is the settings field uppercased). The OpenAI and Gemini media
+keys are the exception: their tools read a resolver property over two slots,
+and on a gateway route the KeySpec moves to the direct slot
+(``_DIRECT_MEDIA_SLOTS``). ``fetch_url_nymeria`` needs no key, SearXNG takes a
+base URL rather than a secret, and Jina's key is optional.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from .state import WizardState
@@ -189,18 +192,20 @@ def _stale_voice_env(state: "WizardState") -> set[str]:
 
 GEMINI_LLM_KEY_ENV = "GEMINI_API_KEY"
 GEMINI_DIRECT_KEY_ENV = "GEMINI_DIRECT_API_KEY"
+OPENAI_LLM_KEY_ENV = "OPENAI_API_KEY"
+OPENAI_DIRECT_KEY_ENV = "OPENAI_DIRECT_API_KEY"
 
 
-def gemini_slot_holds_gateway_key(state: "WizardState") -> bool:
-    """True when this install's GEMINI_API_KEY will hold a gateway's key.
+def _slot_holds_gateway_key(
+    state: "WizardState", slot: str, provider: str, is_vendor_host: Callable[[str], bool]
+) -> bool:
+    """True when this install's ``slot`` will hold a gateway's key.
 
-    The wizard twin of ``Settings.gemini_key_is_gateway_owned``: a CLIProxy
-    route whose catalog key slot is GEMINI_API_KEY (antigravity) writes the
-    proxy's gatekeeper there, and a google route through any non-Google base
-    URL feeds that slot to the gateway. Either way Gemini TTS and image
-    generation, which call Google directly, need the direct slot instead.
-    Checks the CLIProxy pick first because on a fresh run the route's
-    provider and base URL are only filled in at finalize.
+    A CLIProxy route whose catalog key slot is ``slot`` writes the proxy's
+    gatekeeper there, and a ``provider`` route through any base URL off the
+    vendor's own hosts feeds that slot to the gateway. Checks the CLIProxy
+    pick first because on a fresh run the route's provider and base URL are
+    only filled in at finalize.
     """
     if state.auth_method_is_cliproxy():
         from ..cliproxy.catalog import get_cliproxy_provider
@@ -209,35 +214,97 @@ def gemini_slot_holds_gateway_key(state: "WizardState") -> bool:
         pick = state.cliproxy_provider or legacy_cliproxy_provider(state.auth_method)
         cspec = get_cliproxy_provider(pick) if pick else None
         if cspec is not None:
-            return cspec.key_env_var == GEMINI_LLM_KEY_ENV
+            return cspec.key_env_var == slot
     from ..config.llm_providers import normalize_llm_provider
-    from ..config.settings import is_google_api_host
 
-    if not state.provider or normalize_llm_provider(state.provider) != "google":
+    if not state.provider or normalize_llm_provider(state.provider) != provider:
         return False
     base_url = (state.base_url or "").strip()
-    return bool(base_url) and not is_google_api_host(base_url)
+    return bool(base_url) and not is_vendor_host(base_url)
 
 
-def _gemini_media_spec(spec: KeySpec, state: "WizardState") -> KeySpec:
-    """Retarget a Gemini media KeySpec at the direct slot on a gateway route.
+def gemini_slot_holds_gateway_key(state: "WizardState") -> bool:
+    """True when this install's GEMINI_API_KEY will hold a gateway's key.
 
-    Without this the step asked for GEMINI_API_KEY, finalize dropped the typed
-    value because the gatekeeper owns that slot, and the summary reported the
-    Gemini media tools unconfigured with no word about why (#152).
+    The wizard twin of ``Settings.gemini_key_is_gateway_owned`` (#152): the
+    antigravity CLIProxy route, or a google route through a non-Google base
+    URL. Gemini TTS and image generation call Google directly, so they need
+    the direct slot instead.
     """
-    if spec.env_var != GEMINI_LLM_KEY_ENV or not gemini_slot_holds_gateway_key(state):
+    from ..config.settings import is_google_api_host
+
+    return _slot_holds_gateway_key(state, GEMINI_LLM_KEY_ENV, "google", is_google_api_host)
+
+
+def openai_slot_holds_gateway_key(state: "WizardState") -> bool:
+    """True when this install's OPENAI_API_KEY will hold a gateway's key.
+
+    The wizard twin of ``Settings.openai_key_is_gateway_owned`` (#428): the
+    codex, gemini-cli, kimi and grok CLIProxy routes, or an openai route
+    through a non-OpenAI base URL. OpenAI image generation and speech call
+    OpenAI directly, so they need the direct slot instead.
+    """
+    from ..config.settings import is_openai_api_host
+
+    return _slot_holds_gateway_key(state, OPENAI_LLM_KEY_ENV, "openai", is_openai_api_host)
+
+
+@dataclass(frozen=True)
+class _DirectSlot:
+    """The direct-call slot a media KeySpec moves to when a gateway owns its own."""
+
+    env_var: str
+    gateway_owned: Callable[["WizardState"], bool]
+    label: str
+    note: str
+
+
+# Keyed by the shared slot a media KeySpec normally asks for.
+_DIRECT_MEDIA_SLOTS: dict[str, _DirectSlot] = {
+    GEMINI_LLM_KEY_ENV: _DirectSlot(
+        GEMINI_DIRECT_KEY_ENV,
+        gemini_slot_holds_gateway_key,
+        "Google AI (Gemini) API key for media",
+        "Your LLM route's key only works through its gateway, and Gemini "
+        "image generation and speech call Google directly, so they need "
+        "a key from aistudio.google.com. Stored as GEMINI_DIRECT_API_KEY.",
+    ),
+    OPENAI_LLM_KEY_ENV: _DirectSlot(
+        OPENAI_DIRECT_KEY_ENV,
+        openai_slot_holds_gateway_key,
+        "OpenAI API key for image generation and speech",
+        "Your LLM route's key only works through its gateway, and OpenAI "
+        "image generation and speech call OpenAI directly, so they need "
+        "a key from platform.openai.com. Stored as OPENAI_DIRECT_API_KEY.",
+    ),
+}
+
+
+def _direct_media_spec(spec: KeySpec, state: "WizardState") -> KeySpec:
+    """Retarget a media KeySpec at its direct slot on a gateway route.
+
+    Without this the step asked for the shared slot (GEMINI_API_KEY,
+    OPENAI_API_KEY), finalize dropped the typed value because the gatekeeper
+    owns that slot, and the summary reported the media tools unconfigured
+    with no word about why (#152, #428).
+    """
+    direct = _DIRECT_MEDIA_SLOTS.get(spec.env_var)
+    if direct is None or not direct.gateway_owned(state):
         return spec
-    return replace(
-        spec,
-        env_var=GEMINI_DIRECT_KEY_ENV,
-        label="Google AI (Gemini) API key for media",
-        note=(
-            "Your LLM route's key only works through its gateway, and Gemini "
-            "image generation and speech call Google directly, so they need "
-            "a key from aistudio.google.com. Stored as GEMINI_DIRECT_API_KEY."
-        ),
-    )
+    return replace(spec, env_var=direct.env_var, label=direct.label, note=direct.note)
+
+
+def gateway_direct_slot(state: "WizardState", slot: str) -> str | None:
+    """The direct slot a media key typed for ``slot`` belongs in, or None.
+
+    Non-None only while a gateway owns ``slot`` on this install: finalize
+    moves a real key given for the shared slot (``--openai-api-key``,
+    ``--gemini-api-key``) there instead of dropping it under the gatekeeper.
+    """
+    direct = _DIRECT_MEDIA_SLOTS.get(slot)
+    if direct is None or not direct.gateway_owned(state):
+        return None
+    return direct.env_var
 
 
 def already_provided_env(state: "WizardState") -> set[str]:
@@ -255,14 +322,12 @@ def already_provided_env(state: "WizardState") -> set[str]:
     # Reconfigure: credentials already present on disk (recorded by hydration)
     # are satisfied, so a fully-keyed existing install shows no backend-keys step.
     provided |= set(getattr(state, "present_env_keys", set()) or set())
-    # ...except a Gemini slot holding a proxy gatekeeper (a switch from the
-    # antigravity route to another CLI leaves one there until finalize
-    # retires it): it cannot serve the Gemini media tools, so ask (#152). The
-    # OpenAI slot's twin is #428.
-    if GEMINI_LLM_KEY_ENV in state.gatekeeper_env_keys and not state.optional_env.get(
-        GEMINI_LLM_KEY_ENV
-    ):
-        provided.discard(GEMINI_LLM_KEY_ENV)
+    # ...except a shared slot holding a proxy gatekeeper (a switch off a
+    # CLIProxy route leaves one there until finalize retires it): it cannot
+    # serve the media tools, so ask (#152 Gemini, #428 OpenAI).
+    for slot in _DIRECT_MEDIA_SLOTS:
+        if slot in state.gatekeeper_env_keys and not state.optional_env.get(slot):
+            provided.discard(slot)
     return provided
 
 
@@ -294,7 +359,7 @@ def required_backend_credentials(state: "WizardState") -> list[KeySpec]:
         if (spec := BACKEND_KEY_SPECS.get(tool)) is not None
     ]
     candidates.extend(_voice_key_specs(state))
-    candidates = [_gemini_media_spec(spec, state) for spec in candidates]
+    candidates = [_direct_media_spec(spec, state) for spec in candidates]
     seen: set[str] = set()
     specs: list[KeySpec] = []
     for spec in candidates:
@@ -317,5 +382,7 @@ __all__ = [
     "already_provided_env",
     "required_backend_credentials",
     "backend_keys_needed",
+    "gateway_direct_slot",
     "gemini_slot_holds_gateway_key",
+    "openai_slot_holds_gateway_key",
 ]

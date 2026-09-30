@@ -1270,6 +1270,8 @@ export interface ServerSettingsUpdate {
   anthropic_api_key?: string | null;
   anthropic_direct_api_key?: string | null;
   openai_api_key?: string | null;
+  // Direct OpenAI key for image generation and speech; wins over openai_api_key.
+  openai_direct_api_key?: string | null;
   openrouter_api_key?: string | null;
   embedding_api_key?: string | null;
   embedding_provider?: string;

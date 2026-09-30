@@ -869,7 +869,7 @@ def finalize(
                 _warn_stale_service_artifact(state, console)
         return 0
 
-    from .tool_keys import gemini_slot_holds_gateway_key
+    from .tool_keys import gemini_slot_holds_gateway_key, openai_slot_holds_gateway_key
 
     print_capability_summary(
         spec,
@@ -882,6 +882,7 @@ def finalize(
         for_docker=for_docker,
         full_stack=is_full_stack,
         gemini_gateway_slot=gemini_slot_holds_gateway_key(state),
+        openai_gateway_slot=openai_slot_holds_gateway_key(state),
     )
     print_deployment_summary(state, console)
 
@@ -1179,11 +1180,10 @@ def retired_gatekeeper_slots(
 ) -> tuple[str, ...]:
     """The on-disk proxy route's key slot, when this run abandons that route.
 
-    A ``cpx-`` gatekeeper is the proxy's local secret, useless anywhere else
-    and not inert: OpenAI image generation and voice read OPENAI_API_KEY raw
-    and would send a leftover one to OpenAI (#428), and a stale line keeps the
-    wizard counting a key that serves nothing (the Gemini media tools now
-    skip one at runtime, #152). Retired only when the
+    A ``cpx-`` gatekeeper is the proxy's local secret, useless anywhere else,
+    and a stale line keeps the wizard counting a key that serves nothing (the
+    OpenAI and Gemini media tools skip one at runtime, #428 and #152, so
+    it is dead weight rather than a leak). Retired only when the
     config on disk IS a CLIProxy route (hydrate's two-signal rule,
     ``hydrate.is_cliproxy_route``) that this run leaves: off the branch
     entirely, or onto a different CLI whose key lands in another slot. Only
@@ -1289,26 +1289,22 @@ def _resolve_optional_env(
         # proxy gatekeeper, and the capability summary reported Gemini media
         # tools ready off a proxy-local key that cannot serve them.
         from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
-        from .tool_keys import (
-            GEMINI_DIRECT_KEY_ENV,
-            GEMINI_LLM_KEY_ENV,
-            gemini_slot_holds_gateway_key,
-        )
+        from .tool_keys import gateway_direct_slot
 
-        gateway_gemini = gemini_slot_holds_gateway_key(state)
         for env_name in spec.api_key_env_vars:
             value = optional_env.pop(env_name, None)
-            # A Gemini key given for the media tools (`--gemini-api-key`)
-            # while the gateway owns GEMINI_API_KEY is a DIRECT key: keep it
-            # in the direct slot rather than silently dropping it (#152).
+            # A key given for the media tools (`--openai-api-key`,
+            # `--gemini-api-key`) while a gateway owns that slot is a DIRECT
+            # key: keep it in the direct slot rather than silently dropping
+            # it (#152 Gemini, #428 OpenAI).
+            direct_slot = gateway_direct_slot(state, env_name) if value else None
             if (
-                env_name == GEMINI_LLM_KEY_ENV
-                and gateway_gemini
+                direct_slot
                 and value
                 and value != api_key.strip()
                 and not looks_like_cliproxy_gatekeeper_key(value)
             ):
-                optional_env.setdefault(GEMINI_DIRECT_KEY_ENV, value)
+                optional_env.setdefault(direct_slot, value)
     return optional_env
 
 
@@ -1797,6 +1793,7 @@ def print_capability_summary(
     for_docker: bool = False,
     full_stack: bool = False,
     gemini_gateway_slot: bool = False,
+    openai_gateway_slot: bool = False,
 ) -> None:
     """Show which capabilities are ready and which env var unblocks each.
 
@@ -1840,25 +1837,30 @@ def print_capability_summary(
                 f"{escape(manual_install_hint(build_install_command()))}"
             )
 
-    openai_ready = (
-        spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars
-    ) or bool(optional_env.get("OPENAI_API_KEY"))
     from ..config.settings import WEB_SEARCH_BACKEND_ENV_VARS
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
 
+    def media_ready(shared: str, direct: str, gateway_slot: bool) -> bool:
+        # The OpenAI and Gemini media tools call their vendor directly, so the
+        # key that counts is the direct slot (never a gatekeeper pasted
+        # there), or the shared slot only while no gateway owns it (the
+        # wizard twin of Settings.openai_media_api_key / gemini_media_api_key,
+        # #428 / #152). A primary's own key is written to the shared slot and
+        # popped from the optional pool, hence the spec check.
+        direct_key = optional_env.get(direct) or ""
+        if direct_key and not looks_like_cliproxy_gatekeeper_key(direct_key):
+            return True
+        return not gateway_slot and (
+            bool(optional_env.get(shared))
+            or (spec is not None and shared in spec.api_key_env_vars)
+        )
+
+    openai_ready = media_ready("OPENAI_API_KEY", "OPENAI_DIRECT_API_KEY", openai_gateway_slot)
     search_ready = keyless_search_selected or any(
         optional_env.get(env) for env in WEB_SEARCH_BACKEND_ENV_VARS
     )
-    # The Gemini media tools call Google directly, so the key that counts is
-    # the direct slot, or GEMINI_API_KEY only while no gateway owns it
-    # (``gemini_gateway_slot``, the wizard twin of the runtime resolver
-    # Settings.gemini_media_api_key). A google primary's own key is written
-    # to GEMINI_API_KEY and popped from the optional pool, like OpenAI above.
-    gemini_media_ready = bool(optional_env.get("GEMINI_DIRECT_API_KEY")) or (
-        not gemini_gateway_slot
-        and (
-            bool(optional_env.get("GEMINI_API_KEY"))
-            or (spec is not None and "GEMINI_API_KEY" in spec.api_key_env_vars)
-        )
+    gemini_media_ready = media_ready(
+        "GEMINI_API_KEY", "GEMINI_DIRECT_API_KEY", gemini_gateway_slot
     )
     image_ready = openai_ready or gemini_media_ready or any(
         optional_env.get(env)
@@ -1875,7 +1877,12 @@ def print_capability_summary(
         (
             "Image generation",
             image_ready,
-            "add an image provider key in nymeria init",
+            (
+                "add an image provider key in nymeria init; OpenAI needs "
+                "OPENAI_DIRECT_API_KEY: your LLM route's key cannot call OpenAI"
+                if openai_gateway_slot
+                else "add an image provider key in nymeria init"
+            ),
         ),
         (
             "Gemini media tools",

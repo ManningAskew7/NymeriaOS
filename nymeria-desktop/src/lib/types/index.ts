@@ -1611,6 +1611,8 @@ export interface ServerSettingsUpdate {
   anthropic_api_key?: string | null;
   anthropic_direct_api_key?: string | null;
   openai_api_key?: string | null;
+  // Direct OpenAI key for image generation and speech; wins over openai_api_key.
+  openai_direct_api_key?: string | null;
   openrouter_api_key?: string | null;
   // Generic key slot: the backend routes it to the selected provider's
   // declared env var (spec.api_key_env_vars[0]), enabling the long-tail

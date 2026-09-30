@@ -2444,6 +2444,7 @@ Authorization: Bearer <admin-token>
 | `llm_provider_route` | string | `native`/`openai_compat`/`anthropic_messages` | Default adapter route for providers that support more than one route. `google` and `ollama` default to `native`; the Claude-serving gateways (`litellm`, `opencode`, `zenmux`, `requesty`, `fastrouter`, `poe`) offer `anthropic_messages` and default to `openai_compat`; per-thread settings can override this. |
 | `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI-compatible API mode. `responses` is honored only for registry providers that advertise Responses support; Chat Completions is the compatibility baseline. |
 | `openai_api_key` | string | - | Write-only OpenAI or OpenAI-compatible global API key |
+| `openai_direct_api_key` | string | - | Write-only direct OpenAI key for OpenAI image generation, TTS, and STT; wins over `openai_api_key` and is required for them when that holds a gateway's key (a CLIProxy codex, gemini-cli, kimi, or grok route) |
 | `anthropic_api_key` | string | - | Write-only Anthropic global key. For Anthropic CLIProxy this is the local `cpx-*` gatekeeper key. |
 | `anthropic_direct_api_key` | string | - | Write-only direct Anthropic key used when the effective Anthropic base URL is empty |
 | `openrouter_api_key` | string | - | Write-only OpenRouter global API key |

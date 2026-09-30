@@ -11,7 +11,7 @@ import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, List, Literal, Mapping, Optional, Tuple
+from typing import Any, Callable, List, Literal, Mapping, Optional, Tuple
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,6 +45,18 @@ def is_google_api_host(base_url: str) -> bool:
     except ValueError:
         return False
     return host == "googleapis.com" or host.endswith(".googleapis.com")
+
+
+def is_openai_api_host(base_url: str) -> bool:
+    """True when ``base_url`` is one of OpenAI's own API hosts (openai.com)."""
+    from urllib.parse import urlparse
+
+    target = base_url if "://" in base_url else f"https://{base_url}"
+    try:
+        host = (urlparse(target).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "openai.com" or host.endswith(".openai.com")
 
 
 def _find_project_root(start: Path) -> Optional[Path]:
@@ -1352,7 +1364,22 @@ class Settings(BaseSettings):
     )
 
     # API Keys
-    openai_api_key: Optional[str] = Field(default=None)
+    openai_api_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "OpenAI API key: the openai LLM route, plus OpenAI image generation "
+            "and speech unless it holds a gateway key"
+        ),
+    )
+    openai_direct_api_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Direct OpenAI API key for OpenAI image generation and speech; wins "
+            "over OPENAI_API_KEY, and is the only key they use when "
+            "OPENAI_API_KEY holds a gateway key (a CLIProxy codex, gemini-cli, "
+            "kimi or grok route, or an openai route through another base URL)"
+        ),
+    )
     anthropic_api_key: Optional[str] = Field(default=None)
     anthropic_direct_api_key: Optional[str] = Field(default=None, description="Direct Anthropic API key (pay-per-token), used when base_url is empty")
     openrouter_api_key: Optional[str] = Field(default=None)
@@ -2585,7 +2612,7 @@ class Settings(BaseSettings):
         )
     )
     tts_api_key: Optional[str] = Field(
-        default=None, description="TTS API key (falls back to OPENAI_API_KEY if not set)"
+        default=None, description="TTS API key (the openai provider falls back to OPENAI_DIRECT_API_KEY, else OPENAI_API_KEY unless it holds a gateway key)"
     )
     tts_model: Optional[str] = Field(
         default=None,
@@ -2610,7 +2637,7 @@ class Settings(BaseSettings):
         )
     )
     stt_api_key: Optional[str] = Field(
-        default=None, description="STT API key (falls back to OPENAI_API_KEY; Groq also reads GROQ_API_KEY)"
+        default=None, description="STT API key (the openai provider falls back to OPENAI_DIRECT_API_KEY, else OPENAI_API_KEY unless it holds a gateway key; Groq also reads GROQ_API_KEY)"
     )
     stt_model: Optional[str] = Field(
         default=None,
@@ -2832,10 +2859,18 @@ class Settings(BaseSettings):
 
         if looks_like_cliproxy_gatekeeper_key(key):
             return True
-        if normalize_llm_provider(self.llm_provider) != "google":
+        return self._llm_route_is_gateway("google", is_google_api_host)
+
+    def _llm_route_is_gateway(
+        self, provider: str, is_vendor_host: Callable[[str], bool]
+    ) -> bool:
+        """True when the global ``provider`` route's base URL is off the
+        vendor's own hosts, so that provider's key slot feeds a gateway (a
+        proxy, a local server, a third party) whatever it holds right now."""
+        if normalize_llm_provider(self.llm_provider) != provider:
             return False
         base_url = (self.llm_base_url or "").strip()
-        return bool(base_url) and not is_google_api_host(base_url)
+        return bool(base_url) and not is_vendor_host(base_url)
 
     @property
     def gemini_media_api_key(self) -> Optional[str]:
@@ -2875,7 +2910,76 @@ class Settings(BaseSettings):
                 "GEMINI_DIRECT_API_KEY (GEMINI_API_KEY holds this deployment's "
                 "LLM gateway key, which Google does not accept)"
             )
+        if self._llm_route_is_gateway("google", is_google_api_host):
+            # Empty slot on a gateway route: "set GEMINI_API_KEY" would put a
+            # real key where the gateway, not Google, receives it.
+            return (
+                "GEMINI_DIRECT_API_KEY (the google LLM route goes through a "
+                "gateway, which owns GEMINI_API_KEY)"
+            )
         return "GEMINI_API_KEY"
+
+    def openai_key_is_gateway_owned(self) -> bool:
+        """True when ``openai_api_key`` holds a gateway's key rather than OpenAI's.
+
+        The OpenAI twin of ``gemini_key_is_gateway_owned`` (#428). A CLIProxy
+        codex, gemini-cli, kimi or grok route writes the proxy's gatekeeper
+        into OPENAI_API_KEY, and only the ``openai`` provider reads that slot,
+        so an openai route with a base URL off OpenAI's own hosts feeds the
+        slot to that gateway (a local server, a proxy, a third party). Direct
+        OpenAI callers must skip it either way: OpenAI rejects the key, and
+        sending it hands a secret to a party it does not belong to. The cost
+        of the broad rule is a forwarding proxy that carries a real OpenAI key:
+        its media calls ask for OPENAI_DIRECT_API_KEY rather than guessing.
+        """
+        key = (self.openai_api_key or "").strip()
+        if not key:
+            return False
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
+        if looks_like_cliproxy_gatekeeper_key(key):
+            return True
+        return self._llm_route_is_gateway("openai", is_openai_api_host)
+
+    @property
+    def openai_media_api_key(self) -> Optional[str]:
+        """The key for DIRECT OpenAI calls: image generation, TTS and STT.
+
+        OPENAI_DIRECT_API_KEY first, else OPENAI_API_KEY unless it holds a
+        gateway's key (``openai_key_is_gateway_owned``). The LLM route never
+        reads this: it keeps OPENAI_API_KEY, which is the gateway's key there.
+        """
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
+        direct = (self.openai_direct_api_key or "").strip()
+        if direct and not looks_like_cliproxy_gatekeeper_key(direct):
+            return direct
+        if self.openai_key_is_gateway_owned():
+            return None
+        return (self.openai_api_key or "").strip() or None
+
+    def openai_media_key_hint(self) -> str:
+        """What to set when ``openai_media_api_key`` is empty, for error text."""
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
+        if looks_like_cliproxy_gatekeeper_key(self.openai_direct_api_key or ""):
+            return (
+                "OPENAI_DIRECT_API_KEY to a real OpenAI key (it holds a CLIProxy "
+                "gateway key, which OpenAI does not accept)"
+            )
+        if self.openai_key_is_gateway_owned():
+            return (
+                "OPENAI_DIRECT_API_KEY (OPENAI_API_KEY holds this deployment's "
+                "LLM gateway key, which OpenAI does not accept)"
+            )
+        if self._llm_route_is_gateway("openai", is_openai_api_host):
+            # Empty slot on a gateway route: "set OPENAI_API_KEY" would put a
+            # real key where the gateway, not OpenAI, receives it.
+            return (
+                "OPENAI_DIRECT_API_KEY (the openai LLM route goes through a "
+                "gateway, which owns OPENAI_API_KEY)"
+            )
+        return "OPENAI_API_KEY"
 
     def load_soul(self) -> str:
         """Load the base system prompt.
