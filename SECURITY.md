@@ -683,13 +683,20 @@ The network and trust-edge boundaries are enforced and fail closed:
   their own signature, JWT, or state parameter instead of a bearer token. The
   legacy shared API key is no longer accepted. Admin is a token-derived role tier
   resolved from the account database on each request.
-- **Act-as (`X-Nymeria-Act-As`).** Admin-only; a non-admin attempt is rejected.
+- **Act-as (`X-Nymeria-Act-As`).** Admin-only; a non-admin naming another user
+  is rejected (naming its own id is a no-op).
   The effective `user_id` is always token-derived, never taken from a client
   parameter.
 - **MCP HTTP server.** Requires an inbound bearer token resolved against the
   backend; non-admins are pinned to their own identity and any `user_id` argument
-  is ignored. The override `NYMERIA_MCP_ALLOW_UNAUTHENTICATED` disables this gate
-  and must never be set on a reachable endpoint.
+  is ignored. Tool calls reach the API with the caller's own token, never the
+  service token, so an MCP caller holds exactly the rights that token has on the
+  REST API (an admin's may still act as another user). The override
+  `NYMERIA_MCP_ALLOW_UNAUTHENTICATED` disables this gate (tool calls then use
+  the service token) and must never be set on a reachable or proxied endpoint.
+  With it set the server answers only a loopback `Host` and `Origin` and no
+  forwarded request, which stops browser pages, not a client that can reach
+  the port.
 - **Chat-platform bots** (Discord, Telegram, Slack, WhatsApp, Teams).
   **Default-deny:** a platform user who is not linked to a Nymeria account is
   rejected. A link is created either self-service by the account holder (a
@@ -861,8 +868,9 @@ trust of the content the agent ingests. Beyond that:
   effectively admin (Section 2.7).
 - **Terminate TLS at a trusted reverse proxy**, set explicit CORS origins (never
   `*` with credentials), keep the API and MCP ports on loopback, and add
-  host-level firewall rules. Do not publish the MCP HTTP port; never set
-  `NYMERIA_MCP_ALLOW_UNAUTHENTICATED` on anything reachable.
+  host-level firewall rules. Do not publish the MCP HTTP port (serve MCP
+  through the reverse proxy's `/mcp` instead); never set
+  `NYMERIA_MCP_ALLOW_UNAUTHENTICATED` on anything reachable or proxied.
 - **Use per-user account tokens** rather than sharing one, and least-privilege
   provider credentials.
 - **Review third-party MCP servers, custom tools, and skills before install** —

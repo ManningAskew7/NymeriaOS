@@ -1,9 +1,10 @@
 """Inbound authentication for the MCP streamable-HTTP server.
 
-The MCP process is a thin client that talks to the backend with the admin
-service token and forwards a caller-supplied ``user_id`` as ``X-Nymeria-Act-As``.
-Without inbound auth, any reachable caller could invoke every tool against any
-victim's data (full multi-tenant compromise). This module closes that hole:
+The MCP process is a thin client over the backend API. It once called the
+backend only with the admin service token plus a caller-supplied ``user_id``
+as ``X-Nymeria-Act-As``, so without inbound auth any reachable caller could
+invoke every tool against any victim's data (full multi-tenant compromise).
+This module closes that hole:
 
 * A pure-ASGI middleware requires ``Authorization: Bearer <token>`` on every
   HTTP request, resolves it against the backend ``GET /me`` (short TTL cache),
@@ -27,6 +28,21 @@ victim's data (full multi-tenant compromise). This module closes that hole:
 * :func:`effective_act_as` pins non-admin callers to their own identity
   (ignoring any ``user_id`` argument) while letting admins keep Act-As.
 
+* Tool calls reach the backend with the CALLER'S OWN bearer
+  (:func:`forwarded_bearer`), never the admin service token (#427), so an MCP
+  caller holds exactly the privilege of the same token on the REST API.
+* Host and Origin: with the bearer gate enforced there is no Host check (#430).
+  DNS rebinding lends a web page the victim's network position, not the
+  victim's credentials, and a page cannot supply a bearer it does not know, so
+  the gate already refuses it; a Host allow-list would only break legitimate
+  public names (Caddy, Tailscale, a Cloudflare tunnel). The unauthenticated
+  override is the shape the check exists for, so there it serves loopback
+  Host and Origin values only (421 and 403 otherwise) and refuses a request
+  a proxy forwarded. This replaces the MCP SDK's own guard, which
+  ``mcp_server`` turns off. None of it is access control: any client that
+  reaches the port can send ``Host: localhost``, so the override stays safe
+  only while the port is loopback-bound and nothing proxies to it.
+
 STDIO mode (a local, trusted launch) sets no identity, so tool behavior there is
 unchanged. The middleware passes non-HTTP scopes (lifespan) and ``OPTIONS``
 straight through.
@@ -42,8 +58,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import ssl
 import time
+import urllib.parse
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -52,6 +70,11 @@ logger = logging.getLogger(__name__)
 # (e.g. STDIO mode). Shape: {"user_id": str, "role": str}.
 _current_identity: contextvars.ContextVar[Optional[dict[str, str]]] = contextvars.ContextVar(
     "nymeria_mcp_identity", default=None
+)
+# The inbound bearer that identity was resolved from, forwarded on the
+# backend calls this request makes (#427). None exactly when identity is.
+_current_bearer: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "nymeria_mcp_bearer", default=None
 )
 
 _RESOLVE_CACHE: dict[str, tuple[float, Optional[dict[str, str]]]] = {}
@@ -97,17 +120,33 @@ class _Resolution(enum.Enum):
     UNEXPECTED = "unexpected"  # an answer that is not a Nymeria /me (502)
 
 
-def set_identity(identity: Optional[dict[str, str]]):
-    """Set the resolved identity for the current context; returns the token."""
-    return _current_identity.set(identity)
+def set_identity(identity: Optional[dict[str, str]], bearer: Optional[str] = None):
+    """Set the resolved identity (and the bearer it came from) for the current
+    context; returns the reset token for :func:`reset_identity`."""
+    return _current_identity.set(identity), _current_bearer.set(bearer)
 
 
 def reset_identity(token) -> None:
-    _current_identity.reset(token)
+    identity_token, bearer_token = token
+    _current_bearer.reset(bearer_token)
+    _current_identity.reset(identity_token)
 
 
 def current_identity() -> Optional[dict[str, str]]:
     return _current_identity.get()
+
+
+def forwarded_bearer() -> Optional[str]:
+    """The inbound caller's bearer for this request's backend calls, or None
+    when there is no authenticated caller (STDIO, the unauthenticated
+    override), where the service token applies.
+
+    Forwarding the caller's own token, rather than the service token plus
+    Act-As, keeps a non-admin MCP caller from resolving as an admin relay
+    (``via_act_as``), which the API reads as "a bot vouched for this shared
+    channel" (#427). An admin's own token still may Act-As.
+    """
+    return _current_bearer.get()
 
 
 def effective_act_as(requested_user_id: Optional[str]) -> Optional[str]:
@@ -130,7 +169,8 @@ def effective_act_as(requested_user_id: Optional[str]) -> Optional[str]:
     return resolved
 
 
-def _allow_unauthenticated() -> bool:
+def allow_unauthenticated() -> bool:
+    """Whether ``NYMERIA_MCP_ALLOW_UNAUTHENTICATED`` turns the bearer gate off."""
     return os.environ.get("NYMERIA_MCP_ALLOW_UNAUTHENTICATED", "").strip().lower() in {
         "1",
         "true",
@@ -148,6 +188,18 @@ def _cache_get(token_hash: str) -> tuple[bool, Optional[dict[str, str]]]:
         _RESOLVE_CACHE.pop(token_hash, None)
         return False, None
     return True, identity
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def forget(token: str) -> None:
+    """Drop a cached resolution. Called when the backend refuses a forwarded
+    bearer (revoked or expired inside the cache TTL), so the caller's next
+    request gets the 401 challenge that makes an MCP client re-authenticate,
+    not a minute of per-tool 401s."""
+    _RESOLVE_CACHE.pop(_token_hash(token), None)
 
 
 def _cache_put(token_hash: str, identity: Optional[dict[str, str]]) -> None:
@@ -197,6 +249,71 @@ def _tls_context() -> ssl.SSLContext:
     import certifi
 
     return ssl.create_default_context(cafile=certifi.where())
+
+
+_LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+# Characters a loopback Host can contain. An allow-list, because urlsplit
+# silently drops tab, CR and LF, so a deny-list lets ``local\thost`` through.
+_HOST_CHARS = re.compile(r"[A-Za-z0-9.:\[\]-]+")
+# Headers a reverse proxy adds (Caddy, Tailscale serve and cloudflared all
+# send X-Forwarded-For). Their presence means the request did not come
+# straight from this machine, whatever Host it names.
+_FORWARDING_HEADERS = (b"forwarded", b"x-forwarded-for", b"x-forwarded-host", b"x-real-ip")
+
+
+def _header(scope, name: bytes) -> Optional[str]:
+    for key, value in scope.get("headers", []):
+        if key == name:
+            return value.decode("latin-1").strip()
+    return None
+
+
+def _is_loopback_host(value: Optional[str]) -> bool:
+    """A Host header naming this machine: ``127.0.0.1``, ``localhost`` or
+    ``[::1]``, with or without a port. The SDK's guard required a port, so a
+    portless ``localhost`` (port 80) was refused too."""
+    if not value or not _HOST_CHARS.fullmatch(value):
+        return False
+    try:
+        parts = urllib.parse.urlsplit("//" + value)
+        parts.port  # noqa: B018 - raises on a malformed port
+    except ValueError:
+        return False
+    return parts.hostname in _LOOPBACK_NAMES
+
+
+def _is_loopback_origin(value: str) -> bool:
+    try:
+        parts = urllib.parse.urlsplit(value)
+        parts.port  # noqa: B018 - raises on a malformed port
+    except ValueError:
+        return False
+    return (
+        parts.scheme in {"http", "https"}
+        and parts.hostname in _LOOPBACK_NAMES
+        and not parts.username
+        and parts.path == ""
+    )
+
+
+def _unauthenticated_refusal(scope) -> Optional[tuple[int, str]]:
+    """Why the unauthenticated override refuses this request, or None.
+
+    A loopback Host defeats DNS rebinding (the rebound page sends its own
+    name); a loopback-or-absent Origin keeps other sites' pages out; a
+    forwarding header means a proxy relayed it, which catches the shipped
+    Caddy site (its no-domain ``:80`` block passes any Host through). A
+    direct remote client is NOT stopped by any of this: the port binding is
+    the control.
+    """
+    if any(_header(scope, name) is not None for name in _FORWARDING_HEADERS):
+        return 421, "This MCP server runs without auth and refuses proxied requests"
+    if not _is_loopback_host(_header(scope, b"host")):
+        return 421, "This MCP server runs without auth and only answers on localhost"
+    origin = _header(scope, b"origin")
+    if origin is not None and not _is_loopback_origin(origin):
+        return 403, "This MCP server runs without auth and refuses cross-site requests"
+    return None
 
 
 def _holdable(scope, token: str) -> bool:
@@ -296,7 +413,7 @@ async def _resolve_token(
     200 without an identity). Neither says anything about the token, so
     neither is cached. Every non-identity outcome denies access.
     """
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    token_hash = _token_hash(token)
     hit, identity = _cache_get(token_hash)
     if hit:
         return identity
@@ -385,7 +502,12 @@ class MCPAuthMiddleware:
     @staticmethod
     async def _reject(send, status: int, message: str) -> None:
         # Only a 401 challenges for a bearer; a 5xx never says "authenticate".
-        kind = {401: "unauthorized", 502: "unexpected"}.get(status, "unavailable")
+        kind = {
+            401: "unauthorized",
+            403: "forbidden",
+            421: "misdirected",
+            502: "unexpected",
+        }.get(status, "unavailable")
         body = json.dumps({"error": message, "type": kind}).encode("utf-8")
         headers = [
             (b"content-type", b"application/json"),
@@ -403,7 +525,11 @@ class MCPAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if _allow_unauthenticated():
+        if allow_unauthenticated():
+            refusal = _unauthenticated_refusal(scope)
+            if refusal is not None:
+                await self._reject(send, *refusal)
+                return
             await self.app(scope, receive, send)
             return
 
@@ -431,7 +557,7 @@ class MCPAuthMiddleware:
             await self._reject(send, 401, "Invalid or unknown bearer token")
             return
 
-        ctx_token = set_identity(identity)
+        ctx_token = set_identity(identity, token)
         try:
             await self.app(scope, receive, send)
         finally:

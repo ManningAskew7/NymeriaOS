@@ -16,6 +16,8 @@ from urllib.parse import quote
 
 import httpx
 
+from .mcp_auth import allow_unauthenticated, forget, forwarded_bearer
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
@@ -66,10 +68,50 @@ def _coerce_error_payload(response: httpx.Response, body: Optional[str] = None) 
 class NymeriaBackendClient:
     """Async HTTP client for the Nymeria REST/SSE API."""
 
-    def __init__(self, base_url: str, service_token: str, client_id: str = "nymeria-mcp"):
+    def __init__(
+        self,
+        base_url: str,
+        service_token: str,
+        client_id: str = "nymeria-mcp",
+        *,
+        caller_required: bool = False,
+    ):
         self.base_url = base_url.rstrip("/")
         self.service_token = service_token
         self.client_id = client_id
+        # True when this process serves MCP over HTTP behind MCPAuthMiddleware.
+        # Every backend call then belongs to an authenticated caller, so one
+        # arriving without that caller's token lost its request context and
+        # must fail, not quietly run as the admin service account (#427).
+        self.caller_required = caller_required
+
+    def _bearer(self) -> str:
+        """The caller's own token when there is one (#427), else the service
+        token, which only a process without the HTTP gate (STDIO) or under
+        the unauthenticated override may use. The service token plus Act-As
+        would resolve a non-admin as an admin relay (``via_act_as``), which
+        admits shared-channel threads. Act-As still rides along: the API
+        ignores a non-admin naming their own id (#350) and honors an admin's.
+        """
+        bearer = forwarded_bearer()
+        if bearer:
+            return bearer
+        if self.caller_required and not allow_unauthenticated():
+            logger.error("MCP backend call without its caller's token; refusing the service token")
+            raise NymeriaAPIError(
+                500, "The MCP server lost this call's caller identity; not calling the backend"
+            )
+        return self.service_token
+
+    @staticmethod
+    def _api_error(status: int, message: str, payload: Any) -> NymeriaAPIError:
+        if status == 401:
+            bearer = forwarded_bearer()
+            if bearer:
+                # The caller's token died inside the auth cache's TTL: make
+                # the next request re-resolve it and challenge the client.
+                forget(bearer)
+        return NymeriaAPIError(status, message, payload)
 
     def _url(self, path: str) -> str:
         if not path.startswith("/"):
@@ -78,7 +120,7 @@ class NymeriaBackendClient:
 
     def _headers(self, act_as: Optional[str] = None, accept: Optional[str] = None) -> Dict[str, str]:
         headers = {
-            "Authorization": f"Bearer {self.service_token}",
+            "Authorization": f"Bearer {self._bearer()}",
             "Content-Type": "application/json",
             "X-Nymeria-Client-Id": self.client_id,
         }
@@ -109,7 +151,7 @@ class NymeriaBackendClient:
 
         if response.status_code >= 400:
             message, payload = _coerce_error_payload(response)
-            raise NymeriaAPIError(response.status_code, message, payload)
+            raise self._api_error(response.status_code, message, payload)
         if response.status_code == 204 or not response.content:
             return {"status": "ok"}
         content_type = response.headers.get("content-type", "")
@@ -202,7 +244,7 @@ class NymeriaBackendClient:
                 if response.status_code >= 400:
                     raw = (await response.aread()).decode("utf-8", errors="replace")
                     message_text, payload = _coerce_error_payload(response, raw)
-                    raise NymeriaAPIError(response.status_code, message_text, payload)
+                    raise self._api_error(response.status_code, message_text, payload)
 
                 async for event in _iter_sse_events(response):
                     yield event
@@ -241,7 +283,7 @@ class NymeriaBackendClient:
                 if response.status_code >= 400:
                     raw = (await response.aread()).decode("utf-8", errors="replace")
                     message_text, payload = _coerce_error_payload(response, raw)
-                    raise NymeriaAPIError(response.status_code, message_text, payload)
+                    raise self._api_error(response.status_code, message_text, payload)
                 async for event in _iter_sse_events(response):
                     yield event
 

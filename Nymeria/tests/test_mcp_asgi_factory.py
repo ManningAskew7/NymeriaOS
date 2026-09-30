@@ -16,7 +16,9 @@ def _reset_mcp_path_state():
     original_url_override = mcp_server._backend_url_override
     original_service_token_override = mcp_server._service_token_override
     original_client = mcp_server._client
+    original_gated = mcp_server._http_gated
     yield
+    mcp_server._http_gated = original_gated
     mcp_server.mcp.settings.streamable_http_path = original_path
     mcp_server._backend_url_override = original_url_override
     mcp_server._service_token_override = original_service_token_override
@@ -48,9 +50,10 @@ def test_create_mcp_asgi_app_service_token_override_used_by_client() -> None:
     captured: dict[str, str] = {}
 
     class _StubClient:
-        def __init__(self, base_url: str, service_token: str) -> None:
+        def __init__(self, base_url: str, service_token: str, **kwargs: object) -> None:
             captured["base_url"] = base_url
             captured["service_token"] = service_token
+            captured["caller_required"] = kwargs.get("caller_required")
             self.base_url = base_url
             self.service_token = service_token
 
@@ -59,6 +62,8 @@ def test_create_mcp_asgi_app_service_token_override_used_by_client() -> None:
 
     assert captured["service_token"] == "nym_override-token"
     assert captured["base_url"] == "http://127.0.0.1:8000"
+    # The embedded app sits behind the bearer gate (#427).
+    assert captured["caller_required"] is True
     assert client.service_token == "nym_override-token"
 
 

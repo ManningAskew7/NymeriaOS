@@ -66,7 +66,7 @@ Token redaction is applied at the logging layer (`config/logging_config.py::_Tok
 |---|---|---|
 | Nymeria account token | Logging into the web UI/API as a user | `nym_...` |
 | Bootstrap token | First login for the auto-created `default` admin | `data/BOOTSTRAP_TOKEN.txt` |
-| Internal service token | Worker, bots, MCP, and service act-as calls | `NYMERIA_SERVICE_TOKEN`, or `data/SLIM_SERVICE_TOKEN.txt` in slim mode |
+| Internal service token | Worker, bots, STDIO MCP, and service act-as calls (HTTP MCP forwards each caller's own token instead) | `NYMERIA_SERVICE_TOKEN`, or `data/SLIM_SERVICE_TOKEN.txt` in slim mode |
 | LLM provider key | Talking to Anthropic, OpenAI, OpenRouter, or another model provider | Provider-specific, usually `sk-...`, `sk-ant-...`, or `sk-or-...` |
 
 Do not paste provider keys into the web UI account-token field. If you need
@@ -143,8 +143,8 @@ raw status.
 
 `python3 run.py slim` provisions a separate `bot-service` admin user and
 persists its raw token at `data/SLIM_SERVICE_TOKEN.txt` (mode `0600`). This
-token authenticates same-process MCP, trigger-fire, and
-command-service calls; it is verified against the accounts repo on every
+token authenticates same-process trigger-fire and command-service calls
+(MCP tool calls carry the MCP caller's own token instead); it is verified against the accounts repo on every
 boot and rotated automatically if invalid. It is an **internal service
 credential**, not a human bootstrap token - do not paste it into the Setup
 Wizard. See [deployment-slim.md](../deployment/deployment-slim.md) for the full launcher

@@ -2,8 +2,10 @@
 Nymeria MCP Server - thin client over the Nymeria REST/SSE API.
 
 The MCP process intentionally owns no agent, checkpointer, TODO manager, or
-profile state.  It authenticates to the running API with NYMERIA_SERVICE_TOKEN
-and uses X-Nymeria-Act-As for user-scoped operations.
+profile state. Over HTTP each backend call carries the inbound caller's own
+bearer (``mcp_auth``, #427); STDIO and the unauthenticated override, which
+have no caller, use NYMERIA_SERVICE_TOKEN. X-Nymeria-Act-As names the user
+either way (an admin's may differ from the caller).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .mcp_auth import MCPAuthMiddleware, effective_act_as
 from .mcp_backend_client import (
@@ -46,11 +49,22 @@ mcp = FastMCP(
         "configuration, TODOs, triggers, memories, and RAG search."
     ),
     stateless_http=True,
+    # The SDK's DNS-rebinding guard is off here and replaced by
+    # MCPAuthMiddleware (#430): left to itself it switches on at import (the
+    # default host is loopback) and answers 421 to every Host but a
+    # port-carrying localhost, so no public name (Caddy, Tailscale) could
+    # reach the server. The middleware's bearer gate is what refuses a
+    # rebinding page; its unauthenticated override keeps a loopback-only
+    # Host and Origin check.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 _backend_url_override: Optional[str] = None
 _service_token_override: Optional[str] = None
 _client: Optional[NymeriaBackendClient] = None
+# Set by the HTTP runners, which put MCPAuthMiddleware in front of every tool
+# call: the backend client then refuses a call that carries no caller (#427).
+_http_gated = False
 
 
 def _resolve_api_url(api_url: Optional[str] = None) -> str:
@@ -82,6 +96,12 @@ def configure_backend(
     _client = None
 
 
+def _gate_http(gated: bool) -> None:
+    global _http_gated, _client
+    _http_gated = gated
+    _client = None
+
+
 def _get_client() -> NymeriaBackendClient:
     """Get a lazily-created backend client."""
     global _client
@@ -109,7 +129,9 @@ def _get_client() -> NymeriaBackendClient:
     base_url = _resolve_api_url()
     if _client is None or _client.base_url != base_url or _client.service_token != service_token:
         logger.info("Configuring Nymeria MCP backend client: api=%s", base_url)
-        _client = NymeriaBackendClient(base_url=base_url, service_token=service_token)
+        _client = NymeriaBackendClient(
+            base_url=base_url, service_token=service_token, caller_required=_http_gated
+        )
     return _client
 
 
@@ -1965,6 +1987,7 @@ def create_mcp_asgi_app(
     mounted, and returns the ASGI callable.
     """
     configure_backend(api_url=api_url, service_token=service_token)
+    _gate_http(True)
     # FastMCP's streamable HTTP app serves its endpoint at this path relative
     # to wherever it is mounted. Using "/" means the mount point itself is the
     # endpoint; using "/mcp" (the default) would produce /mcp/mcp under our
@@ -1974,15 +1997,17 @@ def create_mcp_asgi_app(
         "Creating Nymeria MCP ASGI app for embedded mount; api=%s",
         _resolve_api_url(),
     )
-    # Require + resolve an inbound bearer on every request. Tools run with the
-    # admin service token, so without this any reachable caller could act as
-    # any user (C-4). The resolver targets the same backend the tools use.
+    # Require + resolve an inbound bearer on every request (C-4). Tools run as
+    # that caller (its own token is forwarded, #427), and a tool call with no
+    # caller fails rather than use the service token. The resolver targets the
+    # same backend the tools use.
     return MCPAuthMiddleware(mcp.streamable_http_app(), resolve_base_url=_resolve_api_url)
 
 
 def run_stdio(api_url: Optional[str] = None) -> None:
     """Run the MCP server in STDIO mode."""
     configure_backend(api_url)
+    _gate_http(False)
     logger.info("Starting Nymeria MCP server in STDIO mode; api=%s", _resolve_api_url())
     mcp.run()
 
@@ -1991,13 +2016,17 @@ def run_http(host: str = "127.0.0.1", port: int = 8001, api_url: Optional[str] =
     """Run the MCP server in streamable HTTP mode.
 
     The streamable-HTTP endpoint is gated by :class:`MCPAuthMiddleware`, which
-    requires an inbound bearer resolving to a real account. This endpoint must
-    still never be exposed beyond loopback / a private mesh: it holds the admin
-    service token, so auth is defense-in-depth, not a license to publish it.
+    requires an inbound bearer resolving to a real account, and every backend
+    call forwards that caller's own token (#427), so the endpoint grants no
+    more than the REST API does to the same token and may sit behind the
+    public reverse proxy (#430). ``NYMERIA_MCP_ALLOW_UNAUTHENTICATED`` turns
+    the gate off; its loopback Host/Origin check stops browsers, not a client
+    that can reach the port, so never publish or proxy it.
     """
     import uvicorn
 
     configure_backend(api_url)
+    _gate_http(True)
     logger.info("Starting Nymeria MCP server in HTTP mode on %s:%s; api=%s", host, port, _resolve_api_url())
     mcp.settings.host = host
     mcp.settings.port = port

@@ -414,12 +414,17 @@ bound to `127.0.0.1` inside the host and only reachable via SSH tunnel.
 4. `docker compose up -d caddy`. Caddy joins the `edge` network and is
    the only host-published service.
 
-Caddy sends the bare `/mcp` path and anything under `/mcp/` to the mcp
-container and every other path to the api. Remote MCP through Caddy
-(`https://<NYMERIA_HOSTNAME>/mcp`) does not work yet: the MCP server only
-accepts a `localhost`/`127.0.0.1` Host header and answers `421 Misdirected
-Request` to any other (tracked as backlog #430). Use the loopback URL above
-over an SSH tunnel until then.
+Through Caddy the MCP server is `https://<NYMERIA_HOSTNAME>/mcp` (the bare
+`/mcp` path and anything under `/mcp/` go to the mcp container; every other
+path goes to the api), so a remote MCP client points its `url` there with
+its own account token as the bearer. Each tool call reaches the API with
+that same token, so an MCP client can do exactly what that account can do
+over the REST API, no more. Never set `NYMERIA_MCP_ALLOW_UNAUTHENTICATED` on
+a stack Caddy or any other proxy fronts. It refuses a non-loopback `Host` or
+`Origin` and any request carrying a forwarding header, which stops browser
+pages and the proxies Nymeria documents, but it is not access control: a
+client that reaches the port can send `Host: localhost`, and a proxy that
+rewrites `Host` and adds no forwarding header would pass it through.
 
 If you don't have a domain yet, leave `NYMERIA_HOSTNAME` unset. Caddy
 listens on `:80` over plain HTTP and you can front it with Cloudflare
@@ -439,7 +444,7 @@ just as they do for local Docker.
 
 ## Security Considerations
 
-1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, bots, MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
+1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, bots, STDIO MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing. The HTTP MCP server instead forwards each caller's own token.
 2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` hold secrets and are gitignored. Keep them out of version control, restrict file permissions, and back them up separately from the repo. See the Secrets Management section above.
 3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` and the local Tauri origins for desktop/mobile clients; no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)

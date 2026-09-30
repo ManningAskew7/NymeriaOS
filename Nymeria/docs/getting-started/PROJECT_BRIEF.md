@@ -190,7 +190,8 @@ lifecycle, network, haptics, and preference helpers.
 
 Current safety controls include:
 - per-user account bearer tokens plus admin service-token authentication for
-  trusted worker/bot/MCP processes
+  trusted worker/bot processes (the HTTP MCP server forwards each caller's
+  own token)
 - thread-level locking to avoid concurrent conversation collisions
 - constrained self-modification file scope + backups + syntax/import validation
 - optional per-user tool preference controls and category toggles

@@ -96,10 +96,14 @@ def test_middleware_accepts_valid_bearer_and_sets_identity(monkeypatch):
 
 
 def test_middleware_allow_unauthenticated_escape_hatch(monkeypatch):
+    # Loopback only since #430 (tests/test_mcp_public_access.py has the rest).
     monkeypatch.setenv("NYMERIA_MCP_ALLOW_UNAUTHENTICATED", "true")
-    resp = _client().post("/x")
+    client = _client()
+    client.base_url = httpx.URL("http://127.0.0.1:8001")
+    resp = client.post("/x")
     assert resp.status_code == 200
     assert resp.json()["identity"] is None
+    assert client.post("/x", headers={"Host": "testserver"}).status_code == 421
 
 
 def test_middleware_skips_auth_for_options(monkeypatch):

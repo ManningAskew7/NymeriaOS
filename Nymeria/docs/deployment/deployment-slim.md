@@ -43,9 +43,9 @@ On first boot:
 - `data/BOOTSTRAP_TOKEN.txt` is written (mode `0600`). Paste this `nym_<token>`
   value into the desktop/mobile Setup Wizard once.
 - `data/SLIM_SERVICE_TOKEN.txt` is written (mode `0600`). This is an
-  *internal* admin token that the in-process MCP, trigger-fire
-  and command-service callers use to authenticate against the API in the
-  same process. **Do not** paste this into the Setup Wizard. It is a
+  *internal* admin token that the in-process trigger-fire and
+  command-service callers use to authenticate against the API in the same
+  process (MCP tool calls forward the MCP caller's own token). **Do not** paste this into the Setup Wizard. It is a
   service credential, not a user credential.
 
 ## URLs
@@ -181,7 +181,7 @@ to `http://127.0.0.1:8000/mcp` using `SLIM_SERVICE_TOKEN.txt` as the bearer.
 | File | Audience | Purpose | Persistence |
 |---|---|---|---|
 | `data/BOOTSTRAP_TOKEN.txt` | The human operator | First-run admin login for the Setup Wizard | Auto-deleted when first used |
-| `data/SLIM_SERVICE_TOKEN.txt` | Slim's same-process callers (MCP/triggers) | Internal admin service credential | Persists; reused on every boot |
+| `data/SLIM_SERVICE_TOKEN.txt` | Slim's same-process callers (triggers, commands) | Internal admin service credential | Persists; reused on every boot |
 
 ## Docker users: what does NOT work
 
