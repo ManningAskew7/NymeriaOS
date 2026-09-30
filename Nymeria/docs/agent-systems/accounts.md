@@ -41,7 +41,9 @@ filesystems would give both one store file; a non-ASCII case variant is not
 caught. Pre-existing ids are grandfathered (no rename; reads and writes keep
 resolving to the segment they always did); on startup the API logs one
 warning per group of existing ids that fold to the same segment, compared
-case-insensitively, so an operator knows they exist.
+case-insensitively, so an operator knows they exist. A read of a thread id
+that has NO owner is a `404` for non-admins unless the id is canonical: the
+read would otherwise land on the store of whichever id it folds onto.
 
 ### Tokens
 

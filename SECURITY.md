@@ -730,7 +730,20 @@ Because Windows and macOS have case-insensitive filesystems, a new id that
 differs from an existing one only by ASCII case (`Alice` beside `alice`) is
 refused too; a non-ASCII case variant is not caught. Ids created before this
 rule are grandfathered untouched, never renamed, and the API process logs one
-warning per collision group (compared case-insensitively) at startup.
+warning per collision group (compared case-insensitively) at startup. Reads
+never create, so the read side has its own rule: a non-admin reading a
+thread id that has no owner is refused (404) unless the id is canonical,
+because the read would land on the store of the id it folds onto.
+Grandfathered ids carry an owner and read as before.
+
+Slash commands carry a client-chosen `thread_id` too (`POST
+/commands/execute` and `GET /commands/options/{ref}`, which the MCP server,
+the terminal client and the Discord and Telegram bots use): the thread is
+checked at that entry, as for every thread route, before any command handler
+or `command_submit` hook runs. (The in-process webhook bots derive their
+thread from the verified platform message, never from a client.) A
+TODO's explicit target thread is checked the same way when the TODO is
+created or retargeted, since that is where its turn will run.
 
 ### 2.8 Tool use and prompt injection
 

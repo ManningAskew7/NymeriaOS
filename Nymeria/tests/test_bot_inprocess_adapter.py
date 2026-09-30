@@ -492,7 +492,9 @@ class _FakeCommandService:
         self.result = result
         self.calls: list[tuple] = []
 
-    async def execute(self, ctx, command, *, api=None):
+    async def execute(self, ctx, command, *, api=None, gate_thread=None):
+        # The platform derived the thread, so this entry says it is not gated.
+        assert gate_thread is False
         self.calls.append((ctx, command, api))
         return self.result
 

@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...core.accounts import AuthenticatedUser
@@ -10,6 +11,7 @@ from ...core.command_service import (
     CommandBackendClient,
     CommandContext,
     get_command_service,
+    http_error_detail,
 )
 from ..schemas.commands import (
     CommandActor,
@@ -52,10 +54,13 @@ def create_commands_router(
             user=user,
             settings_fn=get_settings_fn if get_settings_fn is not None else None,
         )
+        # The client chose request.thread_id: check it before anything runs,
+        # as every other thread route does at the route (#425).
         result = await get_command_service().execute(
             ctx,
             request.command,
             api=backend,
+            gate_thread=True,
         )
         return CommandExecuteResponse(
             success=result.success,
@@ -100,6 +105,15 @@ def create_commands_router(
             user=user,
             settings_fn=get_settings_fn if get_settings_fn is not None else None,
         )
+        if thread_id:
+            # A client-chosen thread: the options carry its state (which
+            # skills are active), so check it like every thread route (#425).
+            try:
+                backend.require_thread_access(thread_id)
+            except httpx.HTTPStatusError as exc:
+                raise HTTPException(
+                    status_code=exc.response.status_code, detail=http_error_detail(exc)
+                ) from exc
         options = await get_command_service().resolve_options(
             ctx, ref, api=backend
         )

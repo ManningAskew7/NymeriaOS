@@ -907,7 +907,7 @@ def test_thread_claim_refuses_non_canonical_new_thread(
     assert accepted.json() == {"thread_id": "qacollide1", "owner": "owner"}
 
 
-def test_first_write_refuses_non_canonical_new_thread_but_reads_do_not(
+def test_first_write_refuses_non_canonical_new_thread_and_a_read_of_it_is_404(
     tmp_path: Path,
     monkeypatch,
     api_client_builder,
@@ -932,7 +932,15 @@ def test_first_write_refuses_non_canonical_new_thread_but_reads_do_not(
         json={"title": "Renamed"},
     )
 
-    assert read.status_code == 200
+    # The ownerless non-canonical id folds onto `qacollide1`; a read would
+    # land on that id's stores, whoever owns it (#425), so it is a 404 like a
+    # foreign thread. The admin still reads it (admins read every thread).
+    assert read.status_code == 404
+    admin_read = client.get(
+        "/threads/qa.collide.1/context",
+        headers=api_client_builder.auth(admin_token),
+    )
+    assert admin_read.status_code == 200
     assert write.status_code == 400
     assert "stored as 'qacollide1'" in write.json()["detail"]
     assert admin_write.status_code == 400

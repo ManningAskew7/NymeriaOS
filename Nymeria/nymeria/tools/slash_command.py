@@ -69,8 +69,13 @@ async def _dispatch_command(command: str, config: RunnableConfig) -> str:
     """Shared slash-command execution logic for sync and async tool paths."""
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
+    # thread_admitted: this is the turn's own thread (the agent cannot name
+    # another), which the runtime admitted before the turn started; without
+    # it a non-admin user's agent is refused in its own shared-channel turn.
     result = await get_command_service().execute(
-        CommandContext(user_id=user_id, thread_id=thread_id, source="agent"),
+        CommandContext(
+            user_id=user_id, thread_id=thread_id, source="agent", thread_admitted=True
+        ),
         command,
     )
     return result.markdown

@@ -1210,7 +1210,7 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `vonage_send_sms` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS message with Vonage. |
 | `wait_for_reply` | `nymeria/tools/thread_requests.py` | Wait for, or check on, the reply to a request you made to another thread. |
 | `watchdog_dispatch` | `nymeria/tools/watchdog_dispatch.py` | Dispatch a TODO to a target thread. You CANNOT target your own thread. |
-| `watchdog_read_notepad` | `nymeria/tools/watchdog_dispatch.py` | Read another thread's notepad to understand what it's currently focused on. |
+| `watchdog_read_notepad` | `nymeria/tools/watchdog_dispatch.py` | Read the notepad of another of your user's threads to see what it is focused on. |
 | `watchdog_todo_overview` | `nymeria/tools/watchdog_dispatch.py` | List all active TODOs across ALL threads, showing which thread each belongs to. |
 | `web_search_brave` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Brave (independent search index). |
 | `web_search_ddgs` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using keyless in-process metasearch. |

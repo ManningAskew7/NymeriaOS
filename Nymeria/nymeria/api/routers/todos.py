@@ -158,8 +158,15 @@ def create_todos_router(
     require_admin_user: Callable[..., Any],
     authed_user_id: Callable[..., Any],
     get_settings_fn: Callable[[], Any],
+    *,
+    require_thread_access_fn: Callable[..., Any],
 ) -> APIRouter:
-    """Create the TODO dashboard router with app dependencies injected."""
+    """Create the TODO dashboard router with app dependencies injected.
+
+    ``require_thread_access_fn`` checks an explicit TODO ``thread_id``: that
+    thread is where the TODO's turn will run, so a caller may only aim a TODO
+    at a thread it can open (#425; read check, the fire claims it).
+    """
     router = APIRouter(tags=["Dashboard"])
 
     @router.get("/todos/thread-counts")
@@ -263,6 +270,8 @@ def create_todos_router(
         scheduled_for = _parse_scheduled_for(request.scheduled_for)
 
         # Default thread_id from request, fallback to user-scoped default
+        if request.thread_id:
+            require_thread_access_fn(user, request.thread_id, claim=False)
         todo_thread_id = request.thread_id or f"default-{user_id}"
 
         workflow_id = (request.workflow_id or "").strip() or None
@@ -317,6 +326,8 @@ def create_todos_router(
         settings: Settings = Depends(get_settings_fn),
     ):
         """Update an existing TODO item."""
+        if request.thread_id:
+            require_thread_access_fn(user, request.thread_id, claim=False)
         todo_manager = TodoManager(settings.data_dir)
         schedule_db = _get_todo_schedule_db(settings)
 

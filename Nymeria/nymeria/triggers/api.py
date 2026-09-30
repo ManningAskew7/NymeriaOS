@@ -29,6 +29,7 @@ from ..core.event_bus import publish_sync_event
 from ..core.rate_limit import SlidingWindowRateLimiter
 from ..core.request_context import reset_request_id, set_request_id
 from ..core import thread_classification as _thread_classification
+from ..core.thread_access import ownerless_read_refused
 from ..tools import SEED_TOOLS
 from ..api.routers.accounts import create_accounts_router
 from ..api.routers.autonomous_stream import create_autonomous_stream_router
@@ -718,9 +719,13 @@ def _require_thread_access(
             raise HTTPException(status_code=404, detail="Not found")
         return
     # Read-only access: do not TOFU-claim an ownerless thread. Allow the read
-    # when the thread is ownerless or owned by the caller; reject only when it
-    # is owned by someone else (same 404 the claiming branch would raise).
+    # when the thread is owned by the caller, or ownerless with a canonical id;
+    # reject one owned by someone else (same 404 the claiming branch would
+    # raise) and an ownerless id that folds onto another's store
+    # (core/thread_access.py).
     owner = agent.accounts_repo.get_thread_owner(thread_id)
+    if owner is None and ownerless_read_refused(thread_id):
+        raise HTTPException(status_code=404, detail="Not found")
     if owner is not None and owner != user.id:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1108,7 +1113,15 @@ def create_api_app(
             get_settings,
         )
     )
-    app.include_router(create_todos_router(verify_api_key, require_admin_user, _authed_user_id, get_settings))
+    app.include_router(
+        create_todos_router(
+            verify_api_key,
+            require_admin_user,
+            _authed_user_id,
+            get_settings,
+            require_thread_access_fn=_require_thread_access,
+        )
+    )
     app.include_router(create_twitch_chatlog_router(verify_api_key, _authed_user_id, get_settings))
     app.include_router(create_commands_router(_make_rate_limited_auth("commands"), get_agent, get_settings))
     app.include_router(

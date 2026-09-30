@@ -23,6 +23,31 @@ from .utils import get_user_id, get_thread_id
 logger = logging.getLogger(__name__)
 
 
+def _target_refusal(user_id: str, target_thread_id: str) -> str | None:
+    """None when ``user_id`` may read ``target_thread_id``, else the refusal.
+
+    Both tools take the thread id from the model, so they carry the read rule
+    every thread surface enforces (``core/thread_access.py``): the watchdog
+    oversees its user's own threads, never another account's (#425). Fails
+    closed when the agent (the ownership record) is unavailable."""
+    from ..core.thread_access import may_read_thread
+    from .utils import current_agent, is_admin
+
+    agent = current_agent()
+    repo = getattr(agent, "accounts_repo", None) if agent is not None else None
+    if repo is None:
+        return "[Error]: Cannot check access to that thread right now."
+    if may_read_thread(
+        repo,
+        user_id=user_id,
+        is_admin=is_admin(user_id, agent=agent),
+        thread_id=target_thread_id,
+    ):
+        return None
+    # Same answer for "someone else's" and "does not exist": no oracle.
+    return f"[Error]: No thread '{target_thread_id}' you can reach."
+
+
 @tool
 def watchdog_dispatch(
     target_thread_id: str,
@@ -56,6 +81,10 @@ def watchdog_dispatch(
 
     if not target_thread_id:
         return "[Error]: 'target_thread_id' is required."
+
+    refusal = _target_refusal(user_id, target_thread_id)
+    if refusal:
+        return refusal
 
     if scheduled_for == "now":
         scheduled_for = "30s"
@@ -108,15 +137,21 @@ def watchdog_dispatch(
 @tool
 def watchdog_read_notepad(
     target_thread_id: str,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Read another thread's notepad to understand what it's currently focused on.
+    Read the notepad of another of your user's threads to see what it is focused on.
 
     Args:
         target_thread_id: Thread ID whose notepad to read
     """
     if not target_thread_id:
         return "[Error]: 'target_thread_id' is required."
+
+    refusal = _target_refusal(get_user_id(config), target_thread_id)
+    if refusal:
+        return refusal
 
     from .thread_notes import read_notepad
     content = read_notepad(target_thread_id)

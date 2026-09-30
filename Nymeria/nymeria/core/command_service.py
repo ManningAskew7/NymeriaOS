@@ -178,6 +178,13 @@ class CommandContext:
     surface: CommandSurface | None = None
     is_admin: bool | None = None
     via_act_as: bool = False
+    # The runtime already admitted this caller to thread_id and the caller
+    # cannot pick another: the agent's slash_command on its own turn thread.
+    # The in-process client admits THAT thread id the way the bot relay's
+    # act-as admits a shared channel, so a non-admin user's agent in its own
+    # shared-channel turn passes the doors the bot relay would; any other
+    # shared channel stays refused (#425). Hooks still read via_act_as.
+    thread_admitted: bool = False
     # Capability flag: the caller renders declarative form payloads
     # (data["form"]). Only form-rendering clients send it (the Rich CLI);
     # execute() strips form payloads for everyone else, and the
@@ -1349,6 +1356,10 @@ class _CommandBackendUser:
     email: str = ""
     display_name: str = ""
     via_act_as: bool = False
+    # The ONE thread the runtime admitted this caller to (the agent's own
+    # turn, CommandContext.thread_admitted): passes the shared-channel arm
+    # for that id only, never for any other shared channel (#425).
+    admitted_thread_id: str | None = None
 
 
 class CommandBackendClient:
@@ -1412,6 +1423,7 @@ class CommandBackendClient:
                 email=email,
                 display_name=display_name,
                 via_act_as=ctx.via_act_as,
+                admitted_thread_id=ctx.thread_id if ctx.thread_admitted else None,
             )
         return cls(agent, user=backend_user, settings_fn=settings_fn or get_settings)
 
@@ -1431,6 +1443,13 @@ class CommandBackendClient:
     def _require_same_user_or_admin(self, user_id: str) -> None:
         if user_id != self.user.id and self.user.role != "admin":
             _raise_http_status(404, "Not found")
+
+    def require_thread_access(self, thread_id: str, *, claim: bool = False) -> None:
+        """The public door for an entry that admits a client-chosen thread id
+        (``execute(gate_thread=True)``, the options route): a READ check by
+        default, so naming a thread never claims it. Raises the same 404 the
+        other doors do."""
+        self._require_thread_access(thread_id, claim=claim)
 
     def _require_thread_access(self, thread_id: str, *, claim: bool = True) -> None:
         """Enforce that the caller owns ``thread_id`` (or is admin).
@@ -1466,6 +1485,8 @@ class CommandBackendClient:
         if is_shared_channel(thread_id):
             if self.user.via_act_as:
                 return
+            if thread_id == self.user.admitted_thread_id:
+                return
             _raise_http_status(404, "Not found")
 
         if claim:
@@ -1474,7 +1495,11 @@ class CommandBackendClient:
                 _raise_http_status(404, "Not found")
             return
 
+        from .thread_access import ownerless_read_refused
+
         owner = self.agent.accounts_repo.get_thread_owner(thread_id)
+        if owner is None and ownerless_read_refused(thread_id):
+            _raise_http_status(404, "Not found")
         if owner is not None and owner != self.user.id:
             _raise_http_status(404, "Not found")
 
@@ -2018,6 +2043,11 @@ class CommandBackendClient:
         from .todo_manager import TodoManager
 
         target_user_id = self._checked_user_id(user_id)
+        if thread_id:
+            # An explicit target thread is where the TODO's turn will run:
+            # the caller must be able to open it (#425). A read check: the
+            # fire claims a not-yet-existing thread, naming it here does not.
+            self._require_thread_access(thread_id, claim=False)
         settings = self._settings()
         todo_manager = TodoManager(settings.data_dir)
         canonical_recurrence: Optional[str] = None
@@ -2168,6 +2198,9 @@ class CommandBackendClient:
         from .todo_manager import TodoManager, TodoStatus
 
         target_user_id = self._checked_user_id(user_id)
+        if patch.get("thread_id"):
+            # Retargeting a TODO is the same act as creating one there (#425).
+            self._require_thread_access(str(patch["thread_id"]), claim=False)
         settings = self._settings()
         todo_manager = TodoManager(settings.data_dir)
         schedule_db = _get_todo_schedule_db(settings)
@@ -3607,8 +3640,20 @@ class CommandService:
         raw_command: str,
         *,
         api: Any | None = None,
+        gate_thread: bool = False,
     ) -> CommandResult:
         """Dispatch one slash command and return its budgeted result.
+
+        ``gate_thread`` is for an entry that admits a CLIENT-chosen
+        ``ctx.thread_id`` (``POST /commands/execute``): the caller's read
+        access to that thread is checked through ``api.require_thread_access``
+        after the command resolves and before COMMAND_SUBMIT hooks or the
+        handler run, so no handler (store-direct ones included) and no hook
+        action ever sees a thread the caller cannot open (#425). Entries whose
+        thread the runtime already chose (the agent's own turn, a platform-
+        derived bot thread, the local CLI) pass False; every call under
+        ``nymeria/api/`` must say which, explicitly (ratchet in
+        ``tests/test_command_thread_gate.py``).
 
         The per-surface output budget is applied HERE, at the one exit every
         result passes through, rather than on the handler branch alone. The
@@ -3621,7 +3666,9 @@ class CommandService:
         one), so listings are shaped to fit; this wrapper is the guarantee that
         nothing can outgrow the budget by construction.
         """
-        result = await self._execute_unbudgeted(ctx, raw_command, api=api)
+        result = await self._execute_unbudgeted(
+            ctx, raw_command, api=api, gate_thread=gate_thread
+        )
         markdown = _truncate(result.markdown, limit=output_budget(ctx.effective_surface))
         if markdown is result.markdown:
             return result
@@ -3633,6 +3680,7 @@ class CommandService:
         raw_command: str,
         *,
         api: Any | None = None,
+        gate_thread: bool = False,
     ) -> CommandResult:
         # User-defined aliases (#133) expand HERE and not in the parser:
         # execute() is the one dispatch seam that knows the user, and the
@@ -3716,6 +3764,20 @@ class CommandService:
                 command_label,
                 level="error",
             )
+        if gate_thread and ctx.thread_id:
+            # Read check, never a claim: naming a thread in a command must not
+            # register it (write doors still claim on first write).
+            if api is None:
+                raise ValueError("gate_thread needs the caller's api client")
+            try:
+                api.require_thread_access(ctx.thread_id)
+            except httpx.HTTPStatusError as exc:
+                return CommandResult(
+                    False,
+                    render_outcome("error", http_error_detail(exc)),
+                    command_label,
+                    level="error",
+                )
         if not definition.executable:
             # data carries the execution kind so generic bot passthroughs can
             # detect chat_stream commands structurally (no string matching)
@@ -4677,6 +4739,17 @@ class _CommandExecutor(
         skill_manager = getattr(agent, "skill_manager", None)
         if skill_manager is None:
             return command_error("Skill manager unavailable.")
+        # The global directory is loaded by EVERY account, so installing into
+        # it is the REST twin's admin-only act (POST /skills/install, 403),
+        # checked on the account's role so an agent acting for a non-admin is
+        # refused too (#426).
+        from ..tools.utils import is_admin
+
+        if scope == "global" and not is_admin(self.user_id, agent=agent):
+            return command_error(
+                "Global skill install requires admin. Install it for yourself "
+                "with `--scope user`."
+            )
 
         from ..skills.marketplace import MarketplaceError, get_fetcher
 

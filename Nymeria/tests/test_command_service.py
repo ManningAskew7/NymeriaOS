@@ -232,6 +232,11 @@ class FakeCommandApi:
         self.calls.append(("get_thread_config", (thread_id,), {"user_id": user_id}))
         return dict(self.thread_config)
 
+    def require_thread_access(self, thread_id: str, *, claim: bool = False) -> None:
+        # The entry gate's door (execute(gate_thread=True), the options
+        # route); this fake admits every thread, a subclass refuses.
+        self.calls.append(("require_thread_access", (thread_id,), {"claim": claim}))
+
     async def get_thread_notepad(self, thread_id: str, user_id: str | None = None) -> dict[str, Any]:
         self.calls.append(("get_thread_notepad", (thread_id,), {}))
         content = self.notepads.get(thread_id, "")

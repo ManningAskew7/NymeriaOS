@@ -1704,6 +1704,12 @@ POST /commands/execute
 }
 ```
 
+A supplied `thread_id` must be a thread the caller can open, checked like
+every other thread route but without claiming it: another user's thread, a
+shared channel reached without the bot relay's act-as, or an unowned id
+that is not a canonical storage id answers `success: false` with
+`**Error:** Not found` before any handler or `command_submit` hook runs.
+
 `supports_forms` (default false) is the form-capability flag: set it ONLY
 when this caller renders `data.form` payloads (today: the Rich CLI). It
 gates two behaviors. Without it, form payloads are STRIPPED from the
@@ -1930,8 +1936,9 @@ option lists use, so a client can feed them straight into a picker or an
 autocomplete. Optional `q` narrows server-side (casefolded substring over
 id, label, and meta) and `limit` caps the list (0 = uncapped, max 100),
 so latency-bound consumers such as autocomplete never ship a full
-catalog. 404 for a ref no resolver claims; a resolver fault degrades to
-an empty list, never an error. Discord autocomplete is this endpoint's
+catalog. 404 for a ref no resolver claims, and for a `thread_id` the
+caller cannot open (checked as for `POST /commands/execute`); a resolver
+fault degrades to an empty list, never an error. Discord autocomplete is this endpoint's
 first remote consumer (acting as the invoking user's linked account); the
 CLI palette and GUI argument stages (#135) are the intended next ones.
 
@@ -2985,7 +2992,7 @@ Authorization: Bearer <token>
 | `task` | string | Yes | Task description |
 | `scheduled_for` | string | No | Relative (`45s`, `17m`, `2h`, `1w`) or absolute/ISO datetime |
 | `recurrence` | string | No | Interval as a canonical duration string (`Nm`, `Nh`, `Nd`, `Nw`; or `Ns` with a 60s minimum). Examples: `"5m"`, `"2h"`, `"1d"`. Legacy preset names (`hourly`, `daily`, `weekly`, `monthly`, `5min` … `30min`) are accepted on input and normalised to canonical form on storage. |
-| `thread_id` | string | No | Thread for autonomous output, defaults to a user-scoped default thread |
+| `thread_id` | string | No | Thread for autonomous output (the TODO's turn runs there), defaults to a user-scoped default thread. Must be a thread the caller can open: another user's thread is a `404`, on `PATCH` too |
 | `notes` | string | No | Additional context |
 | `workflow_id` | string | No | Create-only: run this published workflow tool headlessly at the scheduled time instead of an agent turn. The binding is validated at create time (400 on a missing tool, unapproved revision, or uncovered required parameters). The run never delivers output by itself; the workflow must deliver explicitly. To change a binding, delete and recreate the TODO. |
 | `workflow_params` | object | No | Parameters bound to the scheduled workflow run |

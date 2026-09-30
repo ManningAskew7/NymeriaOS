@@ -50,10 +50,20 @@ def test_write_door_refuses_non_canonical_new_thread(tmp_path: Path, role: str) 
     assert "letters, digits, '-' and '_'" in _detail(excinfo)
     assert agent.accounts_repo.get_thread_owner("qa-collide/1") is None
 
-    # A read-only door is never refused, and a canonical id claims as before.
-    client._require_thread_access("qa-collide/1", claim=False)
+    # A canonical id claims as before.
     client._require_thread_access("qa-collide1")
     assert agent.accounts_repo.get_thread_owner("qa-collide1") == "alice"
+
+    # A read-only door admits the OWNERLESS non-canonical id only for an
+    # admin: for anyone else the read would land on the store of the id it
+    # folds onto (`qa-collide1`, owned now), the read half of this gate (#425).
+    if role == "admin":
+        client._require_thread_access("qa-collide/1", claim=False)
+    else:
+        with pytest.raises(httpx.HTTPStatusError) as refused:
+            client._require_thread_access("qa-collide/1", claim=False)
+        assert refused.value.response.status_code == 404
+    assert agent.accounts_repo.get_thread_owner("qa-collide/1") is None
 
 
 def test_create_thread_refuses_non_canonical_id_before_writing_metadata(

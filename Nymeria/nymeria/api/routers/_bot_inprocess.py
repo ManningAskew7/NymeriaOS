@@ -192,7 +192,12 @@ class InProcessBotAPI:
             via_act_as=True,
         )
         backend = CommandBackendClient.from_context(ctx, agent=self.agent, user=authed)
-        result = await get_command_service().execute(ctx, command, api=backend)
+        # The bot derived thread_id from a verified platform message (never a
+        # client's choice), the same admission the act-as relay gets over
+        # POST /commands/execute, so the entry gate is not applied here.
+        result = await get_command_service().execute(
+            ctx, command, api=backend, gate_thread=False
+        )
         return {
             "success": result.success,
             "markdown": result.markdown,
