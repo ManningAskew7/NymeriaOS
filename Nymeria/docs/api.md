@@ -1612,8 +1612,8 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "id": "tools.list",
     "path": ["tools", "list"],
     "name": "tools list",
-    "description": "List tools: enabled (default), optional, core, or one category",
-    "usage": "/tools list [enabled|optional|core|<category>]",
+    "description": "List tools: enabled (default), optional, core, a category, or an integration group/service",
+    "usage": "/tools list [enabled|optional|core|<category>|<group>|<service>] [--all]",
     "category": "Tools",
     "subcommands": [],
     "aliases": ["/tools_list", "/tools_enabled", "/tools_category", "/tools enabled", "/tools category", "/tools_core", "/tools core", "/tools_optional", "/tools optional"],
@@ -1629,7 +1629,7 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "note": null,
     "blocked_surfaces": [],
     "blocked_reason": null,
-    "examples": [],
+    "examples": ["/tools list", "/tools list optional", "/tools list integrations", "/tools list github", "/tools list optional --all"],
     "params": [
       {
         "name": "filter",
@@ -1643,7 +1643,21 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
         "aliases": [],
         "description": "Which tools to list (default: enabled)",
         "no_echo": false,
-        "label": "enabled|optional|core|<category>"
+        "label": "enabled|optional|core|<category>|<group>|<service>"
+      },
+      {
+        "name": "all",
+        "kind": "flag",
+        "type": "bool",
+        "required": false,
+        "choices": [],
+        "choices_ref": null,
+        "default": null,
+        "repeatable": false,
+        "aliases": [],
+        "description": "With optional or integrations: every tool instead of the index",
+        "no_echo": false,
+        "label": null
       }
     ]
   }

@@ -142,7 +142,7 @@ _TOOL_TARGET_PARAM = CommandParam(
     required=True,
     choices_ref="tools",
     label="tool_or_category",
-    description="Tool name or tool category",
+    description="Tool name, tool category, or integration group/service key",
 )
 # Scope grammar (style guide rule 3), the same shape `/skills enable` uses: the
 # global arm writes the account profile's `default_thread_tools`, which every
@@ -1244,7 +1244,7 @@ def register_default_commands(service: "CommandService") -> None:
     )
     service.register(
         "tools list",
-        description="List tools: enabled (default), optional, core, or one category",
+        description="List tools: enabled (default), optional, core, a category, or an integration group/service",
         category="Tools",
         # The four listing variants (`enabled`, `optional`, `core`,
         # `category <name>`) folded into this one filter (backlog #131).
@@ -1277,13 +1277,30 @@ def register_default_commands(service: "CommandService") -> None:
         # No choices: the category half of the value space is live data from
         # the tools API, and the handler already names every valid category
         # when one misses.
+        # `optional` is an index (categories, integration groups and their
+        # service keys) that fits the compact output budget; a group or
+        # service key lists that slice whole (#101 e27b). `--all` restores the
+        # every-name optional view, which only roomy surfaces print whole.
         params=(
             CommandParam(
                 "filter",
                 default="enabled",
-                label="enabled|optional|core|<category>",
+                label="enabled|optional|core|<category>|<group>|<service>",
                 description="Which tools to list (default: enabled)",
             ),
+            CommandParam(
+                "all",
+                kind="flag",
+                type="bool",
+                description="With optional or integrations: every tool instead of the index",
+            ),
+        ),
+        examples=(
+            "/tools list",
+            "/tools list optional",
+            "/tools list integrations",
+            "/tools list github",
+            "/tools list optional --all",
         ),
     )
     # `requires_thread` is deliberately OFF on both: the global arm writes the
@@ -1299,6 +1316,7 @@ def register_default_commands(service: "CommandService") -> None:
         danger_level="normal",
         examples=(
             "/tools enable web_search",
+            "/tools enable github",
             "/tools enable productivity",
             "/tools enable harness_report global",
         ),

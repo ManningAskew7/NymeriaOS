@@ -237,14 +237,19 @@ async def resolve_fallback_models(
 
 
 async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
-    """Category names, then tool names, then published custom definitions.
+    """Category names, integration groups and services, tool names, then
+    published custom definitions.
 
-    All three are offered because that is what the ``/tools`` target
-    argument accepts (``tool_or_category``): ``_resolve_tool_names`` checks
-    the category map first, the available-tool list second and the custom
-    definitions third (#278), so a tool shadowed by a category name is
-    dropped here rather than offered as an option that would resolve to the
-    category, and a definition shadowed by either is dropped the same way.
+    All are offered because that is what the ``/tools`` target argument
+    accepts (``tool_or_category``): ``_resolve_tool_names`` checks the
+    category map first, the available-tool list second, integration group
+    then service keys third (#101 e27b) and the custom definitions last
+    (#278), so a name shadowed by an earlier kind is dropped here rather than
+    offered as an option that would resolve to something else. The group and
+    service rows are EMITTED right after the categories, though: they are few
+    and they are the drill-down keys `/tools list` advertises, and the options
+    route keeps only the first 25 substring matches, so behind a busy prefix
+    (`microsoft`, `google`) they would never be reached after the tool rows.
 
     Per-thread enable state rides ``meta`` instead of ``current``: many
     tools are on at once, so marking them all would fill a picker with
@@ -281,7 +286,9 @@ async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
             logger.debug("options: thread tool state lookup failed", exc_info=True)
     active = (default_names | thread_extras | live_temp) - thread_disabled
 
-    options: list[dict[str, Any]] = []
+    from .tool_listing import integration_targets
+
+    category_rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for category, names in sorted(categories.items()):
         category_name = str(category)
@@ -289,12 +296,13 @@ async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
             continue
         seen.add(category_name)
         count = len(names or [])
-        options.append(
+        category_rows.append(
             form_option(
                 category_name,
                 meta=f"category, {count} tool{'' if count == 1 else 's'}",
             )
         )
+    tool_rows: list[dict[str, Any]] = []
     for entry in sorted(
         (tool for tool in available if isinstance(tool, Mapping)),
         key=lambda tool: str(tool.get("name") or ""),
@@ -306,13 +314,29 @@ async def resolve_tools(executor: "_CommandExecutor") -> list[dict[str, Any]]:
         meta_parts = ["on" if name in active else "off"]
         if name in default_names:
             meta_parts.append("core")
-        options.append(
+        tool_rows.append(
             form_option(
                 name,
                 meta=", ".join(meta_parts),
                 description=_first_line(entry.get("description")),
             )
         )
+    integration_rows: list[dict[str, Any]] = []
+    for target in integration_targets(
+        tool for tool in available if isinstance(tool, Mapping)
+    ):
+        if target.key in seen:
+            continue
+        seen.add(target.key)
+        on = sum(1 for name in target.names if name in active)
+        integration_rows.append(
+            form_option(
+                target.key,
+                meta=f"integration {target.kind}, {len(target.tools)} tools, {on} on",
+                description=target.label,
+            )
+        )
+    options: list[dict[str, Any]] = category_rows + integration_rows + tool_rows
     definitions: list[Mapping[str, Any]] = []
     reader = getattr(executor.api, "get_custom_tool_definitions", None)
     if reader is not None:

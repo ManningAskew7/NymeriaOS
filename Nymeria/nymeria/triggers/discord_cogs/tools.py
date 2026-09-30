@@ -68,7 +68,7 @@ class ToolsCog(commands.Cog):
 
     @tools_group.command(
         name="optional",
-        description="List optional tool categories (disabled by default)",
+        description="Index of optional tools by category and integration group",
     )
     async def cmd_tools_optional(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -84,10 +84,10 @@ class ToolsCog(commands.Cog):
 
     @tools_group.command(
         name="category",
-        description="List tools in a specific category",
+        description="List tools in a category, integration group, or service",
     )
     @app_commands.describe(
-        name="Category name (e.g., email, browser, calendar)"
+        name="Category, integration group or service (e.g., email, crm_sales, github)"
     )
     async def cmd_tools_category(
         self, interaction: discord.Interaction, name: str
@@ -154,7 +154,7 @@ class ToolsCog(commands.Cog):
         description="Enable a tool or category for this channel",
     )
     @app_commands.describe(
-        name="Tool name or category (e.g., email, bash_execute)"
+        name="Tool, category, or integration group/service (e.g., email, github)"
     )
     async def cmd_tools_enable(
         self, interaction: discord.Interaction, name: str
@@ -177,7 +177,7 @@ class ToolsCog(commands.Cog):
         description="Disable a tool or category for this channel",
     )
     @app_commands.describe(
-        name="Tool name or category (e.g., email, bash_execute)"
+        name="Tool, category, or integration group/service (e.g., email, github)"
     )
     async def cmd_tools_disable(
         self, interaction: discord.Interaction, name: str

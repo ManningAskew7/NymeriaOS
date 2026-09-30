@@ -2113,6 +2113,7 @@ slash_command(command: str)
 - `/env get PERPLEXITY_API_KEY`  -  fetch unmasked secret
 - `/memory save color "deep blue"`  -  save a user memory
 - `/tools enable browser`  -  turn on a category on this thread
+- `/tools enable github` / `/tools enable productivity`  -  turn on one integration service or group (keys from `/tools list integrations`; `/tools list <key>` previews it)
 - `/tools enable harness_report global`  -  add it to `default_thread_tools`, so every thread of the account inherits it
 - `/tools enable <custom tool id>`  -  bind a published custom tool definition on this thread (definitions never take `global`)
 - `/skill <name> [prompt]`  -  activate a markdown-only skill for this turn

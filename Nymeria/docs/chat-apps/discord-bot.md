@@ -332,11 +332,11 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | Command | Description |
 |---------|-------------|
 | `/tools core` | List core tools (always loaded by default). |
-| `/tools optional` | List optional tool categories with per-channel active counts. |
+| `/tools optional` | Index of optional tools: each category with its count, per-channel active count and example names; `integrations` expands into its groups and their service keys. |
 | `/tools enabled` | Show all tools active in this channel: core (with any disabled), optional enabled. |
-| `/tools category <name>` | List tools in a category with enabled/disabled status for this channel. |
+| `/tools category <name>` | List tools in a category with enabled/disabled status for this channel. Also takes an integration group (`crm_sales`) or service (`github`); `integrations` itself lists its groups and services. |
 | `/tools search <query>` | Discord-local tool search with ranked suggestions and enable hints. |
-| `/tools enable <name>` | Enable a tool or entire category for this channel. Accepts a tool name (e.g., `bash_execute`), a category name (e.g., `email`), or a published custom tool definition's id. Autocomplete suggests tools and categories; a definition id is typed. |
+| `/tools enable <name>` | Enable a tool or entire category for this channel. Accepts a tool name (e.g., `bash_execute`), a category name (e.g., `email`), an integration group or service key (e.g., `productivity`, `github`), or a published custom tool definition's id. Autocomplete suggests categories, integration groups and services, then tools; a definition id is typed. |
 | `/tools disable <name>` | Disable a tool or entire category for this channel. Works for core tools (disabling a default) and optional tools. |
 | `/sequential-tools [mode] [scope]` | Run tool calls one at a time instead of in parallel. |
 

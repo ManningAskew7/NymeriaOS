@@ -6990,16 +6990,28 @@ class _CommandExecutor(
     ):
         # ``defaults`` lets a caller that already read /tools/defaults hand the
         # payload in rather than pay for a second profile read.
-        name_key = name.lower().strip().replace("-", "_")
+        # Returns (tool names, set phrase, set key, error). The phrase names a
+        # multi-tool target for receipts ("category 'browser'", "integration
+        # service 'github' (GitHub)"); None for a single tool.
+        from .tool_listing import normalize_key, resolve_integration_target
+
+        name_key = normalize_key(name)
         cat_data = await self.api.get_tool_categories()
         categories = cat_data.get("categories", {})
         if name_key in categories:
-            return (categories[name_key], True, name_key, None)
+            members = categories[name_key]
+            return (members, f"category '{name_key}' ({len(members)} tools)", name_key, None)
         data = defaults if defaults is not None else await self.api.get_default_tools(self.user_id)
         available = data.get("available_tools", [])
         all_names = {t["name"] for t in available}
         if name_key in all_names:
-            return ([name_key], False, None, None)
+            return ([name_key], None, None, None)
+        # An integration group or service key (#101 e27b): what the
+        # `/tools list integrations` drill-down names, resolved from the
+        # caller's own (role-filtered) catalog.
+        target = resolve_integration_target(available, name_key)
+        if target is not None:
+            return (target.names, target.describe(count=True), target.key, None)
         # Published custom tool definitions (#278) are registered under their
         # stored id and bind through a thread's enabled_tools at graph build,
         # but never enter available_tools (seed + visible catalog + MCP). The
@@ -7009,15 +7021,21 @@ class _CommandExecutor(
             if scope == "global":
                 return (
                     [],
-                    False,
+                    None,
                     None,
                     f"'{stored_id}' is a custom tool definition, which is bound per "
                     "thread (in a thread's own tool set), never through the "
                     "account defaults. Run this without `global` on that thread.",
                 )
-            return ([stored_id], False, None, None)
+            return ([stored_id], None, None, None)
         cat_list = ", ".join(sorted(categories))
-        return ([], False, None, f"Unknown tool or category '{name}'. Categories: {cat_list}")
+        return (
+            [],
+            None,
+            None,
+            f"Unknown tool or category '{name}'. Categories: {cat_list}. An integration "
+            "group or service key works too (`/tools list integrations` lists them).",
+        )
 
     async def _custom_tool_definitions(self) -> list[dict]:
         """Published custom definitions, or [] on a client without the read."""
@@ -7069,10 +7087,12 @@ class _CommandExecutor(
         if filter_val == "core":
             return await self._tools_core_markdown()
         if filter_val == "optional":
-            return await self._tools_optional_markdown()
+            return await self._tools_optional_markdown(every_name=bool(bound.get("all")))
         if filter_val in ("enabled", ""):
             return await self._tools_enabled_markdown()
-        return await self._tools_category_markdown(str(bound.get("filter") or ""))
+        return await self._tools_category_markdown(
+            str(bound.get("filter") or ""), every_tool=bool(bound.get("all"))
+        )
 
     async def _tools_core_markdown(self) -> str:
         data = await self.api.get_default_tools(self.user_id)
@@ -7088,7 +7108,11 @@ class _CommandExecutor(
                     lines.append(f"  {t['name']}")
         return "\n".join(lines)
 
-    async def _tools_optional_markdown(self) -> str | CommandOutput:
+    async def _tools_optional_markdown(self, *, every_name: bool = False) -> str | CommandOutput:
+        # An index by default (#101 e27b): the every-name view outgrew the
+        # compact budget and was cut inside its first category.
+        from .tool_listing import render_optional_all, render_optional_index
+
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -7097,24 +7121,9 @@ class _CommandExecutor(
         available = data.get("available_tools", [])
         tc = await self.api.get_thread_config(self.thread_id)
         thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
-
-        cats: dict[str, list] = {}
-        for t in available:
-            if t.get("name") not in default_names:
-                cat = t.get("category", "other")
-                cats.setdefault(cat, []).append(t)
-
-        total = sum(len(v) for v in cats.values())
-        lines = [f"Optional Tools: {total} tools in {len(cats)} categories"]
-        for cat_name in sorted(cats):
-            entries = cats[cat_name]
-            active = sum(1 for t in entries if t["name"] in thread_extras)
-            names = ", ".join(t["name"] for t in entries)
-            tag = f" ({active} enabled on this thread)" if active else ""
-            lines.append("")
-            lines.append(f"{cat_name} ({len(entries)}){tag}")
-            lines.append(f"  {names}")
-        return "\n".join(lines)
+        enabled = thread_extras | live_temporary_tools(tc)
+        render = render_optional_all if every_name else render_optional_index
+        return render(available, default_names, enabled)
 
     async def _tools_enabled_markdown(self) -> str | CommandOutput:
         thread_error = self._require_thread()
@@ -7169,7 +7178,9 @@ class _CommandExecutor(
             lines.append("Optional enabled: none")
         return "\n".join(lines)
 
-    async def _tools_category_markdown(self, cat_name: str) -> str | CommandOutput:
+    async def _tools_category_markdown(
+        self, cat_name: str, *, every_tool: bool = False
+    ) -> str | CommandOutput:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -7184,16 +7195,35 @@ class _CommandExecutor(
         # in temporary_tools for its first 2h, never in enabled_tools).
         all_enabled = (default_names | thread_extras | live_temporary_tools(tc)) - thread_disabled
 
-        cat_key = cat_name.lower().strip().replace("-", "_")
+        from .tool_listing import (
+            INTEGRATIONS,
+            normalize_key,
+            render_integration_target,
+            render_integrations_index,
+            resolve_integration_target,
+        )
+
+        cat_key = normalize_key(cat_name)
         cats: dict[str, list] = {}
         for t in available:
             cat = t.get("category", "other")
             cats.setdefault(cat, []).append(t)
         if cat_key not in cats:
+            target = resolve_integration_target(available, cat_key)
+            if target is not None:
+                return render_integration_target(
+                    target, all_enabled, default_names, {t["name"] for t in available}
+                )
             return command_error(
                 f"Unknown category '{cat_name}'. "
-                f"Available: {', '.join(sorted(cats))}"
+                f"Available: {', '.join(sorted(cats))}. An integration group or "
+                f"service key works too (`/tools list {INTEGRATIONS}` lists them)."
             )
+        if cat_key == INTEGRATIONS and not every_tool:
+            # A thousand-plus tools: an index of groups and services, each of
+            # which lists whole (#101 e27b). `--all` keeps the full listing,
+            # which a roomy surface prints whole.
+            return render_integrations_index(available, all_enabled)
 
         entries = cats[cat_key]
         lines = [f"Tools in category '{cat_key}': {len(entries)} tools"]
@@ -7258,7 +7288,7 @@ class _CommandExecutor(
         name = str(bound.get("name") or "")
         if bound.get("scope") == "global":
             defaults = await self.api.get_default_tools(self.user_id)
-            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
+            tool_names, set_phrase, set_key, error = await self._resolve_tool_names(
                 name, defaults, scope="global"
             )
             if error:
@@ -7268,11 +7298,11 @@ class _CommandExecutor(
             )
             if write_error:
                 return command_error(write_error)
-            if is_category:
+            if set_phrase:
                 return command_success(
-                    f"Enabled category '{cat_name}' ({len(tool_names)} tools) "
+                    f"Enabled {set_phrase} "
                     "on every thread of this account."
-                    + (self._custom_category_note() if cat_name == "custom" else "")
+                    + (self._custom_category_note() if set_key == "custom" else "")
                 )
             return command_success(
                 f"Enabled tool '{tool_names[0]}' on every thread of this account."
@@ -7281,7 +7311,7 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
+        tool_names, set_phrase, set_key, error = await self._resolve_tool_names(name)
         if error:
             return command_error(error)
         tc = await self.api.get_thread_config(self.thread_id)
@@ -7295,10 +7325,10 @@ class _CommandExecutor(
             enabled_tools=sorted(new_enabled),
             disabled_tools=sorted(new_disabled),
         )
-        if is_category:
+        if set_phrase:
             return command_success(
-                f"Enabled category '{cat_name}' ({len(tool_names)} tools)."
-                + (self._custom_category_note() if cat_name == "custom" else "")
+                f"Enabled {set_phrase}."
+                + (self._custom_category_note() if set_key == "custom" else "")
             )
         return command_success(f"Enabled tool '{tool_names[0]}'.")
 
@@ -7307,7 +7337,7 @@ class _CommandExecutor(
         if bound.get("scope") == "global":
             defaults = await self.api.get_default_tools(self.user_id)
             current = set(defaults.get("default_tools", []))
-            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
+            tool_names, set_phrase, set_key, error = await self._resolve_tool_names(
                 name, defaults, scope="global"
             )
             if error:
@@ -7325,7 +7355,7 @@ class _CommandExecutor(
                 # typed as stored; do not "tidy" this into normalized form.
                 literal = name.strip()
                 if literal in current:
-                    tool_names, is_category, cat_name, error = ([literal], False, None, None)
+                    tool_names, set_phrase, set_key, error = ([literal], None, None, None)
                 else:
                     return command_error(error)
             write_error = await self._set_default_tool_names(
@@ -7337,11 +7367,11 @@ class _CommandExecutor(
 
             lost = capability_loss_warning(tool_names)
             suffix = f" {lost}" if lost else ""
-            if is_category:
+            if set_phrase:
                 return command_success(
-                    f"Removed category '{cat_name}' ({len(tool_names)} tools) "
+                    f"Removed {set_phrase} "
                     f"from this account's defaults.{suffix}"
-                    + (self._custom_category_note() if cat_name == "custom" else "")
+                    + (self._custom_category_note() if set_key == "custom" else "")
                 )
             return command_success(
                 f"Removed tool '{tool_names[0]}' from this account's defaults.{suffix}"
@@ -7350,7 +7380,7 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        tool_names, is_category, cat_name, error = await self._resolve_tool_names(name)
+        tool_names, set_phrase, set_key, error = await self._resolve_tool_names(name)
         if error:
             return command_error(error)
         tc = await self.api.get_thread_config(self.thread_id)
@@ -7368,10 +7398,10 @@ class _CommandExecutor(
 
         lost = capability_loss_warning(tool_names)
         suffix = f" {lost}" if lost else ""
-        if is_category:
+        if set_phrase:
             return command_success(
-                f"Disabled category '{cat_name}' ({len(tool_names)} tools).{suffix}"
-                + (self._custom_category_note() if cat_name == "custom" else "")
+                f"Disabled {set_phrase}.{suffix}"
+                + (self._custom_category_note() if set_key == "custom" else "")
             )
         return command_success(f"Disabled tool '{tool_names[0]}'.{suffix}")
 

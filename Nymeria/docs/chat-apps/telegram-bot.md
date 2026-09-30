@@ -285,14 +285,14 @@ names the author of each).
 
 | Command | Description |
 |---------|-------------|
-| `/tools_list [filter]` | List tools: `enabled` (default), `optional`, `core`, or one category name |
+| `/tools_list [filter]` | List tools: `enabled` (default), `optional`, `core`, a category, or an integration group/service key (`crm_sales`, `github`); `--all` prints every name for `optional` or `integrations` |
 | `/tools_core` | List core tools (enabled by default) |
-| `/tools_optional` | List optional tool categories with per-chat active counts |
+| `/tools_optional` | Index of optional tools: categories with counts, per-chat active counts and example names; `integrations` expands into groups and their service keys |
 | `/tools_enabled` | Show all tools active in this chat |
-| `/tools_category <name>` | List tools in a category with enabled/disabled status |
+| `/tools_category <name>` | List tools in a category, integration group, or service with enabled/disabled status |
 | `/tools_search <query>` | Ranked tool search with enable hints (bot-local rendering) |
-| `/tools_enable <name>` | Enable a tool or entire category for this chat |
-| `/tools_disable <name>` | Disable a tool or entire category for this chat |
+| `/tools_enable <name>` | Enable a tool, an entire category, or an integration group/service for this chat |
+| `/tools_disable <name>` | Disable a tool, an entire category, or an integration group/service for this chat |
 
 The four filter spellings folded into `tools list [filter]` in the backend, but
 they stay registered here and each relays its filter VALUE (`/tools list core`).
