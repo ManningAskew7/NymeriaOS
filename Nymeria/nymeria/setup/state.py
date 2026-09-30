@@ -170,6 +170,12 @@ class WizardState:
     # gatekeeper SHAPED (a shape bit; the value itself is never read into
     # state). A gatekeeper is present but cannot serve a media tool (#152).
     gatekeeper_env_keys: set[str] = field(default_factory=set)
+    # The subset of present_env_keys holding the VENDOR's own key in a shared
+    # slot (OPENAI_API_KEY, GEMINI_API_KEY) beside a route that does not feed
+    # that slot to a gateway (tool_keys.slot_holds_vendor_key; a shape bit).
+    # Such a value is no CLIProxy gatekeeper and must not become a gateway
+    # route's bearer; finalize moves it to the direct slot instead (#431).
+    vendor_env_keys: set[str] = field(default_factory=set)
     # Tools in the bootstrap profile's default set that are neither the core seed
     # nor a known init family member (user-added). Carried through a reconfigure so
     # the profile-pick update never silently drops them.

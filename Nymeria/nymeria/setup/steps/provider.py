@@ -264,6 +264,21 @@ class ConnectionStep(WizardStep):
                 idx = 0
             self.state.api_mode = _API_MODE_CHOICES[idx][0]
         self.state.base_url = self.query_one("#base-url", Input).value.strip()
+        # A blank key field meant "keep the existing key"; through a gateway
+        # base URL that key is the vendor's own and would become the
+        # gateway's bearer (#431). Refuse here, while the answer is cheap to
+        # change, rather than at finalize after the whole walkthrough.
+        from ..tool_keys import vendor_key_would_feed_gateway
+
+        spec = get_llm_provider_spec(self.state.provider)
+        slot = spec.api_key_env_vars[0] if spec and spec.api_key_env_vars else None
+        if spec is not None and vendor_key_would_feed_gateway(self.state, slot):
+            self.show_error(
+                f"{slot} holds your {spec.label} key, which this base URL "
+                "would receive. Go back (esc) and enter the gateway's own key, "
+                "or clear the base URL."
+            )
+            return False
         return True
 
 

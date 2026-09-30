@@ -399,12 +399,20 @@ def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
         secret_vars.update(spec.api_key_env_vars)
     from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
 
+    from .tool_keys import slot_holds_vendor_key
+
+    route_provider = values.get("LLM_PROVIDER") or ""
+    route_base_url = values.get("LLM_BASE_URL") or ""
     for var in secret_vars:
         value = (values.get(var) or "").strip()
         if value:
             state.present_env_keys.add(var)
             if looks_like_cliproxy_gatekeeper_key(value):
                 state.gatekeeper_env_keys.add(var)
+            elif slot_holds_vendor_key(
+                var, value, provider=route_provider, base_url=route_base_url
+            ):
+                state.vendor_env_keys.add(var)
 
 
 def is_cliproxy_route(base_url: str, management_url: str = "") -> bool:

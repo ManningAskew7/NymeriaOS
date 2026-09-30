@@ -317,6 +317,21 @@ def test_wizard_asks_again_when_a_gatekeeper_sits_in_gemini_api_key():
     assert required_backend_credentials(state) == []
 
 
+def test_wizard_google_route_on_a_google_host_is_not_a_gateway():
+    """Google's own OpenAI-compatible shim lives on googleapis.com: a real key
+    routed there still serves the media tools, so no direct slot is asked."""
+    state = _media_state(
+        provider="google",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key=REAL_KEY,
+    )
+    assert required_backend_credentials(state) == []
+    state.base_url = "http://my-gemini-gateway:4000/v1"
+    assert [spec.env_var for spec in required_backend_credentials(state)] == [
+        "GEMINI_DIRECT_API_KEY"
+    ]
+
+
 def test_wizard_plain_google_primary_satisfies_media_keys():
     state = _media_state(provider="google", api_key=REAL_KEY)
     assert required_backend_credentials(state) == []
@@ -577,3 +592,65 @@ def test_leaving_the_proxy_keeps_a_real_key_in_a_gatekeeper_slot(
     after = config.read_text(encoding="utf-8")
     assert _env_line(after, "GEMINI_API_KEY") == REAL_KEY
     assert "ANTHROPIC_API_KEY" not in after
+
+
+def test_entering_antigravity_moves_a_real_gemini_key_to_the_direct_slot(
+    monkeypatch, tmp_path, capsys
+):
+    """#431: the antigravity gatekeeper takes GEMINI_API_KEY; a real key there
+    moves to the direct slot instead of vanishing."""
+    root = tmp_path / "init"
+    _stub_llm(monkeypatch)
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "claude-direct",
+         "--api-key", "sk-ant-direct", "--gemini-api-key", REAL_KEY,
+         "--hosting", "local", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    capsys.readouterr()
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("antigravity")])
+    assert setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "antigravity",
+         "--cliproxy-management-url", PROXY_ROOT,
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", GATEKEEPER,
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "GEMINI_API_KEY") == GATEKEEPER
+    assert _env_line(after, "GEMINI_DIRECT_API_KEY") == REAL_KEY
+    out = " ".join(capsys.readouterr().out.split())
+    assert "it is now in GEMINI_DIRECT_API_KEY" in out
+    assert "ok Gemini media tools" in out
+
+
+def test_a_google_gateway_route_never_keeps_the_vendor_key_as_its_own(
+    monkeypatch, tmp_path, capsys
+):
+    """#431 twin: a google route through a gateway with a blank key would
+    hand the Google key in GEMINI_API_KEY to that gateway."""
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+
+    root = tmp_path / "init"
+    _stub_llm(monkeypatch)
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "claude-direct",
+         "--api-key", "sk-ant-direct", "--gemini-api-key", REAL_KEY,
+         "--hosting", "local", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert "GEMINI_API_KEY" in state.vendor_env_keys
+    config = root / "config.env"
+    before = config.read_text(encoding="utf-8")
+    capsys.readouterr()
+    assert setup_main(
+        ["--auth-method", "api_key", "--provider", "google", "--model", "gemini-x",
+         "--base-url", "http://my-gemini-gateway:4000/v1",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 2
+    out = " ".join(capsys.readouterr().out.split())
+    assert "GEMINI_API_KEY holds your" in out
+    assert REAL_KEY not in out
+    assert config.read_text(encoding="utf-8") == before

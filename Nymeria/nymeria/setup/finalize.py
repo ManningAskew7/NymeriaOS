@@ -442,7 +442,8 @@ def finalize(
         and state.cliproxy_provider
         and state.cliproxy_logged_in
         and not api_key
-        and cliproxy_key_env_override(state) not in state.present_env_keys
+        and cliproxy_key_env_override(state)
+        not in state.present_env_keys - state.vendor_env_keys
     ):
         # A completed subscription login with no usable gatekeeper must not
         # silently downgrade to a no-provider config; the operator would only
@@ -467,6 +468,30 @@ def finalize(
         and provider_key_env in state.present_env_keys
         and (key_env_override or provider_key_env not in state.gatekeeper_env_keys)
     )
+    # ...but the vendor's own key is never "kept" for a route that feeds the
+    # slot to a gateway: it would become that gateway's bearer (#431). The
+    # route needs its own key; the vendor key then moves to the direct slot.
+    # The interactive connection step refuses the same case earlier.
+    from .tool_keys import vendor_key_would_feed_gateway
+
+    if spec is not None and vendor_key_would_feed_gateway(state, provider_key_env):
+        if key_env_override:
+            console.print(
+                f"[red]No CLIProxy gatekeeper key is available: {provider_key_env} "
+                f"holds your {spec.label} key, not the proxy's. Finish the "
+                "CLIProxy login (or pass --cliproxy-gatekeeper-key); the "
+                "existing key then moves to the direct slot the media tools "
+                "read.[/red]"
+            )
+        else:
+            console.print(
+                f"[red]{provider_key_env} holds your {spec.label} key, and this "
+                f"route sends that slot to {base_url or 'a gateway'}, not to "
+                f"{spec.label}. Enter the gateway's own key (the provider step, "
+                "or --api-key); the existing key then moves to the direct slot "
+                "the media tools read.[/red]"
+            )
+        return 2
     if spec is None or (spec.requires_api_key and not api_key and not key_present):
         # Provider step was skipped (or a required key is missing); write a
         # usable config without LLM creds.
@@ -716,6 +741,19 @@ def finalize(
             f"[yellow]Removed the old CLIProxy route's local key from "
             f"{', '.join(removed_gatekeepers)}: it only works through that proxy.[/yellow]"
         )
+    displaced = (
+        displaced_vendor_keys(config_path, state, slot=provider_key_env, new_key=api_key)
+        if merge and spec is not None
+        else {}
+    )
+    for direct_slot, value in displaced.items():
+        # A direct key typed this run wins over the one on disk.
+        if optional_env.setdefault(direct_slot, value) == value:
+            console.print(
+                f"[yellow]Kept the key that was in {provider_key_env}: it is now "
+                f"in {direct_slot}, the slot the media tools read while "
+                f"{provider_key_env} belongs to the new route's gateway.[/yellow]"
+            )
     write_config(
         config_path,
         data_dir=data_dir,
@@ -1222,6 +1260,52 @@ def retired_gatekeeper_slots(
         for slot in slots
         if slot != new_slot and looks_like_cliproxy_gatekeeper_key(values.get(slot, ""))
     )
+
+
+def displaced_vendor_keys(
+    config_path: Path, state: WizardState, *, slot: str | None, new_key: str
+) -> dict[str, str]:
+    """A real vendor key this run is about to overwrite, keyed by its new slot.
+
+    Reconfiguring onto a route whose key slot is OPENAI_API_KEY or
+    GEMINI_API_KEY (a CLIProxy codex/gemini-cli/kimi/grok or antigravity pick,
+    or an openai/google route through a non-vendor base URL) merge-writes the
+    route's key over whatever the slot held. Hydrate records only that a key
+    was there, so a real vendor key the media tools used was silently lost
+    (#431). This moves it to the direct slot instead, the one the media tools
+    read on a gateway route.
+
+    Moved only when ``tool_keys.slot_holds_vendor_key`` says the value is the
+    vendor's own: vendor-shaped, not ``cpx-``, and the ON-DISK route did not
+    already make the slot a gateway's key (an old openai route through
+    LiteLLM holds LiteLLM's key, which the direct slot would send to OpenAI).
+    The media tools were already sending such a value to the vendor, and the
+    prefix keeps a hand-kept proxy key out. Never over a direct key on disk.
+    """
+    if not slot or not new_key.strip() or not config_path.exists():
+        return {}
+    from .tool_keys import gateway_direct_slot, slot_holds_vendor_key
+
+    direct = gateway_direct_slot(state, slot)
+    if direct is None:
+        return {}
+    from dotenv import dotenv_values
+
+    values = {k: (v or "").strip() for k, v in dotenv_values(str(config_path)).items()}
+    old = values.get(slot, "")
+    # The same key given again is still the vendor's (a pass-through gateway
+    # like Helicone forwards it): it is copied, not skipped, because the keys
+    # step already counted the direct slot as supplied.
+    if values.get(direct):
+        return {}
+    if not slot_holds_vendor_key(
+        slot,
+        old,
+        provider=values.get("LLM_PROVIDER", ""),
+        base_url=values.get("LLM_BASE_URL", ""),
+    ):
+        return {}
+    return {direct: old}
 
 
 def _read_env_value_from_file(config_path: Path, key: str) -> str | None:

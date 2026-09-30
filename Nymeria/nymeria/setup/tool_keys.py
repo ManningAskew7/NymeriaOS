@@ -196,9 +196,31 @@ OPENAI_LLM_KEY_ENV = "OPENAI_API_KEY"
 OPENAI_DIRECT_KEY_ENV = "OPENAI_DIRECT_API_KEY"
 
 
-def _slot_holds_gateway_key(
-    state: "WizardState", slot: str, provider: str, is_vendor_host: Callable[[str], bool]
-) -> bool:
+def _vendor_host(provider: str) -> Callable[[str], bool]:
+    from ..config.settings import is_google_api_host, is_openai_api_host
+
+    return is_google_api_host if provider == "google" else is_openai_api_host
+
+
+def route_feeds_gateway(provider: str, base_url: str, *, vendor: str) -> bool:
+    """True when an LLM route makes ``vendor``'s key slot a gateway's key.
+
+    ``provider`` is the route's provider (any spelling) and ``vendor`` the
+    provider whose key slot is in question (``openai``, ``google``): only a
+    route OF that provider reads the slot, and only a base URL off the
+    vendor's own hosts makes the key the gateway's rather than the vendor's.
+    Shared by the wizard state check below and finalize's on-disk check
+    (``displaced_vendor_keys``), so the two cannot drift.
+    """
+    from ..config.llm_providers import normalize_llm_provider
+
+    if not provider or normalize_llm_provider(provider) != vendor:
+        return False
+    base_url = (base_url or "").strip()
+    return bool(base_url) and not _vendor_host(vendor)(base_url)
+
+
+def _slot_holds_gateway_key(state: "WizardState", slot: str, provider: str) -> bool:
     """True when this install's ``slot`` will hold a gateway's key.
 
     A CLIProxy route whose catalog key slot is ``slot`` writes the proxy's
@@ -215,12 +237,7 @@ def _slot_holds_gateway_key(
         cspec = get_cliproxy_provider(pick) if pick else None
         if cspec is not None:
             return cspec.key_env_var == slot
-    from ..config.llm_providers import normalize_llm_provider
-
-    if not state.provider or normalize_llm_provider(state.provider) != provider:
-        return False
-    base_url = (state.base_url or "").strip()
-    return bool(base_url) and not is_vendor_host(base_url)
+    return route_feeds_gateway(state.provider or "", state.base_url or "", vendor=provider)
 
 
 def gemini_slot_holds_gateway_key(state: "WizardState") -> bool:
@@ -231,9 +248,7 @@ def gemini_slot_holds_gateway_key(state: "WizardState") -> bool:
     URL. Gemini TTS and image generation call Google directly, so they need
     the direct slot instead.
     """
-    from ..config.settings import is_google_api_host
-
-    return _slot_holds_gateway_key(state, GEMINI_LLM_KEY_ENV, "google", is_google_api_host)
+    return _slot_holds_gateway_key(state, GEMINI_LLM_KEY_ENV, "google")
 
 
 def openai_slot_holds_gateway_key(state: "WizardState") -> bool:
@@ -244,9 +259,7 @@ def openai_slot_holds_gateway_key(state: "WizardState") -> bool:
     through a non-OpenAI base URL. OpenAI image generation and speech call
     OpenAI directly, so they need the direct slot instead.
     """
-    from ..config.settings import is_openai_api_host
-
-    return _slot_holds_gateway_key(state, OPENAI_LLM_KEY_ENV, "openai", is_openai_api_host)
+    return _slot_holds_gateway_key(state, OPENAI_LLM_KEY_ENV, "openai")
 
 
 @dataclass(frozen=True)
@@ -254,6 +267,11 @@ class _DirectSlot:
     """The direct-call slot a media KeySpec moves to when a gateway owns its own."""
 
     env_var: str
+    # The LLM provider whose route key lives in the shared slot.
+    vendor: str
+    # Every key the vendor issues starts with this; a value without it is not
+    # treated as the vendor's key (a hand-kept proxy key, say).
+    key_prefix: str
     gateway_owned: Callable[["WizardState"], bool]
     label: str
     note: str
@@ -263,6 +281,8 @@ class _DirectSlot:
 _DIRECT_MEDIA_SLOTS: dict[str, _DirectSlot] = {
     GEMINI_LLM_KEY_ENV: _DirectSlot(
         GEMINI_DIRECT_KEY_ENV,
+        "google",
+        "AIza",
         gemini_slot_holds_gateway_key,
         "Google AI (Gemini) API key for media",
         "Your LLM route's key only works through its gateway, and Gemini "
@@ -271,6 +291,8 @@ _DIRECT_MEDIA_SLOTS: dict[str, _DirectSlot] = {
     ),
     OPENAI_LLM_KEY_ENV: _DirectSlot(
         OPENAI_DIRECT_KEY_ENV,
+        "openai",
+        "sk-",
         openai_slot_holds_gateway_key,
         "OpenAI API key for image generation and speech",
         "Your LLM route's key only works through its gateway, and OpenAI "
@@ -278,6 +300,14 @@ _DIRECT_MEDIA_SLOTS: dict[str, _DirectSlot] = {
         "a key from platform.openai.com. Stored as OPENAI_DIRECT_API_KEY.",
     ),
 }
+
+
+def direct_slot_vendor(slot: str) -> str | None:
+    """The LLM provider whose key lives in the shared ``slot``, when that slot
+    has a direct twin (``openai`` for OPENAI_API_KEY, ``google`` for
+    GEMINI_API_KEY); None for any other slot."""
+    direct = _DIRECT_MEDIA_SLOTS.get(slot)
+    return direct.vendor if direct is not None else None
 
 
 def _direct_media_spec(spec: KeySpec, state: "WizardState") -> KeySpec:
@@ -292,6 +322,41 @@ def _direct_media_spec(spec: KeySpec, state: "WizardState") -> KeySpec:
     if direct is None or not direct.gateway_owned(state):
         return spec
     return replace(spec, env_var=direct.env_var, label=direct.label, note=direct.note)
+
+
+def slot_holds_vendor_key(slot: str, value: str, *, provider: str, base_url: str) -> bool:
+    """True when ``value`` in the shared ``slot`` is the VENDOR's own key.
+
+    ``provider`` and ``base_url`` are the LLM route that was configured beside
+    it. Vendor-shaped (``sk-`` for OpenAI, ``AIza`` for Google), not a
+    ``cpx-`` gatekeeper, and not behind a route that feeds the slot to a
+    gateway (whose key it would then be). Such a value is not a usable CLIProxy
+    gatekeeper and must never become a gateway's bearer; a reconfigure that
+    hands the slot to a gateway moves it to the direct slot instead (#431).
+    Only slots with a direct twin qualify.
+    """
+    direct = _DIRECT_MEDIA_SLOTS.get(slot)
+    value = (value or "").strip()
+    # The vendor prefix also rules out a ``cpx-`` gatekeeper.
+    if direct is None or not value.startswith(direct.key_prefix):
+        return False
+    return not route_feeds_gateway(provider, base_url, vendor=direct.vendor)
+
+
+def vendor_key_would_feed_gateway(state: "WizardState", slot: str | None) -> bool:
+    """True when a blank key field would hand the vendor's own key to a gateway.
+
+    ``slot`` holds the vendor's key on disk (``vendor_env_keys``), the route
+    this run configures feeds that slot to a gateway, and no new key was
+    given: "keep the existing key" would make the OpenAI (or Google) key that
+    gateway's bearer (#431). The connection step and finalize both refuse it.
+    """
+    return bool(
+        slot
+        and not state.api_key.strip()
+        and slot in state.vendor_env_keys
+        and gateway_direct_slot(state, slot) is not None
+    )
 
 
 def gateway_direct_slot(state: "WizardState", slot: str) -> str | None:
@@ -325,9 +390,13 @@ def already_provided_env(state: "WizardState") -> set[str]:
     # ...except a shared slot holding a proxy gatekeeper (a switch off a
     # CLIProxy route leaves one there until finalize retires it): it cannot
     # serve the media tools, so ask (#152 Gemini, #428 OpenAI).
-    for slot in _DIRECT_MEDIA_SLOTS:
+    for slot, direct in _DIRECT_MEDIA_SLOTS.items():
         if slot in state.gatekeeper_env_keys and not state.optional_env.get(slot):
             provided.discard(slot)
+        # The vendor's own key on disk in a slot a gateway now takes: finalize
+        # moves it to the direct slot (#431), so do not ask for it again.
+        if slot in state.vendor_env_keys and direct.gateway_owned(state):
+            provided.add(direct.env_var)
     return provided
 
 
@@ -382,7 +451,11 @@ __all__ = [
     "already_provided_env",
     "required_backend_credentials",
     "backend_keys_needed",
+    "direct_slot_vendor",
     "gateway_direct_slot",
     "gemini_slot_holds_gateway_key",
     "openai_slot_holds_gateway_key",
+    "route_feeds_gateway",
+    "slot_holds_vendor_key",
+    "vendor_key_would_feed_gateway",
 ]

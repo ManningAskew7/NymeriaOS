@@ -515,9 +515,16 @@ def prepare_headless_cliproxy(
     from .finalize import cliproxy_key_env_override
 
     key_env = cliproxy_key_env_override(state)
+    # A key on disk is the gatekeeper unless it is the vendor's own key (a
+    # real OpenAI key in OPENAI_API_KEY before a switch to codex, #431):
+    # that one is no proxy bearer, so a gatekeeper is minted instead.
+    gatekeeper_on_disk = bool(
+        key_env
+        and key_env in state.present_env_keys
+        and key_env not in state.vendor_env_keys
+    )
     gatekeeper_available = bool(
-        state.cliproxy_gatekeeper_key.strip()
-        or (key_env and key_env in state.present_env_keys)
+        state.cliproxy_gatekeeper_key.strip() or gatekeeper_on_disk
     )
     client = make_management_client(state)
     if client is None and (login or auth_file):
@@ -567,7 +574,7 @@ def prepare_headless_cliproxy(
         if (
             client is not None
             and not state.cliproxy_gatekeeper_key.strip()
-            and not (key_env and key_env in state.present_env_keys)
+            and not gatekeeper_on_disk
         ):
             try:
                 await ensure_gatekeeper_key(state, client)
