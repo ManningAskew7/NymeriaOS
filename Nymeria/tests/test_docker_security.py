@@ -366,6 +366,28 @@ def test_caddy_service_is_present_and_hardened() -> None:
     ), "caddy must mount ./caddy/Caddyfile read-only"
 
 
+def _caddy_mcp_matcher_paths() -> set[str]:
+    """The paths the Caddyfile's MCP matcher routes to the mcp container."""
+    lines = [line.strip() for line in (ROOT / "caddy" / "Caddyfile").read_text().splitlines()]
+    proxies = [line for line in lines if line.startswith("reverse_proxy") and "mcp:8001" in line]
+    assert len(proxies) == 1, proxies
+    target = proxies[0].split()[1]
+    if not target.startswith("@"):
+        return {target}
+    (definition,) = [line for line in lines if line.startswith(f"{target} path ")]
+    return set(definition.split()[2:])
+
+
+def test_caddy_routes_the_bare_mcp_endpoint_to_the_mcp_server() -> None:
+    """The streamable-HTTP endpoint is the bare /mcp path: a /mcp/* matcher
+    alone sent it to the API, which answered 405 (#429)."""
+    paths = _caddy_mcp_matcher_paths()
+    assert "/mcp" in paths
+    assert "/mcp/*" in paths
+    # Nothing broader: /mcpanything must stay with the API.
+    assert paths <= {"/mcp", "/mcp/*"}
+
+
 def test_infra_images_are_digest_pinned() -> None:
     """Third-party images we don't build by default must be
     pinned to a sha256 digest, not a floating tag. A tag like

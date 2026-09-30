@@ -414,6 +414,11 @@ bound to `127.0.0.1` inside the host and only reachable via SSH tunnel.
 4. `docker compose up -d caddy`. Caddy joins the `edge` network and is
    the only host-published service.
 
+Through Caddy the MCP server is `https://<NYMERIA_HOSTNAME>/mcp` (the bare
+`/mcp` path and anything under `/mcp/` go to the mcp container; every other
+path goes to the api), so a remote MCP client points its `url` there with
+the same bearer token as the loopback example above.
+
 If you don't have a domain yet, leave `NYMERIA_HOSTNAME` unset. Caddy
 listens on `:80` over plain HTTP and you can front it with Cloudflare
 Tunnel, Tailscale Funnel, or an SSH tunnel for testing; none of those

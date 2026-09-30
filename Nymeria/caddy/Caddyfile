@@ -11,10 +11,13 @@
 # When NYMERIA_HOSTNAME is a real public domain, Caddy auto-issues and
 # renews a free Let's Encrypt cert on first request to that hostname.
 
-# Primary public site. Proxies / to api, /mcp/* to mcp.
+# Primary public site. Proxies /mcp and /mcp/* to mcp, everything else to api.
 {$NYMERIA_HOSTNAME::80} {
-	# MCP server (SSE / HTTP streaming).
-	reverse_proxy /mcp/* mcp:8001 {
+	# MCP server (streamable HTTP). The endpoint IS the bare /mcp path, which a
+	# /mcp/* matcher alone does not cover: without it a client reached the
+	# API and got a 405 (#429). /mcp/* stays for the server's own sub-paths.
+	@mcp path /mcp /mcp/*
+	reverse_proxy @mcp mcp:8001 {
 		flush_interval -1
 		transport http {
 			read_timeout 24h
