@@ -48,7 +48,6 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
@@ -264,14 +263,11 @@ def _execute(job: _RunnerJob, request: ClaudeCodeRequest, config: ClaudeCodeRunC
 
 def _checkout_head() -> Optional[str]:
     """HEAD of the checkout this module runs from, or None (not a checkout,
-    git missing, packaged install)."""
-    from ..tools.claude_code_bridge import _git
+    an installed package, anything unreadable). Read from ``.git`` directly,
+    the same reader ``/status`` uses, so no git process is spawned."""
+    from .._provenance import checkout_commit
 
-    try:
-        head = _git(["rev-parse", "HEAD"], str(Path(__file__).resolve().parents[2]))
-    except Exception:  # noqa: BLE001 - a version label never blocks startup.
-        return None
-    return (head or "").strip() or None
+    return checkout_commit()
 
 
 def create_app(*, allow_insecure: bool = False):

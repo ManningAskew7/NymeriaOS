@@ -85,6 +85,56 @@ def test_main_passes_the_thin_client_flag_to_validation(monkeypatch, command, th
     assert seen.get("thin_client", False) is thin
 
 
+@pytest.mark.parametrize(
+    "command,logged",
+    [("api", True), ("worker", True), ("telegram-bot", True), ("claude-code-runner", True),
+     ("cli", False), ("reembed", False)],
+)
+def test_server_roles_log_the_code_they_booted_from(monkeypatch, caplog, command, logged):
+    """#101 entry 23b: the journal answers "which code is this running"."""
+    import contextlib
+    import logging
+
+    from nymeria import _provenance
+
+    monkeypatch.setattr(_provenance, "_BOOT", _provenance.BootRecord(
+        version="9.9.9", started_at=0.0, commit="c" * 40, installed=False,
+        dist_version=None, fingerprint=None,
+    ))
+    monkeypatch.setattr(run, "validate_config", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_load_environment", lambda: None)
+    monkeypatch.setattr(run, "_require_launch_mode_service_token", lambda *a, **k: None)
+    monkeypatch.setattr(run, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(run, run.COMMANDS[command].runner.__name__, lambda args: None)
+    monkeypatch.setattr(sys, "argv", ["run.py", command])
+    monkeypatch.setattr(logging.getLogger("nymeria"), "propagate", True)
+
+    with caplog.at_level(logging.INFO, logger="nymeria"), contextlib.suppress(SystemExit):
+        run.main()  # exit-returning commands (reembed) end in sys.exit
+
+    booted = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Booted ")]
+    assert booted == (["Booted NymeriaOS 9.9.9 from checkout commit cccccccc"] if logged else [])
+
+
+def test_every_command_takes_its_code_baseline_at_boot(monkeypatch):
+    """A quiet role still needs the baseline: the fat CLI (`--transport local`)
+    serves /status from its own process, and a baseline taken lazily at the
+    first /status would miss every change made before it."""
+    from nymeria import _provenance
+
+    monkeypatch.setattr(_provenance, "_BOOT", None)
+    monkeypatch.setattr(run, "validate_config", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_load_environment", lambda: None)
+    monkeypatch.setattr(run, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(run, "run_cli", lambda args: None)
+    monkeypatch.setattr(sys, "argv", ["run.py", "cli"])
+
+    run.main()
+
+    assert _provenance._BOOT is not None
+    assert _provenance._BOOT.version == _provenance.__version__
+
+
 @pytest.mark.parametrize("thin_client", [True, False])
 def test_validate_config_maps_thin_client_to_a_non_server_validation(monkeypatch, thin_client):
     import nymeria.config

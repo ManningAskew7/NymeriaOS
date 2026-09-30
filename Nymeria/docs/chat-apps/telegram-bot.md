@@ -213,7 +213,7 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 | `/model [name] [scope]` | Show or change the LLM model. Scope: global (default) or thread |
 | `/models` | List all available models from the current provider (relays `/model list`) |
 | `/think [mode]` | Set thinking mode: off, on, low, medium, high. Admin only on Telegram |
-| `/status` | System dashboard: model, context, tools, tasks, uptime |
+| `/status` | System dashboard: model, context, tools, tasks, and the backend's running code and uptime |
 
 ### TODOs
 

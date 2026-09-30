@@ -2108,7 +2108,7 @@ slash_command(command: str)
 
 **Example commands:**
 - `/help`  -  list every supported command
-- `/status`  -  model, context, tools, tasks summary
+- `/status`  -  model, context, tools, tasks summary, and the running code (version, commit, uptime, and a restart hint when newer code is on disk)
 - `/settings set llm_model claude-opus-4-7`  -  change global model
 - `/env get PERPLEXITY_API_KEY`  -  fetch unmasked secret
 - `/memory save color "deep blue"`  -  save a user memory

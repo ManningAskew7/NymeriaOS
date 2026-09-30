@@ -1386,6 +1386,9 @@ def run_mcp(args: argparse.Namespace) -> None:
         port = args.port or 8001
         api_label = api_url or os.environ.get("NYMERIA_API_URL") or "auto"
         print(f"Starting Nymeria MCP server (HTTP mode) on {host}:{port}; API={api_label}...")
+        from nymeria._provenance import boot_log_line, boot_record
+
+        logging.getLogger("nymeria").info(boot_log_line(boot_record()))
         run_http(host=host, port=port, api_url=api_url)
     else:
         # STDIO mode - minimal output to avoid corrupting JSON-RPC
@@ -1439,6 +1442,9 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
 
     # Use standard logging (console + file), the api's file: this IS the api.
     log_file = setup_logging(settings.log_level, command="api")
+    from nymeria._provenance import boot_log_line, boot_record
+
+    logging.getLogger("nymeria").info(boot_log_line(boot_record()))
 
     print("Starting Nymeria Gateway in foreground mode...")
     print(f"  REST API: http://{settings.api_host}:{settings.api_port}")
@@ -2071,6 +2077,15 @@ def run_snapshot(args: argparse.Namespace) -> int:
     return snapshot_cli.dispatch(args)
 
 
+# The long-running roles, whose logs are where an operator asks "which code is
+# this running". MCP logs its own line (it configures logging separately); the
+# CLI's console is the REPL, so it stays quiet.
+_BOOT_LOGGED_COMMANDS = frozenset({
+    "api", "slim", "worker", "claude-code-runner",
+    "discord-bot", "telegram-bot", "slack-bot", "twitch-bot",
+})
+
+
 class _Command(NamedTuple):
     """How ``main`` runs and validates one top-level subcommand.
 
@@ -2132,6 +2147,12 @@ def main() -> None:
     _suppress_runtime_dependency_warnings()
     parser = build_parser()
     args = parser.parse_args()
+    # Which code this process booted from, taken before the subcommand
+    # imports the rest of the package (#101 entry 23b): `/status` compares it
+    # with the code on disk now, and the server roles log it below.
+    from nymeria._provenance import boot_log_line, boot_record
+
+    boot = boot_record()
     service_token_required = _service_token_requirement(args) is not None
 
     # Once, here, before any subcommand runs or can spawn a child. Every
@@ -2174,6 +2195,8 @@ def main() -> None:
     # shell evals, where even the unwritable-log warning would be text.
     if args.command not in ("service", "browser", "mcp", "init", "doctor", "snapshot", "completion"):
         setup_logging(args.log_level, command=args.command)
+    if args.command in _BOOT_LOGGED_COMMANDS:
+        logging.getLogger("nymeria").info(boot_log_line(boot))
 
     if service_token_required:
         from nymeria.config import get_settings

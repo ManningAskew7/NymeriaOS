@@ -732,6 +732,82 @@ def test_status_degrades_when_parallel_fetch_returns_base_exception() -> None:
     assert "1 pending / 1 in progress" in result.markdown
 
 
+def _code_record(**overrides: Any):
+    from nymeria import _provenance
+
+    fields: dict[str, Any] = dict(
+        version="0.2.0-beta.6", started_at=1_790_000_000.0, commit="a" * 40,
+        installed=False, dist_version=None, fingerprint=None,
+    )
+    fields.update(overrides)
+    return _provenance.BootRecord(**fields)
+
+
+def test_status_says_which_code_the_process_runs(monkeypatch) -> None:
+    """#101 entry 23b: version, commit and start time, and no restart line
+    while the code on disk is what the process loaded."""
+    from nymeria import _provenance
+
+    monkeypatch.setattr(_provenance, "boot_record", lambda: _code_record())
+    monkeypatch.setattr(_provenance, "drift", lambda record: None)
+    result = run(CommandService().execute(_status_ctx(), "/status", api=FakeCommandApi()))
+
+    assert result.success is True
+    assert (
+        "Code\n  0.2.0-beta.6 @ aaaaaaaa | started 2026-09-21 14:13 UTC (up "
+        in result.markdown
+    )
+    assert "restart to load newer code" not in result.markdown
+    # The block sits after Tasks, before the thread/user footer.
+    assert result.markdown.index("Tasks") < result.markdown.index("Code\n")
+    assert result.markdown.index("Code\n") < result.markdown.index("thread: thread-1")
+
+
+@pytest.mark.parametrize("is_admin, shown", [(True, True), (None, True), (False, False)])
+def test_status_says_when_newer_code_is_on_disk(monkeypatch, is_admin, shown) -> None:
+    """The restart hint is operator state: an admin and an agent actor (None,
+    like every admin gate here) see it; a known non-admin, who cannot act on
+    it, keeps the version line only."""
+    from nymeria import _provenance
+
+    monkeypatch.setattr(_provenance, "boot_record", lambda: _code_record(commit=None))
+    monkeypatch.setattr(
+        _provenance, "drift",
+        lambda record: "the checkout moved to bbbbbbbb since this process started",
+    )
+    ctx = CommandContext(user_id="alice", thread_id="thread-1", actor="user",
+                         surface="cli", is_admin=is_admin)
+    result = run(CommandService().execute(ctx, "/status", api=FakeCommandApi()))
+
+    assert "Code\n  0.2.0-beta.6 | started" in result.markdown
+    assert (
+        "  restart to load newer code: the checkout moved to bbbbbbbb since this "
+        "process started" in result.markdown
+    ) is shown
+
+
+def test_status_survives_a_provenance_failure(monkeypatch) -> None:
+    from nymeria import _provenance
+
+    def boom():
+        raise OSError("package dir vanished")
+
+    monkeypatch.setattr(_provenance, "boot_record", boom)
+    result = run(CommandService().execute(_status_ctx(), "/status", api=FakeCommandApi()))
+
+    assert result.success is True
+    assert "Code\n" not in result.markdown
+    assert "Tasks" in result.markdown and "thread: thread-1" in result.markdown
+
+
+def test_status_code_block_is_wired_to_the_real_boot_record() -> None:
+    from nymeria import __version__
+
+    result = run(CommandService().execute(_status_ctx(), "/status", api=FakeCommandApi()))
+
+    assert f"Code\n  {__version__}" in result.markdown
+
+
 def _hold_payload(
     *,
     expires_in: timedelta | None = timedelta(hours=2),

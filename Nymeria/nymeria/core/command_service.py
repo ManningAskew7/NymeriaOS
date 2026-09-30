@@ -357,6 +357,22 @@ def fmt_tokens(n: Optional[int]) -> str:
     return str(n)
 
 
+def _code_status_lines(*, show_drift: bool) -> list[str]:
+    """The ``/status`` Code block: the code this process booted from and
+    whether newer code has landed on disk since (#101 entry 23b). Describes
+    the process EXECUTING the command, which is the backend for every client
+    (in-process doors) and the CLI itself under ``--transport local``.
+
+    The restart hint is operator state: a known non-admin (the shared
+    account of a manually updated instance) would read it on nearly every
+    call and cannot act on it, so it is shown only when ``show_drift``."""
+    from .. import _provenance
+
+    record = _provenance.boot_record()
+    reason = _provenance.drift(record) if show_drift else None
+    return _provenance.status_lines(record, drift_reason=reason)
+
+
 def _client_for_context(ctx: "CommandContext") -> Any:
     """The client execute() and resolve_options construct when the caller
     supplies none: in-process backend doors first, service-token HTTP
@@ -5857,14 +5873,21 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        settings, ctx, tools_data, todos, thread_cfg = await asyncio.gather(
+        settings, ctx, tools_data, todos, thread_cfg, code = await asyncio.gather(
             self.api.get_settings(),
             self.api.get_context_stats(self.thread_id),
             self.api.get_default_tools(self.user_id),
             self.api.list_todos(self.user_id),
             self.api.get_thread_config(self.thread_id),
+            # A stat walk of the package (a few ms): off the event loop.
+            # `is False` like every admin gate here: an agent actor's None
+            # passes, a known non-admin caller does not.
+            asyncio.to_thread(_code_status_lines, show_drift=self.is_admin is not False),
             return_exceptions=True,
         )
+        if isinstance(code, BaseException):
+            logger.warning("/status: code provenance unavailable: %s", code)
+            code = []
         settings = _dict_result(settings)
         ctx = _dict_result(ctx)
         tools_data = _dict_result(tools_data)
@@ -5946,6 +5969,7 @@ class _CommandExecutor(
             "Tasks",
             f"  {tasks_str}",
             "",
+            *(["Code", *[f"  {line}" for line in code], ""] if code else []),
             f"thread: {self.thread_id}",
             f"user:   {self.user_id}",
         ]
