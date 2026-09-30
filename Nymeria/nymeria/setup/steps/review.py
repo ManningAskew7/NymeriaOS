@@ -23,7 +23,7 @@ from ..nav import Step
 from ..rag_catalog import get_embedder, get_reranker
 from ..state import WizardState
 from ..tool_keys import BACKEND_KEY_SPECS
-from ..tool_seed import default_thread_tools_for_state
+from ..tool_seed import core_set_label, default_thread_tools_for_state
 from .base import ACCENT, SECONDARY, WizardStep
 from .placeholders import seeded_global_skills, seeded_tool_names, unmet_fetch_dependency
 
@@ -158,7 +158,7 @@ def _summary_markup(state: WizardState) -> str:
     # admin's default_thread_tools, with the still-placeholder capabilities below.
     total_default = len(default_thread_tools_for_state(state))
     tool_lines: list[str] = [
-        f"Default thread tools: {total_default} (core set + your picks)"
+        f"Default thread tools: {total_default} ({core_set_label(state)} + your picks)"
     ]
     seeded = seeded_tool_names(state)
     if seeded:

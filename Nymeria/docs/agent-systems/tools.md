@@ -2085,7 +2085,7 @@ trigger_info(action="sources")
 
 Gives the agent a single dispatch tool that invokes the same user-facing slash commands exposed by the Discord and Telegram bots  -  so the agent can inspect and change its own backend (LLM model, tool set, memories, TODOs, env vars, notepad) without dedicated per-setting tools bloating the tool list.
 
-> **Note:** Not loaded by default. Lives in `CATALOG_TOOLS`  -  enable per-thread via thread config UI or `PATCH /threads/{id}/config {"enabled_tools": ["slash_command"]}`.
+> **Note:** A core seed tool (`SEED_TOOLS`), so it is in every new thread's default set unless the operator unticks it on the `nymeria init` core-toolset screen or removes it later (desktop Settings, Tools, or `/tools disable slash_command global`). Some commands stay user-only (for example `/stop`, `/clear`, `/compact` and `/restart`).
 
 ### slash_command
 

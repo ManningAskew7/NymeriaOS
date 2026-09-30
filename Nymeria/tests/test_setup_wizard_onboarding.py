@@ -90,30 +90,6 @@ def test_security_profile_choices_disable_coming_soon_rows():
     assert not any("(recommended)" in label for label in by_label)
 
 
-def test_core_tools_match_plan_section_a():
-    """The Core toolset screen pins the 12 literal tools from
-    core-toolset-plan.md Section A (the review screen prints len(CORE_TOOLSET_TARGET)).
-    """
-    from nymeria.setup.steps.core_tools import CORE_TOOLSET_TARGET
-
-    names = [name for name, _note in CORE_TOOLSET_TARGET]
-    assert len(CORE_TOOLSET_TARGET) == 12
-    assert names == [
-        "bash_execute",
-        "file_read",
-        "file_write",
-        "memory_add",
-        "memory_edit",
-        "memory_read",
-        "nym_todo",
-        "nym_todo_delete",
-        "nym_todo_list",
-        "notify",
-        "slash_command",
-        "spawn_thread",
-    ]
-
-
 def test_seeded_tool_names_unions_built_families_and_ignores_placeholders():
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps.placeholders import seeded_tool_names

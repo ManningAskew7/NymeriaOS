@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from rich.console import Console
 from rich.markup import escape
@@ -84,6 +84,8 @@ from ..subprocess_env import (
 )
 from .state import WizardState
 from .tool_seed import (
+    core_set_label,
+    declined_core_tool_names,
     default_thread_tools_for_state,
     docker_init_seed_env,
     selected_global_skills_for_state,
@@ -673,6 +675,9 @@ def finalize(
     # full stack's shared api/worker `environment:` anchor passes the two
     # `NYMERIA_INIT_*` vars through `--env-file` interpolation.
     init_seed_env = docker_init_seed_env(state) if for_docker else None
+    # Both shapes: the wizard's own record of unticked core tools, which a
+    # reconfigure reads back (#102; see config/init_seed_env.py).
+    declined_core_tools = declined_core_tool_names(state)
     # The full Postgres + Redis stack needs minted DB/cache passwords in
     # `.env.docker` (compose fails fast without them). Slim and non-Docker shapes
     # write nothing extra here.
@@ -700,6 +705,7 @@ def finalize(
         api_port=api_port,
         merge=merge,
         init_seed_env=init_seed_env,
+        declined_core_tools=declined_core_tools,
         full_stack_env=full_stack_env,
         provider_key_env=key_env_override,
         image_version=_PACKAGE_VERSION if clone_free_docker else None,
@@ -913,6 +919,7 @@ def write_config(
     api_port: int = 8000,
     merge: bool = False,
     init_seed_env: Mapping[str, str] | None = None,
+    declined_core_tools: Sequence[str] = (),
     full_stack_env: Mapping[str, str] | None = None,
     provider_key_env: str | None = None,
     image_version: str | None = None,
@@ -1015,6 +1022,15 @@ def write_config(
         # (slim `env_file:`, full-stack `--env-file` interpolation).
         if value:
             produced.append((env_var, _env_value(value)))
+    from ..config.init_seed_env import (
+        INIT_DECLINED_CORE_TOOLS_ENV,
+        format_init_name_list,
+    )
+
+    if declined_core_tools:
+        produced.append(
+            (INIT_DECLINED_CORE_TOOLS_ENV, _env_value(format_init_name_list(declined_core_tools)))
+        )
     from .local_rag_install import DOCKER_LOCAL_RAG_ENV, requires_local_rag
 
     if for_docker and full_stack_env and requires_local_rag(extra_env):
@@ -1049,6 +1065,9 @@ def write_config(
             # retires the stale image-tag pin (the checkout composes never
             # interpolate it); when a pin IS produced this run it wins anyway.
             drop_env = drop_env + ("NYMERIA_VERSION",)
+    # Both shapes: re-ticking every core tool retires the declined record (a
+    # produced line wins over the drop when some stay unticked).
+    drop_env = drop_env + (INIT_DECLINED_CORE_TOOLS_ENV,)
     if drop_cliproxy_management:
         # Leaving the subscription branch retires the management endpoint
         # lines; keeping them would leave the backend's /cliproxy routes wired
@@ -1240,7 +1259,7 @@ def seed_bootstrap_profile(
         n_tools, n_skills = _apply_profile_picks(manager, profile, state)
         console.print(
             f"[green]Default thread tools:[/green] {n_tools} seeded "
-            "(core set + your picks)"
+            f"({core_set_label(state)} + your picks)"
         )
         console.print(
             f"[green]Default skill kits:[/green] {n_skills} enabled "
@@ -1273,7 +1292,7 @@ def update_bootstrap_profile(
     Best-effort: a failure here never aborts the reconfigure.
     """
 
-    pick_sections = {"web_search", "fetch_url", "image_gen", "skill_kits"}
+    pick_sections = {"core_tools", "web_search", "fetch_url", "image_gen", "skill_kits"}
     if scoped_section is not None and scoped_section not in pick_sections:
         return  # this jump cannot have changed the profile
 

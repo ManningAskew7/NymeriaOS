@@ -214,9 +214,11 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
     _hydrate_server_browser(state, values, config_root=config_path.parent)
 
     if for_docker:
+        _hydrate_declined_core(state, values)
         _hydrate_carrier_picks(state, values)
     else:
-        _hydrate_profile_picks(state, for_docker=for_docker)
+        on_disk_tools = _hydrate_profile_picks(state, for_docker=for_docker)
+        _hydrate_declined_core(state, values, on_disk_tools=on_disk_tools)
 
     if console is not None:
         shape = "Docker config" if for_docker else "local config"
@@ -465,6 +467,11 @@ def _apply_tool_picks(state: WizardState, default_tools: list[str]) -> None:
     Subtracts the core seed, sorts known family members into their family extras,
     and records tools that are neither core nor a known family member as
     ``unmanaged_tools`` so a reconfigure never drops user-added tools.
+    Deliberately infers nothing from a seed tool MISSING here: that is as
+    often a tool promoted into the seed after this list was written (the
+    backend never backfills one on restart) as one the operator declined, so
+    declines come only from the wizard's own record
+    (``_hydrate_declined_core``, #102).
     Fill-only-if-unset: an explicit flag still wins.
     """
     from .tool_seed import core_seed_tool_names
@@ -494,37 +501,76 @@ def _apply_tool_picks(state: WizardState, default_tools: list[str]) -> None:
 
 
 def _apply_skill_picks(state: WizardState, enabled_skills: list[str]) -> None:
-    """Keep the known skill kits from an ``enabled_global_skills`` list.
+    """Partition an ``enabled_global_skills`` list back into wizard state.
 
-    Non-kit entries (e.g. the always-on ``self-improve``) are dropped here and
-    re-added by ``tool_seed.selected_global_skills_for_state`` on write, so the
-    round-trip is exact. Fill-only-if-unset.
+    Known kits become the kit picks; the guidance skills (always re-added by
+    ``tool_seed.selected_global_skills_for_state``) are dropped; anything else
+    (a skill installed or written after init) is kept as ``unmanaged_skills``
+    so the rewrite does not lose it. Fill-only-if-unset.
     """
-    if "skill_kits" in state.extras:
-        return
+    from ..core.user_profile import DEFAULT_GLOBAL_GUIDANCE_SKILLS
+
     kit_values = {c.value for c in family_catalog.skill_kit_choices()}
-    state.extras["skill_kits"] = [s for s in enabled_skills if s in kit_values]
+    if "skill_kits" not in state.extras:
+        state.extras["skill_kits"] = [s for s in enabled_skills if s in kit_values]
+    unmanaged = [
+        s for s in enabled_skills
+        if s not in kit_values and s not in DEFAULT_GLOBAL_GUIDANCE_SKILLS
+    ]
+    if unmanaged and not state.unmanaged_skills:
+        state.unmanaged_skills = unmanaged
 
 
-def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> None:
+def _hydrate_declined_core(
+    state: WizardState,
+    values: dict[str, str],
+    *,
+    on_disk_tools: Optional[list[str]] = None,
+) -> None:
+    """Recover the core tools unticked last time from the wizard's record.
+
+    Both shapes (the record is a line in the env file finalize wrote, see
+    ``config/init_seed_env.py``). Sets the kept list to the current seed minus
+    the recorded names, so a tool promoted into the seed since is kept, as a
+    fresh install would get it, and a recorded name that left the seed is
+    moot. No record means no decision (the full seed). Fill-only-if-unset.
+
+    ``on_disk_tools`` (local shapes: the profile's list) wins over the record
+    for a tool present in it: the operator turned it back on since
+    (``/tools enable ... global``, the desktop's reset), and the rewrite must
+    not quietly take it away again. A Docker host cannot see the container's
+    profile, so there the record alone decides.
+    """
+    from ..config.init_seed_env import INIT_DECLINED_CORE_TOOLS_ENV, parse_init_name_list
+    from .tool_seed import core_seed_tool_names
+
+    declined = set(parse_init_name_list(values.get(INIT_DECLINED_CORE_TOOLS_ENV)))
+    declined -= set(on_disk_tools or ())
+    if not declined or "core_tools" in state.extras:
+        return
+    state.extras["core_tools"] = [n for n in core_seed_tool_names() if n not in declined]
+
+
+def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> Optional[list[str]]:
     """Recover the bootstrap admin's tool/skill picks from ``profile.json``.
 
     Local/service only (the Docker profile lives in the container volume; see
     ``_hydrate_carrier_picks``). Reads the JSON directly so default-skill
-    migration does not mask the real picks.
+    migration does not mask the real picks. Returns the on-disk
+    ``default_thread_tools`` (None when absent or unreadable).
     """
     root = finalize.resolve_runtime_root(state, for_docker=False)
     data_dir = finalize.resolve_data_dir(state, root=root)
     profile_path = data_dir / "users" / BOOTSTRAP_USER_ID / "profile.json"
     if not profile_path.exists():
-        return
+        return None
     try:
         # Bytes, as the profile store reads them: BOM, UTF-16 and UTF-32 load.
         raw = json.loads(profile_path.read_bytes())
     except (OSError, ValueError):
-        return
+        return None
     if not isinstance(raw, dict):
-        return
+        return None
 
     tool_preferences = raw.get("tool_preferences")
     if not isinstance(tool_preferences, dict):
@@ -536,6 +582,7 @@ def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> None:
     enabled_skills = raw.get("enabled_global_skills")
     if isinstance(enabled_skills, list):
         _apply_skill_picks(state, enabled_skills)
+    return [str(t) for t in default_tools] if isinstance(default_tools, list) else None
 
 
 def _hydrate_carrier_picks(state: WizardState, values: dict[str, str]) -> None:

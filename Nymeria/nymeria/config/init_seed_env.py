@@ -28,6 +28,14 @@ from typing import Mapping, Sequence
 
 INIT_DEFAULT_THREAD_TOOLS_ENV = "NYMERIA_INIT_DEFAULT_THREAD_TOOLS"
 INIT_ENABLED_GLOBAL_SKILLS_ENV = "NYMERIA_INIT_ENABLED_GLOBAL_SKILLS"
+# The seed tools the operator unticked on the wizard's core-toolset screen
+# (#102). A WIZARD-ONLY record in both shapes' env file, like the
+# NYMERIA_HOSTING marker: the backend never reads it (the declined tools are
+# already absent from the list it seeds). A reconfigure hydrates it back, which
+# is the only way to tell "declined" from "promoted into the seed after this
+# install's list was written": a profile or carrier missing a seed tool says
+# neither.
+INIT_DECLINED_CORE_TOOLS_ENV = "NYMERIA_INIT_DECLINED_CORE_TOOLS"
 
 # Separator: in `format_env_value`'s safe set (so values write unquoted) and never
 # part of a tool/skill identifier.

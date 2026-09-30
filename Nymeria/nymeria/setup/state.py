@@ -170,6 +170,10 @@ class WizardState:
     # nor a known init family member (user-added). Carried through a reconfigure so
     # the profile-pick update never silently drops them.
     unmanaged_tools: list[str] = field(default_factory=list)
+    # The same for skills: enabled global skills that are neither a guidance
+    # skill nor a known kit (installed or written later). A profile-pick update
+    # used to drop them, since it rewrites the whole list from the kit picks.
+    unmanaged_skills: list[str] = field(default_factory=list)
 
     def resolved_api_port(self) -> int:
         """The chosen API port with the default applied."""

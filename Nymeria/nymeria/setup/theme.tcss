@@ -163,6 +163,13 @@ SelectionList,
     padding: 0 1;
 }
 
+/* A long checklist (the 19-row core-toolset step; the 10 skill kits on an
+   80x24 terminal) scrolls inside its own box, so the highlighted row's
+   description below it stays on screen on a small terminal. */
+SelectionList {
+    max-height: 40vh;
+}
+
 RadioSet:focus,
 SelectionList:focus,
 .radio-group:focus-within {

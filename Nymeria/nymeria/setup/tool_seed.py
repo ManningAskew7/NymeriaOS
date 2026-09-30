@@ -1,12 +1,11 @@
 """What `nymeria init` writes into the bootstrap admin's default tool set.
 
 TUI-free single source of truth shared by the core-tools screen (what it
-displays), the review screen (what it summarizes), and finalize (what it writes
-to ``data/users/default/profile.json``). The core seed mirrors the backend's own
-``_migrate_tool_preferences`` (``core/agent.py``): all of ``SEED_TOOLS`` minus the
-capability-expansion tools. We seed from the real ``SEED_TOOLS`` rather than the
-aspirational 12-tool core in ``steps/core_tools.py`` so init never silently drops
-tools that exist today (the core-slimming is unbuilt).
+offers), the review screen (what it summarizes), and finalize (what it writes
+to ``data/users/default/profile.json``). The core seed is the backend's own
+``tools.core_seed_tool_names`` (shared with its profile seeding): all of
+``SEED_TOOLS`` minus the capability-expansion tools; the core-tools screen lets
+the operator untick any of them (``kept_core_tool_names``, #102).
 
 Optional tools (``web_search_*`` / ``image_gen_*``) are NOT in ``SEED_TOOLS``, so
 to make a new thread inherit a picked backend by default it must be written into
@@ -35,15 +34,45 @@ def core_seed_tool_names() -> list[str]:
     return _core_seed_tool_names()
 
 
-def default_thread_tools_for_state(state: "WizardState") -> list[str]:
-    """Explicit ``default_thread_tools`` to seed: core plus picked family members.
+def kept_core_tool_names(state: "WizardState") -> list[str]:
+    """The seed tools the operator kept on the core-tools screen, in seed order.
 
-    Order-preserving dedup, core first then the init-chosen ``web_search_*`` /
-    ``fetch_url_*`` / ``image_gen_*`` names.
+    Same semantics as the family picks: ``extras["core_tools"]`` ABSENT means
+    no decision (a non-interactive run, a skipped step, an undemoted install
+    on reconfigure), so the full seed, including any tool promoted into it
+    later; a present list is the kept set, filtered to what is still a seed
+    tool (a name that left the seed is dropped, never resurrected).
+    """
+    core = core_seed_tool_names()
+    kept = state.extras.get("core_tools")
+    if not isinstance(kept, list):
+        return list(core)
+    keep = {str(name) for name in kept}
+    return [name for name in core if name in keep]
+
+
+def declined_core_tool_names(state: "WizardState") -> list[str]:
+    """Seed tools the operator unticked, in seed order (empty when none or no
+    decision): what finalize records as ``NYMERIA_INIT_DECLINED_CORE_TOOLS``."""
+    kept = set(kept_core_tool_names(state))
+    return [name for name in core_seed_tool_names() if name not in kept]
+
+
+def core_set_label(state: "WizardState") -> str:
+    """How the review screen and finalize name the core part of the list."""
+    dropped = len(declined_core_tool_names(state))
+    return f"core set minus {dropped} unticked" if dropped else "core set"
+
+
+def default_thread_tools_for_state(state: "WizardState") -> list[str]:
+    """Explicit ``default_thread_tools`` to seed: kept core plus picked family members.
+
+    Order-preserving dedup, the kept core tools first then the init-chosen
+    ``web_search_*`` / ``fetch_url_*`` / ``image_gen_*`` names.
     """
     from .steps.placeholders import seeded_tool_names
 
-    names = list(core_seed_tool_names())
+    names = kept_core_tool_names(state)
     for name in seeded_tool_names(state):
         if name not in names:
             names.append(name)
@@ -114,12 +143,20 @@ def selected_global_skills_for_state(state: "WizardState") -> list[str]:
     for name in seeded_global_skills(state):
         if name not in names:
             names.append(name)
+    # Reconfigure: skills that are neither guidance nor a kit (installed or
+    # written after init) survive the rewrite. Empty on a first run.
+    for name in getattr(state, "unmanaged_skills", []) or []:
+        if name not in names:
+            names.append(name)
     return names
 
 
 __all__ = [
     "core_seed_tool_names",
     "default_thread_tools_for_state",
+    "kept_core_tool_names",
+    "declined_core_tool_names",
+    "core_set_label",
     "selected_global_skills_for_state",
     "docker_init_seed_env",
 ]
