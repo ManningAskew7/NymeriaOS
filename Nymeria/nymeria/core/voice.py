@@ -447,10 +447,13 @@ def get_tts_service(settings: Settings) -> SupportsSynthesize:
     voice = settings.tts_voice or _TTS_VOICE_DEFAULTS.get(provider, "")
 
     if provider == "gemini":
-        if not settings.gemini_api_key:
-            raise VoiceServiceError("GEMINI_API_KEY is required for Gemini TTS provider.")
+        gemini_key = settings.gemini_media_api_key
+        if not gemini_key:
+            raise VoiceServiceError(
+                f"Gemini TTS needs a Google API key: set {settings.gemini_media_key_hint()}."
+            )
         return GeminiTTSService(
-            api_key=settings.gemini_api_key,
+            api_key=gemini_key,
             model=model,
             voice=voice,
         )

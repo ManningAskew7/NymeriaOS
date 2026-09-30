@@ -35,6 +35,16 @@ CLIPROXY_BILLING_SYSTEM_BLOCK: dict[str, str] = {
 CACHE_CONTROL_EPHEMERAL: dict[str, str] = {"type": "ephemeral"}
 
 
+def looks_like_cliproxy_gatekeeper_key(key: str) -> bool:
+    """Return True when *key* has the shape of a CLIProxy gatekeeper key.
+
+    Every gatekeeper Nymeria mints or documents is ``cpx-`` prefixed
+    (``management_client``), and no vendor issues keys in that shape, so a
+    caller about to send a key to a real vendor endpoint can refuse it here.
+    """
+    return key.strip().startswith("cpx-")
+
+
 def looks_like_cliproxy_url(base_url: str) -> bool:
     """Return True when *base_url* points at a CLIProxy instance.
 

@@ -1282,6 +1282,8 @@ export interface ServerSettingsUpdate {
   rag_rerank_model?: string | null;
   rag_rerank_api_key?: string | null;
   gemini_api_key?: string | null;
+  // Direct Google key for Gemini media tools; wins over gemini_api_key.
+  gemini_direct_api_key?: string | null;
   perplexity_api_key?: string | null;
   wolfram_alpha_app_id?: string | null;
   searxng_base_url?: string | null;

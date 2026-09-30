@@ -238,9 +238,12 @@ def _extract_with_gemini(data_b64: str, mime_type: str, filename: str) -> str:
     from ..config import get_settings
     settings = get_settings()
 
-    api_key = settings.gemini_api_key
+    api_key = settings.gemini_media_api_key
     if not api_key:
-        return "[Error]: GEMINI_API_KEY not set. Cannot extract PDF or image attachments."
+        return (
+            f"[Error]: No Google API key for Gemini extraction: set "
+            f"{settings.gemini_media_key_hint()}. Cannot extract PDF or image attachments."
+        )
 
     model = settings.gemini_extraction_model
 

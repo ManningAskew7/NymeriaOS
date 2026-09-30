@@ -2434,7 +2434,8 @@ Authorization: Bearer <admin-token>
 | `anthropic_direct_api_key` | string | - | Write-only direct Anthropic key used when the effective Anthropic base URL is empty |
 | `openrouter_api_key` | string | - | Write-only OpenRouter global API key |
 | `embedding_api_key` | string | - | Write-only OpenAI-compatible embeddings key. Do not set this to a CLIProxy `cpx-*` gatekeeper key. |
-| `gemini_api_key` | string | - | Write-only Gemini key for Gemini-backed capabilities |
+| `gemini_api_key` | string | - | Write-only Gemini key: the `google` LLM route, and the Gemini media tools unless it is a gateway's key |
+| `gemini_direct_api_key` | string | - | Write-only direct Google key for Gemini TTS, image generation, and attachment extraction; wins over `gemini_api_key` and is required for them on a CLIProxy antigravity route |
 | `perplexity_api_key` | string | - | Write-only Perplexity key for web search |
 | `llm_stream_max_retries` | int | 0-10 | Retries for transient LLM call/stream failures. Post-stream failures rewind to the latest checkpoint before retrying. |
 | `llm_stream_retry_initial_delay` | float | 0-60 | Initial LLM retry backoff delay in seconds |

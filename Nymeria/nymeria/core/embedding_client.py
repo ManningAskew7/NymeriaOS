@@ -35,6 +35,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
 logger = logging.getLogger(__name__)
 
 # Browser User-Agent for native embedding HTTP calls (Cohere). Some managed
@@ -150,7 +152,7 @@ class EmbeddingClient:
         if self.provider in ("openai", "cohere", "gemini"):
             if not self.api_key:
                 return NO_KEY_ERROR
-            if self.api_key.startswith("cpx-"):
+            if looks_like_cliproxy_gatekeeper_key(self.api_key):
                 return GATEKEEPER_KEY_ERROR
             return None
         return f"unknown embedding provider: {self.provider}"
@@ -250,7 +252,7 @@ class EmbeddingClient:
     def _build_openai_client(self):
         if not self.api_key:
             raise RuntimeError("EMBEDDING_API_KEY not configured")
-        if self.api_key.startswith("cpx-"):
+        if looks_like_cliproxy_gatekeeper_key(self.api_key):
             raise RuntimeError(
                 "EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key"
             )

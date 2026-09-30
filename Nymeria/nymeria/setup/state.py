@@ -166,6 +166,10 @@ class WizardState:
     # records presence so a blank field means "keep" and finalize does not blank a
     # working key or downgrade a provider to "unconfigured".
     present_env_keys: set[str] = field(default_factory=set)
+    # The subset of present_env_keys whose on-disk value is CLIProxy
+    # gatekeeper SHAPED (a shape bit; the value itself is never read into
+    # state). A gatekeeper is present but cannot serve a media tool (#152).
+    gatekeeper_env_keys: set[str] = field(default_factory=set)
     # Tools in the bootstrap profile's default set that are neither the core seed
     # nor a known init family member (user-added). Carried through a reconfigure so
     # the profile-pick update never silently drops them.

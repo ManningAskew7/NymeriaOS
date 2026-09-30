@@ -764,20 +764,13 @@ def run_init(args: argparse.Namespace) -> int:
         )
         leaving_cliproxy = False
         if reconfigure and not state.auth_method_is_cliproxy():
-            from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+            from .hydrate import is_cliproxy_route
 
             base_url_hydrated = not (getattr(args, "base_url", None) or "").strip()
-            # Mirror hydrate's two-signal heuristic so a direct-key install
-            # pointing at some unrelated 8318 endpoint keeps its base URL.
-            second_signal = (
-                "cli-proxy" in state.base_url
-                or "cliproxy" in state.base_url
-                or bool(state.cliproxy_management_url)
-            )
-            if (
-                base_url_hydrated
-                and looks_like_cliproxy_url(state.base_url)
-                and second_signal
+            # hydrate's two-signal rule, so a direct-key install pointing at
+            # some unrelated 8318 endpoint keeps its base URL.
+            if base_url_hydrated and is_cliproxy_route(
+                state.base_url, state.cliproxy_management_url
             ):
                 # Leaving the subscription branch: the hydrated base URL and
                 # API mode describe the abandoned proxy route, not user data,

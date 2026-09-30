@@ -213,7 +213,8 @@ authoritative. Local Ollama needs no key at all.
 | `ANTHROPIC_API_KEY` | Anthropic | If using `anthropic` provider |
 | `ANTHROPIC_DIRECT_API_KEY` | Anthropic | Optional direct Anthropic `sk-ant-*` key. Used only when the effective Anthropic base URL is empty/direct; CLIProxy Anthropic calls continue using `ANTHROPIC_API_KEY` (`cpx-*`). |
 | `OPENAI_API_KEY` | OpenAI | If using `openai` provider; optional otherwise for OpenAI image generation, STT, and OpenAI-backed tools |
-| `GEMINI_API_KEY` | Google Gemini | Optional; enables Gemini image generation, Gemini TTS, and Gemini attachment extraction |
+| `GEMINI_API_KEY` | Google Gemini | If using `google` provider; optional otherwise, and then it enables Gemini image generation, Gemini TTS, and Gemini attachment extraction. Those media tools call Google directly, so they skip this key when it belongs to a gateway: a `cpx-*` CLIProxy gatekeeper (an antigravity route stores one here), or any key behind a `google` route whose `LLM_BASE_URL` is not a `googleapis.com` host. A non-`cpx-` proxy key used only by a per-thread google route is not detectable: set `GEMINI_DIRECT_API_KEY` in that case |
+| `GEMINI_DIRECT_API_KEY` | Google Gemini | Optional direct Google key for Gemini image generation, Gemini TTS, and attachment extraction. Wins over `GEMINI_API_KEY` (unless it holds a `cpx-*` gatekeeper, which is skipped), and is the only key they use when `GEMINI_API_KEY` holds a gateway's key (the CLIProxy antigravity route). The LLM route never reads it. The setup wizard asks for it on such a route |
 | `OPENROUTER_API_KEY` | OpenRouter | If using `openrouter` provider |
 | `EMBEDDING_API_KEY` | Memory embeddings | Optional; enables semantic memory, skill, and tool search. Holds the embedder's key for any cloud provider (OpenAI, Voyage, Cohere, Gemini). Keep separate from CLIProxy `OPENAI_API_KEY` values. Not needed for the `local` provider. |
 | `EMBEDDING_PROVIDER` | Memory embeddings | Embedding backend for the memory, skills, and tool-search indexes: `openai` (any OpenAI-compatible endpoint incl. Voyage; default), `cohere` (native embed-v4), `gemini` (native embedding-001), or `local` (in-process sentence-transformers, e.g. granite; needs the local-rag extra). |
@@ -893,8 +894,8 @@ base URLs, but does not persist the submitted API key and does not echo secrets
 in the response. Admins can then persist deployment-wide provider and capability
 keys with `PATCH /settings` using explicit write-only fields such as
 `openai_api_key`, `anthropic_api_key`, `anthropic_direct_api_key`,
-`openrouter_api_key`, `embedding_api_key`, `gemini_api_key`, and
-`perplexity_api_key`. These keys remain absent from `GET /settings`; the admin
+`openrouter_api_key`, `embedding_api_key`, `gemini_api_key`,
+`gemini_direct_api_key`, and `perplexity_api_key`. These keys remain absent from `GET /settings`; the admin
 environment listing masks secret values.
 
 The `/provider` slash command (central command registry, so it works from the
@@ -1691,7 +1692,7 @@ The watchdog is a supervisory sub-loop of the ticker (`core/watchdog_sweep.py`):
 |----------|---------|-------------|
 | `TTS_PROVIDER` | `none` | TTS provider: `none`, `openai`, `kokoro` (local), `qwen3` (local GPU), `gemini`, `cartesia`, `elevenlabs`, `edge` (free, keyless) |
 | `TTS_BASE_URL` | (per provider) | TTS API base URL. Not used for Gemini, Cartesia, ElevenLabs, or Edge. OpenAI defaults to `https://api.openai.com/v1`; `kokoro` unset runs in-process (`nymeriaos[voice-local]` extra), set it to use the speaches sidecar (`http://speaches:8000/v1` in the Docker stack); `qwen3` defaults to `http://localhost:8880/v1` |
-| `TTS_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for hosted TTS. Gemini uses `GEMINI_API_KEY`; Cartesia and ElevenLabs require `TTS_API_KEY` set to their own key. Local providers (kokoro, qwen3) need no key |
+| `TTS_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for hosted TTS. Gemini uses `GEMINI_DIRECT_API_KEY`, else `GEMINI_API_KEY`; Cartesia and ElevenLabs require `TTS_API_KEY` set to their own key. Local providers (kokoro, qwen3) need no key |
 | `TTS_MODEL` | (per provider) | Defaults when unset: OpenAI `gpt-4o-mini-tts`; Cartesia `sonic-3.5`; ElevenLabs `eleven_flash_v2_5`; Gemini `gemini-3.1-flash-tts-preview`; Qwen3 `Qwen3-TTS-0.6B`; kokoro via speaches `speaches-ai/Kokoro-82M-v1.0-ONNX` |
 | `TTS_VOICE` | (per provider) | Defaults when unset: OpenAI `nova` (also `alloy`, `echo`, `fable`, `onyx`, `shimmer`); kokoro `af_heart`; Gemini `Kore` (also `Puck`, `Charon`, 30 total); Edge `en-US-AriaNeural`; ElevenLabs Rachel. Cartesia has no default: set a voice UUID from play.cartesia.ai |
 | `TTS_OUTPUT_FORMAT` | `mp3` | Output format: mp3, wav, opus, aac. Gemini, Cartesia, and Edge always return MP3 |
@@ -1716,7 +1717,7 @@ with `uvx speaches-cli` (see the compose comments). The GPU-tier `qwen3-tts`
 sidecar moved to `--profile voice-gpu` and still requires an operator-pinned
 `QWEN3_TTS_IMAGE` digest (the compose default is an invalid placeholder).
 
-**Gemini TTS** requires `GEMINI_API_KEY` (also used for document extraction). Supports 200+ inline audio tags for expressive speech  -  e.g., `[whispers]`, `[excitedly]`, `[sighs]`. See [Gemini TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
+**Gemini TTS** requires a Google key: `GEMINI_DIRECT_API_KEY`, else `GEMINI_API_KEY` when that is not a gateway's key (see the API keys table; also used for document extraction). Supports 200+ inline audio tags for expressive speech  -  e.g., `[whispers]`, `[excitedly]`, `[sighs]`. See [Gemini TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
 
 ---
 

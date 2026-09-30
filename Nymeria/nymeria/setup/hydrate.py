@@ -397,9 +397,32 @@ def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
     spec = state.provider_spec()
     if spec is not None and spec.api_key_env_vars:
         secret_vars.update(spec.api_key_env_vars)
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
     for var in secret_vars:
-        if (values.get(var) or "").strip():
+        value = (values.get(var) or "").strip()
+        if value:
             state.present_env_keys.add(var)
+            if looks_like_cliproxy_gatekeeper_key(value):
+                state.gatekeeper_env_keys.add(var)
+
+
+def is_cliproxy_route(base_url: str, management_url: str = "") -> bool:
+    """True when an on-disk LLM route is a CLIProxy subscription route.
+
+    The port heuristic alone is too coarse for an auth-model rewrite (any
+    service on 8317/8318 matches it), so a second signal is required: either
+    the install recorded a management endpoint, or the hostname itself says
+    cliproxy. A direct-key install pointing at some other 8318 endpoint is not
+    a proxy route. Shared by hydrate, the runner's branch-exit check, and
+    finalize's gatekeeper retire, so the three agree.
+    """
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+    if not looks_like_cliproxy_url(base_url):
+        return False
+    host_says_cliproxy = "cli-proxy" in base_url or "cliproxy" in base_url
+    return host_says_cliproxy or bool((management_url or "").strip())
 
 
 def _hydrate_cliproxy(state: WizardState, values: dict[str, str]) -> None:
@@ -409,35 +432,33 @@ def _hydrate_cliproxy(state: WizardState, values: dict[str, str]) -> None:
     LLM base URL looking like a CLIProxy endpoint (the same signal the
     runtime cloak uses), unless an explicit --auth-method flag won. The
     concrete CLI is inferred from the route shape where unambiguous:
-    anthropic at the proxy root is Claude, openai+/v1 in responses mode is
-    Codex; the openai+/v1 chat shape is shared by every other CLI, so the
+    anthropic at the proxy root is Claude, google there is Antigravity,
+    openai+/v1 in responses mode is Codex; the openai+/v1 chat shape is shared by every other CLI, so the
     pick is left for the provider step (prefilled by its model default).
     """
+    from ..config.llm_providers import normalize_llm_provider
     from ..onboarding import ProviderAuthMethod
-    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
 
     base_url = _get(values, "LLM_BASE_URL") or ""
     if not state.cliproxy_management_url and _get(values, "CLIPROXY_MANAGEMENT_URL"):
         state.cliproxy_management_url = _get(values, "CLIPROXY_MANAGEMENT_URL") or ""
-    if state.auth_method_explicit or not looks_like_cliproxy_url(base_url):
-        return
-    # The port heuristic alone is too coarse for an auth-model rewrite (any
-    # service on 8317/8318 matches it). Require a second signal: either the
-    # install recorded a management endpoint, or the hostname itself says
-    # cliproxy. A direct-key install pointing at some other 8318 endpoint
-    # stays on the API-key branch.
-    host_says_cliproxy = "cli-proxy" in base_url or "cliproxy" in base_url
-    if not host_says_cliproxy and not _get(values, "CLIPROXY_MANAGEMENT_URL"):
+    if state.auth_method_explicit or not is_cliproxy_route(
+        base_url, _get(values, "CLIPROXY_MANAGEMENT_URL") or ""
+    ):
         return
     state.auth_method = ProviderAuthMethod.CLIPROXY_OAUTH
     if state.cliproxy_provider is None:
-        provider = (_get(values, "LLM_PROVIDER") or "").lower()
+        provider = normalize_llm_provider(_get(values, "LLM_PROVIDER") or "")
         on_v1 = base_url.rstrip("/").endswith("/v1")
         api_mode = (_get(values, "OPENAI_API_MODE") or "").lower()
         if provider == "anthropic" and not on_v1:
             state.cliproxy_provider = "claude"
         elif provider == "openai" and on_v1 and api_mode == "responses":
             state.cliproxy_provider = "codex"
+        elif provider == "google" and not on_v1:
+            # google at the proxy root is only ever antigravity (gemini-cli
+            # rides the shared openai+/v1 chat shape).
+            state.cliproxy_provider = "antigravity"
 
 
 def _hydrate_local_model(state: WizardState) -> None:

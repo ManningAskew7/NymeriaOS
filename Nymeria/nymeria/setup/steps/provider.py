@@ -105,13 +105,17 @@ def _key_placeholder(provider_id: str | None) -> str:
 
 
 def _provider_key_present(state: WizardState, provider_id: str | None) -> bool:
-    """True when this provider's key env var is already set on disk (reconfigure)."""
+    """True when this provider's key env var already holds a usable key (reconfigure).
+
+    This step is the API-key branch, so a CLIProxy gatekeeper in the slot (left by
+    a subscription route this run is leaving) is not a key to keep: finalize
+    retires it, and a blank field would end with no key at all (#152).
+    """
     spec = get_llm_provider_spec(provider_id) if provider_id else None
-    return bool(
-        spec
-        and spec.api_key_env_vars
-        and spec.api_key_env_vars[0] in getattr(state, "present_env_keys", set())
-    )
+    if not spec or not spec.api_key_env_vars:
+        return False
+    slot = spec.api_key_env_vars[0]
+    return slot in state.present_env_keys and slot not in state.gatekeeper_env_keys
 
 
 class ProviderStep(WizardStep):

@@ -42,6 +42,7 @@ from ...cliproxy.management_client import (
 )
 from ...core.llm_provider_utils import cliproxy_failure_hint
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
+from ...vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
 from ..schemas.cliproxy import (
     CLIProxyApplyRouteRequest,
     CLIProxyApplyRouteResponse,
@@ -891,7 +892,7 @@ async def perform_apply_route(
         # fresh-install fallback: no frontend can supply the key because
         # the api-keys knob is masked on REST reads by design).
         candidate = (getattr(settings, spec.key_setting, None) or "").strip()
-        if candidate.startswith("cpx-"):
+        if looks_like_cliproxy_gatekeeper_key(candidate):
             gatekeeper = candidate
         else:
             client = management_client_from_settings(settings)

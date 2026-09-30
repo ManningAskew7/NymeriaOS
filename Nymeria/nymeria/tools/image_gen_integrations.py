@@ -66,8 +66,13 @@ _GEMINI = register_provider_spec(
         provider="gemini",
         aliases=("google_gemini", "genai"),
         groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
-        settings_attr="gemini_api_key",
-        env_vars=("GEMINI_API_KEY",),
+        # The direct-call resolver property, not the raw GEMINI_API_KEY slot:
+        # on a CLIProxy antigravity route that slot holds the proxy's
+        # gatekeeper, and this tool calls Google directly. The env leg names
+        # only the direct slot for the same reason (a raw GEMINI_API_KEY read
+        # would bypass the screen).
+        settings_attr="gemini_media_api_key",
+        env_vars=("GEMINI_DIRECT_API_KEY",),
         tools=("image_gen_gemini",),
     )
 )
@@ -342,7 +347,10 @@ def image_gen_gemini(
     """
     api_key = _get_gemini_image_api_key(config)
     if not api_key:
-        return _missing_key_error("Gemini", "gemini", "image_gen_gemini", "GEMINI_API_KEY"), {}
+        from ..config import get_settings
+
+        hint = get_settings().gemini_media_key_hint()
+        return _missing_key_error("Gemini", "gemini", "image_gen_gemini", hint), {}
 
     cfg = {
         "gemini_model": model,

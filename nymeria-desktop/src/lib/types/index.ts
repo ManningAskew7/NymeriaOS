@@ -1629,6 +1629,8 @@ export interface ServerSettingsUpdate {
   rag_rerank_model?: string | null;
   rag_rerank_api_key?: string | null;
   gemini_api_key?: string | null;
+  // Direct Google key for Gemini media tools; wins over gemini_api_key.
+  gemini_direct_api_key?: string | null;
   perplexity_api_key?: string | null;
   // Capability-backend keys (web search / fetch / image generation), the same
   // set the CLI wizard's backend_keys step collects.

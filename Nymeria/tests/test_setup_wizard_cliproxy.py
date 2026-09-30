@@ -607,9 +607,10 @@ def test_noninteractive_switch_to_direct_provider_exits_cliproxy_route(
     assert "LLM_BASE_URL" not in after
     assert "CLIPROXY_MANAGEMENT_URL" not in after
     assert "CLIPROXY_MANAGEMENT_KEY" not in after
-    # Known residue: the old gatekeeper line stays but is inert without the
-    # proxy base URL (the direct route reads the DIRECT slot).
-    assert _env_line(after, "ANTHROPIC_API_KEY") == "cpx-gate"
+    # The abandoned proxy's gatekeeper retires too (#152): it was once left
+    # as "inert", but the direct media callers read these slots and would
+    # send it to the real vendor.
+    assert "ANTHROPIC_API_KEY" not in after
 
 
 def test_noninteractive_leaving_cliproxy_requires_api_key(monkeypatch, tmp_path):

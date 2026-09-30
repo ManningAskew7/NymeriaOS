@@ -460,7 +460,13 @@ def finalize(
     provider_key_env = key_env_override or (
         spec.api_key_env_vars[0] if spec and spec.api_key_env_vars else None
     )
-    key_present = bool(provider_key_env and provider_key_env in state.present_env_keys)
+    # Off the subscription branch a gatekeeper in the slot is not a key to keep
+    # (finalize retires it below); on the branch it is exactly the key (#152).
+    key_present = bool(
+        provider_key_env
+        and provider_key_env in state.present_env_keys
+        and (key_env_override or provider_key_env not in state.gatekeeper_env_keys)
+    )
     if spec is None or (spec.requires_api_key and not api_key and not key_present):
         # Provider step was skipped (or a required key is missing); write a
         # usable config without LLM creds.
@@ -691,7 +697,25 @@ def finalize(
     # cannot be cleared by replaying the new files, so the doctor run needs
     # this set to drop the removed ones first.
     pre_write_env_keys = _file_defined_env_keys(root)
+    retired_gatekeepers = (
+        retired_gatekeeper_slots(
+            config_path,
+            on_branch=state.auth_method_is_cliproxy(),
+            new_slot=key_env_override,
+        )
+        if merge
+        else ()
+    )
     console.print("\n[bold]Configuration[/bold]")
+    # A slot this run writes a new key into wins over the retire (merge
+    # semantics), so only the slots left empty are reported as removed.
+    produced_slots = set(optional_env) | ({provider_key_env} if api_key else set())
+    removed_gatekeepers = [s for s in retired_gatekeepers if s not in produced_slots]
+    if removed_gatekeepers:
+        console.print(
+            f"[yellow]Removed the old CLIProxy route's local key from "
+            f"{', '.join(removed_gatekeepers)}: it only works through that proxy.[/yellow]"
+        )
     write_config(
         config_path,
         data_dir=data_dir,
@@ -710,6 +734,7 @@ def finalize(
         provider_key_env=key_env_override,
         image_version=_PACKAGE_VERSION if clone_free_docker else None,
         drop_cliproxy_management=not state.auth_method_is_cliproxy(),
+        drop_stale_gatekeepers=retired_gatekeepers,
         drop_public_url=should_drop_public_url(state),
         drop_stale_voice=voice_drop_env(state),
         drop_stale_server_browser=drop_stale_server_browser,
@@ -844,6 +869,8 @@ def finalize(
                 _warn_stale_service_artifact(state, console)
         return 0
 
+    from .tool_keys import gemini_slot_holds_gateway_key
+
     print_capability_summary(
         spec,
         optional_env,
@@ -854,6 +881,7 @@ def finalize(
         ),
         for_docker=for_docker,
         full_stack=is_full_stack,
+        gemini_gateway_slot=gemini_slot_holds_gateway_key(state),
     )
     print_deployment_summary(state, console)
 
@@ -924,6 +952,7 @@ def write_config(
     provider_key_env: str | None = None,
     image_version: str | None = None,
     drop_cliproxy_management: bool = False,
+    drop_stale_gatekeepers: tuple[str, ...] = (),
     drop_public_url: bool = False,
     drop_stale_voice: tuple[str, ...] = (),
     drop_stale_tuning: tuple[str, ...] = (),
@@ -1084,6 +1113,9 @@ def write_config(
             "LLM_BASE_URL",
             "OPENAI_API_MODE",
         )
+    # The abandoned proxy route's gatekeeper (finalize computes which slot,
+    # `retired_gatekeeper_slots`); a key produced this run wins as usual.
+    drop_env = drop_env + drop_stale_gatekeepers
     if drop_public_url:
         # Switching to local-only retires the stale public URL; keeping it
         # would advertise (and hydrate back) an origin the user abandoned.
@@ -1140,6 +1172,56 @@ def _resolve_secrets_key(config_path: Path) -> str:
 
 def _read_secrets_key_from_file(config_path: Path) -> str | None:
     return _read_env_value_from_file(config_path, "NYMERIA_SECRETS_KEY")
+
+
+def retired_gatekeeper_slots(
+    config_path: Path, *, on_branch: bool, new_slot: str | None
+) -> tuple[str, ...]:
+    """The on-disk proxy route's key slot, when this run abandons that route.
+
+    A ``cpx-`` gatekeeper is the proxy's local secret, useless anywhere else
+    and not inert: OpenAI image generation and voice read OPENAI_API_KEY raw
+    and would send a leftover one to OpenAI (#428), and a stale line keeps the
+    wizard counting a key that serves nothing (the Gemini media tools now
+    skip one at runtime, #152). Retired only when the
+    config on disk IS a CLIProxy route (hydrate's two-signal rule,
+    ``hydrate.is_cliproxy_route``) that this run leaves: off the branch
+    entirely, or onto a different CLI whose key lands in another slot. Only
+    the abandoned route's own slot goes, and only a gatekeeper-shaped value,
+    so a hand-kept proxy key in another slot (per-thread proxy routes read the
+    global one) and a real vendor key both stay. On the branch with the CLI
+    unnamed (``new_slot`` None: hydrate could not tell kimi from grok), the
+    route is unchanged and nothing retires.
+    """
+    if on_branch and new_slot is None:
+        return ()
+    if not config_path.exists():
+        return ()
+    from dotenv import dotenv_values
+
+    from ..cliproxy.catalog import list_cliproxy_providers
+    from ..config.llm_providers import normalize_llm_provider
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+    from .hydrate import is_cliproxy_route
+
+    values = {k: (v or "") for k, v in dotenv_values(str(config_path)).items()}
+    if not is_cliproxy_route(
+        values.get("LLM_BASE_URL", ""), values.get("CLIPROXY_MANAGEMENT_URL", "")
+    ):
+        return ()
+    provider = normalize_llm_provider(values.get("LLM_PROVIDER", ""))
+    slots = sorted(
+        {
+            cspec.key_env_var
+            for cspec in list_cliproxy_providers()
+            if cspec.nymeria_provider == provider
+        }
+    )
+    return tuple(
+        slot
+        for slot in slots
+        if slot != new_slot and looks_like_cliproxy_gatekeeper_key(values.get(slot, ""))
+    )
 
 
 def _read_env_value_from_file(config_path: Path, key: str) -> str | None:
@@ -1206,8 +1288,27 @@ def _resolve_optional_env(
         # a typed Gemini media key silently shadowed or was shadowed by the
         # proxy gatekeeper, and the capability summary reported Gemini media
         # tools ready off a proxy-local key that cannot serve them.
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+        from .tool_keys import (
+            GEMINI_DIRECT_KEY_ENV,
+            GEMINI_LLM_KEY_ENV,
+            gemini_slot_holds_gateway_key,
+        )
+
+        gateway_gemini = gemini_slot_holds_gateway_key(state)
         for env_name in spec.api_key_env_vars:
-            optional_env.pop(env_name, None)
+            value = optional_env.pop(env_name, None)
+            # A Gemini key given for the media tools (`--gemini-api-key`)
+            # while the gateway owns GEMINI_API_KEY is a DIRECT key: keep it
+            # in the direct slot rather than silently dropping it (#152).
+            if (
+                env_name == GEMINI_LLM_KEY_ENV
+                and gateway_gemini
+                and value
+                and value != api_key.strip()
+                and not looks_like_cliproxy_gatekeeper_key(value)
+            ):
+                optional_env.setdefault(GEMINI_DIRECT_KEY_ENV, value)
     return optional_env
 
 
@@ -1695,6 +1796,7 @@ def print_capability_summary(
     keyless_search_selected: bool = False,
     for_docker: bool = False,
     full_stack: bool = False,
+    gemini_gateway_slot: bool = False,
 ) -> None:
     """Show which capabilities are ready and which env var unblocks each.
 
@@ -1746,9 +1848,21 @@ def print_capability_summary(
     search_ready = keyless_search_selected or any(
         optional_env.get(env) for env in WEB_SEARCH_BACKEND_ENV_VARS
     )
-    image_ready = openai_ready or any(
+    # The Gemini media tools call Google directly, so the key that counts is
+    # the direct slot, or GEMINI_API_KEY only while no gateway owns it
+    # (``gemini_gateway_slot``, the wizard twin of the runtime resolver
+    # Settings.gemini_media_api_key). A google primary's own key is written
+    # to GEMINI_API_KEY and popped from the optional pool, like OpenAI above.
+    gemini_media_ready = bool(optional_env.get("GEMINI_DIRECT_API_KEY")) or (
+        not gemini_gateway_slot
+        and (
+            bool(optional_env.get("GEMINI_API_KEY"))
+            or (spec is not None and "GEMINI_API_KEY" in spec.api_key_env_vars)
+        )
+    )
+    image_ready = openai_ready or gemini_media_ready or any(
         optional_env.get(env)
-        for env in ("GEMINI_API_KEY", "BFL_API_KEY", "REPLICATE_API_KEY", "FAL_API_KEY")
+        for env in ("BFL_API_KEY", "REPLICATE_API_KEY", "FAL_API_KEY")
     )
     rows = [
         ("Primary LLM", spec is not None, "set a provider with nymeria init"),
@@ -1765,8 +1879,12 @@ def print_capability_summary(
         ),
         (
             "Gemini media tools",
-            bool(optional_env.get("GEMINI_API_KEY")),
-            "set GEMINI_API_KEY",
+            gemini_media_ready,
+            (
+                "set GEMINI_DIRECT_API_KEY: your LLM route's key cannot call Google"
+                if gemini_gateway_slot
+                else "set GEMINI_API_KEY"
+            ),
         ),
     ]
     ready = sum(1 for _name, ok, _hint in rows if ok)

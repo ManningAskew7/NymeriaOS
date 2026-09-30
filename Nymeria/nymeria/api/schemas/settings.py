@@ -356,6 +356,9 @@ class ServerSettingsUpdate(BaseModel):
     rag_rerank_model: Optional[str] = None
     rag_rerank_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
+    # Direct Google key for Gemini TTS / image generation / attachment
+    # extraction; never an LLM-route credential (so no graph rebuild).
+    gemini_direct_api_key: Optional[str] = None
     gemini_extraction_model: Optional[str] = None
     perplexity_api_key: Optional[str] = None
     perplexity_search_model: Optional[str] = None

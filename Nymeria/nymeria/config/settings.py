@@ -35,6 +35,18 @@ _PROJECT_ROOT_MARKERS: Tuple[Tuple[str, ...], ...] = (
 )
 
 
+def is_google_api_host(base_url: str) -> bool:
+    """True when ``base_url`` is one of Google's own API hosts (googleapis.com)."""
+    from urllib.parse import urlparse
+
+    target = base_url if "://" in base_url else f"https://{base_url}"
+    try:
+        host = (urlparse(target).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "googleapis.com" or host.endswith(".googleapis.com")
+
+
 def _find_project_root(start: Path) -> Optional[Path]:
     """Find a Nymeria backend root by walking up from ``start``."""
     current = start.resolve()
@@ -2002,8 +2014,25 @@ class Settings(BaseSettings):
         description="Lower bound of the anchor time-multiplier (0 = a far-off chunk can be fully demoted, 1 = the anchor stops mattering). At 0.4 a strongly-relevant chunk far from the date keeps 40% of its fused score, so the date guides but never filters.",
     )
 
-    # Gemini (document extraction for email attachments)
-    gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key for document extraction")
+    # Gemini: the google LLM route's key, plus the DIRECT Google callers (Gemini
+    # TTS, image generation, attachment extraction), which read it through
+    # ``gemini_media_api_key`` so a gateway's key never goes to Google.
+    gemini_api_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Google Gemini API key: the google LLM route, plus Gemini TTS, image "
+            "generation and attachment extraction unless it holds a gateway key"
+        ),
+    )
+    gemini_direct_api_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Direct Google Gemini API key for Gemini TTS, image generation and "
+            "attachment extraction; wins over GEMINI_API_KEY, and is the only "
+            "key they use when GEMINI_API_KEY holds a gateway key (a CLIProxy "
+            "antigravity route)"
+        ),
+    )
     gemini_extraction_model: str = Field(default="gemini-3-flash-preview", description="Gemini model for attachment text extraction")
 
     # MCP discovery registries
@@ -2781,6 +2810,72 @@ class Settings(BaseSettings):
             return self.anthropic_direct_api_key or self.anthropic_api_key
 
         return resolve_provider_api_key(provider, settings=self)
+
+    def gemini_key_is_gateway_owned(self) -> bool:
+        """True when ``gemini_api_key`` holds a gateway's key rather than Google's.
+
+        GEMINI_API_KEY is the google LLM route's key slot, so a CLIProxy
+        antigravity route (apply-route, the wizard branch, the GUI) writes the
+        proxy-local gatekeeper there. Google rejects that key, and sending it is
+        handing a deployment secret to a third party, so the direct callers
+        must skip it. Two signals, either suffices: the ``cpx-`` shape every
+        minted gatekeeper has (the embedding guard's precedent), and a google
+        route with a base URL off Google's own hosts, which is the rule
+        ``get_api_key_for_provider`` applies to anthropic (a configured base
+        URL means the slot feeds that gateway). Google's own OpenAI-compatible
+        shim lives on googleapis.com, so a real key routed there still counts.
+        """
+        key = (self.gemini_api_key or "").strip()
+        if not key:
+            return False
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
+        if looks_like_cliproxy_gatekeeper_key(key):
+            return True
+        if normalize_llm_provider(self.llm_provider) != "google":
+            return False
+        base_url = (self.llm_base_url or "").strip()
+        return bool(base_url) and not is_google_api_host(base_url)
+
+    @property
+    def gemini_media_api_key(self) -> Optional[str]:
+        """The key for DIRECT Google calls: Gemini TTS, image generation, extraction.
+
+        GEMINI_DIRECT_API_KEY first, else GEMINI_API_KEY unless it holds a
+        gateway's key (``gemini_key_is_gateway_owned``). The LLM route never
+        reads this: it keeps GEMINI_API_KEY, which is the gateway's key there.
+        """
+        direct = (self.gemini_direct_api_key or "").strip()
+        if direct and not self._gemini_direct_key_is_gatekeeper():
+            return direct
+        if self.gemini_key_is_gateway_owned():
+            return None
+        return (self.gemini_api_key or "").strip() or None
+
+    def _gemini_direct_key_is_gatekeeper(self) -> bool:
+        """True when a CLIProxy gatekeeper was pasted into the direct slot.
+
+        The runtime hint says "set GEMINI_DIRECT_API_KEY" beside a ``cpx-``
+        GEMINI_API_KEY line, so copying that line over is the likely mistake;
+        the direct slot is screened like the other one rather than trusted.
+        """
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
+        return looks_like_cliproxy_gatekeeper_key(self.gemini_direct_api_key or "")
+
+    def gemini_media_key_hint(self) -> str:
+        """What to set when ``gemini_media_api_key`` is empty, for error text."""
+        if self._gemini_direct_key_is_gatekeeper():
+            return (
+                "GEMINI_DIRECT_API_KEY to a real Google key (it holds a CLIProxy "
+                "gateway key, which Google does not accept)"
+            )
+        if self.gemini_key_is_gateway_owned():
+            return (
+                "GEMINI_DIRECT_API_KEY (GEMINI_API_KEY holds this deployment's "
+                "LLM gateway key, which Google does not accept)"
+            )
+        return "GEMINI_API_KEY"
 
     def load_soul(self) -> str:
         """Load the base system prompt.

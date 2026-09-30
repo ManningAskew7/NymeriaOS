@@ -11,7 +11,7 @@ key, SearXNG takes a base URL rather than a secret, and Jina's key is optional.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -187,6 +187,59 @@ def _stale_voice_env(state: "WizardState") -> set[str]:
     return stale - {env for env, value in state.optional_env.items() if value}
 
 
+GEMINI_LLM_KEY_ENV = "GEMINI_API_KEY"
+GEMINI_DIRECT_KEY_ENV = "GEMINI_DIRECT_API_KEY"
+
+
+def gemini_slot_holds_gateway_key(state: "WizardState") -> bool:
+    """True when this install's GEMINI_API_KEY will hold a gateway's key.
+
+    The wizard twin of ``Settings.gemini_key_is_gateway_owned``: a CLIProxy
+    route whose catalog key slot is GEMINI_API_KEY (antigravity) writes the
+    proxy's gatekeeper there, and a google route through any non-Google base
+    URL feeds that slot to the gateway. Either way Gemini TTS and image
+    generation, which call Google directly, need the direct slot instead.
+    Checks the CLIProxy pick first because on a fresh run the route's
+    provider and base URL are only filled in at finalize.
+    """
+    if state.auth_method_is_cliproxy():
+        from ..cliproxy.catalog import get_cliproxy_provider
+        from ..onboarding import legacy_cliproxy_provider
+
+        pick = state.cliproxy_provider or legacy_cliproxy_provider(state.auth_method)
+        cspec = get_cliproxy_provider(pick) if pick else None
+        if cspec is not None:
+            return cspec.key_env_var == GEMINI_LLM_KEY_ENV
+    from ..config.llm_providers import normalize_llm_provider
+    from ..config.settings import is_google_api_host
+
+    if not state.provider or normalize_llm_provider(state.provider) != "google":
+        return False
+    base_url = (state.base_url or "").strip()
+    return bool(base_url) and not is_google_api_host(base_url)
+
+
+def _gemini_media_spec(spec: KeySpec, state: "WizardState") -> KeySpec:
+    """Retarget a Gemini media KeySpec at the direct slot on a gateway route.
+
+    Without this the step asked for GEMINI_API_KEY, finalize dropped the typed
+    value because the gatekeeper owns that slot, and the summary reported the
+    Gemini media tools unconfigured with no word about why (#152).
+    """
+    if spec.env_var != GEMINI_LLM_KEY_ENV or not gemini_slot_holds_gateway_key(state):
+        return spec
+    return replace(
+        spec,
+        env_var=GEMINI_DIRECT_KEY_ENV,
+        label="Google AI (Gemini) API key for media",
+        note=(
+            "Your LLM route's key only works through its gateway, and Gemini "
+            "image generation and speech call Google directly, so they need "
+            "a key from aistudio.google.com. Stored as GEMINI_DIRECT_API_KEY."
+        ),
+    )
+
+
 def already_provided_env(state: "WizardState") -> set[str]:
     """Env vars already satisfied elsewhere, so the keys step should not re-ask.
 
@@ -202,6 +255,14 @@ def already_provided_env(state: "WizardState") -> set[str]:
     # Reconfigure: credentials already present on disk (recorded by hydration)
     # are satisfied, so a fully-keyed existing install shows no backend-keys step.
     provided |= set(getattr(state, "present_env_keys", set()) or set())
+    # ...except a Gemini slot holding a proxy gatekeeper (a switch from the
+    # antigravity route to another CLI leaves one there until finalize
+    # retires it): it cannot serve the Gemini media tools, so ask (#152). The
+    # OpenAI slot's twin is #428.
+    if GEMINI_LLM_KEY_ENV in state.gatekeeper_env_keys and not state.optional_env.get(
+        GEMINI_LLM_KEY_ENV
+    ):
+        provided.discard(GEMINI_LLM_KEY_ENV)
     return provided
 
 
@@ -233,6 +294,7 @@ def required_backend_credentials(state: "WizardState") -> list[KeySpec]:
         if (spec := BACKEND_KEY_SPECS.get(tool)) is not None
     ]
     candidates.extend(_voice_key_specs(state))
+    candidates = [_gemini_media_spec(spec, state) for spec in candidates]
     seen: set[str] = set()
     specs: list[KeySpec] = []
     for spec in candidates:
@@ -255,4 +317,5 @@ __all__ = [
     "already_provided_env",
     "required_backend_credentials",
     "backend_keys_needed",
+    "gemini_slot_holds_gateway_key",
 ]

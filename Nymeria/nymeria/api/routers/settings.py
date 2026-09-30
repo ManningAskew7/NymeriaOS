@@ -230,6 +230,7 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "perplexity_api_key",
         "perplexity_search_model",
         "gemini_api_key",
+        "gemini_direct_api_key",
         "gemini_extraction_model",
     ),
     "Context": (
@@ -350,6 +351,7 @@ _SECRET_KEYS: frozenset[str] = frozenset({
     "embedding_api_key",
     "perplexity_api_key",
     "gemini_api_key",
+    "gemini_direct_api_key",
     "discord_bot_token",
     "discord_webhook_url",
     "telegram_bot_token",

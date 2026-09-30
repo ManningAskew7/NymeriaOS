@@ -35,6 +35,9 @@ OPTIONAL_ENV_ORDER = (
     "RAG_RERANK_API_KEY",
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
+    # The Gemini media tools' key on a gateway route (setup/tool_keys.py
+    # gemini_slot_holds_gateway_key), where GEMINI_API_KEY is the gatekeeper.
+    "GEMINI_DIRECT_API_KEY",
     "PERPLEXITY_API_KEY",
     "TAVILY_API_KEY",
     "EXA_API_KEY",

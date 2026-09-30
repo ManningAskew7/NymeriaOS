@@ -121,6 +121,7 @@ class FakeSettings:
     perplexity_api_key: str | None = None
     perplexity_search_model: str = "sonar-pro"
     gemini_api_key: str | None = None
+    gemini_direct_api_key: str | None = None
     gemini_extraction_model: str = "gemini-test"
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
@@ -325,6 +326,10 @@ class FakeSettingsProvider:
             gemini_api_key=os.environ.get(
                 "GEMINI_API_KEY",
                 self.settings.gemini_api_key,
+            ),
+            gemini_direct_api_key=os.environ.get(
+                "GEMINI_DIRECT_API_KEY",
+                self.settings.gemini_direct_api_key,
             ),
             perplexity_api_key=os.environ.get(
                 "PERPLEXITY_API_KEY",
@@ -2191,6 +2196,7 @@ def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
         "OPENROUTER_API_KEY",
         "EMBEDDING_API_KEY",
         "GEMINI_API_KEY",
+        "GEMINI_DIRECT_API_KEY",
         "PERPLEXITY_API_KEY",
     ):
         monkeypatch.delenv(env_var, raising=False)
@@ -2208,6 +2214,7 @@ def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
         "openrouter_api_key": "sk-or-new",
         "embedding_api_key": "sk-embedding-new",
         "gemini_api_key": "sk-gemini-new",
+        "gemini_direct_api_key": "AIza-gemini-direct-new",
         "perplexity_api_key": "pplx-new",
     }
 
@@ -2226,6 +2233,7 @@ def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
     assert "OPENROUTER_API_KEY=sk-or-new" in env_text
     assert "EMBEDDING_API_KEY=sk-embedding-new" in env_text
     assert "GEMINI_API_KEY=sk-gemini-new" in env_text
+    assert "GEMINI_DIRECT_API_KEY=AIza-gemini-direct-new" in env_text
     assert "PERPLEXITY_API_KEY=pplx-new" in env_text
     assert os.environ["OPENAI_API_KEY"] == "sk-openai-new"
     assert provider.cache_clear_count == 1
@@ -2364,6 +2372,7 @@ def test_env_settings_list_masks_provider_and_capability_keys(
         "openrouter_api_key": "sk-env-openrouter-secret",
         "embedding_api_key": "sk-env-embedding-secret",
         "gemini_api_key": "sk-env-gemini-secret",
+        "gemini_direct_api_key": "AIza-env-gemini-direct-secret",
         "perplexity_api_key": "pplx-env-secret",
     }
     settings = FakeSettings(project_root=tmp_path, data_dir=tmp_path, **secrets)

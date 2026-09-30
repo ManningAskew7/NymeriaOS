@@ -320,6 +320,7 @@ Optional capability keys:
 EMBEDDING_API_KEY=sk-<key>       # Semantic memory/RAG/skill search
 OPENAI_API_KEY=sk-<key>          # OpenAI image generation/STT/OpenAI-backed tools
 GEMINI_API_KEY=<key>             # Gemini image/document extraction/TTS tools
+# GEMINI_DIRECT_API_KEY=<key>    # the same tools when GEMINI_API_KEY is a CLIProxy (antigravity) key
 PERPLEXITY_API_KEY=pplx-<key>    # Web search
 ```
 

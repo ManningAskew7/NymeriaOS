@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
 logger = logging.getLogger(__name__)
 
 LocalServerType = Literal["ollama", "lm-studio", "llamacpp", "vllm"]
@@ -23,22 +25,50 @@ CONTAINER_LOCAL_SUFFIXES = (
 )
 TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 LOCAL_METADATA_CACHE_TTL_SECONDS = 300.0
+# A "no" lives shorter than a "yes": one probe in a chain can answer while the
+# identifying one times out (a loaded server), or an Ollama model is pulled a
+# minute later, and neither should pin a wrong negative for five minutes. A
+# minute still collapses the per-build re-probing to one round per minute.
+LOCAL_NEGATIVE_CACHE_TTL_SECONDS = 60.0
 
 _CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 
+# A cache MISS, distinct from a cached None. The probes' negative answer IS
+# None ("not a local server I recognise", "no context length advertised"), so
+# returning None for a miss made every negative look uncached: a CLIProxy on a
+# loopback port answered every probe negatively and was re-probed on every LLM
+# config build, one to five GETs per probe per turn (#152).
+_MISS: Any = object()
 
-def _cache_get(key: tuple[Any, ...]) -> Any | None:
+
+def _cache_get(key: tuple[Any, ...]) -> Any:
+    """The cached value (None included) for ``key``, or ``_MISS``."""
     item = _CACHE.get(key)
     if not item:
-        return None
+        return _MISS
     created, value = item
-    if time.monotonic() - created > LOCAL_METADATA_CACHE_TTL_SECONDS:
+    ttl = (
+        LOCAL_METADATA_CACHE_TTL_SECONDS
+        if value is not None
+        else LOCAL_NEGATIVE_CACHE_TTL_SECONDS
+    )
+    if time.monotonic() - created > ttl:
         _CACHE.pop(key, None)
-        return None
+        return _MISS
     return value
 
 
-def _cache_set(key: tuple[Any, ...], value: Any) -> Any:
+def _cache_set(key: tuple[Any, ...], value: Any, *, answered: bool = True) -> Any:
+    """Cache ``value`` and return it.
+
+    A negative (None) is cached only when the endpoint ``answered`` some probe,
+    and for the shorter negative TTL: that is a real "no" worth remembering
+    briefly. A server that never answered (down, still starting) is re-probed
+    next time, so a local model brought up after Nymeria gets its context
+    length on the next turn.
+    """
+    if value is None and not answered:
+        return None
     _CACHE[key] = (time.monotonic(), value)
     return value
 
@@ -153,19 +183,25 @@ def detect_local_server_type(
 ) -> LocalServerType | None:
     """Probe a local OpenAI-compatible endpoint for its native server type."""
     root = server_root(base_url)
-    if not root or not is_local_llm_base_url(root):
+    # A CLIProxy is never a local model server, but a slim install reaches it
+    # on a loopback port that passes is_local_llm_base_url; asking it for
+    # Ollama tags and llama.cpp props is pure noise (#152). Same exclusion as
+    # the prompt-cache and streaming gates in providers.py.
+    if not root or not is_local_llm_base_url(root) or looks_like_cliproxy_url(root):
         return None
     key = ("server_type", root, bool(api_key))
     cached = _cache_get(key)
-    if cached is not None:
+    if cached is not _MISS:
         return cached
 
     headers = _auth_headers(api_key)
     detected: LocalServerType | None = None
+    answered = False
     try:
         with httpx.Client(timeout=timeout, headers=headers) as client:
             try:
                 response = client.get(f"{root}/api/v1/models")
+                answered = True
                 if response.status_code == 200:
                     detected = "lm-studio"
             except httpx.HTTPError:
@@ -174,6 +210,7 @@ def detect_local_server_type(
             if detected is None:
                 try:
                     response = client.get(f"{root}/api/tags")
+                    answered = True
                     if response.status_code == 200 and isinstance(response.json(), dict):
                         if "models" in response.json():
                             detected = "ollama"
@@ -183,6 +220,7 @@ def detect_local_server_type(
             if detected is None:
                 try:
                     response = client.get(f"{root}/v1/props")
+                    answered = True
                     if response.status_code != 200:
                         response = client.get(f"{root}/props")
                     if response.status_code == 200 and "default_generation_settings" in response.text:
@@ -193,6 +231,7 @@ def detect_local_server_type(
             if detected is None:
                 try:
                     response = client.get(f"{root}/version")
+                    answered = True
                     if response.status_code == 200 and isinstance(response.json(), dict):
                         if "version" in response.json():
                             detected = "vllm"
@@ -201,7 +240,7 @@ def detect_local_server_type(
     except Exception as exc:  # noqa: BLE001 - probe failures are non-fatal.
         logger.debug("Local LLM server detection failed for %s: %s", root, exc)
 
-    return _cache_set(key, detected)
+    return _cache_set(key, detected, answered=answered)
 
 
 def query_ollama_num_ctx(
@@ -218,13 +257,15 @@ def query_ollama_num_ctx(
         return None
     key = ("ollama_num_ctx", root, model, bool(api_key))
     cached = _cache_get(key)
-    if cached is not None:
+    if cached is not _MISS:
         return cached
 
     detected: int | None = None
+    answered = False
     try:
         with httpx.Client(timeout=timeout, headers=_auth_headers(api_key)) as client:
             response = client.post(f"{root}/api/show", json={"name": model})
+            answered = True
             if response.status_code == 200:
                 body = response.json()
                 detected = (
@@ -234,7 +275,7 @@ def query_ollama_num_ctx(
     except Exception as exc:  # noqa: BLE001 - probe failures are non-fatal.
         logger.debug("Ollama num_ctx probe failed for %s at %s: %s", model, root, exc)
 
-    return _cache_set(key, detected)
+    return _cache_set(key, detected, answered=answered)
 
 
 def query_llamacpp_context_length(
@@ -248,12 +289,14 @@ def query_llamacpp_context_length(
         return None
     key = ("llamacpp_context", root, bool(api_key))
     cached = _cache_get(key)
-    if cached is not None:
+    if cached is not _MISS:
         return cached
     detected: int | None = None
+    answered = False
     try:
         with httpx.Client(timeout=timeout, headers=_auth_headers(api_key)) as client:
             response = client.get(f"{root}/v1/props")
+            answered = True
             if response.status_code != 200:
                 response = client.get(f"{root}/props")
             if response.status_code == 200:
@@ -263,7 +306,7 @@ def query_llamacpp_context_length(
                     detected = int(value)
     except Exception as exc:  # noqa: BLE001
         logger.debug("llama.cpp context probe failed for %s: %s", root, exc)
-    return _cache_set(key, detected if detected and detected > 0 else None)
+    return _cache_set(key, detected if detected and detected > 0 else None, answered=answered)
 
 
 def query_local_context_length(
@@ -277,15 +320,17 @@ def query_local_context_length(
     """Query common local servers for the selected model's context length."""
     model = _strip_provider_prefix(model)
     root = server_root(base_url)
-    if not model or not root or not is_local_llm_base_url(root):
+    # Never a CLIProxy (see detect_local_server_type).
+    if not model or not root or not is_local_llm_base_url(root) or looks_like_cliproxy_url(root):
         return None
     server_type = server_type or detect_local_server_type(root, api_key=api_key)
     key = ("context", root, model, server_type, bool(api_key))
     cached = _cache_get(key)
-    if cached is not None:
+    if cached is not _MISS:
         return cached
 
     detected: int | None = None
+    answered = False
     headers = _auth_headers(api_key)
     try:
         with httpx.Client(timeout=timeout, headers=headers) as client:
@@ -293,6 +338,7 @@ def query_local_context_length(
                 detected = query_ollama_num_ctx(model, root, api_key=api_key, timeout=timeout)
             elif server_type == "lm-studio":
                 response = client.get(f"{root}/api/v1/models")
+                answered = True
                 if response.status_code == 200:
                     for item in response.json().get("models", []) or []:
                         if not (
@@ -312,6 +358,7 @@ def query_local_context_length(
 
             if detected is None:
                 response = client.get(f"{root}/v1/models/{model}")
+                answered = True
                 if response.status_code == 200:
                     body = response.json()
                     value = (
@@ -324,6 +371,7 @@ def query_local_context_length(
 
             if detected is None:
                 response = client.get(f"{root}/v1/models")
+                answered = True
                 if response.status_code == 200:
                     for item in response.json().get("data", []) or []:
                         if not _model_id_matches(item.get("id"), model):
@@ -339,4 +387,4 @@ def query_local_context_length(
     except Exception as exc:  # noqa: BLE001
         logger.debug("Local context probe failed for %s at %s: %s", model, root, exc)
 
-    return _cache_set(key, detected if detected and detected > 0 else None)
+    return _cache_set(key, detected if detected and detected > 0 else None, answered=answered)

@@ -154,8 +154,10 @@ def _openai_key() -> str | None:
 
 
 def _gemini_key() -> str | None:
-    settings = get_settings()
-    return settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    # The direct-call resolver, never GEMINI_API_KEY raw: on a CLIProxy
+    # antigravity route that slot holds the proxy's gatekeeper, which this
+    # call would hand to Google (Settings.gemini_media_api_key).
+    return get_settings().gemini_media_api_key
 
 
 def download_image_bytes(
@@ -284,7 +286,9 @@ def _generate_gemini(
 ) -> tuple[bytes, str, str]:
     api_key = api_key or _gemini_key()
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured.")
+        raise RuntimeError(
+            f"No Google API key for Gemini: set {get_settings().gemini_media_key_hint()}."
+        )
 
     try:
         from google import genai
