@@ -293,7 +293,10 @@ the client should hold.
 
 The MCP server checks each token against the API. While the API cannot
 answer (a restart, where the MCP container is up before the API is), it
-responds `503` with `Retry-After` rather than `401`: a `401` means the token
+first holds the request for up to `NYMERIA_MCP_BACKEND_WAIT_SECONDS`
+(default 25), re-checking, so a client connecting mid-restart is served a
+little late rather than refused. Past that it responds `503` with
+`Retry-After` rather than `401`: a `401` means the token
 itself was refused, so a client seeing one should get a new token, while a
 `503` only means "retry shortly". A `502` means the API URL the MCP server
 was given answered, but not as a Nymeria API: a configuration problem that
