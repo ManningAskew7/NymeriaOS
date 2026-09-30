@@ -373,6 +373,28 @@ def _code_status_lines(*, show_drift: bool) -> list[str]:
     return _provenance.status_lines(record, drift_reason=reason)
 
 
+def _notepad_status_line(notepad: dict[str, Any]) -> str | None:
+    """``notepad: N / L chars`` for ``/status`` (#101 entry 24), from the
+    access-checked ``get_thread_notepad`` payload, whose ``char_limit`` is the
+    one the writes enforce. None when that door refused or failed: the line
+    is dropped rather than guessed (a re-derived limit showed the 8000
+    default when the deployment's was 20000).
+
+    A status block is compact: the state rides as a short suffix, and the
+    remedy is left to the write results and ``/notepad read``."""
+    from ..tools.thread_notes import NEARLY_FULL_RATIO
+
+    size, limit = notepad.get("char_count"), notepad.get("char_limit")
+    if not isinstance(size, int) or not isinstance(limit, int):
+        return None
+    line = f"notepad: {size} / {limit} chars"
+    if size > limit:
+        return f"{line} (over the cap)"
+    if size >= limit * NEARLY_FULL_RATIO:
+        return f"{line} (nearly full)"
+    return line
+
+
 def _client_for_context(ctx: "CommandContext") -> Any:
     """The client execute() and resolve_options construct when the caller
     supplies none: in-process backend doors first, service-token HTTP
@@ -940,6 +962,33 @@ class CommandHttpClient:
             if e.response.status_code == 404:
                 return None
             raise
+
+    async def get_thread_notepad(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        return await self._get(f"/threads/{_path_param(thread_id)}/notepad", act_as=user_id)
+
+    async def write_thread_notepad(
+        self,
+        thread_id: str,
+        content: str,
+        *,
+        mode: str = "append",
+        user_id: Optional[str] = None,
+    ) -> str:
+        try:
+            data = await self._put(
+                f"/threads/{_path_param(thread_id)}/notepad",
+                json={"content": content, "mode": mode},
+                act_as=user_id,
+            )
+        except httpx.HTTPStatusError as e:
+            # The route answers a refused write (the cap) with 400 carrying
+            # write_notepad's own "[Error]: ..." string; hand that back as the
+            # in-process door does, so the handler relays one protocol.
+            detail = http_error_detail(e) if e.response.status_code == 400 else ""
+            if detail.startswith("[Error]"):
+                return detail
+            raise
+        return str((data or {}).get("message") or "")
 
     async def list_threads(self, user_id: Optional[str] = None) -> list[dict]:
         # owned_only mirrors CommandBackendClient.list_threads so the two
@@ -1571,6 +1620,36 @@ class CommandBackendClient:
         if tc:
             return _config_response(tc)
         return _default_thread_config_response(thread_id)
+
+    async def get_thread_notepad(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        """The GET /threads/{id}/notepad payload: content, ``char_count`` and
+        the ``char_limit`` writes enforce. Read-only door: never TOFU-claims.
+
+        The notepad is a local store keyed by thread id, so every command
+        that touches it goes through this door or ``write_thread_notepad``:
+        reaching ``thread_notes`` directly skips the ownership check (a
+        foreign ``thread_id`` over ``POST /commands/execute`` read, rewrote
+        and cleared another user's notepad that way)."""
+        self._require_thread_access(thread_id, claim=False)
+        from ..api.routers.thread_config import _notepad_response
+
+        return _notepad_response(thread_id)
+
+    async def write_thread_notepad(
+        self,
+        thread_id: str,
+        content: str,
+        *,
+        mode: str = "append",
+        user_id: Optional[str] = None,
+    ) -> str:
+        """Append to or replace the notepad (a blank replace clears it),
+        returning ``write_notepad``'s own ``[Saved]:`` / ``[Info]:`` /
+        ``[Error]:`` string. A write door: claims an ownerless thread."""
+        self._require_thread_access(thread_id)
+        from ..tools.thread_notes import write_notepad
+
+        return write_notepad(thread_id, content, mode=mode)
 
     async def list_threads(self, user_id: Optional[str] = None) -> list[dict]:
         # Mirrors GET /threads?owned_only=true: only threads recorded in
@@ -5873,12 +5952,13 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        settings, ctx, tools_data, todos, thread_cfg, code = await asyncio.gather(
+        settings, ctx, tools_data, todos, thread_cfg, notepad, code = await asyncio.gather(
             self.api.get_settings(),
             self.api.get_context_stats(self.thread_id),
             self.api.get_default_tools(self.user_id),
             self.api.list_todos(self.user_id),
             self.api.get_thread_config(self.thread_id),
+            self.api.get_thread_notepad(self.thread_id),
             # A stat walk of the package (a few ms): off the event loop.
             # `is False` like every admin gate here: an agent actor's None
             # passes, a known non-admin caller does not.
@@ -5952,6 +6032,7 @@ class _CommandExecutor(
             label, _sep, rest = model_lines[-1].partition(": ")
             model_lines[-1] = f"{label} (active): {rest}"
 
+        notepad_line = _notepad_status_line(_dict_result(notepad))
         lines = [
             "Nymeria Status",
             "",
@@ -5962,6 +6043,7 @@ class _CommandExecutor(
             f"  {fmt_tokens(total)} / {fmt_tokens(limit)} tokens ({pct}%)",
             f"  mode: {ctx_mode}"
             + (f" | {compactions} compaction{'s' if compactions != 1 else ''}" if compactions else ""),
+            *([f"  {notepad_line}"] if notepad_line else []),
             "",
             "Tools",
             f"  {default_count} core / {available_count} available",
@@ -7278,11 +7360,9 @@ class _CommandExecutor(
     async def _cmd_memory_limit(self, bound: BoundArgs) -> str | CommandOutput:
         from .memory_limits import (
             MAX_MEMORY_CHAR_LIMIT,
-            get_effective_thread_memory_char_limit,
             get_global_memory_char_limit,
             profile_memory_text_from_records,
         )
-        from ..tools.thread_notes import read_notepad
 
         def parse_limit(raw: str) -> int | None:
             try:
@@ -7318,22 +7398,20 @@ class _CommandExecutor(
                 f"  global: {len(profile_memory_text_from_records(memories))} / {global_limit} chars",
             ]
             if self.thread_id:
-                manager = getattr(agent, "thread_config_manager", None) if agent is not None else None
-                effective_limit = get_effective_thread_memory_char_limit(
-                    self.thread_id,
-                    settings=settings,
-                    thread_config_manager=manager,
-                )
+                # Both reads are access-checked doors: a thread the caller
+                # cannot reach drops the line instead of reporting its size.
                 try:
+                    notepad = await self.api.get_thread_notepad(self.thread_id)
                     thread_cfg = await self.api.get_thread_config(self.thread_id)
                 except Exception:  # noqa: BLE001
-                    thread_cfg = {}
-                override = (thread_cfg or {}).get("memory_char_limit")
-                source = f"override {override}" if override is not None else "inherits global"
-                notepad = read_notepad(self.thread_id) or ""
-                lines.append(
-                    f"  thread: {len(notepad)} / {effective_limit} chars ({source})"
-                )
+                    logger.debug("/memory limit: thread line unavailable", exc_info=True)
+                else:
+                    override = (thread_cfg or {}).get("memory_char_limit")
+                    source = f"override {override}" if override is not None else "inherits global"
+                    lines.append(
+                        f"  thread: {notepad.get('char_count', 0)} / "
+                        f"{notepad.get('char_limit', '?')} chars ({source})"
+                    )
             return "\n".join(lines)
 
         if scope == "global":
@@ -7779,11 +7857,16 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        from ..tools.thread_notes import read_notepad
-        content = read_notepad(self.thread_id)
+        # Through the access-checked door, never thread_notes directly: the
+        # thread id is caller-supplied (see get_thread_notepad).
+        from ..tools.thread_notes import notepad_occupancy
+
+        notepad = await self.api.get_thread_notepad(self.thread_id)
+        content = notepad.get("content") or ""
         if not content:
             return "Notepad is empty."
-        return f"Notepad ({len(content)} chars):\n\n{content}"
+        occupancy = notepad_occupancy(notepad.get("char_count", len(content)), notepad["char_limit"])
+        return f"Notepad ({occupancy}):\n\n{content}"
 
     async def _cmd_notepad_write(self, args: list[str], rest: str) -> str | CommandOutput:
         thread_error = self._require_thread()
@@ -7792,7 +7875,6 @@ class _CommandExecutor(
         raw = rest
         if not raw:
             return command_error("Usage: /notepad write <content>  (or: replace:<content>)")
-        from ..tools.thread_notes import write_notepad
         if raw.lower().startswith("replace:"):
             write_mode = "replace"
             content = raw[len("replace:"):].strip()
@@ -7804,7 +7886,7 @@ class _CommandExecutor(
         else:
             write_mode = "append"
             content = raw
-        result = write_notepad(self.thread_id, content, mode=write_mode)
+        result = await self.api.write_thread_notepad(self.thread_id, content, mode=write_mode)
         # This site PARSES the tool-channel sentinel protocol, which the #132
         # sweep leaves in place: write_notepad is a TOOL whose contract is its
         # prefixed string, so the relay maps that outcome onto a command level
@@ -7819,10 +7901,15 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        from ..tools.thread_notes import delete_notepad
-        if delete_notepad(self.thread_id):
-            return command_success("Notepad cleared.")
-        return "Notepad was already empty."
+        # Both access-checked doors (a blank replace is the clear). The
+        # pre-read costs a second door call but keeps this handler free of
+        # tool-channel parsing, which the #132 ratchet would otherwise have to
+        # allowlist for a second function.
+        notepad = await self.api.get_thread_notepad(self.thread_id)
+        if not notepad.get("content"):
+            return "Notepad was already empty."
+        await self.api.write_thread_notepad(self.thread_id, "", mode="replace")
+        return command_success("Notepad cleared.")
 
     # ── Thread lifecycle ──────────────────────────────────────────────────
 

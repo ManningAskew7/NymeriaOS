@@ -136,9 +136,11 @@ class ThreadConfigUpdateRequest(BaseModel):
 
 
 class NotepadUpdateRequest(BaseModel):
-    """Replace a thread's notepad content. Blank content clears the notepad."""
+    """Write a thread's notepad: replace it (the default; blank content clears
+    it) or append to it (the ``/notepad write`` default over HTTP)."""
 
     content: str = Field(default="", max_length=2_000_000)
+    mode: Literal["replace", "append"] = "replace"
 
 
 class ThreadTeamCreateRequest(BaseModel):

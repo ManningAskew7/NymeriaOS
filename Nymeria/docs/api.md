@@ -4082,6 +4082,29 @@ Resets thread config to defaults.
 
 ---
 
+### Thread Notepad
+
+```http
+GET /threads/{thread_id}/notepad
+PUT /threads/{thread_id}/notepad
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"content": "Deadline moved to Monday.", "mode": "append"}
+```
+
+The thread's persistent notepad (the agent's thread memory, re-read after
+every compaction). Both routes check thread ownership (a thread you do not
+own is 404). `GET` returns `content`, `char_count` and `char_limit`, the
+limit writes enforce (the thread's override, else `MEMORY_CHAR_LIMIT`). `PUT`
+takes `content` and `mode`: `replace` (the default; blank content clears
+the notepad) or `append`. A write whose result would exceed the limit is a
+400 whose `detail` is the refusal text (it names `/memory limit <chars>
+thread` as the way to raise it); a successful write returns the `GET`
+fields plus `message`.
+
+---
+
 ### Thread Config Sharing
 
 ```http

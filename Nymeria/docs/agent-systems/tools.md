@@ -759,7 +759,7 @@ Three unified primitives  -  `memory_add`, `memory_edit`, `memory_read`  -  cove
 
 `memory_add` is additive only: empty `content` is a no-op. All deletion and clearing lives in `memory_edit` - an empty `replace` whose result empties the entry deletes cleanly (profile rows are popped, notepad files are unlinked, team entries are removed), and an empty `find` operates on the whole target (rewrite or clear the notepad, or delete just the named global or team key). There is no separate `memory_forget` because edit-to-blank leaves no zombie entries. Global and team edits always require a `key`, so neither tool can wipe a whole store in one call; that stays the explicit `memory_clear_all` (which clears global memory only, never notepads or team memory).
 
-Global profile memories and per-thread notepads have an aggregate character budget. The global default is `MEMORY_CHAR_LIMIT=8000`; a thread can override the notepad limit from thread settings. Team memory rides the same global key-value caps (entry count, per-value chars, aggregate chars), applied per team. Writes that would grow past the effective budget fail with a memory-full error telling the agent to consolidate or remove older memories. Deletes and shrinking edits are still allowed when existing data is already over the limit.
+Global profile memories and per-thread notepads have an aggregate character budget. The global default is `MEMORY_CHAR_LIMIT=8000`; a thread can override the notepad limit from thread settings. Team memory rides the same global key-value caps (entry count, per-value chars, aggregate chars), applied per team. Writes that would grow past the effective budget fail with a memory-full error telling the agent to consolidate or remove older memories; the thread notepad's error also names raising that thread's limit, `/memory limit <chars> thread`. Every successful notepad write reports `N / L chars` and, from 80%, says the notepad is nearly full (a dream shadow, which writes its parent's notepad but cannot raise the parent's limit, is told to consolidate only). `/status` shows the same `notepad: N / L chars` line. Deletes and shrinking edits are still allowed when existing data is already over the limit.
 
 > **Implementation note:** `memory_add`, `memory_edit`, `memory_read`, `personality_set`, and `rag_search` accept an `Annotated[RunnableConfig, InjectedToolArg]` parameter that LangGraph injects automatically. The LLM never passes it.
 
@@ -786,7 +786,7 @@ memory_add(scope="thread", content="Update: deadline moved to Monday.")   # appe
 
 **Behavior:**
 - `scope="global"` upserts a single key into `UserProfile.memories` (the value is always supplied) and re-indexes in the RAG store if RAG is enabled.
-- `scope="thread"` appends to the notepad (a blank line separates notes). It never overwrites; use `memory_edit` to revise or clear.
+- `scope="thread"` appends to the notepad (a blank line separates notes) and reports the notepad's size against its limit (`N / L chars`). It never overwrites; use `memory_edit` to revise or clear.
 - Empty `content` is a no-op in both scopes (returns an `[Info]` pointing at `memory_edit`); nothing is deleted.
 - Memory max size: `MEMORY_CHAR_LIMIT` characters by default, with optional per-thread notepad overrides. Profile max entries: 100. Profile values are truncated to 1000 chars.
 - Prompt injection guard: profile values are rendered as data, not Markdown instructions; embedded commands, role changes, and tool requests must not be followed by the model.

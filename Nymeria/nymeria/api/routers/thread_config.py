@@ -96,6 +96,23 @@ def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
     return response
 
 
+def _notepad_response(thread_id: str) -> dict[str, Any]:
+    """A thread notepad's content with its size and the limit its writes
+    enforce. Shared by the REST routes and the command layer's in-process
+    door (``CommandBackendClient.get_thread_notepad``), so every surface
+    reports the one limit ``write_notepad`` resolves, never a re-derivation."""
+    from ...core.memory_limits import get_effective_thread_memory_char_limit
+    from ...tools import thread_notes
+
+    content = thread_notes.read_notepad(thread_id) or ""
+    return {
+        "thread_id": thread_id,
+        "content": content,
+        "char_count": len(content),
+        "char_limit": get_effective_thread_memory_char_limit(thread_id),
+    }
+
+
 def _serialize_thread_teams(agent: Any, user_id: str) -> dict[str, Any]:
     """Team list via the shared serializer (core/team_manager.py).
 
@@ -489,16 +506,7 @@ def create_thread_config_router(
         /notepad slash command; here it is exposed for direct editing in the UI.
         """
         require_thread_access_fn(user, thread_id, claim=False)
-        from ...core.memory_limits import get_effective_thread_memory_char_limit
-        from ...tools import thread_notes
-
-        content = thread_notes.read_notepad(thread_id) or ""
-        return {
-            "thread_id": thread_id,
-            "content": content,
-            "char_count": len(content),
-            "char_limit": get_effective_thread_memory_char_limit(thread_id),
-        }
+        return _notepad_response(thread_id)
 
     @router.put("/threads/{thread_id}/notepad")
     async def update_thread_notepad(
@@ -506,27 +514,19 @@ def create_thread_config_router(
         request: NotepadUpdateRequest,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Replace a thread's notepad content (blank clears it).
+        """Replace (default) or append to a thread's notepad; a blank replace
+        clears it.
 
         Enforces the per-thread/global memory char limit via write_notepad; a
         limit violation surfaces as HTTP 400.
         """
         require_thread_access_fn(user, thread_id)
-        from ...core.memory_limits import get_effective_thread_memory_char_limit
         from ...tools import thread_notes
 
-        result = thread_notes.write_notepad(thread_id, request.content, mode="replace")
+        result = thread_notes.write_notepad(thread_id, request.content, mode=request.mode)
         if result.startswith("[Error]"):
             raise HTTPException(status_code=400, detail=result)
-
-        content = thread_notes.read_notepad(thread_id) or ""
-        return {
-            "thread_id": thread_id,
-            "content": content,
-            "char_count": len(content),
-            "char_limit": get_effective_thread_memory_char_limit(thread_id),
-            "message": result,
-        }
+        return {**_notepad_response(thread_id), "message": result}
 
     @router.get("/thread-teams")
     async def list_thread_teams(user_id: str = Depends(authed_user_id)):

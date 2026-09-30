@@ -48,7 +48,7 @@ from ..core.memory_limits import (
     validate_team_memory_write,
 )
 from . import thread_notes
-from .utils import current_agent, get_effective_thread_id, get_user_id
+from .utils import current_agent, get_effective_thread_id, get_thread_id, get_user_id
 
 # The RAG-search subsystem (semantic search + rerank diagnostics) lives in
 # rag_search_tool.py; it is a different mental model from profile/notepad memory
@@ -258,6 +258,15 @@ def rag_remove_team_memories(user_id: str, team_id: str) -> None:
         logger.warning(f"Failed to clear team memory from RAG index: {e}")
 
 
+def _can_raise_notepad_limit(config: RunnableConfig, notepad_thread_id: str) -> bool:
+    """Whether the writer can take the ``/memory limit`` remedy itself.
+
+    A dream shadow writes its PARENT's notepad (``get_effective_thread_id``)
+    but binds no ``slash_command``, and one would act on the shadow, not the
+    parent, so its write results name consolidation only."""
+    return notepad_thread_id == get_thread_id(config)
+
+
 def _resolve_team_scope(config: RunnableConfig) -> Tuple[Any, str, Optional[str]]:
     """(agent, team_id, error) for a team-scoped memory call.
 
@@ -303,6 +312,15 @@ def memory_add(
     scope="thread": append to the per-thread notepad (markdown that survives
         compaction). No `key` — there is one notepad per thread. Does NOT
         overwrite existing notes; use memory_edit to revise or clear them.
+        The notepad has a character cap: the deployment's memory limit
+        (8000 unless configured), which a thread can override. Each write
+        reports "N / L chars"; from 80% it says the notepad is nearly full.
+        A write whose result would pass the cap fails and nothing is saved:
+        consolidate with memory_edit, or, when the notes are worth keeping,
+        raise this thread's cap with `/memory limit <chars> thread`
+        (slash_command, or ask the user). Raise it modestly: the whole
+        notepad is reloaded after every compaction, so a bigger cap is a
+        standing context cost.
         Example:
           memory_add(scope="thread", content="Working on auth refactor; deadline Friday.")
 
@@ -325,7 +343,7 @@ def memory_add(
 
     Returns:
         Global: "[Saved]: I'll remember '<key>'...". Thread: "[Saved]: Notepad
-        updated (N chars)...". Team: "[Saved]: Team memory '<key>'...". Empty
+        updated (N / L chars)...". Team: "[Saved]: Team memory '<key>'...". Empty
         content: "[Info]: ..." pointing at memory_edit. Errors: "[Error]:
         <reason>".
     """
@@ -433,7 +451,9 @@ def memory_add(
             "[Info]: No content to add; the notepad is unchanged. To revise or "
             "clear it, use memory_edit(scope='thread', ...)."
         )
-    return thread_notes.write_notepad(thread_id, content, mode="append")
+    return thread_notes.write_notepad(
+        thread_id, content, mode="append", offer_raise=_can_raise_notepad_limit(config, thread_id)
+    )
 
 
 @tool
@@ -461,7 +481,9 @@ def memory_edit(
         `key`. Empty `find` operates on the whole notepad: a non-empty `replace`
         rewrites it end-to-end, an empty `replace` clears it. Empty `replace`
         with a non-empty `find` deletes just the matched text; if the notepad
-        becomes empty, the file is deleted.
+        becomes empty, the file is deleted. Same character cap as
+        memory_add(scope="thread"): an edit may shrink an over-cap notepad but
+        never grow one past the cap; `/memory limit <chars> thread` raises it.
         Examples:
           memory_edit(scope="thread", find="deadline Friday", replace="deadline Monday")
           memory_edit(scope="thread", find="", replace="<consolidated notepad>")  # full rewrite
@@ -481,8 +503,9 @@ def memory_edit(
 
     Returns:
         Global/team: "[Saved]: Updated ... '<key>'" or "[Deleted]: Removed ...
-        '<key>'". Thread: "[Saved]: Text replaced...", "[Saved]: Notepad
-        rewritten (N chars).", or "[Saved]: Notepad cleared...". Errors:
+        '<key>'". Thread: "[Saved]: Text replaced... Notepad is now N / L
+        chars.", "[Saved]: Notepad rewritten (N / L chars).", or "[Saved]:
+        Notepad cleared...". Errors:
         "[Error]: <reason>" (key not found, substring not matched).
     """
     err = _validate_scope(scope)
@@ -598,7 +621,9 @@ def memory_edit(
 
     # scope == "thread"
     thread_id = get_effective_thread_id(config)
-    return thread_notes.edit_notepad(thread_id, find, replace)
+    return thread_notes.edit_notepad(
+        thread_id, find, replace, offer_raise=_can_raise_notepad_limit(config, thread_id)
+    )
 
 
 @tool

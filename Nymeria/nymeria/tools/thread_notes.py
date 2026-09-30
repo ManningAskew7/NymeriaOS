@@ -1,11 +1,17 @@
 """Per-thread notepad helpers used by the unified memory tools.
 
-Storage layer for the thread notepad — a per-thread markdown file that survives
+Storage layer for the thread notepad: a per-thread markdown file that survives
 context compaction and is re-injected after compaction so critical thread
 context is never lost. The agent-facing surface (``memory_add``, ``memory_edit``,
 ``memory_read``) lives in ``nymeria/tools/memory.py`` and calls the helpers here
-when ``scope="thread"``. User-facing bot slash commands (``/notepad_read`` in
-Discord/Telegram, slash dispatcher) also import these helpers directly.
+when ``scope="thread"`` (the agent's own thread, or a dream's parent).
+
+These helpers do NO ownership check. A surface keyed by a caller-supplied
+thread id must go through an access-checked door instead: the REST routes
+``GET``/``PUT /threads/{id}/notepad``, or the command layer's
+``get_thread_notepad`` / ``write_thread_notepad`` client methods (``/notepad``
+imported these helpers directly until 2026-09-30 and so read, rewrote and
+cleared other users' notepads).
 
 Storage: data/thread_notes/{thread_id}.md
 """
@@ -25,6 +31,43 @@ logger = logging.getLogger(__name__)
 # Legacy compatibility constant. Current writes use MEMORY_CHAR_LIMIT plus any
 # per-thread override, both measured in characters.
 MAX_NOTEPAD_SIZE = 50 * 1024
+
+# From this share of the cap a successful write says the notepad is nearly full
+# and names both ways forward, so the cap is plannable instead of discovered by
+# a failed write mid-task (backlog #101 entry 24).
+NEARLY_FULL_RATIO = 0.8
+RAISE_THREAD_LIMIT = "`/memory limit <chars> thread`"
+
+
+def notepad_occupancy(size: int, limit: int, *, offer_raise: bool = True) -> str:
+    """``N / L chars``, plus the ways forward once the notepad is nearly full
+    (or already past a cap that was lowered under it). ``offer_raise=False``
+    names consolidation only, for a writer that cannot raise the limit."""
+    text = f"{size} / {limit} chars"
+    if size < limit * NEARLY_FULL_RATIO:
+        return text
+    # Past the cap only a shrinking write is accepted (validate_text_memory_write).
+    state = "over the cap, so only edits that shrink it succeed" if size > limit else "nearly full"
+    text += f"; {state}: consolidate older notes"
+    if offer_raise:
+        text += f", or raise this thread's limit with {RAISE_THREAD_LIMIT}"
+    return text
+
+
+def _thread_full_error(limit_error: str, *, offer_raise: bool = True) -> str:
+    """The shared memory-full error plus the remedy only a thread has: its own
+    limit (the notes may be worth keeping; shrinking is not the only move).
+
+    Surface-neutral on purpose: the same string reaches the agent, a human's
+    ``/notepad write`` and the desktop Memory tab, so it names the command
+    and not who runs it (the tool description tells the agent how)."""
+    if not offer_raise:
+        return limit_error
+    return (
+        f"{limit_error} If these notes are worth keeping, raise this thread's "
+        f"limit instead: {RAISE_THREAD_LIMIT}."
+    )
+
 
 # Per-thread locks so the read-modify-write in write_notepad/edit_notepad can't
 # lose data when two writers hit the same notepad at once. This is reachable now
@@ -82,6 +125,7 @@ def write_notepad(
     mode: str = "append",
     *,
     char_limit: int | None = None,
+    offer_raise: bool = True,
 ) -> str:
     """Write to a thread's notepad.
 
@@ -89,6 +133,8 @@ def write_notepad(
         thread_id: Thread to write to.
         content: New text.
         mode: "append" adds to existing notes, "replace" overwrites entirely.
+        offer_raise: name ``/memory limit`` as a remedy (False for a writer
+            that cannot raise this notepad's limit, e.g. a dream shadow).
 
     Returns:
         Status string (mirrors the agent-facing tool result format).
@@ -124,14 +170,17 @@ def write_notepad(
             limit=limit,
         )
         if limit_error:
-            return limit_error
+            return _thread_full_error(limit_error, offer_raise=offer_raise)
 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new_content, encoding="utf-8")
 
         size = len(new_content)
         logger.info(f"Notepad written for thread {thread_id}: {size} chars ({mode})")
-        return f"[Saved]: Notepad updated ({size} chars). This content will persist through compaction."
+        return (
+            f"[Saved]: Notepad updated ({notepad_occupancy(size, limit, offer_raise=offer_raise)}). "
+            "This content will persist through compaction."
+        )
 
 
 def edit_notepad(
@@ -140,6 +189,7 @@ def edit_notepad(
     new_text: str = "",
     *,
     char_limit: int | None = None,
+    offer_raise: bool = True,
 ) -> str:
     """Find/replace within a thread's notepad. Empty new_text deletes the matched text.
 
@@ -177,12 +227,12 @@ def edit_notepad(
                 limit=limit,
             )
             if limit_error:
-                return limit_error
+                return _thread_full_error(limit_error, offer_raise=offer_raise)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(new_body, encoding="utf-8")
             size = len(new_body)
             logger.info(f"Notepad rewritten via memory_edit for thread {thread_id}: {size} chars")
-            return f"[Saved]: Notepad rewritten ({size} chars)."
+            return f"[Saved]: Notepad rewritten ({notepad_occupancy(size, limit, offer_raise=offer_raise)})."
 
         if not path.exists():
             return "[Error]: Notepad is empty; nothing to edit."
@@ -214,7 +264,7 @@ def edit_notepad(
             limit=limit,
         )
         if limit_error:
-            return limit_error
+            return _thread_full_error(limit_error, offer_raise=offer_raise)
 
         path.write_text(updated, encoding="utf-8")
         size = len(updated)
@@ -222,4 +272,4 @@ def edit_notepad(
         action = "replaced" if new_text else "removed"
         extra = f" ({count} occurrences found, first one {action})" if count > 1 else ""
         logger.info(f"Notepad edited for thread {thread_id}: {action} text, {size} chars")
-        return f"[Saved]: Text {action}{extra}. Notepad is now {size} chars."
+        return f"[Saved]: Text {action}{extra}. Notepad is now {notepad_occupancy(size, limit, offer_raise=offer_raise)}."

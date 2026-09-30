@@ -88,6 +88,11 @@ class FakeCommandApi:
         # What a `/settings reload` reports as moved; settable so a test can
         # model a reload that touched a #157-sensitive key.
         self.reload_changed: list[str] = ["llm_model"]
+        # The notepad doors: a store keyed by thread id, and the limit the
+        # server resolves (settable, so a test can tell the door's limit from
+        # any re-derivation off settings or the thread config).
+        self.notepads: dict[str, str] = {}
+        self.notepad_char_limit = 8000
 
     async def close(self) -> None:
         self.closed = True
@@ -226,6 +231,29 @@ class FakeCommandApi:
     ) -> dict[str, Any]:
         self.calls.append(("get_thread_config", (thread_id,), {"user_id": user_id}))
         return dict(self.thread_config)
+
+    async def get_thread_notepad(self, thread_id: str, user_id: str | None = None) -> dict[str, Any]:
+        self.calls.append(("get_thread_notepad", (thread_id,), {}))
+        content = self.notepads.get(thread_id, "")
+        return {
+            "thread_id": thread_id,
+            "content": content,
+            "char_count": len(content),
+            "char_limit": self.notepad_char_limit,
+        }
+
+    async def write_thread_notepad(
+        self, thread_id: str, content: str, *, mode: str = "append", user_id: str | None = None
+    ) -> str:
+        self.calls.append(("write_thread_notepad", (thread_id, content), {"mode": mode}))
+        existing = self.notepads.get(thread_id, "")
+        new = f"{existing}\n\n{content}" if mode == "append" and existing else content
+        if not new.strip():
+            if self.notepads.pop(thread_id, None) is None:
+                return "[Info]: Notepad was already empty."
+            return "[Saved]: Notepad is empty."
+        self.notepads[thread_id] = new
+        return f"[Saved]: Notepad updated ({len(new)} / {self.notepad_char_limit} chars)."
 
     async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
         self.calls.append(("get_settings", (), {"user_id": user_id}))
@@ -730,6 +758,47 @@ def test_status_degrades_when_parallel_fetch_returns_base_exception() -> None:
     assert result.success is True
     assert "### Nymeria Status" in result.markdown
     assert "1 pending / 1 in progress" in result.markdown
+
+
+@pytest.mark.parametrize(
+    "limit, size, expected",
+    [
+        (8000, 1200, "notepad: 1200 / 8000 chars"),
+        # The limit is the one the door reports (the one writes enforce),
+        # never re-derived: settings and the thread config here say 8000 and
+        # no override. The state rides as a compact suffix.
+        (20000, 17000, "notepad: 17000 / 20000 chars (nearly full)"),
+        (100, 101, "notepad: 101 / 100 chars (over the cap)"),
+    ],
+)
+def test_status_shows_how_full_the_notepad_is(limit, size, expected) -> None:
+    """#101 entry 24: the user sees the notepad approach its cap too."""
+    api = FakeCommandApi()
+    api.notepad_char_limit = limit
+    api.notepads = {"thread-1": "x" * size, "alice": "y" * 5}  # keyed by THREAD id
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+
+    context = result.markdown.split("Context", 1)[1].split("Tools", 1)[0]
+    assert f"  {expected}\n" in context
+
+
+@pytest.mark.parametrize("status_code", [404, 500])
+def test_status_drops_the_notepad_line_when_the_door_refuses_or_fails(status_code) -> None:
+    """A refused door (a thread the caller cannot reach) or a failed one drops
+    the line and nothing else: /status never reports a size it was not
+    allowed to read, and never guesses a limit."""
+
+    class _Refusing(FakeCommandApi):
+        async def get_thread_notepad(self, thread_id, user_id=None):
+            request = httpx.Request("GET", "nymeria://threads")
+            response = httpx.Response(status_code, json={"detail": "Not found"}, request=request)
+            raise httpx.HTTPStatusError("refused", request=request, response=response)
+
+    api = _Refusing()
+    api.notepads = {"thread-1": "x" * 1200}
+    result = run(CommandService().execute(_status_ctx(), "/status", api=api))
+    assert result.success is True
+    assert "notepad:" not in result.markdown and "Tasks" in result.markdown
 
 
 def _code_record(**overrides: Any):
@@ -7246,45 +7315,21 @@ def test_root_usage_errors_render_from_registry() -> None:
     assert "See `/help mcp`." in result.markdown
 
 
-def test_notepad_write_append_prefix_is_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
-    saved: dict[str, str] = {}
-
-    def fake_write(thread_id: str, content: str, mode: str = "append") -> str:
-        saved["content"] = content
-        saved["mode"] = mode
-        return "[Saved]: ok"
-
-    import nymeria.tools.thread_notes as thread_notes
-
-    monkeypatch.setattr(thread_notes, "write_notepad", fake_write)
-    result = run(
-        CommandService().execute(_ctx(), "/notepad write append: milk", api=FakeCommandApi())
-    )
+def test_notepad_write_append_prefix_is_stripped() -> None:
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/notepad write append: milk", api=api))
     assert result.success is True
-    assert saved["mode"] == "append"
-    assert saved["content"] == "milk"
+    assert ("write_thread_notepad", ("thread-1", "milk"), {"mode": "append"}) in api.calls
 
 
-def test_rest_extraction_survives_newlines(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rest_extraction_survives_newlines() -> None:
     # Chat clients send Shift+Enter newlines; the rest extractor must treat
     # any whitespace as a token boundary or the word glued to the newline is
     # silently dropped.
-    saved: dict[str, str] = {}
-
-    def fake_write(thread_id: str, content: str, mode: str = "append") -> str:
-        saved["content"] = content
-        return "[Saved]: ok"
-
-    import nymeria.tools.thread_notes as thread_notes
-
-    monkeypatch.setattr(thread_notes, "write_notepad", fake_write)
-    result = run(
-        CommandService().execute(
-            _ctx(), "/notepad write\nmilk and bread", api=FakeCommandApi()
-        )
-    )
+    api = FakeCommandApi()
+    result = run(CommandService().execute(_ctx(), "/notepad write\nmilk and bread", api=api))
     assert result.success is True
-    assert saved["content"] == "milk and bread"
+    assert api.notepads["thread-1"] == "milk and bread"
 
 
 # ── #129 wave 2a: memory and notepad declared params ─────────────────────────
@@ -7420,21 +7465,14 @@ def test_memory_limit_inherit_clears_the_thread_override_at_either_spelling() ->
     assert api.thread_config["memory_char_limit"] == 6000
 
 
-def test_notepad_read_rejects_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    reads: list[str] = []
-
-    def fake_read(thread_id: str) -> str:
-        reads.append(thread_id)
-        return "notes"
-
-    import nymeria.tools.thread_notes as thread_notes
-
-    monkeypatch.setattr(thread_notes, "read_notepad", fake_read)
-    result = run(CommandService().execute(_ctx(), "/notepad read all", api=FakeCommandApi()))
+def test_notepad_read_rejects_arguments() -> None:
+    api = FakeCommandApi()
+    api.notepads = {"thread-1": "notes"}
+    result = run(CommandService().execute(_ctx(), "/notepad read all", api=api))
 
     assert result.success is False
     assert "Unexpected argument `all`" in result.markdown
-    assert reads == []
+    assert not [call for call in api.calls if call[0] == "get_thread_notepad"]
 
 
 # ── #129 wave 2b: settings, tools, tier, todo, and status declared params ────
