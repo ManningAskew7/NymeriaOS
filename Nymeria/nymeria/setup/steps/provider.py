@@ -268,7 +268,9 @@ class ConnectionStep(WizardStep):
         # base URL that key is the vendor's own and would become the
         # gateway's bearer (#431). Refuse here, while the answer is cheap to
         # change, rather than at finalize after the whole walkthrough.
-        from ..tool_keys import vendor_key_would_feed_gateway
+        # The mirror image (#433): the OLD gateway's key would go to the
+        # vendor, or to a different gateway, instead.
+        from ..tool_keys import gateway_key_would_go_elsewhere, vendor_key_would_feed_gateway
 
         spec = get_llm_provider_spec(self.state.provider)
         slot = spec.api_key_env_vars[0] if spec and spec.api_key_env_vars else None
@@ -277,6 +279,13 @@ class ConnectionStep(WizardStep):
                 f"{slot} holds your {spec.label} key, which this base URL "
                 "would receive. Go back (esc) and enter the gateway's own key, "
                 "or clear the base URL."
+            )
+            return False
+        if spec is not None and gateway_key_would_go_elsewhere(self.state, slot):
+            self.show_error(
+                f"{slot} holds the old gateway's key, which only works there. "
+                "Go back (esc) and enter the key for this route, or keep the "
+                "old base URL."
             )
             return False
         return True

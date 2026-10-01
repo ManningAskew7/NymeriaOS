@@ -654,3 +654,25 @@ def test_a_google_gateway_route_never_keeps_the_vendor_key_as_its_own(
     assert "GEMINI_API_KEY holds your" in out
     assert REAL_KEY not in out
     assert config.read_text(encoding="utf-8") == before
+
+
+def test_leaving_a_google_gateway_route_retires_its_key(monkeypatch, tmp_path, capsys):
+    """#433 twin: a gateway's key in GEMINI_API_KEY beside a Claude route
+    would be the Gemini media tools' key, sent to Google."""
+    root = tmp_path / "init"
+    _stub_llm(monkeypatch)
+    assert setup_main(
+        ["--provider", "google", "--model", "gemini-x", "--api-key", "gw-gemini-key",
+         "--base-url", "http://my-gemini-gateway:4000/v1", "--hosting", "local",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    capsys.readouterr()
+    assert setup_main(
+        ["--auth-method", "api_key", "--provider", "anthropic", "--model", "claude-direct",
+         "--api-key", "sk-ant-direct", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert "GEMINI_API_KEY" not in after
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Removed the old gateway route's key from GEMINI_API_KEY" in out

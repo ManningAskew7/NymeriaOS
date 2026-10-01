@@ -512,20 +512,14 @@ def prepare_headless_cliproxy(
             "--cliproxy-management-url is required with "
             "--non-interactive --auth-method cliproxy_oauth"
         )
-    from .finalize import cliproxy_key_env_override
+    from .finalize import cliproxy_key_env_override, gatekeeper_on_disk
 
     key_env = cliproxy_key_env_override(state)
-    # A key on disk is the gatekeeper unless it is the vendor's own key (a
-    # real OpenAI key in OPENAI_API_KEY before a switch to codex, #431):
-    # that one is no proxy bearer, so a gatekeeper is minted instead.
-    gatekeeper_on_disk = bool(
-        key_env
-        and key_env in state.present_env_keys
-        and key_env not in state.vendor_env_keys
-    )
-    gatekeeper_available = bool(
-        state.cliproxy_gatekeeper_key.strip() or gatekeeper_on_disk
-    )
+    # A key on disk is the gatekeeper unless it is the vendor's own key (#431)
+    # or another gateway's (#433): neither is a proxy bearer, so a gatekeeper
+    # is read or minted instead.
+    key_on_disk = gatekeeper_on_disk(state, key_env)
+    gatekeeper_available = bool(state.cliproxy_gatekeeper_key.strip() or key_on_disk)
     client = make_management_client(state)
     if client is None and (login or auth_file):
         raise SystemExit(
@@ -574,7 +568,7 @@ def prepare_headless_cliproxy(
         if (
             client is not None
             and not state.cliproxy_gatekeeper_key.strip()
-            and not gatekeeper_on_disk
+            and not key_on_disk
         ):
             try:
                 await ensure_gatekeeper_key(state, client)

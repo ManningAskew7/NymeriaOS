@@ -781,6 +781,26 @@ def run_init(args: argparse.Namespace) -> int:
                 state.base_url = ""
                 state.api_mode = ""
                 leaving_cliproxy = True
+        disk_provider = str(state.extras.get("llm_provider_on_disk") or "")
+        if (
+            reconfigure
+            and not state.auth_method_is_cliproxy()
+            and not leaving_cliproxy
+            and not (getattr(args, "base_url", None) or "").strip()
+            and state.provider
+            and disk_provider
+        ):
+            from ..config.llm_providers import normalize_llm_provider
+
+            if normalize_llm_provider(state.provider) != normalize_llm_provider(
+                disk_provider
+            ):
+                # The headless twin of the provider step's switch rule: the
+                # hydrated base URL and API mode belong to the PREVIOUS
+                # provider. Kept, a switch from openai via LiteLLM to
+                # anthropic sent the Anthropic key to LiteLLM (#433).
+                state.base_url = ""
+                state.api_mode = ""
         if state.auth_method_is_cliproxy():
             # Explicit intent means the user is setting up or changing the
             # subscription route this run. A branch merely inferred from disk
@@ -822,10 +842,16 @@ def run_init(args: argparse.Namespace) -> int:
             # (finalize's keep-existing-key path preserves the line). Mirrors
             # finalize's own key_present check. Not honored when leaving the
             # CLIProxy branch: the present key is the proxy gatekeeper.
+            # Nor for an old gateway route's key anywhere but that gateway
+            # (openai via LiteLLM, then openai direct or another base URL):
+            # LiteLLM's key is no OpenAI key (#433).
+            from .tool_keys import gateway_key_would_go_elsewhere
+
+            slot = spec.api_key_env_vars[0] if spec and spec.api_key_env_vars else ""
             key_present = not leaving_cliproxy and bool(
-                spec is not None
-                and spec.api_key_env_vars
-                and spec.api_key_env_vars[0] in state.present_env_keys
+                slot
+                and slot in state.present_env_keys
+                and not gateway_key_would_go_elsewhere(state, slot)
             )
             if (
                 spec is not None

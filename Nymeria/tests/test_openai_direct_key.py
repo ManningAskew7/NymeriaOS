@@ -795,3 +795,300 @@ def test_a_skipped_cliproxy_login_over_a_vendor_key_names_the_login(
     assert "No CLIProxy gatekeeper key is available" in text
     assert "Finish the CLIProxy login" in text
     assert "gateway's own key" not in text
+
+
+# --- #433: leaving a gateway route retires the gateway's key -----------------
+
+
+def _litellm_install(monkeypatch, root) -> None:
+    _stub_llm(monkeypatch)
+    assert setup_main(
+        ["--provider", "openai", "--model", "gpt-x", "--api-key", "sk-litellm",
+         "--base-url", "http://litellm:4000/v1", "--hosting", "local",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+
+
+def _to_claude(root, *extra: str) -> int:
+    return setup_main(
+        ["--auth-method", "api_key", "--provider", "anthropic", "--model", "claude-direct",
+         "--api-key", "sk-ant-direct", "--root", str(root),
+         "--non-interactive", "--skip-llm-test", *extra]
+    )
+
+
+def test_leaving_a_gateway_route_retires_its_key_from_the_shared_slot(
+    monkeypatch, tmp_path, capsys
+):
+    """LiteLLM's key left in OPENAI_API_KEY beside a Claude route would be
+    OpenAI image generation's key, sent to api.openai.com."""
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    capsys.readouterr()
+    assert _to_claude(root) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_PROVIDER") == "anthropic"
+    assert "OPENAI_API_KEY" not in after
+    assert "LLM_BASE_URL" not in after
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Removed the old gateway route's key from OPENAI_API_KEY" in out
+    assert "sk-litellm" not in out
+    assert "-- Image generation (" in out
+
+
+def test_a_real_key_given_on_the_way_out_replaces_the_gateway_key(
+    monkeypatch, tmp_path, capsys
+):
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    capsys.readouterr()
+    assert _to_claude(root, "--openai-api-key", REAL_KEY) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "OPENAI_API_KEY") == REAL_KEY
+    out = capsys.readouterr().out
+    assert "Removed the old gateway route's key" not in out
+
+
+def test_a_blank_key_on_the_way_to_openai_direct_does_not_keep_the_gateway_key(
+    monkeypatch, tmp_path, capsys
+):
+    """openai via LiteLLM, then openai direct with the key field left blank:
+    "keep the existing key" would make LiteLLM's key the OpenAI key."""
+    from nymeria.setup import finalize as finalize_mod
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from rich.console import Console
+
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    config = root / "config.env"
+    # Headless: the flag check stops before anything is written.
+    before = config.read_text(encoding="utf-8")
+    with pytest.raises(SystemExit, match="--api-key is required"):
+        setup_main(
+            ["--auth-method", "api_key", "--provider", "openai", "--model", "gpt-x",
+             "--base-url", "https://api.openai.com/v1", "--root", str(root),
+             "--non-interactive", "--skip-llm-test"]
+        )
+    assert config.read_text(encoding="utf-8") == before
+    # The finalize backstop (the connection step refuses first, below): the
+    # run stops naming the slot rather than handing LiteLLM's key to OpenAI.
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    state.base_url = ""
+    state.api_key = ""
+    state.skip_llm_test = True
+    console = Console(record=True, width=200)
+    assert finalize_mod.finalize(state, console=console, non_interactive=True, merge=True) == 2
+    text = " ".join(console.export_text().split())
+    assert "OPENAI_API_KEY holds the old gateway route's key" in text
+    assert "sk-litellm" not in text
+    assert config.read_text(encoding="utf-8") == before
+
+
+def test_a_new_openai_key_on_the_way_to_openai_direct_is_written(monkeypatch, tmp_path):
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    assert setup_main(
+        ["--auth-method", "api_key", "--provider", "openai", "--model", "gpt-x",
+         "--api-key", REAL_KEY, "--base-url", "https://api.openai.com/v1",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "OPENAI_API_KEY") == REAL_KEY
+    assert _env_line(after, "LLM_BASE_URL") == "https://api.openai.com/v1"
+
+
+def test_an_untouched_gateway_route_keeps_its_key(monkeypatch, tmp_path):
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    assert setup_main(["--root", str(root), "--non-interactive", "--skip-llm-test"]) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "OPENAI_API_KEY") == "sk-litellm"
+    assert _env_line(after, "LLM_BASE_URL") == "http://litellm:4000/v1"
+
+
+def test_a_real_media_key_beside_claude_survives_a_plain_reconfigure(monkeypatch, tmp_path):
+    root = tmp_path / "init"
+    _plain_install(monkeypatch, root, "--openai-api-key", REAL_KEY)
+    assert setup_main(["--root", str(root), "--non-interactive", "--skip-llm-test"]) == 0
+    assert _env_line((root / "config.env").read_text(encoding="utf-8"), "OPENAI_API_KEY") == REAL_KEY
+
+
+def test_leaving_a_proxy_route_retires_a_hand_set_non_cpx_proxy_key(monkeypatch, tmp_path):
+    """A CLIProxy route whose api-key is not cpx- shaped (set by hand in the
+    proxy config) is still that proxy's key."""
+    root = tmp_path / "init"
+    assert _codex_install(monkeypatch, root) == 0
+    config = root / "config.env"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            f"OPENAI_API_KEY={GATEKEEPER}", "OPENAI_API_KEY=sk-my-proxy-key"
+        ),
+        encoding="utf-8",
+    )
+    assert _to_claude(root) == 0
+    assert "OPENAI_API_KEY" not in config.read_text(encoding="utf-8")
+
+
+def test_the_keys_step_asks_again_after_leaving_the_gateway_route():
+    state = _media_state(provider="anthropic", api_key="sk-ant-x")
+    state.present_env_keys.add("OPENAI_API_KEY")
+    state.gateway_env_keys.add("OPENAI_API_KEY")
+    assert [spec.env_var for spec in required_backend_credentials(state)] == [
+        "OPENAI_API_KEY"
+    ]
+    # On a route that still feeds the slot to a gateway, the question is the
+    # direct slot's, as before.
+    state = _media_state(provider="openai", base_url="http://litellm:4000/v1", api_key="")
+    state.present_env_keys.add("OPENAI_API_KEY")
+    state.gateway_env_keys.add("OPENAI_API_KEY")
+    assert [spec.env_var for spec in required_backend_credentials(state)] == [
+        "OPENAI_DIRECT_API_KEY"
+    ]
+
+
+def test_hydrate_records_a_gateway_key_apart_from_a_vendor_key(monkeypatch, tmp_path):
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert "OPENAI_API_KEY" in state.gateway_env_keys
+    assert "OPENAI_API_KEY" not in state.vendor_env_keys
+    assert "OPENAI_API_KEY" not in state.gatekeeper_env_keys
+
+
+def test_a_same_provider_headless_edit_keeps_the_gateway_base_url(monkeypatch, tmp_path):
+    """Only a provider SWITCH drops the hydrated base URL; a new key or
+    model for the same openai route through LiteLLM keeps pointing there."""
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    assert setup_main(
+        ["--provider", "openai", "--model", "gpt-y", "--api-key", "sk-litellm-2",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_BASE_URL") == "http://litellm:4000/v1"
+    assert _env_line(after, "OPENAI_API_KEY") == "sk-litellm-2"
+
+
+def test_a_hand_kept_non_vendor_key_beside_claude_is_not_retired(monkeypatch, tmp_path):
+    """Only a key the ON-DISK route fed to a gateway retires. A non-sk value
+    beside a Claude route (a per-thread proxy route's key, say) is the
+    operator's, and a plain reconfigure leaves it alone."""
+    root = tmp_path / "init"
+    _plain_install(monkeypatch, root)
+    config = root / "config.env"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "OPENAI_API_KEY=my-proxy-key\n",
+        encoding="utf-8",
+    )
+    assert setup_main(["--root", str(root), "--non-interactive", "--skip-llm-test"]) == 0
+    assert _env_line(config.read_text(encoding="utf-8"), "OPENAI_API_KEY") == "my-proxy-key"
+
+
+
+def test_a_gateway_key_is_not_carried_to_a_different_gateway(monkeypatch, tmp_path):
+    """Same provider, new base URL, blank key: LiteLLM's key is not the new
+    gateway's (#433 review). A key given for the new gateway is written."""
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    config = root / "config.env"
+    before = config.read_text(encoding="utf-8")
+    with pytest.raises(SystemExit, match="--api-key is required"):
+        setup_main(
+            ["--provider", "openai", "--model", "gpt-x",
+             "--base-url", "https://openrouter.example/api/v1",
+             "--root", str(root), "--non-interactive", "--skip-llm-test"]
+        )
+    assert config.read_text(encoding="utf-8") == before
+    assert setup_main(
+        ["--provider", "openai", "--model", "gpt-x", "--api-key", "sk-other-gw",
+         "--base-url", "https://openrouter.example/api/v1",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    assert _env_line(config.read_text(encoding="utf-8"), "OPENAI_API_KEY") == "sk-other-gw"
+
+
+def test_headless_codex_does_not_adopt_a_litellm_key_as_its_gatekeeper(monkeypatch, tmp_path):
+    """LiteLLM's key on disk is no CLIProxy bearer: the headless branch reads
+    or mints the proxy's own key (#433 review)."""
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    _fake_cliproxy_client(
+        monkeypatch, auth_files=[_active_auth("codex")], knobs={"api-keys": ["cpx-from-proxy"]}
+    )
+    assert setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "codex",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "OPENAI_API_KEY") == "cpx-from-proxy"
+    assert "sk-litellm" not in after
+
+
+def test_a_hand_set_proxy_key_still_serves_its_own_cliproxy_route(monkeypatch, tmp_path):
+    """A non-cpx api-key set by hand on the proxy, beside a route that was
+    already that CLIProxy route, is the gatekeeper: nothing is minted."""
+    root = tmp_path / "init"
+    assert _codex_install(monkeypatch, root) == 0
+    config = root / "config.env"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            f"OPENAI_API_KEY={GATEKEEPER}", "OPENAI_API_KEY=sk-my-proxy-key"
+        ),
+        encoding="utf-8",
+    )
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("codex")], knobs={})
+    assert setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "codex",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+    assert _env_line(config.read_text(encoding="utf-8"), "OPENAI_API_KEY") == "sk-my-proxy-key"
+
+
+def _connection_step_collect_gateway(base_url: str) -> tuple[bool, str]:
+    import asyncio
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.steps.provider import make_connection_step
+    from textual.widgets import Input, Static
+
+    state = WizardState(provider="openai", api_key="")
+    state.present_env_keys.add("OPENAI_API_KEY")
+    state.gateway_env_keys.add("OPENAI_API_KEY")
+    state.extras["llm_base_url_on_disk"] = "http://litellm:4000/v1"
+
+    async def drive():
+        app = SetupWizardApp(state, steps=[make_connection_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one("#base-url", Input).value = base_url
+            ok = screen.collect()
+            await pilot.pause()
+            return ok, str(screen.query_one("#wizard-error", Static).render())
+
+    return asyncio.run(drive())
+
+
+def test_the_connection_step_refuses_to_carry_a_gateway_key_elsewhere():
+    ok, error = _connection_step_collect_gateway("")
+    assert ok is False
+    assert "OPENAI_API_KEY holds the old gateway's key" in error
+    ok, _ = _connection_step_collect_gateway("http://litellm:4000/v1/")
+    assert ok is True
+
+
+def test_the_keys_step_counts_a_new_route_key_typed_this_run():
+    """Leaving LiteLLM for openai direct WITH a new key: that key serves
+    image generation, so the keys step does not ask for it again."""
+    state = _media_state(provider="openai", api_key=REAL_KEY)
+    state.present_env_keys.add("OPENAI_API_KEY")
+    state.gateway_env_keys.add("OPENAI_API_KEY")
+    assert required_backend_credentials(state) == []

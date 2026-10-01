@@ -176,6 +176,11 @@ class WizardState:
     # Such a value is no CLIProxy gatekeeper and must not become a gateway
     # route's bearer; finalize moves it to the direct slot instead (#431).
     vendor_env_keys: set[str] = field(default_factory=set)
+    # The subset of present_env_keys holding a GATEWAY's non-cpx key in a
+    # shared slot: the on-disk route feeds that slot to a gateway (LiteLLM, a
+    # local server; tool_keys.slot_holds_gateway_key; a shape bit). Not a key
+    # to keep once the slot is the vendor's again, and retired then (#433).
+    gateway_env_keys: set[str] = field(default_factory=set)
     # Tools in the bootstrap profile's default set that are neither the core seed
     # nor a known init family member (user-added). Carried through a reconfigure so
     # the profile-pick update never silently drops them.

@@ -113,6 +113,13 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
             if state.api_port is None:
                 state.api_port = disk_port
 
+    if _get(values, "LLM_PROVIDER"):
+        # Stashed so a headless run that switches provider can tell the
+        # hydrated base URL belongs to the OLD provider (runner.run_init).
+        state.extras.setdefault("llm_provider_on_disk", _get(values, "LLM_PROVIDER"))
+    if _get(values, "LLM_BASE_URL"):
+        # With it, a gateway's key is only ever kept for that same gateway.
+        state.extras.setdefault("llm_base_url_on_disk", _get(values, "LLM_BASE_URL"))
     if state.provider is None and _get(values, "LLM_PROVIDER"):
         state.provider = _get(values, "LLM_PROVIDER")
     if not state.model and _get(values, "LLM_MODEL"):
@@ -399,7 +406,7 @@ def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
         secret_vars.update(spec.api_key_env_vars)
     from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
 
-    from .tool_keys import slot_holds_vendor_key
+    from .tool_keys import slot_holds_gateway_key, slot_holds_vendor_key
 
     route_provider = values.get("LLM_PROVIDER") or ""
     route_base_url = values.get("LLM_BASE_URL") or ""
@@ -413,6 +420,10 @@ def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
                 var, value, provider=route_provider, base_url=route_base_url
             ):
                 state.vendor_env_keys.add(var)
+            elif slot_holds_gateway_key(
+                var, value, provider=route_provider, base_url=route_base_url
+            ):
+                state.gateway_env_keys.add(var)
 
 
 def is_cliproxy_route(base_url: str, management_url: str = "") -> bool:

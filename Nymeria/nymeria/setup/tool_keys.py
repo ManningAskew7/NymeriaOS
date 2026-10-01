@@ -343,6 +343,63 @@ def slot_holds_vendor_key(slot: str, value: str, *, provider: str, base_url: str
     return not route_feeds_gateway(provider, base_url, vendor=direct.vendor)
 
 
+def slot_holds_gateway_key(slot: str, value: str, *, provider: str, base_url: str) -> bool:
+    """True when ``value`` in the shared ``slot`` is a GATEWAY's key.
+
+    The complement of ``slot_holds_vendor_key`` for a set slot: the route
+    configured beside it (``provider``, ``base_url``) feeds the slot to a
+    gateway (LiteLLM, a local server, a proxy), so the value only works
+    there. ``cpx-`` gatekeepers are tracked apart (``gatekeeper_env_keys``,
+    retired by ``finalize.retired_gatekeeper_slots``). Such a value must not
+    outlive its route: once the slot is the vendor's again the media tools
+    would send it to the vendor (#433). Only slots with a direct twin qualify.
+    """
+    direct = _DIRECT_MEDIA_SLOTS.get(slot)
+    value = (value or "").strip()
+    if direct is None or not value:
+        return False
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_gatekeeper_key
+
+    if looks_like_cliproxy_gatekeeper_key(value):
+        return False
+    return route_feeds_gateway(provider, base_url, vendor=direct.vendor)
+
+
+def retired_gateway_slots(state: "WizardState") -> tuple[str, ...]:
+    """Shared slots holding the old route's gateway key that this run's route
+    no longer feeds to a gateway: the key only worked there (#433)."""
+    return tuple(
+        sorted(
+            slot for slot in state.gateway_env_keys if gateway_direct_slot(state, slot) is None
+        )
+    )
+
+
+def _same_url(a: str, b: str) -> bool:
+    return (a or "").strip().rstrip("/").lower() == (b or "").strip().rstrip("/").lower()
+
+
+def gateway_key_would_go_elsewhere(state: "WizardState", slot: str | None) -> bool:
+    """True when a blank key field would hand the OLD gateway's key to a new
+    destination: the vendor (this route no longer feeds the slot to a
+    gateway) or a different gateway (another base URL). A gateway's key is
+    only ever kept for that same gateway (#433). Off the CLIProxy branch: on
+    it, whether the slot holds the proxy's key is the gatekeeper question
+    (``finalize.gatekeeper_on_disk``).
+    """
+    if (
+        not slot
+        or state.api_key.strip()
+        or slot not in state.gateway_env_keys
+        or state.auth_method_is_cliproxy()
+    ):
+        return False
+    if gateway_direct_slot(state, slot) is None:
+        return True
+    disk_url = str(state.extras.get("llm_base_url_on_disk") or "")
+    return bool(disk_url) and not _same_url(disk_url, state.base_url)
+
+
 def vendor_key_would_feed_gateway(state: "WizardState", slot: str | None) -> bool:
     """True when a blank key field would hand the vendor's own key to a gateway.
 
@@ -381,22 +438,30 @@ def already_provided_env(state: "WizardState") -> set[str]:
     var (so an OpenAI primary provider satisfies ``image_gen_openai``).
     """
     provided = {env for env, value in state.optional_env.items() if value}
-    spec = state.provider_spec()
-    if spec is not None and spec.api_key_env_vars and state.api_key.strip():
-        provided.add(spec.api_key_env_vars[0])
     # Reconfigure: credentials already present on disk (recorded by hydration)
     # are satisfied, so a fully-keyed existing install shows no backend-keys step.
-    provided |= set(getattr(state, "present_env_keys", set()) or set())
-    # ...except a shared slot holding a proxy gatekeeper (a switch off a
-    # CLIProxy route leaves one there until finalize retires it): it cannot
-    # serve the media tools, so ask (#152 Gemini, #428 OpenAI).
+    on_disk = set(getattr(state, "present_env_keys", set()) or set())
     for slot, direct in _DIRECT_MEDIA_SLOTS.items():
-        if slot in state.gatekeeper_env_keys and not state.optional_env.get(slot):
-            provided.discard(slot)
+        # ...except a shared slot holding a proxy gatekeeper (a switch off a
+        # CLIProxy route leaves one there until finalize retires it): it
+        # cannot serve the media tools, so ask (#152 Gemini, #428 OpenAI).
+        if slot in state.gatekeeper_env_keys:
+            on_disk.discard(slot)
+        # ...or the old route's gateway key in a slot the vendor gets back:
+        # finalize retires it (#433), so it answers no media question.
+        if slot in state.gateway_env_keys and not direct.gateway_owned(state):
+            on_disk.discard(slot)
         # The vendor's own key on disk in a slot a gateway now takes: finalize
         # moves it to the direct slot (#431), so do not ask for it again.
         if slot in state.vendor_env_keys and direct.gateway_owned(state):
             provided.add(direct.env_var)
+    provided |= on_disk
+    # The primary provider's key typed this run satisfies its own slot, after
+    # the on-disk discards (a new OpenAI key for an openai route does serve
+    # image generation even where the old gateway key did not).
+    spec = state.provider_spec()
+    if spec is not None and spec.api_key_env_vars and state.api_key.strip():
+        provided.add(spec.api_key_env_vars[0])
     return provided
 
 
@@ -455,7 +520,10 @@ __all__ = [
     "gateway_direct_slot",
     "gemini_slot_holds_gateway_key",
     "openai_slot_holds_gateway_key",
+    "retired_gateway_slots",
     "route_feeds_gateway",
+    "slot_holds_gateway_key",
     "slot_holds_vendor_key",
+    "gateway_key_would_go_elsewhere",
     "vendor_key_would_feed_gateway",
 ]

@@ -442,8 +442,7 @@ def finalize(
         and state.cliproxy_provider
         and state.cliproxy_logged_in
         and not api_key
-        and cliproxy_key_env_override(state)
-        not in state.present_env_keys - state.vendor_env_keys
+        and not gatekeeper_on_disk(state, cliproxy_key_env_override(state))
     ):
         # A completed subscription login with no usable gatekeeper must not
         # silently downgrade to a no-provider config; the operator would only
@@ -463,17 +462,31 @@ def finalize(
     )
     # Off the subscription branch a gatekeeper in the slot is not a key to keep
     # (finalize retires it below); on the branch it is exactly the key (#152).
+    # On the branch the gatekeeper question decides (a vendor or another
+    # gateway's key is no proxy bearer, #431/#433).
     key_present = bool(
         provider_key_env
         and provider_key_env in state.present_env_keys
-        and (key_env_override or provider_key_env not in state.gatekeeper_env_keys)
+        and (
+            gatekeeper_on_disk(state, provider_key_env)
+            if key_env_override
+            else provider_key_env not in state.gatekeeper_env_keys
+        )
     )
     # ...but the vendor's own key is never "kept" for a route that feeds the
     # slot to a gateway: it would become that gateway's bearer (#431). The
     # route needs its own key; the vendor key then moves to the direct slot.
     # The interactive connection step refuses the same case earlier.
-    from .tool_keys import vendor_key_would_feed_gateway
+    from .tool_keys import gateway_key_would_go_elsewhere, vendor_key_would_feed_gateway
 
+    if spec is not None and gateway_key_would_go_elsewhere(state, provider_key_env):
+        # A gateway's key is only kept for that same gateway (#433).
+        console.print(
+            f"[red]{provider_key_env} holds the old gateway route's key, which "
+            f"only works there, not with {base_url or spec.label}. Enter the "
+            "key for this route (the provider step, or --api-key).[/red]"
+        )
+        return 2
     if spec is not None and vendor_key_would_feed_gateway(state, provider_key_env):
         if key_env_override:
             console.print(
@@ -741,6 +754,20 @@ def finalize(
             f"[yellow]Removed the old CLIProxy route's local key from "
             f"{', '.join(removed_gatekeepers)}: it only works through that proxy.[/yellow]"
         )
+    # The old manual gateway route's key (LiteLLM's, say) in a slot the
+    # vendor gets back: the media tools would send it to the vendor (#433).
+    from .tool_keys import retired_gateway_slots
+
+    retired_gateway_keys = retired_gateway_slots(state) if merge else ()
+    removed_gateway_keys = [s for s in retired_gateway_keys if s not in produced_slots]
+    if removed_gateway_keys:
+        console.print(
+            f"[yellow]Removed the old gateway route's key from "
+            f"{', '.join(removed_gateway_keys)}: it only works through that "
+            "gateway, and the media tools would send it to the vendor. If it "
+            "was your own vendor key (a pass-through gateway), enter it again "
+            "as the media key.[/yellow]"
+        )
     displaced = (
         displaced_vendor_keys(config_path, state, slot=provider_key_env, new_key=api_key)
         if merge and spec is not None
@@ -772,7 +799,7 @@ def finalize(
         provider_key_env=key_env_override,
         image_version=_PACKAGE_VERSION if clone_free_docker else None,
         drop_cliproxy_management=not state.auth_method_is_cliproxy(),
-        drop_stale_gatekeepers=retired_gatekeepers,
+        drop_stale_gatekeepers=retired_gatekeepers + retired_gateway_keys,
         drop_public_url=should_drop_public_url(state),
         drop_stale_voice=voice_drop_env(state),
         drop_stale_server_browser=drop_stale_server_browser,
@@ -1622,6 +1649,28 @@ def cliproxy_key_env_override(state: WizardState) -> str | None:
 
     cspec = get_cliproxy_provider(state.cliproxy_provider)
     return cspec.key_env_var if cspec else None
+
+
+def gatekeeper_on_disk(state: WizardState, slot: str | None) -> bool:
+    """True when the key on disk in ``slot`` can serve as the CLIProxy
+    gatekeeper for this run's subscription route.
+
+    Presence alone is not enough: the vendor's own key (a real OpenAI key in
+    OPENAI_API_KEY, #431) and another gateway's key (LiteLLM's, #433) are no
+    proxy bearer, so the headless branch mints one and finalize never keeps
+    them. A non-``cpx-`` key beside a route that was ALREADY a CLIProxy route
+    is that proxy's own (a hand-set api-key), and still counts.
+    """
+    if not slot or slot not in state.present_env_keys or slot in state.vendor_env_keys:
+        return False
+    if slot in state.gateway_env_keys:
+        from .hydrate import is_cliproxy_route
+
+        return is_cliproxy_route(
+            str(state.extras.get("llm_base_url_on_disk") or ""),
+            state.cliproxy_management_url,
+        )
+    return True
 
 
 def _resolve_extra_env(state: WizardState) -> dict[str, str]:
