@@ -46,7 +46,7 @@ Nothing here reads config today, on purpose.
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Optional, cast
+from typing import Any, Awaitable, Callable, Literal, NamedTuple, Optional, cast
 
 from langchain_core.messages import ToolMessage
 
@@ -166,55 +166,112 @@ def tool_allowlist(agent: Any, user_id: str, thread_id: str) -> Optional[frozens
     return None
 
 
-def by_name_gate_reason(
+ByNameRefusalKind = Literal["excluded", "protected", "role", "disabled", "allowlist"]
+
+
+class ByNameRefusal(NamedTuple):
+    """One reason the by-name gate refuses a name.
+
+    ``kind`` is for a caller that must branch on WHY (see
+    :func:`by_name_gate_refusals`); ``reason`` is the model-facing copy, the
+    exact string :func:`by_name_gate_reason` returns for it.
+    """
+
+    kind: ByNameRefusalKind
+    reason: str
+
+
+def by_name_gate_refusals(
     agent: Any, name: str, user_id: str, thread_id: str, role: str
-) -> Optional[str]:
-    """Why this caller may not dispatch ``name`` by name, or None to allow.
+) -> list[ByNameRefusal]:
+    """EVERY reason this caller may not dispatch ``name`` by name, in gate order.
 
-    The single admissibility gate for every by-name spelling: the deferred
-    exclusion set, the protected-management denylist, the admin/developer role
-    gates, the thread's authoritative ``disabled_tools``, and the allowlist arm.
-    Credentials still resolve as the calling user at invoke time; this decides
-    only whether the call is admissible.
+    The gate itself: the deferred exclusion set, the protected-management
+    denylist, the admin/developer role gates, the thread's authoritative
+    ``disabled_tools``, and the allowlist arm. An empty list allows the call.
+    :func:`by_name_gate_reason` is the first entry's ``reason``, so the two
+    cannot drift.
 
-    Order is chosen for the copy the model sees: the most specific and most
-    actionable reason wins, so "this tool cannot be deferred at all" beats "you
-    are not an admin", which beats "it is disabled on this thread".
+    The full list exists for a caller that has to know WHY, not just whether:
+    the deferred kit listing (``skills/meta_tool.py``, backlog #417) tells a
+    protected tool (it runs once bound, so steer to the kit bind) apart from a
+    role-blocked or thread-disabled one (a bind cannot lift the role gate, and
+    would silently reverse the user's disable), and it must see a role or
+    disabled refusal even behind a protected one, which a first-reason answer
+    hides.
     """
     from ..tools.tool_search import PROTECTED_MANAGEMENT_TOOL_NAMES
 
+    refusals: list[ByNameRefusal] = []
     excluded = BY_NAME_EXCLUDED_REASONS.get(name)
     if excluded is not None:
-        return f"{name!r} cannot be dispatched by name. {excluded}"
+        refusals.append(
+            ByNameRefusal("excluded", f"{name!r} cannot be dispatched by name. {excluded}")
+        )
 
     if name in PROTECTED_MANAGEMENT_TOOL_NAMES:
-        return (
-            f"tool {name!r} is a protected management tool and cannot be "
-            "dispatched by name"
+        refusals.append(
+            ByNameRefusal(
+                "protected",
+                f"tool {name!r} is a protected management tool and cannot be "
+                "dispatched by name",
+            )
         )
 
     from ..tools import filter_admin_only_tools, filter_developer_only_tools
 
     _, blocked = filter_admin_only_tools({name}, role)
     if blocked:
-        return f"tool {name!r} is admin-only and the caller is not an admin"
+        refusals.append(
+            ByNameRefusal(
+                "role", f"tool {name!r} is admin-only and the caller is not an admin"
+            )
+        )
     _, blocked = filter_developer_only_tools({name}, role)
     if blocked:
-        return f"tool {name!r} is developer-only and the caller is not an admin"
+        refusals.append(
+            ByNameRefusal(
+                "role", f"tool {name!r} is developer-only and the caller is not an admin"
+            )
+        )
 
     if name in thread_disabled_tools(agent, thread_id):
-        return (
-            f"{name!r} is disabled on this thread (disabled_tools is "
-            "authoritative). Ask the user to re-enable it, or use a different tool."
+        refusals.append(
+            ByNameRefusal(
+                "disabled",
+                f"{name!r} is disabled on this thread (disabled_tools is "
+                "authoritative). Ask the user to re-enable it, or use a different tool.",
+            )
         )
 
     allowed = tool_allowlist(agent, user_id, thread_id)
     if allowed is not None and name not in allowed:
-        return (
-            f"{name!r} is not in this thread's allowed tool set. "
-            "Ask the user to permit it."
+        refusals.append(
+            ByNameRefusal(
+                "allowlist",
+                f"{name!r} is not in this thread's allowed tool set. "
+                "Ask the user to permit it.",
+            )
         )
-    return None
+    return refusals
+
+
+def by_name_gate_reason(
+    agent: Any, name: str, user_id: str, thread_id: str, role: str
+) -> Optional[str]:
+    """Why this caller may not dispatch ``name`` by name, or None to allow.
+
+    The single admissibility gate for every by-name spelling (the checks are
+    :func:`by_name_gate_refusals`; this is its first entry). Credentials still
+    resolve as the calling user at invoke time; this decides only whether the
+    call is admissible.
+
+    Order is chosen for the copy the model sees: the most specific and most
+    actionable reason wins, so "this tool cannot be deferred at all" beats "you
+    are not an admin", which beats "it is disabled on this thread".
+    """
+    refusals = by_name_gate_refusals(agent, name, user_id, thread_id, role)
+    return refusals[0].reason if refusals else None
 
 
 def resolve_by_name(agent: Any, user_id: str, thread_id: str, name: str) -> Optional[Any]:

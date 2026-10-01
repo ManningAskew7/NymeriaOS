@@ -334,11 +334,34 @@ reads as its tool grammar while a deferred one is prose in history, so binding
 calls more reliably. `ttl` is still required by the schema under
 `defer=true` and is ignored (the result says so).
 
-One exception to "binds nothing" (backlog #170): when the thread cannot call
-`tool_invoke` itself, the activation binds just `tool_invoke` on a
-self-cleaning 7-day TTL and announces it in the result, so defer never points
-the model at an executor it lacks. A thread that explicitly disabled
-`tool_invoke` is never silently un-disabled: the result says so and steers to
+A deferred load only offers what the agent can actually run (backlog #417).
+Each kit tool is judged by the same by-name gate a `tool_invoke` call hits
+(`core/tool_execution.by_name_gate_refusals`) plus the thread's bind state,
+and listed as one of:
+
+- runnable: unbound and the gate allows it. Only these get an argument
+  schema and the run-by-name recipe.
+- already bound: on the thread already (a seed tool such as `spawn_thread`,
+  or a protected tool a live kit TTL bound), so it is called directly.
+- bind-only: a protected management tool (`tool_search`, `tool_manage`,
+  `hook_config`, ...) or another name the gate never dispatches by name. It
+  runs only once bound, so the line points at `Skill(name=..., ttl=...)`.
+- unavailable: blocked for the caller's role or by the thread's
+  `disabled_tools`, listed with the gate's reason and no bind steer (a kit
+  bind cannot lift a role gate, and would un-disable the tool).
+
+When none of a kit's tools is runnable or bound and it declares no thread
+templates or nested skills (today `tool-management`, `skill-management` and
+`mcp-management` on a fresh thread), defer is refused up front: the result
+lists each tool's reason and points at `Skill(name=..., ttl=...)`, and
+carries no kit body (the bind returns it).
+
+One exception to "binds nothing" (backlog #170): when a runnable tool or a
+thread template needs `tool_invoke` and the thread cannot call it, the
+activation binds just `tool_invoke` on a self-cleaning 7-day TTL and
+announces it in the result, so defer never points the model at an executor
+it lacks. A kit whose tools are all bound or bind-only binds nothing. A
+thread that explicitly disabled `tool_invoke` is never silently un-disabled: the result says so and steers to
 `ttl` binding instead. On threads running permissive dynamic binding
 (`allow_unbound_tool_calls` together with `dynamic_tool_binding`), the
 deferred result instead instructs calling the tools directly by name and

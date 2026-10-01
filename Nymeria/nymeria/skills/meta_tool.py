@@ -14,7 +14,7 @@ lives in a ToolMessage (conversation history).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated, List, NamedTuple, Optional, Union
+from typing import TYPE_CHECKING, Annotated, List, Literal, NamedTuple, Optional, Union
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool as tool_decorator
@@ -428,19 +428,167 @@ def _unbound_direct_calls_active() -> bool:
     return unbound_direct_calls_active(getattr(agent, "settings", None))
 
 
+DeferredToolState = Literal["runnable", "bound", "bind_only", "unavailable"]
+
+
+class _DeferredKitTool(NamedTuple):
+    """One kit tool as a deferred activation will present it (backlog #417).
+
+    ``reason`` is the by-name gate's own copy for ``bind_only`` and
+    ``unavailable`` entries, empty otherwise.
+    """
+
+    name: str
+    state: DeferredToolState
+    reason: str = ""
+
+
+def _classify_deferred_kit_tools(
+    tool_names: List[str], config: RunnableConfig
+) -> List[_DeferredKitTool]:
+    """Sort a deferred kit's tools by what THIS caller can do with each.
+
+    Defer used to tell the model to run every ``required_tools`` entry by
+    name, and the by-name gate refuses every protected management tool, so a
+    deferred ``tool-management`` load handed over five recipes that all fail
+    (#417). Each tool is now judged by the SAME gate the call would hit
+    (``core/tool_execution.by_name_gate_refusals``: exclusion set, protected
+    denylist, role gates, the thread's ``disabled_tools``, the allowlist arm),
+    plus the thread's bind state (``tool_search.thread_tool_reachability``):
+
+    - ``unavailable``: refused for role or ``disabled_tools`` (or the
+      allowlist, when unbound). Listed with the gate's reason, never a recipe
+      and never a bind steer: a kit bind cannot lift a role gate, and would
+      silently un-disable a thread-disabled tool (``bind_tools_for_thread``).
+    - ``bound``: already reachable on the thread (a protected tool bound by a
+      live kit TTL, a seed tool such as ``spawn_thread``): call it directly.
+      A bound call never runs the by-name gate, and ``tool_invoke``'s own
+      description forbids routing a bound tool through it.
+    - ``bind_only``: refused as protected or excluded, and unbound. It runs
+      only once bound, so the steer is the kit bind, ``Skill(name, ttl=...)``.
+    - ``runnable``: the gate allows it and it is unbound: schema and recipe.
+
+    A gate that raises fails CLOSED on the static protected and excluded sets
+    (never a recipe for those) and open to ``runnable`` for the rest, as
+    ``react.reaction_guidance_block`` does: the call is gated again when it
+    runs, so an over-offer costs a refused call, never a bypass.
+    """
+    from ..core.agent import get_current_agent
+    from ..core.tool_execution import BY_NAME_EXCLUDED_TOOL_NAMES, by_name_gate_refusals
+    from ..tools.tool_search import (
+        PROTECTED_MANAGEMENT_TOOL_NAMES,
+        thread_tool_reachability,
+    )
+    from ..tools.utils import caller_role, get_thread_id, get_user_id
+
+    agent = get_current_agent()
+    thread_id = get_thread_id(config)
+    user_id = get_user_id(config)
+    role = caller_role(user_id, agent=agent)
+
+    classified: List[_DeferredKitTool] = []
+    for name in tool_names:
+        bound = thread_tool_reachability(name, thread_id, user_id) == "bound"
+        try:
+            refusals = by_name_gate_refusals(agent, name, user_id, thread_id, role)
+        except Exception:  # noqa: BLE001 - classification is copy, the call re-gates
+            logger.warning(
+                "deferred kit tool classification: gate failed for %s", name,
+                exc_info=True,
+            )
+            if bound:
+                classified.append(_DeferredKitTool(name, "bound"))
+            elif name in PROTECTED_MANAGEMENT_TOOL_NAMES:
+                classified.append(
+                    _DeferredKitTool(name, "bind_only", "protected management tool")
+                )
+            elif name in BY_NAME_EXCLUDED_TOOL_NAMES:
+                classified.append(
+                    _DeferredKitTool(name, "bind_only", "cannot be dispatched by name")
+                )
+            else:
+                classified.append(_DeferredKitTool(name, "runnable"))
+            continue
+
+        blocking = next(
+            (r for r in refusals if r.kind in ("role", "disabled")), None
+        )
+        bind_only = next(
+            (r for r in refusals if r.kind in ("excluded", "protected")), None
+        )
+        if blocking is not None:
+            classified.append(_DeferredKitTool(name, "unavailable", blocking.reason))
+        elif bound:
+            classified.append(_DeferredKitTool(name, "bound"))
+        elif bind_only is not None:
+            classified.append(_DeferredKitTool(name, "bind_only", bind_only.reason))
+        elif refusals:
+            classified.append(
+                _DeferredKitTool(name, "unavailable", refusals[0].reason)
+            )
+        else:
+            classified.append(_DeferredKitTool(name, "runnable"))
+    return classified
+
+
+def _defer_refusal(
+    skill: Skill, tool_states: List[_DeferredKitTool]
+) -> Optional[str]:
+    """Refuse a deferred load up front when nothing in it can run (#417).
+
+    Returns the refusal text when the kit has tools, none is runnable or
+    already bound, and it declares no thread templates and no nested skills
+    (each of those still gives the deferred load something to act on);
+    None otherwise. Today that is
+    ``tool-management``, ``skill-management`` and ``mcp-management`` on a
+    fresh thread. The refusal carries no kit body: the agent's next move is
+    the bind, which returns the body anyway, so loading it here would only
+    pay for it twice. Nothing is loaded or bound, and no ``tool_invoke``
+    executor is auto-bound for tools that could never use it. The bind steer
+    appears only when some tool is bind-only: for role-blocked or disabled
+    tools a bind is no remedy.
+    """
+    if not tool_states or skill.thread_templates or skill.required_skills:
+        return None
+    if any(t.state in ("runnable", "bound") for t in tool_states):
+        return None
+    lines = [
+        f"[Skill Kit defer not possible: {skill.name}] None of this kit's "
+        "tools can run on this thread without binding the kit, so the "
+        "deferred load was refused and nothing was loaded or bound:",
+    ]
+    lines.extend(f"  - {t.name}: {t.reason}" for t in tool_states)
+    if any(t.state == "bind_only" for t in tool_states):
+        lines.append(
+            "These run only when bound: activate the kit with "
+            f'Skill(name="{skill.name}", ttl=...) instead, which binds its '
+            "tools and returns its instructions, choosing the ttl for how "
+            'long you expect to need them (Nm/Nh/Nd/Nw or "permanent").'
+        )
+    else:
+        lines.append(
+            "Binding the kit would not make them runnable here; tell the "
+            "user what blocks them (each reason above)."
+        )
+    return "\n".join(lines)
+
+
 def _ensure_deferred_executor(
-    skill: Skill, config: RunnableConfig, use_direct: bool
+    skill: Skill, config: RunnableConfig, use_direct: bool, needs_executor: bool
 ) -> tuple[str, bool, bool]:
     """Guarantee the executor a deferred activation tells the model to use.
 
-    A deferred kit's tool schemas and thread templates are run via
+    A deferred kit's runnable tools and thread templates are run via
     ``tool_invoke``, which the thread may not actually have (#164: seeding is
     first-time-only, so an account whose ``default_thread_tools`` predates the
     tool silently lacks it). Defer promising an unreachable executor reads to
     the model as its own failure. Resolution, in order:
 
-    - Direct-call mode, or nothing in this activation points at
-      ``tool_invoke``: nothing to ensure.
+    - Direct-call mode, or nothing in this activation will run through
+      ``tool_invoke`` (``needs_executor`` False: no runnable kit tool and no
+      thread templates; a kit whose tools are all bound or bind-only must not
+      pay a 7-day tools-prefix change for an executor nothing uses, #417):
+      nothing to ensure.
     - Reachable (``thread_tool_reachability``, which resolves from thread
       config, never the built tool list): nothing to ensure.
     - Disabled on the thread: honest note, NO un-disable. Calling the bind
@@ -458,7 +606,7 @@ def _ensure_deferred_executor(
     persisted, so the deferred blocks can drop their cache-safe framing (the
     tools prefix DID change in that case).
     """
-    if use_direct or not (skill.required_tools or skill.thread_templates):
+    if use_direct or not needs_executor:
         return "", False, False
 
     from ..tools.tool_search import bind_tools_for_thread, thread_tool_reachability
@@ -540,18 +688,25 @@ def _ensure_deferred_executor(
 
 
 def _defer_kit_tools_block(
-    skill: Skill, use_direct: bool, executor_bound: bool = False
+    skill: Skill,
+    tool_states: List[_DeferredKitTool],
+    use_direct: bool,
+    executor_bound: bool = False,
 ) -> str:
     """Body block for a deferred Skill Kit activation (binds no kit tools).
 
-    Loads each required tool's compact argument schema so the model can call
-    it by name (via ``tool_invoke``, or directly in permissive dynamic mode)
-    without the kit mutating the thread's tool list. Skills that bind no
-    tools get a short no-op note instead. The repeat-use steer is the
-    kit-level one, a second ``Skill()`` call with a ``ttl``, never a
-    ``tool_manage`` detour (backlog #170). When ``executor_bound`` (the
-    activation auto-bound ``tool_invoke``), the cache-safe framing is dropped:
-    the tools prefix DID change, and the auto-bound note explains why.
+    Renders the per-tool partition from ``_classify_deferred_kit_tools``
+    (#417): only RUNNABLE tools get a compact argument schema and the recipe
+    (via ``tool_invoke``, or directly in permissive dynamic mode); bound
+    tools are named as callable directly (their schema is already in the
+    tool list); bind-only and unavailable tools get one line with the gate's
+    reason and no recipe, so the model is never told to run a name the
+    by-name gate refuses. Skills that bind no tools get a short no-op note
+    instead. The repeat-use steer is the kit-level one, a second ``Skill()``
+    call with a ``ttl``, never a ``tool_manage`` detour (backlog #170). When
+    ``executor_bound`` (the activation auto-bound ``tool_invoke``), the
+    cache-safe framing is dropped: the tools prefix DID change, and the
+    auto-bound note explains why.
     """
     if not skill.required_tools:
         return (
@@ -564,38 +719,62 @@ def _defer_kit_tools_block(
     from ..tools.schema_render import render_tool_args_schema
     from ..tools.tool_search import _resolve_tool_object
 
-    agent = get_current_agent()
-    if use_direct:
-        instruction = (
-            "Call these tools DIRECTLY by name (this thread allows direct "
-            "unbound calls, gated the same as any other tool call)."
-        )
-    elif executor_bound:
-        instruction = "Run these tools by name with tool_invoke(name, arguments)."
-    else:
-        instruction = (
-            "Run these tools by name with tool_invoke(name, arguments) "
-            "(cache-safe)."
-        )
+    bind_call = f'Skill(name="{skill.name}", ttl=...)'
     lines = [
         "\n\n---\n"
-        "[Skill Kit deferred] None of this kit's tools were bound to this "
-        f"thread. {instruction} "
-        "If this becomes a multi-step task or you will use the kit again "
-        'later, activate it again with Skill(name="' + skill.name + '", '
-        "ttl=...) to bind its tools first-class instead, choosing the ttl "
-        'for how long you expect to need them (Nm/Nh/Nd/Nw or "permanent").',
+        "[Skill Kit deferred] None of this kit's tools were bound by this "
+        "activation. If this becomes a multi-step task or you will use the "
+        f"kit again later, activate it again with {bind_call} to bind its "
+        "tools first-class instead, choosing the ttl for how long you expect "
+        'to need them (Nm/Nh/Nd/Nw or "permanent").',
     ]
-    for name in skill.required_tools:
-        tool_obj = _resolve_tool_object(name, agent)
-        if tool_obj is None:
-            lines.append(
-                f"  - {name}: schema unavailable (its backing source may be "
-                "installed but disabled)"
+
+    runnable = [t for t in tool_states if t.state == "runnable"]
+    if runnable:
+        if use_direct:
+            instruction = (
+                "Call these tools DIRECTLY by name (this thread allows direct "
+                "unbound calls, gated the same as any other tool call):"
             )
-            continue
-        schema = render_tool_args_schema(tool_obj)
-        lines.append(f"  - {name} args: {schema or '(no arguments)'}")
+        elif executor_bound:
+            instruction = "Run these tools by name with tool_invoke(name, arguments):"
+        else:
+            instruction = (
+                "Run these tools by name with tool_invoke(name, arguments) "
+                "(cache-safe):"
+            )
+        lines.append(instruction)
+        agent = get_current_agent()
+        for entry in runnable:
+            tool_obj = _resolve_tool_object(entry.name, agent)
+            if tool_obj is None:
+                lines.append(
+                    f"  - {entry.name}: schema unavailable (its backing source "
+                    "may be installed but disabled)"
+                )
+                continue
+            schema = render_tool_args_schema(tool_obj)
+            lines.append(f"  - {entry.name} args: {schema or '(no arguments)'}")
+
+    bound = [t.name for t in tool_states if t.state == "bound"]
+    if bound:
+        lines.append(
+            "Already bound on this thread: call these directly by name (their "
+            "schemas are in your tool list): " + ", ".join(bound)
+        )
+
+    bind_only = [t for t in tool_states if t.state == "bind_only"]
+    if bind_only:
+        lines.append(
+            "Bind-only: these refuse by-name calls and run only once bound; "
+            f"activate {bind_call} to bind the kit before using them:"
+        )
+        lines.extend(f"  - {t.name}: {t.reason}" for t in bind_only)
+
+    unavailable = [t for t in tool_states if t.state == "unavailable"]
+    if unavailable:
+        lines.append("Unavailable on this thread (do not call these):")
+        lines.extend(f"  - {t.name}: {t.reason}" for t in unavailable)
     return "\n".join(lines)
 
 
@@ -945,18 +1124,31 @@ def create_skill_meta_tool(
         # Deferred activation: load the kit's tool schemas and list its nested
         # skills but bind nothing, so the model runs the tools by name (via
         # tool_invoke, or directly in permissive dynamic mode) with the prompt
-        # cache preserved. One exception: when the thread lacks the
-        # tool_invoke executor those instructions rely on,
-        # _ensure_deferred_executor binds it on a self-cleaning TTL (or says
-        # honestly why it will not, when the thread disabled it).
+        # cache preserved. Each tool is first classified by the by-name gate
+        # plus the thread's bind state (#417), so only tools that can actually
+        # run unbound get a recipe, and a kit with nothing runnable is refused
+        # before its body loads. One exception to "binds nothing": when a
+        # runnable tool or template needs the tool_invoke executor and the
+        # thread lacks it, _ensure_deferred_executor binds it on a
+        # self-cleaning TTL (or says honestly why it will not, when the
+        # thread disabled it).
         if defer:
+            tool_states = _classify_deferred_kit_tools(
+                list(skill.required_tools), config
+            )
+            refusal = _defer_refusal(skill, tool_states)
+            if refusal is not None:
+                return refusal
             body = _render_skill_body(skill)
             use_direct = _unbound_direct_calls_active()
+            needs_executor = bool(skill.thread_templates) or any(
+                t.state == "runnable" for t in tool_states
+            )
             executor_note, emit_reload, executor_bound = _ensure_deferred_executor(
-                skill, config, use_direct
+                skill, config, use_direct, needs_executor
             )
             body += _defer_kit_tools_block(
-                skill, use_direct, executor_bound=executor_bound
+                skill, tool_states, use_direct, executor_bound=executor_bound
             )
             body += _defer_required_skills_block(
                 skill, skill_manager, user_id, snapshot_by_name

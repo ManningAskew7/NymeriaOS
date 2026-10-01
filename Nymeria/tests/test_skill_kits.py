@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
+from nymeria.core import tool_execution
 from nymeria.core.agent import NymeriaAgent, set_current_agent
+from nymeria.core.tool_execution import by_name_gate_reason
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, TemporaryToolEntry
 from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
 from nymeria.skills import SkillManager, load_skill_directory
@@ -1394,6 +1399,548 @@ def test_defer_autobind_after_expired_ttl_entry(tmp_path: Path):
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
     assert expires - datetime.now(timezone.utc) > timedelta(days=6)
+
+
+# ---------------------------------------------------------------------------
+# Deferred kits only offer what the agent can run (backlog #417): each kit
+# tool is judged by the same by-name gate a deferred call hits, plus the
+# thread's bind state, so a protected tool is never handed a tool_invoke
+# recipe the gate refuses, and a kit with nothing runnable is refused before
+# its body loads. Edges skipped: the allowlist arm (inert today; its kind is
+# covered at the gate in test_tool_execution_envelope.py) and an unresolvable
+# runnable tool (unchanged "schema unavailable" line, pinned elsewhere).
+# ---------------------------------------------------------------------------
+
+PROTECTED_KIT_MD = """---
+name: protected-kit
+description: Binds only protected management tools.
+metadata:
+  nymeria:
+    required_tools:
+      - tool_search
+      - tool_manage
+    tool_ttl: 30m
+---
+
+# Protected Kit
+
+PROTECTED-KIT-BODY-MARKER
+"""
+
+GUARDED_KIT_MD = """---
+name: guarded-kit
+description: One protected, one excluded, one ordinary tool.
+metadata:
+  nymeria:
+    required_tools:
+      - hook_config
+      - install_skill
+      - hello_test
+    tool_ttl: 30m
+---
+
+# Guarded Kit
+
+GUARDED-KIT-BODY-MARKER
+"""
+
+PLAIN_TOOLS_KIT_MD = """---
+name: plain-tools-kit
+description: Two unprotected tools.
+metadata:
+  nymeria:
+    required_tools:
+      - hello_test
+      - memory_clear_all
+    tool_ttl: 30m
+---
+
+# Plain Tools Kit
+
+PLAIN-TOOLS-KIT-BODY-MARKER
+"""
+
+
+def _deferred_listing(text: str) -> dict[str, list[str]]:
+    """Kit tool names per section of a deferred result, as the model reads it.
+
+    ``runnable`` is every name under the run-by-name header (the recipe the
+    model follows), whatever line shape it has; ``refused`` is the per-tool
+    list of an up-front refusal.
+    """
+    sections: dict[str, list[str]] = {
+        "runnable": [], "bound": [], "bind_only": [], "unavailable": [],
+        "refused": [],
+    }
+    current: str | None = None
+    for line in text.splitlines():
+        if line.startswith("[Skill Kit defer not possible"):
+            current = "refused"
+        elif line.startswith(("Run these tools by name", "Call these tools DIRECTLY")):
+            current = "runnable"
+        elif line.startswith("Already bound on this thread"):
+            names = line.split("): ", 1)[1]
+            sections["bound"].extend(n.strip() for n in names.split(","))
+            current = None
+        elif line.startswith("Bind-only"):
+            current = "bind_only"
+        elif line.startswith("Unavailable on this thread"):
+            current = "unavailable"
+        elif line.startswith("  - ") and current is not None:
+            head = line[4:].split(":", 1)[0]
+            sections[current].append(head.removesuffix(" args").strip())
+        elif not line.startswith("  "):
+            current = None
+    return sections
+
+
+def _agent_with(tmp_path: Path, *, role: str = "admin", default_tools=None,
+                dynamic=None, allow_unbound: bool = False) -> _FakeAgent:
+    agent = _defer_agent(
+        tmp_path, default_tools=default_tools, dynamic=dynamic,
+        allow_unbound=allow_unbound,
+    )
+    agent.accounts_repo = SimpleNamespace(
+        get_user_by_id=lambda user_id: SimpleNamespace(role=role)
+    )
+    return agent
+
+
+@contextmanager
+def _as_current(agent: _FakeAgent):
+    """Install the fake as the current agent for the block, then clear it."""
+    set_current_agent(cast(NymeriaAgent, agent))
+    try:
+        yield agent
+    finally:
+        set_current_agent(None)
+
+
+def _defer_text(result) -> str:
+    if isinstance(result, Command):
+        update = result.update
+        assert isinstance(update, dict)
+        return update["messages"][0].content
+    assert isinstance(result, str)
+    return result
+
+
+def test_defer_all_protected_kit_is_refused_up_front_without_body_or_bind(
+    tmp_path: Path,
+):
+    """B1: nothing runnable, so no body, no recipe, and no executor auto-bind.
+
+    The thread lacks tool_invoke and runs the legacy rebuild path, where the
+    old code auto-bound the executor for 7 days and returned a reload Command
+    for a kit none of whose tools tool_invoke can run.
+    """
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "protected-kit", PROTECTED_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"])  # legacy
+    with _as_current(agent):
+        result = _defer_call("protected-kit", skill)
+
+    assert isinstance(result, str)
+    assert result.startswith("[Skill Kit defer not possible: protected-kit]")
+    assert 'Skill(name="protected-kit", ttl=...)' in result
+    assert "PROTECTED-KIT-BODY-MARKER" not in result
+    assert "args:" not in result
+    assert "tool_invoke" not in result
+    for name in ("tool_search", "tool_manage"):
+        assert f"  - {name}: tool '{name}' is a protected management tool" in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
+
+
+@pytest.mark.parametrize(
+    "kit", ["tool-management", "skill-management", "mcp-management"]
+)
+def test_defer_bundled_all_protected_kits_are_refused_up_front(tmp_path: Path, kit):
+    """B1 on the real kits: the result names the ttl bind and nothing else runs."""
+    skill = load_skill_directory(_bundled_skills_dir() / kit, "bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    with _as_current(agent):
+        result = _defer_call(kit, skill)
+
+    assert isinstance(result, str)
+    assert result.startswith(f"[Skill Kit defer not possible: {kit}]")
+    assert f'Skill(name="{kit}", ttl=...)' in result
+    assert f"# Skill: {kit}" not in result
+    assert "args:" not in result
+    assert "tool_invoke(" not in result
+    for name in skill.required_tools:
+        assert f"  - {name}: " in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
+
+
+PROTECTED_TEMPLATE_KIT_MD = """---
+name: protected-template-kit
+description: A protected tool plus a thread template.
+metadata:
+  nymeria:
+    required_tools:
+      - tool_search
+    thread_templates:
+      - name: helper-thread
+        description: A helper thread.
+---
+
+# Protected Template Kit
+"""
+
+PROTECTED_NESTED_KIT_MD = """---
+name: protected-nested-kit
+description: A protected tool plus a nested skill.
+metadata:
+  nymeria:
+    required_tools:
+      - tool_search
+    required_skills:
+      - plain-skill
+---
+
+# Protected Nested Kit
+"""
+
+
+def test_defer_kit_with_templates_or_nested_skills_is_not_refused(
+    tmp_path: Path,
+):
+    """Nothing runnable among the kit's own tools, but a thread template or a
+    nested skill is still something the deferred load can act on, so it loads
+    (the template still gets its executor; the nested listing binds nothing)."""
+    template_kit = load_skill_directory(
+        _write_skill(tmp_path, "protected-template-kit", PROTECTED_TEMPLATE_KIT_MD),
+        scope="bundled",
+    )
+    nested_kit = load_skill_directory(
+        _write_skill(tmp_path, "protected-nested-kit", PROTECTED_NESTED_KIT_MD),
+        scope="bundled",
+    )
+    plain = load_skill_directory(
+        _write_skill(tmp_path, "plain-skill", PLAIN_MD), scope="bundled"
+    )
+    assert template_kit is not None and nested_kit is not None and plain is not None
+
+    nested_agent = _defer_agent(tmp_path / "n", default_tools=["bash_execute"],
+                                dynamic=True)
+    with _as_current(nested_agent):
+        meta = cast(StructuredTool, create_skill_meta_tool([nested_kit, plain]))
+        assert meta.func is not None
+        nested = meta.func(
+            "protected-nested-kit", ttl="2h", defer=True, tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    nested_text = _defer_text(nested)
+    assert "defer not possible" not in nested_text
+    assert "[Required skills (deferred)]" in nested_text
+    assert "  - plain-skill (skill): " in nested_text
+    assert _deferred_listing(nested_text)["bind_only"] == ["tool_search"]
+    assert nested_agent.thread_config_manager.get_config("thread-a") is None
+
+    template_agent = _defer_agent(tmp_path / "t", default_tools=["bash_execute"],
+                                  dynamic=True)
+    with _as_current(template_agent):
+        templated = _defer_call("protected-template-kit", template_kit)
+    template_text = _defer_text(templated)
+    assert "defer not possible" not in template_text
+    assert "Thread templates (deferred)" in template_text
+    assert _deferred_listing(template_text)["bind_only"] == ["tool_search"]
+    assert "tool_invoke auto-bound" in template_text
+    tc = template_agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert set(tc.temporary_tools) == {"tool_invoke"}
+
+
+def test_defer_hook_management_offers_hook_info_and_binds_its_executor(
+    tmp_path: Path,
+):
+    """B2: hook_info gets schema and recipe, hook_config is bind-only, and the
+    executor is still auto-bound because hook_info needs it."""
+    skill = load_skill_directory(_bundled_skills_dir() / "hook-management", "bundled")
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    with _as_current(agent):
+        result = _defer_call("hook-management", skill)
+
+    text = _defer_text(result)
+    assert "# Skill: hook-management" in text
+    listing = _deferred_listing(text)
+    assert listing["runnable"] == ["hook_info"]
+    assert listing["bind_only"] == ["hook_config"]
+    assert "hook_info args:" in text
+    assert "hook_config args:" not in text
+    assert "tool_invoke auto-bound" in text
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert set(tc.temporary_tools) == {"tool_invoke"}
+
+
+def test_defer_orchestrate_names_bound_seed_tools_and_binds_no_executor(
+    tmp_path: Path,
+):
+    """B3: the seed tools are already bound (call directly, no recipe through
+    tool_invoke, which forbids bound targets), tool_search is bind-only, and
+    with nothing runnable the executor is not auto-bound."""
+    skill = load_skill_directory(_bundled_skills_dir() / "orchestrate", "bundled")
+    assert skill is not None
+    agent = _defer_agent(
+        tmp_path,
+        default_tools=["bash_execute", "spawn_thread", "nym_todo", "nym_todo_list"],
+        dynamic=True,
+    )
+    with _as_current(agent):
+        result = _defer_call("orchestrate", skill)
+
+    text = _defer_text(result)
+    assert "# Skill: orchestrate" in text
+    listing = _deferred_listing(text)
+    assert listing["runnable"] == []
+    assert listing["bound"] == ["spawn_thread", "nym_todo", "nym_todo_list"]
+    assert listing["bind_only"] == ["tool_search"]
+    assert "args:" not in text
+    assert "auto-bound" not in text
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
+
+
+def test_defer_protected_tool_bound_by_a_live_ttl_is_called_directly(
+    tmp_path: Path,
+):
+    """B4: a protected tool a live kit TTL bound is callable, so it is listed
+    as already bound, the deferred load is not refused, and nothing binds."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "protected-kit", PROTECTED_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _defer_agent(tmp_path, default_tools=["bash_execute"], dynamic=True)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.temporary_tools = {"tool_search": TemporaryToolEntry(expires_at=future)}
+    agent.thread_config_manager.save_config(tc)
+    with _as_current(agent):
+        result = _defer_call("protected-kit", skill)
+
+    text = _defer_text(result)
+    assert "PROTECTED-KIT-BODY-MARKER" in text
+    assert "defer not possible" not in text
+    listing = _deferred_listing(text)
+    assert listing["bound"] == ["tool_search"]
+    assert listing["bind_only"] == ["tool_manage"]
+    assert listing["runnable"] == []
+    assert "args:" not in text
+    after = agent.thread_config_manager.get_config("thread-a")
+    assert after is not None
+    assert set(after.temporary_tools) == {"tool_search"}
+
+
+def test_defer_direct_mode_partition_never_mentions_tool_invoke(tmp_path: Path):
+    """B5: permissive direct-call mode gets the same partition, and neither
+    the bind-only copy nor the refusal ever says tool_invoke."""
+    guarded = load_skill_directory(
+        _write_skill(tmp_path, "guarded-kit", GUARDED_KIT_MD), scope="bundled"
+    )
+    protected = load_skill_directory(
+        _write_skill(tmp_path, "protected-kit", PROTECTED_KIT_MD), scope="bundled"
+    )
+    assert guarded is not None and protected is not None
+    agent = _defer_agent(
+        tmp_path, default_tools=["bash_execute"], dynamic=True, allow_unbound=True
+    )
+    with _as_current(agent):
+        mixed = _defer_call("guarded-kit", guarded)
+        refused = _defer_call("protected-kit", protected)
+
+    text = _defer_text(mixed)
+    listing = _deferred_listing(text)
+    assert "Call these tools DIRECTLY by name" in text
+    assert listing["runnable"] == ["hello_test"]
+    assert listing["bind_only"] == ["hook_config", "install_skill"]
+    assert "tool_invoke" not in text
+    assert isinstance(refused, str)
+    assert refused.startswith("[Skill Kit defer not possible: protected-kit]")
+    assert "tool_invoke" not in refused
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_defer_thread_disabled_kit_tool_is_unavailable_without_a_recipe(
+    tmp_path: Path,
+):
+    """B6, disabled arm: the gate's reason, no recipe, and the disable stands."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "plain-tools-kit", PLAIN_TOOLS_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")  # seed defaults carry tool_invoke
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["memory_clear_all"]
+    agent.thread_config_manager.save_config(tc)
+    with _as_current(agent):
+        result = _defer_call("plain-tools-kit", skill)
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    assert listing["runnable"] == ["hello_test"]
+    assert listing["unavailable"] == ["memory_clear_all"]
+    assert "'memory_clear_all' is disabled on this thread" in text
+    assert "memory_clear_all args:" not in text
+    after = agent.thread_config_manager.get_config("thread-a")
+    assert after is not None
+    assert after.disabled_tools == ["memory_clear_all"]
+    assert not after.enabled_tools and not after.temporary_tools
+
+
+def test_defer_disabled_protected_tool_is_unavailable_not_bind_only(
+    tmp_path: Path,
+):
+    """A protected tool the thread disabled is unavailable, with the disable
+    as its reason: a bind steer would silently un-disable it (a kit bind
+    un-disables first), even though the gate's FIRST reason is "protected"."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "guarded-kit", GUARDED_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["hook_config"]
+    agent.thread_config_manager.save_config(tc)
+    with _as_current(agent):
+        result = _defer_call("guarded-kit", skill)
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    assert listing["unavailable"] == ["hook_config"]
+    assert listing["bind_only"] == ["install_skill"]
+    assert listing["runnable"] == ["hello_test"]
+    assert "  - hook_config: 'hook_config' is disabled on this thread" in text
+    after = agent.thread_config_manager.get_config("thread-a")
+    assert after is not None
+    assert after.disabled_tools == ["hook_config"]
+
+
+def test_defer_role_blocked_kit_tool_is_unavailable_even_in_the_defaults(
+    tmp_path: Path,
+):
+    """B6, role arm: a developer-only tool in a non-admin's defaults reads as
+    bound to thread config, but graph build strips it for the role, so it is
+    unavailable with the gate's reason, never "already bound"."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "plain-tools-kit", PLAIN_TOOLS_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _agent_with(
+        tmp_path, role="user", default_tools=["tool_invoke", "hello_test"]
+    )
+    with _as_current(agent):
+        result = _defer_call("plain-tools-kit", skill)
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    assert listing["unavailable"] == ["hello_test"]
+    assert listing["bound"] == []
+    assert listing["runnable"] == ["memory_clear_all"]
+    assert "tool 'hello_test' is developer-only" in text
+    assert "hello_test args:" not in text
+
+
+def test_defer_kit_blocked_for_the_role_is_refused_without_a_bind_steer(
+    tmp_path: Path,
+):
+    """A kit whose only tool the caller's role blocks: refused up front, and
+    the copy does not point at a ttl bind, which the same role gate refuses."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "hello-kit", KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _agent_with(tmp_path, role="user", default_tools=["bash_execute"],
+                        dynamic=True)
+    with _as_current(agent):
+        result = _defer_call("hello-kit", skill)
+
+    assert isinstance(result, str)
+    assert result.startswith("[Skill Kit defer not possible: hello-kit]")
+    assert "tool 'hello_test' is developer-only" in result
+    assert "ttl=..." not in result
+    assert "Hello Kit" not in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_defer_gate_failure_never_offers_protected_or_excluded_recipes(
+    tmp_path: Path, monkeypatch
+):
+    """B7: a gate that raises fails closed on the static protected and
+    excluded sets and open for the rest (the call itself is gated again)."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "guarded-kit", GUARDED_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("gate exploded")
+
+    monkeypatch.setattr(tool_execution, "by_name_gate_refusals", _boom)
+    agent = _FakeAgent(tmp_path / "data")
+    with _as_current(agent):
+        result = _defer_call("guarded-kit", skill)
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    assert listing["runnable"] == ["hello_test"]
+    assert listing["bind_only"] == ["hook_config", "install_skill"]
+    assert "hook_config args:" not in text
+    assert "install_skill args:" not in text
+
+
+def _bundled_kit_names() -> list[str]:
+    import nymeria
+
+    root = Path(nymeria.__file__).resolve().parent / "skills_bundled"
+    names = []
+    for child in sorted(root.iterdir()):
+        skill = load_skill_directory(child, "bundled") if child.is_dir() else None
+        if skill is not None and skill.required_tools:
+            names.append(child.name)
+    return names
+
+
+@pytest.mark.parametrize("role", ["admin", "user"])
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("kit", _bundled_kit_names())
+def test_no_bundled_kit_defers_a_recipe_the_gate_refuses(
+    tmp_path: Path, kit, direct, role
+):
+    """B8, the invariant: no bundled kit's deferred result tells the model to
+    run (via tool_invoke or directly) a name the by-name gate refuses, and
+    every kit tool is still named (nothing silently dropped)."""
+    skill = load_skill_directory(_bundled_skills_dir() / kit, "bundled")
+    assert skill is not None
+    agent = _agent_with(tmp_path, role=role, dynamic=True, allow_unbound=direct)
+    with _as_current(agent):
+        result = _defer_call(kit, skill)
+        refused = {
+            name
+            for name in skill.required_tools
+            if by_name_gate_reason(agent, name, "user-a", "thread-a", role)
+        }
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    offered = set(listing["runnable"])
+    assert not (offered & refused), sorted(offered & refused)
+    for name in refused:
+        assert f"{name} args:" not in text
+    # A partition, not a filter: every kit tool lands in exactly one place
+    # (checked on the parsed listing, since kit bodies name their own tools).
+    placed = [name for names in listing.values() for name in names]
+    assert sorted(placed) == sorted(skill.required_tools)
+    if direct:
+        # Only the deferred block is ours; a kit body may mention tool_invoke.
+        marker = text.find("[Skill Kit deferred]")
+        assert "tool_invoke(" not in (text[marker:] if marker >= 0 else text)
 
 
 def test_skill_meta_tool_not_found_copy_points_to_install(tmp_path: Path):

@@ -289,6 +289,45 @@ def test_gate_allowlist_distinguishes_empty_from_absent(monkeypatch):
     assert by_name_gate_reason(agent, "env_stub_add", "u", "t", "admin")
 
 
+def test_gate_refusals_report_every_reason_in_gate_order(monkeypatch):
+    """The structured gate lists EVERY refusal, not just the winning one.
+
+    The deferred kit listing (#417) has to see a role or disabled refusal that
+    sits behind an exclusion or protection, so it can say "unavailable" rather
+    than "bind the kit". ``self_invoke_tool`` is a real name that is both
+    excluded and admin-only; with it disabled and an empty allowlist every arm
+    fires. The reason gate must stay the first entry, word for word.
+    """
+    from nymeria.core.tool_execution import by_name_gate_refusals
+    from nymeria.tools import ADMIN_ONLY_TOOL_NAMES
+
+    assert "self_invoke_tool" in BY_NAME_EXCLUDED_TOOL_NAMES & ADMIN_ONLY_TOOL_NAMES
+    agent = _FakeAgent(disabled=["self_invoke_tool", "tool_manage"])
+    monkeypatch.setattr(tool_execution, "tool_allowlist", lambda a, u, t: frozenset())
+
+    refusals = by_name_gate_refusals(agent, "self_invoke_tool", "u", "t", "user")
+    assert [r.kind for r in refusals] == ["excluded", "role", "disabled", "allowlist"]
+    assert "admin-only" in refusals[1].reason
+    assert "disabled on this thread" in refusals[2].reason
+    assert by_name_gate_reason(agent, "self_invoke_tool", "u", "t", "user") == (
+        refusals[0].reason
+    )
+
+    protected = by_name_gate_refusals(agent, "tool_manage", "u", "t", "admin")
+    assert [r.kind for r in protected] == ["protected", "disabled", "allowlist"]
+    assert by_name_gate_reason(agent, "tool_manage", "u", "t", "admin") == (
+        protected[0].reason
+    )
+
+
+def test_gate_refusals_empty_for_an_admissible_name():
+    from nymeria.core.tool_execution import by_name_gate_refusals
+
+    agent = _FakeAgent(disabled=["something_else"])
+    assert by_name_gate_refusals(agent, "env_stub_add", "u", "t", "user") == []
+    assert by_name_gate_reason(agent, "env_stub_add", "u", "t", "user") is None
+
+
 @pytest.mark.asyncio
 async def test_deferred_path_enforces_the_allowlist(monkeypatch):
     """The arm is wired into the live deferred path, not just callable directly."""

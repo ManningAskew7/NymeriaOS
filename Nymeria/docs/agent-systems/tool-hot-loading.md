@@ -115,8 +115,15 @@ generic dispatch idiom they are trained on and guess arguments by tool name
 - `Skill(name=..., defer=true)` is the kit-level expression: it loads the kit's
   instructions plus its tools' argument schemas and binds none of the kit's
   tools, for use via `tool_invoke`. `ttl` stays required by the schema and is
-  ignored under `defer=true`. One exception to "binds nothing" (backlog #170): when the thread
-  cannot call `tool_invoke` itself (e.g. an account whose curated
+  ignored under `defer=true`. Only tools the by-name gate would run get a
+  schema and recipe: already-bound tools are named as callable directly,
+  protected management tools as bind-only, role-blocked or thread-disabled
+  ones as unavailable with the gate's reason, and a kit with nothing runnable
+  or bound is refused up front with no body, pointing at the `ttl` bind
+  (backlog #417; the partition is described in
+  [skills.md](./skills.md#deferred-skill-kits-defertrue)). One exception to
+  "binds nothing" (backlog #170): when a runnable tool needs `tool_invoke`
+  and the thread cannot call it (e.g. an account whose curated
   `default_thread_tools` predates the tool, #164), the activation binds just
   `tool_invoke` on a self-cleaning 7-day TTL and announces it in the result.
   Under dynamic binding it is callable on the next model step; on the legacy
