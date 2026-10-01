@@ -899,10 +899,10 @@ class NymeriaAgent:
         if not text:
             return
         try:
-            from .notifications import create_notification
+            from .notifications import NOTIFICATION_SUMMARY_MAX_CHARS, create_notification
             create_notification(
                 user_id=user_id or "",
-                summary=text[:200],
+                summary=text[:NOTIFICATION_SUMMARY_MAX_CHARS],
                 thread_id=thread_id or "",
                 task_id=None,
             )

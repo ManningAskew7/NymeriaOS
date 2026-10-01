@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from nymeria.core.ticker import Ticker
+from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 from nymeria.core.todo_manager import TodoManager
 from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from nymeria.core.trigger_manager import (
@@ -1463,3 +1464,176 @@ def test_the_first_source_alert_never_says_still_failing(
     assert len(new_alerts) == 1
     assert "[TRIGGER FAILING]" in new_alerts[0]["message"]
     assert "STILL" not in new_alerts[0]["message"]
+
+
+# --- #406: the in-app row (the message cut at the cap) keeps the fix --------
+# A user with no external destinations sees only the first
+# NOTIFICATION_SUMMARY_MAX_CHARS characters. Worst-case inputs throughout: a
+# 200-character trigger name (the field's max), errors at their 200 cap, and
+# task text past the copies' 80-character cut. External destinations still
+# receive every word, so the full message must keep the name and the error.
+
+_LONG_NAME = ("Forward every invoice from the accounts inbox to bookkeeping " * 4)[:200]
+_LONG_ERROR = "upstream refused the request: " + "quota window exhausted; " * 20
+_LONG_TASK = (
+    "Check the overnight medication log, message the carer if any evening "
+    "dose was missed or doubled, and file the summary"
+)
+
+
+def _in_app_row(message: str) -> str:
+    return message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+
+
+def _add_long_named_trigger(manager: TriggerManager, user_id: str = "owner"):
+    trigger = TriggerDefinition(
+        id="trig-406",
+        name=_LONG_NAME,
+        source_type="webhook",
+        source_config={},
+        action=TriggerAction(type="run_workflow", config={"workflow_id": "wf_demo"}),
+        thread_id="trig-thread",
+        enabled=True,
+    )
+    with manager.atomic_update(user_id) as store:
+        store.triggers.append(trigger)
+    return trigger
+
+
+def _fire_failing_long(manager, trigger, monkeypatch):
+    from nymeria.core.workflows import tool_runtime as tool_runtime_module
+
+    monkeypatch.setattr(
+        tool_runtime_module, "workflow_declares_event", lambda _wf: False
+    )
+    executor = _WorkflowExecutorStub(
+        {
+            "ok": False,
+            "status": "error",
+            "error": {"kind": "x", "message": _LONG_ERROR},
+        }
+    )
+    manager.fire_action(trigger, {}, executor, "owner")
+
+
+class _LongBrokenSource(_QuietSource):
+    def check(self, source_config, state, user_id=""):
+        self.checks += 1
+        raise RuntimeError(_LONG_ERROR)
+
+
+def test_trigger_action_alerts_keep_the_fix_in_the_in_app_row(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#406 behaviors 17, 18, 28: alert threshold then pause."""
+    manager = TriggerManager(tmp_path)
+    trigger = _add_long_named_trigger(manager)
+
+    for _ in range(5):
+        _fire_failing_long(manager, trigger, monkeypatch)
+
+    stored = _get_trigger(manager, trigger.id)
+    assert stored.auto_paused_at is not None
+    assert len(stored.last_error or "") == 200  # the error at its cap
+    alert, paused = (a["message"] for a in trigger_alerts)
+
+    row = _in_app_row(alert)
+    assert row.startswith(f"[TRIGGER ALERT] Trigger \"{_LONG_NAME[:37]}...\" ({trigger.id})")
+    assert "failed its action 2 times in a row; it auto-pauses after 5." in row
+    assert "Manage it with /triggers." in row
+
+    row = _in_app_row(paused)
+    assert row.startswith("[TRIGGER PAUSED]")
+    assert "stopped after 5 consecutive failed actions" in row
+    assert f"Fix the cause, then /triggers resume {trigger.id}." in row
+
+    for message in (alert, paused):
+        assert f'Full name: "{_LONG_NAME}".' in message
+        assert f"Last error: {stored.last_error}." in message
+
+
+def test_a_short_trigger_name_is_not_repeated(tmp_path, monkeypatch, trigger_alerts):
+    """The full-name tail appears only when the lead clipped the name."""
+    manager = TriggerManager(tmp_path)
+    trigger = _add_action_trigger(manager)
+    for _ in range(2):
+        _fire_failing(manager, trigger, monkeypatch)
+
+    message = trigger_alerts[0]["message"]
+    assert message.count("Mail sweep") == 1
+    assert "Full name" not in message
+
+
+def test_trigger_source_alerts_keep_the_fix_in_the_in_app_row(
+    tmp_path, monkeypatch, trigger_alerts
+):
+    """#406 behaviors 19, 28: first crossing and the repeat reminder; the
+    repeat still never sends the owner to resume."""
+    _settings_with_cooldown(monkeypatch, 180)
+    manager = TriggerManager(tmp_path)
+    trigger = _add_long_named_trigger(manager)
+    _wire_source(monkeypatch, _LongBrokenSource())
+    for _ in range(5):
+        manager.check_triggers("owner")
+    manager.update_trigger(
+        "owner", trigger.id, last_source_alert_at=utc_now() - timedelta(hours=4)
+    )
+    for _ in range(10):
+        manager.check_triggers("owner")
+
+    first, repeat = (a["message"] for a in trigger_alerts)
+    stored = _get_trigger(manager, trigger.id)
+    assert len(stored.last_error or "") == 200
+
+    row = _in_app_row(first)
+    assert row.startswith("[TRIGGER FAILING]")
+    assert "is now marked failing" in row
+    assert "Manage it with /triggers." in row
+
+    row = _in_app_row(repeat)
+    assert row.startswith("[TRIGGER STILL FAILING]")
+    assert "Fix the cause or disable it with /triggers" in row
+    assert "resume" not in repeat.lower()
+
+    for message in (first, repeat):
+        assert f'Full name: "{_LONG_NAME}".' in message
+        assert f"Last error: {stored.last_error}." in message
+
+
+def test_scheduled_task_failure_alerts_keep_the_fix_in_the_in_app_row(
+    tmp_path, quiet_ticker_module
+):
+    """#406 behaviors 20, 21, 28: the ticker's failure alert, then its pause."""
+    alerts = quiet_ticker_module
+    ticker, agent = _make_ticker(tmp_path, alert_after=2, pause_after=3)
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        todo = todo_list.add_item(
+            _LONG_TASK,
+            scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=1),
+            thread_id="thread-1",
+            created_by="user",
+            recurrence="1d",
+        )
+    assert todo is not None
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    agent.astream = _failing_astream(_LONG_ERROR)  # type: ignore[attr-defined]
+
+    for _ in range(3):
+        _run_one_occurrence(ticker, _entry_for(agent, todo))
+
+    alert, paused = (a["message"] for a in alerts)
+
+    row = _in_app_row(alert)
+    assert row.startswith(f"[SCHEDULED TASK ALERT] Recurring TODO [{todo.id}]")
+    assert "has failed 2 consecutive runs and keeps retrying on schedule" in row
+    assert "Manage it with /todos." in row
+    assert "It auto-pauses after 3 consecutive failures." in row
+
+    row = _in_app_row(paused)
+    assert row.startswith(f"[SCHEDULED TASK PAUSED] Recurring TODO [{todo.id}]")
+    assert "auto-paused after 3 consecutive failed runs" in row
+    assert f"reschedule it: /todos schedule {todo.id} ..." in row
+
+    for message in (alert, paused):
+        assert f'Task: "{_LONG_TASK[:80]}".' in message
+        assert f"Last error: {_LONG_ERROR[:200]}." in message

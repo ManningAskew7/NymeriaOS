@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import nymeria.core.notification_channels as nc
 import nymeria.core.notification_destinations as nd
 from nymeria.core.notification_channels import SendResult, _BaseChannel
@@ -384,3 +386,76 @@ def test_notify_tool_routes_through_dispatch():
 
     assert tool_mod.send_via_profile is dispatch_mod.send_via_profile
     assert tool_mod.get_in_app_notification_level is dispatch_mod.get_in_app_notification_level
+
+
+# ── #406: one summary cap, and the owner alert's in-app row ─────────────────
+
+
+def test_owner_alert_row_and_live_event_are_the_message_cut_at_the_cap(
+    tmp_path, monkeypatch
+):
+    """A user with no external destinations sees only the in-app row: it is
+    the message's first NOTIFICATION_SUMMARY_MAX_CHARS characters, stored and
+    published alike (cap semantics unchanged, now via the one constant)."""
+    import nymeria.core.event_bus as event_bus_mod
+    import nymeria.core.notifications as notifications_mod
+    from nymeria.core.notification_dispatch import send_owner_alert
+    from nymeria.core.notifications import (
+        NOTIFICATION_SUMMARY_MAX_CHARS,
+        NotificationStore,
+    )
+
+    _tmp_repo(tmp_path, monkeypatch)  # no destinations, no profiles
+    store = NotificationStore(tmp_path)
+    monkeypatch.setattr(notifications_mod, "_notification_store", store)
+    events: list[dict] = []
+    monkeypatch.setattr(
+        event_bus_mod, "publish_autonomous_event", lambda **kw: events.append(kw)
+    )
+    message = "[TEST ALERT] Fix it with /triggers. " + "detail " * 60 + "END"
+    assert len(message) > NOTIFICATION_SUMMARY_MAX_CHARS + 50
+
+    send_owner_alert(
+        message, _settings(data_dir=tmp_path), user_id="u1", thread_id="t1", task_id="k1"
+    )
+
+    rows = store.get_all("u1")
+    assert [row.summary for row in rows] == [message[:NOTIFICATION_SUMMARY_MAX_CHARS]]
+    assert rows[0].thread_id == "t1" and rows[0].task_id == "k1"
+    assert [e["data"]["summary"] for e in events if e["event_type"] == "notification"] == [
+        message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    ]
+    # The cap itself did not move: a code rollback on the same data dir must
+    # still validate every stored row (old code pinned max_length=200).
+    assert NOTIFICATION_SUMMARY_MAX_CHARS == 200
+
+
+def test_the_store_model_enforces_the_same_cap():
+    from pydantic import ValidationError
+
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS, Notification
+
+    at_cap = "x" * NOTIFICATION_SUMMARY_MAX_CHARS
+    assert Notification(user_id="u1", summary=at_cap).summary == at_cap
+    with pytest.raises(ValidationError):
+        Notification(user_id="u1", summary=at_cap + "x")
+
+
+def test_alert_subject_clips_only_what_is_too_long():
+    from nymeria.core.notifications import (
+        ALERT_SUBJECT_MAX_CHARS,
+        alert_subject,
+        clip_alert_subject,
+    )
+
+    fits = "n" * ALERT_SUBJECT_MAX_CHARS
+    assert alert_subject(fits, label="Full name") == (fits, "")
+    over = "n" * (ALERT_SUBJECT_MAX_CHARS - 5) + " tail end"
+    lead, tail = alert_subject(over, label="Full name")
+    assert len(lead) == ALERT_SUBJECT_MAX_CHARS and lead.endswith("...")
+    assert over.startswith(lead[:-3])
+    assert tail == f' Full name: "{over}".'  # nothing lost externally
+    # One line in the lead; the tail keeps the original text.
+    lead, tail = alert_subject("Mail\nsweep", label="Full name")
+    assert lead == "Mail sweep" and tail == ' Full name: "Mail\nsweep".'
+    assert clip_alert_subject(None) == "" and clip_alert_subject("") == ""

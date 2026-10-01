@@ -47,6 +47,48 @@ class NotificationsUnavailableError(StoreUnavailableError):
     The API answers it 503."""
 
 
+#: Hard cap on an in-app notification row's ``summary``, the whole text the
+#: notification center shows (both clients render it unclamped). Every writer
+#: truncates to it; external destinations still get the full message. Owner
+#: alerts are written to survive the cut (#406): verdict and remedy lead,
+#: with subjects clipped by :func:`clip_alert_subject`, and variable detail
+#: (full names, task text, errors) goes last.
+NOTIFICATION_SUMMARY_MAX_CHARS = 200
+
+#: How much of a variable subject (trigger name, delivery target, thread id)
+#: an owner alert's lead may spend before its verdict and remedy (#406).
+ALERT_SUBJECT_MAX_CHARS = 40
+
+
+def clip_alert_subject(text: object, limit: int = ALERT_SUBJECT_MAX_CHARS) -> str:
+    """A subject for an owner alert's bounded lead: one line, at most ``limit``.
+
+    Whitespace runs collapse to single spaces; a longer subject keeps its
+    start and ends in "...". The alert repeats the full subject in its
+    detail tail when this clipped it, so external destinations lose nothing.
+    """
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: max(0, limit - 3)].rstrip() + "..."
+
+
+def alert_subject(
+    text: object, *, label: str, limit: int = ALERT_SUBJECT_MAX_CHARS
+) -> Tuple[str, str]:
+    """``(lead, tail)`` for a variable subject in an owner alert.
+
+    ``lead`` is the clipped form for the alert's opening; ``tail`` is
+    ``' <label>: "<full text>".'`` when the clip lost something, else "", so
+    the full subject still reaches external destinations at the end.
+    """
+    full = str(text or "")
+    lead = clip_alert_subject(full, limit)
+    if lead == full:
+        return lead, ""
+    return lead, f' {label}: "{full}".'
+
+
 class Notification(BaseModel):
     """A single notification entry.
 
@@ -59,7 +101,7 @@ class Notification(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     user_id: str
-    summary: str = Field(..., max_length=200)
+    summary: str = Field(..., max_length=NOTIFICATION_SUMMARY_MAX_CHARS)
     thread_id: Optional[str] = None
     task_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -145,7 +187,7 @@ class NotificationStore:
         """
         notification = Notification(
             user_id=user_id,
-            summary=summary[:200],  # Truncate if too long
+            summary=summary[:NOTIFICATION_SUMMARY_MAX_CHARS],
             thread_id=thread_id,
             task_id=task_id,
             profile=profile,
@@ -568,14 +610,14 @@ def notify_user_best_effort(
 
     The shared delivery half of the approval announce paths (hook, workflow,
     and fallback approvals): a notification-center row (summary truncated to
-    the store's 200-char cap) plus, when ``push`` and ``settings.fcm_enabled``,
-    a push carrying the untruncated text. Summary COPY stays with the caller;
-    only delivery lives here.
+    the store's ``NOTIFICATION_SUMMARY_MAX_CHARS`` cap) plus, when ``push``
+    and ``settings.fcm_enabled``, a push carrying the untruncated text.
+    Summary COPY stays with the caller; only delivery lives here.
     """
     try:
         create_notification(
             user_id=str(user_id or ""),
-            summary=summary[:200],
+            summary=summary[:NOTIFICATION_SUMMARY_MAX_CHARS],
             thread_id=str(thread_id) if thread_id else None,
             task_id=None,
         )

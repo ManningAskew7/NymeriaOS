@@ -7,6 +7,7 @@ import json
 import logging
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from nymeria.core import agent_history as agent_history_module
@@ -973,3 +974,118 @@ def test_saved_batches_keep_separate_replies_and_do_not_merge_across_turns():
     assert history[0]['queued_batch']['inputs'][0]['text'] == 'request 1'
     assert history[2]['queued_batch']['inputs'][0]['text'] == 'request 2'
     assert [history[i]['content'] for i in (1, 3)] == ['first reply', 'second reply']
+
+
+# ── autonomous_source badge (It29, adjacent to #419) ─────────────────────────
+# Every autonomous wake-up persists as metadata, then the run rules, then the
+# message. Classification used to see the rules heading first, so every
+# scheduled TODO and watchdog nudge was badged "trigger". The stored content
+# here comes from the real assembly, not a hand-written literal.
+
+# The rules wording as first shipped (2026-05-29, 33ac1da2). Each stored
+# message keeps the wording it was sent with, so history holds this text.
+_RULES_2026_05 = """## Autonomous Run Rules
+
+This is autonomous user-visible work. Do not end by choosing silence, a no-op,
+or "nothing to do" as the final outcome.
+
+- For scheduled TODOs: work the TODO, then use `nym_todo(todo_id=..., status="done")`
+  when complete, update its notes/status when still in progress, or use
+  `nym_todo_delete` when it is truly obsolete.
+- For watchdog or trigger runs: perform the requested check/action and report the
+  outcome concisely.
+- If there is no useful action to take, still respond with a brief explanation of
+  what you checked and why no action was taken."""
+
+_SCHEDULED_BODY = "Work on TODO 583c2ced: Just reply pong. Do not call any tools."
+_WATCHDOG_BODY = (
+    "[WATCHDOG ALERT] The following TODO(s) on this thread have not been "
+    "updated in 20 minutes."
+)
+_TRIGGER_BODY = (
+    "New mail arrived: subject 'Invoice'.\n\nWork on TODO 1234abcd: this "
+    "line is quoted mail, not a scheduled fire."
+)
+
+
+def _stored_wakeup(body: str, *, source: str, rules: str | None = None) -> str:
+    from nymeria.core.agent_turn_metadata import _assemble
+    from nymeria.core.prompts import get_autonomous_tail_guidance, get_time_context
+
+    metadata = get_time_context(True, source=source)
+    guidance = get_autonomous_tail_guidance(True) if rules is None else rules
+    return _assemble(metadata, guidance, body)
+
+
+def _badges(content: str, *, show_prompt_metadata: bool = False) -> list:
+    history = format_conversation_history(
+        [
+            HumanMessage(
+                content=content,
+                id="wake-1",
+                additional_kwargs={
+                    "internal": True,
+                    "internal_type": "autonomous_wakeup",
+                },
+            ),
+            AIMessage(content="pong", id="reply-1"),
+        ],
+        thread_id="thread-badge",
+        show_autonomous_prompts=True,
+        show_prompt_metadata=show_prompt_metadata,
+    )
+    return [entry.get("autonomous_source") for entry in history if entry["role"] == "user"]
+
+
+@pytest.mark.parametrize("show_prompt_metadata", [False, True], ids=["stripped", "raw"])
+@pytest.mark.parametrize(
+    ("body", "source", "expected"),
+    [
+        (_SCHEDULED_BODY, "ticker", "scheduler"),
+        (_WATCHDOG_BODY, "watchdog", "watchdog"),
+        # A marker quoted later in a trigger's body is not its start.
+        (_TRIGGER_BODY, "trigger", "trigger"),
+    ],
+    ids=["scheduled", "watchdog", "trigger"],
+)
+def test_stored_wakeups_are_badged_by_their_real_source(
+    body, source, expected, show_prompt_metadata
+):
+    content = _stored_wakeup(body, source=source)
+    assert content.count("## Autonomous Run Rules") == 1  # realistic shape
+
+    assert _badges(content, show_prompt_metadata=show_prompt_metadata) == [expected]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (_SCHEDULED_BODY, "scheduler"),
+        (_WATCHDOG_BODY, "watchdog"),
+        (_TRIGGER_BODY, "trigger"),
+    ],
+    ids=["scheduled", "watchdog", "trigger"],
+)
+def test_a_wakeup_stored_under_older_rules_text_still_classifies(body, expected):
+    content = _stored_wakeup(body, source="ticker", rules=_RULES_2026_05)
+    assert _RULES_2026_05 != agent_history_module.AUTONOMOUS_MODE_RULES.strip()
+
+    assert _badges(content) == [expected]
+
+
+def test_a_rules_wording_without_a_bullet_list_falls_back_to_the_marker():
+    rules = "## Autonomous Run Rules\n\nWork the task and report the outcome."
+    for body, expected in ((_SCHEDULED_BODY, "scheduler"), (_WATCHDOG_BODY, "watchdog")):
+        assert _badges(_stored_wakeup(body, source="ticker", rules=rules)) == [expected]
+    assert _badges(_stored_wakeup("Mail arrived.", source="trigger", rules=rules)) == [
+        "trigger"
+    ]
+
+
+def test_a_wakeup_without_rules_or_metadata_still_classifies():
+    """Metadata hook disabled and no rules block: the message leads, as the
+    classifier always assumed."""
+    classify = agent_history_module.classify_autonomous_source
+    assert classify(_SCHEDULED_BODY) == "scheduler"
+    assert classify(_WATCHDOG_BODY) == "watchdog"
+    assert classify("Reflect on today's conversations.") == "trigger"

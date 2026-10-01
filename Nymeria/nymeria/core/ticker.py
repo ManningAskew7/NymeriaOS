@@ -27,6 +27,7 @@ from .notification_dispatch import (
     send_owner_alert,
     should_notify_autonomous,
 )
+from .notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from .scheduler_lock import LockOutcome, ScheduleLock
 from .scheduler_state import (
@@ -1458,10 +1459,11 @@ class Ticker:
         # row write must not swallow the alert, which is the durable signal.
         try:
             send_owner_alert(
-                # Verdict and remedy first: the in-app row keeps only 200
-                # characters (#406), so the task text goes last. "May": a
-                # long run is not necessarily a stuck one, and a stop is
-                # cooperative (a single stalled read never sees it).
+                # Verdict and remedy first: the in-app row keeps only
+                # NOTIFICATION_SUMMARY_MAX_CHARS (#406), so the task text
+                # goes last. "May": a long run is not necessarily a stuck
+                # one, and a stop is cooperative (a single stalled read
+                # never sees it).
                 (
                     f"[SCHEDULED TASK STILL RUNNING] TODO [{entry.todo_id}] has "
                     f"been running {minutes} min and will not run again until "
@@ -1590,12 +1592,21 @@ class Ticker:
                 f"that started {started} and retries every poll; if the "
                 f"database keeps failing it is reclaimed at {reclaim}"
             )
+            verdict = (
+                f"its run marker is not released yet and the scheduler "
+                f"retries every poll; if the database keeps failing it is "
+                f"reclaimed at {reclaim}"
+            )
         else:
             cause = (
                 f"an execution marker left by the run that started {started} "
                 f"was never released. The scheduler reclaims it "
                 f"automatically at {reclaim}; restarting the scheduler "
                 f"clears it now"
+            )
+            verdict = (
+                f"a stale run marker holds it; restarting the scheduler "
+                f"clears it now, or it is reclaimed at {reclaim}"
             )
         logger.warning(
             "Scheduled TODO %s (due %s) is blocked by an execution marker "
@@ -1611,9 +1622,11 @@ class Ticker:
         # must not swallow the alert, which is the durable signal.
         try:
             send_owner_alert(
+                # Verdict and remedy first, slots and task last (#406).
                 (
-                    f"[SCHEDULED TASK BLOCKED] TODO [{entry.todo_id}] "
-                    f"\"{task}\" is due ({due}) but cannot start: {cause}."
+                    f"[SCHEDULED TASK BLOCKED] TODO [{entry.todo_id}] cannot "
+                    f"start: {verdict}. Task: \"{task}\", due {due}. The "
+                    f"marker is from the run that started {started}."
                 ),
                 self.settings,
                 user_id=entry.user_id,
@@ -2156,7 +2169,11 @@ class Ticker:
             del self._retry_counts[todo.id]
 
         should_notify = self._should_create_autonomous_notification(thread_id)
-        notification_summary = response_text[:200] if response_text else "Scheduled TODO executed"
+        notification_summary = (
+            response_text[:NOTIFICATION_SUMMARY_MAX_CHARS]
+            if response_text
+            else "Scheduled TODO executed"
+        )
 
         publish_autonomous_event(
             event_type="task_completed",
@@ -2457,15 +2474,16 @@ class Ticker:
             return
         try:
             send_owner_alert(
+                # Verdict and next slot first, task and timing last (#406).
                 (
                     f"[SCHEDULED TASK SKIPPED] Recurring TODO [{todo_id}] "
-                    f"\"{task}\" skipped {skipped} scheduled {noun}: the run "
-                    f"due {_format_slot(fired_at)} ended at "
-                    f"{_format_slot(now)}, after later slots had already "
-                    f"passed; {next_copy}. Usual causes: the scheduler was "
-                    f"down or busy, or a run took longer than its "
-                    f"{recurrence} interval. At most one such alert per TODO "
-                    f"per {self._skip_alert_cooldown_label()}."
+                    f"skipped {skipped} scheduled {noun}; {next_copy}. Task: "
+                    f"\"{task}\". The run due {_format_slot(fired_at)} ended "
+                    f"at {_format_slot(now)}, after later slots had already "
+                    f"passed. Usual causes: the scheduler was down or busy, "
+                    f"or a run took longer than its {recurrence} interval. "
+                    f"At most one such alert per TODO per "
+                    f"{self._skip_alert_cooldown_label()}."
                 ),
                 self.settings,
                 user_id=entry.user_id,
@@ -2849,12 +2867,14 @@ class Ticker:
             # (which runs inside _execute_scheduled_todo's except block,
             # where a raise would skip the execution-marker note path).
             send_owner_alert(
+                # Verdict and remedy first, task and error last (#406).
                 (
-                    f"[SCHEDULED TASK PAUSED] Recurring TODO [{todo.id}] "
-                    f"\"{(todo.task or '')[:80]}\" was auto-paused after "
-                    f"{failure_count} consecutive failed runs. Last error: "
-                    f"{str(error)[:200]}. Its recurrence is kept; reschedule "
-                    f"it (/todos schedule {todo.id} ...) to resume."
+                    f"[SCHEDULED TASK PAUSED] Recurring TODO [{todo.id}] was "
+                    f"auto-paused after {failure_count} consecutive failed "
+                    f"runs. To resume, reschedule it: /todos schedule "
+                    f"{todo.id} ... (its recurrence is kept). Task: "
+                    f"\"{(todo.task or '')[:80]}\". Last error: "
+                    f"{str(error)[:200]}."
                 ),
                 self.settings,
                 user_id=entry.user_id,
@@ -2884,14 +2904,14 @@ class Ticker:
         )
         try:
             # Same belt as the pause alert: never let the alert plane break
-            # the failure handler.
+            # the failure handler. Verdict and remedy first (#406).
             send_owner_alert(
                 (
-                    f"[SCHEDULED TASK ALERT] Recurring TODO [{todo.id}] "
-                    f"\"{(todo.task or '')[:80]}\" has failed {failure_count} "
-                    f"consecutive runs. Last error: {str(error)[:200]}. It "
-                    f"will keep retrying on schedule.{pause_note} Manage it "
-                    f"with /todos."
+                    f"[SCHEDULED TASK ALERT] Recurring TODO [{todo.id}] has "
+                    f"failed {failure_count} consecutive runs and keeps "
+                    f"retrying on schedule. Manage it with /todos.{pause_note} "
+                    f"Task: \"{(todo.task or '')[:80]}\". Last error: "
+                    f"{str(error)[:200]}."
                 ),
                 self.settings,
                 user_id=entry.user_id,

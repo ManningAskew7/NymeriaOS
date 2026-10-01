@@ -25,6 +25,7 @@ from .agent_text_extract import (  # noqa: F401  (re-export surface; several als
     strip_inline_thinking_text,
     trailing_marker_prefix_length,
 )
+from .prompts import AUTONOMOUS_MODE_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -239,12 +240,61 @@ def build_message_timestamp_map(
     return timestamp_map
 
 
+# Wake-up bodies the history badge recognizes, matched at the start of the
+# message proper (ticker.py builds "Work on TODO <id>: ...", the watchdog
+# sweep its "[WATCHDOG ALERT] ..." nudge). Anything else is "trigger".
+_AUTONOMOUS_SOURCE_MARKERS = (
+    ("Work on TODO ", "scheduler"),
+    ("[WATCHDOG ALERT]", "watchdog"),
+)
+_AUTONOMOUS_RULES_HEADING = "## Autonomous Run Rules"
+
+
+def _autonomous_message_body(text: str) -> str:
+    """``text`` without the autonomous run-rules block that leads it.
+
+    Every autonomous wake-up persists as metadata, then the run rules, then
+    the message (``agent_turn_metadata._assemble``). The current rules text is
+    removed exactly. Each stored message keeps the rules wording it was sent
+    with, so an OLDER wording falls back to structure. Every wording so far
+    is the heading, prose, then one bullet list, so the message starts at the
+    first blank-line-delimited block after that list (a marker merely quoted
+    later in a trigger's body is never mistaken for its start). A wording
+    without a bullet list falls back to the first block that starts with a
+    known marker ("" when none does).
+    """
+    if not text.startswith(_AUTONOMOUS_RULES_HEADING):
+        return text
+    current = AUTONOMOUS_MODE_RULES.strip() + "\n\n"
+    if text.startswith(current):
+        return text[len(current):]
+    blocks = text.split("\n\n")
+    index = 1
+    while index < len(blocks) and not blocks[index].startswith("- "):
+        index += 1
+    if index < len(blocks):
+        while index < len(blocks) and blocks[index].startswith("- "):
+            index += 1
+        return "\n\n".join(blocks[index:])
+    markers = tuple(marker for marker, _source in _AUTONOMOUS_SOURCE_MARKERS)
+    for index in range(1, len(blocks)):
+        if blocks[index].startswith(markers):
+            return "\n\n".join(blocks[index:])
+    return ""
+
+
 def classify_autonomous_source(text: str) -> str:
-    """Classify the source of an autonomous wakeup from its stripped prompt."""
-    if text.startswith("Work on TODO "):
-        return "scheduler"
-    if text.startswith("[WATCHDOG ALERT]"):
-        return "watchdog"
+    """Classify the source of an autonomous wake-up from its stored prompt.
+
+    Accepts the raw stored content or an already stripped one: the
+    ``[Time:]/[Trigger:]`` block and the run rules both lead the message, so
+    both come off before the marker check (before 2026-10-01 only the
+    metadata did, and every scheduled or watchdog wake-up read "trigger").
+    """
+    body = _autonomous_message_body(strip_prompt_context(text))
+    for marker, source in _AUTONOMOUS_SOURCE_MARKERS:
+        if body.startswith(marker):
+            return source
     return "trigger"
 
 

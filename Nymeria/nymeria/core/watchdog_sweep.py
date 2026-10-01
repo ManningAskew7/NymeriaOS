@@ -44,6 +44,7 @@ from .notification_dispatch import (
     send_external_notifications,
     should_notify_autonomous,
 )
+from .notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from .stream_bridge import stream_and_collect
 from .time_utils import ensure_aware_utc
@@ -531,7 +532,9 @@ class WatchdogSweep:
                 user_id=user_id,
                 thread_id=thread_id,
                 task_id=task_id,
-                summary=(content or "Watchdog nudge completed")[:200],
+                summary=(content or "Watchdog nudge completed")[
+                    :NOTIFICATION_SUMMARY_MAX_CHARS
+                ],
                 settings=self.settings,
                 thread_config_manager=self.thread_config_manager,
             )

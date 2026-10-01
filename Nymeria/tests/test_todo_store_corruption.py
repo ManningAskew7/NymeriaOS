@@ -787,3 +787,28 @@ def test_a_healthy_list_round_trips_without_repair(tmp_path, recorders):
     assert loaded.get_item(ids[0]).status == TodoStatus.DONE  # type: ignore[union-attr]
     assert not (manager.todos_dir / "quarantine").exists()
     assert recorders.audits == []
+
+
+# --- #406: the in-app row (the message cut at the cap) keeps the fix --------
+
+
+def test_the_corrupt_alert_row_keeps_the_restore_hint(tmp_path, recorders):
+    """#406 behavior 26: the restore hint leads the quarantine path, which
+    grows with the account id."""
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
+    user = "family-tablet-shared-account-" + "x" * 60
+    manager = TodoManager(tmp_path)
+    manager.todos_dir.mkdir(parents=True, exist_ok=True)
+    _path(manager, user).write_text('{"user_id": "x", "items": [{"id', encoding="utf-8")
+
+    assert manager.get_todos(user).items == []
+
+    assert recorders.alerted.wait(5)
+    message = recorders.alerts[0]
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith("[TODO LIST CORRUPT]")
+    assert "an admin can restore items from the original" in row
+    quarantined = _quarantined(manager, user)
+    assert len(quarantined) == 1
+    assert f"todos/quarantine/{quarantined[0].name}" in message

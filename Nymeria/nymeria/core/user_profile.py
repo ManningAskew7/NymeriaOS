@@ -694,12 +694,14 @@ def _report_profile_unavailable(user_id: str, why: str) -> None:
         user_id,
         why,
     )
+    # Remedy before the cause: ``why`` can carry a long OS error and path,
+    # and the in-app row keeps only NOTIFICATION_SUMMARY_MAX_CHARS (#406).
     alert = (
         f"[PROFILE UNREADABLE] Your profile file (memories and preferences) "
-        f"exists but could not be used: {why}. Until it can be, the assistant "
-        f"runs without your memories and no change to them can be saved; "
-        f"nothing in the file was changed. Check its permissions and free "
-        f"disk space."
+        f"exists but could not be used. Check its permissions and free disk "
+        f"space. Until then the assistant runs without your memories and no "
+        f"change to them can be saved; nothing in the file was changed. "
+        f"Cause: {why}."
     )
 
     def _send() -> None:
@@ -728,12 +730,13 @@ def _report_profile_repair(
     where = f"users/{user_dir}/quarantine/{quarantine_name}"
     if not salvage.salvageable:
         detail = "corrupt profile preserved; a fresh profile started"
+        # The restore hint before the quarantine path (#406).
         alert = (
             f"[PROFILE CORRUPT] Your profile file (memories and preferences) "
-            f"could not be parsed (edited by hand or by a tool?), so a fresh "
-            f"profile with default settings started. Nothing was deleted: "
-            f"the original is preserved at {where}, and an admin can restore "
-            f"your memories from it."
+            f"could not be parsed, so a fresh profile with default settings "
+            f"started. An admin can restore your memories from the original, "
+            f"preserved at {where}; nothing was deleted. (Edited by hand or "
+            f"by a tool?)"
         )
     else:
         kept = len(salvage.profile.memories)

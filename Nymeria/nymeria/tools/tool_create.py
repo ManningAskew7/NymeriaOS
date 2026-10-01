@@ -856,11 +856,14 @@ def _active_admin_user_ids() -> list[str]:
 def _notify_user(user_id: str, summary: str, thread_id: str = "") -> None:
     """Best-effort in-app notification (the hooks notify-action idiom)."""
     try:
-        from ..core.notifications import create_notification
+        from ..core.notifications import (
+            NOTIFICATION_SUMMARY_MAX_CHARS,
+            create_notification,
+        )
 
         create_notification(
             user_id=user_id,
-            summary=summary[:200],
+            summary=summary[:NOTIFICATION_SUMMARY_MAX_CHARS],
             thread_id=thread_id,
             task_id=None,
         )

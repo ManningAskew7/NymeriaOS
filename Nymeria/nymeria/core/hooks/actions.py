@@ -411,11 +411,11 @@ def notify(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
         return None
     try:
         from ...config import get_settings
-        from ..notifications import create_notification
+        from ..notifications import NOTIFICATION_SUMMARY_MAX_CHARS, create_notification
         settings = get_settings()
         create_notification(
             user_id=ctx.user_id or "",
-            summary=text[:200],
+            summary=text[:NOTIFICATION_SUMMARY_MAX_CHARS],
             thread_id=ctx.thread_id or "",
             task_id=None,
         )

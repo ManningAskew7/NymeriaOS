@@ -18,6 +18,7 @@ import pytest
 
 from nymeria.core import delivery_accounting
 from nymeria.core.accounts import AccountsRepo
+from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 from nymeria.core.todo_manager import TodoManager
 from nymeria.core.todo_schedule_db import TodoScheduleDB
 
@@ -290,3 +291,100 @@ def test_unknown_todo_404_and_non_admin_rejected(
     assert resp.status_code == 403
     tm = TodoManager(tmp_path)
     assert tm.get_todo_by_id("owner", todo_id).delivery_failures == 0
+
+
+# ── #406: the in-app row (the message cut at the cap) keeps the fix ─────────
+# Worst-case inputs at the request schema's limits: a 40-char platform, a
+# 120-char target, a 500-char error (the copies keep 200), and task text past
+# the copies' 80-character cut.
+
+_LONG_TASK = (
+    "Send the morning check-in with the weather, the day's appointments and "
+    "a reminder about the pharmacy pickup"
+)
+_LONG_PLATFORM = "discord-guild-relay-for-the-family-group"[:40]
+_LONG_TARGET = "channel " + "family-announcements-and-reminders-" * 4
+_LONG_ERROR = "403 Forbidden: Missing Access. " + "The bot lacks permission. " * 20
+
+
+def _long_todo(tmp_path: Path, *, recurrence: str | None) -> str:
+    tm = TodoManager(tmp_path)
+    with tm.atomic_update("owner") as todo_list:
+        created = todo_list.add_item(
+            _LONG_TASK,
+            scheduled_for=datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc),
+            thread_id="discord_123456789012345678",
+            recurrence=recurrence,
+        )
+    assert created is not None
+    return created.id
+
+
+def _long_report(client, headers, todo_id: str):
+    return _report(
+        client,
+        headers,
+        todo_id,
+        "failed",
+        platform=_LONG_PLATFORM,
+        target=_LONG_TARGET[:120],
+        error=_LONG_ERROR[:500],
+        thread_id="discord_123456789012345678",
+    )
+
+
+def _in_app_row(message: str) -> str:
+    return message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+
+
+def _assert_detail_survives_externally(message: str) -> None:
+    where = f"{_LONG_PLATFORM} {_LONG_TARGET[:120]}"
+    assert f'Task: "{_LONG_TASK[:80]}".' in message
+    assert where in message
+    assert _LONG_ERROR[:200] in message
+
+
+def test_one_shot_not_delivered_row_says_the_output_is_saved(
+    tmp_path: Path, api_client_builder, alerts
+):
+    """#406 behaviors 24, 28 (one-shot)."""
+    client, _agent, headers = _admin_client(tmp_path, api_client_builder)
+    todo_id = _long_todo(tmp_path, recurrence=None)
+
+    _long_report(client, headers, todo_id)
+
+    message = alerts[0]["message"]
+    row = _in_app_row(message)
+    assert row.startswith(f"[SCHEDULED TASK NOT DELIVERED] TODO [{todo_id}] ran")
+    # The destination leads clipped to 40 characters; its full form closes.
+    assert f"could not be delivered to {_LONG_PLATFORM[:37]}...;" in row
+    assert "the output is saved in the thread's history." in row
+    _assert_detail_survives_externally(message)
+    assert f'Destination: "{_LONG_PLATFORM} {_LONG_TARGET[:120]}".' in message
+
+
+def test_recurring_delivery_alert_and_pause_rows_keep_the_fix(
+    tmp_path: Path, api_client_builder, alerts
+):
+    """#406 behaviors 24, 28 (recurring alert at 2, pause at 5)."""
+    client, _agent, headers = _admin_client(tmp_path, api_client_builder)
+    todo_id = _long_todo(tmp_path, recurrence="1d")
+
+    for _ in range(5):
+        _long_report(client, headers, todo_id)
+
+    alert, paused = (a["message"] for a in alerts)
+
+    row = _in_app_row(alert)
+    assert row.startswith(f"[SCHEDULED TASK ALERT] Recurring TODO [{todo_id}]")
+    assert "could not be delivered for 2 consecutive runs" in row
+    assert "(saved in the thread's history)" in row
+    assert "Manage it with /todos." in row
+
+    row = _in_app_row(paused)
+    assert row.startswith(f"[SCHEDULED TASK PAUSED] Recurring TODO [{todo_id}]")
+    assert "could not be delivered 5 runs in a row" in row
+    assert f"reschedule it: /todos schedule {todo_id} ..." in row
+
+    for message in (alert, paused):
+        _assert_detail_survives_externally(message)

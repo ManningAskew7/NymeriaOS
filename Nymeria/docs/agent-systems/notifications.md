@@ -98,11 +98,13 @@ endpoint and renders the right form fields.
 The desktop sidebar's notifications panel is the audit log of every
 `notify` call. Each row carries:
 
-- `summary` -- short message body
-- `profile` -- profile that routed the notification (e.g. `"default"`)
-- `attempted` -- destination names tried (excludes disabled destinations)
-- `delivered_to` -- destinations that succeeded
-- `errors` -- `{destination_name: error_message}` for failures
+- `summary`: short message body, the first 200 characters of the message
+  (`NOTIFICATION_SUMMARY_MAX_CHARS` in `core/notifications.py`, the one cap
+  every writer uses); external destinations get the full text
+- `profile`: profile that routed the notification (e.g. `"default"`)
+- `attempted`: destination names tried (excludes disabled destinations)
+- `delivered_to`: destinations that succeeded
+- `errors`: `{destination_name: error_message}` for failures
 
 The frontend renders chips for each `delivered_to` entry and red chips for
 errors. Rows are stored at `data/notifications/{user_id}.json`; capacity is
@@ -113,6 +115,15 @@ One that cannot be read or preserved is not saved over: notifications are
 still delivered but not recorded, and mark-read or delete answers 503.
 Clearing the whole history (`DELETE /notifications`) still removes the file,
 since that is what was asked (#401).
+
+Owner alerts (`send_owner_alert`: the scheduler, trigger, delivery, store
+repair and agent-settings alerts, all tagged like `[TRIGGER PAUSED]`) always
+write a row and are written to survive that cut (#406): the tag, a subject
+clipped to 40 characters, the verdict and the remedy command come first,
+and the variable detail (full names, task text, the last error) comes last.
+A user with no external destinations therefore still reads what happened
+and what to type, such as `/triggers resume <id>`; the full text reaches
+every external destination unchanged.
 
 The `in_app_notification_level` per-thread setting still gates whether
 **autonomous task completions** create rows (`notify_only` = explicit

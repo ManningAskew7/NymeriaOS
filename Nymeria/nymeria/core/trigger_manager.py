@@ -2033,18 +2033,24 @@ class TriggerManager:
         paused: bool,
         parked: int = 0,
     ) -> None:
-        """Owner alert for the #264 action-failure policy. Never raises."""
+        """Owner alert for the #264 action-failure policy. Never raises.
+
+        Verdict and remedy lead, with the name clipped (#406): the in-app row
+        keeps only ``NOTIFICATION_SUMMARY_MAX_CHARS``, and a name may be 200
+        characters. The error and the full name close the message, which
+        external destinations receive whole.
+        """
         try:
             from ..config import get_settings
             from .notification_dispatch import send_owner_alert
+            from .notifications import alert_subject
 
+            subject, full_name = alert_subject(trigger_name, label="Full name")
             if paused:
                 message = (
-                    f"[TRIGGER PAUSED] Trigger \"{trigger_name}\" "
-                    f"({trigger_id}) was auto-paused after {count} "
-                    f"consecutive failed actions, so it has stopped running "
-                    f"and stopped consuming events. Last error: "
-                    f"{last_error}."
+                    f"[TRIGGER PAUSED] Trigger \"{subject}\" ({trigger_id}) "
+                    f"stopped after {count} consecutive failed actions. Fix "
+                    f"the cause, then /triggers resume {trigger_id}."
                     + (
                         f" The {parked} event(s) its failed runs could not "
                         f"deliver are kept and will be retried once it resumes. "
@@ -2053,8 +2059,8 @@ class TriggerManager:
                         if parked
                         else ""
                     )
-                    + f" Fix the cause, then resume it with /triggers resume "
-                    f"{trigger_id}."
+                    + " Until then it neither runs nor consumes events. Last "
+                    f"error: {last_error}.{full_name}"
                 )
             else:
                 settings = get_settings()
@@ -2062,14 +2068,13 @@ class TriggerManager:
                     0, int(getattr(settings, "trigger_failure_pause_after", 5))
                 )
                 pause_note = (
-                    f" It auto-pauses after {pause_after} consecutive "
-                    f"failures." if pause_after else ""
+                    f"; it auto-pauses after {pause_after}" if pause_after else ""
                 )
                 message = (
-                    f"[TRIGGER ALERT] Trigger \"{trigger_name}\" "
-                    f"({trigger_id}) has failed its action {count} times in "
-                    f"a row. Last error: {last_error}.{pause_note} Manage it "
-                    f"with /triggers."
+                    f"[TRIGGER ALERT] Trigger \"{subject}\" ({trigger_id}) "
+                    f"failed its action {count} times in a row{pause_note}. "
+                    f"Manage it with /triggers. Last error: "
+                    f"{last_error}.{full_name}"
                 )
 
             send_owner_alert(
@@ -2114,21 +2119,23 @@ class TriggerManager:
         try:
             from ..config import get_settings
             from .notification_dispatch import send_owner_alert
+            from .notifications import alert_subject
 
+            subject, full_name = alert_subject(trigger_name, label="Full name")
             if repeat:
                 message = (
-                    f"[TRIGGER STILL FAILING] Trigger \"{trigger_name}\" "
-                    f"({trigger_id}) is still failing its source checks and "
-                    f"is polling at a reduced rate. Last error: {last_error}. "
-                    f"This reminder repeats until you fix the cause or "
-                    f"disable it with /triggers."
+                    f"[TRIGGER STILL FAILING] Trigger \"{subject}\" "
+                    f"({trigger_id}) still fails its source checks. Fix the "
+                    f"cause or disable it with /triggers; this reminder "
+                    f"repeats until then. It is polling at a reduced rate. "
+                    f"Last error: {last_error}.{full_name}"
                 )
             else:
                 message = (
-                    f"[TRIGGER FAILING] Trigger \"{trigger_name}\" "
-                    f"({trigger_id}) keeps erroring and is now marked "
-                    f"failing (checks back off). Last error: {last_error}. "
-                    f"Manage it with /triggers."
+                    f"[TRIGGER FAILING] Trigger \"{subject}\" ({trigger_id}) "
+                    f"keeps erroring and is now marked failing (checks back "
+                    f"off). Manage it with /triggers. Last error: "
+                    f"{last_error}.{full_name}"
                 )
 
             send_owner_alert(

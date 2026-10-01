@@ -238,13 +238,14 @@ def _report_repair(user_id: str, quarantine_name: str, salvage: _Salvage) -> Non
     where = f"thread_metadata/quarantine/{quarantine_name}"
     if not salvage.parsed:
         detail = "corrupt thread list preserved; the list starts empty"
+        # The restore hint before the detail and the path (#406).
         alert = (
             f"[THREAD LIST CORRUPT] Your thread list file (titles, pins, "
-            f"running costs) could not be parsed (edited by hand or by a "
-            f"tool?), so a new, empty one started. No conversation was "
-            f"deleted, but threads may be missing from the list or show "
-            f"default titles. The original is preserved at {where}, and an "
-            f"admin can restore it."
+            f"running costs) could not be parsed, so a new, empty one "
+            f"started. An admin can restore it from the original; no "
+            f"conversation was deleted. Until then threads may be missing "
+            f"from the list or show default titles. The original is preserved "
+            f"at {where}. (Edited by hand or by a tool?)"
         )
     else:
         detail = (

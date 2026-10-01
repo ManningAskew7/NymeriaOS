@@ -9205,6 +9205,86 @@ def test_agent_reload_that_moves_a_sensitive_key_alerts_the_owner(
     assert alerts == []
 
 
+# #406: the in-app row is the message cut at NOTIFICATION_SUMMARY_MAX_CHARS,
+# so the remedy must lead the variable parts (a long URL value, a platform
+# thread id, every sensitive key at once).
+_LONG_THREAD = "discord_123456789012345678_987654321098765432_reply_relay"
+
+
+def _long_thread_agent_ctx() -> CommandContext:
+    return CommandContext(
+        user_id="alice",
+        thread_id=_LONG_THREAD,
+        actor="agent",
+        surface="agent",
+        is_admin=True,
+    )
+
+
+def _capture_owner_alerts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    return alerts
+
+
+def test_agent_settings_write_alert_row_keeps_the_review_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
+    alerts = _capture_owner_alerts(monkeypatch)
+    url = "https://relay.example.net/" + "tenant-a1b2c3/" * 7
+    assert len(url) >= 120
+
+    result = run(
+        CommandService().execute(
+            _long_thread_agent_ctx(),
+            f"/env set NYMERIA_PUBLIC_URL {url}",
+            api=FakeCommandApi(),
+        )
+    )
+
+    assert result.success is True
+    message = alerts[0]
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith("An agent changed server setting nymeria_public_url via agent")
+    assert "Review with /env show; revert with /env set" in row
+    # The value and the full thread id still reach external destinations.
+    assert f"New value: {url}" in message
+    assert f'Thread: "{_LONG_THREAD}".' in message
+
+
+def test_agent_reload_alert_row_keeps_the_review_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nymeria.api.schemas.settings import AGENT_WRITE_ALERT_SETTINGS
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
+    alerts = _capture_owner_alerts(monkeypatch)
+    api = FakeCommandApi()
+    api.reload_changed = sorted(AGENT_WRITE_ALERT_SETTINGS)
+
+    result = run(
+        CommandService().execute(_long_thread_agent_ctx(), "/settings reload", api=api)
+    )
+
+    assert result.success is True
+    message = alerts[0]
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith("An agent reloaded the server config files via agent")
+    assert "Review with /env show; revert with /env set" in row
+    assert f"Changed: {', '.join(sorted(AGENT_WRITE_ALERT_SETTINGS))}." in message
+    assert f'Thread: "{_LONG_THREAD}".' in message
+
+
 def test_agent_settings_alert_failure_never_blocks_the_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

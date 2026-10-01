@@ -626,11 +626,12 @@ def _report_todo_repair(
     where = f"todos/quarantine/{quarantine_name}"
     if not had_items:
         detail = "corrupt TODO list preserved; the list starts empty"
+        # The restore hint before the quarantine path (#406).
         alert = (
-            f"[TODO LIST CORRUPT] Your TODO list file could not be parsed "
-            f"(edited by hand or by a tool?), so a new, empty list started. "
-            f"Nothing was deleted: the original is preserved at {where}, and "
-            f"an admin can restore items from it."
+            f"[TODO LIST CORRUPT] Your TODO list file could not be parsed, "
+            f"so a new, empty list started. Nothing was deleted: an admin can "
+            f"restore items from the original, preserved at {where}. (Edited "
+            f"by hand or by a tool?)"
         )
     else:
         detail = (

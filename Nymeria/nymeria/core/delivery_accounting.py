@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .notification_dispatch import send_owner_alert
+from .notifications import alert_subject
 from .todo_manager import (
     PAUSE_NOTE_PREFIX,
     TodoManager,
@@ -92,6 +93,10 @@ def record_delivery_report(
     task_text = (todo.task or "") if todo else ""
     where = f"{platform} {target}".strip() if target else platform
     err_text = (error or "unknown error")[:200]
+    # Every alert below leads with verdict and remedy and keeps the variable
+    # parts (task, a destination up to 161 chars, the error) for the end, so
+    # the in-app row's NOTIFICATION_SUMMARY_MAX_CHARS keeps the fix (#406).
+    where_lead, where_full = alert_subject(where, label="Destination")
 
     alerted = False
     paused = False
@@ -102,10 +107,10 @@ def record_delivery_report(
         if count:
             send_owner_alert(
                 (
-                    f"[SCHEDULED TASK NOT DELIVERED] TODO [{todo_id}] "
-                    f"\"{task_text[:80]}\" ran, but its output could not be "
-                    f"delivered to {where}: {err_text}. The output is saved "
-                    f"in the thread's history."
+                    f"[SCHEDULED TASK NOT DELIVERED] TODO [{todo_id}] ran, "
+                    f"but its output could not be delivered to {where_lead}; "
+                    f"the output is saved in the thread's history. Task: "
+                    f"\"{task_text[:80]}\". Error: {err_text}.{where_full}"
                 ),
                 settings,
                 user_id=user_id,
@@ -133,11 +138,11 @@ def record_delivery_report(
                 send_owner_alert(
                     (
                         f"[SCHEDULED TASK PAUSED] Recurring TODO [{todo_id}] "
-                        f"\"{task_text[:80]}\" was auto-paused after {count} "
-                        f"consecutive runs whose output could not be "
-                        f"delivered to {where}. Last error: {err_text}. Its "
-                        f"recurrence is kept; reschedule it "
-                        f"(/todos schedule {todo_id} ...) to resume."
+                        f"was auto-paused: its output could not be delivered "
+                        f"{count} runs in a row. To resume, reschedule it: "
+                        f"/todos schedule {todo_id} ... (its recurrence is "
+                        f"kept). Task: \"{task_text[:80]}\". Undelivered to "
+                        f"{where}. Last error: {err_text}."
                     ),
                     settings,
                     user_id=user_id,
@@ -153,11 +158,11 @@ def record_delivery_report(
             send_owner_alert(
                 (
                     f"[SCHEDULED TASK ALERT] Recurring TODO [{todo_id}] "
-                    f"\"{task_text[:80]}\" keeps running, but its output "
-                    f"could not be delivered to {where} for {count} "
-                    f"consecutive runs. Last error: {err_text}. The output "
-                    f"is saved in the thread's history.{pause_note} Manage "
-                    f"it with /todos."
+                    f"keeps running, but its output could not be delivered "
+                    f"for {count} consecutive runs (saved in the thread's "
+                    f"history). Manage it with /todos."
+                    f"{pause_note} Task: \"{task_text[:80]}\". Undelivered "
+                    f"to {where}. Last error: {err_text}."
                 ),
                 settings,
                 user_id=user_id,

@@ -329,6 +329,27 @@ def test_unparseable_text_is_preserved_and_reported_as_corrupt(tmp_path, recorde
     assert "starts empty" in recorders.audits[0][1]
 
 
+def test_the_corrupt_alert_row_keeps_the_restore_hint(tmp_path, recorders):
+    """#406: the in-app row (the message cut at the cap) says an admin can
+    restore the list before the detail and the quarantine path."""
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
+    manager = _metadata(tmp_path)
+    _seed_threads(manager)
+    _metadata_path(manager).write_text("{not json", encoding="utf-8")
+
+    assert manager.list_threads(USER) == []
+
+    assert recorders.alerted.wait(5)
+    message = recorders.alerts[0]
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith("[THREAD LIST CORRUPT]")
+    assert "An admin can restore it from the original" in row
+    assert "no conversation was deleted" in message
+    quarantined = _quarantined(manager.metadata_dir, USER)
+    assert f"thread_metadata/quarantine/{quarantined[0].name}" in message
+
+
 def test_a_utf16_file_loads_without_repair(tmp_path, recorders):
     manager = _metadata(tmp_path)
     _seed_threads(manager)

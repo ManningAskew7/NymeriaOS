@@ -72,6 +72,55 @@ def test_prefix_turn_metadata_appends_guidance_only_when_autonomous(monkeypatch)
     assert "Autonomous Run Rules" not in interactive
 
 
+# #419: a scheduled TODO whose task says "do not call any tools" was never
+# closed: the task text arrives AFTER the rules, so recency won and the run
+# ended without nym_todo, leaving the TODO in_progress for the watchdog.
+
+_EXEMPTION = "make them even when the task says not to call tools"
+
+
+def _scheduled_todo_bullet(guidance: str) -> str:
+    return next(
+        part for part in guidance.split("\n- ") if part.startswith("For scheduled TODOs")
+    )
+
+
+def test_todo_bookkeeping_is_exempt_from_a_no_tools_task():
+    """The scheduled-TODO bullet itself says closing, rescheduling or deleting
+    the TODO is run bookkeeping the task text cannot forbid."""
+    bullet = _scheduled_todo_bullet(get_autonomous_tail_guidance(True))
+
+    assert "run bookkeeping, not part of the task" in bullet
+    assert _EXEMPTION in bullet
+    # It names the calls it exempts, so "no tools" cannot be read as covering them.
+    assert "`nym_todo`/`nym_todo_delete` calls" in bullet
+
+
+def test_scheduled_wakeup_carries_the_exemption_before_the_task():
+    """The real assembly for a ticker fire: metadata, then the rules with the
+    exemption, then the task. Stripping the metadata (history views, RAG)
+    leaves exactly the rules and the task."""
+    from nymeria.core.agent_history import CONTEXT_PREFIX_PATTERN, strip_prompt_context
+
+    agent = _agent_with_configs()
+    task = "Work on TODO 583c2ced: Just reply pong. Do not call any tools."
+
+    assembled = agent._prefix_turn_metadata(
+        task,
+        is_self_invoke=True,
+        trigger_override=None,
+        is_autonomous=True,
+        source="ticker",
+    )
+
+    metadata = CONTEXT_PREFIX_PATTERN.match(assembled)
+    assert metadata is not None
+    exemption_at = assembled.index(_EXEMPTION)
+    assert metadata.end() <= exemption_at < assembled.index(task)
+    assert assembled.endswith(task)
+    assert strip_prompt_context(assembled) == f"{AUTONOMOUS_MODE_RULES.strip()}\n\n{task}"
+
+
 def test_request_metadata_block_explains_the_reply_contract():
     """Source-specific guidance rides in the request block, not the system
     prompt (backlog #357): the callee learns who asked, how to answer, and that
@@ -115,6 +164,9 @@ def test_default_prompt_omits_mode_rules_and_time():
 
     assert "BASE PROMPT" in prompt
     assert "## Autonomous Run Rules" not in prompt
+    # #419's exemption rides the message tail like the rest of the rules:
+    # editing it never invalidates a cached system-prompt prefix.
+    assert _EXEMPTION not in prompt
     assert "[Time:" not in prompt
     assert "[Trigger:" not in prompt
     # Deterministic: rebuilding yields the identical prefix.

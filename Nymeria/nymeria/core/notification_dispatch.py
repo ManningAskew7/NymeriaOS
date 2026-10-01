@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 import httpx
 
+from .notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
 if TYPE_CHECKING:
     from .notification_channels import DispatchResult
     from .thread_config import ThreadConfigManager
@@ -121,7 +123,10 @@ def publish_telegram_thread_notification(
             thread_id=thread_id,
             user_id=user_id,
             task_id="",
-            data={"message": message, "summary": message[:200]},
+            data={
+                "message": message,
+                "summary": message[:NOTIFICATION_SUMMARY_MAX_CHARS],
+            },
         )
         logger.info("Telegram thread notification queued for thread=%s", thread_id)
         return "Queued to Telegram thread"
@@ -161,9 +166,10 @@ def create_in_app_notification(
     try:
         from .notifications import create_notification
 
+        summary = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
         notification = create_notification(
             user_id=user_id,
-            summary=message[:200],
+            summary=summary,
             thread_id=thread_id if thread_id and thread_id != "default" else None,
             task_id=task_id,
             profile=profile,
@@ -179,7 +185,7 @@ def create_in_app_notification(
                 thread_id=thread_id if thread_id else "default",
                 user_id=user_id,
                 task_id=task_id or "",
-                data={"summary": message[:200], "in_app_only": True},
+                data={"summary": summary, "in_app_only": True},
             )
         except Exception:
             logger.warning("Failed to publish notification event to event bus", exc_info=True)
@@ -283,7 +289,7 @@ def create_autonomous_notification(
 
         create_notification(
             user_id=user_id,
-            summary=summary[:200],
+            summary=summary[:NOTIFICATION_SUMMARY_MAX_CHARS],
             thread_id=thread_id,
             task_id=task_id,
         )

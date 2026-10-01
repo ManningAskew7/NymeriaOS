@@ -6935,12 +6935,20 @@ class _CommandExecutor(
                     if secret
                     else f" (was {old_value})"
                 )
+            from .notifications import alert_subject
+
             surface = self.surface or "unknown surface"
+            # Remedy before the value (#406): a URL value or a long
+            # platform thread id would push it past the in-app row's
+            # NOTIFICATION_SUMMARY_MAX_CHARS.
+            thread, thread_full = alert_subject(
+                self.thread_id or "unknown", label="Thread"
+            )
             self._dispatch_owner_alert(
-                f"An agent changed server setting {key} to {shown}{was} "
-                f"via {surface} on thread {self.thread_id or 'unknown'}. "
-                "Review with /env show and revert with /env set if this was "
-                "not expected.",
+                f"An agent changed server setting {key} via {surface} on "
+                f"thread {thread}. Review with /env show; revert with /env set "
+                f"if this was not expected. New value: "
+                f"{shown}{was}.{thread_full}",
                 context=key,
             )
         except Exception as e:  # noqa: BLE001 - never fail the write
@@ -7010,13 +7018,18 @@ class _CommandExecutor(
             applied = sorted(set(changed) & AGENT_WRITE_ALERT_SETTINGS)
             if not applied:
                 return
+            from .notifications import alert_subject
+
             surface = self.surface or "unknown surface"
+            # Remedy before the key list, which has no length bound (#406).
+            thread, thread_full = alert_subject(
+                self.thread_id or "unknown", label="Thread"
+            )
             self._dispatch_owner_alert(
                 "An agent reloaded the server config files via "
-                f"{surface} on thread {self.thread_id or 'unknown'}, which "
-                f"changed: {', '.join(applied)}. Values are not shown here; "
-                "review with /env show and revert with /env set if this was "
-                "not expected.",
+                f"{surface} on thread {thread}. Review with /env show; revert "
+                "with /env set if this was not expected (values are not shown "
+                f"here). Changed: {', '.join(applied)}.{thread_full}",
                 context=",".join(applied),
             )
         except Exception as e:  # noqa: BLE001 - never fail the reload

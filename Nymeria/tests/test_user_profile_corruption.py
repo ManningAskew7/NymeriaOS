@@ -821,3 +821,60 @@ def test_setup_hydrate_reads_a_utf16_profile_with_null_tool_preferences(tmp_path
     _hydrate_profile_picks(state, for_docker=False)
 
     assert state.extras["skill_kits"] == [kit]
+
+
+# --- #406: the in-app row (the message cut at the cap) keeps the fix --------
+
+
+def test_the_unreadable_alert_row_keeps_the_remedy_before_a_long_os_error(
+    tmp_path, recorders, monkeypatch
+):
+    """#406 behavior 25: the cause (an OS error carrying a full path) goes
+    last, so the row still says what to check."""
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
+    monkeypatch.setattr(user_profile_module, "_unavailable_reported", set())
+    manager = UserProfileManager(tmp_path)
+    _seed(manager)
+    path = _path(manager)
+    real_read_bytes = Path.read_bytes
+    strerror = "Input/output error" + " on a degraded network volume" * 5
+
+    def _failing(self: Path) -> bytes:
+        if self == path:
+            raise OSError(5, strerror, str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _failing)
+
+    manager.get_profile(USER)
+
+    assert recorders.alerted.wait(5)
+    message = recorders.alerts[0]
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith("[PROFILE UNREADABLE]")
+    assert "Check its permissions and free disk space." in row
+    # The cause still reaches external destinations whole.
+    assert strerror in message and str(path) in message
+
+
+def test_the_corrupt_alert_row_keeps_the_restore_hint(tmp_path, recorders):
+    """#406 (CORRUPT twin of the TODO list copy): the restore hint leads the
+    quarantine path, which grows with the account id."""
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
+    user = "family-tablet-shared-account-" + "x" * 40
+    manager = UserProfileManager(tmp_path)
+    _seed(manager, user)
+    _path(manager, user).write_bytes(b"{ not json")
+
+    manager.get_profile(user)
+
+    assert recorders.alerted.wait(5)
+    message = recorders.alerts[0]
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith("[PROFILE CORRUPT]")
+    assert "An admin can restore your memories from the original" in row
+    quarantined = _quarantined(manager, user)
+    assert len(quarantined) == 1
+    assert f"users/{user}/quarantine/{quarantined[0].name}" in message

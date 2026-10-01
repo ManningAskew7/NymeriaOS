@@ -31,6 +31,7 @@ import pytest
 from nymeria.core import activity_log as activity_log_module
 from nymeria.core import notification_dispatch as dispatch_module
 from nymeria.core.activity_log import ActivityLog
+from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 from nymeria.core.pending_prompt_queue import (
     create_pending_queue,
     reset_pending_queue_for_tests,
@@ -385,6 +386,35 @@ def test_paused_trigger_keeps_parked_events_and_resume_retries_them(
     positions = [last.index(f"Mail: e{i}") for i in range(1, 7)]
     assert positions == sorted(positions)
     assert _stored(tmp_path).failed_events == []
+
+
+def test_pause_alert_with_parked_events_keeps_the_resume_command_in_app(
+    tmp_path, source, alerts, monkeypatch
+):
+    """#406 behavior 17: a 200-character name, a long error and the parked
+    events sentences together still leave the verdict and the resume command
+    in the in-app row (the message cut at the cap); the full message keeps
+    every sentence for external destinations."""
+    source([_mail(f"e{i}") for i in range(1, 6)])
+    manager = TriggerManager(tmp_path)
+    _add(manager)
+    long_name = ("Sweep the shared accounts mailbox for supplier invoices " * 4)[:200]
+    with manager.atomic_update(USER) as store:
+        store.triggers[0].name = long_name
+    monkeypatch.setattr(manager, "_stream_live", _Turns(["relay refused: " + "x" * 300] * 5))
+
+    for _ in range(5):
+        _poll_and_fire(manager)
+
+    message = alerts[-1]
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith("[TRIGGER PAUSED]")
+    assert "stopped after 5 consecutive failed actions" in row
+    assert "Fix the cause, then /triggers resume trig-1." in row
+    assert "The 5 event(s) its failed runs could not deliver are kept" in message
+    assert "discard them" in message
+    assert f'Full name: "{long_name}".' in message
+    assert f"Last error: {_stored(tmp_path).last_error}." in message
 
 
 def test_trigger_views_show_the_parked_count(tmp_path, monkeypatch):

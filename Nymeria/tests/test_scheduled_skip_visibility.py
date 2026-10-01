@@ -26,6 +26,7 @@ from nymeria.core import ticker as ticker_module
 from nymeria.core import time_utils as time_utils_module
 from nymeria.core import todo_constants as todo_constants_module
 from nymeria.core.activity_log import ActivityType
+from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 from nymeria.core.ticker import Ticker
 from nymeria.core.todo_constants import count_skipped_occurrences
 from nymeria.core.todo_manager import TodoManager
@@ -1140,7 +1141,7 @@ def test_the_long_run_alert_leads_with_the_verdict_and_the_remedy(tmp_path, sign
 
     alert = _long_run_alerts(signals)[0]
     message = alert["message"]
-    headline = message[:200]
+    headline = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
     assert f"TODO [{todo.id}]" in headline
     assert "has been running 95 min" in headline
     assert "will not run again until that run ends" in headline
@@ -1326,3 +1327,105 @@ def test_a_failing_report_never_breaks_the_poll(tmp_path, signals, monkeypatch):
 
     assert len(pool.submitted) == 2
     assert other.id in ticker._active_futures
+
+
+# ------------------------------------------------------------------
+# #406: the in-app row (the message cut at the cap) keeps the fix
+# ------------------------------------------------------------------
+# Worst-case inputs: task text past the copies' 80-character cut and the
+# longest zone key tzdata ships (30 characters), which lengthens every slot.
+
+_LONG_TASK = (
+    "Check the overnight medication log, message the carer if any evening "
+    "dose was missed or doubled, and file the summary"
+)
+_LONGEST_ZONE = "America/North_Dakota/New_Salem"
+
+
+def _in_app_row(message: str) -> str:
+    return message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+
+
+def _long_zone(monkeypatch) -> None:
+    monkeypatch.setattr(time_utils_module, "get_user_tz", lambda: ZoneInfo(_LONGEST_ZONE))
+
+
+def _add_long_todo(agent: FakeAgent, *, slot: datetime, recurrence: str = "1h"):
+    with agent.todo_manager.atomic_update(USER) as todo_list:
+        todo = todo_list.add_item(
+            _LONG_TASK,
+            scheduled_for=slot,
+            thread_id="thread-1",
+            created_by="user",
+            recurrence=recurrence,
+        )
+    assert todo is not None
+    agent.todo_manager.sync_schedule_to_db(USER, todo.id, agent._schedule_db)
+    return todo
+
+
+def test_the_skip_alert_row_keeps_the_count_and_the_next_run(
+    tmp_path, signals, monkeypatch
+):
+    """#406 behaviors 23, 28."""
+    _long_zone(monkeypatch)
+    ticker, agent = _make_ticker(tmp_path)
+    todo = _add_long_todo(agent, slot=_now() - timedelta(hours=3, minutes=10))
+
+    ticker._execute_scheduled_todo(_entry_for(agent, todo.id))
+
+    message = _alerts(signals, "[SCHEDULED TASK SKIPPED]")[0]["message"]
+    upcoming = _current(agent, todo.id).scheduled_for
+    assert upcoming is not None
+    row = _in_app_row(message)
+    assert row.startswith(f"[SCHEDULED TASK SKIPPED] Recurring TODO [{todo.id}]")
+    assert "skipped 3 scheduled occurrences" in row
+    assert f"next run {ticker_module._format_slot(upcoming)}." in row
+    assert _LONGEST_ZONE in row
+    assert f'Task: "{_LONG_TASK[:80]}".' in message
+    assert "Usual causes:" in message
+
+
+def test_the_blocked_alert_row_keeps_the_restart_remedy_and_reclaim_time(
+    tmp_path, signals, monkeypatch
+):
+    """#406 behaviors 22, 28: a leaked marker from an earlier run."""
+    _long_zone(monkeypatch)
+    ticker, agent = _make_ticker(tmp_path)
+    slot = _now() - timedelta(minutes=1)
+    todo = _add_long_todo(agent, slot=slot)
+    started = (slot - timedelta(hours=1)).timestamp()
+    _leave_marker(agent, todo.id, started)
+
+    ticker._execute_scheduled_todo(_entry_for(agent, todo.id))
+
+    message = _alerts(signals, "[SCHEDULED TASK BLOCKED]")[0]["message"]
+    row = _in_app_row(message)
+    assert row.startswith(f"[SCHEDULED TASK BLOCKED] TODO [{todo.id}] cannot start")
+    assert "restarting the scheduler clears it now" in row
+    assert f"reclaimed at {ticker_module._format_slot(started + 24 * 3600)}" in row
+    assert f'Task: "{_LONG_TASK[:80]}", due {ticker_module._format_slot(slot)}.' in message
+    assert ticker_module._format_slot(started) in message
+
+
+def test_the_release_pending_blocked_row_says_it_retries_and_never_restart(
+    tmp_path, signals, monkeypatch
+):
+    """#406 behavior 22: our own failed release retries every poll, so the
+    copy must not send the owner to restart anything."""
+    _long_zone(monkeypatch)
+    ticker, agent = _make_ticker(tmp_path)
+    todo = _add_long_todo(agent, slot=_now() - timedelta(minutes=1))
+    _fail_releases(monkeypatch, agent._schedule_db, failures=10)
+    ticker._execute_scheduled_todo(_entry_for(agent, todo.id))
+    ticker._check_and_execute()  # the retry fails too
+    _move_slot(agent, todo.id, _now())
+
+    ticker._execute_scheduled_todo(_entry_for(agent, todo.id))
+
+    message = _alerts(signals, "[SCHEDULED TASK BLOCKED]")[0]["message"]
+    row = _in_app_row(message)
+    assert row.startswith(f"[SCHEDULED TASK BLOCKED] TODO [{todo.id}] cannot start")
+    assert "retries every poll" in row
+    assert "restart" not in message.lower()
+    assert f'Task: "{_LONG_TASK[:80]}"' in message
